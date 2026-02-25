@@ -268,8 +268,9 @@ def _coo_on_pre_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
         )
 
     register_tvm_cuda_from_file(
-        module='coo_plasticity_binary',
-        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+        module='coo_plasticity_binary_pre',
+        source=Path(__file__).parent.joinpath('plasticity_binary_update_coo_on_binary_pre.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -282,7 +283,7 @@ def _coo_on_pre_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'coo_plasticity_binary.update_coo_on_pre{wt_sfx}{spk_suffix}'
+    kernel_name = f'coo_plasticity_binary_pre.update_coo_on_pre{wt_sfx}{spk_suffix}'
 
     def kernel(weight, pre_ids, post_ids, pre_spike, post_trace):
         return jax.ffi.ffi_call(
@@ -817,8 +818,9 @@ def _coo_on_post_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
         )
 
     register_tvm_cuda_from_file(
-        module='coo_plasticity_binary',
-        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+        module='coo_plasticity_binary_post',
+        source=Path(__file__).parent.joinpath('plasticity_binary_update_coo_on_binary_post.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -831,7 +833,7 @@ def _coo_on_post_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'coo_plasticity_binary.update_coo_on_post{wt_sfx}{spk_suffix}'
+    kernel_name = f'coo_plasticity_binary_post.update_coo_on_post{wt_sfx}{spk_suffix}'
 
     def kernel(weight, pre_ids, post_ids, pre_trace, post_spike):
         return jax.ffi.ffi_call(

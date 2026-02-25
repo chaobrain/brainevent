@@ -946,13 +946,14 @@ def _binary_jitumv_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='jit_uniform',
-        source=Path(__file__).parent.joinpath('jit_uniform.cu'),
+        module='binary_jitumv',
+        source=Path(__file__).parent.joinpath('binary_jitumv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_uniform.binary_jitumv_{variant}{wt_sfx}{sp_sfx}'
+    kernel_name = f'binary_jitumv.binary_jitumv_{variant}{wt_sfx}{sp_sfx}'
 
     def kernel(w_low, w_high, clen, vector, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
@@ -2023,13 +2024,14 @@ def _binary_jitumm_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='jit_uniform',
-        source=Path(__file__).parent.joinpath('jit_uniform.cu'),
+        module='binary_jitumm',
+        source=Path(__file__).parent.joinpath('binary_jitumm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_uniform.binary_jitumm_{variant}{wt_sfx}{sp_sfx}'
+    kernel_name = f'binary_jitumm.binary_jitumm_{variant}{wt_sfx}{sp_sfx}'
 
     def kernel(w_low, w_high, clen, B, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)

@@ -141,6 +141,8 @@ def register_tvm_cuda_kernels(
     source_code: str,
     module: str,
     functions: Sequence[str],
+    arg_spec: Sequence[str] = ("args", "rets", "ctx.stream"),
+    include_dir: str | Path | None = None,
 ):
     """Compile CUDA source code and register the resulting kernels with JAX FFI.
 
@@ -165,6 +167,9 @@ def register_tvm_cuda_kernels(
     functions : Sequence of str
         Names of the functions (entry points) to extract from the
         compiled module and register with JAX FFI.
+    include_dir : str or Path or None, optional
+        Directory path to add to the include search path during compilation.
+        This allows ``#include`` directives in the source to find headers.
 
     Returns
     -------
@@ -233,16 +238,32 @@ def register_tvm_cuda_kernels(
             )
         return _registered_tvm_modules[module]
 
+    # Prepare compilation options
+    compile_options = {}
+    if include_dir:
+        include_dir_path = Path(include_dir)
+        if not include_dir_path.is_dir():
+            raise ValueError(f"Include directory not found: {include_dir}")
+        compile_options['extra_include_paths'] = [str(include_dir_path)]
+
     # Compile CUDA module
-    _cuda_module = tvm_ffi.cpp.load_inline(name=module, cuda_sources=source_code, functions=functions)
+    _cuda_module = tvm_ffi.cpp.load_inline(
+        name=module,
+        cuda_sources=source_code,
+        functions=functions,
+        **compile_options
+    )
 
     # Register each kernel with JAX FFI
     for name in functions:
         jax_tvm_ffi.register_ffi_target(
-            f"{module}.{name}",
-            getattr(_cuda_module, name),
-            ["args", "rets", "ctx.stream"],
+            name=f"{module}.{name}",
+            function=getattr(_cuda_module, name),
+            arg_spec=list(arg_spec),
             platform="gpu",
+            allow_cuda_graph=True,
+            pass_owned_tensor=False,
+            use_last_output_for_alloc_workspace=False,
         )
 
     # Mark this module as registered so future calls can safely reuse it.
@@ -340,6 +361,7 @@ def _parse_tvm_entry_functions(source_code: str) -> list:
 def register_tvm_cuda_from_file(
     module: str,
     source: str | Path,
+    include_dir: str | Path | None = None,
 ):
     """Compile a CUDA source and auto-register all TVM FFI entry points.
 
@@ -368,6 +390,9 @@ def register_tvm_cuda_from_file(
         A raw CUDA string is also accepted::
 
             register_tvm_cuda_from_file('mykernels', cuda_source_string)
+    include_dir : str or Path or None, optional
+        Directory path to add to the include search path during compilation.
+        This allows ``#include`` directives in the source to find headers.
 
     Returns
     -------
@@ -424,7 +449,12 @@ def register_tvm_cuda_from_file(
             "Entry functions must be top-level 'void' functions (at column 0) "
             "with 'tvm::ffi::TensorView' parameters."
         )
-    return register_tvm_cuda_kernels(source_code=source, module=module, functions=functions)
+    return register_tvm_cuda_kernels(
+        source_code=source,
+        module=module,
+        functions=functions,
+        include_dir=include_dir,
+    )
 
 
 def defjvp(primitive, *jvp_rules):

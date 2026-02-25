@@ -115,43 +115,43 @@ _fused_fwd_gru_diag##SUFFIX(                                                   \
     const int bxpb_stride = 3 * hidden_dim;                                    \
                                                                                \
     /* Load Bxpb values for this thread's chunk */                             \
-    SCALAR_T bxpb_z[CHUNK_SIZE], bxpb_r[CHUNK_SIZE], bxpb_h[CHUNK_SIZE];      \
+    SCALAR_T bxpb_z[CHUNK_SIZE], bxpb_r[CHUNK_SIZE], bxpb_h[CHUNK_SIZE];       \
     const int t_start = tid * CHUNK_SIZE;                                      \
     int num_valid = 0;                                                         \
     for (int c = 0; c < CHUNK_SIZE; c++) {                                     \
         int t = t_start + c;                                                   \
         if (t < seq_len) {                                                     \
             int off = bxpb_base + t * bxpb_stride;                             \
-            bxpb_z[c] = Bxpb[off + 0 * hidden_dim];                           \
-            bxpb_r[c] = Bxpb[off + 1 * hidden_dim];                           \
-            bxpb_h[c] = Bxpb[off + 2 * hidden_dim];                           \
+            bxpb_z[c] = Bxpb[off + 0 * hidden_dim];                            \
+            bxpb_r[c] = Bxpb[off + 1 * hidden_dim];                            \
+            bxpb_h[c] = Bxpb[off + 2 * hidden_dim];                            \
             num_valid++;                                                       \
         } else {                                                               \
-            bxpb_z[c] = (SCALAR_T)(0.0);                                      \
-            bxpb_r[c] = (SCALAR_T)(0.0);                                      \
-            bxpb_h[c] = (SCALAR_T)(0.0);                                      \
+            bxpb_z[c] = (SCALAR_T)(0.0);                                       \
+            bxpb_r[c] = (SCALAR_T)(0.0);                                       \
+            bxpb_h[c] = (SCALAR_T)(0.0);                                       \
         }                                                                      \
     }                                                                          \
                                                                                \
     /* Initialize solution: h = GRU(0, x) (one-step from zero) */              \
     SCALAR_T sol[CHUNK_SIZE];                                                  \
     for (int c = 0; c < CHUNK_SIZE; c++) {                                     \
-        SCALAR_T z = cuda_sigmoid<SCALAR_T>(bxpb_z[c]);                       \
-        SCALAR_T h_new = cuda_tanh<SCALAR_T>(bxpb_h[c]);                      \
+        SCALAR_T z = cuda_sigmoid<SCALAR_T>(bxpb_z[c]);                        \
+        SCALAR_T h_new = cuda_tanh<SCALAR_T>(bxpb_h[c]);                       \
         sol[c] = z * h_new;                                                    \
     }                                                                          \
                                                                                \
-    /* Shared memory for inter-warp communication */                            \
-    extern __shared__ char _smem_bytes[];                                       \
+    /* Shared memory for inter-warp communication */                           \
+    extern __shared__ char _smem_bytes[];                                      \
     SCALAR_T* smem_jac = reinterpret_cast<SCALAR_T*>(_smem_bytes);             \
     SCALAR_T* smem_rhs = smem_jac + warps_per_block;                           \
                                                                                \
     /* Newton iterations */                                                    \
     for (int newton_it = 0; newton_it < max_its; newton_it++) {                \
                                                                                \
-        /* Compute h_prev (shifted): h_prev[t] = sol[t-1], h_prev[0] = 0 */   \
+        /* Compute h_prev (shifted): h_prev[t] = sol[t-1], h_prev[0] = 0 */    \
         SCALAR_T h_prev[CHUNK_SIZE];                                           \
-        /* Get previous thread's last solution via shuffle */                   \
+        /* Get previous thread's last solution via shuffle */                  \
         SCALAR_T prev_thread_sol = __shfl_up_sync(                             \
             0xffffffff, sol[CHUNK_SIZE - 1], 1);                               \
         /* For first thread in warp, need from shared memory */                \
@@ -167,7 +167,7 @@ _fused_fwd_gru_diag##SUFFIX(                                                   \
             h_prev[c] = sol[c - 1];                                            \
         }                                                                      \
         /* Boundary: first element of first thread */                          \
-        if (tid == 0) h_prev[0] = (SCALAR_T)(0.0);                            \
+        if (tid == 0) h_prev[0] = (SCALAR_T)(0.0);                             \
                                                                                \
         /* Compute negative residuals and Jacobians */                         \
         SCALAR_T reg_jac[CHUNK_SIZE];                                          \
@@ -182,15 +182,15 @@ _fused_fwd_gru_diag##SUFFIX(                                                   \
                 SCALAR_T r = cuda_sigmoid<SCALAR_T>(pre_r);                    \
                 SCALAR_T pre_h = A_h * hp * r + bxpb_h[c];                     \
                 SCALAR_T h_new = cuda_tanh<SCALAR_T>(pre_h);                   \
-                SCALAR_T f_val = z * h_new + ((SCALAR_T)(1.0) - z) * hp;      \
+                SCALAR_T f_val = z * h_new + ((SCALAR_T)(1.0) - z) * hp;       \
                                                                                \
-                /* Negative residual */                                         \
+                /* Negative residual */                                        \
                 reg_rhs[c] = -(sol[c] - f_val);                                \
                                                                                \
                 /* Jacobian: -df/dh_prev (diagonal) */                         \
                 SCALAR_T dz = cuda_sigmoid_deriv<SCALAR_T>(pre_z);             \
                 SCALAR_T dr = cuda_sigmoid_deriv<SCALAR_T>(pre_r);             \
-                SCALAR_T dh = cuda_tanh_deriv<SCALAR_T>(pre_h);               \
+                SCALAR_T dh = cuda_tanh_deriv<SCALAR_T>(pre_h);                \
                 SCALAR_T J_z = A_z * dz;                                       \
                 SCALAR_T J_r = A_r * dr;                                       \
                 SCALAR_T J_h = A_h * dh;                                       \
@@ -199,25 +199,25 @@ _fused_fwd_gru_diag##SUFFIX(                                                   \
                     + (h_new - hp) * J_z + z * J_h;                            \
                 reg_jac[c] = -jac_val;                                         \
             } else {                                                           \
-                reg_jac[c] = (SCALAR_T)(-1.0);                                \
-                reg_rhs[c] = (SCALAR_T)(0.0);                                 \
+                reg_jac[c] = (SCALAR_T)(-1.0);                                 \
+                reg_rhs[c] = (SCALAR_T)(0.0);                                  \
             }                                                                  \
         }                                                                      \
-        if (tid == 0) reg_jac[0] = (SCALAR_T)(0.0);                           \
+        if (tid == 0) reg_jac[0] = (SCALAR_T)(0.0);                            \
                                                                                \
         /* ============== Parallel reduction (5-step) ============== */        \
         /* Step 1: Thomas */                                                   \
         for (int c = 1; c < CHUNK_SIZE; c++) {                                 \
-            reg_rhs[c] -= reg_jac[c] * reg_rhs[c - 1];                        \
-            reg_jac[c] *= -reg_jac[c - 1];                                    \
+            reg_rhs[c] -= reg_jac[c] * reg_rhs[c - 1];                         \
+            reg_jac[c] *= -reg_jac[c - 1];                                     \
         }                                                                      \
         /* Step 2: Warp PCR */                                                 \
         SCALAR_T jl = reg_jac[CHUNK_SIZE - 1];                                 \
         SCALAR_T rl = reg_rhs[CHUNK_SIZE - 1];                                 \
-        for (int d = 1; d < THREADS_PER_WARP; d <<= 1) {                      \
+        for (int d = 1; d < THREADS_PER_WARP; d <<= 1) {                       \
             SCALAR_T jp = __shfl_up_sync(0xffffffff, jl, d);                   \
             SCALAR_T rp = __shfl_up_sync(0xffffffff, rl, d);                   \
-            if (lane >= d) { rl -= jl * rp; jl *= -jp; }                      \
+            if (lane >= d) { rl -= jl * rp; jl *= -jp; }                       \
         }                                                                      \
         reg_jac[CHUNK_SIZE - 1] = jl;                                          \
         reg_rhs[CHUNK_SIZE - 1] = rl;                                          \
@@ -227,7 +227,7 @@ _fused_fwd_gru_diag##SUFFIX(                                                   \
             smem_rhs[warp_id] = reg_rhs[CHUNK_SIZE - 1];                       \
         }                                                                      \
         __syncthreads();                                                       \
-        for (int d = 1; d < warps_per_block; d <<= 1) {                       \
+        for (int d = 1; d < warps_per_block; d <<= 1) {                        \
             int pw = warp_id - d;                                              \
             if (lane == (THREADS_PER_WARP - 1) && pw >= 0                      \
                 && num_valid > 0) {                                            \
@@ -259,11 +259,11 @@ _fused_fwd_gru_diag##SUFFIX(                                                   \
                 0xffffffff, reg_rhs[CHUNK_SIZE-1], 1);                         \
             SCALAR_T pj = __shfl_up_sync(                                      \
                 0xffffffff, reg_jac[CHUNK_SIZE-1], 1);                         \
-            if (lane > 0) { sp = pr; jpv = pj; }                              \
+            if (lane > 0) { sp = pr; jpv = pj; }                               \
         }                                                                      \
         /* Step 5: Chunk fwd subst */                                          \
         for (int c = 0; c < CHUNK_SIZE - 1; c++) {                             \
-            reg_rhs[c] -= reg_jac[c] * sp;                                    \
+            reg_rhs[c] -= reg_jac[c] * sp;                                     \
             reg_jac[c] *= -jpv;                                                \
         }                                                                      \
                                                                                \
@@ -272,7 +272,7 @@ _fused_fwd_gru_diag##SUFFIX(                                                   \
             sol[c] += omega * reg_rhs[c];                                      \
         }                                                                      \
                                                                                \
-        /* Store last thread's sol for next iteration's h_prev lookup */        \
+        /* Store last thread's sol for next iteration's h_prev lookup */       \
         if (lane == (THREADS_PER_WARP - 1)) {                                  \
             smem_rhs[warp_id] = sol[CHUNK_SIZE - 1];                           \
         }                                                                      \
@@ -327,77 +327,77 @@ _fused_bwd_gru_diag##SUFFIX(                                                   \
     const int bxpb_base = b_idx * seq_len * 3 * hidden_dim + h_idx;            \
     const int bxpb_stride = 3 * hidden_dim;                                    \
                                                                                \
-    /* Load grad_y in reverse time order for backward solve */                  \
+    /* Load grad_y in reverse time order for backward solve */                 \
     const int t_start = tid * CHUNK_SIZE;                                      \
     SCALAR_T grad_rev[CHUNK_SIZE];                                             \
     int num_valid = 0;                                                         \
     for (int c = 0; c < CHUNK_SIZE; c++) {                                     \
-        int t_fwd = seq_len - 1 - (t_start + c);                              \
-        if (t_fwd >= 0 && t_fwd < seq_len) {                                  \
-            grad_rev[c] = grad_y[h_base + t_fwd * hidden_dim];                \
+        int t_fwd = seq_len - 1 - (t_start + c);                               \
+        if (t_fwd >= 0 && t_fwd < seq_len) {                                   \
+            grad_rev[c] = grad_y[h_base + t_fwd * hidden_dim];                 \
             num_valid++;                                                       \
         } else {                                                               \
-            grad_rev[c] = (SCALAR_T)(0.0);                                    \
+            grad_rev[c] = (SCALAR_T)(0.0);                                     \
         }                                                                      \
     }                                                                          \
                                                                                \
     /* Compute backward Jacobians (reversed, shifted) */                       \
     SCALAR_T reg_jac[CHUNK_SIZE];                                              \
     for (int c = 0; c < CHUNK_SIZE; c++) {                                     \
-        int t_fwd = seq_len - 1 - (t_start + c);                              \
-        /* For backward: use Jacobian from t_fwd+1 (shifted) */               \
-        int t_jac = t_fwd + 1;                                                \
-        if (t_jac >= 0 && t_jac < seq_len) {                                  \
+        int t_fwd = seq_len - 1 - (t_start + c);                               \
+        /* For backward: use Jacobian from t_fwd+1 (shifted) */                \
+        int t_jac = t_fwd + 1;                                                 \
+        if (t_jac >= 0 && t_jac < seq_len) {                                   \
             /* Get h[t_jac-1] (h_prev for t_jac) */                            \
             SCALAR_T hp;                                                       \
             if (t_jac > 0) {                                                   \
-                hp = h[h_base + (t_jac - 1) * hidden_dim];                    \
+                hp = h[h_base + (t_jac - 1) * hidden_dim];                     \
             } else {                                                           \
                 hp = (SCALAR_T)(0.0);                                          \
             }                                                                  \
             int boff = bxpb_base + t_jac * bxpb_stride;                        \
-            SCALAR_T pre_z = A_z * hp + Bxpb[boff + 0 * hidden_dim];          \
-            SCALAR_T pre_r = A_r * hp + Bxpb[boff + 1 * hidden_dim];          \
+            SCALAR_T pre_z = A_z * hp + Bxpb[boff + 0 * hidden_dim];           \
+            SCALAR_T pre_r = A_r * hp + Bxpb[boff + 1 * hidden_dim];           \
             SCALAR_T z = cuda_sigmoid<SCALAR_T>(pre_z);                        \
             SCALAR_T r = cuda_sigmoid<SCALAR_T>(pre_r);                        \
-            SCALAR_T pre_hh = A_h * hp * r + Bxpb[boff + 2 * hidden_dim];     \
-            SCALAR_T h_new = cuda_tanh<SCALAR_T>(pre_hh);                     \
-            SCALAR_T dz = cuda_sigmoid_deriv<SCALAR_T>(pre_z);                \
-            SCALAR_T dr = cuda_sigmoid_deriv<SCALAR_T>(pre_r);                \
-            SCALAR_T dh_val = cuda_tanh_deriv<SCALAR_T>(pre_hh);              \
+            SCALAR_T pre_hh = A_h * hp * r + Bxpb[boff + 2 * hidden_dim];      \
+            SCALAR_T h_new = cuda_tanh<SCALAR_T>(pre_hh);                      \
+            SCALAR_T dz = cuda_sigmoid_deriv<SCALAR_T>(pre_z);                 \
+            SCALAR_T dr = cuda_sigmoid_deriv<SCALAR_T>(pre_r);                 \
+            SCALAR_T dh_val = cuda_tanh_deriv<SCALAR_T>(pre_hh);               \
             SCALAR_T J_z = A_z * dz;                                           \
             SCALAR_T J_r = A_r * dr;                                           \
-            SCALAR_T J_h = A_h * dh_val * (r + hp * J_r);                     \
-            SCALAR_T jac_val = ((SCALAR_T)(1.0) - z)                          \
-                + (h_new - hp) * J_z + z * J_h;                               \
+            SCALAR_T J_h = A_h * dh_val * (r + hp * J_r);                      \
+            SCALAR_T jac_val = ((SCALAR_T)(1.0) - z)                           \
+                + (h_new - hp) * J_z + z * J_h;                                \
             /* For diagonal, transpose is identity */                          \
             reg_jac[c] = -jac_val;                                             \
         } else {                                                               \
-            reg_jac[c] = (SCALAR_T)(0.0);                                     \
+            reg_jac[c] = (SCALAR_T)(0.0);                                      \
         }                                                                      \
     }                                                                          \
-    if (tid == 0) reg_jac[0] = (SCALAR_T)(0.0);                               \
+    if (tid == 0) reg_jac[0] = (SCALAR_T)(0.0);                                \
                                                                                \
     /* Solve backward system via parallel reduction */                         \
-    extern __shared__ char _smem_bytes[];                                       \
+    extern __shared__ char _smem_bytes[];                                      \
     SCALAR_T* smem_jac = reinterpret_cast<SCALAR_T*>(_smem_bytes);             \
     SCALAR_T* smem_rhs = smem_jac + warps_per_block;                           \
                                                                                \
     SCALAR_T reg_rhs[CHUNK_SIZE];                                              \
-    for (int c = 0; c < CHUNK_SIZE; c++) reg_rhs[c] = grad_rev[c];            \
+    for (int c = 0; c < CHUNK_SIZE; c++) reg_rhs[c] = grad_rev[c];             \
                                                                                \
     /* Step 1: Thomas */                                                       \
     for (int c = 1; c < CHUNK_SIZE; c++) {                                     \
-        reg_rhs[c] -= reg_jac[c] * reg_rhs[c - 1];                            \
-        reg_jac[c] *= -reg_jac[c - 1];                                        \
+        reg_rhs[c] -= reg_jac[c] * reg_rhs[c - 1];                             \
+        reg_jac[c] *= -reg_jac[c - 1];                                         \
     }                                                                          \
     /* Step 2: Warp PCR */                                                     \
     SCALAR_T jl = reg_jac[CHUNK_SIZE - 1];                                     \
     SCALAR_T rl = reg_rhs[CHUNK_SIZE - 1];                                     \
-    for (int d = 1; d < THREADS_PER_WARP; d <<= 1) {                          \
+    for (int d = 1; d < THREADS_PER_WARP; d <<= 1) {                           \
         SCALAR_T jp = __shfl_up_sync(0xffffffff, jl, d);                       \
         SCALAR_T rp = __shfl_up_sync(0xffffffff, rl, d);                       \
-        if (lane >= d) { rl -= jl * rp; jl *= -jp; }                          \
+        if (lane >= d) { rl -= jl * rp; jl *= -jp; }                           \
     }                                                                          \
     reg_jac[CHUNK_SIZE - 1] = jl;                                              \
     reg_rhs[CHUNK_SIZE - 1] = rl;                                              \
@@ -407,7 +407,7 @@ _fused_bwd_gru_diag##SUFFIX(                                                   \
         smem_rhs[warp_id] = reg_rhs[CHUNK_SIZE - 1];                           \
     }                                                                          \
     __syncthreads();                                                           \
-    for (int d = 1; d < warps_per_block; d <<= 1) {                           \
+    for (int d = 1; d < warps_per_block; d <<= 1) {                            \
         int pw = warp_id - d;                                                  \
         if (lane == (THREADS_PER_WARP - 1) && pw >= 0 && num_valid > 0) {      \
             SCALAR_T jpw = smem_jac[pw];                                       \
@@ -438,19 +438,19 @@ _fused_bwd_gru_diag##SUFFIX(                                                   \
             0xffffffff, reg_rhs[CHUNK_SIZE-1], 1);                             \
         SCALAR_T pj = __shfl_up_sync(                                          \
             0xffffffff, reg_jac[CHUNK_SIZE-1], 1);                             \
-        if (lane > 0) { sp = pr; jpv = pj; }                                  \
+        if (lane > 0) { sp = pr; jpv = pj; }                                   \
     }                                                                          \
     /* Step 5: Chunk fwd subst */                                              \
     for (int c = 0; c < CHUNK_SIZE - 1; c++) {                                 \
-        reg_rhs[c] -= reg_jac[c] * sp;                                        \
+        reg_rhs[c] -= reg_jac[c] * sp;                                         \
         reg_jac[c] *= -jpv;                                                    \
     }                                                                          \
                                                                                \
     /* Write dl/dh in forward order (reverse back from reversed) */            \
     for (int c = 0; c < CHUNK_SIZE; c++) {                                     \
-        int t_fwd = seq_len - 1 - (t_start + c);                              \
-        if (t_fwd >= 0 && t_fwd < seq_len) {                                  \
-            dl_dh_out[h_base + t_fwd * hidden_dim] = reg_rhs[c];              \
+        int t_fwd = seq_len - 1 - (t_start + c);                               \
+        if (t_fwd >= 0 && t_fwd < seq_len) {                                   \
+            dl_dh_out[h_base + t_fwd * hidden_dim] = reg_rhs[c];               \
         }                                                                      \
     }                                                                          \
 }

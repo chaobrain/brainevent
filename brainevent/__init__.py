@@ -123,7 +123,6 @@ from ._pallas_random import (
 from ._registry import (
     get_registry, get_primitives_by_tags, get_all_primitive_names,
 )
-from . import pararnn
 
 __all__ = [
 
@@ -229,8 +228,6 @@ __all__ = [
     # --- config & registry --- #
     'config', 'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
 
-    # --- parallel RNN --- #
-    'pararnn',
 ]
 
 

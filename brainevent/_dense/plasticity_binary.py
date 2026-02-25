@@ -200,8 +200,9 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
 
 def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
     register_tvm_cuda_from_file(
-        module='dense_plasticity',
-        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+        module='dense_plasticity_on_pre',
+        source=Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -214,7 +215,7 @@ def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'dense_plasticity.update_dense_on_pre{wt_sfx}{spk_suffix}'
+    kernel_name = f'dense_plasticity_on_pre.update_dense_on_pre{wt_sfx}{spk_suffix}'
 
     def kernel(weight, spike, trace):
         return jax.ffi.ffi_call(
@@ -640,8 +641,9 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
 
 def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
     register_tvm_cuda_from_file(
-        module='dense_plasticity',
-        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+        module='dense_plasticity_on_post',
+        source=Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -654,7 +656,7 @@ def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'dense_plasticity.update_dense_on_post{wt_sfx}{spk_suffix}'
+    kernel_name = f'dense_plasticity_on_post.update_dense_on_post{wt_sfx}{spk_suffix}'
 
     def kernel(weight, trace, spike):
         return jax.ffi.ffi_call(
