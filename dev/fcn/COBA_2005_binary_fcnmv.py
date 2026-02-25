@@ -34,8 +34,12 @@ import brainunit as u
 import jax
 
 import brainevent
+from model import FixedNumConn
 
-brainevent.config.set_backend('gpu', 'pallas')
+brainevent.config.set_backend('gpu', 'tvmffi')
+
+data_type = 'binary'
+efferent_target = 'post'
 
 
 class EINet(brainstate.nn.Module):
@@ -50,13 +54,19 @@ class EINet(brainstate.nn.Module):
             V_initializer=braintools.init.Normal(-55., 2., unit=u.mV)
         )
         self.E = brainpy.state.AlignPostProj(
-            comm=brainstate.nn.EventFixedProb(self.n_exc, self.num, conn_num=80 / self.num, conn_weight=0.6 * u.mS),
+            comm=FixedNumConn(
+                self.n_exc, self.num, conn_num=80 / self.num, conn_weight=0.6 * u.mS,
+                data_type=data_type, efferent_target=efferent_target
+            ),
             syn=brainpy.state.Expon.desc(self.num, tau=5. * u.ms),
             out=brainpy.state.COBA.desc(E=0. * u.mV),
             post=self.N
         )
         self.I = brainpy.state.AlignPostProj(
-            comm=brainstate.nn.EventFixedProb(self.n_inh, self.num, conn_num=80 / self.num, conn_weight=6.7 * u.mS),
+            comm=FixedNumConn(
+                self.n_inh, self.num, conn_num=80 / self.num, conn_weight=6.7 * u.mS,
+                data_type=data_type, efferent_target=efferent_target
+            ),
             syn=brainpy.state.Expon.desc(self.num, tau=10. * u.ms),
             out=brainpy.state.COBA.desc(E=-80. * u.mV),
             post=self.N
@@ -96,7 +106,6 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
     n, rate = jax.block_until_ready(run(s))
     t1 = time.time()
     print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
-
 
 # ----------------------------
 # A6000 NVIDIA GPU
@@ -145,7 +154,6 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
 # scale=100, size=400000, time = 215.4547393321991 s, firing rate = 50.6129150390625 Hz
 
 
-
 # --------------------
 # 2026/02/13, i9-12900H, brainevent 0.0.6, Numba 0.63.1, jax 0.9.0.1, 雷神Win11狂暴模式
 #
@@ -160,4 +168,3 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
 # scale=60, size=240000, time = 91.62744402885437 s, firing rate = 59.56953811645508 Hz
 # scale=80, size=320000, time = 109.23221325874329 s, firing rate = 59.57052993774414 Hz
 # scale=100, size=400000, time = 135.50585222244263 s, firing rate = 59.57082748413086 Hz
-
