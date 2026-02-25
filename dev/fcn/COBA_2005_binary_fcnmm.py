@@ -25,106 +25,290 @@
 #
 
 
+import argparse
+import csv
+import json
+import statistics
+import sys
 import time
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable
 
-import brainpy
-import brainstate
-import braintools
-import brainunit as u
 import jax
+import brainunit as u
+
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import brainevent
-from model import FixedNumConn
+from COBA_2005_benchmark import make_simulation_batch_run
 
-brainevent.config.set_backend('gpu', 'tvmffi')
-
-batch_size = 16
-data_type = 'binary'
-efferent_target = 'post'
+DEFAULT_SCALES = (1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100)
+DEFAULT_BACKENDS = ('tvmffi', 'pallas', 'jax_raw')
+DEFAULT_CONNS = ('post', 'pre')
 
 
-class EINet(brainstate.nn.Module):
-    def __init__(self, scale):
-        super().__init__()
-        self.n_exc = int(3200 * scale)
-        self.n_inh = int(800 * scale)
-        self.num = self.n_exc + self.n_inh
-        self.N = brainpy.state.LIFRef(
-            self.num, V_rest=-60. * u.mV, V_th=-50. * u.mV, V_reset=-60. * u.mV,
-            tau=20. * u.ms, tau_ref=5. * u.ms,
-            V_initializer=braintools.init.Normal(-55., 2., unit=u.mV)
+def _benchmark_single_backend(
+    backend: str,
+    scales: Iterable[int],
+    conn: str,
+    batch_size: int,
+    duration_ms: float,
+    warmup: int,
+    runs: int,
+) -> list[dict]:
+    brainevent.config.set_backend('gpu', backend)
+    rows: list[dict] = []
+    for scale in scales:
+        run = make_simulation_batch_run(
+            scale,
+            batch_size,
+            'binary',
+            conn,
+            duration=duration_ms * u.ms,
         )
-        self.E = brainpy.state.AlignPostProj(
-            comm=FixedNumConn(
-                self.n_exc, self.num, conn_num=80 / self.num, conn_weight=0.6 * u.mS,
-                data_type=data_type, efferent_target=efferent_target
-            ),
-            syn=brainpy.state.Expon.desc(self.num, tau=5. * u.ms),
-            out=brainpy.state.COBA.desc(E=0. * u.mV),
-            post=self.N
-        )
-        self.I = brainpy.state.AlignPostProj(
-            comm=FixedNumConn(
-                self.n_inh, self.num, conn_num=80 / self.num, conn_weight=6.7 * u.mS,
-                data_type=data_type, efferent_target=efferent_target
-            ),
-            syn=brainpy.state.Expon.desc(self.num, tau=10. * u.ms),
-            out=brainpy.state.COBA.desc(E=-80. * u.mV),
-            post=self.N
-        )
-
-    def init_state(self, *args, **kwargs):
-        self.rate = brainstate.ShortTermState(u.math.zeros(self.num))
-
-    def update(self, t, inp):
-        with brainstate.environ.context(t=t):
-            spk = self.N.get_spike() != 0.
-            self.E(spk[:self.n_exc])
-            self.I(spk[self.n_exc:])
-            self.N(inp)
-            self.rate.value += self.N.get_spike()
+        for _ in range(warmup):
+            jax.block_until_ready(run())
+        for run_id in range(1, runs + 1):
+            t0 = time.perf_counter()
+            out = jax.block_until_ready(run())
+            elapsed_s = time.perf_counter() - t0
+            if isinstance(out, tuple) and len(out) == 2:
+                n, rate = out
+            else:
+                n = int(4000 * scale)
+                rate = out
+            row = {
+                'backend': backend,
+                'conn': conn,
+                'scale': int(scale),
+                'run_id': run_id,
+                'size': int(n),
+                'firing_rate_hz': float(rate),
+                'elapsed_s': elapsed_s,
+            }
+            rows.append(row)
+            print(
+                f"backend={backend}, conn={conn}, scale={scale}, run={run_id}/{runs}, "
+                f"time={elapsed_s:.6f}s, firing_rate={float(rate):.6f}Hz"
+            )
+    return rows
 
 
-@brainstate.transform.jit(static_argnums=0)
-def run(scale: float):
-    # network
-    net = EINet(scale)
-    mapper = brainstate.nn.Map(net, init_map_size=batch_size)
-    mapper.init_all_states()
+def _summarize(rows: Iterable[dict], baseline_backend: str) -> list[dict]:
+    grouped: dict[tuple, list[dict]] = defaultdict(list)
+    for row in rows:
+        grouped[(row['backend'], row['conn'], row['scale'])].append(row)
 
-    def fn(t):
-        ts = jax.numpy.ones(batch_size) * t
-        return mapper.map('update', in_axes=(0, None))(ts, 20. * u.mA)
+    summary: list[dict] = []
+    for (backend, conn, scale), records in sorted(grouped.items()):
+        times = [float(r['elapsed_s']) for r in records]
+        rates = [float(r['firing_rate_hz']) for r in records]
+        size = int(records[0]['size'])
+        entry = {
+            'backend': backend,
+            'conn': conn,
+            'scale': int(scale),
+            'size': size,
+            'runs': len(records),
+            'elapsed_mean_s': statistics.fmean(times),
+            'elapsed_std_s': statistics.pstdev(times) if len(times) > 1 else 0.0,
+            'firing_rate_mean_hz': statistics.fmean(rates),
+        }
+        summary.append(entry)
 
-    # simulation
-    duration = 1e4 * u.ms
-    with brainstate.environ.context(dt=0.1 * u.ms):
-        times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
-        brainstate.transform.for_loop(fn, times)
+    baseline_lookup = {
+        (e['conn'], e['scale']): e['elapsed_mean_s']
+        for e in summary
+        if e['backend'] == baseline_backend
+    }
+    for entry in summary:
+        baseline = baseline_lookup.get((entry['conn'], entry['scale']))
+        if baseline is None:
+            entry['speedup_vs_baseline'] = None
+        else:
+            entry['speedup_vs_baseline'] = baseline / entry['elapsed_mean_s']
+    return summary
 
-    return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second) / batch_size
+
+def _write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
-# for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-for s in [1, ]:
-    jax.block_until_ready(run(s))
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w') as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
 
-    t0 = time.time()
-    n, rate = jax.block_until_ready(run(s))
-    t1 = time.time()
-    print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
 
-# --------------------
-# 2026/02/04, NVIDIA GeForce RTX 3090, brainevent 0.0.6, Warp 1.11.1+cu13, jax 0.9.0, Ubuntu 24.04
-#
-# scale=1, size=4000, time = 1.7868633270263672 s, firing rate = 59.56795120239258 Hz
-# scale=2, size=8000, time = 1.8208961486816406 s, firing rate = 59.56516647338867 Hz
-# scale=4, size=16000, time = 1.9305737018585205 s, firing rate = 59.5695915222168 Hz
-# scale=6, size=24000, time = 2.1917836666107178 s, firing rate = 59.56669998168945 Hz
-# scale=8, size=32000, time = 2.235652208328247 s, firing rate = 59.57065200805664 Hz
-# scale=10, size=40000, time = 2.2676308155059814 s, firing rate = 59.57038497924805 Hz
-# scale=20, size=80000, time = 2.3961074352264404 s, firing rate = 59.570884704589844 Hz
-# scale=40, size=160000, time = 2.8628697395324707 s, firing rate = 59.571327209472656 Hz
-# scale=60, size=240000, time = 3.671980857849121 s, firing rate = 59.57017135620117 Hz
-# scale=80, size=320000, time = 4.697195053100586 s, firing rate = 59.56940841674805 Hz
-# scale=100, size=400000, time = 5.40840220451355 s, firing rate = 59.569679260253906 Hz
+def _plot(summary: list[dict], output_dir: Path, baseline_backend: str) -> list[Path]:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print('matplotlib is not installed; skipping plots.')
+        return []
+
+    paths: list[Path] = []
+    conns = sorted({entry['conn'] for entry in summary})
+    for conn in conns:
+        conn_rows = [e for e in summary if e['conn'] == conn]
+        backends = sorted({e['backend'] for e in conn_rows})
+
+        fig1, ax1 = plt.subplots(figsize=(9, 5))
+        for backend in backends:
+            b_rows = sorted((e for e in conn_rows if e['backend'] == backend), key=lambda e: e['scale'])
+            ax1.plot(
+                [e['scale'] for e in b_rows],
+                [e['elapsed_mean_s'] for e in b_rows],
+                marker='o',
+                label=backend,
+            )
+        ax1.set_title(f'COBA 2005 binary_fcnmm runtime ({conn} conn)')
+        ax1.set_xlabel('Scale')
+        ax1.set_ylabel('Mean runtime (s)')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend()
+        runtime_path = output_dir / f'runtime_{conn}.png'
+        fig1.tight_layout()
+        fig1.savefig(runtime_path, dpi=150)
+        plt.close(fig1)
+        paths.append(runtime_path)
+
+        speedup_rows = [
+            e for e in conn_rows if e['backend'] != baseline_backend and e['speedup_vs_baseline'] is not None
+        ]
+        if speedup_rows:
+            fig2, ax2 = plt.subplots(figsize=(9, 5))
+            for backend in sorted({e['backend'] for e in speedup_rows}):
+                b_rows = sorted((e for e in speedup_rows if e['backend'] == backend), key=lambda e: e['scale'])
+                ax2.plot(
+                    [e['scale'] for e in b_rows],
+                    [e['speedup_vs_baseline'] for e in b_rows],
+                    marker='o',
+                    label=f'{backend} vs {baseline_backend}',
+                )
+            ax2.axhline(1.0, color='k', linestyle='--', linewidth=1)
+            ax2.set_title(f'COBA 2005 binary_fcnmm speedup ({conn} conn)')
+            ax2.set_xlabel('Scale')
+            ax2.set_ylabel('Speedup (>1 is faster)')
+            ax2.grid(True, alpha=0.3)
+            ax2.legend()
+            speedup_path = output_dir / f'speedup_{conn}.png'
+            fig2.tight_layout()
+            fig2.savefig(speedup_path, dpi=150)
+            plt.close(fig2)
+            paths.append(speedup_path)
+    return paths
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Run and compare COBA_2005 binary_fcnmm backends.')
+    parser.add_argument('--backends', nargs='+', default=list(DEFAULT_BACKENDS))
+    parser.add_argument('--scales', nargs='+', type=int, default=list(DEFAULT_SCALES))
+    parser.add_argument('--conns', nargs='+', choices=['post', 'pre'], default=list(DEFAULT_CONNS))
+    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--warmup', type=int, default=1)
+    parser.add_argument('--runs', type=int, default=3)
+    parser.add_argument('--duration-ms', type=float, default=1e4)
+    parser.add_argument('--baseline-backend', default='jax_raw')
+    parser.add_argument('--output-dir', default='dev/fcn/results')
+    parser.add_argument('--tag', default=None, help='Optional suffix for output files.')
+    parser.add_argument('--no-plot', action='store_true')
+    args = parser.parse_args()
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    tag = f'_{args.tag}' if args.tag else ''
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    all_rows: list[dict] = []
+    failed_backends: list[tuple[str, str]] = []
+    for backend in args.backends:
+        for conn in args.conns:
+            print(f'Running backend={backend}, conn={conn} ...')
+            try:
+                rows = _benchmark_single_backend(
+                    backend=backend,
+                    scales=args.scales,
+                    conn=conn,
+                    batch_size=args.batch_size,
+                    duration_ms=args.duration_ms,
+                    warmup=args.warmup,
+                    runs=args.runs,
+                )
+                all_rows.extend(rows)
+            except Exception as e:  # noqa: BLE001
+                failed_backends.append((f'{backend}/{conn}', repr(e)))
+                print(f'Failed backend={backend}, conn={conn}: {e!r}')
+
+    if not all_rows:
+        raise RuntimeError('No benchmark results were collected.')
+
+    summary = _summarize(all_rows, baseline_backend=args.baseline_backend)
+
+    raw_csv_path = output_dir / f'coba_2005_binary_fcnmm_raw_{timestamp}{tag}.csv'
+    summary_csv_path = output_dir / f'coba_2005_binary_fcnmm_summary_{timestamp}{tag}.csv'
+    summary_json_path = output_dir / f'coba_2005_binary_fcnmm_summary_{timestamp}{tag}.json'
+    _write_csv(
+        raw_csv_path,
+        all_rows,
+        fieldnames=['backend', 'conn', 'scale', 'run_id', 'size', 'firing_rate_hz', 'elapsed_s'],
+    )
+    _write_csv(
+        summary_csv_path,
+        summary,
+        fieldnames=[
+            'backend',
+            'conn',
+            'scale',
+            'size',
+            'runs',
+            'elapsed_mean_s',
+            'elapsed_std_s',
+            'firing_rate_mean_hz',
+            'speedup_vs_baseline',
+        ],
+    )
+    _write_json(
+        summary_json_path,
+        {
+            'created_at': timestamp,
+            'backends': args.backends,
+            'conns': args.conns,
+            'scales': args.scales,
+            'batch_size': args.batch_size,
+            'warmup': args.warmup,
+            'runs': args.runs,
+            'duration_ms': args.duration_ms,
+            'baseline_backend': args.baseline_backend,
+            'failed_backends': failed_backends,
+            'summary': summary,
+        },
+    )
+
+    plot_paths: list[Path] = []
+    if not args.no_plot:
+        plot_paths = _plot(summary, output_dir=output_dir, baseline_backend=args.baseline_backend)
+
+    print(f'Raw results saved to: {raw_csv_path}')
+    print(f'Summary saved to: {summary_csv_path}')
+    print(f'Summary JSON saved to: {summary_json_path}')
+    if plot_paths:
+        print('Plots saved:')
+        for p in plot_paths:
+            print(f'  - {p}')
+    if failed_backends:
+        print('Some backend/conn runs failed:')
+        for backend_conn, err in failed_backends:
+            print(f'  - {backend_conn}: {err}')
+
+
+if __name__ == '__main__':
+    main()

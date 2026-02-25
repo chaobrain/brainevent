@@ -27,144 +27,38 @@
 
 import time
 
-import brainpy
-import brainstate
-import braintools
-import brainunit as u
 import jax
 
 import brainevent
-from model import FixedNumConn
+from COBA_2005_benchmark import make_simulation_run
 
 brainevent.config.set_backend('gpu', 'tvmffi')
 
-data_type = 'binary'
-efferent_target = 'post'
+
+def benchmark_post_conn():
+    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+        run = make_simulation_run(s, 'binary', 'post')
+
+        jax.block_until_ready(run(s))
+
+        t0 = time.time()
+        n, rate = jax.block_until_ready(run(s))
+        t1 = time.time()
+        print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
 
 
-class EINet(brainstate.nn.Module):
-    def __init__(self, scale):
-        super().__init__()
-        self.n_exc = int(3200 * scale)
-        self.n_inh = int(800 * scale)
-        self.num = self.n_exc + self.n_inh
-        self.N = brainpy.state.LIFRef(
-            self.num, V_rest=-60. * u.mV, V_th=-50. * u.mV, V_reset=-60. * u.mV,
-            tau=20. * u.ms, tau_ref=5. * u.ms,
-            V_initializer=braintools.init.Normal(-55., 2., unit=u.mV)
-        )
-        self.E = brainpy.state.AlignPostProj(
-            comm=FixedNumConn(
-                self.n_exc, self.num, conn_num=80 / self.num, conn_weight=0.6 * u.mS,
-                data_type=data_type, efferent_target=efferent_target
-            ),
-            syn=brainpy.state.Expon.desc(self.num, tau=5. * u.ms),
-            out=brainpy.state.COBA.desc(E=0. * u.mV),
-            post=self.N
-        )
-        self.I = brainpy.state.AlignPostProj(
-            comm=FixedNumConn(
-                self.n_inh, self.num, conn_num=80 / self.num, conn_weight=6.7 * u.mS,
-                data_type=data_type, efferent_target=efferent_target
-            ),
-            syn=brainpy.state.Expon.desc(self.num, tau=10. * u.ms),
-            out=brainpy.state.COBA.desc(E=-80. * u.mV),
-            post=self.N
-        )
+def benchmark_pre_conn():
+    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+        run = make_simulation_run(s, 'binary', 'pre')
 
-    def init_state(self, *args, **kwargs):
-        self.rate = brainstate.ShortTermState(u.math.zeros(self.num))
+        jax.block_until_ready(run(s))
 
-    def update(self, t, inp):
-        with brainstate.environ.context(t=t):
-            spk = self.N.get_spike() != 0.
-            self.E(spk[:self.n_exc])
-            self.I(spk[self.n_exc:])
-            self.N(inp)
-            self.rate.value += self.N.get_spike()
+        t0 = time.time()
+        n, rate = jax.block_until_ready(run(s))
+        t1 = time.time()
+        print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
 
 
-@brainstate.transform.jit(static_argnums=0)
-def run(scale: float):
-    # network
-    net = EINet(scale)
-    net.init_all_states()
-
-    duration = 1e4 * u.ms
-    # simulation
-    with brainstate.environ.context(dt=0.1 * u.ms):
-        times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
-        brainstate.transform.for_loop(lambda t: net.update(t, 20. * u.mA), times)
-
-    return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second)
-
-
-for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-    jax.block_until_ready(run(s))
-
-    t0 = time.time()
-    n, rate = jax.block_until_ready(run(s))
-    t1 = time.time()
-    print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
-
-# ----------------------------
-# A6000 NVIDIA GPU
-#
-# scale=1, size=4000, time = 2.659956455230713 s, firing rate = 50.62445068359375 Hz
-# scale=2, size=8000, time = 2.7318649291992188 s, firing rate = 50.613040924072266 Hz
-# scale=4, size=16000, time = 2.807222604751587 s, firing rate = 50.60573959350586 Hz
-# scale=6, size=24000, time = 3.026782512664795 s, firing rate = 50.60918045043945 Hz
-# scale=8, size=32000, time = 3.1258811950683594 s, firing rate = 50.607574462890625 Hz
-# scale=10, size=40000, time = 3.172346353530884 s, firing rate = 50.60942840576172 Hz
-# scale=20, size=80000, time = 3.751189947128296 s, firing rate = 50.612369537353516 Hz
-# scale=40, size=160000, time = 5.0217814445495605 s, firing rate = 50.617958068847656 Hz
-# scale=60, size=240000, time = 7.002646207809448 s, firing rate = 50.61948776245117 Hz
-# scale=80, size=320000, time = 9.384576320648193 s, firing rate = 50.618499755859375 Hz
-# scale=100, size=400000, time = 11.69654369354248 s, firing rate = 50.61605453491211 Hz
-
-
-# --------------------
-# 2026/02/04, NVIDIA GeForce RTX 3090, brainevent 0.0.6, Warp 1.11.1+cu13, jax 0.9.0, Ubuntu 24.04
-#
-# scale=1, size=4000, time = 1.7868633270263672 s, firing rate = 59.56795120239258 Hz
-# scale=2, size=8000, time = 1.8208961486816406 s, firing rate = 59.56516647338867 Hz
-# scale=4, size=16000, time = 1.9305737018585205 s, firing rate = 59.5695915222168 Hz
-# scale=6, size=24000, time = 2.1917836666107178 s, firing rate = 59.56669998168945 Hz
-# scale=8, size=32000, time = 2.235652208328247 s, firing rate = 59.57065200805664 Hz
-# scale=10, size=40000, time = 2.2676308155059814 s, firing rate = 59.57038497924805 Hz
-# scale=20, size=80000, time = 2.3961074352264404 s, firing rate = 59.570884704589844 Hz
-# scale=40, size=160000, time = 2.8628697395324707 s, firing rate = 59.571327209472656 Hz
-# scale=60, size=240000, time = 3.671980857849121 s, firing rate = 59.57017135620117 Hz
-# scale=80, size=320000, time = 4.697195053100586 s, firing rate = 59.56940841674805 Hz
-# scale=100, size=400000, time = 5.40840220451355 s, firing rate = 59.569679260253906 Hz
-
-# ------------------
-# AMD Ryzen 7 7840HS
-#
-# scale=1, size=4000, time = 4.436027526855469 s, firing rate = 50.6119270324707 Hz
-# scale=2, size=8000, time = 8.349745273590088 s, firing rate = 50.612266540527344 Hz
-# scale=4, size=16000, time = 16.39163303375244 s, firing rate = 50.61349105834961 Hz
-# scale=6, size=24000, time = 15.725558042526245 s, firing rate = 50.6125602722168 Hz
-# scale=8, size=32000, time = 21.31995177268982 s, firing rate = 50.61244583129883 Hz
-# scale=10, size=40000, time = 27.811061143875122 s, firing rate = 50.61423873901367 Hz
-# scale=20, size=80000, time = 45.54235219955444 s, firing rate = 50.61320877075195 Hz
-# scale=40, size=160000, time = 82.22228026390076 s, firing rate = 50.61309814453125 Hz
-# scale=60, size=240000, time = 125.44037556648254 s, firing rate = 50.613094329833984 Hz
-# scale=80, size=320000, time = 171.20458459854126 s, firing rate = 50.613365173339844 Hz
-# scale=100, size=400000, time = 215.4547393321991 s, firing rate = 50.6129150390625 Hz
-
-
-# --------------------
-# 2026/02/13, i9-12900H, brainevent 0.0.6, Numba 0.63.1, jax 0.9.0.1, 雷神Win11狂暴模式
-#
-# scale=1, size=4000, time = 8.120884656906128 s, firing rate = 59.57337951660156 Hz
-# scale=2, size=8000, time = 13.005541324615479 s, firing rate = 59.57312774658203 Hz
-# scale=4, size=16000, time = 19.352699279785156 s, firing rate = 59.57073974609375 Hz
-# scale=6, size=24000, time = 25.48886799812317 s, firing rate = 59.570106506347656 Hz
-# scale=8, size=32000, time = 31.20573663711548 s, firing rate = 59.570465087890625 Hz
-# scale=10, size=40000, time = 35.085668325424194 s, firing rate = 59.56831359863281 Hz
-# scale=20, size=80000, time = 47.73188495635986 s, firing rate = 59.57057189941406 Hz
-# scale=40, size=160000, time = 69.347576379776 s, firing rate = 59.56987762451172 Hz
-# scale=60, size=240000, time = 91.62744402885437 s, firing rate = 59.56953811645508 Hz
-# scale=80, size=320000, time = 109.23221325874329 s, firing rate = 59.57052993774414 Hz
-# scale=100, size=400000, time = 135.50585222244263 s, firing rate = 59.57082748413086 Hz
+if __name__ == '__main__':
+    benchmark_post_conn()
+    benchmark_pre_conn()
