@@ -530,7 +530,7 @@ void fused_bwd_gru_diag_f32(
     const BE::Tensor h_tv,
     const BE::Tensor A_tv,
     const BE::Tensor Bxpb_tv,
-    const BE::Tensor dl_dh_tv,
+    BE::Tensor dl_dh_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
@@ -561,7 +561,7 @@ void fused_bwd_gru_diag_f64(
     const BE::Tensor h_tv,
     const BE::Tensor A_tv,
     const BE::Tensor Bxpb_tv,
-    const BE::Tensor dl_dh_tv,
+    BE::Tensor dl_dh_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
