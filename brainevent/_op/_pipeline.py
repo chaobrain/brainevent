@@ -32,17 +32,12 @@ from brainevent._error import KernelError
 from brainevent._version import __version__
 from ._cache import CompilationCache
 from ._codegen import (
-    FunctionSpec,
-    infer_arg_spec_from_source,
-    normalize_tokens,
-    parse_arg_spec,
-    parse_annotations,
-    preprocess_source,
-    resolve_bare_attr_types,
+    FunctionSpec, infer_arg_spec_from_source, normalize_tokens,
+    parse_arg_spec, parse_annotations, preprocess_source, resolve_bare_attr_types,
 )
 from ._compiler import CPPBackend, CUDABackend
 from ._runtime import CompiledModule, _REGISTERED_TARGETS, register_ffi_target
-from ._toolchain import detect_cpp_toolchain, detect_cuda_arch, detect_toolchain, so_ext
+from ._toolchain import detect_cpp_toolchain, detect_cuda_arch, detect_cuda_toolchain, so_ext
 
 # Shared cache instance
 _cache = CompilationCache()
@@ -157,7 +152,7 @@ def load_cuda_inline(
         functions = parse_annotations(user_source)
 
     # Detect toolchain
-    toolchain = detect_toolchain()
+    toolchain = detect_cuda_toolchain()
     gpu_arch = compute_capability or detect_cuda_arch()[0]
 
     # Compute cache key (includes optimization settings so changing them rebuilds)
@@ -165,9 +160,11 @@ def load_cuda_inline(
         source=user_source,
         arch=gpu_arch,
         cxx_version=toolchain.nvcc_version,
-        extra_cflags=(extra_cuda_cflags or [])
-                     + [f"-O{optimization_level}"]
-                     + (["--use_fast_math"] if use_fast_math else []),
+        extra_cflags=(
+            (extra_cuda_cflags or [])
+            + [f"-O{optimization_level}"]
+            + (["--use_fast_math"] if use_fast_math else [])
+        ),
         extra_ldflags=extra_ldflags,
     )
 
@@ -468,7 +465,7 @@ def print_diagnostics() -> None:
 
     # Toolchain
     try:
-        tc = detect_toolchain()
+        tc = detect_cuda_toolchain()
         print(f"nvcc: {tc.nvcc}")
         print(f"  version: {tc.nvcc_version}")
         print(f"C++ compiler: {tc.cxx}")

@@ -124,7 +124,6 @@ from ._op import (
     register_ffi_target,
     list_registered_targets,
     normalize_tokens,
-    so_ext,
     CompilerBackend,
     CUDABackend,
     CPPBackend,
@@ -229,7 +228,7 @@ __all__ = [
     'load_cpp_inline', 'load_cpp_file',
     'set_cache_dir', 'get_cache_dir', 'clear_cache', 'print_diagnostics',
     'CompiledModule', 'register_ffi_target', 'list_registered_targets',
-    'normalize_tokens', 'so_ext',
+    'normalize_tokens',
     'CompilerBackend', 'CUDABackend', 'CPPBackend', 'HIPBackend',
 
     # --- Pallas kernel --- #

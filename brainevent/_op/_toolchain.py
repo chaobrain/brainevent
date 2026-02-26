@@ -35,7 +35,7 @@ class CudaToolchain:
     cuda_home: str
     cuda_include_dir: str
     xla_ffi_include_dir: str
-    be_include_dir: str
+    brainevent_include_dir: str
     nvcc_version: str = ""
 
 
@@ -44,11 +44,11 @@ class CppToolchain:
     """Immutable description of the CPU/C++ compilation tools (no CUDA required)."""
     cxx: str
     xla_ffi_include_dir: str
-    be_include_dir: str
+    brainevent_include_dir: str
     cxx_version: str = ""
 
 
-def detect_toolchain() -> CudaToolchain:
+def detect_cuda_toolchain() -> CudaToolchain:
     """Auto-detect nvcc, C++ compiler, and include paths.
 
     Raises ToolchainError if essential tools are missing.
@@ -113,7 +113,7 @@ def detect_toolchain() -> CudaToolchain:
         cuda_home=cuda_home,
         cuda_include_dir=cuda_include,
         xla_ffi_include_dir=xla_ffi_include,
-        be_include_dir=be_include,
+        brainevent_include_dir=be_include,
         nvcc_version=nvcc_version,
     )
 
@@ -152,7 +152,7 @@ def detect_cpp_toolchain() -> CppToolchain:
     return CppToolchain(
         cxx=cxx,
         xla_ffi_include_dir=xla_ffi_include,
-        be_include_dir=be_include,
+        brainevent_include_dir=be_include,
         cxx_version=cxx_version,
     )
 
