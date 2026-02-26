@@ -86,7 +86,7 @@ brainevent = "brainevent._cli:main"
 
 [project.optional-dependencies]
 cpu = ['jax[cpu]>=0.5.0', 'numba']
-cuda12 = ['jax[cuda12]>=0.5.0', 'ninja', 'ml_dtypes']
-cuda13 = ['jax[cuda13]>=0.5.0', 'ninja', 'ml_dtypes']
+cuda12 = ['jax[cuda12]>=0.5.0', 'ninja']
+cuda13 = ['jax[cuda13]>=0.5.0', 'ninja']
 tpu = ['jax[tpu]>=0.5.0']
 testing = ['pytest']
