@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 from brainevent._csr.yw2y import csrmv_yw2y
 
-def benchmark_kernel(n_pre, n_post, prob, transpose, backend='tvmffi', n_warmup=10, n_runs=50):
+def benchmark_kernel(n_pre, n_post, prob, transpose, backend='cuda_raw', n_warmup=10, n_runs=50):
     """Benchmark and compute roofline metrics"""
     rng = np.random.default_rng(42)
     dtype = np.float32
@@ -115,7 +115,7 @@ def benchmark_kernel(n_pre, n_post, prob, transpose, backend='tvmffi', n_warmup=
 
 if __name__ == "__main__":
     print("="*100)
-    print("ROOFLINE ANALYSIS — csrmv_yw2y TVM FFI Kernels")
+    print("ROOFLINE ANALYSIS — csrmv_yw2y CUDA Kernels")
     print("="*100)
     print(f"Target GPU: {jax.devices('gpu')[0]}")
     print(f"Peak BW: 1555 GB/s (A100), Peak FP32: 19.5 TFLOPS")

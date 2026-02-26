@@ -40,13 +40,14 @@
  *                            post_trace, w_min=None, w_max=None,
  *                            backend=None)
  *
- * TVM FFI Entry Points (one per dtype combination):
+ * CUDA Entry Points (one per dtype combination):
  *   update_coo_on_pre_{wt}_{spk}  where
  *     wt  in {f16, bf16, f32, f64}
  *     spk in {bool, float}
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // COO Pre-Synaptic Plasticity Kernel
@@ -105,54 +106,54 @@ DEFINE_COO_ON_PRE(_bf16_bool, int8_t,         IS_ACTIVE_BOOL,  __nv_bfloat16,  f
 DEFINE_COO_ON_PRE(_bf16_float,__nv_bfloat16,  IS_ACTIVE_BF16,  __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
-// TVM FFI Entry Points
+// CUDA Entry Points
 // =========================================================================
 
-#define FFI_COO_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)           \
-void update_coo_on_pre##SUFFIX(                                 \
-    tvm::ffi::TensorView weight,                                \
-    tvm::ffi::TensorView pre_ids,                               \
-    tvm::ffi::TensorView post_ids,                              \
-    tvm::ffi::TensorView spike,                                 \
-    tvm::ffi::TensorView trace,                                 \
-    tvm::ffi::TensorView out_weight,                            \
-    int64_t stream                                              \
-) {                                                             \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
-    int n_syn = static_cast<int>(out_weight.size(0));           \
-    if (n_syn == 0) return;                                     \
-    const WEIGHT_C_T*  d_w_in = static_cast<const WEIGHT_C_T*>( \
-                                    weight.data_ptr());         \
-    WEIGHT_C_T*        d_w    = static_cast<WEIGHT_C_T*>(       \
-                                    out_weight.data_ptr());     \
-    const SPIKE_C_T*   d_spk  = static_cast<const SPIKE_C_T*>(  \
-                                    spike.data_ptr());          \
-    const WEIGHT_C_T*  d_tr   = static_cast<const WEIGHT_C_T*>( \
-                                    trace.data_ptr());          \
-    const int32_t*     d_pre  = static_cast<const int32_t*>(    \
-                                    pre_ids.data_ptr());        \
-    const int32_t*     d_post = static_cast<const int32_t*>(    \
-                                    post_ids.data_ptr());       \
+#define FFI_COO_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                \
+void update_coo_on_pre##SUFFIX(                                      \
+    const BE::Tensor weight,                                         \
+    const BE::Tensor pre_ids,                                        \
+    const BE::Tensor post_ids,                                       \
+    const BE::Tensor spike,                                          \
+    const BE::Tensor trace,                                          \
+    BE::Tensor out_weight,                                     \
+    int64_t stream                                                   \
+) {                                                                  \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);         \
+    int n_syn = static_cast<int>(out_weight.size(0));                \
+    if (n_syn == 0) return;                                          \
+    const WEIGHT_C_T*  d_w_in = static_cast<const WEIGHT_C_T*>(      \
+                                    weight.data_ptr());              \
+    WEIGHT_C_T*        d_w    = static_cast<WEIGHT_C_T*>(            \
+                                    out_weight.data_ptr());          \
+    const SPIKE_C_T*   d_spk  = static_cast<const SPIKE_C_T*>(       \
+                                    spike.data_ptr());               \
+    const WEIGHT_C_T*  d_tr   = static_cast<const WEIGHT_C_T*>(      \
+                                    trace.data_ptr());               \
+    const int32_t*     d_pre  = static_cast<const int32_t*>(         \
+                                    pre_ids.data_ptr());             \
+    const int32_t*     d_post = static_cast<const int32_t*>(         \
+                                    post_ids.data_ptr());            \
     cudaMemcpyAsync(d_w, d_w_in, (size_t)n_syn * sizeof(WEIGHT_C_T), \
-                    cudaMemcpyDeviceToDevice, s);               \
-    int grid_size = (n_syn + 511) / 512;                        \
-    _coo_on_pre_kern##SUFFIX<<<grid_size, 512, 0, s>>>(         \
-        d_w, d_spk, d_tr, d_pre, d_post, n_syn);                \
+                    cudaMemcpyDeviceToDevice, s);                    \
+    int grid_size = (n_syn + 511) / 512;                             \
+    _coo_on_pre_kern##SUFFIX<<<grid_size, 512, 0, s>>>(              \
+        d_w, d_spk, d_tr, d_pre, d_post, n_syn);                     \
 }
 
-// @tvm_ffi update_coo_on_pre_f32_bool
+// @BE update_coo_on_pre_f32_bool
 FFI_COO_ON_PRE(_f32_bool,  float,         int8_t)
-// @tvm_ffi update_coo_on_pre_f32_float
+// @BE update_coo_on_pre_f32_float
 FFI_COO_ON_PRE(_f32_float, float,         float)
-// @tvm_ffi update_coo_on_pre_f64_bool
+// @BE update_coo_on_pre_f64_bool
 FFI_COO_ON_PRE(_f64_bool,  double,        int8_t)
-// @tvm_ffi update_coo_on_pre_f64_float
+// @BE update_coo_on_pre_f64_float
 FFI_COO_ON_PRE(_f64_float, double,        float)
-// @tvm_ffi update_coo_on_pre_f16_bool
+// @BE update_coo_on_pre_f16_bool
 FFI_COO_ON_PRE(_f16_bool,  __half,        int8_t)
-// @tvm_ffi update_coo_on_pre_f16_float
+// @BE update_coo_on_pre_f16_float
 FFI_COO_ON_PRE(_f16_float, __half,        __half)
-// @tvm_ffi update_coo_on_pre_bf16_bool
+// @BE update_coo_on_pre_bf16_bool
 FFI_COO_ON_PRE(_bf16_bool, __nv_bfloat16, int8_t)
-// @tvm_ffi update_coo_on_pre_bf16_float
+// @BE update_coo_on_pre_bf16_float
 FFI_COO_ON_PRE(_bf16_float,__nv_bfloat16, __nv_bfloat16)

@@ -49,7 +49,7 @@ class ApplicationMode(str, Enum):
     - ``SEQUENTIAL``: O(T) sequential scan via ``jax.lax.scan``.
     - ``PARALLEL``: O(log T) parallel via Newton + ``jax.lax.associative_scan``.
     - ``FUSED``: Single CUDA kernel combining Newton + parallel reduction.
-      Requires TVM FFI and a GPU. Falls back to ``PARALLEL`` if unavailable.
+      Requires CUDA and a GPU. Falls back to ``PARALLEL`` if unavailable.
     """
     SEQUENTIAL = "sequential"
     PARALLEL = "parallel"

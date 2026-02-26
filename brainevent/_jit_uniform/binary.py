@@ -26,9 +26,10 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
+from brainevent._op._pipeline import load_cuda_file
 from .float import jitumv_p_call, jitumm_p_call, _dtype_sfx
 
 __all__ = [
@@ -945,10 +946,9 @@ def _binary_jitumv_cuda_kernel(
     vector_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='binary_jitumv',
-        source=Path(__file__).parent.joinpath('binary_jitumv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitumv.cu'),
+        name='binary_jitumv',
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
@@ -1323,7 +1323,7 @@ def _jitumm_warp_kernel_generator(
 binary_jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
 binary_jitumv_p.def_warp_kernel(_jitumv_warp_kernel_generator)
 binary_jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
-binary_jitumv_p.def_tvmffi_kernel('gpu', _binary_jitumv_cuda_kernel)
+binary_jitumv_p.def_cuda_raw_kernel(_binary_jitumv_cuda_kernel)
 binary_jitumv_p.def_jvp_rule2(_jitumv_jvp_wloc, _jitumv_jvp_wscale, None, _jitumv_jvp_v, None)
 binary_jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
 binary_jitumv_p.def_batching_rule(_jitumv_batching)
@@ -2023,10 +2023,9 @@ def _binary_jitumm_cuda_kernel(
     B_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='binary_jitumm',
-        source=Path(__file__).parent.joinpath('binary_jitumm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitumm.cu'),
+        name='binary_jitumm',
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
@@ -2067,7 +2066,7 @@ binary_jitumm : High-level user-facing function wrapper.
 binary_jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
 binary_jitumm_p.def_warp_kernel(_jitumm_warp_kernel_generator)
 binary_jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)
-binary_jitumm_p.def_tvmffi_kernel('gpu', _binary_jitumm_cuda_kernel)
+binary_jitumm_p.def_cuda_raw_kernel(_binary_jitumm_cuda_kernel)
 binary_jitumm_p.def_jvp_rule2(_jitumm_jvp_wloc, _jitumm_jvp_wscale, None, _jitumm_jvp_B, None)
 binary_jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
 binary_jitumm_p.def_batching_rule(_jitumm_batching)

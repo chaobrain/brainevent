@@ -42,6 +42,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 #include "curand_common.h"
 
 // #########################################################################
@@ -175,19 +176,19 @@ DEFINE_JITUMV_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomi
 DEFINE_JITUMV_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomic_add_f16)
 DEFINE_JITUMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomic_add_bf16)
 
-// ---- TVM FFI: jitumv gather ----
+// ---- CUDA: jitumv gather ----
 // Dispatches to shared-memory kernel when vector fits in device smem,
 // falls back to global-memory kernel for larger vectors.
 // No memset needed: gather kernels write every output element exactly once.
 
 #define FFI_JITUMV_GATHER(SUFFIX, WEIGHT_C_T, ACC_C_T)                        \
 void jitumv_gather##SUFFIX(                                                   \
-    tvm::ffi::TensorView w_low,                                               \
-    tvm::ffi::TensorView w_high,                                              \
-    tvm::ffi::TensorView clen,                                                \
-    tvm::ffi::TensorView seed,                                                \
-    tvm::ffi::TensorView vector,                                              \
-    tvm::ffi::TensorView output,                                              \
+    const BE::Tensor w_low,                                                   \
+    const BE::Tensor w_high,                                                  \
+    const BE::Tensor clen,                                                    \
+    const BE::Tensor seed,                                                    \
+    const BE::Tensor vector,                                                  \
+    BE::Tensor output,                                                        \
     int64_t stream                                                            \
 ) {                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \
@@ -199,7 +200,7 @@ void jitumv_gather##SUFFIX(                                                   \
     int _dev = 0; cudaGetDevice(&_dev);                                       \
     int _max_smem = 0;                                                        \
     cudaDeviceGetAttribute(&_max_smem,                                        \
-        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                             \
+        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                            \
     if (smem_bytes <= (size_t)_max_smem) {                                    \
         _jitumv_gather_smem_kern##SUFFIX<<<blocks, threads, smem_bytes, s>>>( \
             static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                 \
@@ -223,25 +224,25 @@ void jitumv_gather##SUFFIX(                                                   \
     }                                                                         \
 }
 
-// @tvm_ffi jitumv_gather_f32
+// @BE jitumv_gather_f32
 FFI_JITUMV_GATHER(_f32, float, float)
-// @tvm_ffi jitumv_gather_f64
+// @BE jitumv_gather_f64
 FFI_JITUMV_GATHER(_f64, double, double)
-// @tvm_ffi jitumv_gather_f16
+// @BE jitumv_gather_f16
 FFI_JITUMV_GATHER(_f16, __half, float)
-// @tvm_ffi jitumv_gather_bf16
+// @BE jitumv_gather_bf16
 FFI_JITUMV_GATHER(_bf16, __nv_bfloat16, float)
 
-// ---- TVM FFI: jitumv scatter ----
+// ---- CUDA: jitumv scatter ----
 
 #define FFI_JITUMV_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitumv_scatter##SUFFIX(                                 \
-    tvm::ffi::TensorView w_low,                              \
-    tvm::ffi::TensorView w_high,                             \
-    tvm::ffi::TensorView clen,                               \
-    tvm::ffi::TensorView seed,                               \
-    tvm::ffi::TensorView vector,                             \
-    tvm::ffi::TensorView output,                             \
+    const BE::Tensor w_low,                                  \
+    const BE::Tensor w_high,                                 \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor vector,                                 \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -262,11 +263,11 @@ void jitumv_scatter##SUFFIX(                                 \
     );                                                       \
 }
 
-// @tvm_ffi jitumv_scatter_f32
+// @BE jitumv_scatter_f32
 FFI_JITUMV_SCATTER(_f32, float)
-// @tvm_ffi jitumv_scatter_f64
+// @BE jitumv_scatter_f64
 FFI_JITUMV_SCATTER(_f64, double)
-// @tvm_ffi jitumv_scatter_f16
+// @BE jitumv_scatter_f16
 FFI_JITUMV_SCATTER(_f16, __half)
-// @tvm_ffi jitumv_scatter_bf16
+// @BE jitumv_scatter_bf16
 FFI_JITUMV_SCATTER(_bf16, __nv_bfloat16)

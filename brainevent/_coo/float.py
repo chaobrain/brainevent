@@ -25,11 +25,12 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, register_tvm_cuda_from_file, \
+from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, \
     jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     "coomv",
@@ -753,15 +754,15 @@ def _coomv_cusparse_kernel(
     return kernel
 
 
-def _coomv_tvmffi_kernel(
+def _coomv_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for float COO SpMV.
+    """CUDA Raw kernel for float COO SpMV.
 
     Dispatches to one of the ``coomv_{homo,hetero}_atomic_{nt,t}`` kernels
-    compiled from ``float_coomv.cu`` via ``register_tvm_cuda_from_file``.
+    compiled from ``float_coomv.cu`` via ``load_cuda_file``.
 
     Both directions use a grid-stride atomic-scatter kernel (1024 threads/block):
 
@@ -780,10 +781,9 @@ def _coomv_tvmffi_kernel(
     v must have the same dtype as weights.  The Python caller (``coomv_p_call``)
     ensures both are the same dtype before dispatch.
     """
-    register_tvm_cuda_from_file(
-        module='coo_float_coomv',
-        source=Path(__file__).parent.joinpath('float_coomv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_coomv.cu'),
+        name='coo_float_coomv',
     )
 
     out_info = kwargs['outs']
@@ -1026,7 +1026,7 @@ coomv_p.def_numba_kernel(_coomv_numba_kernel)
 coomv_p.def_warp_kernel(_coomv_warp_kernel)
 coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
-coomv_p.def_tvmffi_kernel('gpu', _coomv_tvmffi_kernel)
+coomv_p.def_cuda_raw_kernel(_coomv_cuda_kernel)
 coomv_p.def_kernel('jax_raw', 'cpu', _coomv_jax_kernel)
 coomv_p.def_kernel('jax_raw', 'gpu', _coomv_jax_kernel)
 coomv_p.def_kernel('jax_raw', 'tpu', _coomv_jax_kernel)
@@ -1448,16 +1448,16 @@ def _coomm_pallas_tpu_kernel(
     return kernel
 
 
-def _coomm_tvmffi_kernel(
+def _coomm_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for float COO SpMM.
+    """CUDA Raw kernel for float COO SpMM.
 
     Dispatches to one of the ``coomm_{homo,hetero}_{variant}_{nt,t}`` kernels
-    compiled from ``float_coomm.cu`` via ``register_tvm_cuda_from_file``.
+    compiled from ``float_coomm.cu`` via ``load_cuda_file``.
 
     Kernel variant selection (based on n = number of output columns):
     - CT (Column-Tiled, n ≤ 64): One warp per block serializes over 32 NNZ
@@ -1480,10 +1480,9 @@ def _coomm_tvmffi_kernel(
     B must have the same dtype as weights.  The Python caller (``coomm_p_call``)
     ensures B is promoted to ``weights.dtype`` before dispatch when necessary.
     """
-    register_tvm_cuda_from_file(
-        module='coo_float_coomm',
-        source=Path(__file__).parent.joinpath('float_coomm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_coomm.cu'),
+        name='coo_float_coomm',
     )
 
     out_info = kwargs['outs']
@@ -1809,7 +1808,7 @@ coomm_p.def_numba_kernel(_coomm_numba_kernel)
 coomm_p.def_warp_kernel(_coomm_warp_kernel)
 coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
-coomm_p.def_tvmffi_kernel('gpu', _coomm_tvmffi_kernel)
+coomm_p.def_cuda_raw_kernel(_coomm_cuda_kernel)
 coomm_p.def_kernel('jax_raw', 'cpu', _coomm_jax_kernel)
 coomm_p.def_kernel('jax_raw', 'gpu', _coomm_jax_kernel)
 coomm_p.def_kernel('jax_raw', 'tpu', _coomm_jax_kernel)

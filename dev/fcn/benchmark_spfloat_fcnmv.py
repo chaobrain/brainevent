@@ -5,7 +5,7 @@ Sparse-Float FCN Matrix-Vector Multiplication Benchmark
 Benchmarks all available GPU backends for ``spfloat_fcnmv`` (gather and scatter
 modes, homo and hetero weights, various spike rates) across a range of problem
 sizes.  The primary interest is the sparsity-exploitation advantage of the CUDA
-(tvmffi) backend over dense-style kernels at low firing rates.
+(cuda_raw) backend over dense-style kernels at low firing rates.
 
 Usage
 -----

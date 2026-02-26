@@ -39,6 +39,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // Dense Pre-Synaptic Plasticity Kernels
@@ -110,15 +111,15 @@ DEFINE_ON_PRE_FINAL(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16,  float,
 DEFINE_ON_PRE_FINAL(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
-// TVM FFI Entry Points
+// CUDA Entry Points
 // =========================================================================
 
 #define FFI_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                 \
 void update_dense_on_pre##SUFFIX(                                                 \
-    tvm::ffi::TensorView weight,                                                  \
-    tvm::ffi::TensorView spike,                                                   \
-    tvm::ffi::TensorView trace,                                                   \
-    tvm::ffi::TensorView out_weight,                                              \
+    const BE::Tensor weight,                                                      \
+    const BE::Tensor spike,                                                       \
+    const BE::Tensor trace,                                                       \
+    const BE::Tensor out_weight,                                                  \
     int64_t stream                                                                \
 ) {                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                      \
@@ -134,19 +135,19 @@ void update_dense_on_pre##SUFFIX(                                               
         d_w, d_spk, d_trace, n_pre, n_post);                                      \
 }
 
-// @tvm_ffi update_dense_on_pre_f32_bool
+// @BE update_dense_on_pre_f32_bool
 FFI_ON_PRE(_f32_bool,   float,          int8_t)
-// @tvm_ffi update_dense_on_pre_f32_float
+// @BE update_dense_on_pre_f32_float
 FFI_ON_PRE(_f32_float,  float,          float)
-// @tvm_ffi update_dense_on_pre_f64_bool
+// @BE update_dense_on_pre_f64_bool
 FFI_ON_PRE(_f64_bool,   double,         int8_t)
-// @tvm_ffi update_dense_on_pre_f64_float
+// @BE update_dense_on_pre_f64_float
 FFI_ON_PRE(_f64_float,  double,         float)
-// @tvm_ffi update_dense_on_pre_f16_bool
+// @BE update_dense_on_pre_f16_bool
 FFI_ON_PRE(_f16_bool,   __half,         int8_t)
-// @tvm_ffi update_dense_on_pre_f16_float
+// @BE update_dense_on_pre_f16_float
 FFI_ON_PRE(_f16_float,  __half,         float)
-// @tvm_ffi update_dense_on_pre_bf16_bool
+// @BE update_dense_on_pre_bf16_bool
 FFI_ON_PRE(_bf16_bool,  __nv_bfloat16,  int8_t)
-// @tvm_ffi update_dense_on_pre_bf16_float
+// @BE update_dense_on_pre_bf16_float
 FFI_ON_PRE(_bf16_float, __nv_bfloat16,  float)

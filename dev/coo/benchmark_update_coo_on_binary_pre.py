@@ -12,7 +12,7 @@ This is the STDP pre-synaptic weight update for COO sparse connectivity.
 
 Backends compared:
   pallas    -- JAX Pallas/Triton GPU kernel (block-based, default GPU backend)
-  tvmffi    -- TVM FFI CUDA kernel (warp-ballot early exit; optimised for sparsity)
+  cuda_raw    -- CUDA CUDA kernel (warp-ballot early exit; optimised for sparsity)
   jax       -- Pure-JAX reference (outer-product-like gather, no event-driven opt)
 
 Problem configurations:
@@ -132,7 +132,7 @@ def main():
     print(f"update_coo_on_binary_pre GPU benchmark")
     print(f"  GPU     : {gpu}")
     print(f"  warmup  : {args.n_warmup}  runs: {args.n_runs}")
-    print(f"  backends: numba (CPU only), pallas, tvmffi, jax")
+    print(f"  backends: numba (CPU only), pallas, cuda_raw, jax")
     print()
 
     update_coo_on_binary_pre_p.def_benchmark_data(_make_benchmark_data)

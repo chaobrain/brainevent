@@ -9,7 +9,7 @@ Usage
 -----
     python dev/jitu/benchmark_jitumm.py
     python dev/jitu/benchmark_jitumm.py --n_warmup 5 --n_runs 50
-    python dev/jitu/benchmark_jitumm.py --backends tvmffi pallas
+    python dev/jitu/benchmark_jitumm.py --backends cuda_raw pallas
 """
 
 import argparse
@@ -62,8 +62,8 @@ def main():
     parser = argparse.ArgumentParser(description="jitumm backend benchmark")
     parser.add_argument("--n_warmup", type=int, default=10)
     parser.add_argument("--n_runs", type=int, default=1)
-    parser.add_argument("--backends", nargs="+", default=["pallas", 'tvmffi'],
-                        help="Backends to benchmark (default: tvmffi pallas)")
+    parser.add_argument("--backends", nargs="+", default=["pallas", 'cuda_raw'],
+                        help="Backends to benchmark (default: cuda_raw pallas)")
     args = parser.parse_args()
 
     try:

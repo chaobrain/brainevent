@@ -2,8 +2,8 @@
 warp-lang
 brainstate
 braintools
-jax_tvm_ffi
 ninja
+ml_dtypes
 
 # test requirements
 pytest

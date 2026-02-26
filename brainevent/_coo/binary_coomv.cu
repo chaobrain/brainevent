@@ -50,15 +50,16 @@
  *   float32 to maintain numerical precision, with results written back
  *   atomically.
  *
- * TVM FFI Integration:
+ * CUDA Integration:
  * -------------------
- * All kernels are exposed via TVM FFI with @tvm_ffi annotations for seamless
+ * All kernels are exposed via CUDA with @cuda annotations for seamless
  * integration with JAX.  Homo vs. hetero dispatch is resolved at compile time
  * on the Python side (based on weight_info.size), so there is no runtime
  * is_homo branch in the kernels.
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // ============================================================================
 // Homogeneous kernels — scalar weight data[0] broadcast to all connections
@@ -198,11 +199,11 @@ DEFINE_COOMV_HETERO_ATOMIC_T (_bf16_float, float,         IS_ACTIVE_FLOAT, __nv_
 
 #define FFI_COOMV_HOMO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM) \
 void binary_coomv_homo_atomic_nt##SUFFIX(                                           \
-    tvm::ffi::TensorView data,                                                      \
-    tvm::ffi::TensorView row_idx,                                                   \
-    tvm::ffi::TensorView col_idx,                                                   \
-    tvm::ffi::TensorView v,                                                         \
-    tvm::ffi::TensorView output,                                                    \
+    const BE::Tensor data,                                                          \
+    const BE::Tensor row_idx,                                                       \
+    const BE::Tensor col_idx,                                                       \
+    const BE::Tensor v,                                                             \
+    BE::Tensor output,                                                              \
     int64_t stream                                                                  \
 ) {                                                                                 \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                        \
@@ -224,11 +225,11 @@ void binary_coomv_homo_atomic_nt##SUFFIX(                                       
 
 #define FFI_COOMV_HOMO_ATOMIC_T(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM) \
 void binary_coomv_homo_atomic_t##SUFFIX(                                           \
-    tvm::ffi::TensorView data,                                                     \
-    tvm::ffi::TensorView row_idx,                                                  \
-    tvm::ffi::TensorView col_idx,                                                  \
-    tvm::ffi::TensorView v,                                                        \
-    tvm::ffi::TensorView output,                                                   \
+    const BE::Tensor data,                                                         \
+    const BE::Tensor row_idx,                                                      \
+    const BE::Tensor col_idx,                                                      \
+    const BE::Tensor v,                                                            \
+    BE::Tensor output,                                                             \
     int64_t stream                                                                 \
 ) {                                                                                \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                       \
@@ -254,11 +255,11 @@ void binary_coomv_homo_atomic_t##SUFFIX(                                        
 
 #define FFI_COOMV_HETERO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM) \
 void binary_coomv_hetero_atomic_nt##SUFFIX(                                           \
-    tvm::ffi::TensorView data,                                                        \
-    tvm::ffi::TensorView row_idx,                                                     \
-    tvm::ffi::TensorView col_idx,                                                     \
-    tvm::ffi::TensorView v,                                                           \
-    tvm::ffi::TensorView output,                                                      \
+    const BE::Tensor data,                                                            \
+    const BE::Tensor row_idx,                                                         \
+    const BE::Tensor col_idx,                                                         \
+    const BE::Tensor v,                                                               \
+    BE::Tensor output,                                                                \
     int64_t stream                                                                    \
 ) {                                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                          \
@@ -280,11 +281,11 @@ void binary_coomv_hetero_atomic_nt##SUFFIX(                                     
 
 #define FFI_COOMV_HETERO_ATOMIC_T(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM) \
 void binary_coomv_hetero_atomic_t##SUFFIX(                                           \
-    tvm::ffi::TensorView data,                                                       \
-    tvm::ffi::TensorView row_idx,                                                    \
-    tvm::ffi::TensorView col_idx,                                                    \
-    tvm::ffi::TensorView v,                                                          \
-    tvm::ffi::TensorView output,                                                     \
+    const BE::Tensor data,                                                           \
+    const BE::Tensor row_idx,                                                        \
+    const BE::Tensor col_idx,                                                        \
+    const BE::Tensor v,                                                              \
+    BE::Tensor output,                                                               \
     int64_t stream                                                                   \
 ) {                                                                                  \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                         \
@@ -308,82 +309,82 @@ void binary_coomv_hetero_atomic_t##SUFFIX(                                      
 // FFI instantiations — homogeneous NT
 // ============================================================================
 
-// @tvm_ffi binary_coomv_homo_atomic_nt_f32_bool
+// @BE binary_coomv_homo_atomic_nt_f32_bool
 FFI_COOMV_HOMO_ATOMIC_NT(_f32_bool,   float,         int8_t, sizeof(float))
-// @tvm_ffi binary_coomv_homo_atomic_nt_f32_float
+// @BE binary_coomv_homo_atomic_nt_f32_float
 FFI_COOMV_HOMO_ATOMIC_NT(_f32_float,  float,         float,  sizeof(float))
-// @tvm_ffi binary_coomv_homo_atomic_nt_f64_bool
+// @BE binary_coomv_homo_atomic_nt_f64_bool
 FFI_COOMV_HOMO_ATOMIC_NT(_f64_bool,   double,        int8_t, sizeof(double))
-// @tvm_ffi binary_coomv_homo_atomic_nt_f64_float
+// @BE binary_coomv_homo_atomic_nt_f64_float
 FFI_COOMV_HOMO_ATOMIC_NT(_f64_float,  double,        float,  sizeof(double))
-// @tvm_ffi binary_coomv_homo_atomic_nt_f16_bool
+// @BE binary_coomv_homo_atomic_nt_f16_bool
 FFI_COOMV_HOMO_ATOMIC_NT(_f16_bool,   __half,        int8_t, sizeof(__half))
-// @tvm_ffi binary_coomv_homo_atomic_nt_f16_float
+// @BE binary_coomv_homo_atomic_nt_f16_float
 FFI_COOMV_HOMO_ATOMIC_NT(_f16_float,  __half,        float,  sizeof(__half))
-// @tvm_ffi binary_coomv_homo_atomic_nt_bf16_bool
+// @BE binary_coomv_homo_atomic_nt_bf16_bool
 FFI_COOMV_HOMO_ATOMIC_NT(_bf16_bool,  __nv_bfloat16, int8_t, sizeof(__nv_bfloat16))
-// @tvm_ffi binary_coomv_homo_atomic_nt_bf16_float
+// @BE binary_coomv_homo_atomic_nt_bf16_float
 FFI_COOMV_HOMO_ATOMIC_NT(_bf16_float, __nv_bfloat16, float,  sizeof(__nv_bfloat16))
 
 // ============================================================================
 // FFI instantiations — homogeneous T
 // ============================================================================
 
-// @tvm_ffi binary_coomv_homo_atomic_t_f32_bool
+// @BE binary_coomv_homo_atomic_t_f32_bool
 FFI_COOMV_HOMO_ATOMIC_T(_f32_bool,   float,         int8_t, sizeof(float))
-// @tvm_ffi binary_coomv_homo_atomic_t_f32_float
+// @BE binary_coomv_homo_atomic_t_f32_float
 FFI_COOMV_HOMO_ATOMIC_T(_f32_float,  float,         float,  sizeof(float))
-// @tvm_ffi binary_coomv_homo_atomic_t_f64_bool
+// @BE binary_coomv_homo_atomic_t_f64_bool
 FFI_COOMV_HOMO_ATOMIC_T(_f64_bool,   double,        int8_t, sizeof(double))
-// @tvm_ffi binary_coomv_homo_atomic_t_f64_float
+// @BE binary_coomv_homo_atomic_t_f64_float
 FFI_COOMV_HOMO_ATOMIC_T(_f64_float,  double,        float,  sizeof(double))
-// @tvm_ffi binary_coomv_homo_atomic_t_f16_bool
+// @BE binary_coomv_homo_atomic_t_f16_bool
 FFI_COOMV_HOMO_ATOMIC_T(_f16_bool,   __half,        int8_t, sizeof(__half))
-// @tvm_ffi binary_coomv_homo_atomic_t_f16_float
+// @BE binary_coomv_homo_atomic_t_f16_float
 FFI_COOMV_HOMO_ATOMIC_T(_f16_float,  __half,        float,  sizeof(__half))
-// @tvm_ffi binary_coomv_homo_atomic_t_bf16_bool
+// @BE binary_coomv_homo_atomic_t_bf16_bool
 FFI_COOMV_HOMO_ATOMIC_T(_bf16_bool,  __nv_bfloat16, int8_t, sizeof(__nv_bfloat16))
-// @tvm_ffi binary_coomv_homo_atomic_t_bf16_float
+// @BE binary_coomv_homo_atomic_t_bf16_float
 FFI_COOMV_HOMO_ATOMIC_T(_bf16_float, __nv_bfloat16, float,  sizeof(__nv_bfloat16))
 
 // ============================================================================
 // FFI instantiations — heterogeneous NT
 // ============================================================================
 
-// @tvm_ffi binary_coomv_hetero_atomic_nt_f32_bool
+// @BE binary_coomv_hetero_atomic_nt_f32_bool
 FFI_COOMV_HETERO_ATOMIC_NT(_f32_bool,   float,         int8_t, sizeof(float))
-// @tvm_ffi binary_coomv_hetero_atomic_nt_f32_float
+// @BE binary_coomv_hetero_atomic_nt_f32_float
 FFI_COOMV_HETERO_ATOMIC_NT(_f32_float,  float,         float,  sizeof(float))
-// @tvm_ffi binary_coomv_hetero_atomic_nt_f64_bool
+// @BE binary_coomv_hetero_atomic_nt_f64_bool
 FFI_COOMV_HETERO_ATOMIC_NT(_f64_bool,   double,        int8_t, sizeof(double))
-// @tvm_ffi binary_coomv_hetero_atomic_nt_f64_float
+// @BE binary_coomv_hetero_atomic_nt_f64_float
 FFI_COOMV_HETERO_ATOMIC_NT(_f64_float,  double,        float,  sizeof(double))
-// @tvm_ffi binary_coomv_hetero_atomic_nt_f16_bool
+// @BE binary_coomv_hetero_atomic_nt_f16_bool
 FFI_COOMV_HETERO_ATOMIC_NT(_f16_bool,   __half,        int8_t, sizeof(__half))
-// @tvm_ffi binary_coomv_hetero_atomic_nt_f16_float
+// @BE binary_coomv_hetero_atomic_nt_f16_float
 FFI_COOMV_HETERO_ATOMIC_NT(_f16_float,  __half,        float,  sizeof(__half))
-// @tvm_ffi binary_coomv_hetero_atomic_nt_bf16_bool
+// @BE binary_coomv_hetero_atomic_nt_bf16_bool
 FFI_COOMV_HETERO_ATOMIC_NT(_bf16_bool,  __nv_bfloat16, int8_t, sizeof(__nv_bfloat16))
-// @tvm_ffi binary_coomv_hetero_atomic_nt_bf16_float
+// @BE binary_coomv_hetero_atomic_nt_bf16_float
 FFI_COOMV_HETERO_ATOMIC_NT(_bf16_float, __nv_bfloat16, float,  sizeof(__nv_bfloat16))
 
 // ============================================================================
 // FFI instantiations — heterogeneous T
 // ============================================================================
 
-// @tvm_ffi binary_coomv_hetero_atomic_t_f32_bool
+// @BE binary_coomv_hetero_atomic_t_f32_bool
 FFI_COOMV_HETERO_ATOMIC_T(_f32_bool,   float,         int8_t, sizeof(float))
-// @tvm_ffi binary_coomv_hetero_atomic_t_f32_float
+// @BE binary_coomv_hetero_atomic_t_f32_float
 FFI_COOMV_HETERO_ATOMIC_T(_f32_float,  float,         float,  sizeof(float))
-// @tvm_ffi binary_coomv_hetero_atomic_t_f64_bool
+// @BE binary_coomv_hetero_atomic_t_f64_bool
 FFI_COOMV_HETERO_ATOMIC_T(_f64_bool,   double,        int8_t, sizeof(double))
-// @tvm_ffi binary_coomv_hetero_atomic_t_f64_float
+// @BE binary_coomv_hetero_atomic_t_f64_float
 FFI_COOMV_HETERO_ATOMIC_T(_f64_float,  double,        float,  sizeof(double))
-// @tvm_ffi binary_coomv_hetero_atomic_t_f16_bool
+// @BE binary_coomv_hetero_atomic_t_f16_bool
 FFI_COOMV_HETERO_ATOMIC_T(_f16_bool,   __half,        int8_t, sizeof(__half))
-// @tvm_ffi binary_coomv_hetero_atomic_t_f16_float
+// @BE binary_coomv_hetero_atomic_t_f16_float
 FFI_COOMV_HETERO_ATOMIC_T(_f16_float,  __half,        float,  sizeof(__half))
-// @tvm_ffi binary_coomv_hetero_atomic_t_bf16_bool
+// @BE binary_coomv_hetero_atomic_t_bf16_bool
 FFI_COOMV_HETERO_ATOMIC_T(_bf16_bool,  __nv_bfloat16, int8_t, sizeof(__nv_bfloat16))
-// @tvm_ffi binary_coomv_hetero_atomic_t_bf16_float
+// @BE binary_coomv_hetero_atomic_t_bf16_float
 FFI_COOMV_HETERO_ATOMIC_T(_bf16_float, __nv_bfloat16, float,  sizeof(__nv_bfloat16))

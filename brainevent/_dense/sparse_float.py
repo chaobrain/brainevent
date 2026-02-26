@@ -25,8 +25,9 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent.config import get_numba_parallel
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'spfloat_densemv',
@@ -249,10 +250,9 @@ def _spfloat_densemv_cuda_kernel(
     transpose: bool,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='dense_sparse_float',
-        source=Path(__file__).parent.joinpath('sparse_float_densemv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_densemv.cu'),
+        name='dense_sparse_float',
     )
 
     out_info = kwargs['outs']
@@ -693,7 +693,7 @@ def _spfloat_densemm_warp_kernel(
 spfloat_densemv_p.def_numba_kernel(_spfloat_densemv_numba_kernel)
 spfloat_densemv_p.def_warp_kernel(_spfloat_densemv_warp_kernel)
 spfloat_densemv_p.def_pallas_kernel('gpu', _spfloat_densemv_pallas_kernel)
-spfloat_densemv_p.def_tvmffi_kernel('gpu', _spfloat_densemv_cuda_kernel)
+spfloat_densemv_p.def_cuda_raw_kernel(_spfloat_densemv_cuda_kernel)
 spfloat_densemv_p.def_kernel('jax_raw', 'cpu', _spfloat_densemv_jax_kernel)
 spfloat_densemv_p.def_kernel('jax_raw', 'gpu', _spfloat_densemv_jax_kernel)
 spfloat_densemv_p.def_kernel('jax_raw', 'tpu', _spfloat_densemv_jax_kernel)
@@ -937,10 +937,9 @@ def _spfloat_densemm_cuda_kernel(
     transpose: bool,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='dense_sparse_float',
-        source=Path(__file__).parent.joinpath('sparse_float_densemm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_densemm.cu'),
+        name='dense_sparse_float',
     )
 
     out_info = kwargs['outs']
@@ -1158,7 +1157,7 @@ spfloat_densemm : High-level user-facing function wrapper.
 spfloat_densemm_p.def_numba_kernel(_spfloat_densemm_numba_kernel)
 spfloat_densemm_p.def_warp_kernel(_spfloat_densemm_warp_kernel)
 spfloat_densemm_p.def_pallas_kernel('gpu', _spfloat_densemm_pallas_kernel)
-spfloat_densemm_p.def_tvmffi_kernel('gpu', _spfloat_densemm_cuda_kernel)
+spfloat_densemm_p.def_cuda_raw_kernel(_spfloat_densemm_cuda_kernel)
 spfloat_densemm_p.def_kernel('jax_raw', 'cpu', _spfloat_densemm_jax_kernel)
 spfloat_densemm_p.def_kernel('jax_raw', 'gpu', _spfloat_densemm_jax_kernel)
 spfloat_densemm_p.def_kernel('jax_raw', 'tpu', _spfloat_densemm_jax_kernel)

@@ -33,7 +33,7 @@
  * - float32, float64, float16 (sm_70+), bfloat16 (sm_80+)
  * - For f16/bf16, accumulation is performed in float32 for numerical stability.
  *
- * TVM FFI Entry Points:
+ * CUDA Entry Points:
  * --------------------
  * coomv_homo_atomic_nt_{f32,f64,f16,bf16}   -- non-transposed SpMV (homo weights)
  * coomv_homo_atomic_t_{f32,f64,f16,bf16}    -- transposed SpMV (homo weights)
@@ -42,6 +42,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 
 // ============================================================================
@@ -254,11 +255,11 @@ DEFINE_COOMV_HETERO_ATOMIC_T (_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_a
 
 #define FFI_COOMV_HOMO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomv_homo_atomic_nt##SUFFIX(                                       \
-    tvm::ffi::TensorView data,                                           \
-    tvm::ffi::TensorView row_idx,                                        \
-    tvm::ffi::TensorView col_idx,                                        \
-    tvm::ffi::TensorView v,                                              \
-    tvm::ffi::TensorView output,                                         \
+    const BE::Tensor data,                                               \
+    const BE::Tensor row_idx,                                            \
+    const BE::Tensor col_idx,                                            \
+    const BE::Tensor v,                                                  \
+    BE::Tensor output,                                                   \
     int64_t stream                                                       \
 ) {                                                                      \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);             \
@@ -280,11 +281,11 @@ void coomv_homo_atomic_nt##SUFFIX(                                       \
 
 #define FFI_COOMV_HOMO_ATOMIC_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomv_homo_atomic_t##SUFFIX(                                       \
-    tvm::ffi::TensorView data,                                          \
-    tvm::ffi::TensorView row_idx,                                       \
-    tvm::ffi::TensorView col_idx,                                       \
-    tvm::ffi::TensorView v,                                             \
-    tvm::ffi::TensorView output,                                        \
+    const BE::Tensor data,                                              \
+    const BE::Tensor row_idx,                                           \
+    const BE::Tensor col_idx,                                           \
+    const BE::Tensor v,                                                 \
+    BE::Tensor output,                                                  \
     int64_t stream                                                      \
 ) {                                                                     \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);            \
@@ -310,11 +311,11 @@ void coomv_homo_atomic_t##SUFFIX(                                       \
 
 #define FFI_COOMV_HETERO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomv_hetero_atomic_nt##SUFFIX(                                       \
-    tvm::ffi::TensorView data,                                             \
-    tvm::ffi::TensorView row_idx,                                          \
-    tvm::ffi::TensorView col_idx,                                          \
-    tvm::ffi::TensorView v,                                                \
-    tvm::ffi::TensorView output,                                           \
+    const BE::Tensor data,                                                 \
+    const BE::Tensor row_idx,                                              \
+    const BE::Tensor col_idx,                                              \
+    const BE::Tensor v,                                                    \
+    BE::Tensor output,                                                     \
     int64_t stream                                                         \
 ) {                                                                        \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);               \
@@ -336,11 +337,11 @@ void coomv_hetero_atomic_nt##SUFFIX(                                       \
 
 #define FFI_COOMV_HETERO_ATOMIC_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomv_hetero_atomic_t##SUFFIX(                                       \
-    tvm::ffi::TensorView data,                                            \
-    tvm::ffi::TensorView row_idx,                                         \
-    tvm::ffi::TensorView col_idx,                                         \
-    tvm::ffi::TensorView v,                                               \
-    tvm::ffi::TensorView output,                                          \
+    const BE::Tensor data,                                                \
+    const BE::Tensor row_idx,                                             \
+    const BE::Tensor col_idx,                                             \
+    const BE::Tensor v,                                                   \
+    BE::Tensor output,                                                    \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
@@ -360,36 +361,36 @@ void coomv_hetero_atomic_t##SUFFIX(                                       \
     );                                                                    \
 }
 
-// @tvm_ffi coomv_homo_atomic_nt_f32
+// @BE coomv_homo_atomic_nt_f32
 FFI_COOMV_HOMO_ATOMIC_NT(_f32,  float,          sizeof(float))
-// @tvm_ffi coomv_homo_atomic_t_f32
+// @BE coomv_homo_atomic_t_f32
 FFI_COOMV_HOMO_ATOMIC_T (_f32,  float,          sizeof(float))
-// @tvm_ffi coomv_homo_atomic_nt_f64
+// @BE coomv_homo_atomic_nt_f64
 FFI_COOMV_HOMO_ATOMIC_NT(_f64,  double,         sizeof(double))
-// @tvm_ffi coomv_homo_atomic_t_f64
+// @BE coomv_homo_atomic_t_f64
 FFI_COOMV_HOMO_ATOMIC_T (_f64,  double,         sizeof(double))
-// @tvm_ffi coomv_homo_atomic_nt_f16
+// @BE coomv_homo_atomic_nt_f16
 FFI_COOMV_HOMO_ATOMIC_NT(_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomv_homo_atomic_t_f16
+// @BE coomv_homo_atomic_t_f16
 FFI_COOMV_HOMO_ATOMIC_T (_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomv_homo_atomic_nt_bf16
+// @BE coomv_homo_atomic_nt_bf16
 FFI_COOMV_HOMO_ATOMIC_NT(_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
-// @tvm_ffi coomv_homo_atomic_t_bf16
+// @BE coomv_homo_atomic_t_bf16
 FFI_COOMV_HOMO_ATOMIC_T (_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
 
-// @tvm_ffi coomv_hetero_atomic_nt_f32
+// @BE coomv_hetero_atomic_nt_f32
 FFI_COOMV_HETERO_ATOMIC_NT(_f32,  float,          sizeof(float))
-// @tvm_ffi coomv_hetero_atomic_t_f32
+// @BE coomv_hetero_atomic_t_f32
 FFI_COOMV_HETERO_ATOMIC_T (_f32,  float,          sizeof(float))
-// @tvm_ffi coomv_hetero_atomic_nt_f64
+// @BE coomv_hetero_atomic_nt_f64
 FFI_COOMV_HETERO_ATOMIC_NT(_f64,  double,         sizeof(double))
-// @tvm_ffi coomv_hetero_atomic_t_f64
+// @BE coomv_hetero_atomic_t_f64
 FFI_COOMV_HETERO_ATOMIC_T (_f64,  double,         sizeof(double))
-// @tvm_ffi coomv_hetero_atomic_nt_f16
+// @BE coomv_hetero_atomic_nt_f16
 FFI_COOMV_HETERO_ATOMIC_NT(_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomv_hetero_atomic_t_f16
+// @BE coomv_hetero_atomic_t_f16
 FFI_COOMV_HETERO_ATOMIC_T (_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomv_hetero_atomic_nt_bf16
+// @BE coomv_hetero_atomic_nt_bf16
 FFI_COOMV_HETERO_ATOMIC_NT(_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
-// @tvm_ffi coomv_hetero_atomic_t_bf16
+// @BE coomv_hetero_atomic_t_bf16
 FFI_COOMV_HETERO_ATOMIC_T (_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))

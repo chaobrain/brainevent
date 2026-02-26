@@ -21,7 +21,7 @@
  * The connectivity matrix M[i,j] is never materialised; weights are generated
  * on the fly only for connected (i, j) pairs.
  *
- * TVM FFI entry points
+ * CUDA entry points
  * --------------------
  * binary_jitnmm_gather_{f32,f64,f16,bf16}_{bool,float}
  *     — gather (corder=True):  one thread per output row i
@@ -46,6 +46,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 #include "curand_common.h"
 
 // #########################################################################
@@ -158,12 +159,12 @@ DEFINE_BINARY_JITNMM_SCATTER(_bf16_float, __nv_bfloat16, float,  READ_BF16, WRIT
 
 #define FFI_BINARY_JITNMM_GATHER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitnmm_gather##SUFFIX(                                 \
-    tvm::ffi::TensorView w_loc,                                    \
-    tvm::ffi::TensorView w_scale,                                  \
-    tvm::ffi::TensorView clen,                                     \
-    tvm::ffi::TensorView seed,                                     \
-    tvm::ffi::TensorView B,                                        \
-    tvm::ffi::TensorView output,                                   \
+    const BE::Tensor w_loc,                                        \
+    const BE::Tensor w_scale,                                      \
+    const BE::Tensor clen,                                         \
+    const BE::Tensor seed,                                         \
+    const BE::Tensor B,                                            \
+    BE::Tensor output,                                             \
     int64_t stream                                                 \
 ) {                                                                \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
@@ -185,31 +186,31 @@ void binary_jitnmm_gather##SUFFIX(                                 \
     );                                                             \
 }
 
-// @tvm_ffi binary_jitnmm_gather_f32_bool
+// @BE binary_jitnmm_gather_f32_bool
 FFI_BINARY_JITNMM_GATHER(_f32_bool,   float,         int8_t)
-// @tvm_ffi binary_jitnmm_gather_f32_float
+// @BE binary_jitnmm_gather_f32_float
 FFI_BINARY_JITNMM_GATHER(_f32_float,  float,         float)
-// @tvm_ffi binary_jitnmm_gather_f64_bool
+// @BE binary_jitnmm_gather_f64_bool
 FFI_BINARY_JITNMM_GATHER(_f64_bool,   double,        int8_t)
-// @tvm_ffi binary_jitnmm_gather_f64_float
+// @BE binary_jitnmm_gather_f64_float
 FFI_BINARY_JITNMM_GATHER(_f64_float,  double,        float)
-// @tvm_ffi binary_jitnmm_gather_f16_bool
+// @BE binary_jitnmm_gather_f16_bool
 FFI_BINARY_JITNMM_GATHER(_f16_bool,   __half,        int8_t)
-// @tvm_ffi binary_jitnmm_gather_f16_float
+// @BE binary_jitnmm_gather_f16_float
 FFI_BINARY_JITNMM_GATHER(_f16_float,  __half,        float)
-// @tvm_ffi binary_jitnmm_gather_bf16_bool
+// @BE binary_jitnmm_gather_bf16_bool
 FFI_BINARY_JITNMM_GATHER(_bf16_bool,  __nv_bfloat16, int8_t)
-// @tvm_ffi binary_jitnmm_gather_bf16_float
+// @BE binary_jitnmm_gather_bf16_float
 FFI_BINARY_JITNMM_GATHER(_bf16_float, __nv_bfloat16, float)
 
 #define FFI_BINARY_JITNMM_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitnmm_scatter##SUFFIX(                                 \
-    tvm::ffi::TensorView w_loc,                                     \
-    tvm::ffi::TensorView w_scale,                                   \
-    tvm::ffi::TensorView clen,                                      \
-    tvm::ffi::TensorView seed,                                      \
-    tvm::ffi::TensorView B,                                         \
-    tvm::ffi::TensorView output,                                    \
+    const BE::Tensor w_loc,                                         \
+    const BE::Tensor w_scale,                                       \
+    const BE::Tensor clen,                                          \
+    const BE::Tensor seed,                                          \
+    const BE::Tensor B,                                             \
+    BE::Tensor output,                                              \
     int64_t stream                                                  \
 ) {                                                                 \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);        \
@@ -231,19 +232,19 @@ void binary_jitnmm_scatter##SUFFIX(                                 \
     );                                                              \
 }
 
-// @tvm_ffi binary_jitnmm_scatter_f32_bool
+// @BE binary_jitnmm_scatter_f32_bool
 FFI_BINARY_JITNMM_SCATTER(_f32_bool,   float,         int8_t)
-// @tvm_ffi binary_jitnmm_scatter_f32_float
+// @BE binary_jitnmm_scatter_f32_float
 FFI_BINARY_JITNMM_SCATTER(_f32_float,  float,         float)
-// @tvm_ffi binary_jitnmm_scatter_f64_bool
+// @BE binary_jitnmm_scatter_f64_bool
 FFI_BINARY_JITNMM_SCATTER(_f64_bool,   double,        int8_t)
-// @tvm_ffi binary_jitnmm_scatter_f64_float
+// @BE binary_jitnmm_scatter_f64_float
 FFI_BINARY_JITNMM_SCATTER(_f64_float,  double,        float)
-// @tvm_ffi binary_jitnmm_scatter_f16_bool
+// @BE binary_jitnmm_scatter_f16_bool
 FFI_BINARY_JITNMM_SCATTER(_f16_bool,   __half,        int8_t)
-// @tvm_ffi binary_jitnmm_scatter_f16_float
+// @BE binary_jitnmm_scatter_f16_float
 FFI_BINARY_JITNMM_SCATTER(_f16_float,  __half,        float)
-// @tvm_ffi binary_jitnmm_scatter_bf16_bool
+// @BE binary_jitnmm_scatter_bf16_bool
 FFI_BINARY_JITNMM_SCATTER(_bf16_bool,  __nv_bfloat16, int8_t)
-// @tvm_ffi binary_jitnmm_scatter_bf16_float
+// @BE binary_jitnmm_scatter_bf16_float
 FFI_BINARY_JITNMM_SCATTER(_bf16_float, __nv_bfloat16, float)

@@ -13,18 +13,38 @@
 # limitations under the License.
 # ==============================================================================
 
+from ._codegen import normalize_tokens
+from ._compiler import CompilerBackend, CUDABackend, CPPBackend, HIPBackend
+from ._pipeline import (
+    load_cuda_inline,
+    load_cuda_file,
+    load_cuda_dir,
+    load_cpp_inline,
+    load_cpp_file,
+    set_cache_dir,
+    get_cache_dir,
+    clear_cache,
+    print_diagnostics,
+)
+from ._runtime import CompiledModule, register_ffi_target, list_registered_targets
+from ._toolchain import so_ext
 from .benchmark import BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function
 from .main import XLACustomKernel, KernelEntry
 from .numba_cuda_ffi import numba_cuda_kernel, numba_cuda_callable
 from .numba_ffi import numba_kernel
-from .tvm_ffi import register_tvm_cuda_kernels, register_tvm_cuda_from_file
 from .util import defjvp, general_batching_rule, jaxinfo_to_warpinfo, jaxtype_to_warptype
 
 __all__ = [
     'XLACustomKernel', 'KernelEntry',
     'BenchmarkConfig', 'BenchmarkRecord', 'BenchmarkResult', 'benchmark_function',
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
-    'register_tvm_cuda_kernels', 'register_tvm_cuda_from_file',
     'defjvp', 'general_batching_rule',
     'jaxinfo_to_warpinfo', 'jaxtype_to_warptype',
+    # kernix CUDA/C++ compilation API
+    'load_cuda_inline', 'load_cuda_file', 'load_cuda_dir',
+    'load_cpp_inline', 'load_cpp_file',
+    'set_cache_dir', 'get_cache_dir', 'clear_cache', 'print_diagnostics',
+    'CompiledModule', 'register_ffi_target', 'list_registered_targets',
+    'normalize_tokens', 'so_ext',
+    'CompilerBackend', 'CUDABackend', 'CPPBackend', 'HIPBackend',
 ]

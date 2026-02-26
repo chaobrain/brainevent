@@ -10,7 +10,7 @@ Operation:
 
 This benchmark compares:
   - pallas:   JAX Pallas/Triton kernel (event-driven, fori_loop-based)
-  - tvmffi:   Custom CUDA kernel (event-driven, row-parallel)
+  - cuda_raw:   Custom CUDA kernel (event-driven, row-parallel)
 
 The CUDA kernel's advantage is largest when:
   - Spike density is low (<= 1%) — most blocks exit in ~1 warp instruction.

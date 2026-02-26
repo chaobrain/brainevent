@@ -23,9 +23,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import namescope
-from brainevent._op import XLACustomKernel, numba_kernel, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'update_csr_on_binary_pre',
@@ -298,7 +299,7 @@ def _csr_on_pre_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for CSR pre-synaptic plasticity update.
+    """CUDA Raw kernel for CSR pre-synaptic plasticity update.
 
     Dispatches to ``update_csr_on_pre{wt_sfx}{spk_sfx}`` compiled from
     ``plasticity_binary.cu``.  The auto-variant selects among
@@ -310,15 +311,14 @@ def _csr_on_pre_cuda_kernel(
     """
     if indices_info.dtype == jnp.int64:
         raise TypeError(
-            "update_csr_on_binary_pre: the 'tvmffi' backend only supports "
+            "update_csr_on_binary_pre: the 'cuda_raw' backend only supports "
             "int32 index arrays (indices / indptr).  "
             "Use backend='pallas' or backend='jax' for int64 indices."
         )
 
-    register_tvm_cuda_from_file(
-        module='csr_plasticity_binary_pre',
-        source=Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_pre.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_pre.cu'),
+        name='csr_plasticity_binary_pre',
     )
 
     out_info = kwargs['outs']
@@ -578,7 +578,7 @@ update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
 update_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
 update_csr_on_binary_pre_p.def_pallas_kernel('gpu', partial(_csr_on_pre_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_pre_p.def_pallas_kernel('tpu', partial(_csr_on_pre_pallas_kernel_generator, 'mosaic_tpu'))
-update_csr_on_binary_pre_p.def_tvmffi_kernel('gpu', _csr_on_pre_cuda_kernel)
+update_csr_on_binary_pre_p.def_cuda_raw_kernel(_csr_on_pre_cuda_kernel)
 update_csr_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _csr_on_pre_jax_kernel)
 update_csr_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _csr_on_pre_jax_kernel)
 update_csr_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _csr_on_pre_jax_kernel)
@@ -869,7 +869,7 @@ def _csr2csc_on_post_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for CSR post-synaptic plasticity update.
+    """CUDA Raw kernel for CSR post-synaptic plasticity update.
 
     Dispatches to ``update_csr_on_post{wt_sfx}{spk_sfx}`` compiled from
     ``plasticity_binary.cu``.  The auto-variant selects among
@@ -885,15 +885,14 @@ def _csr2csc_on_post_cuda_kernel(
     """
     if indices_info.dtype == jnp.int64:
         raise TypeError(
-            "update_csr_on_binary_post: the 'tvmffi' backend only supports "
+            "update_csr_on_binary_post: the 'cuda_raw' backend only supports "
             "int32 index arrays (indices / indptr / weight_indices).  "
             "Use backend='pallas' or backend='jax' for int64 indices."
         )
 
-    register_tvm_cuda_from_file(
-        module='csr_plasticity_binary_post',
-        source=Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_post.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_post.cu'),
+        name='csr_plasticity_binary_post',
     )
 
     out_info = kwargs['outs']
@@ -1052,7 +1051,7 @@ update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_gener
 update_csr_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 update_csr_on_binary_post_p.def_pallas_kernel('gpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_post_p.def_pallas_kernel('tpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'mosaic_tpu'))
-update_csr_on_binary_post_p.def_tvmffi_kernel('gpu', _csr2csc_on_post_cuda_kernel)
+update_csr_on_binary_post_p.def_cuda_raw_kernel(_csr2csc_on_post_cuda_kernel)
 update_csr_on_binary_post_p.def_kernel('jax_raw', 'cpu', _csr2csc_on_post_jax_kernel)
 update_csr_on_binary_post_p.def_kernel('jax_raw', 'gpu', _csr2csc_on_post_jax_kernel)
 update_csr_on_binary_post_p.def_kernel('jax_raw', 'tpu', _csr2csc_on_post_jax_kernel)

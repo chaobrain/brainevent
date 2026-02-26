@@ -26,10 +26,11 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import (
-    general_batching_rule, XLACustomKernel, numba_kernel, register_tvm_cuda_from_file,
+    general_batching_rule, XLACustomKernel, numba_kernel,
     BenchmarkConfig, jaxinfo_to_warpinfo
 )
 from brainevent.config import get_numba_parallel
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'fcnmv',
@@ -76,7 +77,7 @@ def fcnmv(
         pre-synaptic connections, scatter mode).
     backend : str or None, optional
         Execution backend override (``'numba'``,
-        ``'pallas'``, ``'tvmffi'``, or ``None`` for automatic selection).
+        ``'pallas'``, ``'cuda_raw'``, or ``None`` for automatic selection).
 
     Returns
     -------
@@ -290,10 +291,9 @@ def _fcnmv_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='fcn_float_mv',
-        source=Path(__file__).parent.joinpath('float_fcnmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_fcnmv.cu'),
+        name='fcn_float_mv',
     )
 
     out_info = kwargs['outs']
@@ -465,7 +465,7 @@ def fcnmv_p_call(
     connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba, Pallas, or TVM FFI) without performing any
+    custom kernel (Numba, Pallas, or CUDA) without performing any
     physical-unit bookkeeping.  It is typically called from :func:`fcnmv`
     or from autodiff rules.
 
@@ -486,7 +486,7 @@ def fcnmv_p_call(
         scatter mode (fixed pre-connections).
     backend : str or None, optional
         Backend override (``'numba'``, ``'pallas'``,
-        ``'tvmffi'``, or ``None``).
+        ``'cuda_raw'``, or ``None``).
 
     Returns
     -------
@@ -520,7 +520,7 @@ Low-level XLA custom-kernel primitive for ``fcnmv``.
 
 This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-vector
 multiplication operation with floating-point weights to registered backends
-(``numba``, ``pallas``, ``tvmffi``), using runtime shape/dtype metadata
+(``numba``, ``pallas``, ``cuda_raw``), using runtime shape/dtype metadata
 provided by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
@@ -733,7 +733,7 @@ def _fcnmm_warp_kernel(
 fcnmv_p.def_numba_kernel(_fcnmv_numba_kernel)
 fcnmv_p.def_warp_kernel(_fcnmv_warp_kernel)
 fcnmv_p.def_pallas_kernel('gpu', _fcnmv_pallas_kernel)
-fcnmv_p.def_tvmffi_kernel('gpu', _fcnmv_cuda_kernel)
+fcnmv_p.def_cuda_raw_kernel(_fcnmv_cuda_kernel)
 fcnmv_p.def_kernel('jax_raw', 'cpu', _fcnmv_jax_kernel)
 fcnmv_p.def_kernel('jax_raw', 'gpu', _fcnmv_jax_kernel)
 fcnmv_p.def_kernel('jax_raw', 'tpu', _fcnmv_jax_kernel)
@@ -1013,10 +1013,9 @@ def _fcnmm_cuda_kernel(
     matrix_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='fcn_float_mm',
-        source=Path(__file__).parent.joinpath('float_fcnmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_fcnmm.cu'),
+        name='fcn_float_mm',
     )
 
     out_info = kwargs['outs']
@@ -1294,7 +1293,7 @@ fcnmm : High-level user-facing function wrapper.
 fcnmm_p.def_numba_kernel(_fcnmm_numba_kernel)
 fcnmm_p.def_warp_kernel(_fcnmm_warp_kernel)
 fcnmm_p.def_pallas_kernel('gpu', _fcnmm_pallas_kernel)
-fcnmm_p.def_tvmffi_kernel('gpu', _fcnmm_cuda_kernel)
+fcnmm_p.def_cuda_raw_kernel(_fcnmm_cuda_kernel)
 fcnmm_p.def_kernel('jax_raw', 'cpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'gpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'tpu', _fcnmm_jax_kernel)

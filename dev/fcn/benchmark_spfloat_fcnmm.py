@@ -6,7 +6,7 @@ Benchmarks all available GPU backends for ``spfloat_fcnmm`` (gather and scatter
 modes, homo and hetero weights, various spike rates) across a range of problem
 sizes and column counts.
 
-The primary interest is the sparsity-exploitation advantage of the CUDA (tvmffi)
+The primary interest is the sparsity-exploitation advantage of the CUDA (cuda_raw)
 backend: gather kernels use ``__ballot_sync`` to skip all-zero warp chunks;
 scatter kernels use tile-level early exit via warp ballot + ``atomicOr`` on a
 shared flag.

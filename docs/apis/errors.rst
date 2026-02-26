@@ -15,5 +15,4 @@ Error Classes
    KernelCompilationError
    KernelFallbackExhaustedError
    KernelExecutionError
-   TVMFFINotInstalledError
-   TVMModuleAlreadyRegisteredError
+   CUDANotInstalledError

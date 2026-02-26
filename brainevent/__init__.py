@@ -14,9 +14,6 @@
 # ==============================================================================
 
 
-__version__ = "0.0.7"
-__version_info__ = tuple(map(int, __version__.split(".")))
-
 from . import config
 from ._coo import (
     COO,
@@ -60,8 +57,7 @@ from ._error import (
     KernelCompilationError,
     KernelFallbackExhaustedError,
     KernelExecutionError,
-    TVMFFINotInstalledError,
-    TVMModuleAlreadyRegisteredError,
+    CUDANotInstalledError,
 )
 from ._event import (
     EventRepresentation,
@@ -113,8 +109,25 @@ from ._op import (
     XLACustomKernel, KernelEntry,
     BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function,
     numba_kernel, numba_cuda_kernel, numba_cuda_callable,
-    register_tvm_cuda_kernels, defjvp, general_batching_rule,
+    defjvp, general_batching_rule,
     jaxtype_to_warptype, jaxinfo_to_warpinfo,
+    load_cuda_inline,
+    load_cuda_file,
+    load_cuda_dir,
+    load_cpp_inline,
+    load_cpp_file,
+    set_cache_dir,
+    get_cache_dir,
+    clear_cache,
+    print_diagnostics,
+    CompiledModule,
+    register_ffi_target,
+    list_registered_targets,
+    normalize_tokens,
+    CompilerBackend,
+    CUDABackend,
+    CPPBackend,
+    HIPBackend,
 )
 from ._pallas_random import (
     PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG,
@@ -123,6 +136,7 @@ from ._pallas_random import (
 from ._registry import (
     get_registry, get_primitives_by_tags, get_all_primitive_names,
 )
+from ._version import __version__, __version_info__
 
 __all__ = [
 
@@ -206,8 +220,16 @@ __all__ = [
     'XLACustomKernel', 'KernelEntry',
     'BenchmarkConfig', 'BenchmarkRecord', 'BenchmarkResult', 'benchmark_function',
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
-    'register_tvm_cuda_kernels', 'defjvp', 'general_batching_rule',
+    'defjvp', 'general_batching_rule',
     'jaxtype_to_warptype', 'jaxinfo_to_warpinfo',
+
+    # --- CUDA/C++ compilation API --- #
+    'load_cuda_inline', 'load_cuda_file', 'load_cuda_dir',
+    'load_cpp_inline', 'load_cpp_file',
+    'set_cache_dir', 'get_cache_dir', 'clear_cache', 'print_diagnostics',
+    'CompiledModule', 'register_ffi_target', 'list_registered_targets',
+    'normalize_tokens',
+    'CompilerBackend', 'CUDABackend', 'CPPBackend', 'HIPBackend',
 
     # --- Pallas kernel --- #
     'PallasLFSR88RNG', 'PallasLFSR113RNG', 'PallasLFSR128RNG',
@@ -219,8 +241,7 @@ __all__ = [
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
     'KernelExecutionError',
-    'TVMFFINotInstalledError',
-    'TVMModuleAlreadyRegisteredError',
+    'CUDANotInstalledError',
 
     # --- utilities --- #
     'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index',
@@ -248,4 +269,3 @@ def __getattr__(name):
         # warnings.warn(f'dense_on_post is deprecated, use {update_dense_on_binary_post.__name__} instead')
         return update_dense_on_binary_post
     raise AttributeError(name)
-

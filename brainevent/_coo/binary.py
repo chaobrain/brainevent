@@ -26,11 +26,12 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, \
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, \
     jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
+from brainevent._op._pipeline import load_cuda_file
 from .float import coomv, coomm
 
 __all__ = [
@@ -855,16 +856,16 @@ def _binary_coomv_cusparse_kernel(
     return kernel
 
 
-def _coomv_tvmffi_kernel(
+def _coomv_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for binary COO SpMV.
+    """CUDA Raw kernel for binary COO SpMV.
 
     Dispatches to one of the ``binary_coomv_{homo,hetero}_atomic_{nt,t}``
-    kernels compiled from ``binary_coomv.cu`` via ``register_tvm_cuda_from_file``.
+    kernels compiled from ``binary_coomv.cu`` via ``load_cuda_file``.
 
     Kernel selection:
     - Weight mode: ``homo`` (weight_info.size == 1) or ``hetero`` (per-connection),
@@ -876,10 +877,9 @@ def _coomv_tvmffi_kernel(
     The output buffer is zero-initialized inside the CUDA entry function
     (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
     """
-    register_tvm_cuda_from_file(
-        module='coo_binary_coomv',
-        source=Path(__file__).parent.joinpath('binary_coomv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_coomv.cu'),
+        name='coo_binary_coomv',
     )
 
     out_info = kwargs['outs']
@@ -1179,7 +1179,7 @@ binary_coomv_p.def_numba_kernel(_coomv_numba_kernel)
 binary_coomv_p.def_warp_kernel(_coomv_warp_kernel)
 binary_coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 binary_coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
-binary_coomv_p.def_tvmffi_kernel('gpu', _coomv_tvmffi_kernel)
+binary_coomv_p.def_cuda_raw_kernel(_coomv_cuda_kernel)
 binary_coomv_p.def_kernel('jax_raw', 'cpu', _binary_coomv_jax_kernel)
 binary_coomv_p.def_kernel('jax_raw', 'gpu', _binary_coomv_jax_kernel)
 binary_coomv_p.def_kernel('jax_raw', 'tpu', _binary_coomv_jax_kernel)
@@ -1847,16 +1847,16 @@ def _binary_coomm_cusparse_kernel(
     return kernel
 
 
-def _coomm_tvmffi_kernel(
+def _coomm_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for binary COO SpMM.
+    """CUDA Raw kernel for binary COO SpMM.
 
     Dispatches to one of the ``binary_coomm_{homo,hetero}_{variant}_{nt,t}``
-    kernels compiled from ``binary_coomm.cu`` via ``register_tvm_cuda_from_file``.
+    kernels compiled from ``binary_coomm.cu`` via ``load_cuda_file``.
 
     Kernel variant selection (based on n = number of output columns):
     - CT (Column-Tiled, n <= 64): One warp per block serially iterates over
@@ -1876,10 +1876,9 @@ def _coomm_tvmffi_kernel(
     The output buffer is zero-initialized inside the CUDA entry function
     (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
     """
-    register_tvm_cuda_from_file(
-        module='coo_binary_coomm',
-        source=Path(__file__).parent.joinpath('binary_coomm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_coomm.cu'),
+        name='coo_binary_coomm',
     )
 
     out_info = kwargs['outs']
@@ -2184,7 +2183,7 @@ binary_coomm_p.def_numba_kernel(_coomm_numba_kernel)
 binary_coomm_p.def_warp_kernel(_coomm_warp_kernel)
 binary_coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 binary_coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
-binary_coomm_p.def_tvmffi_kernel('gpu', _coomm_tvmffi_kernel)
+binary_coomm_p.def_cuda_raw_kernel(_coomm_cuda_kernel)
 binary_coomm_p.def_kernel('jax_raw', 'cpu', _binary_coomm_jax_kernel)
 binary_coomm_p.def_kernel('jax_raw', 'gpu', _binary_coomm_jax_kernel)
 binary_coomm_p.def_kernel('jax_raw', 'tpu', _binary_coomm_jax_kernel)

@@ -32,7 +32,7 @@
  *     spikes  : float16/float32/float64/bfloat16 sparse-float vector
  *     returns : output vector
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   spfloat_densemv_gather_warp_{dtype}
  *   spfloat_densemv_gather_block_{dtype}
  *   spfloat_densemv_gather_auto_{dtype}
@@ -40,6 +40,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // Dense Matrix-Vector Multiplication (spfloat_densemv) - GATHER (NT mode)
@@ -139,24 +140,24 @@ DEFINE_SPFLOAT_GATHER_BLOCK(_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 
 DEFINE_SPFLOAT_SCATTER(_bf16,      __nv_bfloat16, float, READ_BF16, WRITE_BF16, READ_BF16, 0.0f)
 
 // FFI Macros for SpMV
-#define FFI_SPFLOAT_GATHER_WARP(SUFFIX, WEIGHT_C_T)            \
-void spfloat_densemv_gather_warp##SUFFIX(                      \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes, \
-    tvm::ffi::TensorView output, int64_t stream                \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int m = static_cast<int>(weights.size(0));                 \
-    int k = static_cast<int>(weights.size(1));                 \
-    _spfloat_gather_warp_kern##SUFFIX<<<m, 32, 0, s>>>(        \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),    \
-        static_cast<const WEIGHT_C_T*>(spikes.data_ptr()),     \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k);    \
+#define FFI_SPFLOAT_GATHER_WARP(SUFFIX, WEIGHT_C_T)          \
+void spfloat_densemv_gather_warp##SUFFIX(                    \
+    const BE::Tensor weights, const BE::Tensor spikes,       \
+    BE::Tensor output, int64_t stream                        \
+) {                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int m = static_cast<int>(weights.size(0));               \
+    int k = static_cast<int>(weights.size(1));               \
+    _spfloat_gather_warp_kern##SUFFIX<<<m, 32, 0, s>>>(      \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),  \
+        static_cast<const WEIGHT_C_T*>(spikes.data_ptr()),   \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k);  \
 }
 
 #define FFI_SPFLOAT_GATHER_BLOCK(SUFFIX, WEIGHT_C_T, SHM_SIZE)   \
 void spfloat_densemv_gather_block##SUFFIX(                       \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,   \
-    tvm::ffi::TensorView output, int64_t stream                  \
+    const BE::Tensor weights, const BE::Tensor spikes,           \
+    BE::Tensor output, int64_t stream                            \
 ) {                                                              \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);     \
     int m = static_cast<int>(weights.size(0));                   \
@@ -169,8 +170,8 @@ void spfloat_densemv_gather_block##SUFFIX(                       \
 
 #define FFI_SPFLOAT_GATHER_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                                 \
 void spfloat_densemv_gather_auto##SUFFIX(                                                     \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,                                \
-    tvm::ffi::TensorView output, int64_t stream                                               \
+    const BE::Tensor weights, const BE::Tensor spikes,                                        \
+    BE::Tensor output, int64_t stream                                                         \
 ) {                                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                  \
     int m = static_cast<int>(weights.size(0));                                                \
@@ -185,38 +186,38 @@ void spfloat_densemv_gather_auto##SUFFIX(                                       
     }                                                                                         \
 }
 
-#define FFI_SPFLOAT_SCATTER(SUFFIX, WEIGHT_C_T)                \
-void spfloat_densemv_scatter##SUFFIX(                          \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes, \
-    tvm::ffi::TensorView output, int64_t stream                \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int k = static_cast<int>(weights.size(0));                 \
-    int n = static_cast<int>(weights.size(1));                 \
-    int blocks = (n + 255) / 256;                              \
-    _spfloat_scatter_kern##SUFFIX<<<blocks, 256, 0, s>>>(      \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),    \
-        static_cast<const WEIGHT_C_T*>(spikes.data_ptr()),     \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), k, n);    \
+#define FFI_SPFLOAT_SCATTER(SUFFIX, WEIGHT_C_T)              \
+void spfloat_densemv_scatter##SUFFIX(                        \
+    const BE::Tensor weights, const BE::Tensor spikes,       \
+    BE::Tensor output, int64_t stream                        \
+) {                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int k = static_cast<int>(weights.size(0));               \
+    int n = static_cast<int>(weights.size(1));               \
+    int blocks = (n + 255) / 256;                            \
+    _spfloat_scatter_kern##SUFFIX<<<blocks, 256, 0, s>>>(    \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),  \
+        static_cast<const WEIGHT_C_T*>(spikes.data_ptr()),   \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), k, n);  \
 }
 
-// @tvm_ffi spfloat_densemv_gather_warp_f32
+// @BE spfloat_densemv_gather_warp_f32
 FFI_SPFLOAT_GATHER_WARP(_f32,    float)
-// @tvm_ffi spfloat_densemv_gather_block_f32
+// @BE spfloat_densemv_gather_block_f32
 FFI_SPFLOAT_GATHER_BLOCK(_f32,   float,  32 * sizeof(float))
-// @tvm_ffi spfloat_densemv_gather_auto_f32
+// @BE spfloat_densemv_gather_auto_f32
 FFI_SPFLOAT_GATHER_AUTO(_f32,    float,  32 * sizeof(float))
-// @tvm_ffi spfloat_densemv_scatter_f32
+// @BE spfloat_densemv_scatter_f32
 FFI_SPFLOAT_SCATTER(_f32,        float)
-// @tvm_ffi spfloat_densemv_gather_auto_f64
+// @BE spfloat_densemv_gather_auto_f64
 FFI_SPFLOAT_GATHER_AUTO(_f64,    double, 32 * sizeof(double))
-// @tvm_ffi spfloat_densemv_scatter_f64
+// @BE spfloat_densemv_scatter_f64
 FFI_SPFLOAT_SCATTER(_f64,        double)
-// @tvm_ffi spfloat_densemv_gather_auto_f16
+// @BE spfloat_densemv_gather_auto_f16
 FFI_SPFLOAT_GATHER_AUTO(_f16,    __half, 32 * sizeof(float))
-// @tvm_ffi spfloat_densemv_scatter_f16
+// @BE spfloat_densemv_scatter_f16
 FFI_SPFLOAT_SCATTER(_f16,        __half)
-// @tvm_ffi spfloat_densemv_gather_auto_bf16
+// @BE spfloat_densemv_gather_auto_bf16
 FFI_SPFLOAT_GATHER_AUTO(_bf16,   __nv_bfloat16, 32 * sizeof(float))
-// @tvm_ffi spfloat_densemv_scatter_bf16
+// @BE spfloat_densemv_scatter_bf16
 FFI_SPFLOAT_SCATTER(_bf16,       __nv_bfloat16)
