@@ -682,7 +682,7 @@ void csr_slice_rows_fwd_hetero_auto##SUFFIX(                                    
 void csr_slice_rows_grad_thread##SUFFIX(                        \
     const BE::Tensor ct,    const BE::Tensor indices,           \
     const BE::Tensor indptr, const BE::Tensor row_indices,      \
-    const BE::Tensor ct_data, int64_t stream                    \
+    BE::Tensor ct_data, int64_t stream                    \
 ) {                                                             \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream); \
     int m             = static_cast<int>(indptr.size(0)) - 1;   \
@@ -706,7 +706,7 @@ void csr_slice_rows_grad_thread##SUFFIX(                        \
 void csr_slice_rows_grad_warp##SUFFIX(                          \
     const BE::Tensor ct,    const BE::Tensor indices,           \
     const BE::Tensor indptr, const BE::Tensor row_indices,      \
-    const BE::Tensor ct_data, int64_t stream                    \
+    BE::Tensor ct_data, int64_t stream                    \
 ) {                                                             \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream); \
     int m             = static_cast<int>(indptr.size(0)) - 1;   \
@@ -729,7 +729,7 @@ void csr_slice_rows_grad_warp##SUFFIX(                          \
 void csr_slice_rows_grad_auto##SUFFIX(                                                 \
     const BE::Tensor ct,    const BE::Tensor indices,                                  \
     const BE::Tensor indptr, const BE::Tensor row_indices,                             \
-    const BE::Tensor ct_data, int64_t stream                                           \
+    BE::Tensor ct_data, int64_t stream                                           \
 ) {                                                                                    \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                        \
     int m             = static_cast<int>(indptr.size(0)) - 1;                          \

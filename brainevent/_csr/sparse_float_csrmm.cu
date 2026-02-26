@@ -297,7 +297,7 @@ DEFINE_SPFLOAT_CSRMM_T_WARP_HETERO (_bf16, __nv_bfloat16, float, READ_BF16, WRIT
 void spfloat_csrmm_nt_homo_warp##SUFFIX(                              \
     const BE::Tensor weights, const BE::Tensor indices,               \
     const BE::Tensor indptr,  const BE::Tensor B,                     \
-    const BE::Tensor C,       int64_t stream                          \
+    BE::Tensor C,       int64_t stream                          \
 ) {                                                                   \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);         \
     int m        = static_cast<int>(indptr.size(0)) - 1;              \
@@ -320,7 +320,7 @@ void spfloat_csrmm_nt_homo_warp##SUFFIX(                              \
 void spfloat_csrmm_nt_hetero_warp##SUFFIX(                            \
     const BE::Tensor weights, const BE::Tensor indices,               \
     const BE::Tensor indptr,  const BE::Tensor B,                     \
-    const BE::Tensor C,       int64_t stream                          \
+    BE::Tensor C,       int64_t stream                          \
 ) {                                                                   \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);         \
     int m        = static_cast<int>(indptr.size(0)) - 1;              \
@@ -343,7 +343,7 @@ void spfloat_csrmm_nt_hetero_warp##SUFFIX(                            \
 void spfloat_csrmm_nt_homo_block##SUFFIX(                                  \
     const BE::Tensor weights, const BE::Tensor indices,                    \
     const BE::Tensor indptr,  const BE::Tensor B,                          \
-    const BE::Tensor C,       int64_t stream                               \
+    BE::Tensor C,       int64_t stream                               \
 ) {                                                                        \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);              \
     int m        = static_cast<int>(indptr.size(0)) - 1;                   \
@@ -366,7 +366,7 @@ void spfloat_csrmm_nt_homo_block##SUFFIX(                                  \
 void spfloat_csrmm_nt_hetero_block##SUFFIX(                                  \
     const BE::Tensor weights, const BE::Tensor indices,                      \
     const BE::Tensor indptr,  const BE::Tensor B,                            \
-    const BE::Tensor C,       int64_t stream                                 \
+    BE::Tensor C,       int64_t stream                                 \
 ) {                                                                          \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                \
     int m        = static_cast<int>(indptr.size(0)) - 1;                     \
@@ -389,7 +389,7 @@ void spfloat_csrmm_nt_hetero_block##SUFFIX(                                  \
 void spfloat_csrmm_nt_homo_auto##SUFFIX(                                        \
     const BE::Tensor weights, const BE::Tensor indices,                         \
     const BE::Tensor indptr,  const BE::Tensor B,                               \
-    const BE::Tensor C,       int64_t stream                                    \
+    BE::Tensor C,       int64_t stream                                    \
 ) {                                                                             \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                   \
     int m        = static_cast<int>(indptr.size(0)) - 1;                        \
@@ -418,7 +418,7 @@ void spfloat_csrmm_nt_homo_auto##SUFFIX(                                        
 void spfloat_csrmm_nt_hetero_auto##SUFFIX(                                       \
     const BE::Tensor weights, const BE::Tensor indices,                          \
     const BE::Tensor indptr,  const BE::Tensor B,                                \
-    const BE::Tensor C,       int64_t stream                                     \
+    BE::Tensor C,       int64_t stream                                     \
 ) {                                                                              \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                    \
     int m        = static_cast<int>(indptr.size(0)) - 1;                         \
@@ -447,7 +447,7 @@ void spfloat_csrmm_nt_hetero_auto##SUFFIX(                                      
 void spfloat_csrmm_t_homo_warp##SUFFIX(                                     \
     const BE::Tensor weights, const BE::Tensor indices,                     \
     const BE::Tensor indptr,  const BE::Tensor B,                           \
-    const BE::Tensor C,       int64_t stream                                \
+    BE::Tensor C,       int64_t stream                                \
 ) {                                                                         \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);               \
     int m        = static_cast<int>(indptr.size(0)) - 1;                    \
@@ -470,7 +470,7 @@ void spfloat_csrmm_t_homo_warp##SUFFIX(                                     \
 void spfloat_csrmm_t_hetero_warp##SUFFIX(                                   \
     const BE::Tensor weights, const BE::Tensor indices,                     \
     const BE::Tensor indptr,  const BE::Tensor B,                           \
-    const BE::Tensor C,       int64_t stream                                \
+    BE::Tensor C,       int64_t stream                                \
 ) {                                                                         \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);               \
     int m        = static_cast<int>(indptr.size(0)) - 1;                    \
