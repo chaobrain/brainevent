@@ -30,24 +30,27 @@ import brainstate
 from brainevent import fcnmv_p, BenchmarkConfig
 
 current_name = 'fcnmv'
+benchmark_data_type = 'typeA'
 
-def load_benchmark_config(json_path: str, operator_name: str, config_key: str = 'config_1') -> dict:
-
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = 'config_1') -> dict:
     with open(json_path, 'r') as f:
         raw_data = json.load(f)
         
-    if operator_name not in raw_data:
-        raise KeyError(f"Operator '{operator_name}' not found in configuration file.")
+    if benchmark_data_type not in raw_data:
+        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
         
-    operator_data = raw_data[operator_name]
+    if operator_name not in raw_data[benchmark_data_type]["operator"]:
+        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
     
+    operator_data = raw_data[benchmark_data_type]
+
     if config_key not in operator_data:
         raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
         
     return operator_data[config_key]
 
 config_file_path = 'benchmark_config.json'
-parsed_config = load_benchmark_config(config_file_path, current_name)
+parsed_config = load_benchmark_config(config_file_path, benchmark_data_type, current_name)
 
 dist_type = parsed_config.get('dist_type', 'uniform')
 transpose_list = parsed_config.get('transpose', [False, True])
@@ -68,8 +71,8 @@ def _make_benchmark_data(*, platform):
 
         n_conn = max(1, int(n_post * prob))
         indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
-        for transpose in (False, True):
-            for homo in (True, False):
+        for transpose in transpose_list:
+            for homo in homo_list:
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:

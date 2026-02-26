@@ -17,6 +17,7 @@ Usage
 import argparse
 import sys
 from pathlib import Path
+import json
 
 _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
@@ -30,44 +31,74 @@ import brainstate
 
 from brainevent import BenchmarkConfig, spfloat_fcnmv_p
 
-# (n_pre, n_post, n_conn) configurations
-CONFIGS = [
-    (1000, 1000, 50),
-    (1000, 1000, 100),
-    (5000, 5000, 200),
-    (5000, 5000, 500),
-    (10000, 10000, 1000),
-]
+current_name = 'spfloat_fcnmv'
+benchmark_data_type = 'typeA'
+DEFAULT_SPIKE_RATES = [0.01, 0.05, 0.10, 0.50]
 
 # Spike rates to sweep.  At lower rates, the CUDA kernel's early-exit
 # optimisation should show the largest speedup over dense-style kernels.
-DEFAULT_SPIKE_RATES = [0.01, 0.05, 0.10, 0.50]
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = 'config_1') -> dict:
+    with open(json_path, 'r') as f:
+        raw_data = json.load(f)
+        
+    if benchmark_data_type not in raw_data:
+        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
+        
+    if operator_name not in raw_data[benchmark_data_type]["operator"]:
+        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
+    
+    operator_data = raw_data[benchmark_data_type]
 
+    if config_key not in operator_data:
+        raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
+        
+    return operator_data[config_key]
+
+config_file_path = 'benchmark_config.json'
+parsed_config = load_benchmark_config(config_file_path, benchmark_data_type, current_name)
+
+dist_type = parsed_config.get('dist_type', 'uniform')
+transpose_list = parsed_config.get('transpose', [False, True])
+homo_list = parsed_config.get('homo_weight', [True, False])
+matrix_configs = parsed_config.get('configs', [])
+default_spike_rates = parsed_config.get('spike_rates', DEFAULT_SPIKE_RATES)
+
+base_len_config = len(matrix_configs) * len(transpose_list) * len(homo_list)
 
 def _make_benchmark_data(*, platform, spike_rates=None):
-    brainstate.environ.set(precision=16)  # change to 16 or 64 for other precisions
+    brainstate.environ.set(precision=16) 
     if spike_rates is None:
-        spike_rates = DEFAULT_SPIKE_RATES
+        spike_rates = default_spike_rates
+        
     rng = np.random.default_rng(42)
     dtype = brainstate.environ.dftype()
-    for n_pre, n_post, n_conn in CONFIGS:
+    
+    for cfg in matrix_configs:
+        n_pre = cfg['n_rows']
+        n_post = cfg['n_cols']
+        prob = cfg['density']
+
+        n_conn = max(1, int(n_post * prob))
         indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
-        for transpose in (False, True):
-            for homo in (True, False):
+        
+        for transpose in transpose_list:
+            for homo in homo_list:
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
                     weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)), dtype=dtype)
+                
                 v_size = n_post if not transpose else n_pre
+                
                 for rate in spike_rates:
-                    # Sparse-float vector: draw from N(0,1) but zero out (1-rate) fraction
                     v_raw = rng.standard_normal(v_size)
                     mask = rng.random(v_size) < rate
                     vector = jnp.asarray(v_raw * mask, dtype=dtype)
+                    
                     name = (
                         f"{'T' if transpose else 'NT'},"
                         f"{'homo' if homo else 'hetero'},"
-                        f"{n_pre}x{n_post}x{n_conn},"
+                        f"{n_pre}x{n_post}x{prob},"
                         f"rate={rate:.0%}"
                     )
                     yield BenchmarkConfig(
@@ -77,7 +108,7 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                         data_kwargs={
                             'n_pre': n_pre,
                             'n_post': n_post,
-                            'n_conn': n_conn,
+                            'prob': prob,
                             'transpose': transpose,
                             'spike_rate': rate,
                         },
@@ -88,11 +119,12 @@ def main():
     parser = argparse.ArgumentParser(description="spfloat_fcnmv backend benchmark")
     parser.add_argument("--n_warmup", type=int, default=10)
     parser.add_argument("--n_runs", type=int, default=20)
+    parser.add_argument("--n_batch_per_run", type=int, default=10)
     parser.add_argument(
         "--spike_rates",
         type=float,
         nargs="+",
-        default=DEFAULT_SPIKE_RATES,
+        default= DEFAULT_SPIKE_RATES,
         metavar="RATE",
         help="Firing rates to sweep (e.g. 0.01 0.05 0.10 0.50)",
     )
@@ -113,14 +145,18 @@ def main():
 
     spfloat_fcnmv_p.def_benchmark_data(_data_gen)
 
-    result = spfloat_fcnmv_p.benchmark(
+    total_len_config = base_len_config * len(args.spike_rates)
+
+    result = spfloat_fcnmv_p.benchmark_csv_output(
         platform='gpu',
         n_warmup=args.n_warmup,
         n_runs=args.n_runs,
-        n_batch_per_run=1,
+        n_batch_per_run=args.n_batch_per_run,
         compare_results=True,
-        verbose=True,
+        verbose=False,
+        len_config = total_len_config
     )
+    
     result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 
 

@@ -22,34 +22,57 @@ if _project_root not in sys.path:
 import jax
 import jax.numpy as jnp
 import numpy as np
-
+import json
 import brainstate
 
 from brainevent import fcnmm_p, BenchmarkConfig
 
 # (n_pre, n_post, n_conn, n_col)
-CONFIGS = [
-    (1000, 1000, 50, 10),
-    (1000, 1000, 100, 128),
-    (1000, 1000, 128, 64),
-    (1000, 1000, 200, 256),
-    (5000, 5000, 100, 128),
-    (5000, 5000, 200, 64),
-    (5000, 5000, 50, 512),
-    (10000, 10000, 100, 128),
-    (10000, 10000, 50, 32),
-    (10000, 10000, 200, 64),
-]
+current_name = 'fcnmm'
+benchmark_data_type = 'typeB'
 
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = 'config_1') -> dict:
+    with open(json_path, 'r') as f:
+        raw_data = json.load(f)
+        
+    if benchmark_data_type not in raw_data:
+        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
+        
+    if operator_name not in raw_data[benchmark_data_type]["operator"]:
+        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
+    
+    operator_data = raw_data[benchmark_data_type]
+
+    if config_key not in operator_data:
+        raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
+        
+    return operator_data[config_key]
+
+config_file_path = 'benchmark_config.json'
+parsed_config = load_benchmark_config(config_file_path, benchmark_data_type, current_name)
+
+dist_type = parsed_config.get('dist_type', 'uniform')
+transpose_list = parsed_config.get('transpose', [False, True])
+homo_list = parsed_config.get('homo_weight', [True, False])
+matrix_configs = parsed_config.get('configs', [])
+
+len_config = len(matrix_configs) * len(transpose_list) * len(homo_list)
 
 def _make_benchmark_data(*, platform):
     brainstate.environ.set(precision=32)  # change to 16 or 64 for other precisions
     rng = np.random.default_rng(42)
     dtype = brainstate.environ.dftype()
-    for n_pre, n_post, n_conn, n_col in CONFIGS:
+    for config in matrix_configs:
+
+        n_pre = config['n_rows']
+        n_post = config['n_cols']
+        prob = config['density']
+        n_col = config['n_col']
+
+        n_conn = max(1, int(n_post * prob))
         indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
-        for transpose in (False, True):
-            for homo in (True, False):
+        for transpose in transpose_list:
+            for homo in homo_list:
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
@@ -59,7 +82,7 @@ def _make_benchmark_data(*, platform):
                 name = (
                     f"{'T' if transpose else 'NT'},"
                     f"{'homo' if homo else 'hetero'},"
-                    f"{n_pre}x{n_post}x{n_conn},ncol={n_col}"
+                    f"{n_pre}x{n_post}x{prob},ncol={n_col}"
                 )
                 yield BenchmarkConfig(
                     name=name,
@@ -67,7 +90,7 @@ def _make_benchmark_data(*, platform):
                     kernel_kwargs={'shape': (n_pre, n_post), 'transpose': transpose},
                     data_kwargs={
                         'n_pre': n_pre, 'n_post': n_post,
-                        'n_conn': n_conn, 'n_col': n_col,
+                        'prob': prob, 'n_col': n_col,
                     },
                 )
 
@@ -76,6 +99,7 @@ def main():
     parser = argparse.ArgumentParser(description="fcnmm backend benchmark")
     parser.add_argument("--n_warmup", type=int, default=10)
     parser.add_argument("--n_runs", type=int, default=1)
+    parser.add_argument("--n_batch_per_run", type=int, default=10)
     args = parser.parse_args()
 
     try:
@@ -89,12 +113,14 @@ def main():
 
     fcnmm_p.def_benchmark_data(_make_benchmark_data)
 
-    result = fcnmm_p.benchmark(
+    result = fcnmm_p.benchmark_csv_output(
         platform='gpu',
         n_warmup=args.n_warmup,
         n_runs=args.n_runs,
+        n_batch_per_run = args.n_batch_per_run,
         compare_results=True,
-        verbose=True,
+        verbose=False,
+        len_config = len_config
     )
     result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 

@@ -32,6 +32,7 @@ _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+import json
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -40,6 +41,7 @@ import brainstate
 from brainevent import BenchmarkConfig, binary_fcnmm_p
 
 # Problem sizes: (n_pre, n_post, n_conn)
+'''
 CONFIGS = [
     (500, 1000, 10),
     (1000, 1000, 32),
@@ -51,6 +53,40 @@ CONFIGS = [
     (10000, 10000, 500),
     (10000, 10000, 1000),
 ]
+'''
+
+current_name = 'binary_fcnmm'
+benchmark_data_type = 'typeB'
+
+# Problem sizes: (n_pre, n_post, n_conn)
+
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = 'config_1') -> dict:
+    with open(json_path, 'r') as f:
+        raw_data = json.load(f)
+        
+    if benchmark_data_type not in raw_data:
+        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
+        
+    if operator_name not in raw_data[benchmark_data_type]["operator"]:
+        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
+    
+    operator_data = raw_data[benchmark_data_type]
+
+    if config_key not in operator_data:
+        raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
+        
+    return operator_data[config_key]
+
+config_file_path = 'benchmark_config.json'
+parsed_config = load_benchmark_config(config_file_path, benchmark_data_type,  current_name)
+
+dist_type = parsed_config.get('dist_type', 'uniform')
+transpose_list = parsed_config.get('transpose', [False, True])
+homo_list = parsed_config.get('homo_weight', [True, False])
+matrix_configs = parsed_config.get('configs', [])
+bool_event_list = parsed_config.get('bool_event', [True, False]) # binary_fcnmv specific
+
+len_config = len(matrix_configs) * len(transpose_list) * len(homo_list) * len(bool_event_list)
 
 
 def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
@@ -59,13 +95,20 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
     dtype = brainstate.environ.dftype()
     spike_rates = (spike_rate,) if spike_rate is not None else (0.01, 0.05, 0.1)
     n_batches = (n_batch,) if n_batch is not None else (16, 64)
+
     for spike_rate in spike_rates:
         for n_b in n_batches:
-            for n_pre, n_post, n_conn in CONFIGS:
+            for cfg in matrix_configs:
+                n_pre = cfg['n_rows']
+                n_post = cfg['n_cols']
+                prob = cfg['density']
+
+                n_conn = max(1, int(n_post * prob))
                 indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
-                for transpose in (False, True):
-                    for homo in (True, False):
-                        for bool_event in (True, False):
+
+                for transpose in transpose_list:
+                    for homo in homo_list:
+                        for bool_event in bool_event_list:
                             if homo:
                                 weights = jnp.ones(1, dtype=dtype)
                             else:
@@ -83,7 +126,7 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
                                 f"{'homo' if homo else 'hetero'},"
                                 f"{'bool' if bool_event else 'float'},"
                                 f"batch={n_b},"
-                                f"{n_pre}x{n_post}x{n_conn}"
+                                f"{n_pre}x{n_post}x{prob}"
                             )
                             yield BenchmarkConfig(
                                 name=name,
@@ -93,7 +136,7 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
                                     'transpose': transpose,
                                 },
                                 data_kwargs={
-                                    'n_pre': n_pre, 'n_post': n_post, 'n_conn': n_conn,
+                                    'n_pre': n_pre, 'n_post': n_post, 'prob': prob,
                                     'n_batch': n_b, 'transpose': transpose,
                                     'homo': homo, 'bool_event': bool_event,
                                     'spike_rate': spike_rate,
@@ -133,14 +176,17 @@ def main():
 
     binary_fcnmm_p.def_benchmark_data(_data_gen)
 
-    result = binary_fcnmm_p.benchmark(
+    total_len_config = len_config * (1 if args.spike_rate is not None else 3)
+
+    result = binary_fcnmm_p.benchmark_csv_output(
         platform='gpu',
         n_warmup=args.n_warmup,
         n_runs=args.n_runs,
         n_batch_per_run=1,
         compare_results=True,
-        verbose=True,
+        verbose=False,
         catch_errors=False,
+        len_config=total_len_config
     )
     result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 
