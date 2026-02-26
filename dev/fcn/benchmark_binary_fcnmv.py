@@ -42,10 +42,10 @@ from brainevent import BenchmarkConfig, binary_fcnmv_p
 
 current_name = 'binary_fcnmv'
 benchmark_data_type = 'typeA'
-
+config_type = "config_1"
 # Problem sizes: (n_pre, n_post, n_conn)
 
-def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = 'config_1') -> dict:
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
     with open(json_path, 'r') as f:
         raw_data = json.load(f)
         

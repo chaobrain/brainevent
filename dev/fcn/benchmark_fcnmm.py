@@ -30,8 +30,8 @@ from brainevent import fcnmm_p, BenchmarkConfig
 # (n_pre, n_post, n_conn, n_col)
 current_name = 'fcnmm'
 benchmark_data_type = 'typeB'
-
-def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = 'config_1') -> dict:
+config_type = "config_1"
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
     with open(json_path, 'r') as f:
         raw_data = json.load(f)
         

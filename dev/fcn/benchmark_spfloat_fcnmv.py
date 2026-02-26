@@ -34,10 +34,10 @@ from brainevent import BenchmarkConfig, spfloat_fcnmv_p
 current_name = 'spfloat_fcnmv'
 benchmark_data_type = 'typeA'
 DEFAULT_SPIKE_RATES = [0.01, 0.05, 0.10, 0.50]
-
+config_type = "config_1"
 # Spike rates to sweep.  At lower rates, the CUDA kernel's early-exit
 # optimisation should show the largest speedup over dense-style kernels.
-def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = 'config_1') -> dict:
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
     with open(json_path, 'r') as f:
         raw_data = json.load(f)
         

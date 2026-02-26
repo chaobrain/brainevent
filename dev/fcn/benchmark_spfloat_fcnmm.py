@@ -54,10 +54,10 @@ import json
 current_name = 'spfloat_fcnmm'
 benchmark_data_type = 'typeB'
 DEFAULT_SPIKE_RATES = [0.01, 0.05, 0.10, 0.50]
-
+config_type = "config_1"
 # Spike rates to sweep.  At lower rates, the CUDA kernel's early-exit
 # optimisation should show the largest speedup over dense-style kernels.
-def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = 'config_1') -> dict:
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
     with open(json_path, 'r') as f:
         raw_data = json.load(f)
         
@@ -120,8 +120,8 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                     name = (
                         f"{'T' if transpose else 'NT'},"
                         f"{'homo' if homo else 'hetero'},"
-                        f"{n_pre}x{n_post}x{n_conn},"
-                        f"prob={prob},"
+                        f"{n_pre}x{n_post}x{prob},"
+                        f"n_col={n_col},"
                         f"rate={rate:.0%}"
                     )
                     yield BenchmarkConfig(
@@ -131,8 +131,8 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                         data_kwargs={
                             'n_pre': n_pre,
                             'n_post': n_post,
-                            'n_conn': n_conn,
                             'prob': prob,
+                            'n_col': n_col,
                             'transpose': transpose,
                             'spike_rate': rate,
                         },
