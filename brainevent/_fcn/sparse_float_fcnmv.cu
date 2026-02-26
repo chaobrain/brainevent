@@ -352,8 +352,8 @@ __global__ void _spfloat_gather_shared_hetero_kern(const int32_t* __restrict__ i
 // ---- FFI macro: gather homo auto ----
 #define FFI_SPFLOAT_GATHER_HOMO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                                                     \
 void spfloat_fcnmv_gather_homo_auto##SUFFIX(                                                                           \
-    const BE::Tensor weights, const BE::Tensor indices,                                                        \
-    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                          \
+    const BE::Tensor weights, const BE::Tensor indices,                                                                \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                                        \
 ) {                                                                                                                    \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                          \
     int n_pre       = static_cast<int>(indices.size(0));                                                               \
@@ -371,8 +371,8 @@ void spfloat_fcnmv_gather_homo_auto##SUFFIX(                                    
 // ---- FFI macro: gather hetero auto ----
 #define FFI_SPFLOAT_GATHER_HETERO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                                                     \
 void spfloat_fcnmv_gather_hetero_auto##SUFFIX(                                                                           \
-    const BE::Tensor weights, const BE::Tensor indices,                                                          \
-    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                            \
+    const BE::Tensor weights, const BE::Tensor indices,                                                                  \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                                          \
 ) {                                                                                                                      \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                            \
     int n_pre       = static_cast<int>(indices.size(0));                                                                 \
@@ -390,8 +390,8 @@ void spfloat_fcnmv_gather_hetero_auto##SUFFIX(                                  
 // ---- FFI macro: scatter homo auto ----
 #define FFI_SPFLOAT_SCATTER_HOMO_AUTO(SUFFIX, WEIGHT_C_T)                                                        \
 void spfloat_fcnmv_scatter_homo_auto##SUFFIX(                                                                    \
-    const BE::Tensor weights, const BE::Tensor indices,                                                  \
-    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                    \
+    const BE::Tensor weights, const BE::Tensor indices,                                                          \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                                  \
 ) {                                                                                                              \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                    \
     int n_pre       = static_cast<int>(indices.size(0));                                                         \
@@ -412,8 +412,8 @@ void spfloat_fcnmv_scatter_homo_auto##SUFFIX(                                   
 // ---- FFI macro: scatter hetero auto ----
 #define FFI_SPFLOAT_SCATTER_HETERO_AUTO(SUFFIX, WEIGHT_C_T)                                                        \
 void spfloat_fcnmv_scatter_hetero_auto##SUFFIX(                                                                    \
-    const BE::Tensor weights, const BE::Tensor indices,                                                    \
-    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                      \
+    const BE::Tensor weights, const BE::Tensor indices,                                                            \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                                    \
 ) {                                                                                                                \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                      \
     int n_pre       = static_cast<int>(indices.size(0));                                                           \

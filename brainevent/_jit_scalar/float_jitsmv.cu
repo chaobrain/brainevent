@@ -127,11 +127,11 @@ DEFINE_JITSMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomi
 
 #define FFI_JITSMV_GATHER(SUFFIX, WEIGHT_C_T)                \
 void jitsmv_gather##SUFFIX(                                  \
-    const BE::Tensor weight,                             \
-    const BE::Tensor clen,                               \
-    const BE::Tensor seed,                               \
-    const BE::Tensor vector,                             \
-    BE::Tensor output,                             \
+    const BE::Tensor weight,                                 \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor vector,                                 \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -164,11 +164,11 @@ FFI_JITSMV_GATHER(_bf16, __nv_bfloat16)
 
 #define FFI_JITSMV_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitsmv_scatter##SUFFIX(                                 \
-    const BE::Tensor weight,                             \
-    const BE::Tensor clen,                               \
-    const BE::Tensor seed,                               \
-    const BE::Tensor vector,                             \
-    BE::Tensor output,                             \
+    const BE::Tensor weight,                                 \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor vector,                                 \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \

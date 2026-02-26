@@ -186,12 +186,12 @@ DEFINE_BINARY_JITUMM_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE
 
 #define FFI_BINARY_JITUMM_GATHER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitumm_gather##SUFFIX(                                 \
-    const BE::Tensor w_low,                                    \
-    const BE::Tensor w_high,                                   \
-    const BE::Tensor clen,                                     \
-    const BE::Tensor seed,                                     \
-    const BE::Tensor B,                                        \
-    BE::Tensor output,                                   \
+    const BE::Tensor w_low,                                        \
+    const BE::Tensor w_high,                                       \
+    const BE::Tensor clen,                                         \
+    const BE::Tensor seed,                                         \
+    const BE::Tensor B,                                            \
+    BE::Tensor output,                                             \
     int64_t stream                                                 \
 ) {                                                                \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
@@ -232,12 +232,12 @@ FFI_BINARY_JITUMM_GATHER(_bf16_float,__nv_bfloat16, float)
 
 #define FFI_BINARY_JITUMM_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitumm_scatter##SUFFIX(                                 \
-    const BE::Tensor w_low,                                     \
-    const BE::Tensor w_high,                                    \
-    const BE::Tensor clen,                                      \
-    const BE::Tensor seed,                                      \
-    const BE::Tensor B,                                         \
-    BE::Tensor output,                                    \
+    const BE::Tensor w_low,                                         \
+    const BE::Tensor w_high,                                        \
+    const BE::Tensor clen,                                          \
+    const BE::Tensor seed,                                          \
+    const BE::Tensor B,                                             \
+    BE::Tensor output,                                              \
     int64_t stream                                                  \
 ) {                                                                 \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);        \

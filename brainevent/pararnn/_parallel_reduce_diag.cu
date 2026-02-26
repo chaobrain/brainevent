@@ -465,9 +465,9 @@ DEFINE_DIAG_REDUCE(_f64, double, 4)
 
 #define DEFINE_FFI_DIAG_REDUCE(SUFFIX, SCALAR_T, CHUNK_SIZE)                     \
 void pararnn_reduce_diag##SUFFIX(                                                \
-    const BE::Tensor jac_tv,                                                 \
-    const BE::Tensor rhs_tv,                                                 \
-    BE::Tensor output_tv,                                              \
+    const BE::Tensor jac_tv,                                                     \
+    const BE::Tensor rhs_tv,                                                     \
+    BE::Tensor output_tv,                                                        \
     int64_t stream                                                               \
 ) {                                                                              \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                     \

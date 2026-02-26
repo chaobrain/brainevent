@@ -163,12 +163,12 @@ DEFINE_JITUMM_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomi
 
 #define FFI_JITUMM_GATHER(SUFFIX, WEIGHT_C_T)                \
 void jitumm_gather##SUFFIX(                                  \
-    const BE::Tensor w_low,                              \
-    const BE::Tensor w_high,                             \
-    const BE::Tensor clen,                               \
-    const BE::Tensor seed,                               \
-    const BE::Tensor B,                                  \
-    BE::Tensor output,                             \
+    const BE::Tensor w_low,                                  \
+    const BE::Tensor w_high,                                 \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor B,                                      \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -201,12 +201,12 @@ FFI_JITUMM_GATHER(_bf16, __nv_bfloat16)
 
 #define FFI_JITUMM_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitumm_scatter##SUFFIX(                                 \
-    const BE::Tensor w_low,                              \
-    const BE::Tensor w_high,                             \
-    const BE::Tensor clen,                               \
-    const BE::Tensor seed,                               \
-    const BE::Tensor B,                                  \
-    BE::Tensor output,                             \
+    const BE::Tensor w_low,                                  \
+    const BE::Tensor w_high,                                 \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor B,                                      \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \

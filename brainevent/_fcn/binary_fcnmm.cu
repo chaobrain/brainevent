@@ -166,26 +166,26 @@ __global__ void _bgm_basic_hetero_kern##SUFFIX(                                 
 }
 
 #define DEFINE_BSM_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bsm_warp_homo_kern##SUFFIX(                                                   \
-    const int32_t* __restrict__ indices,                                                       \
-    const SPIKE_T* __restrict__ matrix,                                                        \
-    WEIGHT_T*      __restrict__ output,                                                        \
-    const WEIGHT_T* __restrict__ weights,                                                      \
-    int n_pre, int n_conn, int n_batch                                                         \
-) {                                                                                            \
-    int row = blockIdx.x;                                                                      \
-    int t   = threadIdx.x;                                                                     \
-    int j   = (int)blockIdx.y * 32 + t;                                                        \
-    if (row >= n_pre) return;                                                                  \
-    bool col_valid = (j < n_batch);                                                            \
-    int  safe_j    = col_valid ? j : 0;                                                        \
-    bool active    = col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + safe_j]));   \
-    if (__ballot_sync(0xffffffff, active) == 0) return;                                        \
-    if (!active) return;                                                                       \
-    const int32_t*  i_row = indices + (size_t)row * n_conn;                                    \
-    ACC_T w0 = READ_W(__ldg(&weights[0]));                                                     \
-    for (int k = 0; k < n_conn; k++)                                                           \
-        ATOMIC_ADD_W(&output[(size_t)__ldg(&i_row[k]) * n_batch + j], w0);                     \
+__global__ void _bsm_warp_homo_kern##SUFFIX(                                                    \
+    const int32_t* __restrict__ indices,                                                        \
+    const SPIKE_T* __restrict__ matrix,                                                         \
+    WEIGHT_T*      __restrict__ output,                                                         \
+    const WEIGHT_T* __restrict__ weights,                                                       \
+    int n_pre, int n_conn, int n_batch                                                          \
+) {                                                                                             \
+    int row = blockIdx.x;                                                                       \
+    int t   = threadIdx.x;                                                                      \
+    int j   = (int)blockIdx.y * 32 + t;                                                         \
+    if (row >= n_pre) return;                                                                   \
+    bool col_valid = (j < n_batch);                                                             \
+    int  safe_j    = col_valid ? j : 0;                                                         \
+    bool active    = col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + safe_j]));    \
+    if (__ballot_sync(0xffffffff, active) == 0) return;                                         \
+    if (!active) return;                                                                        \
+    const int32_t*  i_row = indices + (size_t)row * n_conn;                                     \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                                      \
+    for (int k = 0; k < n_conn; k++)                                                            \
+        ATOMIC_ADD_W(&output[(size_t)__ldg(&i_row[k]) * n_batch + j], w0);                      \
 }
 
 #define DEFINE_BSM_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
@@ -212,31 +212,31 @@ __global__ void _bsm_warp_hetero_kern##SUFFIX(                                  
 }
 
 #define DEFINE_BSM_BASIC_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bsm_basic_homo_kern##SUFFIX(                                                   \
-    const int32_t* __restrict__ indices,                                                        \
-    const SPIKE_T* __restrict__ matrix,                                                         \
-    WEIGHT_T*      __restrict__ output,                                                         \
-    const WEIGHT_T* __restrict__ weights,                                                       \
-    int n_pre, int n_conn, int n_batch                                                          \
-) {                                                                                             \
-    extern __shared__ int _smem_flag[];                                                         \
-    int row = blockIdx.x;                                                                       \
-    if (row >= n_pre) return;                                                                   \
-    if (threadIdx.x == 0) _smem_flag[0] = 0;                                                    \
-    __syncthreads();                                                                            \
-    for (int j = threadIdx.x; j < n_batch; j += blockDim.x)                                     \
-        if (IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + j]))) {                             \
-            atomicOr(_smem_flag, 1); break;                                                     \
-        }                                                                                       \
-    __syncthreads();                                                                            \
-    if (_smem_flag[0] == 0) return;                                                             \
-    const int32_t*  i_row = indices + (size_t)row * n_conn;                                     \
-    ACC_T w0 = READ_W(__ldg(&weights[0]));                                                      \
-    for (int j = 0; j < n_batch; j++) {                                                         \
-        if (!IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + j]))) continue;                    \
-        for (int k = threadIdx.x; k < n_conn; k += blockDim.x)                                  \
-            ATOMIC_ADD_W(&output[(size_t)__ldg(&i_row[k]) * n_batch + j], w0);                  \
-    }                                                                                           \
+__global__ void _bsm_basic_homo_kern##SUFFIX(                                                    \
+    const int32_t* __restrict__ indices,                                                         \
+    const SPIKE_T* __restrict__ matrix,                                                          \
+    WEIGHT_T*      __restrict__ output,                                                          \
+    const WEIGHT_T* __restrict__ weights,                                                        \
+    int n_pre, int n_conn, int n_batch                                                           \
+) {                                                                                              \
+    extern __shared__ int _smem_flag[];                                                          \
+    int row = blockIdx.x;                                                                        \
+    if (row >= n_pre) return;                                                                    \
+    if (threadIdx.x == 0) _smem_flag[0] = 0;                                                     \
+    __syncthreads();                                                                             \
+    for (int j = threadIdx.x; j < n_batch; j += blockDim.x)                                      \
+        if (IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + j]))) {                              \
+            atomicOr(_smem_flag, 1); break;                                                      \
+        }                                                                                        \
+    __syncthreads();                                                                             \
+    if (_smem_flag[0] == 0) return;                                                              \
+    const int32_t*  i_row = indices + (size_t)row * n_conn;                                      \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                                       \
+    for (int j = 0; j < n_batch; j++) {                                                          \
+        if (!IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + j]))) continue;                     \
+        for (int k = threadIdx.x; k < n_conn; k += blockDim.x)                                   \
+            ATOMIC_ADD_W(&output[(size_t)__ldg(&i_row[k]) * n_batch + j], w0);                   \
+    }                                                                                            \
 }
 
 #define DEFINE_BSM_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)   \
@@ -344,8 +344,8 @@ DEFINE_BSM_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat1
 // ---- FFI macro: gather homo warp ----
 #define FFI_BGM_HOMO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                               \
 void binary_fcnmm_gather_homo_warp##SUFFIX(                                                            \
-    const BE::Tensor weights, const BE::Tensor indices,                                        \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                          \
+    const BE::Tensor weights, const BE::Tensor indices,                                                \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                        \
 ) {                                                                                                    \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                           \
     int n_pre   = static_cast<int>(indices.size(0));                                                   \
@@ -363,8 +363,8 @@ void binary_fcnmm_gather_homo_warp##SUFFIX(                                     
 // ---- FFI macro: gather hetero warp ----
 #define FFI_BGM_HETERO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                               \
 void binary_fcnmm_gather_hetero_warp##SUFFIX(                                                            \
-    const BE::Tensor weights, const BE::Tensor indices,                                          \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                            \
+    const BE::Tensor weights, const BE::Tensor indices,                                                  \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                          \
 ) {                                                                                                      \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                             \
     int n_pre   = static_cast<int>(indices.size(0));                                                     \
@@ -382,8 +382,8 @@ void binary_fcnmm_gather_hetero_warp##SUFFIX(                                   
 // ---- FFI macro: gather homo basic ----
 #define FFI_BGM_HOMO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T, ACC_SIZE)                                        \
 void binary_fcnmm_gather_homo_basic##SUFFIX(                                                               \
-    const BE::Tensor weights, const BE::Tensor indices,                                            \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                              \
+    const BE::Tensor weights, const BE::Tensor indices,                                                    \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                            \
 ) {                                                                                                        \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                               \
     int n_pre   = static_cast<int>(indices.size(0));                                                       \
@@ -404,8 +404,8 @@ void binary_fcnmm_gather_homo_basic##SUFFIX(                                    
 // ---- FFI macro: gather hetero basic ----
 #define FFI_BGM_HETERO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T, ACC_SIZE)                                        \
 void binary_fcnmm_gather_hetero_basic##SUFFIX(                                                               \
-    const BE::Tensor weights, const BE::Tensor indices,                                              \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                \
+    const BE::Tensor weights, const BE::Tensor indices,                                                      \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                              \
 ) {                                                                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                 \
     int n_pre   = static_cast<int>(indices.size(0));                                                         \
@@ -426,8 +426,8 @@ void binary_fcnmm_gather_hetero_basic##SUFFIX(                                  
 // ---- FFI macro: scatter homo warp ----
 #define FFI_BSM_HOMO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                               \
 void binary_fcnmm_scatter_homo_warp##SUFFIX(                                                           \
-    const BE::Tensor weights, const BE::Tensor indices,                                        \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                          \
+    const BE::Tensor weights, const BE::Tensor indices,                                                \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                        \
 ) {                                                                                                    \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                           \
     int n_pre   = static_cast<int>(indices.size(0));                                                   \
@@ -446,8 +446,8 @@ void binary_fcnmm_scatter_homo_warp##SUFFIX(                                    
 // ---- FFI macro: scatter hetero warp ----
 #define FFI_BSM_HETERO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                               \
 void binary_fcnmm_scatter_hetero_warp##SUFFIX(                                                           \
-    const BE::Tensor weights, const BE::Tensor indices,                                          \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                            \
+    const BE::Tensor weights, const BE::Tensor indices,                                                  \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                          \
 ) {                                                                                                      \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                             \
     int n_pre   = static_cast<int>(indices.size(0));                                                     \
@@ -466,8 +466,8 @@ void binary_fcnmm_scatter_hetero_warp##SUFFIX(                                  
 // ---- FFI macro: scatter homo basic ----
 #define FFI_BSM_HOMO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                           \
 void binary_fcnmm_scatter_homo_basic##SUFFIX(                                                                       \
-    const BE::Tensor weights, const BE::Tensor indices,                                                     \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                       \
+    const BE::Tensor weights, const BE::Tensor indices,                                                             \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                                     \
 ) {                                                                                                                 \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                        \
     int n_pre   = static_cast<int>(indices.size(0));                                                                \
@@ -485,8 +485,8 @@ void binary_fcnmm_scatter_homo_basic##SUFFIX(                                   
 // ---- FFI macro: scatter hetero basic ----
 #define FFI_BSM_HETERO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                           \
 void binary_fcnmm_scatter_hetero_basic##SUFFIX(                                                                       \
-    const BE::Tensor weights, const BE::Tensor indices,                                                       \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                         \
+    const BE::Tensor weights, const BE::Tensor indices,                                                               \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                                       \
 ) {                                                                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                          \
     int n_pre   = static_cast<int>(indices.size(0));                                                                  \

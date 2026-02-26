@@ -163,12 +163,12 @@ DEFINE_JITNMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, curan
 // --- FFI gather: dispatch to smem or global kernel ---
 #define FFI_JITNMV_GATHER(SUFFIX, WEIGHT_C_T, ACC_SIZEOF)                     \
 void jitnmv_gather##SUFFIX(                                                   \
-    const BE::Tensor w_loc,                                               \
-    const BE::Tensor w_scale,                                             \
-    const BE::Tensor clen,                                                \
-    const BE::Tensor seed,                                                \
-    const BE::Tensor vector,                                              \
-    BE::Tensor output,                                              \
+    const BE::Tensor w_loc,                                                   \
+    const BE::Tensor w_scale,                                                 \
+    const BE::Tensor clen,                                                    \
+    const BE::Tensor seed,                                                    \
+    const BE::Tensor vector,                                                  \
+    BE::Tensor output,                                                        \
     int64_t stream                                                            \
 ) {                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \
@@ -182,7 +182,7 @@ void jitnmv_gather##SUFFIX(                                                   \
     int _dev = 0; cudaGetDevice(&_dev);                                       \
     int _max_smem = 0;                                                        \
     cudaDeviceGetAttribute(&_max_smem,                                        \
-        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                             \
+        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                            \
     if (smem_bytes <= (size_t)_max_smem) {                                    \
         _jitnmv_gather_smem_kern##SUFFIX<<<blocks, threads, smem_bytes, s>>>( \
             static_cast<const WEIGHT_C_T*>(w_loc.data_ptr()),                 \
@@ -217,12 +217,12 @@ FFI_JITNMV_GATHER(_bf16, __nv_bfloat16, sizeof(float))
 
 #define FFI_JITNMV_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitnmv_scatter##SUFFIX(                                 \
-    const BE::Tensor w_loc,                              \
-    const BE::Tensor w_scale,                            \
-    const BE::Tensor clen,                               \
-    const BE::Tensor seed,                               \
-    const BE::Tensor vector,                             \
-    BE::Tensor output,                             \
+    const BE::Tensor w_loc,                                  \
+    const BE::Tensor w_scale,                                \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor vector,                                 \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \

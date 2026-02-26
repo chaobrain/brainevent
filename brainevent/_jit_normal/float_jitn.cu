@@ -106,11 +106,11 @@ DEFINE_JITN_CORDER_FALSE(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, cu
 
 #define FFI_JITN_CORDER_TRUE(SUFFIX, WEIGHT_C_T)               \
 void jitn_corder_true##SUFFIX(                                 \
-    const BE::Tensor w_loc,                                \
-    const BE::Tensor w_scale,                              \
-    const BE::Tensor clen,                                 \
-    const BE::Tensor seed,                                 \
-    BE::Tensor output,                               \
+    const BE::Tensor w_loc,                                    \
+    const BE::Tensor w_scale,                                  \
+    const BE::Tensor clen,                                     \
+    const BE::Tensor seed,                                     \
+    BE::Tensor output,                                         \
     int64_t stream                                             \
 ) {                                                            \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
@@ -141,11 +141,11 @@ FFI_JITN_CORDER_TRUE(_bf16, __nv_bfloat16)
 
 #define FFI_JITN_CORDER_FALSE(SUFFIX, WEIGHT_C_T)               \
 void jitn_corder_false##SUFFIX(                                 \
-    const BE::Tensor w_loc,                                 \
-    const BE::Tensor w_scale,                               \
-    const BE::Tensor clen,                                  \
-    const BE::Tensor seed,                                  \
-    BE::Tensor output,                                \
+    const BE::Tensor w_loc,                                     \
+    const BE::Tensor w_scale,                                   \
+    const BE::Tensor clen,                                      \
+    const BE::Tensor seed,                                      \
+    BE::Tensor output,                                          \
     int64_t stream                                              \
 ) {                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \

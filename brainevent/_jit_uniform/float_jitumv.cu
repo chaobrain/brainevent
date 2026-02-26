@@ -183,12 +183,12 @@ DEFINE_JITUMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomi
 
 #define FFI_JITUMV_GATHER(SUFFIX, WEIGHT_C_T, ACC_C_T)                        \
 void jitumv_gather##SUFFIX(                                                   \
-    const BE::Tensor w_low,                                               \
-    const BE::Tensor w_high,                                              \
-    const BE::Tensor clen,                                                \
-    const BE::Tensor seed,                                                \
-    const BE::Tensor vector,                                              \
-    BE::Tensor output,                                              \
+    const BE::Tensor w_low,                                                   \
+    const BE::Tensor w_high,                                                  \
+    const BE::Tensor clen,                                                    \
+    const BE::Tensor seed,                                                    \
+    const BE::Tensor vector,                                                  \
+    BE::Tensor output,                                                        \
     int64_t stream                                                            \
 ) {                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \
@@ -200,7 +200,7 @@ void jitumv_gather##SUFFIX(                                                   \
     int _dev = 0; cudaGetDevice(&_dev);                                       \
     int _max_smem = 0;                                                        \
     cudaDeviceGetAttribute(&_max_smem,                                        \
-        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                             \
+        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                            \
     if (smem_bytes <= (size_t)_max_smem) {                                    \
         _jitumv_gather_smem_kern##SUFFIX<<<blocks, threads, smem_bytes, s>>>( \
             static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                 \
@@ -237,12 +237,12 @@ FFI_JITUMV_GATHER(_bf16, __nv_bfloat16, float)
 
 #define FFI_JITUMV_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitumv_scatter##SUFFIX(                                 \
-    const BE::Tensor w_low,                              \
-    const BE::Tensor w_high,                             \
-    const BE::Tensor clen,                               \
-    const BE::Tensor seed,                               \
-    const BE::Tensor vector,                             \
-    BE::Tensor output,                             \
+    const BE::Tensor w_low,                                  \
+    const BE::Tensor w_high,                                 \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor vector,                                 \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \

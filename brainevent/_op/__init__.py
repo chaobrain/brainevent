@@ -13,14 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
-from .benchmark import BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function
-from .main import XLACustomKernel, KernelEntry
-from .numba_cuda_ffi import numba_cuda_kernel, numba_cuda_callable
-from .numba_ffi import numba_kernel
-from .util import defjvp, general_batching_rule, jaxinfo_to_warpinfo, jaxtype_to_warptype
-
-# kernix CUDA/C++ compilation API
-from brainevent._op._pipeline import (
+from ._codegen import normalize_tokens
+from ._compiler import CompilerBackend, CUDABackend, CPPBackend, HIPBackend
+from ._pipeline import (
     load_cuda_inline,
     load_cuda_file,
     load_cuda_dir,
@@ -31,14 +26,13 @@ from brainevent._op._pipeline import (
     clear_cache,
     print_diagnostics,
 )
-from brainevent._op._runtime import (
-    CompiledModule,
-    register_ffi_target,
-    list_registered_targets,
-)
-from brainevent._op._codegen import normalize_tokens
-from brainevent._op._toolchain import so_ext
-from brainevent._op._compiler import CompilerBackend, CUDABackend, CPPBackend, HIPBackend
+from ._runtime import CompiledModule, register_ffi_target, list_registered_targets
+from ._toolchain import so_ext
+from .benchmark import BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function
+from .main import XLACustomKernel, KernelEntry
+from .numba_cuda_ffi import numba_cuda_kernel, numba_cuda_callable
+from .numba_ffi import numba_kernel
+from .util import defjvp, general_batching_rule, jaxinfo_to_warpinfo, jaxtype_to_warptype
 
 __all__ = [
     'XLACustomKernel', 'KernelEntry',

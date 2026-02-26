@@ -109,36 +109,36 @@ DEFINE_COO_ON_PRE(_bf16_float,__nv_bfloat16,  IS_ACTIVE_BF16,  __nv_bfloat16,  f
 // CUDA Entry Points
 // =========================================================================
 
-#define FFI_COO_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)           \
-void update_coo_on_pre##SUFFIX(                                 \
-    const BE::Tensor weight,                                \
-    const BE::Tensor pre_ids,                               \
-    const BE::Tensor post_ids,                              \
-    const BE::Tensor spike,                                 \
-    const BE::Tensor trace,                                 \
-    const BE::Tensor out_weight,                            \
-    int64_t stream                                              \
-) {                                                             \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
-    int n_syn = static_cast<int>(out_weight.size(0));           \
-    if (n_syn == 0) return;                                     \
-    const WEIGHT_C_T*  d_w_in = static_cast<const WEIGHT_C_T*>( \
-                                    weight.data_ptr());         \
-    WEIGHT_C_T*        d_w    = static_cast<WEIGHT_C_T*>(       \
-                                    out_weight.data_ptr());     \
-    const SPIKE_C_T*   d_spk  = static_cast<const SPIKE_C_T*>(  \
-                                    spike.data_ptr());          \
-    const WEIGHT_C_T*  d_tr   = static_cast<const WEIGHT_C_T*>( \
-                                    trace.data_ptr());          \
-    const int32_t*     d_pre  = static_cast<const int32_t*>(    \
-                                    pre_ids.data_ptr());        \
-    const int32_t*     d_post = static_cast<const int32_t*>(    \
-                                    post_ids.data_ptr());       \
+#define FFI_COO_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                \
+void update_coo_on_pre##SUFFIX(                                      \
+    const BE::Tensor weight,                                         \
+    const BE::Tensor pre_ids,                                        \
+    const BE::Tensor post_ids,                                       \
+    const BE::Tensor spike,                                          \
+    const BE::Tensor trace,                                          \
+    const BE::Tensor out_weight,                                     \
+    int64_t stream                                                   \
+) {                                                                  \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);         \
+    int n_syn = static_cast<int>(out_weight.size(0));                \
+    if (n_syn == 0) return;                                          \
+    const WEIGHT_C_T*  d_w_in = static_cast<const WEIGHT_C_T*>(      \
+                                    weight.data_ptr());              \
+    WEIGHT_C_T*        d_w    = static_cast<WEIGHT_C_T*>(            \
+                                    out_weight.data_ptr());          \
+    const SPIKE_C_T*   d_spk  = static_cast<const SPIKE_C_T*>(       \
+                                    spike.data_ptr());               \
+    const WEIGHT_C_T*  d_tr   = static_cast<const WEIGHT_C_T*>(      \
+                                    trace.data_ptr());               \
+    const int32_t*     d_pre  = static_cast<const int32_t*>(         \
+                                    pre_ids.data_ptr());             \
+    const int32_t*     d_post = static_cast<const int32_t*>(         \
+                                    post_ids.data_ptr());            \
     cudaMemcpyAsync(d_w, d_w_in, (size_t)n_syn * sizeof(WEIGHT_C_T), \
-                    cudaMemcpyDeviceToDevice, s);               \
-    int grid_size = (n_syn + 511) / 512;                        \
-    _coo_on_pre_kern##SUFFIX<<<grid_size, 512, 0, s>>>(         \
-        d_w, d_spk, d_tr, d_pre, d_post, n_syn);                \
+                    cudaMemcpyDeviceToDevice, s);                    \
+    int grid_size = (n_syn + 511) / 512;                             \
+    _coo_on_pre_kern##SUFFIX<<<grid_size, 512, 0, s>>>(              \
+        d_w, d_spk, d_tr, d_pre, d_post, n_syn);                     \
 }
 
 // @BE update_coo_on_pre_f32_bool

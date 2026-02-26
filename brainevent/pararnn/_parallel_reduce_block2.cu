@@ -616,9 +616,9 @@ DEFINE_BLOCK2_REDUCE(_f64, double, 2)
 
 #define DEFINE_FFI_BLOCK2_REDUCE(SUFFIX, SCALAR_T, CHUNK_SIZE)                \
 void pararnn_reduce_block2##SUFFIX(                                           \
-    const BE::Tensor jac_tv,                                              \
-    const BE::Tensor rhs_tv,                                              \
-    BE::Tensor output_tv,                                           \
+    const BE::Tensor jac_tv,                                                  \
+    const BE::Tensor rhs_tv,                                                  \
+    BE::Tensor output_tv,                                                     \
     int64_t stream                                                            \
 ) {                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \

@@ -182,8 +182,8 @@ DEFINE_SPFLOAT_MM_T(_bf16, __nv_bfloat16, float, 32, READ_BF16, WRITE_BF16, READ
 // FFI Macros for SpMM
 #define FFI_SPFLOAT_MM_NT_WPR(SUFFIX, WEIGHT_C_T, CHUNK_N_VAL)                  \
 void spfloat_densemm_nt##SUFFIX(                                                \
-    const BE::Tensor weights, const BE::Tensor spikes,                  \
-    BE::Tensor output, int64_t stream                                 \
+    const BE::Tensor weights, const BE::Tensor spikes,                          \
+    BE::Tensor output, int64_t stream                                           \
 ) {                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                    \
     int m = static_cast<int>(weights.size(0));                                  \
@@ -202,8 +202,8 @@ void spfloat_densemm_nt##SUFFIX(                                                
 
 #define FFI_SPFLOAT_MM_NT_TPE(SUFFIX, WEIGHT_C_T)                               \
 void spfloat_densemm_nt_tpe##SUFFIX(                                            \
-    const BE::Tensor weights, const BE::Tensor spikes,                  \
-    BE::Tensor output, int64_t stream                                 \
+    const BE::Tensor weights, const BE::Tensor spikes,                          \
+    BE::Tensor output, int64_t stream                                           \
 ) {                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                    \
     int m = static_cast<int>(weights.size(0));                                  \
@@ -222,8 +222,8 @@ void spfloat_densemm_nt_tpe##SUFFIX(                                            
 
 #define FFI_SPFLOAT_MM_T(SUFFIX, WEIGHT_C_T, CHUNK_N_VAL)                       \
 void spfloat_densemm_t##SUFFIX(                                                 \
-    const BE::Tensor weights, const BE::Tensor spikes,                  \
-    BE::Tensor output, int64_t stream                                 \
+    const BE::Tensor weights, const BE::Tensor spikes,                          \
+    BE::Tensor output, int64_t stream                                           \
 ) {                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                    \
     int k = static_cast<int>(weights.size(0));                                  \

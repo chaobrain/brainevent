@@ -211,24 +211,24 @@ DEFINE_SCATTER(_bf16_bool,       int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, 
 DEFINE_SCATTER(_bf16_float,      float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
 
 // FFI Macros for SpMV
-#define FFI_GATHER_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)         \
-void binary_densemv_gather_warp##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes, \
-    BE::Tensor output, int64_t stream                \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int m = static_cast<int>(weights.size(0));                 \
-    int k = static_cast<int>(weights.size(1));                 \
-    _gather_warp_kern##SUFFIX<<<m, 32, 0, s>>>(                \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),    \
-        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),      \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k);    \
+#define FFI_GATHER_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)       \
+void binary_densemv_gather_warp##SUFFIX(                     \
+    const BE::Tensor weights, const BE::Tensor spikes,       \
+    BE::Tensor output, int64_t stream                        \
+) {                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int m = static_cast<int>(weights.size(0));               \
+    int k = static_cast<int>(weights.size(1));               \
+    _gather_warp_kern##SUFFIX<<<m, 32, 0, s>>>(              \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),  \
+        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),    \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k);  \
 }
 
 #define FFI_GATHER_BLOCK(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemv_gather_block##SUFFIX(                         \
-    const BE::Tensor weights, const BE::Tensor spikes,    \
-    BE::Tensor output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor spikes,            \
+    BE::Tensor output, int64_t stream                             \
 ) {                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);      \
     int m = static_cast<int>(weights.size(0));                    \
@@ -241,8 +241,8 @@ void binary_densemv_gather_block##SUFFIX(                         \
 
 #define FFI_GATHER_AUTO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)                      \
 void binary_densemv_gather_auto##SUFFIX(                                              \
-    const BE::Tensor weights, const BE::Tensor spikes,                        \
-    BE::Tensor output, int64_t stream                                       \
+    const BE::Tensor weights, const BE::Tensor spikes,                                \
+    BE::Tensor output, int64_t stream                                                 \
 ) {                                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                          \
     int m = static_cast<int>(weights.size(0));                                        \
@@ -257,19 +257,19 @@ void binary_densemv_gather_auto##SUFFIX(                                        
     }                                                                                 \
 }
 
-#define FFI_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)             \
-void binary_densemv_scatter##SUFFIX(                           \
-    const BE::Tensor weights, const BE::Tensor spikes, \
-    BE::Tensor output, int64_t stream                \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int k = static_cast<int>(weights.size(0));                 \
-    int n = static_cast<int>(weights.size(1));                 \
-    int blocks = (n + 255) / 256;                              \
-    _scatter_kern##SUFFIX<<<blocks, 256, 0, s>>>(              \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),    \
-        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),      \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), k, n);    \
+#define FFI_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)           \
+void binary_densemv_scatter##SUFFIX(                         \
+    const BE::Tensor weights, const BE::Tensor spikes,       \
+    BE::Tensor output, int64_t stream                        \
+) {                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int k = static_cast<int>(weights.size(0));               \
+    int n = static_cast<int>(weights.size(1));               \
+    int blocks = (n + 255) / 256;                            \
+    _scatter_kern##SUFFIX<<<blocks, 256, 0, s>>>(            \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),  \
+        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),    \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), k, n);  \
 }
 
 // SpMV FFI Instantiations

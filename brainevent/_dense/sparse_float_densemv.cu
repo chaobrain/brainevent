@@ -140,24 +140,24 @@ DEFINE_SPFLOAT_GATHER_BLOCK(_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 
 DEFINE_SPFLOAT_SCATTER(_bf16,      __nv_bfloat16, float, READ_BF16, WRITE_BF16, READ_BF16, 0.0f)
 
 // FFI Macros for SpMV
-#define FFI_SPFLOAT_GATHER_WARP(SUFFIX, WEIGHT_C_T)            \
-void spfloat_densemv_gather_warp##SUFFIX(                      \
-    const BE::Tensor weights, const BE::Tensor spikes, \
-    BE::Tensor output, int64_t stream                \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int m = static_cast<int>(weights.size(0));                 \
-    int k = static_cast<int>(weights.size(1));                 \
-    _spfloat_gather_warp_kern##SUFFIX<<<m, 32, 0, s>>>(        \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),    \
-        static_cast<const WEIGHT_C_T*>(spikes.data_ptr()),     \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k);    \
+#define FFI_SPFLOAT_GATHER_WARP(SUFFIX, WEIGHT_C_T)          \
+void spfloat_densemv_gather_warp##SUFFIX(                    \
+    const BE::Tensor weights, const BE::Tensor spikes,       \
+    BE::Tensor output, int64_t stream                        \
+) {                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int m = static_cast<int>(weights.size(0));               \
+    int k = static_cast<int>(weights.size(1));               \
+    _spfloat_gather_warp_kern##SUFFIX<<<m, 32, 0, s>>>(      \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),  \
+        static_cast<const WEIGHT_C_T*>(spikes.data_ptr()),   \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k);  \
 }
 
 #define FFI_SPFLOAT_GATHER_BLOCK(SUFFIX, WEIGHT_C_T, SHM_SIZE)   \
 void spfloat_densemv_gather_block##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes,   \
-    BE::Tensor output, int64_t stream                  \
+    const BE::Tensor weights, const BE::Tensor spikes,           \
+    BE::Tensor output, int64_t stream                            \
 ) {                                                              \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);     \
     int m = static_cast<int>(weights.size(0));                   \
@@ -170,8 +170,8 @@ void spfloat_densemv_gather_block##SUFFIX(                       \
 
 #define FFI_SPFLOAT_GATHER_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                                 \
 void spfloat_densemv_gather_auto##SUFFIX(                                                     \
-    const BE::Tensor weights, const BE::Tensor spikes,                                \
-    BE::Tensor output, int64_t stream                                               \
+    const BE::Tensor weights, const BE::Tensor spikes,                                        \
+    BE::Tensor output, int64_t stream                                                         \
 ) {                                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                  \
     int m = static_cast<int>(weights.size(0));                                                \
@@ -186,19 +186,19 @@ void spfloat_densemv_gather_auto##SUFFIX(                                       
     }                                                                                         \
 }
 
-#define FFI_SPFLOAT_SCATTER(SUFFIX, WEIGHT_C_T)                \
-void spfloat_densemv_scatter##SUFFIX(                          \
-    const BE::Tensor weights, const BE::Tensor spikes, \
-    BE::Tensor output, int64_t stream                \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int k = static_cast<int>(weights.size(0));                 \
-    int n = static_cast<int>(weights.size(1));                 \
-    int blocks = (n + 255) / 256;                              \
-    _spfloat_scatter_kern##SUFFIX<<<blocks, 256, 0, s>>>(      \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),    \
-        static_cast<const WEIGHT_C_T*>(spikes.data_ptr()),     \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), k, n);    \
+#define FFI_SPFLOAT_SCATTER(SUFFIX, WEIGHT_C_T)              \
+void spfloat_densemv_scatter##SUFFIX(                        \
+    const BE::Tensor weights, const BE::Tensor spikes,       \
+    BE::Tensor output, int64_t stream                        \
+) {                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int k = static_cast<int>(weights.size(0));               \
+    int n = static_cast<int>(weights.size(1));               \
+    int blocks = (n + 255) / 256;                            \
+    _spfloat_scatter_kern##SUFFIX<<<blocks, 256, 0, s>>>(    \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),  \
+        static_cast<const WEIGHT_C_T*>(spikes.data_ptr()),   \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), k, n);  \
 }
 
 // @BE spfloat_densemv_gather_warp_f32

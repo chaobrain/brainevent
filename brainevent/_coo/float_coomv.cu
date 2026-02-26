@@ -255,11 +255,11 @@ DEFINE_COOMV_HETERO_ATOMIC_T (_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_a
 
 #define FFI_COOMV_HOMO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomv_homo_atomic_nt##SUFFIX(                                       \
-    const BE::Tensor data,                                           \
-    const BE::Tensor row_idx,                                        \
-    const BE::Tensor col_idx,                                        \
-    const BE::Tensor v,                                              \
-    BE::Tensor output,                                         \
+    const BE::Tensor data,                                               \
+    const BE::Tensor row_idx,                                            \
+    const BE::Tensor col_idx,                                            \
+    const BE::Tensor v,                                                  \
+    BE::Tensor output,                                                   \
     int64_t stream                                                       \
 ) {                                                                      \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);             \
@@ -281,11 +281,11 @@ void coomv_homo_atomic_nt##SUFFIX(                                       \
 
 #define FFI_COOMV_HOMO_ATOMIC_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomv_homo_atomic_t##SUFFIX(                                       \
-    const BE::Tensor data,                                          \
-    const BE::Tensor row_idx,                                       \
-    const BE::Tensor col_idx,                                       \
-    const BE::Tensor v,                                             \
-    BE::Tensor output,                                        \
+    const BE::Tensor data,                                              \
+    const BE::Tensor row_idx,                                           \
+    const BE::Tensor col_idx,                                           \
+    const BE::Tensor v,                                                 \
+    BE::Tensor output,                                                  \
     int64_t stream                                                      \
 ) {                                                                     \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);            \
@@ -311,11 +311,11 @@ void coomv_homo_atomic_t##SUFFIX(                                       \
 
 #define FFI_COOMV_HETERO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomv_hetero_atomic_nt##SUFFIX(                                       \
-    const BE::Tensor data,                                             \
-    const BE::Tensor row_idx,                                          \
-    const BE::Tensor col_idx,                                          \
-    const BE::Tensor v,                                                \
-    BE::Tensor output,                                           \
+    const BE::Tensor data,                                                 \
+    const BE::Tensor row_idx,                                              \
+    const BE::Tensor col_idx,                                              \
+    const BE::Tensor v,                                                    \
+    BE::Tensor output,                                                     \
     int64_t stream                                                         \
 ) {                                                                        \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);               \
@@ -337,11 +337,11 @@ void coomv_hetero_atomic_nt##SUFFIX(                                       \
 
 #define FFI_COOMV_HETERO_ATOMIC_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomv_hetero_atomic_t##SUFFIX(                                       \
-    const BE::Tensor data,                                            \
-    const BE::Tensor row_idx,                                         \
-    const BE::Tensor col_idx,                                         \
-    const BE::Tensor v,                                               \
-    BE::Tensor output,                                          \
+    const BE::Tensor data,                                                \
+    const BE::Tensor row_idx,                                             \
+    const BE::Tensor col_idx,                                             \
+    const BE::Tensor v,                                                   \
+    BE::Tensor output,                                                    \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \

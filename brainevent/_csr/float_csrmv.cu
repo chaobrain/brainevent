@@ -185,9 +185,9 @@ DEFINE_CSRMV_T_WARP(_bf16,    __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0
 // FFI Macros for SpMV
 #define FFI_CSRMV_NT_THREAD(SUFFIX, WEIGHT_C_T)                   \
 void csrmv_nt_thread##SUFFIX(                                     \
-    const BE::Tensor weights, const BE::Tensor indices,   \
-    const BE::Tensor indptr,  const BE::Tensor vector,    \
-    BE::Tensor output,  int64_t stream                  \
+    const BE::Tensor weights, const BE::Tensor indices,           \
+    const BE::Tensor indptr,  const BE::Tensor vector,            \
+    BE::Tensor output,  int64_t stream                            \
 ) {                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
     int m           = static_cast<int>(indptr.size(0)) - 1;       \
@@ -203,9 +203,9 @@ void csrmv_nt_thread##SUFFIX(                                     \
 
 #define FFI_CSRMV_NT_WARP(SUFFIX, WEIGHT_C_T)                     \
 void csrmv_nt_warp##SUFFIX(                                       \
-    const BE::Tensor weights, const BE::Tensor indices,   \
-    const BE::Tensor indptr,  const BE::Tensor vector,    \
-    BE::Tensor output,  int64_t stream                  \
+    const BE::Tensor weights, const BE::Tensor indices,           \
+    const BE::Tensor indptr,  const BE::Tensor vector,            \
+    BE::Tensor output,  int64_t stream                            \
 ) {                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
     int m           = static_cast<int>(indptr.size(0)) - 1;       \
@@ -220,9 +220,9 @@ void csrmv_nt_warp##SUFFIX(                                       \
 
 #define FFI_CSRMV_NT_BLOCK(SUFFIX, WEIGHT_C_T, SHM_SIZE)          \
 void csrmv_nt_block##SUFFIX(                                      \
-    const BE::Tensor weights, const BE::Tensor indices,   \
-    const BE::Tensor indptr,  const BE::Tensor vector,    \
-    BE::Tensor output,  int64_t stream                  \
+    const BE::Tensor weights, const BE::Tensor indices,           \
+    const BE::Tensor indptr,  const BE::Tensor vector,            \
+    BE::Tensor output,  int64_t stream                            \
 ) {                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
     int m           = static_cast<int>(indptr.size(0)) - 1;       \
@@ -237,9 +237,9 @@ void csrmv_nt_block##SUFFIX(                                      \
 
 #define FFI_CSRMV_NT_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                         \
 void csrmv_nt_auto##SUFFIX(                                                     \
-    const BE::Tensor weights, const BE::Tensor indices,                 \
-    const BE::Tensor indptr,  const BE::Tensor vector,                  \
-    BE::Tensor output,  int64_t stream                                \
+    const BE::Tensor weights, const BE::Tensor indices,                         \
+    const BE::Tensor indptr,  const BE::Tensor vector,                          \
+    BE::Tensor output,  int64_t stream                                          \
 ) {                                                                             \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                   \
     int m           = static_cast<int>(indptr.size(0)) - 1;                     \
@@ -266,9 +266,9 @@ void csrmv_nt_auto##SUFFIX(                                                     
 
 #define FFI_CSRMV_T_WARP(SUFFIX, WEIGHT_C_T)                         \
 void csrmv_t_warp##SUFFIX(                                           \
-    const BE::Tensor weights, const BE::Tensor indices,      \
-    const BE::Tensor indptr,  const BE::Tensor vector,       \
-    BE::Tensor output,  int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,              \
+    const BE::Tensor indptr,  const BE::Tensor vector,               \
+    BE::Tensor output,  int64_t stream                               \
 ) {                                                                  \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);        \
     int m           = static_cast<int>(indptr.size(0)) - 1;          \

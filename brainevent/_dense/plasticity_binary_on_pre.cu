@@ -116,10 +116,10 @@ DEFINE_ON_PRE_FINAL(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,
 
 #define FFI_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                 \
 void update_dense_on_pre##SUFFIX(                                                 \
-    const BE::Tensor weight,                                                  \
-    const BE::Tensor spike,                                                   \
-    const BE::Tensor trace,                                                   \
-    const BE::Tensor out_weight,                                              \
+    const BE::Tensor weight,                                                      \
+    const BE::Tensor spike,                                                       \
+    const BE::Tensor trace,                                                       \
+    const BE::Tensor out_weight,                                                  \
     int64_t stream                                                                \
 ) {                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                      \

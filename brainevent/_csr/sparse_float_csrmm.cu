@@ -293,65 +293,65 @@ DEFINE_SPFLOAT_CSRMM_T_WARP_HETERO (_bf16, __nv_bfloat16, float, READ_BF16, WRIT
 
 // FFI Macros for SpMM
 // ---- FFI macro: forward homo warp ----
-#define FFI_SPFLOAT_CSRMM_NT_HOMO_WARP(SUFFIX, WEIGHT_C_T)        \
-void spfloat_csrmm_nt_homo_warp##SUFFIX(                          \
-    const BE::Tensor weights, const BE::Tensor indices,   \
-    const BE::Tensor indptr,  const BE::Tensor B,         \
-    const BE::Tensor C,       int64_t stream                  \
-) {                                                               \
-    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
-    int m        = static_cast<int>(indptr.size(0)) - 1;          \
-    int n        = static_cast<int>(B.size(1));                   \
-    int c_blocks = (n + 31) / 32;                                 \
-    dim3 grid(m, c_blocks);                                       \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
-    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);       \
-    _spfloat_csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>( \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),       \
-        static_cast<const int32_t*>(indices.data_ptr()),          \
-        static_cast<const int32_t*>(indptr.data_ptr()),           \
-        static_cast<const WEIGHT_C_T*>(B.data_ptr()),             \
-        static_cast<WEIGHT_C_T*>(C.data_ptr()),                   \
-        m, n);                                                    \
+#define FFI_SPFLOAT_CSRMM_NT_HOMO_WARP(SUFFIX, WEIGHT_C_T)            \
+void spfloat_csrmm_nt_homo_warp##SUFFIX(                              \
+    const BE::Tensor weights, const BE::Tensor indices,               \
+    const BE::Tensor indptr,  const BE::Tensor B,                     \
+    const BE::Tensor C,       int64_t stream                          \
+) {                                                                   \
+    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);         \
+    int m        = static_cast<int>(indptr.size(0)) - 1;              \
+    int n        = static_cast<int>(B.size(1));                       \
+    int c_blocks = (n + 31) / 32;                                     \
+    dim3 grid(m, c_blocks);                                           \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());       \
+    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s); \
+    _spfloat_csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(     \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),           \
+        static_cast<const int32_t*>(indices.data_ptr()),              \
+        static_cast<const int32_t*>(indptr.data_ptr()),               \
+        static_cast<const WEIGHT_C_T*>(B.data_ptr()),                 \
+        static_cast<WEIGHT_C_T*>(C.data_ptr()),                       \
+        m, n);                                                        \
 }
 
 // ---- FFI macro: forward hetero warp ----
-#define FFI_SPFLOAT_CSRMM_NT_HETERO_WARP(SUFFIX, WEIGHT_C_T)        \
-void spfloat_csrmm_nt_hetero_warp##SUFFIX(                          \
-    const BE::Tensor weights, const BE::Tensor indices,     \
-    const BE::Tensor indptr,  const BE::Tensor B,           \
-    const BE::Tensor C,       int64_t stream                    \
-) {                                                                 \
-    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);       \
-    int m        = static_cast<int>(indptr.size(0)) - 1;            \
-    int n        = static_cast<int>(B.size(1));                     \
-    int c_blocks = (n + 31) / 32;                                   \
-    dim3 grid(m, c_blocks);                                         \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
-    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);       \
-    _spfloat_csrmm_nt_warp_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>( \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),         \
-        static_cast<const int32_t*>(indices.data_ptr()),            \
-        static_cast<const int32_t*>(indptr.data_ptr()),             \
-        static_cast<const WEIGHT_C_T*>(B.data_ptr()),               \
-        static_cast<WEIGHT_C_T*>(C.data_ptr()),                     \
-        m, n);                                                      \
+#define FFI_SPFLOAT_CSRMM_NT_HETERO_WARP(SUFFIX, WEIGHT_C_T)          \
+void spfloat_csrmm_nt_hetero_warp##SUFFIX(                            \
+    const BE::Tensor weights, const BE::Tensor indices,               \
+    const BE::Tensor indptr,  const BE::Tensor B,                     \
+    const BE::Tensor C,       int64_t stream                          \
+) {                                                                   \
+    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);         \
+    int m        = static_cast<int>(indptr.size(0)) - 1;              \
+    int n        = static_cast<int>(B.size(1));                       \
+    int c_blocks = (n + 31) / 32;                                     \
+    dim3 grid(m, c_blocks);                                           \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());       \
+    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s); \
+    _spfloat_csrmm_nt_warp_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(   \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),           \
+        static_cast<const int32_t*>(indices.data_ptr()),              \
+        static_cast<const int32_t*>(indptr.data_ptr()),               \
+        static_cast<const WEIGHT_C_T*>(B.data_ptr()),                 \
+        static_cast<WEIGHT_C_T*>(C.data_ptr()),                       \
+        m, n);                                                        \
 }
 
 // ---- FFI macro: forward homo block ----
 #define FFI_SPFLOAT_CSRMM_NT_HOMO_BLOCK(SUFFIX, WEIGHT_C_T, SHM_SIZE)      \
 void spfloat_csrmm_nt_homo_block##SUFFIX(                                  \
-    const BE::Tensor weights, const BE::Tensor indices,            \
-    const BE::Tensor indptr,  const BE::Tensor B,                  \
-    const BE::Tensor C,       int64_t stream                           \
+    const BE::Tensor weights, const BE::Tensor indices,                    \
+    const BE::Tensor indptr,  const BE::Tensor B,                          \
+    const BE::Tensor C,       int64_t stream                               \
 ) {                                                                        \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);              \
     int m        = static_cast<int>(indptr.size(0)) - 1;                   \
     int n        = static_cast<int>(B.size(1));                            \
     int c_blocks = (n + 31) / 32;                                          \
     dim3 grid(m, c_blocks);                                                \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
-    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);       \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());            \
+    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);      \
     _spfloat_csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                \
         static_cast<const int32_t*>(indices.data_ptr()),                   \
@@ -364,17 +364,17 @@ void spfloat_csrmm_nt_homo_block##SUFFIX(                                  \
 // ---- FFI macro: forward hetero block ----
 #define FFI_SPFLOAT_CSRMM_NT_HETERO_BLOCK(SUFFIX, WEIGHT_C_T, SHM_SIZE)      \
 void spfloat_csrmm_nt_hetero_block##SUFFIX(                                  \
-    const BE::Tensor weights, const BE::Tensor indices,              \
-    const BE::Tensor indptr,  const BE::Tensor B,                    \
-    const BE::Tensor C,       int64_t stream                             \
+    const BE::Tensor weights, const BE::Tensor indices,                      \
+    const BE::Tensor indptr,  const BE::Tensor B,                            \
+    const BE::Tensor C,       int64_t stream                                 \
 ) {                                                                          \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                \
     int m        = static_cast<int>(indptr.size(0)) - 1;                     \
     int n        = static_cast<int>(B.size(1));                              \
     int c_blocks = (n + 31) / 32;                                            \
     dim3 grid(m, c_blocks);                                                  \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
-    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);       \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());              \
+    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);        \
     _spfloat_csrmm_nt_block_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                  \
         static_cast<const int32_t*>(indices.data_ptr()),                     \
@@ -387,9 +387,9 @@ void spfloat_csrmm_nt_hetero_block##SUFFIX(                                  \
 // ---- FFI macro: forward homo auto ----
 #define FFI_SPFLOAT_CSRMM_NT_HOMO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)            \
 void spfloat_csrmm_nt_homo_auto##SUFFIX(                                        \
-    const BE::Tensor weights, const BE::Tensor indices,                 \
-    const BE::Tensor indptr,  const BE::Tensor B,                       \
-    const BE::Tensor C,       int64_t stream                                \
+    const BE::Tensor weights, const BE::Tensor indices,                         \
+    const BE::Tensor indptr,  const BE::Tensor B,                               \
+    const BE::Tensor C,       int64_t stream                                    \
 ) {                                                                             \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                   \
     int m        = static_cast<int>(indptr.size(0)) - 1;                        \
@@ -416,9 +416,9 @@ void spfloat_csrmm_nt_homo_auto##SUFFIX(                                        
 // ---- FFI macro: forward hetero auto ----
 #define FFI_SPFLOAT_CSRMM_NT_HETERO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)           \
 void spfloat_csrmm_nt_hetero_auto##SUFFIX(                                       \
-    const BE::Tensor weights, const BE::Tensor indices,                  \
-    const BE::Tensor indptr,  const BE::Tensor B,                        \
-    const BE::Tensor C,       int64_t stream                                 \
+    const BE::Tensor weights, const BE::Tensor indices,                          \
+    const BE::Tensor indptr,  const BE::Tensor B,                                \
+    const BE::Tensor C,       int64_t stream                                     \
 ) {                                                                              \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                    \
     int m        = static_cast<int>(indptr.size(0)) - 1;                         \
@@ -432,7 +432,7 @@ void spfloat_csrmm_nt_hetero_auto##SUFFIX(                                      
     const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());      \
     const WEIGHT_C_T* d_b = static_cast<const WEIGHT_C_T*>(B.data_ptr());        \
     WEIGHT_C_T*       d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());              \
-    cudaMemsetAsync(d_c, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);             \
+    cudaMemsetAsync(d_c, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);              \
     if (avg_nnz <= 256) {                                                        \
         _spfloat_csrmm_nt_warp_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(          \
             d_w, d_i, d_p, d_b, d_c, m, n);                                      \
@@ -445,9 +445,9 @@ void spfloat_csrmm_nt_hetero_auto##SUFFIX(                                      
 // ---- FFI macro: transpose homo warp ----
 #define FFI_SPFLOAT_CSRMM_T_HOMO_WARP(SUFFIX, WEIGHT_C_T)                   \
 void spfloat_csrmm_t_homo_warp##SUFFIX(                                     \
-    const BE::Tensor weights, const BE::Tensor indices,             \
-    const BE::Tensor indptr,  const BE::Tensor B,                   \
-    const BE::Tensor C,       int64_t stream                            \
+    const BE::Tensor weights, const BE::Tensor indices,                     \
+    const BE::Tensor indptr,  const BE::Tensor B,                           \
+    const BE::Tensor C,       int64_t stream                                \
 ) {                                                                         \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);               \
     int m        = static_cast<int>(indptr.size(0)) - 1;                    \
@@ -468,9 +468,9 @@ void spfloat_csrmm_t_homo_warp##SUFFIX(                                     \
 // ---- FFI macro: transpose hetero warp ----
 #define FFI_SPFLOAT_CSRMM_T_HETERO_WARP(SUFFIX, WEIGHT_C_T)                 \
 void spfloat_csrmm_t_hetero_warp##SUFFIX(                                   \
-    const BE::Tensor weights, const BE::Tensor indices,             \
-    const BE::Tensor indptr,  const BE::Tensor B,                   \
-    const BE::Tensor C,       int64_t stream                            \
+    const BE::Tensor weights, const BE::Tensor indices,                     \
+    const BE::Tensor indptr,  const BE::Tensor B,                           \
+    const BE::Tensor C,       int64_t stream                                \
 ) {                                                                         \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);               \
     int m        = static_cast<int>(indptr.size(0)) - 1;                    \

@@ -375,44 +375,44 @@ DEFINE_YW2Y_T_NZ_THREAD  (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 // =========================================================================
 
 // ---- FFI macro: NT row-thread kernel ----
-#define FFI_YW2Y_NT_ROW_THREAD(SUFFIX, WEIGHT_C_T)             \
-void csrmv_yw2y_nt_row_thread##SUFFIX(                         \
-    const BE::Tensor y,       const BE::Tensor w,      \
-    const BE::Tensor indices, const BE::Tensor indptr, \
-    BE::Tensor output,  int64_t stream               \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int m     = static_cast<int>(indptr.size(0)) - 1;          \
-    int blocks = (m + 255) / 256;                              \
-    _yw2y_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(   \
-        static_cast<const WEIGHT_C_T*>(y.data_ptr()),          \
-        static_cast<const WEIGHT_C_T*>(w.data_ptr()),          \
-        static_cast<const int32_t*>(indptr.data_ptr()),        \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);       \
+#define FFI_YW2Y_NT_ROW_THREAD(SUFFIX, WEIGHT_C_T)           \
+void csrmv_yw2y_nt_row_thread##SUFFIX(                       \
+    const BE::Tensor y,       const BE::Tensor w,            \
+    const BE::Tensor indices, const BE::Tensor indptr,       \
+    BE::Tensor output,  int64_t stream                       \
+) {                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int m     = static_cast<int>(indptr.size(0)) - 1;        \
+    int blocks = (m + 255) / 256;                            \
+    _yw2y_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
+        static_cast<const WEIGHT_C_T*>(y.data_ptr()),        \
+        static_cast<const WEIGHT_C_T*>(w.data_ptr()),        \
+        static_cast<const int32_t*>(indptr.data_ptr()),      \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);     \
 }
 
 // ---- FFI macro: NT row-warp kernel ----
-#define FFI_YW2Y_NT_ROW_WARP(SUFFIX, WEIGHT_C_T)               \
-void csrmv_yw2y_nt_row_warp##SUFFIX(                           \
-    const BE::Tensor y,       const BE::Tensor w,      \
-    const BE::Tensor indices, const BE::Tensor indptr, \
-    BE::Tensor output,  int64_t stream               \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int m = static_cast<int>(indptr.size(0)) - 1;              \
-    _yw2y_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(           \
-        static_cast<const WEIGHT_C_T*>(y.data_ptr()),          \
-        static_cast<const WEIGHT_C_T*>(w.data_ptr()),          \
-        static_cast<const int32_t*>(indptr.data_ptr()),        \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);       \
+#define FFI_YW2Y_NT_ROW_WARP(SUFFIX, WEIGHT_C_T)             \
+void csrmv_yw2y_nt_row_warp##SUFFIX(                         \
+    const BE::Tensor y,       const BE::Tensor w,            \
+    const BE::Tensor indices, const BE::Tensor indptr,       \
+    BE::Tensor output,  int64_t stream                       \
+) {                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int m = static_cast<int>(indptr.size(0)) - 1;            \
+    _yw2y_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(         \
+        static_cast<const WEIGHT_C_T*>(y.data_ptr()),        \
+        static_cast<const WEIGHT_C_T*>(w.data_ptr()),        \
+        static_cast<const int32_t*>(indptr.data_ptr()),      \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);     \
 }
 
 // ---- FFI macro: NT nz-thread kernel ----
 #define FFI_YW2Y_NT_NZ_THREAD(SUFFIX, WEIGHT_C_T)                  \
 void csrmv_yw2y_nt_nz_thread##SUFFIX(                              \
-    const BE::Tensor y,       const BE::Tensor w,          \
-    const BE::Tensor indices, const BE::Tensor indptr,     \
-    BE::Tensor output,  int64_t stream                   \
+    const BE::Tensor y,       const BE::Tensor w,                  \
+    const BE::Tensor indices, const BE::Tensor indptr,             \
+    BE::Tensor output,  int64_t stream                             \
 ) {                                                                \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
     int m   = static_cast<int>(indptr.size(0)) - 1;                \
@@ -438,9 +438,9 @@ void csrmv_yw2y_nt_nz_thread##SUFFIX(                              \
 //
 #define FFI_YW2Y_NT_AUTO(SUFFIX, WEIGHT_C_T)                                                    \
 void csrmv_yw2y_nt_auto##SUFFIX(                                                                \
-    const BE::Tensor y,       const BE::Tensor w,                                       \
-    const BE::Tensor indices, const BE::Tensor indptr,                                  \
-    BE::Tensor output,  int64_t stream                                                \
+    const BE::Tensor y,       const BE::Tensor w,                                               \
+    const BE::Tensor indices, const BE::Tensor indptr,                                          \
+    BE::Tensor output,  int64_t stream                                                          \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int m     = static_cast<int>(indptr.size(0)) - 1;                                           \
@@ -465,20 +465,20 @@ void csrmv_yw2y_nt_auto##SUFFIX(                                                
 }
 
 // ---- FFI macro: T nz-thread kernel (transpose) ----
-#define FFI_YW2Y_T_NZ_THREAD(SUFFIX, WEIGHT_C_T)               \
-void csrmv_yw2y_t_nz_thread##SUFFIX(                           \
-    const BE::Tensor y,       const BE::Tensor w,      \
-    const BE::Tensor indices, const BE::Tensor indptr, \
-    BE::Tensor output,  int64_t stream               \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int nse = static_cast<int>(w.size(0));                     \
-    int blocks = (nse + 255) / 256;                            \
-    _yw2y_t_nz_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(     \
-        static_cast<const WEIGHT_C_T*>(y.data_ptr()),          \
-        static_cast<const WEIGHT_C_T*>(w.data_ptr()),          \
-        static_cast<const int32_t*>(indices.data_ptr()),       \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), nse);     \
+#define FFI_YW2Y_T_NZ_THREAD(SUFFIX, WEIGHT_C_T)             \
+void csrmv_yw2y_t_nz_thread##SUFFIX(                         \
+    const BE::Tensor y,       const BE::Tensor w,            \
+    const BE::Tensor indices, const BE::Tensor indptr,       \
+    BE::Tensor output,  int64_t stream                       \
+) {                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int nse = static_cast<int>(w.size(0));                   \
+    int blocks = (nse + 255) / 256;                          \
+    _yw2y_t_nz_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(   \
+        static_cast<const WEIGHT_C_T*>(y.data_ptr()),        \
+        static_cast<const WEIGHT_C_T*>(w.data_ptr()),        \
+        static_cast<const int32_t*>(indices.data_ptr()),     \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), nse);   \
 }
 
 

@@ -129,29 +129,7 @@ __global__ void _bg_mr_hetero_kern##SUFFIX(                                     
 }
 
 #define DEFINE_BS_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_warp_homo_kern##SUFFIX(                                                   \
-    const int32_t* __restrict__ indices,                                                      \
-    const SPIKE_T* __restrict__ spikes,                                                       \
-    WEIGHT_T*      __restrict__ output,                                                       \
-    const WEIGHT_T* __restrict__ weights,                                                     \
-    int n_pre, int n_conn                                                                     \
-) {                                                                                           \
-    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                             \
-    int lane_id   = threadIdx.x & 31;                                                         \
-    int num_warps = (gridDim.x * blockDim.x) >> 5;                                            \
-    ACC_T w0 = READ_W(weights[0]);                                                            \
-    for (int row = warp_id; row < n_pre; row += num_warps) {                            \
-        if (!IS_ACTIVE(__ldg(&spikes[row]))) continue;                                  \
-        const int32_t* i_row = indices + (size_t)row * n_conn;                          \
-        for (int k = lane_id; k < n_conn; k += 32) {                                    \
-            int idx = __ldg(&i_row[k]);                                                 \
-            ATOMIC_ADD_W(&output[idx], w0);                                             \
-        }                                                                               \
-    }                                                                                   \
-}
-
-#define DEFINE_BS_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_warp_hetero_kern##SUFFIX(                                                  \
+__global__ void _bs_warp_homo_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                       \
     const SPIKE_T* __restrict__ spikes,                                                        \
     WEIGHT_T*      __restrict__ output,                                                        \
@@ -161,39 +139,42 @@ __global__ void _bs_warp_hetero_kern##SUFFIX(                                   
     int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                              \
     int lane_id   = threadIdx.x & 31;                                                          \
     int num_warps = (gridDim.x * blockDim.x) >> 5;                                             \
+    ACC_T w0 = READ_W(weights[0]);                                                             \
     for (int row = warp_id; row < n_pre; row += num_warps) {                                   \
         if (!IS_ACTIVE(__ldg(&spikes[row]))) continue;                                         \
         const int32_t* i_row = indices + (size_t)row * n_conn;                                 \
-        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                \
         for (int k = lane_id; k < n_conn; k += 32) {                                           \
             int idx = __ldg(&i_row[k]);                                                        \
-            ACC_T wk = READ_W(__ldg(&w_row[k]));                                               \
-            ATOMIC_ADD_W(&output[idx], wk);                                               \
-        }                                                                                 \
-    }                                                                                     \
+            ATOMIC_ADD_W(&output[idx], w0);                                                    \
+        }                                                                                      \
+    }                                                                                          \
+}
+
+#define DEFINE_BS_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_warp_hetero_kern##SUFFIX(                                                    \
+    const int32_t* __restrict__ indices,                                                         \
+    const SPIKE_T* __restrict__ spikes,                                                          \
+    WEIGHT_T*      __restrict__ output,                                                          \
+    const WEIGHT_T* __restrict__ weights,                                                        \
+    int n_pre, int n_conn                                                                        \
+) {                                                                                              \
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                                \
+    int lane_id   = threadIdx.x & 31;                                                            \
+    int num_warps = (gridDim.x * blockDim.x) >> 5;                                               \
+    for (int row = warp_id; row < n_pre; row += num_warps) {                                     \
+        if (!IS_ACTIVE(__ldg(&spikes[row]))) continue;                                           \
+        const int32_t* i_row = indices + (size_t)row * n_conn;                                   \
+        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                  \
+        for (int k = lane_id; k < n_conn; k += 32) {                                             \
+            int idx = __ldg(&i_row[k]);                                                          \
+            ACC_T wk = READ_W(__ldg(&w_row[k]));                                                 \
+            ATOMIC_ADD_W(&output[idx], wk);                                                      \
+        }                                                                                        \
+    }                                                                                            \
 }
 
 #define DEFINE_BS_BASIC_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_basic_homo_kern##SUFFIX(                                                   \
-    const int32_t* __restrict__ indices,                                                       \
-    const SPIKE_T* __restrict__ spikes,                                                        \
-    WEIGHT_T*      __restrict__ output,                                                        \
-    const WEIGHT_T* __restrict__ weights,                                                      \
-    int n_pre, int n_conn                                                                      \
-) {                                                                                            \
-    int row = blockIdx.x;                                                                      \
-    if (row >= n_pre) return;                                                                  \
-    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                               \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                                     \
-    ACC_T w0 = READ_W(weights[0]);                                                             \
-    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                             \
-        int idx = __ldg(&i_row[k]);                                                      \
-        ATOMIC_ADD_W(&output[idx], w0);                                                  \
-    }                                                                                    \
-}
-
-#define DEFINE_BS_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_basic_hetero_kern##SUFFIX(                                                  \
+__global__ void _bs_basic_homo_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                        \
     const SPIKE_T* __restrict__ spikes,                                                         \
     WEIGHT_T*      __restrict__ output,                                                         \
@@ -204,12 +185,31 @@ __global__ void _bs_basic_hetero_kern##SUFFIX(                                  
     if (row >= n_pre) return;                                                                   \
     if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                                \
     const int32_t* i_row = indices + (size_t)row * n_conn;                                      \
-    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                     \
+    ACC_T w0 = READ_W(weights[0]);                                                              \
     for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                                    \
         int idx = __ldg(&i_row[k]);                                                             \
-        ACC_T wk = READ_W(__ldg(&w_row[k]));                                                    \
-        ATOMIC_ADD_W(&output[idx], wk);                                                    \
-    }                                                                                      \
+        ATOMIC_ADD_W(&output[idx], w0);                                                         \
+    }                                                                                           \
+}
+
+#define DEFINE_BS_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_basic_hetero_kern##SUFFIX(                                                    \
+    const int32_t* __restrict__ indices,                                                          \
+    const SPIKE_T* __restrict__ spikes,                                                           \
+    WEIGHT_T*      __restrict__ output,                                                           \
+    const WEIGHT_T* __restrict__ weights,                                                         \
+    int n_pre, int n_conn                                                                         \
+) {                                                                                               \
+    int row = blockIdx.x;                                                                         \
+    if (row >= n_pre) return;                                                                     \
+    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                                  \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                                        \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                       \
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                                      \
+        int idx = __ldg(&i_row[k]);                                                               \
+        ACC_T wk = READ_W(__ldg(&w_row[k]));                                                      \
+        ATOMIC_ADD_W(&output[idx], wk);                                                           \
+    }                                                                                             \
 }
 
 // Instantiations
@@ -395,8 +395,8 @@ void binary_fcnmv_scatter_hetero_warp##SUFFIX(                                  
 // ---- FFI macro: scatter homo basic ----
 #define FFI_BS_HOMO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_scatter_homo_basic##SUFFIX(                                                   \
-    const BE::Tensor weights, const BE::Tensor indices,                                 \
-    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int n_pre  = static_cast<int>(indices.size(0));                                             \
@@ -413,8 +413,8 @@ void binary_fcnmv_scatter_homo_basic##SUFFIX(                                   
 // ---- FFI macro: scatter hetero basic ----
 #define FFI_BS_HETERO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_scatter_hetero_basic##SUFFIX(                                                   \
-    const BE::Tensor weights, const BE::Tensor indices,                                   \
-    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,                                           \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                   \
 ) {                                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
     int n_pre  = static_cast<int>(indices.size(0));                                               \

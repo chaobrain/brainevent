@@ -351,8 +351,8 @@ DEFINE_SCATTER_TILED_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,
 
 #define FFI_GATHER_MM_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemm_gather_auto_homo##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes,      \
-    BE::Tensor output, int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor spikes,              \
+    BE::Tensor output, int64_t stream                               \
 ) {                                                                 \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);        \
     int m = static_cast<int>(output.size(0));                       \
@@ -372,8 +372,8 @@ void binary_densemm_gather_auto_homo##SUFFIX(                       \
 
 #define FFI_GATHER_MM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemm_gather_auto_hetero##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes,        \
-    BE::Tensor output, int64_t stream                       \
+    const BE::Tensor weights, const BE::Tensor spikes,                \
+    BE::Tensor output, int64_t stream                                 \
 ) {                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);          \
     int m = static_cast<int>(weights.size(0));                        \
@@ -393,8 +393,8 @@ void binary_densemm_gather_auto_hetero##SUFFIX(                       \
 
 #define FFI_SCATTER_MM_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemm_scatter_auto_homo##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes,       \
-    BE::Tensor output, int64_t stream                      \
+    const BE::Tensor weights, const BE::Tensor spikes,               \
+    BE::Tensor output, int64_t stream                                \
 ) {                                                                  \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);         \
     int k = static_cast<int>(spikes.size(0));  /* spikes[k,n] */     \
@@ -414,8 +414,8 @@ void binary_densemm_scatter_auto_homo##SUFFIX(                       \
 
 #define FFI_SCATTER_MM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemm_scatter_auto_hetero##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes,         \
-    BE::Tensor output, int64_t stream                        \
+    const BE::Tensor weights, const BE::Tensor spikes,                 \
+    BE::Tensor output, int64_t stream                                  \
 ) {                                                                    \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);           \
     int k = static_cast<int>(weights.size(0));                         \

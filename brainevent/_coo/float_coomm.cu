@@ -317,11 +317,11 @@ DEFINE_COOMM_HETERO_WPE_T (_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_add_
 
 #define FFI_COOMM_HOMO_CT_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)  \
 void coomm_homo_ct_nt##SUFFIX(                                        \
-    const BE::Tensor data,                                        \
-    const BE::Tensor row_idx,                                     \
-    const BE::Tensor col_idx,                                     \
-    const BE::Tensor B,                                           \
-    BE::Tensor output,                                      \
+    const BE::Tensor data,                                            \
+    const BE::Tensor row_idx,                                         \
+    const BE::Tensor col_idx,                                         \
+    const BE::Tensor B,                                               \
+    BE::Tensor output,                                                \
     int64_t stream                                                    \
 ) {                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);          \
@@ -348,11 +348,11 @@ void coomm_homo_ct_nt##SUFFIX(                                        \
 
 #define FFI_COOMM_HOMO_CT_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)       \
 void coomm_homo_ct_t##SUFFIX(                                             \
-    const BE::Tensor data,                                            \
-    const BE::Tensor row_idx,                                         \
-    const BE::Tensor col_idx,                                         \
-    const BE::Tensor B,                                               \
-    BE::Tensor output,                                          \
+    const BE::Tensor data,                                                \
+    const BE::Tensor row_idx,                                             \
+    const BE::Tensor col_idx,                                             \
+    const BE::Tensor B,                                                   \
+    BE::Tensor output,                                                    \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
@@ -383,11 +383,11 @@ void coomm_homo_ct_t##SUFFIX(                                             \
 
 #define FFI_COOMM_HOMO_WPE_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomm_homo_wpe_nt##SUFFIX(                                       \
-    const BE::Tensor data,                                        \
-    const BE::Tensor row_idx,                                     \
-    const BE::Tensor col_idx,                                     \
-    const BE::Tensor B,                                           \
-    BE::Tensor output,                                      \
+    const BE::Tensor data,                                            \
+    const BE::Tensor row_idx,                                         \
+    const BE::Tensor col_idx,                                         \
+    const BE::Tensor B,                                               \
+    BE::Tensor output,                                                \
     int64_t stream                                                    \
 ) {                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);          \
@@ -414,11 +414,11 @@ void coomm_homo_wpe_nt##SUFFIX(                                       \
 
 #define FFI_COOMM_HOMO_WPE_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)      \
 void coomm_homo_wpe_t##SUFFIX(                                            \
-    const BE::Tensor data,                                            \
-    const BE::Tensor row_idx,                                         \
-    const BE::Tensor col_idx,                                         \
-    const BE::Tensor B,                                               \
-    BE::Tensor output,                                          \
+    const BE::Tensor data,                                                \
+    const BE::Tensor row_idx,                                             \
+    const BE::Tensor col_idx,                                             \
+    const BE::Tensor B,                                                   \
+    BE::Tensor output,                                                    \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
@@ -449,11 +449,11 @@ void coomm_homo_wpe_t##SUFFIX(                                            \
 
 #define FFI_COOMM_HETERO_CT_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomm_hetero_ct_nt##SUFFIX(                                       \
-    const BE::Tensor data,                                         \
-    const BE::Tensor row_idx,                                      \
-    const BE::Tensor col_idx,                                      \
-    const BE::Tensor B,                                            \
-    BE::Tensor output,                                       \
+    const BE::Tensor data,                                             \
+    const BE::Tensor row_idx,                                          \
+    const BE::Tensor col_idx,                                          \
+    const BE::Tensor B,                                                \
+    BE::Tensor output,                                                 \
     int64_t stream                                                     \
 ) {                                                                    \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);           \
@@ -480,11 +480,11 @@ void coomm_hetero_ct_nt##SUFFIX(                                       \
 
 #define FFI_COOMM_HETERO_CT_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)     \
 void coomm_hetero_ct_t##SUFFIX(                                           \
-    const BE::Tensor data,                                            \
-    const BE::Tensor row_idx,                                         \
-    const BE::Tensor col_idx,                                         \
-    const BE::Tensor B,                                               \
-    BE::Tensor output,                                          \
+    const BE::Tensor data,                                                \
+    const BE::Tensor row_idx,                                             \
+    const BE::Tensor col_idx,                                             \
+    const BE::Tensor B,                                                   \
+    BE::Tensor output,                                                    \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
@@ -515,11 +515,11 @@ void coomm_hetero_ct_t##SUFFIX(                                           \
 
 #define FFI_COOMM_HETERO_WPE_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomm_hetero_wpe_nt##SUFFIX(                                       \
-    const BE::Tensor data,                                          \
-    const BE::Tensor row_idx,                                       \
-    const BE::Tensor col_idx,                                       \
-    const BE::Tensor B,                                             \
-    BE::Tensor output,                                        \
+    const BE::Tensor data,                                              \
+    const BE::Tensor row_idx,                                           \
+    const BE::Tensor col_idx,                                           \
+    const BE::Tensor B,                                                 \
+    BE::Tensor output,                                                  \
     int64_t stream                                                      \
 ) {                                                                     \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);            \
@@ -546,11 +546,11 @@ void coomm_hetero_wpe_nt##SUFFIX(                                       \
 
 #define FFI_COOMM_HETERO_WPE_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)    \
 void coomm_hetero_wpe_t##SUFFIX(                                          \
-    const BE::Tensor data,                                            \
-    const BE::Tensor row_idx,                                         \
-    const BE::Tensor col_idx,                                         \
-    const BE::Tensor B,                                               \
-    BE::Tensor output,                                          \
+    const BE::Tensor data,                                                \
+    const BE::Tensor row_idx,                                             \
+    const BE::Tensor col_idx,                                             \
+    const BE::Tensor B,                                                   \
+    BE::Tensor output,                                                    \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
