@@ -520,9 +520,7 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
             ret_idx += 1
         elif token == "stream":
             if spec.has_stream:
-                raise KernelError(
-                    f"Duplicate 'stream' token in arg_spec for {func_name}"
-                )
+                raise KernelError( f"Duplicate 'stream' token in arg_spec for {func_name}")
             spec.has_stream = True
             spec.user_param_order.append("stream")
         else:

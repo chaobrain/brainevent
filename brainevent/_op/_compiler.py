@@ -236,9 +236,7 @@ default {so_file}
         """
         ninja = _find_ninja()
         if ninja is None:
-            raise KernelToolchainError(
-                "ninja not found. Install with: pip install ninja"
-            )
+            raise KernelToolchainError("ninja not found. Install with: pip install ninja")
 
         self.generate()
 

@@ -605,8 +605,12 @@ class TestUint64:
                                       np.full(N, 2 ** 40, dtype=np.uint64))
 
     def test_max_value(self, bare_mod):
+        # JAX's mlir.ir_attribute encodes uint64 attrs as a C signed long
+        # internally, so values with the MSB set (>= 2**63) overflow and are
+        # unrepresentable.  The effective maximum encodable value is 2**63-1
+        # (INT64_MAX), which is still a large and meaningful uint64 test.
         x = jnp.zeros(N, dtype=jnp.uint64)
-        big = np.uint64(2 ** 63)
+        big = np.uint64(2 ** 63 - 1)
         out = _call("test_attrs_bare", "add_u64", jnp.uint64, x,
                     offset=big)
         np.testing.assert_array_equal(np.asarray(out),
