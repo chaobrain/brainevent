@@ -54,7 +54,7 @@ def detect_toolchain() -> CudaToolchain:
     Raises ToolchainError if essential tools are missing.
     """
     # --- nvcc ---
-    nvcc = os.environ.get("JKB_NVCC_PATH") or shutil.which("nvcc")
+    nvcc = os.environ.get("BRAINEVENT_NVCC_PATH") or shutil.which("nvcc")
     if nvcc is None:
         cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
         candidate = os.path.join(cuda_home, "bin", "nvcc")
@@ -63,7 +63,7 @@ def detect_toolchain() -> CudaToolchain:
     if nvcc is None:
         raise KernelToolchainError(
             "Cannot find nvcc. Ensure CUDA Toolkit is installed and nvcc is "
-            "on PATH, or set JKB_NVCC_PATH / CUDA_HOME."
+            "on PATH, or set BRAINEVENT_NVCC_PATH / CUDA_HOME."
         )
 
     # --- CUDA home & include ---
@@ -75,14 +75,13 @@ def detect_toolchain() -> CudaToolchain:
 
     # --- nvcc version ---
     nvcc_version = ""
-    try:
-        proc = subprocess.run([nvcc, "--version"], capture_output=True, text=True, timeout=10)
-        for line in proc.stdout.splitlines():
-            if "release" in line.lower():
-                nvcc_version = line.strip()
-                break
-    except Exception:
-        pass
+    proc = subprocess.run([nvcc, "--version"], capture_output=True, text=True, timeout=10)
+    for line in proc.stdout.splitlines():
+        if "release" in line.lower():
+            nvcc_version = line.strip()
+            break
+    if not nvcc_version:
+        raise KernelToolchainError(f"Failed to determine nvcc version from output: {proc.stdout}")
 
     # --- C++ compiler ---
     cxx = os.environ.get("CXX") or shutil.which("g++") or shutil.which("c++")
@@ -132,24 +131,11 @@ def detect_cpp_toolchain() -> CppToolchain:
         raise KernelToolchainError("Cannot find a C++ compiler. Install g++ or clang++, or set CXX.")
 
     # --- cxx version string ---
-    cxx_version = ""
-    try:
-        proc = subprocess.run(
-            [cxx, "--version"], capture_output=True, text=True, timeout=10
-        )
-        cxx_version = proc.stdout.splitlines()[0].strip() if proc.stdout else ""
-    except Exception:
-        pass
+    proc = subprocess.run([cxx, "--version"], capture_output=True, text=True, timeout=10)
+    cxx_version = proc.stdout.splitlines()[0].strip() if proc.stdout else ""
 
     # --- XLA FFI include dir (from jaxlib) ---
-    try:
-        import jax.ffi
-        xla_ffi_include = jax.ffi.include_dir()
-    except Exception as e:
-        raise KernelToolchainError(
-            f"Cannot determine XLA FFI include directory: {e}. "
-            "Ensure jax and jaxlib are installed."
-        ) from e
+    xla_ffi_include = jax.ffi.include_dir()
 
     ffi_header = os.path.join(xla_ffi_include, "xla", "ffi", "api", "ffi.h")
     if not os.path.isfile(ffi_header):
@@ -246,23 +232,23 @@ def detect_cuda_arch() -> list[str]:
     Returns a list like ``["sm_86"]``.  Falls back to ``["sm_80"]`` if
     detection fails.
     """
-    fallback = os.environ.get("JKB_COMPUTE_CAPABILITIES", "")
+    fallback = os.environ.get("BRAINEVENT_COMPUTE_CAPABILITIES", "")
     if fallback:
         return [f"sm_{c.replace('.', '')}" for c in fallback.split(",")]
 
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            caps = set()
-            for line in result.stdout.strip().splitlines():
-                cap = line.strip().replace(".", "")
-                caps.add(f"sm_{cap}")
-            if caps:
-                return sorted(caps)
-    except FileNotFoundError:
-        pass
-
-    return ["sm_80"]
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode == 0:
+        caps = set()
+        for line in result.stdout.strip().splitlines():
+            cap = line.strip().replace(".", "")
+            caps.add(f"sm_{cap}")
+        if caps:
+            return sorted(caps)
+    raise KernelToolchainError(
+        "Failed to detect GPU compute capabilities via nvidia-smi. "
+        "Ensure NVIDIA drivers are installed and nvidia-smi is on PATH, "
+        "or set BRAINEVENT_COMPUTE_CAPABILITIES (e.g. '8.6,8.0')."
+    )

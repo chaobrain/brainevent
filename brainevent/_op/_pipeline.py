@@ -28,6 +28,7 @@ from pathlib import Path
 import jax
 import jaxlib
 
+from brainevent._error import KernelError
 from brainevent._version import __version__
 from ._cache import CompilationCache
 from ._codegen import (
@@ -40,14 +41,8 @@ from ._codegen import (
     resolve_bare_attr_types,
 )
 from ._compiler import CPPBackend, CUDABackend
-from brainevent._error import KernelError
 from ._runtime import CompiledModule, _REGISTERED_TARGETS, register_ffi_target
-from ._toolchain import (
-    detect_cpp_toolchain,
-    detect_cuda_arch,
-    detect_toolchain,
-    so_ext,
-)
+from ._toolchain import detect_cpp_toolchain, detect_cuda_arch, detect_toolchain, so_ext
 
 # Shared cache instance
 _cache = CompilationCache()
