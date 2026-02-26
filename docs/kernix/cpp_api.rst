@@ -12,6 +12,49 @@ A lightweight, non-owning view over a contiguous tensor buffer.  Stores shape
 and C-contiguous strides internally (up to 8 dimensions) so the object is
 trivially copyable and can be passed by value into CUDA kernel argument lists.
 
+.. warning::
+
+   **``const BE::Tensor`` does NOT mean read-only data.**
+
+   ``const BE::Tensor param`` freezes only the tensor *metadata* (shape, dtype,
+   strides).  The underlying GPU memory is still writable — you can silently
+   cast away constness with ``static_cast<float*>(param.data_ptr())`` and C++
+   will not warn you.
+
+   brainevent's auto-detection uses ``const`` as the **sole discriminator**
+   between inputs and outputs:
+
+   .. list-table::
+      :header-rows: 1
+      :widths: 40 20 15
+
+      * - C++ declaration
+        - arg_spec token
+        - Role
+      * - ``const BE::Tensor param``
+        - ``"arg"``
+        - input
+      * - ``BE::Tensor param``
+        - ``"ret"``
+        - output
+
+   Declaring an output tensor as ``const BE::Tensor`` causes a runtime
+   ``KernelError: No non-const Tensor output found`` — there is no compile-time
+   warning.  **Remove** ``const`` from every ``BE::Tensor`` parameter that the
+   kernel writes to.
+
+   .. code-block:: cpp
+
+      // WRONG — output marked const; KernelError raised at runtime
+      void my_bwd(const BE::Tensor grad,
+                  const BE::Tensor out,   // ← BUG
+                  int64_t stream);
+
+      // CORRECT — output is non-const
+      void my_bwd(const BE::Tensor grad,
+                  BE::Tensor out,         // ← correct
+                  int64_t stream);
+
 .. code-block:: cpp
 
    #include "brainevent/common.h"
