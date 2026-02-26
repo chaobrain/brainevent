@@ -26,9 +26,10 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
+from brainevent._op._pipeline import load_cuda_file
 from .float import jitnmv_p_call, jitnmm_p_call
 
 __all__ = [
@@ -738,10 +739,9 @@ def _binary_jitnmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_normal_binary_jitnmv',
-        source=Path(__file__).parent.joinpath('binary_jitnmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitnmv.cu'),
+        name='jit_normal_binary_jitnmv',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     stype = '_bool' if kwargs['vector_info'].dtype == jnp.bool_ else '_float'
@@ -758,10 +758,9 @@ def _binary_jitnmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_normal_binary_jitnmm',
-        source=Path(__file__).parent.joinpath('binary_jitnmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitnmm.cu'),
+        name='jit_normal_binary_jitnmm',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     stype = '_bool' if kwargs['B_info'].dtype == jnp.bool_ else '_float'
@@ -1101,7 +1100,7 @@ def _jitc_mm_normal_warp_kernel_generator(
 binary_jitnmv_p.def_numba_kernel(_jitc_mv_normal_numba_kernel_generator)
 binary_jitnmv_p.def_warp_kernel(_jitc_mv_normal_warp_kernel_generator)
 binary_jitnmv_p.def_pallas_kernel('gpu', _jitc_mv_normal_pallas_kernel_generator)
-binary_jitnmv_p.def_tvmffi_kernel('gpu', _binary_jitnmv_cuda_kernel)
+binary_jitnmv_p.def_cuda_raw_kernel(_binary_jitnmv_cuda_kernel)
 binary_jitnmv_p.def_jvp_rule2(_jitc_mv_normal_jvp_wloc, _jitc_mv_normal_jvp_wscale, None, _jitc_mv_normal_jvp_v, None)
 binary_jitnmv_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 binary_jitnmv_p.def_batching_rule(_jitc_mv_normal_batching)
@@ -1603,7 +1602,7 @@ binary_jitnmm : High-level user-facing function wrapper.
 binary_jitnmm_p.def_numba_kernel(_jitc_mm_normal_numba_kernel_generator)
 binary_jitnmm_p.def_warp_kernel(_jitc_mm_normal_warp_kernel_generator)
 binary_jitnmm_p.def_pallas_kernel('gpu', _jitc_mm_normal_pallas_kernel_generator)
-binary_jitnmm_p.def_tvmffi_kernel('gpu', _binary_jitnmm_cuda_kernel)
+binary_jitnmm_p.def_cuda_raw_kernel(_binary_jitnmm_cuda_kernel)
 binary_jitnmm_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale, None, _jitc_mm_normal_jvp_B, None)
 binary_jitnmm_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
 binary_jitnmm_p.def_batching_rule(_jitc_mm_normal_batching)

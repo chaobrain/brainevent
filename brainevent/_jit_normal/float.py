@@ -27,9 +27,10 @@ from brainevent._compatible_import import Tracer
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     "jitn",
@@ -685,10 +686,9 @@ def _jitn_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_normal_jitn',
-        source=Path(__file__).parent.joinpath('float_jitn.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitn.cu'),
+        name='jit_normal_jitn',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     variant = 'corder_true' if corder else 'corder_false'
@@ -704,10 +704,9 @@ def _jitnmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_normal_jitnmv',
-        source=Path(__file__).parent.joinpath('float_jitnmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitnmv.cu'),
+        name='jit_normal_jitnmv',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
@@ -723,10 +722,9 @@ def _jitnmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_normal_jitnmm',
-        source=Path(__file__).parent.joinpath('float_jitnmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitnmm.cu'),
+        name='jit_normal_jitnmm',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
@@ -1067,7 +1065,7 @@ def _jitnmm_warp_kernel_generator(
 jitn_p.def_numba_kernel(_jitn_numba_kernel_generator)
 jitn_p.def_warp_kernel(_jitn_warp_kernel_generator)
 jitn_p.def_pallas_kernel('gpu', _jitn_pallas_kernel_generator)
-jitn_p.def_tvmffi_kernel('gpu', _jitn_cuda_kernel)
+jitn_p.def_cuda_raw_kernel(_jitn_cuda_kernel)
 jitn_p.def_jvp_rule2(_jitn_jvp_wlow, _jitn_jvp_whigh, None, None)
 jitn_p.def_transpose_rule(_jitn_transpose)
 jitn_p.def_batching_rule(_jitn_batching)
@@ -1477,7 +1475,7 @@ jitnmv : High-level user-facing function wrapper.
 jitnmv_p.def_numba_kernel(_jitnmv_numba_kernel_generator)
 jitnmv_p.def_warp_kernel(_jitnmv_warp_kernel_generator)
 jitnmv_p.def_pallas_kernel('gpu', _jitnmv_pallas_kernel_generator)
-jitnmv_p.def_tvmffi_kernel('gpu', _jitnmv_cuda_kernel)
+jitnmv_p.def_cuda_raw_kernel(_jitnmv_cuda_kernel)
 jitnmv_p.def_jvp_rule2(_jitnmv_jvp_wloc, _jitnmv_jvp_wscale, None, _jitnmv_jvp_v, None)
 jitnmv_p.def_transpose_rule(_jitnmv_transpose_rules)
 jitnmv_p.def_batching_rule(_jitnmv_batching)
@@ -1912,7 +1910,7 @@ jitnmm : High-level user-facing function wrapper.
 jitnmm_p.def_numba_kernel(_jitnmm_numba_kernel_generator)
 jitnmm_p.def_warp_kernel(_jitnmm_warp_kernel_generator)
 jitnmm_p.def_pallas_kernel('gpu', _jitnmm_pallas_kernel_generator)
-jitnmm_p.def_tvmffi_kernel('gpu', _jitnmm_cuda_kernel)
+jitnmm_p.def_cuda_raw_kernel(_jitnmm_cuda_kernel)
 jitnmm_p.def_jvp_rule2(_jitnmm_jvp_wloc, _jitnmm_jvp_wscale, None, _jitnmm_jvp_B, None)
 jitnmm_p.def_transpose_rule(_jitnmm_transpose_rules)
 jitnmm_p.def_batching_rule(_jitnmm_batching)

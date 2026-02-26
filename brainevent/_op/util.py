@@ -16,10 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import functools
-import hashlib
 import importlib.util
-import re
-from pathlib import Path
 from typing import Protocol, Union, Tuple, Sequence
 
 import jax
@@ -28,18 +25,11 @@ from jax import tree_util
 from jax.interpreters import ad
 
 from brainevent._compatible_import import Primitive
-from brainevent._error import TVMFFINotInstalledError, TVMModuleAlreadyRegisteredError
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
-# Try to import Warp - will fail gracefully if not available
-if warp_installed:
-    try:
-        import warp  # pylint: disable=import-error, import-outside-toplevel
-
-        warp.config.quiet = True
-    except:
-        warp_installed = False
+# Cached lazy import, initialized by import_warp() on first use.
+warp = None
 
 __all__ = [
     'defjvp',
@@ -51,6 +41,29 @@ __all__ = [
 ]
 
 _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
+_WARP_INSTALL_ERROR_MESSAGE = (
+    "Warp kernels require the 'warp' package, but it is not installed.\n"
+    "Please install Warp using one of the following methods:\n"
+    "  pip install warp-lang\n"
+    "For more information, visit: https://nvidia.github.io/warp/user_guide/installation.html"
+)
+
+
+def import_warp():
+    """Import warp lazily and configure runtime defaults."""
+    global warp, warp_installed
+    if warp is not None:
+        return warp
+    if not warp_installed:
+        raise ImportError(_WARP_INSTALL_ERROR_MESSAGE)
+    try:
+        import warp as _warp  # pylint: disable=import-error, import-outside-toplevel
+        _warp.config.quiet = True
+    except Exception as exc:
+        warp_installed = False
+        raise ImportError(_WARP_INSTALL_ERROR_MESSAGE) from exc
+    warp = _warp
+    return warp
 
 
 def check_pallas_jax_version():
@@ -104,13 +117,11 @@ def check_warp_installed():
 
         >>> check_warp_installed()  # succeeds silently when warp is installed
     """
-    if not warp_installed:
-        raise RuntimeError(
-            "Warp kernels require the 'warp' package, but it is not installed.\n"
-            "Please install Warp using one of the following methods:\n"
-            "  pip install warp-lang\n"
-            "For more information, visit: https://nvidia.github.io/warp/user_guide/installation.html"
-        )
+    try:
+        import_warp()
+    except ImportError as exc:
+        raise RuntimeError(_WARP_INSTALL_ERROR_MESSAGE) from exc
+
 
 def defjvp(primitive, *jvp_rules):
     """Define per-input JVP rules for a JAX primitive.
@@ -517,40 +528,39 @@ def jaxtype_to_warptype(dtype):
         >>> warp_type = jaxtype_to_warptype(np.float32)
         >>> warp_type  # warp.float32
     """
-    if not warp_installed:
-        raise ImportError('Warp is required to convert JAX dtypes to Warp types.')
+    warp_mod = import_warp()
 
     # float
     if dtype == np.float16:
-        return warp.float16
+        return warp_mod.float16
     elif dtype == np.float32:
-        return warp.float32
+        return warp_mod.float32
     elif dtype == np.float64:
-        return warp.float64
+        return warp_mod.float64
 
     # integer
     elif dtype == np.int8:
-        return warp.int8
+        return warp_mod.int8
     elif dtype == np.int16:
-        return warp.int16
+        return warp_mod.int16
     elif dtype == np.int32:
-        return warp.int32
+        return warp_mod.int32
     elif dtype == np.int64:
-        return warp.int64
+        return warp_mod.int64
 
     # unsigned integer
     elif dtype == np.uint8:
-        return warp.uint8
+        return warp_mod.uint8
     elif dtype == np.uint16:
-        return warp.uint16
+        return warp_mod.uint16
     elif dtype == np.uint32:
-        return warp.uint32
+        return warp_mod.uint32
     elif dtype == np.uint64:
-        return warp.uint64
+        return warp_mod.uint64
 
     # boolean
     elif dtype == np.bool_:
-        return warp.bool
+        return warp_mod.bool
     else:
         raise ValueError(f"Warp does not support computations with dtype: {dtype}")
 
@@ -605,5 +615,6 @@ def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct):
         >>> info = jax.ShapeDtypeStruct(shape=(32, 32), dtype=np.float32)
         >>> warp_arr_type = jaxinfo_to_warpinfo(info)
     """
+    warp_mod = import_warp()
     dtype = jaxtype_to_warptype(jax_info.dtype)
-    return warp.array(dtype=dtype, ndim=jax_info.ndim)
+    return warp_mod.array(dtype=dtype, ndim=jax_info.ndim)

@@ -239,7 +239,7 @@ class TestCUDAReduceDiag:
         rhs = jr.normal(k2, (B, T, N))
 
         h_seq = _sequential_reduce_diag_v1(jac, rhs)
-        h_cuda = parallel_reduce_diag(jac, rhs, backend='tvmffi')
+        h_cuda = parallel_reduce_diag(jac, rhs, backend='cuda_raw')
 
         assert jnp.allclose(h_seq, h_cuda, atol=1e-4, rtol=1e-4), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_seq - h_cuda))}"
@@ -253,7 +253,7 @@ class TestCUDAReduceDiag:
         rhs = jr.normal(k2, (B, T, N))
 
         h_jax = parallel_reduce_diag(jac, rhs, backend='jax_raw')
-        h_cuda = parallel_reduce_diag(jac, rhs, backend='tvmffi')
+        h_cuda = parallel_reduce_diag(jac, rhs, backend='cuda_raw')
 
         assert jnp.allclose(h_jax, h_cuda, atol=1e-4, rtol=1e-4), \
             f"Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
@@ -268,7 +268,7 @@ class TestCUDAReduceDiag:
         rhs = jr.normal(k2, (B, T, N))
 
         h_seq = _sequential_reduce_diag_v1(jac, rhs)
-        h_cuda = parallel_reduce_diag(jac, rhs, backend='tvmffi')
+        h_cuda = parallel_reduce_diag(jac, rhs, backend='cuda_raw')
 
         assert jnp.allclose(h_seq, h_cuda, atol=1e-4, rtol=1e-4), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_seq - h_cuda))}"
@@ -279,7 +279,7 @@ class TestCUDAReduceDiag:
         jac = jnp.zeros((B, T, N))
         rhs = jnp.ones((B, T, N))
 
-        h = parallel_reduce_diag(jac, rhs, backend='tvmffi')
+        h = parallel_reduce_diag(jac, rhs, backend='cuda_raw')
         assert jnp.allclose(h, rhs)
 
     @pytest.mark.parametrize('T', [4096, 8192])
@@ -292,7 +292,7 @@ class TestCUDAReduceDiag:
         rhs = jr.normal(k2, (B, T, N))
 
         h_jax = parallel_reduce_diag(jac, rhs, backend='jax_raw')
-        h_cuda = parallel_reduce_diag(jac, rhs, backend='tvmffi')
+        h_cuda = parallel_reduce_diag(jac, rhs, backend='cuda_raw')
 
         assert jnp.allclose(h_jax, h_cuda, atol=1e-3, rtol=1e-3), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
@@ -310,7 +310,7 @@ class TestCUDAReduceBlock2:
         rhs = jr.normal(k2, (B, T, N, K))
 
         h_seq = _sequential_reduce_block2(jac, rhs)
-        h_cuda = parallel_reduce_block_diag(jac, rhs, backend='tvmffi')
+        h_cuda = parallel_reduce_block_diag(jac, rhs, backend='cuda_raw')
 
         assert jnp.allclose(h_seq, h_cuda, atol=1e-4, rtol=1e-4), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_seq - h_cuda))}"
@@ -324,7 +324,7 @@ class TestCUDAReduceBlock2:
         rhs = jr.normal(k2, (B, T, N, K))
 
         h_jax = parallel_reduce_block_diag(jac, rhs, backend='jax_raw')
-        h_cuda = parallel_reduce_block_diag(jac, rhs, backend='tvmffi')
+        h_cuda = parallel_reduce_block_diag(jac, rhs, backend='cuda_raw')
 
         assert jnp.allclose(h_jax, h_cuda, atol=1e-4, rtol=1e-4), \
             f"Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
@@ -339,7 +339,7 @@ class TestCUDAReduceBlock2:
         rhs = jr.normal(k2, (B, T, N, K))
 
         h_seq = _sequential_reduce_block2(jac, rhs)
-        h_cuda = parallel_reduce_block_diag(jac, rhs, backend='tvmffi')
+        h_cuda = parallel_reduce_block_diag(jac, rhs, backend='cuda_raw')
 
         assert jnp.allclose(h_seq, h_cuda, atol=1e-4, rtol=1e-4), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_seq - h_cuda))}"
@@ -354,7 +354,7 @@ class TestCUDAReduceBlock2:
         rhs = jr.normal(k2, (B, T, N, K))
 
         h_jax = parallel_reduce_block_diag(jac, rhs, backend='jax_raw')
-        h_cuda = parallel_reduce_block_diag(jac, rhs, backend='tvmffi')
+        h_cuda = parallel_reduce_block_diag(jac, rhs, backend='cuda_raw')
 
         assert jnp.allclose(h_jax, h_cuda, atol=1e-3, rtol=1e-3), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"

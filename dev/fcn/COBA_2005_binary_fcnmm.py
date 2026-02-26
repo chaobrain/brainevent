@@ -47,7 +47,7 @@ import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
 
 DEFAULT_SCALES = (1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100)
-DEFAULT_BACKENDS = ('tvmffi', 'pallas', 'jax_raw')
+DEFAULT_BACKENDS = ('cuda_raw', 'pallas', 'jax_raw')
 DEFAULT_CONNS = ('post', 'pre')
 
 

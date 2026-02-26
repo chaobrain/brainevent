@@ -10,7 +10,7 @@ Operation:
 
 This benchmark compares:
   - pallas:   JAX Pallas/Triton kernel (event-driven, fori_loop-based)
-  - tvmffi:   Custom CUDA kernel (event-driven, 32-column tiled, coalesced)
+  - cuda_raw:   Custom CUDA kernel (event-driven, 32-column tiled, coalesced)
 
 The CUDA kernel's advantage is largest when:
   - Spike density is low (<= 1%) — most column tiles exit after the shared-

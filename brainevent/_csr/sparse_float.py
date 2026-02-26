@@ -23,11 +23,12 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
+from brainevent._op._pipeline import load_cuda_file
 from .float import csrmv, csrmm
 
 __all__ = [
@@ -739,10 +740,9 @@ def _spfloat_csrmv_cuda_kernel(
             f"or select a different backend."
         )
 
-    register_tvm_cuda_from_file(
-        module='csr_sparse_float_csrmv',
-        source=Path(__file__).parent.joinpath('sparse_float_csrmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_csrmv.cu'),
+        name='csr_sparse_float_csrmv',
     )
 
     out_info = kwargs['outs']
@@ -1027,7 +1027,7 @@ spfloat_csrmv : High-level user-facing function wrapper.
 spfloat_csrmv_p.def_numba_kernel(_sparse_float_csrmv_numba_kernel)
 spfloat_csrmv_p.def_pallas_kernel('gpu', _sparse_float_csrmv_pallas_kernel)
 spfloat_csrmv_p.def_pallas_kernel('tpu', _sparse_float_csrmv_pallas_kernel)
-spfloat_csrmv_p.def_tvmffi_kernel('gpu', _spfloat_csrmv_cuda_kernel)
+spfloat_csrmv_p.def_cuda_raw_kernel(_spfloat_csrmv_cuda_kernel)
 spfloat_csrmv_p.def_kernel('jax_raw', 'cpu', _spfloat_csrmv_jax_kernel)
 spfloat_csrmv_p.def_kernel('jax_raw', 'gpu', _spfloat_csrmv_jax_kernel)
 spfloat_csrmv_p.def_kernel('jax_raw', 'tpu', _spfloat_csrmv_jax_kernel)
@@ -1380,10 +1380,9 @@ def _spfloat_csrmm_cuda_kernel(
             f"or select a different backend."
         )
 
-    register_tvm_cuda_from_file(
-        module='csr_sparse_float_csrmm',
-        source=Path(__file__).parent.joinpath('sparse_float_csrmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_csrmm.cu'),
+        name='csr_sparse_float_csrmm',
     )
 
     out_info = kwargs['outs']
@@ -1758,7 +1757,7 @@ spfloat_csrmm : High-level user-facing function wrapper.
 spfloat_csrmm_p.def_numba_kernel(_sparse_float_csrmm_numba_kernel)
 spfloat_csrmm_p.def_pallas_kernel('gpu', _sparse_float_csrmm_pallas_kernel)
 spfloat_csrmm_p.def_pallas_kernel('tpu', _sparse_float_csrmm_pallas_kernel)
-spfloat_csrmm_p.def_tvmffi_kernel('gpu', _spfloat_csrmm_cuda_kernel)
+spfloat_csrmm_p.def_cuda_raw_kernel(_spfloat_csrmm_cuda_kernel)
 spfloat_csrmm_p.def_kernel('jax_raw', 'cpu', _spfloat_csrmm_jax_kernel)
 spfloat_csrmm_p.def_kernel('jax_raw', 'gpu', _spfloat_csrmm_jax_kernel)
 spfloat_csrmm_p.def_kernel('jax_raw', 'tpu', _spfloat_csrmm_jax_kernel)

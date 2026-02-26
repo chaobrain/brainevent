@@ -26,9 +26,10 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     "jitu",
@@ -892,10 +893,9 @@ def _jitu_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='float_jitu',
-        source=Path(__file__).parent.joinpath('float_jitu.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitu.cu'),
+        name='float_jitu',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     variant = 'corder_true' if corder else 'corder_false'
@@ -1261,7 +1261,7 @@ def _jitumm_warp_kernel_generator(
 jitu_p.def_numba_kernel(_jitu_numba_kernel_generator)
 jitu_p.def_warp_kernel(_jitu_warp_kernel_generator)
 jitu_p.def_pallas_kernel('gpu', _jitu_pallas_kernel_generator)
-jitu_p.def_tvmffi_kernel('gpu', _jitu_cuda_kernel)
+jitu_p.def_cuda_raw_kernel(_jitu_cuda_kernel)
 jitu_p.def_jvp_rule2(_jitu_jvp_wlow, _jitu_jvp_whigh, None, None)
 jitu_p.def_transpose_rule(_jitu_transpose)
 jitu_p.def_batching_rule(_jitu_batching)
@@ -1853,10 +1853,9 @@ def _jitumv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='float_jitumv',
-        source=Path(__file__).parent.joinpath('float_jitumv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitumv.cu'),
+        name='float_jitumv',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
@@ -1897,7 +1896,7 @@ jitumv : High-level user-facing function wrapper.
 jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
 jitumv_p.def_warp_kernel(_jitumv_warp_kernel_generator)
 jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
-jitumv_p.def_tvmffi_kernel('gpu', _jitumv_cuda_kernel)
+jitumv_p.def_cuda_raw_kernel(_jitumv_cuda_kernel)
 jitumv_p.def_jvp_rule2(_jitumv_jvp_wlow, _jitumv_jvp_whigh, None, _jitumv_jvp_v, None)
 jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
 jitumv_p.def_batching_rule(_jitumv_batching)
@@ -2546,10 +2545,9 @@ def _jitumm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='float_jitumm',
-        source=Path(__file__).parent.joinpath('float_jitumm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitumm.cu'),
+        name='float_jitumm',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
@@ -2590,7 +2588,7 @@ jitumm : High-level user-facing function wrapper.
 jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
 jitumm_p.def_warp_kernel(_jitumm_warp_kernel_generator)
 jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)
-jitumm_p.def_tvmffi_kernel('gpu', _jitumm_cuda_kernel)
+jitumm_p.def_cuda_raw_kernel(_jitumm_cuda_kernel)
 jitumm_p.def_jvp_rule2(_jitumm_jvp_wlow, _jitumm_jvp_whigh, None, _jitumm_jvp_B, None)
 jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
 jitumm_p.def_batching_rule(_jitumm_batching)

@@ -47,6 +47,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 #include "curand_common.h"
 
 // #########################################################################
@@ -122,15 +123,15 @@ DEFINE_JITSMV_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomi
 DEFINE_JITSMV_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomic_add_f16)
 DEFINE_JITSMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomic_add_bf16)
 
-// ---- TVM FFI: jitsmv gather ----
+// ---- CUDA: jitsmv gather ----
 
 #define FFI_JITSMV_GATHER(SUFFIX, WEIGHT_C_T)                \
 void jitsmv_gather##SUFFIX(                                  \
-    tvm::ffi::TensorView weight,                             \
-    tvm::ffi::TensorView clen,                               \
-    tvm::ffi::TensorView seed,                               \
-    tvm::ffi::TensorView vector,                             \
-    tvm::ffi::TensorView output,                             \
+    const BE::Tensor weight,                                 \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor vector,                                 \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -150,24 +151,24 @@ void jitsmv_gather##SUFFIX(                                  \
     );                                                       \
 }
 
-// @tvm_ffi jitsmv_gather_f32
+// @BE jitsmv_gather_f32
 FFI_JITSMV_GATHER(_f32, float)
-// @tvm_ffi jitsmv_gather_f64
+// @BE jitsmv_gather_f64
 FFI_JITSMV_GATHER(_f64, double)
-// @tvm_ffi jitsmv_gather_f16
+// @BE jitsmv_gather_f16
 FFI_JITSMV_GATHER(_f16, __half)
-// @tvm_ffi jitsmv_gather_bf16
+// @BE jitsmv_gather_bf16
 FFI_JITSMV_GATHER(_bf16, __nv_bfloat16)
 
-// ---- TVM FFI: jitsmv scatter ----
+// ---- CUDA: jitsmv scatter ----
 
 #define FFI_JITSMV_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitsmv_scatter##SUFFIX(                                 \
-    tvm::ffi::TensorView weight,                             \
-    tvm::ffi::TensorView clen,                               \
-    tvm::ffi::TensorView seed,                               \
-    tvm::ffi::TensorView vector,                             \
-    tvm::ffi::TensorView output,                             \
+    const BE::Tensor weight,                                 \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor vector,                                 \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -187,11 +188,11 @@ void jitsmv_scatter##SUFFIX(                                 \
     );                                                       \
 }
 
-// @tvm_ffi jitsmv_scatter_f32
+// @BE jitsmv_scatter_f32
 FFI_JITSMV_SCATTER(_f32, float)
-// @tvm_ffi jitsmv_scatter_f64
+// @BE jitsmv_scatter_f64
 FFI_JITSMV_SCATTER(_f64, double)
-// @tvm_ffi jitsmv_scatter_f16
+// @BE jitsmv_scatter_f16
 FFI_JITSMV_SCATTER(_f16, __half)
-// @tvm_ffi jitsmv_scatter_bf16
+// @BE jitsmv_scatter_bf16
 FFI_JITSMV_SCATTER(_bf16, __nv_bfloat16)

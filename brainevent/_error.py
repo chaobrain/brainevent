@@ -17,18 +17,26 @@
 
 
 __all__ = [
+    'BrainEventError',
     'MathError',
     'KernelNotAvailableError',
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
     'KernelExecutionError',
+    'KernelError',
+    'KernelToolchainError',
+    'CompilationError',
+    'KernelRegistrationError',
     'BenchmarkDataFnNotProvidedError',
-    'TVMFFINotInstalledError',
-    'TVMModuleAlreadyRegisteredError',
+    'CUDANotInstalledError',
 ]
 
 
-class MathError(Exception):
+class BrainEventError(Exception):
+    pass
+
+
+class MathError(BrainEventError):
     """Base exception for mathematical errors in brainevent operations.
 
     Raised when a mathematical operation fails due to invalid inputs,
@@ -62,7 +70,12 @@ class MathError(Exception):
     __module__ = 'brainevent'
 
 
-class KernelNotAvailableError(Exception):
+class KernelError(BrainEventError):
+    """Base exception for brainevent."""
+    pass
+
+
+class KernelNotAvailableError(KernelError):
     """Raised when a requested kernel backend is not installed or is version-incompatible.
 
     This exception signals that a specific backend (e.g., Warp, Pallas,
@@ -101,7 +114,7 @@ class KernelNotAvailableError(Exception):
     __module__ = 'brainevent'
 
 
-class KernelCompilationError(Exception):
+class KernelCompilationError(KernelError):
     """Raised when a kernel fails to compile on the target backend.
 
     This exception indicates that the backend is available but the
@@ -137,7 +150,7 @@ class KernelCompilationError(Exception):
     __module__ = 'brainevent'
 
 
-class KernelFallbackExhaustedError(Exception):
+class KernelFallbackExhaustedError(KernelError):
     """Raised when all fallback kernel backends have been exhausted.
 
     This exception is raised by :class:`~brainevent._op.main.XLACustomKernel`
@@ -175,7 +188,7 @@ class KernelFallbackExhaustedError(Exception):
     __module__ = 'brainevent'
 
 
-class KernelExecutionError(Exception):
+class KernelExecutionError(KernelError):
     """Raised when a compiled kernel fails during execution at runtime.
 
     This exception wraps runtime errors that occur after a kernel has
@@ -216,69 +229,36 @@ class KernelExecutionError(Exception):
     __module__ = 'brainevent'
 
 
-class TVMFFINotInstalledError(Exception):
-    """Raised when a TVM FFI operation is requested but the package is not installed.
+class CUDANotInstalledError(KernelError):
+    """Raised when a CUDA operation is requested but the package is not installed.
 
-    This exception is raised by :func:`~brainevent._op.util.register_tvm_cuda_kernels`
-    when ``jax_tvm_ffi`` or ``tvm_ffi.cpp`` is not available in the current
+    This exception is raised by :func:`~brainevent._op.util.load_cuda_inline`
+    when ``kernix`` or ``cuda.cpp`` is not available in the current
     environment.
 
     Parameters
     ----------
     message : str
-        A human-readable description indicating that TVM FFI is missing
+        A human-readable description indicating that CUDA is missing
         and how to install it.
 
     See Also
     --------
-    TVMModuleAlreadyRegisteredError : Raised when the same module name is
-        registered more than once.
     KernelNotAvailableError : General exception for unavailable backends.
 
     Examples
     --------
     .. code-block:: python
 
-        >>> from brainevent._error import TVMFFINotInstalledError
-        >>> raise TVMFFINotInstalledError(
-        ...     "jax_tvm_ffi is not installed. Install with: pip install jax-tvm-ffi"
+        >>> from brainevent._error import CUDANotInstalledError
+        >>> raise CUDANotInstalledError(
+        ...     "kernix is not installed. Install with: pip install kernix"
         ... )  # doctest: +SKIP
     """
     __module__ = 'brainevent'
 
 
-class TVMModuleAlreadyRegisteredError(Exception):
-    """Raised when a TVM CUDA module name is registered more than once.
-
-    :func:`~brainevent._op.util.register_tvm_cuda_kernels` maintains a
-    per-process cache of compiled module names.  Attempting to register
-    the same *module* name a second time raises this exception so that
-    accidental double-registration is caught early rather than silently
-    overwriting existing kernels.
-
-    Parameters
-    ----------
-    message : str
-        A human-readable description including the duplicate module name.
-
-    See Also
-    --------
-    TVMFFINotInstalledError : Raised when TVM FFI is not installed.
-    register_tvm_cuda_kernels : The function that raises this exception.
-
-    Examples
-    --------
-    .. code-block:: python
-
-        >>> from brainevent._error import TVMModuleAlreadyRegisteredError
-        >>> raise TVMModuleAlreadyRegisteredError(
-        ...     "TVM CUDA module 'my_kernels' has already been registered."
-        ... )  # doctest: +SKIP
-    """
-    __module__ = 'brainevent'
-
-
-class BenchmarkDataFnNotProvidedError(Exception):
+class BenchmarkDataFnNotProvidedError(BrainEventError):
     """Raised when ``benchmark()`` is called but no data function has been registered.
 
     :meth:`~brainevent._op.main.XLACustomKernel.benchmark` requires a
@@ -311,3 +291,28 @@ class BenchmarkDataFnNotProvidedError(Exception):
         ... )  # doctest: +SKIP
     """
     __module__ = 'brainevent'
+
+
+class KernelToolchainError(KernelError):
+    """Compilation toolchain missing or incompatible."""
+    pass
+
+
+class CompilationError(KernelError):
+    """CUDA or C++ compilation failed."""
+
+    def __init__(self, message: str, compiler_output: str = "",
+                 command: str = ""):
+        self.compiler_output = compiler_output
+        self.command = command
+        full_msg = message
+        if command:
+            full_msg += f"\n\nCommand:\n  {command}"
+        if compiler_output:
+            full_msg += f"\n\nCompiler output:\n{compiler_output}"
+        super().__init__(full_msg)
+
+
+class KernelRegistrationError(KernelError):
+    """JAX FFI target registration failed."""
+    pass

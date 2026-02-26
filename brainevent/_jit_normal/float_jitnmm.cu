@@ -20,7 +20,7 @@
  * Computes Y = M @ B where M[i,j] = Normal(w_loc, w_scale) * Bernoulli(prob).
  * The matrix M is never materialised; weights are generated on the fly.
  *
- * TVM FFI entry points
+ * CUDA entry points
  * --------------------
  * jitnmm_gather_{f32,f64,f16,bf16}  — gather (corder=True):  one thread per output row i
  * jitnmm_scatter_{f32,f64,f16,bf16} — scatter (corder=False): one thread per input row j
@@ -43,6 +43,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 #include "curand_common.h"
 
 // #########################################################################
@@ -142,12 +143,12 @@ DEFINE_JITNMM_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, curan
 
 #define FFI_JITNMM_GATHER(SUFFIX, WEIGHT_C_T)                \
 void jitnmm_gather##SUFFIX(                                  \
-    tvm::ffi::TensorView w_loc,                              \
-    tvm::ffi::TensorView w_scale,                            \
-    tvm::ffi::TensorView clen,                               \
-    tvm::ffi::TensorView seed,                               \
-    tvm::ffi::TensorView B,                                  \
-    tvm::ffi::TensorView output,                             \
+    const BE::Tensor w_loc,                                  \
+    const BE::Tensor w_scale,                                \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor B,                                      \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -169,23 +170,23 @@ void jitnmm_gather##SUFFIX(                                  \
     );                                                       \
 }
 
-// @tvm_ffi jitnmm_gather_f32
+// @BE jitnmm_gather_f32
 FFI_JITNMM_GATHER(_f32, float)
-// @tvm_ffi jitnmm_gather_f64
+// @BE jitnmm_gather_f64
 FFI_JITNMM_GATHER(_f64, double)
-// @tvm_ffi jitnmm_gather_f16
+// @BE jitnmm_gather_f16
 FFI_JITNMM_GATHER(_f16, __half)
-// @tvm_ffi jitnmm_gather_bf16
+// @BE jitnmm_gather_bf16
 FFI_JITNMM_GATHER(_bf16, __nv_bfloat16)
 
 #define FFI_JITNMM_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitnmm_scatter##SUFFIX(                                 \
-    tvm::ffi::TensorView w_loc,                              \
-    tvm::ffi::TensorView w_scale,                            \
-    tvm::ffi::TensorView clen,                               \
-    tvm::ffi::TensorView seed,                               \
-    tvm::ffi::TensorView B,                                  \
-    tvm::ffi::TensorView output,                             \
+    const BE::Tensor w_loc,                                  \
+    const BE::Tensor w_scale,                                \
+    const BE::Tensor clen,                                   \
+    const BE::Tensor seed,                                   \
+    const BE::Tensor B,                                      \
+    BE::Tensor output,                                       \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -207,11 +208,11 @@ void jitnmm_scatter##SUFFIX(                                 \
     );                                                       \
 }
 
-// @tvm_ffi jitnmm_scatter_f32
+// @BE jitnmm_scatter_f32
 FFI_JITNMM_SCATTER(_f32, float)
-// @tvm_ffi jitnmm_scatter_f64
+// @BE jitnmm_scatter_f64
 FFI_JITNMM_SCATTER(_f64, double)
-// @tvm_ffi jitnmm_scatter_f16
+// @BE jitnmm_scatter_f16
 FFI_JITNMM_SCATTER(_f16, __half)
-// @tvm_ffi jitnmm_scatter_bf16
+// @BE jitnmm_scatter_bf16
 FFI_JITNMM_SCATTER(_bf16, __nv_bfloat16)

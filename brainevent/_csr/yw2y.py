@@ -22,9 +22,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import numba_kernel, XLACustomKernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'csrmv_yw2y',
@@ -406,10 +407,9 @@ def _csrmv_yw2y_cuda_kernel(
     w_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
-    register_tvm_cuda_from_file(
-        module='csrmv_yw2y',
-        source=Path(__file__).parent.joinpath('yw2y_csrmv_yw2y.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('yw2y_csrmv_yw2y.cu'),
+        name='csrmv_yw2y',
     )
 
     out_info = kwargs['outs']
@@ -585,7 +585,7 @@ csrmv_yw2y : High-level user-facing function wrapper.
 csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
 csrmv_yw2y_p.def_warp_kernel(_csrmv_yw2y_warp_kernel_generator)
 csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
-csrmv_yw2y_p.def_tvmffi_kernel('gpu', _csrmv_yw2y_cuda_kernel)
+csrmv_yw2y_p.def_cuda_raw_kernel(_csrmv_yw2y_cuda_kernel)
 csrmv_yw2y_p.def_kernel('jax_raw', 'cpu', _csrmv_yw2y_jax_kernel)
 csrmv_yw2y_p.def_kernel('jax_raw', 'gpu', _csrmv_yw2y_jax_kernel)
 csrmv_yw2y_p.def_kernel('jax_raw', 'tpu', _csrmv_yw2y_jax_kernel)

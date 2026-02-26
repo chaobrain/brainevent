@@ -42,7 +42,7 @@
  * Grid: (hidden_dim, batch_size), Block: (threads_per_block).
  * Each thread handles CHUNK_SIZE consecutive timesteps.
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   fused_fwd_gru_diag_f32(A, Bxpb, output, stream)
  *   fused_fwd_gru_diag_f64(A, Bxpb, output, stream)
  *   fused_bwd_gru_diag_f32(grad, h, A, Bxpb, dl_dh, stream)
@@ -51,6 +51,7 @@
 
 #include <cuda_runtime.h>
 #include <cstdint>
+#include "brainevent/common.h"
 
 #define THREADS_PER_WARP 32
 #define THREADS_PER_BLOCK_GRU 1024
@@ -460,14 +461,14 @@ DEFINE_FUSED_BWD_GRU(_f32, float, 4)
 DEFINE_FUSED_BWD_GRU(_f64, double, 1)
 
 // ============================================================================
-// TVM FFI entry points
+// CUDA entry points
 // ============================================================================
 
-// @tvm_ffi fused_fwd_gru_diag_f32
+// @BE fused_fwd_gru_diag_f32
 void fused_fwd_gru_diag_f32(
-    tvm::ffi::TensorView A_tv,
-    tvm::ffi::TensorView Bxpb_tv,
-    tvm::ffi::TensorView output_tv,
+    const BE::Tensor A_tv,
+    const BE::Tensor Bxpb_tv,
+    BE::Tensor output_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
@@ -493,11 +494,11 @@ void fused_fwd_gru_diag_f32(
         max_its, omega);
 }
 
-// @tvm_ffi fused_fwd_gru_diag_f64
+// @BE fused_fwd_gru_diag_f64
 void fused_fwd_gru_diag_f64(
-    tvm::ffi::TensorView A_tv,
-    tvm::ffi::TensorView Bxpb_tv,
-    tvm::ffi::TensorView output_tv,
+    const BE::Tensor A_tv,
+    const BE::Tensor Bxpb_tv,
+    BE::Tensor output_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
@@ -523,13 +524,13 @@ void fused_fwd_gru_diag_f64(
         max_its, omega);
 }
 
-// @tvm_ffi fused_bwd_gru_diag_f32
+// @BE fused_bwd_gru_diag_f32
 void fused_bwd_gru_diag_f32(
-    tvm::ffi::TensorView grad_tv,
-    tvm::ffi::TensorView h_tv,
-    tvm::ffi::TensorView A_tv,
-    tvm::ffi::TensorView Bxpb_tv,
-    tvm::ffi::TensorView dl_dh_tv,
+    const BE::Tensor grad_tv,
+    const BE::Tensor h_tv,
+    const BE::Tensor A_tv,
+    const BE::Tensor Bxpb_tv,
+    const BE::Tensor dl_dh_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
@@ -554,13 +555,13 @@ void fused_bwd_gru_diag_f32(
         seq_len, hidden_dim, batch_size, max_its, omega);
 }
 
-// @tvm_ffi fused_bwd_gru_diag_f64
+// @BE fused_bwd_gru_diag_f64
 void fused_bwd_gru_diag_f64(
-    tvm::ffi::TensorView grad_tv,
-    tvm::ffi::TensorView h_tv,
-    tvm::ffi::TensorView A_tv,
-    tvm::ffi::TensorView Bxpb_tv,
-    tvm::ffi::TensorView dl_dh_tv,
+    const BE::Tensor grad_tv,
+    const BE::Tensor h_tv,
+    const BE::Tensor A_tv,
+    const BE::Tensor Bxpb_tv,
+    const BE::Tensor dl_dh_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);

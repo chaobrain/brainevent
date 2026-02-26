@@ -359,6 +359,22 @@ See also the ecosystem
 .. toctree::
    :hidden:
    :maxdepth: 2
+   :caption: kernix — CUDA/C++ Kernels
+
+   kernix/index.rst
+
+
+.. toctree::
+   :hidden:
+   :maxdepth: 1
+   :caption: FAQ
+
+   FQA.rst
+
+
+.. toctree::
+   :hidden:
+   :maxdepth: 2
    :caption: API Reference
 
    apis/events.rst

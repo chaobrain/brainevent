@@ -8,7 +8,7 @@ modes) across problem sizes and spike densities.
 This benchmark compares:
   - jax_raw:  standard ``jnp.matmul`` (cuBLAS GEMV, no event-driven skip)
   - pallas:   Pallas Triton kernel (event-driven, fori_loop-based)
-  - tvmffi:   Custom CUDA kernel (event-driven, hand-tuned)
+  - cuda_raw:   Custom CUDA kernel (event-driven, hand-tuned)
 
 The CUDA kernel's advantage is largest when spike density is low (<10%)
 and the matrix dimensions are moderate to large (>=1000).
@@ -128,7 +128,7 @@ def _measure_dispatch_overhead(n_warmup=50, n_runs=500):
     w_tiny = jax.device_put(jnp.ones((4, 4), jnp.float32), gpu).block_until_ready()
     s_tiny = jax.device_put(jnp.ones(4, jnp.bool_), gpu).block_until_ready()
     overheads = {}
-    for backend in ['jax_raw', 'tvmffi']:
+    for backend in ['jax_raw', 'cuda_raw']:
         fn = jax.jit(lambda w, s: binary_densemv_p.call(w, s, transpose=False, backend=backend))
         for _ in range(n_warmup):
             fn(w_tiny, s_tiny)[0].block_until_ready()
@@ -187,7 +187,7 @@ def _manual_benchmark(n_warmup=20, n_runs=200):
         (5000, 5000, 0.10, True, jnp.bfloat16),
     ]
 
-    backends = ['jax_raw', 'tvmffi']
+    backends = ['jax_raw', 'cuda_raw']
 
     print("=" * 100)
     print("Manual micro-benchmark (jit-compiled, amortized dispatch)")

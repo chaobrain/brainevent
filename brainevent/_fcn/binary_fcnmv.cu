@@ -30,6 +30,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // ============================================================================
 // FCN Matrix-Vector Multiplication (fcnmv) — Optimized CUDA Kernels
@@ -128,29 +129,7 @@ __global__ void _bg_mr_hetero_kern##SUFFIX(                                     
 }
 
 #define DEFINE_BS_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_warp_homo_kern##SUFFIX(                                                   \
-    const int32_t* __restrict__ indices,                                                      \
-    const SPIKE_T* __restrict__ spikes,                                                       \
-    WEIGHT_T*      __restrict__ output,                                                       \
-    const WEIGHT_T* __restrict__ weights,                                                     \
-    int n_pre, int n_conn                                                                     \
-) {                                                                                           \
-    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                             \
-    int lane_id   = threadIdx.x & 31;                                                         \
-    int num_warps = (gridDim.x * blockDim.x) >> 5;                                            \
-    ACC_T w0 = READ_W(weights[0]);                                                            \
-    for (int row = warp_id; row < n_pre; row += num_warps) {                            \
-        if (!IS_ACTIVE(__ldg(&spikes[row]))) continue;                                  \
-        const int32_t* i_row = indices + (size_t)row * n_conn;                          \
-        for (int k = lane_id; k < n_conn; k += 32) {                                    \
-            int idx = __ldg(&i_row[k]);                                                 \
-            ATOMIC_ADD_W(&output[idx], w0);                                             \
-        }                                                                               \
-    }                                                                                   \
-}
-
-#define DEFINE_BS_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_warp_hetero_kern##SUFFIX(                                                  \
+__global__ void _bs_warp_homo_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                       \
     const SPIKE_T* __restrict__ spikes,                                                        \
     WEIGHT_T*      __restrict__ output,                                                        \
@@ -160,39 +139,42 @@ __global__ void _bs_warp_hetero_kern##SUFFIX(                                   
     int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                              \
     int lane_id   = threadIdx.x & 31;                                                          \
     int num_warps = (gridDim.x * blockDim.x) >> 5;                                             \
+    ACC_T w0 = READ_W(weights[0]);                                                             \
     for (int row = warp_id; row < n_pre; row += num_warps) {                                   \
         if (!IS_ACTIVE(__ldg(&spikes[row]))) continue;                                         \
         const int32_t* i_row = indices + (size_t)row * n_conn;                                 \
-        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                \
         for (int k = lane_id; k < n_conn; k += 32) {                                           \
             int idx = __ldg(&i_row[k]);                                                        \
-            ACC_T wk = READ_W(__ldg(&w_row[k]));                                               \
-            ATOMIC_ADD_W(&output[idx], wk);                                               \
-        }                                                                                 \
-    }                                                                                     \
+            ATOMIC_ADD_W(&output[idx], w0);                                                    \
+        }                                                                                      \
+    }                                                                                          \
+}
+
+#define DEFINE_BS_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_warp_hetero_kern##SUFFIX(                                                    \
+    const int32_t* __restrict__ indices,                                                         \
+    const SPIKE_T* __restrict__ spikes,                                                          \
+    WEIGHT_T*      __restrict__ output,                                                          \
+    const WEIGHT_T* __restrict__ weights,                                                        \
+    int n_pre, int n_conn                                                                        \
+) {                                                                                              \
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                                \
+    int lane_id   = threadIdx.x & 31;                                                            \
+    int num_warps = (gridDim.x * blockDim.x) >> 5;                                               \
+    for (int row = warp_id; row < n_pre; row += num_warps) {                                     \
+        if (!IS_ACTIVE(__ldg(&spikes[row]))) continue;                                           \
+        const int32_t* i_row = indices + (size_t)row * n_conn;                                   \
+        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                  \
+        for (int k = lane_id; k < n_conn; k += 32) {                                             \
+            int idx = __ldg(&i_row[k]);                                                          \
+            ACC_T wk = READ_W(__ldg(&w_row[k]));                                                 \
+            ATOMIC_ADD_W(&output[idx], wk);                                                      \
+        }                                                                                        \
+    }                                                                                            \
 }
 
 #define DEFINE_BS_BASIC_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_basic_homo_kern##SUFFIX(                                                   \
-    const int32_t* __restrict__ indices,                                                       \
-    const SPIKE_T* __restrict__ spikes,                                                        \
-    WEIGHT_T*      __restrict__ output,                                                        \
-    const WEIGHT_T* __restrict__ weights,                                                      \
-    int n_pre, int n_conn                                                                      \
-) {                                                                                            \
-    int row = blockIdx.x;                                                                      \
-    if (row >= n_pre) return;                                                                  \
-    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                               \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                                     \
-    ACC_T w0 = READ_W(weights[0]);                                                             \
-    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                             \
-        int idx = __ldg(&i_row[k]);                                                      \
-        ATOMIC_ADD_W(&output[idx], w0);                                                  \
-    }                                                                                    \
-}
-
-#define DEFINE_BS_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_basic_hetero_kern##SUFFIX(                                                  \
+__global__ void _bs_basic_homo_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                        \
     const SPIKE_T* __restrict__ spikes,                                                         \
     WEIGHT_T*      __restrict__ output,                                                         \
@@ -203,12 +185,31 @@ __global__ void _bs_basic_hetero_kern##SUFFIX(                                  
     if (row >= n_pre) return;                                                                   \
     if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                                \
     const int32_t* i_row = indices + (size_t)row * n_conn;                                      \
-    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                     \
+    ACC_T w0 = READ_W(weights[0]);                                                              \
     for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                                    \
         int idx = __ldg(&i_row[k]);                                                             \
-        ACC_T wk = READ_W(__ldg(&w_row[k]));                                                    \
-        ATOMIC_ADD_W(&output[idx], wk);                                                    \
-    }                                                                                      \
+        ATOMIC_ADD_W(&output[idx], w0);                                                         \
+    }                                                                                           \
+}
+
+#define DEFINE_BS_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_basic_hetero_kern##SUFFIX(                                                    \
+    const int32_t* __restrict__ indices,                                                          \
+    const SPIKE_T* __restrict__ spikes,                                                           \
+    WEIGHT_T*      __restrict__ output,                                                           \
+    const WEIGHT_T* __restrict__ weights,                                                         \
+    int n_pre, int n_conn                                                                         \
+) {                                                                                               \
+    int row = blockIdx.x;                                                                         \
+    if (row >= n_pre) return;                                                                     \
+    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                                  \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                                        \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                       \
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                                      \
+        int idx = __ldg(&i_row[k]);                                                               \
+        ACC_T wk = READ_W(__ldg(&w_row[k]));                                                      \
+        ATOMIC_ADD_W(&output[idx], wk);                                                           \
+    }                                                                                             \
 }
 
 // Instantiations
@@ -288,8 +289,10 @@ DEFINE_BS_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16
 // ---- FFI macro: gather homo warp ----
 #define FFI_BG_HOMO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                       \
 void binary_fcnmv_gather_homo_warp##SUFFIX(                                                   \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                               \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                 \
+    const BE::Tensor weights,                                                                 \
+    const BE::Tensor indices,                                                                 \
+    const BE::Tensor spikes,                                                                  \
+    BE::Tensor output, int64_t stream                                                         \
 ) {                                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                  \
     int n_pre  = static_cast<int>(indices.size(0));                                           \
@@ -304,8 +307,8 @@ void binary_fcnmv_gather_homo_warp##SUFFIX(                                     
 // ---- FFI macro: gather hetero warp ----
 #define FFI_BG_HETERO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                       \
 void binary_fcnmv_gather_hetero_warp##SUFFIX(                                                   \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                 \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int n_pre  = static_cast<int>(indices.size(0));                                             \
@@ -320,8 +323,8 @@ void binary_fcnmv_gather_hetero_warp##SUFFIX(                                   
 // ---- FFI macro: gather homo basic (multi-row) ----
 #define FFI_BG_HOMO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_gather_homo_basic##SUFFIX(                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                 \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int n_pre  = static_cast<int>(indices.size(0));                                             \
@@ -337,8 +340,8 @@ void binary_fcnmv_gather_homo_basic##SUFFIX(                                    
 // ---- FFI macro: gather hetero basic (multi-row) ----
 #define FFI_BG_HETERO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_gather_hetero_basic##SUFFIX(                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                   \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,                                           \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                   \
 ) {                                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
     int n_pre  = static_cast<int>(indices.size(0));                                               \
@@ -354,8 +357,8 @@ void binary_fcnmv_gather_hetero_basic##SUFFIX(                                  
 // ---- FFI macro: scatter homo warp ----
 #define FFI_BS_HOMO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                         \
 void binary_fcnmv_scatter_homo_warp##SUFFIX(                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                 \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int n_pre  = static_cast<int>(indices.size(0));                                             \
@@ -373,8 +376,8 @@ void binary_fcnmv_scatter_homo_warp##SUFFIX(                                    
 // ---- FFI macro: scatter hetero warp ----
 #define FFI_BS_HETERO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                         \
 void binary_fcnmv_scatter_hetero_warp##SUFFIX(                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                   \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,                                           \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                   \
 ) {                                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
     int n_pre  = static_cast<int>(indices.size(0));                                               \
@@ -392,8 +395,8 @@ void binary_fcnmv_scatter_hetero_warp##SUFFIX(                                  
 // ---- FFI macro: scatter homo basic ----
 #define FFI_BS_HOMO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_scatter_homo_basic##SUFFIX(                                                   \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                 \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int n_pre  = static_cast<int>(indices.size(0));                                             \
@@ -410,8 +413,8 @@ void binary_fcnmv_scatter_homo_basic##SUFFIX(                                   
 // ---- FFI macro: scatter hetero basic ----
 #define FFI_BS_HETERO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_scatter_hetero_basic##SUFFIX(                                                   \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                   \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,                                           \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                   \
 ) {                                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
     int n_pre  = static_cast<int>(indices.size(0));                                               \
@@ -427,137 +430,137 @@ void binary_fcnmv_scatter_hetero_basic##SUFFIX(                                 
 
 // SpMV FFI Instantiations
 // ---- float32 ----
-// @tvm_ffi binary_fcnmv_gather_homo_warp_bool_f32
+// @BE binary_fcnmv_gather_homo_warp_bool_f32
 FFI_BG_HOMO_WARP  (_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_bool_f32
+// @BE binary_fcnmv_gather_hetero_warp_bool_f32
 FFI_BG_HETERO_WARP(_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_warp_float_f32
+// @BE binary_fcnmv_gather_homo_warp_float_f32
 FFI_BG_HOMO_WARP  (_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_float_f32
+// @BE binary_fcnmv_gather_hetero_warp_float_f32
 FFI_BG_HETERO_WARP(_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_bool_f32
+// @BE binary_fcnmv_gather_homo_basic_bool_f32
 FFI_BG_HOMO_BASIC (_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_bool_f32
+// @BE binary_fcnmv_gather_hetero_basic_bool_f32
 FFI_BG_HETERO_BASIC(_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_float_f32
+// @BE binary_fcnmv_gather_homo_basic_float_f32
 FFI_BG_HOMO_BASIC (_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_float_f32
+// @BE binary_fcnmv_gather_hetero_basic_float_f32
 FFI_BG_HETERO_BASIC(_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_bool_f32
+// @BE binary_fcnmv_scatter_homo_warp_bool_f32
 FFI_BS_HOMO_WARP  (_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_bool_f32
+// @BE binary_fcnmv_scatter_hetero_warp_bool_f32
 FFI_BS_HETERO_WARP(_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_float_f32
+// @BE binary_fcnmv_scatter_homo_warp_float_f32
 FFI_BS_HOMO_WARP  (_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_float_f32
+// @BE binary_fcnmv_scatter_hetero_warp_float_f32
 FFI_BS_HETERO_WARP(_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_bool_f32
+// @BE binary_fcnmv_scatter_homo_basic_bool_f32
 FFI_BS_HOMO_BASIC (_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_bool_f32
+// @BE binary_fcnmv_scatter_hetero_basic_bool_f32
 FFI_BS_HETERO_BASIC(_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_float_f32
+// @BE binary_fcnmv_scatter_homo_basic_float_f32
 FFI_BS_HOMO_BASIC (_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_float_f32
+// @BE binary_fcnmv_scatter_hetero_basic_float_f32
 FFI_BS_HETERO_BASIC(_float_f32, float, float)
 
 // ---- float64 ----
-// @tvm_ffi binary_fcnmv_gather_homo_warp_bool_f64
+// @BE binary_fcnmv_gather_homo_warp_bool_f64
 FFI_BG_HOMO_WARP  (_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_bool_f64
+// @BE binary_fcnmv_gather_hetero_warp_bool_f64
 FFI_BG_HETERO_WARP(_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_warp_float_f64
+// @BE binary_fcnmv_gather_homo_warp_float_f64
 FFI_BG_HOMO_WARP  (_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_float_f64
+// @BE binary_fcnmv_gather_hetero_warp_float_f64
 FFI_BG_HETERO_WARP(_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_bool_f64
+// @BE binary_fcnmv_gather_homo_basic_bool_f64
 FFI_BG_HOMO_BASIC (_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_bool_f64
+// @BE binary_fcnmv_gather_hetero_basic_bool_f64
 FFI_BG_HETERO_BASIC(_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_float_f64
+// @BE binary_fcnmv_gather_homo_basic_float_f64
 FFI_BG_HOMO_BASIC (_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_float_f64
+// @BE binary_fcnmv_gather_hetero_basic_float_f64
 FFI_BG_HETERO_BASIC(_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_bool_f64
+// @BE binary_fcnmv_scatter_homo_warp_bool_f64
 FFI_BS_HOMO_WARP  (_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_bool_f64
+// @BE binary_fcnmv_scatter_hetero_warp_bool_f64
 FFI_BS_HETERO_WARP(_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_float_f64
+// @BE binary_fcnmv_scatter_homo_warp_float_f64
 FFI_BS_HOMO_WARP  (_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_float_f64
+// @BE binary_fcnmv_scatter_hetero_warp_float_f64
 FFI_BS_HETERO_WARP(_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_bool_f64
+// @BE binary_fcnmv_scatter_homo_basic_bool_f64
 FFI_BS_HOMO_BASIC (_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_bool_f64
+// @BE binary_fcnmv_scatter_hetero_basic_bool_f64
 FFI_BS_HETERO_BASIC(_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_float_f64
+// @BE binary_fcnmv_scatter_homo_basic_float_f64
 FFI_BS_HOMO_BASIC (_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_float_f64
+// @BE binary_fcnmv_scatter_hetero_basic_float_f64
 FFI_BS_HETERO_BASIC(_float_f64, double, double)
 
 // ---- float16 ----
-// @tvm_ffi binary_fcnmv_gather_homo_warp_bool_f16
+// @BE binary_fcnmv_gather_homo_warp_bool_f16
 FFI_BG_HOMO_WARP  (_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_bool_f16
+// @BE binary_fcnmv_gather_hetero_warp_bool_f16
 FFI_BG_HETERO_WARP(_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_warp_float_f16
+// @BE binary_fcnmv_gather_homo_warp_float_f16
 FFI_BG_HOMO_WARP  (_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_float_f16
+// @BE binary_fcnmv_gather_hetero_warp_float_f16
 FFI_BG_HETERO_WARP(_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_bool_f16
+// @BE binary_fcnmv_gather_homo_basic_bool_f16
 FFI_BG_HOMO_BASIC (_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_bool_f16
+// @BE binary_fcnmv_gather_hetero_basic_bool_f16
 FFI_BG_HETERO_BASIC(_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_float_f16
+// @BE binary_fcnmv_gather_homo_basic_float_f16
 FFI_BG_HOMO_BASIC (_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_float_f16
+// @BE binary_fcnmv_gather_hetero_basic_float_f16
 FFI_BG_HETERO_BASIC(_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_bool_f16
+// @BE binary_fcnmv_scatter_homo_warp_bool_f16
 FFI_BS_HOMO_WARP  (_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_bool_f16
+// @BE binary_fcnmv_scatter_hetero_warp_bool_f16
 FFI_BS_HETERO_WARP(_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_float_f16
+// @BE binary_fcnmv_scatter_homo_warp_float_f16
 FFI_BS_HOMO_WARP  (_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_float_f16
+// @BE binary_fcnmv_scatter_hetero_warp_float_f16
 FFI_BS_HETERO_WARP(_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_bool_f16
+// @BE binary_fcnmv_scatter_homo_basic_bool_f16
 FFI_BS_HOMO_BASIC (_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_bool_f16
+// @BE binary_fcnmv_scatter_hetero_basic_bool_f16
 FFI_BS_HETERO_BASIC(_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_float_f16
+// @BE binary_fcnmv_scatter_homo_basic_float_f16
 FFI_BS_HOMO_BASIC (_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_float_f16
+// @BE binary_fcnmv_scatter_hetero_basic_float_f16
 FFI_BS_HETERO_BASIC(_float_f16, __half, __half)
 
 // ---- bfloat16 ----
-// @tvm_ffi binary_fcnmv_gather_homo_warp_bool_bf16
+// @BE binary_fcnmv_gather_homo_warp_bool_bf16
 FFI_BG_HOMO_WARP  (_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_bool_bf16
+// @BE binary_fcnmv_gather_hetero_warp_bool_bf16
 FFI_BG_HETERO_WARP(_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_warp_float_bf16
+// @BE binary_fcnmv_gather_homo_warp_float_bf16
 FFI_BG_HOMO_WARP  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_float_bf16
+// @BE binary_fcnmv_gather_hetero_warp_float_bf16
 FFI_BG_HETERO_WARP(_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_bool_bf16
+// @BE binary_fcnmv_gather_homo_basic_bool_bf16
 FFI_BG_HOMO_BASIC (_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_bool_bf16
+// @BE binary_fcnmv_gather_hetero_basic_bool_bf16
 FFI_BG_HETERO_BASIC(_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_float_bf16
+// @BE binary_fcnmv_gather_homo_basic_float_bf16
 FFI_BG_HOMO_BASIC (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_float_bf16
+// @BE binary_fcnmv_gather_hetero_basic_float_bf16
 FFI_BG_HETERO_BASIC(_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_bool_bf16
+// @BE binary_fcnmv_scatter_homo_warp_bool_bf16
 FFI_BS_HOMO_WARP  (_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_bool_bf16
+// @BE binary_fcnmv_scatter_hetero_warp_bool_bf16
 FFI_BS_HETERO_WARP(_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_float_bf16
+// @BE binary_fcnmv_scatter_homo_warp_float_bf16
 FFI_BS_HOMO_WARP  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_float_bf16
+// @BE binary_fcnmv_scatter_hetero_warp_float_bf16
 FFI_BS_HETERO_WARP(_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_bool_bf16
+// @BE binary_fcnmv_scatter_homo_basic_bool_bf16
 FFI_BS_HOMO_BASIC (_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_bool_bf16
+// @BE binary_fcnmv_scatter_hetero_basic_bool_bf16
 FFI_BS_HETERO_BASIC(_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_float_bf16
+// @BE binary_fcnmv_scatter_homo_basic_float_bf16
 FFI_BS_HOMO_BASIC (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_float_bf16
+// @BE binary_fcnmv_scatter_hetero_basic_float_bf16
 FFI_BS_HETERO_BASIC(_float_bf16, __nv_bfloat16, __nv_bfloat16)

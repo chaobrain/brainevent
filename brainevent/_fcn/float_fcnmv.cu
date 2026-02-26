@@ -22,6 +22,7 @@
  * 1. Sparse Matrix-Vector Product (SpMV): fcnmv
  */
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // ============================================================================
 // FCN Matrix-Vector Multiplication (fcnmv)
@@ -132,92 +133,92 @@ __global__ void _gather_basic_hetero_kern##SUFFIX(                              
 }
 
 #define DEFINE_SCATTER_BASIC_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _scatter_basic_homo_kern##SUFFIX(                               \
-    const int32_t* __restrict__ indices,                                        \
-    const WEIGHT_T* __restrict__ vector,                                        \
-    WEIGHT_T*       __restrict__ output,                                        \
-    const WEIGHT_T* __restrict__ weights,                                       \
-    int n_pre, int n_conn                                                       \
-) {                                                                             \
-    int row = blockIdx.x;                                                       \
-    if (row >= n_pre) return;                                                   \
-    ACC_T v = READ_W(__ldg(&vector[row]));                                      \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                      \
-    ACC_T w0 = READ_W(__ldg(&weights[0]));                                      \
-    ACC_T wv = w0 * v;                                                          \
-    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                    \
-        int32_t idx = __ldg(&i_row[k]);                                         \
-        ATOMIC_ADD_W(&output[idx], wv);                                         \
-    }                                                                           \
-}
-
-#define DEFINE_SCATTER_BASIC_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _scatter_basic_hetero_kern##SUFFIX(                               \
-    const int32_t* __restrict__ indices,                                          \
-    const WEIGHT_T* __restrict__ vector,                                          \
-    WEIGHT_T*       __restrict__ output,                                          \
-    const WEIGHT_T* __restrict__ weights,                                         \
-    int n_pre, int n_conn                                                         \
-) {                                                                               \
-    int row = blockIdx.x;                                                         \
-    if (row >= n_pre) return;                                                     \
-    ACC_T v = READ_W(__ldg(&vector[row]));                                        \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                        \
-    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                       \
-    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                      \
-        int32_t idx = __ldg(&i_row[k]);                                           \
-        ACC_T wk = READ_W(__ldg(&w_row[k]));                                      \
-        ATOMIC_ADD_W(&output[idx], wk * v);                                       \
-    }                                                                             \
-}
-
-#define DEFINE_SCATTER_WARP_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _scatter_warp_homo_kern##SUFFIX(                               \
-    const int32_t* __restrict__ indices,                                       \
-    const WEIGHT_T* __restrict__ vector,                                       \
-    WEIGHT_T*       __restrict__ output,                                       \
-    const WEIGHT_T* __restrict__ weights,                                      \
-    int n_pre, int n_conn                                                      \
-) {                                                                            \
-    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;              \
-    int lane_id   = threadIdx.x & 31;                                          \
-    int num_warps = (gridDim.x * blockDim.x) >> 5;                             \
-    ACC_T w0 = READ_W(__ldg(&weights[0]));                                     \
-    for (int row = warp_id; row < n_pre; row += num_warps) {                   \
-        ACC_T v = READ_W(__ldg(&vector[row]));                                 \
-        const int32_t* i_row = indices + (size_t)row * n_conn;                 \
-        ACC_T wv = w0 * v;                                                     \
-        for (int k = lane_id; k < n_conn; k += 32) {                           \
-            int32_t idx = __ldg(&i_row[k]);                                    \
-            ATOMIC_ADD_W(&output[idx], wv);                                    \
-        }                                                                      \
-    }                                                                          \
-}
-
-#define DEFINE_SCATTER_WARP_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _scatter_warp_hetero_kern##SUFFIX(                               \
+__global__ void _scatter_basic_homo_kern##SUFFIX(                                \
     const int32_t* __restrict__ indices,                                         \
     const WEIGHT_T* __restrict__ vector,                                         \
     WEIGHT_T*       __restrict__ output,                                         \
     const WEIGHT_T* __restrict__ weights,                                        \
     int n_pre, int n_conn                                                        \
 ) {                                                                              \
-    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                \
-    int lane_id   = threadIdx.x & 31;                                            \
-    int num_warps = (gridDim.x * blockDim.x) >> 5;                               \
-    for (int row = warp_id; row < n_pre; row += num_warps) {                     \
-        ACC_T v = READ_W(__ldg(&vector[row]));                                   \
-        const int32_t* i_row = indices + (size_t)row * n_conn;                   \
-        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                  \
-        for (int k = lane_id; k < n_conn; k += 32) {                             \
-            int32_t idx = __ldg(&i_row[k]);                                      \
-            ACC_T wk = READ_W(__ldg(&w_row[k]));                                 \
-            ATOMIC_ADD_W(&output[idx], wk * v);                                  \
-        }                                                                        \
+    int row = blockIdx.x;                                                        \
+    if (row >= n_pre) return;                                                    \
+    ACC_T v = READ_W(__ldg(&vector[row]));                                       \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                       \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                       \
+    ACC_T wv = w0 * v;                                                           \
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                     \
+        int32_t idx = __ldg(&i_row[k]);                                          \
+        ATOMIC_ADD_W(&output[idx], wv);                                          \
     }                                                                            \
 }
 
-#define DEFINE_SCATTER_GS_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)          \
+#define DEFINE_SCATTER_BASIC_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _scatter_basic_hetero_kern##SUFFIX(                                \
+    const int32_t* __restrict__ indices,                                           \
+    const WEIGHT_T* __restrict__ vector,                                           \
+    WEIGHT_T*       __restrict__ output,                                           \
+    const WEIGHT_T* __restrict__ weights,                                          \
+    int n_pre, int n_conn                                                          \
+) {                                                                                \
+    int row = blockIdx.x;                                                          \
+    if (row >= n_pre) return;                                                      \
+    ACC_T v = READ_W(__ldg(&vector[row]));                                         \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                         \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                        \
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                       \
+        int32_t idx = __ldg(&i_row[k]);                                            \
+        ACC_T wk = READ_W(__ldg(&w_row[k]));                                       \
+        ATOMIC_ADD_W(&output[idx], wk * v);                                        \
+    }                                                                              \
+}
+
+#define DEFINE_SCATTER_WARP_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _scatter_warp_homo_kern##SUFFIX(                                \
+    const int32_t* __restrict__ indices,                                        \
+    const WEIGHT_T* __restrict__ vector,                                        \
+    WEIGHT_T*       __restrict__ output,                                        \
+    const WEIGHT_T* __restrict__ weights,                                       \
+    int n_pre, int n_conn                                                       \
+) {                                                                             \
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;               \
+    int lane_id   = threadIdx.x & 31;                                           \
+    int num_warps = (gridDim.x * blockDim.x) >> 5;                              \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                      \
+    for (int row = warp_id; row < n_pre; row += num_warps) {                    \
+        ACC_T v = READ_W(__ldg(&vector[row]));                                  \
+        const int32_t* i_row = indices + (size_t)row * n_conn;                  \
+        ACC_T wv = w0 * v;                                                      \
+        for (int k = lane_id; k < n_conn; k += 32) {                            \
+            int32_t idx = __ldg(&i_row[k]);                                     \
+            ATOMIC_ADD_W(&output[idx], wv);                                     \
+        }                                                                       \
+    }                                                                           \
+}
+
+#define DEFINE_SCATTER_WARP_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _scatter_warp_hetero_kern##SUFFIX(                                \
+    const int32_t* __restrict__ indices,                                          \
+    const WEIGHT_T* __restrict__ vector,                                          \
+    WEIGHT_T*       __restrict__ output,                                          \
+    const WEIGHT_T* __restrict__ weights,                                         \
+    int n_pre, int n_conn                                                         \
+) {                                                                               \
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                 \
+    int lane_id   = threadIdx.x & 31;                                             \
+    int num_warps = (gridDim.x * blockDim.x) >> 5;                                \
+    for (int row = warp_id; row < n_pre; row += num_warps) {                      \
+        ACC_T v = READ_W(__ldg(&vector[row]));                                    \
+        const int32_t* i_row = indices + (size_t)row * n_conn;                    \
+        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                   \
+        for (int k = lane_id; k < n_conn; k += 32) {                              \
+            int32_t idx = __ldg(&i_row[k]);                                       \
+            ACC_T wk = READ_W(__ldg(&w_row[k]));                                  \
+            ATOMIC_ADD_W(&output[idx], wk * v);                                   \
+        }                                                                         \
+    }                                                                             \
+}
+
+#define DEFINE_SCATTER_GS_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)         \
 __global__ void _scatter_gs_homo_kern##SUFFIX(                                        \
     const int32_t* __restrict__ indices,                                              \
     const WEIGHT_T* __restrict__ vector,                                              \
@@ -235,7 +236,7 @@ __global__ void _scatter_gs_homo_kern##SUFFIX(                                  
     }                                                                                 \
 }
 
-#define DEFINE_SCATTER_GS_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)        \
+#define DEFINE_SCATTER_GS_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)       \
 __global__ void _scatter_gs_hetero_kern##SUFFIX(                                      \
     const int32_t* __restrict__ indices,                                              \
     const WEIGHT_T* __restrict__ vector,                                              \
@@ -397,8 +398,8 @@ __global__ void _gather_vec4_hetero_kern(const int32_t* __restrict__ indices, co
 // ---- FFI macro: gather homo auto ----
 #define FFI_GATHER_HOMO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                        \
 void fcnmv_gather_homo_auto##SUFFIX(                                              \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream     \
+    const BE::Tensor weights, const BE::Tensor indices,                           \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                   \
 ) {                                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                     \
     int n_pre       = static_cast<int>(indices.size(0));                          \
@@ -418,8 +419,8 @@ void fcnmv_gather_homo_auto##SUFFIX(                                            
 // ---- FFI macro: gather hetero auto ----
 #define FFI_GATHER_HETERO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                      \
 void fcnmv_gather_hetero_auto##SUFFIX(                                            \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream     \
+    const BE::Tensor weights, const BE::Tensor indices,                           \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                   \
 ) {                                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                     \
     int n_pre       = static_cast<int>(indices.size(0));                          \
@@ -439,8 +440,8 @@ void fcnmv_gather_hetero_auto##SUFFIX(                                          
 // ---- FFI macro: scatter homo auto ----
 #define FFI_SCATTER_HOMO_AUTO(SUFFIX, WEIGHT_C_T)                                 \
 void fcnmv_scatter_homo_auto##SUFFIX(                                             \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream     \
+    const BE::Tensor weights, const BE::Tensor indices,                           \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                   \
 ) {                                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                     \
     int n_pre       = static_cast<int>(indices.size(0));                          \
@@ -468,8 +469,8 @@ void fcnmv_scatter_homo_auto##SUFFIX(                                           
 // ---- FFI macro: scatter hetero auto ----
 #define FFI_SCATTER_HETERO_AUTO(SUFFIX, WEIGHT_C_T)                               \
 void fcnmv_scatter_hetero_auto##SUFFIX(                                           \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream     \
+    const BE::Tensor weights, const BE::Tensor indices,                           \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                   \
 ) {                                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                     \
     int n_pre       = static_cast<int>(indices.size(0));                          \
@@ -496,50 +497,50 @@ void fcnmv_scatter_hetero_auto##SUFFIX(                                         
 
 // SpMV FFI Instantiations
 // ---- float32 ----
-// @tvm_ffi fcnmv_gather_homo_auto_f32
+// @BE fcnmv_gather_homo_auto_f32
 FFI_GATHER_HOMO_AUTO  (_f32, float, 32 * sizeof(float))
-// @tvm_ffi fcnmv_gather_hetero_auto_f32
+// @BE fcnmv_gather_hetero_auto_f32
 FFI_GATHER_HETERO_AUTO(_f32, float, 32 * sizeof(float))
-// @tvm_ffi fcnmv_scatter_homo_auto_f32
+// @BE fcnmv_scatter_homo_auto_f32
 FFI_SCATTER_HOMO_AUTO (_f32, float)
-// @tvm_ffi fcnmv_scatter_hetero_auto_f32
+// @BE fcnmv_scatter_hetero_auto_f32
 FFI_SCATTER_HETERO_AUTO(_f32, float)
 
 // ---- float64 ----
-// @tvm_ffi fcnmv_gather_homo_auto_f64
+// @BE fcnmv_gather_homo_auto_f64
 FFI_GATHER_HOMO_AUTO  (_f64, double, 32 * sizeof(double))
-// @tvm_ffi fcnmv_gather_hetero_auto_f64
+// @BE fcnmv_gather_hetero_auto_f64
 FFI_GATHER_HETERO_AUTO(_f64, double, 32 * sizeof(double))
-// @tvm_ffi fcnmv_scatter_homo_auto_f64
+// @BE fcnmv_scatter_homo_auto_f64
 FFI_SCATTER_HOMO_AUTO (_f64, double)
-// @tvm_ffi fcnmv_scatter_hetero_auto_f64
+// @BE fcnmv_scatter_hetero_auto_f64
 FFI_SCATTER_HETERO_AUTO(_f64, double)
 
 // ---- float16 ----
-// @tvm_ffi fcnmv_gather_homo_auto_f16
+// @BE fcnmv_gather_homo_auto_f16
 FFI_GATHER_HOMO_AUTO  (_f16, __half, 32 * sizeof(float))
-// @tvm_ffi fcnmv_gather_hetero_auto_f16
+// @BE fcnmv_gather_hetero_auto_f16
 FFI_GATHER_HETERO_AUTO(_f16, __half, 32 * sizeof(float))
-// @tvm_ffi fcnmv_scatter_homo_auto_f16
+// @BE fcnmv_scatter_homo_auto_f16
 FFI_SCATTER_HOMO_AUTO (_f16, __half)
-// @tvm_ffi fcnmv_scatter_hetero_auto_f16
+// @BE fcnmv_scatter_hetero_auto_f16
 FFI_SCATTER_HETERO_AUTO(_f16, __half)
 
 // ---- bfloat16 ----
-// @tvm_ffi fcnmv_gather_homo_auto_bf16
+// @BE fcnmv_gather_homo_auto_bf16
 FFI_GATHER_HOMO_AUTO  (_bf16, __nv_bfloat16, 32 * sizeof(float))
-// @tvm_ffi fcnmv_gather_hetero_auto_bf16
+// @BE fcnmv_gather_hetero_auto_bf16
 FFI_GATHER_HETERO_AUTO(_bf16, __nv_bfloat16, 32 * sizeof(float))
-// @tvm_ffi fcnmv_scatter_homo_auto_bf16
+// @BE fcnmv_scatter_homo_auto_bf16
 FFI_SCATTER_HOMO_AUTO (_bf16, __nv_bfloat16)
-// @tvm_ffi fcnmv_scatter_hetero_auto_bf16
+// @BE fcnmv_scatter_hetero_auto_bf16
 FFI_SCATTER_HETERO_AUTO(_bf16, __nv_bfloat16)
 
 // SpMV f32-specific specializations
-// @tvm_ffi fcnmv_gather_shared_homo_f32
+// @BE fcnmv_gather_shared_homo_f32
 void fcnmv_gather_shared_homo_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -552,10 +553,10 @@ void fcnmv_gather_shared_homo_f32(
         n_pre, n_conn);
 }
 
-// @tvm_ffi fcnmv_gather_shared_hetero_f32
+// @BE fcnmv_gather_shared_hetero_f32
 void fcnmv_gather_shared_hetero_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -568,10 +569,10 @@ void fcnmv_gather_shared_hetero_f32(
         n_pre, n_conn);
 }
 
-// @tvm_ffi fcnmv_gather_vec4_homo_f32
+// @BE fcnmv_gather_vec4_homo_f32
 void fcnmv_gather_vec4_homo_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -584,10 +585,10 @@ void fcnmv_gather_vec4_homo_f32(
         n_pre, n_conn);
 }
 
-// @tvm_ffi fcnmv_gather_vec4_hetero_f32
+// @BE fcnmv_gather_vec4_hetero_f32
 void fcnmv_gather_vec4_hetero_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -608,10 +609,10 @@ void fcnmv_gather_vec4_hetero_f32(
  *   5Kx5Kx500  hetero: 0.026 ms → ~772 GB/s (L2-cached regime)
  *   1Kx1Kx100  hetero: 0.009 ms → ~90 GB/s  (launch-overhead-dominated)
  */
-// @tvm_ffi fcnmv_gather_auto_f32
+// @BE fcnmv_gather_auto_f32
 void fcnmv_gather_auto_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));

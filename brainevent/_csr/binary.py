@@ -23,12 +23,13 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, \
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, \
     jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
+from brainevent._op._pipeline import load_cuda_file
 from .float import csrmv, csrmm
 
 __all__ = [
@@ -857,10 +858,9 @@ def _binary_csrmv_cuda_kernel(
     transpose: bool,
     **kwargs,
 ):
-    register_tvm_cuda_from_file(
-        module='csr_binary_csrmv',
-        source=Path(__file__).parent.joinpath('binary_csrmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_csrmv.cu'),
+        name='csr_binary_csrmv',
     )
 
     out_info = kwargs['outs']
@@ -1184,7 +1184,7 @@ binary_csrmv_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``binary_csrmv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR sparse matrix-vector multiplication
-operation to registered backends (``numba``, ``pallas``, ``tvmffi``),
+operation to registered backends (``numba``, ``pallas``, ``cuda_raw``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 Only entries of ``v`` that are ``True`` (boolean) or positive (float) are considered active events
@@ -1206,7 +1206,7 @@ binary_csrmv : High-level user-facing function wrapper.
 binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
 binary_csrmv_p.def_warp_kernel(_csrmv_warp_kernel)
 binary_csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_gpu_kernel)
-binary_csrmv_p.def_tvmffi_kernel('gpu', _binary_csrmv_cuda_kernel)
+binary_csrmv_p.def_cuda_raw_kernel(_binary_csrmv_cuda_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_jax_kernel)
@@ -1901,10 +1901,9 @@ def _binary_csrmm_cuda_kernel(
     transpose: bool,
     **kwargs,
 ):
-    register_tvm_cuda_from_file(
-        module='csr_binary_csrmm',
-        source=Path(__file__).parent.joinpath('binary_csrmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_csrmm.cu'),
+        name='csr_binary_csrmm',
     )
 
     out_info = kwargs['outs']
@@ -2227,7 +2226,7 @@ binary_csrmm : High-level user-facing function wrapper.
 binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
 binary_csrmm_p.def_warp_kernel(_csrmm_warp_kernel)
 binary_csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_gpu_kernel)
-binary_csrmm_p.def_tvmffi_kernel('gpu', _binary_csrmm_cuda_kernel)
+binary_csrmm_p.def_cuda_raw_kernel(_binary_csrmm_cuda_kernel)
 binary_csrmm_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_jax_kernel)
 binary_csrmm_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_jax_kernel)
 binary_csrmm_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_jax_kernel)

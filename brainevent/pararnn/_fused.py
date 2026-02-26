@@ -22,7 +22,7 @@ computation, and parallel reduction into a single operation.
 Two backends are provided:
 - ``jax_raw``: Pure-JAX implementation with hardcoded sigmoid/tanh
   (matching the CUDA kernels' fixed nonlinearities). Works on all platforms.
-- ``tvmffi``: CUDA kernels via TVM FFI (GPU only). Eliminates intermediate
+- ``cuda_raw``: CUDA kernels via CUDA (GPU only). Eliminates intermediate
   global memory round-trips for maximum performance.
 
 Functions:
@@ -39,7 +39,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._op import XLACustomKernel, register_tvm_cuda_from_file
+from brainevent._op import XLACustomKernel
+from brainevent._op._pipeline import load_cuda_file
 from ._parallel_reduce import _adjoint_reduce_diag
 
 __all__ = [
@@ -338,10 +339,10 @@ def _fused_gru_fwd_jax_kernel(**kwargs):
 
 
 def _fused_gru_fwd_cuda_kernel(**kwargs):
-    """tvmffi kernel: fused GRU forward via CUDA."""
-    register_tvm_cuda_from_file(
-        module='fused_gru_diag',
-        source=Path(__file__).parent / '_fused_gru_diag.cu',
+    """cuda_raw kernel: fused GRU forward via CUDA."""
+    load_cuda_file(
+        Path(__file__).parent / '_fused_gru_diag.cu',
+        name='fused_gru_diag',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['A_info'].dtype)]
@@ -474,7 +475,7 @@ fused_gru_diag_fwd_p = XLACustomKernel('fused_gru_diag_fwd')
 fused_gru_diag_fwd_p.def_kernel('jax_raw', 'cpu', _fused_gru_fwd_jax_kernel)
 fused_gru_diag_fwd_p.def_kernel('jax_raw', 'gpu', _fused_gru_fwd_jax_kernel)
 fused_gru_diag_fwd_p.def_kernel('jax_raw', 'tpu', _fused_gru_fwd_jax_kernel)
-fused_gru_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_gru_fwd_cuda_kernel, asdefault=True)
+fused_gru_diag_fwd_p.def_cuda_raw_kernel(_fused_gru_fwd_cuda_kernel, asdefault=True)
 fused_gru_diag_fwd_p.def_tags('pararnn', 'fused')
 fused_gru_diag_fwd_p.def_jvp_rule2(_fused_gru_fwd_jvp_A, _fused_gru_fwd_jvp_Bxpb)
 fused_gru_diag_fwd_p.def_transpose_rule(_fused_gru_fwd_transpose)
@@ -494,7 +495,7 @@ def fused_gru_diag_forward(
     Args:
         A: Diagonal recurrence weights, shape ``(3, hidden_dim)``.
         Bxpb: Precomputed input projection, shape ``(B, T, 3, hidden_dim)``.
-        backend: ``'tvmffi'`` for CUDA, ``None`` for default (``jax_raw``).
+        backend: ``'cuda_raw'`` for CUDA, ``None`` for default (``jax_raw``).
 
     Returns:
         Hidden states ``h``, shape ``(B, T, hidden_dim)``.
@@ -526,10 +527,10 @@ def _fused_gru_bwd_jax_kernel(**kwargs):
 
 
 def _fused_gru_bwd_cuda_kernel(**kwargs):
-    """tvmffi kernel: fused GRU backward via CUDA."""
-    register_tvm_cuda_from_file(
-        module='fused_gru_diag',
-        source=Path(__file__).parent / '_fused_gru_diag.cu',
+    """cuda_raw kernel: fused GRU backward via CUDA."""
+    load_cuda_file(
+        Path(__file__).parent / '_fused_gru_diag.cu',
+        name='fused_gru_diag',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['A_info'].dtype)]
@@ -588,7 +589,7 @@ fused_gru_diag_bwd_p = XLACustomKernel('fused_gru_diag_bwd')
 fused_gru_diag_bwd_p.def_kernel('jax_raw', 'cpu', _fused_gru_bwd_jax_kernel)
 fused_gru_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_gru_bwd_jax_kernel)
 fused_gru_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_gru_bwd_jax_kernel)
-fused_gru_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_gru_bwd_cuda_kernel, asdefault=True)
+fused_gru_diag_bwd_p.def_cuda_raw_kernel(_fused_gru_bwd_cuda_kernel, asdefault=True)
 fused_gru_diag_bwd_p.def_tags('pararnn', 'fused')
 fused_gru_diag_bwd_p.def_jvp_rule2(_fused_gru_bwd_jvp_grad_y, None, None, None)
 fused_gru_diag_bwd_p.def_transpose_rule(_fused_gru_bwd_transpose)
@@ -611,7 +612,7 @@ def fused_gru_diag_backward(
         h: Forward hidden states, shape ``(B, T, hidden_dim)``.
         A: Diagonal recurrence weights, shape ``(3, hidden_dim)``.
         Bxpb: Precomputed input projection, shape ``(B, T, 3, hidden_dim)``.
-        backend: ``'tvmffi'`` for CUDA, ``None`` for default.
+        backend: ``'cuda_raw'`` for CUDA, ``None`` for default.
 
     Returns:
         dl/dh with shape ``(B, T, hidden_dim)``.
@@ -664,10 +665,10 @@ def _fused_lstm_fwd_jax_kernel(**kwargs):
 
 
 def _fused_lstm_fwd_cuda_kernel(**kwargs):
-    """tvmffi kernel: fused LSTM-CIFG forward via CUDA."""
-    register_tvm_cuda_from_file(
-        module='fused_lstm_cifg_diag',
-        source=Path(__file__).parent / '_fused_lstm_cifg_diag.cu',
+    """cuda_raw kernel: fused LSTM-CIFG forward via CUDA."""
+    load_cuda_file(
+        Path(__file__).parent / '_fused_lstm_cifg_diag.cu',
+        name='fused_lstm_cifg_diag',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['A_info'].dtype)]
@@ -784,7 +785,7 @@ fused_lstm_cifg_diag_fwd_p = XLACustomKernel('fused_lstm_cifg_diag_fwd')
 fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'cpu', _fused_lstm_fwd_jax_kernel)
 fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'gpu', _fused_lstm_fwd_jax_kernel)
 fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'tpu', _fused_lstm_fwd_jax_kernel)
-fused_lstm_cifg_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_lstm_fwd_cuda_kernel, asdefault=True)
+fused_lstm_cifg_diag_fwd_p.def_cuda_raw_kernel(_fused_lstm_fwd_cuda_kernel, asdefault=True)
 fused_lstm_cifg_diag_fwd_p.def_tags('pararnn', 'fused')
 fused_lstm_cifg_diag_fwd_p.def_jvp_rule2(_fused_lstm_fwd_jvp_A, _fused_lstm_fwd_jvp_Bxpb, _fused_lstm_fwd_jvp_C)
 fused_lstm_cifg_diag_fwd_p.def_transpose_rule(_fused_lstm_fwd_transpose)
@@ -806,7 +807,7 @@ def fused_lstm_cifg_diag_forward(
         A: Diagonal recurrence weights, shape ``(3, state_dim)``.
         Bxpb: Precomputed input projection, shape ``(B, T, 3, state_dim)``.
         C: Peephole connection weights, shape ``(2, state_dim)``.
-        backend: ``'tvmffi'`` for CUDA, ``None`` for default (``jax_raw``).
+        backend: ``'cuda_raw'`` for CUDA, ``None`` for default (``jax_raw``).
 
     Returns:
         Full state ``[c, h]``, shape ``(B, T, 2, state_dim)``.
@@ -851,10 +852,10 @@ def _fused_lstm_bwd_jax_kernel(**kwargs):
 
 
 def _fused_lstm_bwd_cuda_kernel(**kwargs):
-    """tvmffi kernel: fused LSTM-CIFG backward via CUDA."""
-    register_tvm_cuda_from_file(
-        module='fused_lstm_cifg_diag',
-        source=Path(__file__).parent / '_fused_lstm_cifg_diag.cu',
+    """cuda_raw kernel: fused LSTM-CIFG backward via CUDA."""
+    load_cuda_file(
+        Path(__file__).parent / '_fused_lstm_cifg_diag.cu',
+        name='fused_lstm_cifg_diag',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['A_info'].dtype)]
@@ -926,7 +927,7 @@ fused_lstm_cifg_diag_bwd_p = XLACustomKernel('fused_lstm_cifg_diag_bwd')
 fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'cpu', _fused_lstm_bwd_jax_kernel)
 fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_lstm_bwd_jax_kernel)
 fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_lstm_bwd_jax_kernel)
-fused_lstm_cifg_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_lstm_bwd_cuda_kernel, asdefault=True)
+fused_lstm_cifg_diag_bwd_p.def_cuda_raw_kernel(_fused_lstm_bwd_cuda_kernel, asdefault=True)
 fused_lstm_cifg_diag_bwd_p.def_tags('pararnn', 'fused')
 fused_lstm_cifg_diag_bwd_p.def_jvp_rule2(_fused_lstm_bwd_jvp_grad_y, None, None, None, None)
 fused_lstm_cifg_diag_bwd_p.def_transpose_rule(_fused_lstm_bwd_transpose)
@@ -951,7 +952,7 @@ def fused_lstm_cifg_diag_backward(
         A: Diagonal recurrence weights, shape ``(3, state_dim)``.
         Bxpb: Precomputed input projection, shape ``(B, T, 3, state_dim)``.
         C: Peephole connection weights, shape ``(2, state_dim)``.
-        backend: ``'tvmffi'`` for CUDA, ``None`` for default.
+        backend: ``'cuda_raw'`` for CUDA, ``None`` for default.
 
     Returns:
         dl/d[c,h] with shape ``(B, T, 2, state_dim)``.

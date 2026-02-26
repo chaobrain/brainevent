@@ -41,13 +41,14 @@
  *   update_csr_on_binary_pre(weight, indices, indptr, pre_spike, post_trace,
  *                            w_min=None, w_max=None, shape=..., backend=None)
  *
- * TVM FFI Entry Points (one per dtype combination):
+ * CUDA Entry Points (one per dtype combination):
  *   update_csr_on_pre_{wt}_{spk}  where
  *     wt  in {f16, bf16, f32, f64}
  *     spk in {bool, float}
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // CSR Pre-Synaptic Plasticity Kernels
@@ -75,12 +76,12 @@
 //    - Cannot be coalesced without changing to CSC format (transpose)
 //    - Would require Python layer changes to pre-transpose weight matrix
 //
-// 2. TVM FFI Per-Call Overhead:
+// 2. CUDA Per-Call Overhead:
 //    - FFI overhead ~2.2 ms dominates kernel execution (~0.1 ms actual)
 //    - Irreducible without infrastructure changes:
 //      * Batching multiple updates into single kernel call (higher-level fusion)
 //      * Persistent kernels or CUDA Graphs (requires JIT compilation changes)
-//      * Replacing TVM FFI with direct JAX custom calls (major refactor)
+//      * Replacing CUDA with direct JAX custom calls (major refactor)
 //
 // 3. Sparse Event Density:
 //    - At 10% spike density, only 459/5000 neurons active
@@ -266,17 +267,17 @@ DEFINE_CSR_ON_PRE_BLOCK(_bf16_bool, int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16,  flo
 DEFINE_CSR_ON_PRE_BLOCK(_bf16_float,float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
-// TVM FFI Entry Points
+// CUDA Entry Points
 // =========================================================================
 
 #define FFI_CSR_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)         \
 void update_csr_on_pre##SUFFIX(                               \
-    tvm::ffi::TensorView weight,                              \
-    tvm::ffi::TensorView indices,                             \
-    tvm::ffi::TensorView indptr,                              \
-    tvm::ffi::TensorView spike,                               \
-    tvm::ffi::TensorView trace,                               \
-    tvm::ffi::TensorView out_weight,                          \
+    const BE::Tensor weight,                                  \
+    const BE::Tensor indices,                                 \
+    const BE::Tensor indptr,                                  \
+    const BE::Tensor spike,                                   \
+    const BE::Tensor trace,                                   \
+    const BE::Tensor out_weight,                              \
     int64_t stream                                            \
 ) {                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);  \
@@ -308,19 +309,19 @@ void update_csr_on_pre##SUFFIX(                               \
     }                                                         \
 }
 
-// @tvm_ffi update_csr_on_pre_f32_bool
+// @BE update_csr_on_pre_f32_bool
 FFI_CSR_ON_PRE(_f32_bool,  float,          int8_t)
-// @tvm_ffi update_csr_on_pre_f32_float
+// @BE update_csr_on_pre_f32_float
 FFI_CSR_ON_PRE(_f32_float, float,          float)
-// @tvm_ffi update_csr_on_pre_f64_bool
+// @BE update_csr_on_pre_f64_bool
 FFI_CSR_ON_PRE(_f64_bool,  double,         int8_t)
-// @tvm_ffi update_csr_on_pre_f64_float
+// @BE update_csr_on_pre_f64_float
 FFI_CSR_ON_PRE(_f64_float, double,         float)
-// @tvm_ffi update_csr_on_pre_f16_bool
+// @BE update_csr_on_pre_f16_bool
 FFI_CSR_ON_PRE(_f16_bool,  __half,         int8_t)
-// @tvm_ffi update_csr_on_pre_f16_float
+// @BE update_csr_on_pre_f16_float
 FFI_CSR_ON_PRE(_f16_float, __half,         float)
-// @tvm_ffi update_csr_on_pre_bf16_bool
+// @BE update_csr_on_pre_bf16_bool
 FFI_CSR_ON_PRE(_bf16_bool, __nv_bfloat16,  int8_t)
-// @tvm_ffi update_csr_on_pre_bf16_float
+// @BE update_csr_on_pre_bf16_float
 FFI_CSR_ON_PRE(_bf16_float,__nv_bfloat16,  float)

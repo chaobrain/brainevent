@@ -6,8 +6,8 @@ Benchmarks all available backends for ``binary_coomv`` (event-driven COO
 SpMV, homo/hetero weights, bool/float spikes) across a range of problem
 sizes, connection probabilities, and spike densities.
 
-The ``tvmffi`` (TVM FFI CUDA) backend is included automatically once
-registered via ``binary_coomv_p.def_tvmffi_kernel``.
+The ``cuda_raw`` backend is included automatically once
+registered via ``binary_coomv_p.def_cuda_raw_kernel``.
 
 Usage
 -----
@@ -174,7 +174,7 @@ def run_density(n_warmup, n_runs):
 def run_size(n_warmup, n_runs):
     """Size sweep: fixed 10% spike rate, varied matrix dimensions.
 
-    Highlights where GPU parallelism (tvmffi) wins over CPU (numba) and
+    Highlights where GPU parallelism (cuda_raw) wins over CPU (numba) and
     pure-JAX scatter: the crossover typically occurs around nnz ~ 50-100K.
     Very large matrices (nnz > 1M) show the clearest CUDA advantage.
     """

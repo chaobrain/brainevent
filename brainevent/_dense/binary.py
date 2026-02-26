@@ -25,9 +25,10 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'binary_densemv', 'binary_densemv_p',
@@ -270,10 +271,9 @@ def _binary_densemv_cuda_kernel(
     transpose: bool,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='dense_binary_mv',
-        source=Path(__file__).parent.joinpath('binary_densemv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_densemv.cu'),
+        name='dense_binary_mv',
     )
 
     out_info = kwargs['outs']
@@ -681,7 +681,7 @@ def _binary_densemm_warp_kernel(
 binary_densemv_p.def_numba_kernel(_binary_densemv_numba_kernel)
 binary_densemv_p.def_warp_kernel(_binary_densemv_warp_kernel)
 binary_densemv_p.def_pallas_kernel('gpu', _binary_densemv_pallas_kernel)
-binary_densemv_p.def_tvmffi_kernel('gpu', _binary_densemv_cuda_kernel)
+binary_densemv_p.def_cuda_raw_kernel(_binary_densemv_cuda_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'cpu', _binary_densemv_jax_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'gpu', _binary_densemv_jax_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'tpu', _binary_densemv_jax_kernel)
@@ -1116,7 +1116,7 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
     spikes : jax.Array
         The binary matrix with shape ``(k, n)``. Can be boolean or float.
         Boolean inputs are passed through to backends that support them
-        natively (tvmffi, numba) for better performance; Pallas converts
+        natively (cuda_raw, numba) for better performance; Pallas converts
         internally.
     transpose : bool
         If False, compute ``weights @ spikes`` producing shape ``(m, n)``.
@@ -1219,7 +1219,7 @@ def _binary_densemm_cuda_kernel(
     **kwargs
 ):
     """
-    CUDA TVM FFI kernel generator for ``binary_densemm``.
+    CUDA Raw kernel generator for ``binary_densemm``.
 
     Registers and selects optimised CUDA kernels from ``binary_densemm.cu``
     for the binary dense matrix-matrix multiply. The kernel variant is chosen
@@ -1265,10 +1265,9 @@ def _binary_densemm_cuda_kernel(
     tiled kernel achieves ~33%.  The ``jax_raw`` backend (cuBLAS) should
     be preferred for large matrices.
     """
-    register_tvm_cuda_from_file(
-        module='dense_binary_mm',
-        source=Path(__file__).parent.joinpath('binary_densemm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_densemm.cu'),
+        name='dense_binary_mm',
     )
 
     out_info = kwargs['outs']
@@ -1325,7 +1324,7 @@ binary_densemm : High-level user-facing function wrapper.
 binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
 binary_densemm_p.def_warp_kernel(_binary_densemm_warp_kernel)
 binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
-binary_densemm_p.def_tvmffi_kernel('gpu', _binary_densemm_cuda_kernel)
+binary_densemm_p.def_cuda_raw_kernel(_binary_densemm_cuda_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'cpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'gpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'tpu', _binary_densemm_jax_kernel)

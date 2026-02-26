@@ -21,7 +21,7 @@ Compares backend performance for ``coomm``:
   - jax       : pure-JAX scatter-add reference
   - pallas    : JAX Pallas/Triton GPU kernels
   - cusparse  : cuSPARSE via jax.experimental.sparse
-  - tvmffi    : custom CUDA kernels via TVM FFI
+  - cuda_raw    : custom CUDA kernels via CUDA
       - CT  (column-tiled, 1 warp/block):  n ≤ 64
       - WPE (warp-per-entry, 8 warps/blk): n > 64
 
@@ -192,7 +192,7 @@ def run_manual(
     n_warmup: int = 20,
     n_runs: int = 100,
     configs=None,
-    backends=('jax', 'pallas', 'cusparse', 'tvmffi'),
+    backends=('jax', 'pallas', 'cusparse', 'cuda_raw'),
 ):
     """Manual micro-benchmark with explicit timing and speedup reporting.
 
@@ -292,7 +292,7 @@ def run_ncols_sweep(n_warmup=20, n_runs=100):
 # ---------------------------------------------------------------------------
 
 def run_dtype_check():
-    """Verify numerical correctness of tvmffi vs. jax across supported dtypes."""
+    """Verify numerical correctness of cuda_raw vs. jax across supported dtypes."""
     print("\n" + "=" * 70)
     print("coomm  —  dtype correctness check")
     print("=" * 70)
@@ -315,13 +315,13 @@ def run_dtype_check():
         ref = coomm_p_call(weights, row, col, B, shape=shape, transpose=False, backend='jax')[0]
 
         try:
-            tvm_out = coomm_p_call(
-                weights, row, col, B, shape=shape, transpose=False, backend='tvmffi',
+            cuda_out = coomm_p_call(
+                weights, row, col, B, shape=shape, transpose=False, backend='cuda_raw',
             )[0]
             ref32  = ref.astype(jnp.float32)
-            tvm32  = tvm_out.astype(jnp.float32)
+            cuda32 = cuda_out.astype(jnp.float32)
             tol = 5e-2 if wt_dtype in (jnp.float16, jnp.bfloat16) else 1e-4
-            max_err = float(jnp.max(jnp.abs(ref32 - tvm32)))
+            max_err = float(jnp.max(jnp.abs(ref32 - cuda32)))
             ok = max_err <= tol
             status = f"PASS  max_err={max_err:.3e}"
         except Exception as exc:

@@ -50,7 +50,7 @@ class KernelEntry:
     ----------
     backend : str
         The backend name (e.g., ``'numba'``, ``'warp'``, ``'pallas'``,
-        ``'triton'``, ``'tvmffi'``, ``'numba_cuda'``).
+        ``'triton'``, ``'cuda_raw'``, ``'numba_cuda'``).
     platform : str
         The hardware platform name (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
     kernel_generator : KernelGenerator
@@ -103,8 +103,8 @@ class XLACustomKernel:
 
     Supported backends by platform:
 
-    - **CPU**: Numba, TVM FFI
-    - **GPU**: Pallas, TVM FFI, Numba CUDA, Warp, Triton
+    - **CPU**: Numba, CUDA
+    - **GPU**: Pallas, CUDA, Numba CUDA, Warp, Triton
     - **TPU**: Pallas
 
     The workflow for using this class is:
@@ -301,7 +301,7 @@ class XLACustomKernel:
         ----------
         backend : str
             The backend name (e.g., ``'numba'``, ``'warp'``, ``'pallas'``,
-            ``'triton'``, ``'tvmffi'``, ``'numba_cuda'``).
+            ``'triton'``, ``'cuda_raw'``, ``'numba_cuda'``).
         platform : str
             The hardware platform (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
         kg : KernelGenerator
@@ -570,47 +570,35 @@ class XLACustomKernel:
         assert platform in ['gpu', 'tpu'], f'The `platform` should be either `gpu` or `tpu`, but got {platform}.'
         self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)
 
-    def def_tvmffi_kernel(
+    def def_cuda_raw_kernel(
         self,
-        platform: str,
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a TVM FFI kernel for the CPU or GPU platform.
+        """Register a cuda_raw (nvcc-compiled) kernel for the CPU or GPU platform.
 
         Convenience wrapper around :meth:`def_kernel` with
-        ``backend='tvmffi'``.
+        ``backend='cuda_raw'``.  The kernel generator function should
+        call :func:`brainevent.load_cuda_file` or
+        :func:`brainevent.load_cuda_inline` to compile and
+        register the CUDA kernel, then return a closure that calls it via
+        ``jax.ffi.ffi_call``.
 
         Parameters
         ----------
         platform : str
             Target platform.  Must be ``'cpu'`` or ``'gpu'``.
         kg : KernelGenerator
-            A callable that generates the TVM FFI kernel function.
+            A callable that compiles and returns the kernel function.
         asdefault : bool, optional
-            If ``True``, set TVM FFI as the default backend for the
+            If ``True``, set cuda_raw as the default backend for the
             given platform.  Default is ``False``.
-
-        Raises
-        ------
-        AssertionError
-            If *platform* is not ``'cpu'`` or ``'gpu'``.
 
         See Also
         --------
         def_kernel : General kernel registration method.
-        register_tvm_cuda_kernels : Lower-level TVM CUDA kernel
-            registration utility.
-
-        Examples
-        --------
-        .. code-block:: python
-
-            >>> kernel = XLACustomKernel('my_op')
-            >>> kernel.def_tvmffi_kernel('gpu', my_tvm_gen)  # doctest: +SKIP
         """
-        assert platform in ['cpu', 'gpu'], f'The `platform` should be either `cpu` or `gpu`, but got {platform}.'
-        self.def_kernel(backend='tvmffi', platform=platform, kg=kg, asdefault=asdefault)
+        self.def_kernel(backend='cuda_raw', platform='gpu', kg=kg, asdefault=asdefault)
 
     def def_numba_cuda_kernel(
         self,

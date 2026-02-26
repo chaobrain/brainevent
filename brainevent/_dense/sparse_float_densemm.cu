@@ -32,13 +32,14 @@
  *     spikes  : float16/float32/float64/bfloat16 sparse-float matrix
  *     returns : output matrix
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   spfloat_densemm_nt_{dtype}       (warp-per-row NT)
  *   spfloat_densemm_nt_tpe_{dtype}   (thread-per-element NT)
  *   spfloat_densemm_t_{dtype}        (T mode)
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // Dense Matrix-Matrix Multiplication (spfloat_densemm) - NT MODE
@@ -181,8 +182,8 @@ DEFINE_SPFLOAT_MM_T(_bf16, __nv_bfloat16, float, 32, READ_BF16, WRITE_BF16, READ
 // FFI Macros for SpMM
 #define FFI_SPFLOAT_MM_NT_WPR(SUFFIX, WEIGHT_C_T, CHUNK_N_VAL)                  \
 void spfloat_densemm_nt##SUFFIX(                                                \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,                  \
-    tvm::ffi::TensorView output, int64_t stream                                 \
+    const BE::Tensor weights, const BE::Tensor spikes,                          \
+    BE::Tensor output, int64_t stream                                           \
 ) {                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                    \
     int m = static_cast<int>(weights.size(0));                                  \
@@ -201,8 +202,8 @@ void spfloat_densemm_nt##SUFFIX(                                                
 
 #define FFI_SPFLOAT_MM_NT_TPE(SUFFIX, WEIGHT_C_T)                               \
 void spfloat_densemm_nt_tpe##SUFFIX(                                            \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,                  \
-    tvm::ffi::TensorView output, int64_t stream                                 \
+    const BE::Tensor weights, const BE::Tensor spikes,                          \
+    BE::Tensor output, int64_t stream                                           \
 ) {                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                    \
     int m = static_cast<int>(weights.size(0));                                  \
@@ -221,8 +222,8 @@ void spfloat_densemm_nt_tpe##SUFFIX(                                            
 
 #define FFI_SPFLOAT_MM_T(SUFFIX, WEIGHT_C_T, CHUNK_N_VAL)                       \
 void spfloat_densemm_t##SUFFIX(                                                 \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,                  \
-    tvm::ffi::TensorView output, int64_t stream                                 \
+    const BE::Tensor weights, const BE::Tensor spikes,                          \
+    BE::Tensor output, int64_t stream                                           \
 ) {                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                    \
     int k = static_cast<int>(weights.size(0));                                  \
@@ -240,27 +241,27 @@ void spfloat_densemm_t##SUFFIX(                                                 
 }
 
 // SpMM FFI Instantiations
-// @tvm_ffi spfloat_densemm_nt_f32
+// @BE spfloat_densemm_nt_f32
 FFI_SPFLOAT_MM_NT_WPR(_f32, float, 32)
-// @tvm_ffi spfloat_densemm_nt_tpe_f32
+// @BE spfloat_densemm_nt_tpe_f32
 FFI_SPFLOAT_MM_NT_TPE(_f32, float)
-// @tvm_ffi spfloat_densemm_t_f32
+// @BE spfloat_densemm_t_f32
 FFI_SPFLOAT_MM_T(_f32, float, 32)
-// @tvm_ffi spfloat_densemm_nt_f64
+// @BE spfloat_densemm_nt_f64
 FFI_SPFLOAT_MM_NT_WPR(_f64, double, 16)
-// @tvm_ffi spfloat_densemm_nt_tpe_f64
+// @BE spfloat_densemm_nt_tpe_f64
 FFI_SPFLOAT_MM_NT_TPE(_f64, double)
-// @tvm_ffi spfloat_densemm_t_f64
+// @BE spfloat_densemm_t_f64
 FFI_SPFLOAT_MM_T(_f64, double, 16)
-// @tvm_ffi spfloat_densemm_nt_f16
+// @BE spfloat_densemm_nt_f16
 FFI_SPFLOAT_MM_NT_WPR(_f16, __half, 32)
-// @tvm_ffi spfloat_densemm_nt_tpe_f16
+// @BE spfloat_densemm_nt_tpe_f16
 FFI_SPFLOAT_MM_NT_TPE(_f16, __half)
-// @tvm_ffi spfloat_densemm_t_f16
+// @BE spfloat_densemm_t_f16
 FFI_SPFLOAT_MM_T(_f16, __half, 32)
-// @tvm_ffi spfloat_densemm_nt_bf16
+// @BE spfloat_densemm_nt_bf16
 FFI_SPFLOAT_MM_NT_WPR(_bf16, __nv_bfloat16, 32)
-// @tvm_ffi spfloat_densemm_nt_tpe_bf16
+// @BE spfloat_densemm_nt_tpe_bf16
 FFI_SPFLOAT_MM_NT_TPE(_bf16, __nv_bfloat16)
-// @tvm_ffi spfloat_densemm_t_bf16
+// @BE spfloat_densemm_t_bf16
 FFI_SPFLOAT_MM_T(_bf16, __nv_bfloat16, 32)
