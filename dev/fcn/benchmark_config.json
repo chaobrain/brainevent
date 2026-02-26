@@ -1,0 +1,93 @@
+{
+    "fcnmv": {
+        "operator": "fcnmv",
+        "config_1": {
+            "warmup": 10,
+            "runs": 20,
+            "dist_type": "uniform",
+            "configs": [
+                {
+                    "n_rows": 1000,
+                    "n_cols": 1000,
+                    "density": 0.1
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 1000,
+                    "density": 0.01
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 1000,
+                    "density": 0.001
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 5000,
+                    "density": 0.1
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 5000,
+                    "density": 0.01
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 5000,
+                    "density": 0.001
+                },
+                {
+                    "n_rows": 5000,
+                    "n_cols": 5000,
+                    "density": 0.1
+                },
+                {
+                    "n_rows": 5000,
+                    "n_cols": 5000,
+                    "density": 0.01
+                },
+                {
+                    "n_rows": 5000,
+                    "n_cols": 5000,
+                    "density": 0.001
+                },
+                {
+                    "n_rows": 10000,
+                    "n_cols": 5000,
+                    "density": 0.1
+                },
+                {
+                    "n_rows": 10000,
+                    "n_cols": 5000,
+                    "density": 0.01
+                },
+                {
+                    "n_rows": 10000,
+                    "n_cols": 5000,
+                    "density": 0.001
+                },
+                {
+                    "n_rows": 10000,
+                    "n_cols": 10000,
+                    "density": 0.1
+                },
+                {
+                    "n_rows": 10000,
+                    "n_cols": 10000,
+                    "density": 0.01
+                },
+                {
+                    "n_rows": 10000,
+                    "n_cols": 10000,
+                    "density": 0.001
+                }
+            ],
+            "transpose": [
+                false, true
+            ],
+            "homo_weight": [
+                true, false
+            ]
+        }
+    }
+}

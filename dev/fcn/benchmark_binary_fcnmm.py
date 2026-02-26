@@ -86,7 +86,7 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
                                 f"{n_pre}x{n_post}x{n_conn}"
                             )
                             yield BenchmarkConfig(
-                                name='',
+                                name=name,
                                 args=(weights, indices, mat),
                                 kernel_kwargs={
                                     'shape': (n_pre, n_post),
