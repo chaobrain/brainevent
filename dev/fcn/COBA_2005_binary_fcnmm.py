@@ -46,9 +46,54 @@ if _PROJECT_ROOT not in sys.path:
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
 
+current_name = 'COBA_binary_fcnmv'
+benchmark_data_type = 'typeC'
+config_type = "config_1"
+config_file_path = 'benchmark_config.json'
+
 DEFAULT_SCALES = (1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100)
 DEFAULT_BACKENDS = ('cuda_raw', 'pallas', 'jax_raw')
 DEFAULT_CONNS = ('post', 'pre')
+WARMUP = 10
+RUNS = 10
+DURATION = 1e5
+BATCHSIZE = 16
+
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type):
+    with open(json_path, 'r') as f:
+        raw_data = json.load(f)
+        
+    if benchmark_data_type not in raw_data:
+        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
+        
+    if operator_name not in raw_data[benchmark_data_type]["operator"]:
+        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
+    
+    operator_data = raw_data[benchmark_data_type]
+
+    if config_key not in operator_data:
+        raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
+  
+    if 'scale' in operator_data[config_key]:
+        DEFAULT_SCALES = tuple(operator_data["scale"])
+
+    if 'backends' in operator_data[config_key]:
+        DEFAULT_BACKENDS = tuple(operator_data["backends"])
+
+    if 'conns' in operator_data[config_key]:
+        DEFAULT_CONNS = tuple(operator_data["conns"])
+
+    if 'warmup'in operator_data[config_key]:
+        WARMUP = operator_data["warmup"]
+
+    if 'runs'in operator_data[config_key]:
+        RUNS = operator_data["runs"]
+
+    if 'duration'in operator_data[config_key]:
+        DURATION = operator_data["duration"]
+
+    if 'batch-size'in operator_data[config_key]:
+        BATCHSIZE = operator_data["batch"-size]
 
 
 def _benchmark_single_backend(
@@ -213,16 +258,17 @@ def main() -> None:
     parser.add_argument('--backends', nargs='+', default=list(DEFAULT_BACKENDS))
     parser.add_argument('--scales', nargs='+', type=int, default=list(DEFAULT_SCALES))
     parser.add_argument('--conns', nargs='+', choices=['post', 'pre'], default=list(DEFAULT_CONNS))
-    parser.add_argument('--batch-size', type=int, default=16)
-    parser.add_argument('--warmup', type=int, default=1)
-    parser.add_argument('--runs', type=int, default=3)
-    parser.add_argument('--duration-ms', type=float, default=1e4)
+    parser.add_argument('--warmup', type=int, default=WARMUP)
+    parser.add_argument('--runs', type=int, default=RUNS)
+    parser.add_argument('--duration-ms', type=float, default=DURATION)
     parser.add_argument('--baseline-backend', default='jax_raw')
     parser.add_argument('--output-dir', default='dev/fcn/results')
     parser.add_argument('--tag', default=None, help='Optional suffix for output files.')
     parser.add_argument('--no-plot', action='store_true')
-    args = parser.parse_args()
+    
+    parser.add_argument('--batch-size', type=int, default=BATCHSIZE)
 
+    args = parser.parse_args()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     tag = f'_{args.tag}' if args.tag else ''
     output_dir = Path(args.output_dir)
@@ -311,4 +357,5 @@ def main() -> None:
 
 
 if __name__ == '__main__':
+    #load_benchmark_config(config_file_path, benchmark_data_type, current_name)
     main()

@@ -46,7 +46,7 @@ def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_nam
     operator_data = raw_data[benchmark_data_type]
 
     if config_key not in operator_data:
-        raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
+        raise KeyError(f"Configuration block '{config_key}' not found config_key '{config_key}'.")
         
     return operator_data[config_key]
 
