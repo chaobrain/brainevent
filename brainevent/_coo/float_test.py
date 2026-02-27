@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from importlib.metadata import version
+from importlib.metadata import version, PackageNotFoundError
 
 import brainstate
 import braintools
@@ -151,7 +151,11 @@ class TestVectorCOO:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_coomv_dtype(self, implementation, dtype, homo_w):
         if implementation == 'cuda_raw' and dtype == jnp.float64:
-            if version("kernix") <= '0.1.2':
+            try:
+                kernix_ver = version("kernix")
+            except PackageNotFoundError:
+                kernix_ver = None
+            if kernix_ver is not None and kernix_ver <= '0.1.2':
                 pytest.skip('float64 not supported by cuda_raw (kernix<=0.1.2)')
         with brainstate.environ.context(precision=64 if dtype == jnp.float64 else 32):
             m, n = 30, 50

@@ -298,7 +298,7 @@ class KernelToolchainError(KernelError):
     pass
 
 
-class CompilationError(KernelError):
+class CompilationError(KernelCompilationError):
     """CUDA or C++ compilation failed."""
 
     def __init__(self, message: str, compiler_output: str = "",

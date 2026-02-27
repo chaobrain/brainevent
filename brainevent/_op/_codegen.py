@@ -185,10 +185,7 @@ def _params_str_to_tokens(params_str: str, func_name: str) -> list[str]:
                     tokens.append(f'attr.{param_name}:{be_type}')
 
     if not tokens:
-        raise KernelError(
-            f"No Tensor parameters found in '{func_name}'. "
-            "Cannot auto-detect arg_spec."
-        )
+        raise KernelError(f"No Tensor parameters found in '{func_name}'. Cannot auto-detect arg_spec.")
     if 'ret' not in tokens:
         raise KernelError(
             f"No non-const Tensor output found in '{func_name}'. "
@@ -473,9 +470,7 @@ _ATTR_TYPES = (
     # cannot encode numpy complex scalars, so they are unusable as FFI attrs.
     # Use two separate float32/float64 re/im attrs instead.
 )
-_ATTR_RE = re.compile(
-    r"^attr\.(\w+):(" + "|".join(_ATTR_TYPES) + r")$"
-)
+_ATTR_RE = re.compile(r"^attr\.(\w+):(" + "|".join(_ATTR_TYPES) + r")$")
 _ATTR_RE_BARE = re.compile(r"^attr\.(\w+)$")
 
 
@@ -525,9 +520,7 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
             ret_idx += 1
         elif token == "stream":
             if spec.has_stream:
-                raise KernelError(
-                    f"Duplicate 'stream' token in arg_spec for {func_name}"
-                )
+                raise KernelError( f"Duplicate 'stream' token in arg_spec for {func_name}")
             spec.has_stream = True
             spec.user_param_order.append("stream")
         else:
@@ -654,15 +647,9 @@ def generate_ffi_wrapper(spec: FunctionSpec, allow_cuda_graph: bool = True) -> s
     # 2. Convert buffers to Tensor
     # ------------------------------------------------------------------
     for i in range(spec.num_args):
-        lines.append(
-            f"    BE::Tensor tv_arg{i} = "
-            f"BE::internal::buffer_to_tensor(arg{i});"
-        )
+        lines.append(f"    BE::Tensor tv_arg{i} = BE::internal::buffer_to_tensor(arg{i});")
     for i in range(spec.num_rets):
-        lines.append(
-            f"    BE::Tensor tv_ret{i} = "
-            f"BE::internal::result_buffer_to_tensor(ret{i});"
-        )
+        lines.append(f"    BE::Tensor tv_ret{i} = BE::internal::result_buffer_to_tensor(ret{i});")
 
     # ------------------------------------------------------------------
     # 3. Call user function in the order specified by arg_spec
@@ -688,9 +675,7 @@ def generate_ffi_wrapper(spec: FunctionSpec, allow_cuda_graph: bool = True) -> s
     # ------------------------------------------------------------------
     binding_parts: list[str] = []
     if spec.has_stream:
-        binding_parts.append(
-            "    .Ctx<xla::ffi::PlatformStream<cudaStream_t>>()"
-        )
+        binding_parts.append("    .Ctx<xla::ffi::PlatformStream<cudaStream_t>>()")
     for _ in range(spec.num_args):
         binding_parts.append("    .Arg<xla::ffi::AnyBuffer>()")
     for _ in range(spec.num_rets):

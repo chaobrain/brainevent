@@ -220,6 +220,28 @@ Your C++ function parameters must follow this order:
                   float scale,
                   int64_t stream);
 
+.. warning::
+
+   **``const`` on** ``BE::Tensor`` **is the only thing that distinguishes an
+   input from an output in auto-detection.**
+
+   ``const BE::Tensor`` freezes only the tensor metadata (shape, dtype) — not
+   the underlying GPU data.  C++ silently allows
+   ``static_cast<float*>(param.data_ptr())`` even on a ``const BE::Tensor``, so
+   there is no compiler warning when an output tensor is accidentally marked
+   ``const``.
+
+   If every ``BE::Tensor`` parameter is ``const``, auto-detection raises:
+
+   .. code-block:: text
+
+      KernelError: No non-const Tensor output found in 'my_func'.
+      Mark input Tensors with 'const' to distinguish inputs from outputs,
+      or use the explicit dict form: functions={'my_func': ['arg', 'ret', ...]}
+
+   **Rule**: remove ``const`` from every tensor the kernel writes to, regardless
+   of whether C++ requires it.
+
 Attribute Type Inference
 ------------------------
 
