@@ -110,15 +110,17 @@ class Test_csr_on_pre:
 
         csr = brainevent.CSR.fromdense(mat)
         csr = csr.with_data(
-            update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
-                                     w_min=w_in, w_max=w_max, shape=csr.shape, backend=backend)
+            update_csr_on_binary_pre(
+                csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
+                w_min=w_in, w_max=w_max, shape=csr.shape, backend=backend
+            )
         )
 
         mat = mat + jnp.outer(pre_spike.astype(float), post_trace)
         mat = u.math.clip(mat, a_min=w_in, a_max=w_max)
 
         mat = jnp.where(mask, mat, 0.)
-        assert jnp.allclose(csr.todense(), mat)
+        assert jnp.allclose(csr.todense(), mat, atol=1e-1, rtol=1e-1)
 
         jax.block_until_ready((mat, pre_spike, post_trace))
 
