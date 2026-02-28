@@ -101,19 +101,14 @@
             ]
         },
         "config_2": {
-            "warmup": 10,
-            "runs": 20,
+            "warmup": 3,
+            "runs": 3,
             "dist_type": "uniform",
             "configs": [
                 {
                     "n_rows": 10000,
                     "n_cols": 10000,
                     "density": 0.1
-                },
-                {
-                    "n_rows": 10000,
-                    "n_cols": 10000,
-                    "density": 0.01
                 },
                 {
                     "n_rows": 10000,
@@ -217,20 +212,14 @@
             ]
         },
         "config_2": {
-            "warmup": 10,
-            "runs": 20,
+            "warmup": 3,
+            "runs": 3,
             "dist_type": "uniform",
             "configs": [
                 {
                     "n_rows": 10000,
                     "n_cols": 10000,
                     "density": 0.1,
-                    "n_col": 50
-                },
-                {
-                    "n_rows": 10000,
-                    "n_cols": 10000,
-                    "density": 0.01,
                     "n_col": 50
                 },
                 {
@@ -246,13 +235,92 @@
             "homo_weight": [
                 false
             ]
+        },
+            "config_3": {
+            "warmup": 10,
+            "runs": 20,
+            "dist_type": "uniform",
+            "configs": [
+                {
+                    "n_rows": 1000,
+                    "n_cols": 1000,
+                    "density": 0.1,
+                    "n_col": 50
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 1000,
+                    "density": 0.01,
+                    "n_col": 50
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 1000,
+                    "density": 0.001,
+                    "n_col": 50
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 5000,
+                    "density": 0.1,
+                    "n_col": 100
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 5000,
+                    "density": 0.01,
+                    "n_col": 100
+                },
+                {
+                    "n_rows": 1000,
+                    "n_cols": 5000,
+                    "density": 0.001,
+                    "n_col": 100
+                },
+                {
+                    "n_rows": 5000,
+                    "n_cols": 5000,
+                    "density": 0.1,
+                    "n_col": 500
+                },
+                {
+                    "n_rows": 5000,
+                    "n_cols": 5000,
+                    "density": 0.01,
+                    "n_col": 500
+                },
+                {
+                    "n_rows": 5000,
+                    "n_cols": 5000,
+                    "density": 0.001,
+                    "n_col": 500
+                },
+                {
+                    "n_rows": 10000,
+                    "n_cols": 5000,
+                    "density": 0.01,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 10000,
+                    "n_cols": 5000,
+                    "density": 0.001,
+                    "n_col": 1000
+                }
+            ],
+            "transpose": [
+                false, true
+            ],
+            "homo_weight": [
+                true, false
+            ]
         }
     },
     "typeC": {
         "operator": ["COBA_binary_fcnmv"],
         "config_1": {
-            "warmup": 10,
-            "runs": 20,
+            "warmup": 5,
+            "runs": 5,
             "dist_type": "uniform",
             "duration": 1e5,
             "scale": [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100],
@@ -264,8 +332,8 @@
     "typeD": {
         "operator": ["COBA_binary_fcnmm"],
         "config_1": {
-            "warmup": 10,
-            "runs": 20,
+            "warmup": 5,
+            "runs": 5,
             "dist_type": "uniform",
             "duration": 1e5,
             "scale": [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100],

@@ -57,7 +57,7 @@ CONFIGS = [
 
 current_name = 'binary_fcnmm'
 benchmark_data_type = 'typeB'
-config_type = "config_1"
+config_type = "config_2"
 # Problem sizes: (n_pre, n_post, n_conn)
 
 def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
@@ -85,9 +85,11 @@ transpose_list = parsed_config.get('transpose', [False, True])
 homo_list = parsed_config.get('homo_weight', [True, False])
 matrix_configs = parsed_config.get('configs', [])
 bool_event_list = parsed_config.get('bool_event', [True, False]) # binary_fcnmv specific
-
+runs = parsed_config.get('runs', 10)
+warmup = parsed_config.get('warmup', 10)
+batch = parsed_config.get('batch', 10)
 len_config = len(matrix_configs) * len(transpose_list) * len(homo_list) * len(bool_event_list)
-
+spike_rate = 0.1
 
 def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
     brainstate.environ.set(precision=32)  # change to 16 or 64 for other precisions
@@ -144,52 +146,36 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
                             )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="binary_fcnmm backend benchmark")
-    parser.add_argument("--n_warmup", type=int, default=10,
-                        help="Number of warmup iterations (default: 10)")
-    parser.add_argument("--n_runs", type=int, default=50,
-                        help="Number of timed iterations (default: 50)")
-    parser.add_argument("--spike_rate", type=float, default=0.1,
-                        help="Fraction of active matrix entries (default: 0.1 = 10%%)")
-    parser.add_argument("--n_batch", type=int, default=32,
-                        help="Batch (n) dimension of the input matrix (default: 32)")
-    args = parser.parse_args()
+try:
+    gpu = jax.devices("gpu")[0]
+except RuntimeError:
+    print("ERROR: No GPU device found.  Run this script on a CUDA-enabled machine.")
 
-    try:
-        gpu = jax.devices("gpu")[0]
-    except RuntimeError:
-        print("ERROR: No GPU device found.  Run this script on a CUDA-enabled machine.")
-        return
 
-    print(f"binary_fcnmm benchmark  —  GPU: {gpu}")
-    print(f"warmup={args.n_warmup}  runs={args.n_runs}  "
-          f"spike_rate={args.spike_rate:.0%}  n_batch={args.n_batch}")
-    print()
+print(f"binary_fcnmm benchmark  —  GPU: {gpu}")
+print(f"warmup={warmup}  runs={runs}  "
+        f"spike_rate={spike_rate:.0%}  n_batch={batch}")
+print()
 
-    def _data_gen(*, platform):
-        yield from _make_benchmark_data(
-            platform=platform,
-            spike_rate=args.spike_rate,
-            n_batch=args.n_batch,
-        )
-
-    binary_fcnmm_p.def_benchmark_data(_data_gen)
-
-    total_len_config = len_config * (1 if args.spike_rate is not None else 3)
-
-    result = binary_fcnmm_p.benchmark_csv_output(
-        platform='gpu',
-        n_warmup=args.n_warmup,
-        n_runs=args.n_runs,
-        n_batch_per_run=1,
-        compare_results=True,
-        verbose=False,
-        catch_errors=False,
-        len_config=total_len_config
+def _data_gen(*, platform):
+    yield from _make_benchmark_data(
+        platform=platform,
+        spike_rate=spike_rate,
+        n_batch=batch,
     )
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 
+binary_fcnmm_p.def_benchmark_data(_data_gen)
 
-if __name__ == "__main__":
-    main()
+total_len_config = len_config * (1 if spike_rate is not None else 3)
+
+result = binary_fcnmm_p.benchmark_csv_output(
+    platform='gpu',
+    n_warmup=warmup,
+    n_runs=runs,
+    n_batch_per_run=batch,
+    compare_results=True,
+    verbose=False,
+    catch_errors=False,
+    len_config=total_len_config
+)
+result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')

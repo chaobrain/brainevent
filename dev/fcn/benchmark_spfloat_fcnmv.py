@@ -34,7 +34,7 @@ from brainevent import BenchmarkConfig, spfloat_fcnmv_p
 current_name = 'spfloat_fcnmv'
 benchmark_data_type = 'typeA'
 DEFAULT_SPIKE_RATES = [0.01, 0.05, 0.10, 0.50]
-config_type = "config_1"
+config_type = "config_2"
 # Spike rates to sweep.  At lower rates, the CUDA kernel's early-exit
 # optimisation should show the largest speedup over dense-style kernels.
 def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
@@ -62,7 +62,9 @@ transpose_list = parsed_config.get('transpose', [False, True])
 homo_list = parsed_config.get('homo_weight', [True, False])
 matrix_configs = parsed_config.get('configs', [])
 default_spike_rates = parsed_config.get('spike_rates', DEFAULT_SPIKE_RATES)
-
+runs = parsed_config.get('runs', 10)
+warmup = parsed_config.get('warmup', 10)
+batch = parsed_config.get('batch', 10)
 base_len_config = len(matrix_configs) * len(transpose_list) * len(homo_list)
 
 def _make_benchmark_data(*, platform, spike_rates=None):
@@ -114,51 +116,31 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                         },
                     )
 
-
-def main():
-    parser = argparse.ArgumentParser(description="spfloat_fcnmv backend benchmark")
-    parser.add_argument("--n_warmup", type=int, default=10)
-    parser.add_argument("--n_runs", type=int, default=20)
-    parser.add_argument("--n_batch_per_run", type=int, default=10)
-    parser.add_argument(
-        "--spike_rates",
-        type=float,
-        nargs="+",
-        default= DEFAULT_SPIKE_RATES,
-        metavar="RATE",
-        help="Firing rates to sweep (e.g. 0.01 0.05 0.10 0.50)",
-    )
-    args = parser.parse_args()
-
-    try:
-        gpu = jax.devices("gpu")[0]
-    except RuntimeError:
-        print("ERROR: No GPU device found.")
-        return
-
-    print(f"spfloat_fcnmv benchmark  —  GPU: {gpu}")
-    print(f"warmup={args.n_warmup}  runs={args.n_runs}")
-    print(f"spike_rates={args.spike_rates}")
-
-    def _data_gen(*, platform):
-        yield from _make_benchmark_data(platform=platform, spike_rates=args.spike_rates)
-
-    spfloat_fcnmv_p.def_benchmark_data(_data_gen)
-
-    total_len_config = base_len_config * len(args.spike_rates)
-
-    result = spfloat_fcnmv_p.benchmark_csv_output(
-        platform='gpu',
-        n_warmup=args.n_warmup,
-        n_runs=args.n_runs,
-        n_batch_per_run=args.n_batch_per_run,
-        compare_results=True,
-        verbose=False,
-        len_config = total_len_config
-    )
-    
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
+try:
+    gpu = jax.devices("gpu")[0]
+except RuntimeError:
+    print("ERROR: No GPU device found.")
 
 
-if __name__ == "__main__":
-    main()
+print(f"spfloat_fcnmv benchmark  —  GPU: {gpu}")
+print(f"warmup={warmup}  runs={runs}")
+print(f"spike_rates={default_spike_rates}")
+
+def _data_gen(*, platform):
+    yield from _make_benchmark_data(platform=platform, spike_rates=default_spike_rates)
+
+spfloat_fcnmv_p.def_benchmark_data(_data_gen)
+
+total_len_config = base_len_config * len(default_spike_rates)
+
+result = spfloat_fcnmv_p.benchmark_csv_output(
+    platform='gpu',
+    n_warmup=warmup,
+    n_runs=runs,
+    n_batch_per_run=batch,
+    compare_results=True,
+    verbose=False,
+    len_config = total_len_config
+)
+
+result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')

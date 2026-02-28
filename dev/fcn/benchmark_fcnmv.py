@@ -57,6 +57,9 @@ dist_type = parsed_config.get('dist_type', 'uniform')
 transpose_list = parsed_config.get('transpose', [False, True])
 homo_list = parsed_config.get('homo_weight', [True, False])
 matrix_configs = parsed_config.get('configs', [])
+runs = parsed_config.get('runs', 10)
+warmup = parsed_config.get('warmup', 10)
+batch = parsed_config.get('batch', 10)
 
 len_config = len(matrix_configs) * len(transpose_list) * len(homo_list)
 
@@ -93,36 +96,27 @@ def _make_benchmark_data(*, platform):
                 )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="fcnmv backend benchmark")
-    parser.add_argument("--n_warmup", type=int, default=10)
-    parser.add_argument("--n_runs", type=int, default=10)
-    parser.add_argument("--n_batch_per_run", type=int, default=10)
-    args = parser.parse_args()
 
-    try:
-        gpu = jax.devices("gpu")[0]
-    except RuntimeError:
-        print("ERROR: No GPU device found.")
-        return
+try:
+    gpu = jax.devices("gpu")[0]
+except RuntimeError:
+    print("ERROR: No GPU device found.")
 
-    print(f"fcnmv benchmark  —  GPU: {gpu}")
-    print(f"warmup={args.n_warmup}  runs={args.n_runs}")
+print(f"fcnmv benchmark  —  GPU: {gpu}")
+print(f"warmup={warmup}  runs={runs}")
 
-    fcnmv_p.def_benchmark_data(_make_benchmark_data)
+fcnmv_p.def_benchmark_data(_make_benchmark_data)
 
-    result = fcnmv_p.benchmark_csv_output(
-        platform='gpu',
-        n_warmup=args.n_warmup,
-        n_runs=args.n_runs,
-        n_batch_per_run = args.n_batch_per_run,
-        compare_results=True,
-        verbose=False,
-        len_config = len_config
-    )
-    # result.print(order_by=['transpose', 'shape', 'backend'], highlight_best=True, speedup_vs='jax_raw')
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
+result = fcnmv_p.benchmark_csv_output(
+    platform='gpu',
+    n_warmup=warmup,
+    n_runs=runs,
+    n_batch_per_run = batch,
+    compare_results=True,
+    verbose=False,
+    len_config = len_config
+)
+# result.print(order_by=['transpose', 'shape', 'backend'], highlight_best=True, speedup_vs='jax_raw')
+result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 
 
-if __name__ == "__main__":
-    main()

@@ -21,6 +21,7 @@ from typing import Callable, Dict, List, Optional
 import jax
 from jax.interpreters import xla, batching, ad, mlir
 
+import nvtx
 from brainevent._compatible_import import Primitive
 from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
@@ -1349,6 +1350,7 @@ class XLACustomKernel:
                 for be in backends_to_test:
                     import jax
                     @jax.jit
+                    @nvtx.annotate(f"{str(be)}")
                     def run_fn(*args):
                         return self._call_fn(*args, backend=be, **config.kernel_kwargs)
 
@@ -1361,6 +1363,7 @@ class XLACustomKernel:
                         try:
                             mean_s, std_s, min_s, _max_s, output = benchmark_function(
                                 run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run, data=config.args,
+                                be_name = be,
                             )
                             success = True
                             mean_ms, std_ms, min_ms , max_ms = mean_s * 1000.0, std_s * 1000.0, min_s * 1000.0, _max_s* 1000.0
@@ -1369,6 +1372,7 @@ class XLACustomKernel:
                     else:
                         mean_s, std_s, min_s, _max_s, output = benchmark_function(
                             run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run, data=config.args,
+                            be_name = be,
                         )
                         success = True
                         mean_ms, std_ms, min_ms , max_ms = mean_s * 1000.0, std_s * 1000.0, min_s * 1000.0, _max_s* 1000.0
