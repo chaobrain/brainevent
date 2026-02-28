@@ -33,7 +33,7 @@ from brainevent._op._pipeline import load_cuda_inline
 # --- Unit tests for normalize_tokens (no GPU needed) ---
 
 def test_normalize_tokens_legacy_aliases():
-    """normalize_tokens converts kernix aliases to canonical BE tokens."""
+    """normalize_tokens converts kernel aliases to canonical BE tokens."""
 
     assert normalize_tokens(["args", "rets", "ctx.stream"]) == ["arg", "ret", "stream"]
 
@@ -53,7 +53,7 @@ def test_normalize_tokens_passthrough():
 
 
 def test_normalize_tokens_mixed():
-    """Mixed JKB and kernix tokens all normalise correctly."""
+    """Mixed JKB and kernel tokens all normalise correctly."""
 
     result = normalize_tokens(["args", "rets", "attrs.scale", "ctx.stream"])
     assert result == ["arg", "ret", "attr.scale", "stream"]
@@ -196,14 +196,14 @@ def test_parse_annotations_inline_spec_no_stream():
 
 
 def test_parse_annotations_inline_spec_legacy_aliases():
-    """Inline spec accepts kernix token aliases and normalises them."""
+    """Inline spec accepts kernel token aliases and normalises them."""
 
     source = """
     // @BE my_func args rets ctx.stream
     void my_func(const BE::Tensor x, BE::Tensor out, int64_t stream) {}
     """
     result = parse_annotations(source)
-    # kernix aliases are normalised to canonical BE form
+    # aliases are normalised to canonical BE form
     assert result["my_func"] == ["arg", "ret", "stream"]
 
 

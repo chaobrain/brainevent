@@ -334,7 +334,7 @@ def parse_annotations(source: str) -> dict[str, list[str]]:
     Each annotation marks a user function for FFI export.  The arg_spec can
     be specified in two ways:
 
-    **Inline spec** (kernix-compatible)::
+    **Inline spec**::
 
         // @BE vector_add arg arg ret stream
 
@@ -346,7 +346,7 @@ def parse_annotations(source: str) -> dict[str, list[str]]:
         // @BE gen_kernel_f32_bool arg arg ret stream
         MY_MACRO(_f32_bool, float, uint8_t)
 
-    Accepted kernix aliases are automatically normalised:
+    Accepted aliases are automatically normalised:
     ``args`` → ``arg``, ``rets`` → ``ret``, ``ctx.stream`` → ``stream``,
     ``attrs.name`` → ``attr.name``.
 
@@ -390,7 +390,7 @@ def parse_annotations(source: str) -> dict[str, list[str]]:
         inline_spec_str = m.group(2).strip()
         if inline_spec_str:
             # Inline arg_spec: "// @BE func_name arg arg ret stream"
-            # Normalise kernix compatible aliases (args→arg, etc.)
+            # Normalise kernel compatible aliases (args→arg, etc.)
             result[name] = normalize_tokens(inline_spec_str.split())
         else:
             # No inline tokens: infer from C++ signature (direct or macro).
@@ -400,7 +400,7 @@ def parse_annotations(source: str) -> dict[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# kernix token aliases — normalize to canonical BE form
+# kernel token aliases — normalize to canonical BE form
 # ---------------------------------------------------------------------------
 
 # Simple one-to-one aliases
@@ -410,17 +410,17 @@ _TOKEN_ALIASES: dict[str, str] = {
     "ctx.stream": "stream",
 }
 
-# attrs.name → attr.name  (kernix uses dot-separated 'attrs' prefix)
+# attrs.name → attr.name  (kernel uses dot-separated 'attrs' prefix)
 _ATTRS_ALIAS_RE = re.compile(r"^attrs\.(\w+)$")
 
 
 def normalize_tokens(tokens: list[str]) -> list[str]:
-    """Normalise kernix compatible tokens to canonical BE form.
+    """Normalise compatible tokens to canonical BE form.
 
     The following aliases are accepted and converted transparently:
 
     +--------------------+------------------+
-    | kernix token  | BE canonical    |
+    |     token          | BE canonical    |
     +====================+==================+
     | ``"args"``         | ``"arg"``        |
     | ``"rets"``         | ``"ret"``        |
@@ -434,7 +434,7 @@ def normalize_tokens(tokens: list[str]) -> list[str]:
     Parameters
     ----------
     tokens : list[str]
-        Raw arg_spec tokens, possibly using kernix conventions.
+        Raw arg_spec tokens, possibly using conventions.
 
     Returns
     -------

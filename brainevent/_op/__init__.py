@@ -40,7 +40,7 @@ __all__ = [
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
     'defjvp', 'general_batching_rule',
     'jaxinfo_to_warpinfo', 'jaxtype_to_warptype',
-    # kernix CUDA/C++ compilation API
+    # CUDA/C++ compilation API
     'load_cuda_inline', 'load_cuda_file', 'load_cuda_dir',
     'load_cpp_inline', 'load_cpp_file',
     'set_cache_dir', 'get_cache_dir', 'clear_cache', 'print_diagnostics',
