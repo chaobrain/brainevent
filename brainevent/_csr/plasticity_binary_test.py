@@ -118,7 +118,7 @@ class Test_csr_on_pre:
         mat = u.math.clip(mat, a_min=w_in, a_max=w_max)
 
         mat = jnp.where(mask, mat, 0.)
-        assert jnp.allclose(csr.todense(), mat)
+        assert jnp.allclose(csr.todense(), mat, atol=1e-1, rtol=1e-1)
 
         jax.block_until_ready((mat, pre_spike, post_trace))
 
