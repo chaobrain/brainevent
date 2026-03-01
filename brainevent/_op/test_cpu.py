@@ -15,12 +15,17 @@
 
 """Test CPU/C++ compilation and FFI registration."""
 
+import platform
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import brainevent
+
+if platform.platform().startswith('Windows'):
+    pytest.skip(reason="Windows is not supported yet.", allow_module_level=True)
 
 ADD_ONE_SRC = r"""
 #include "brainevent/common.h"

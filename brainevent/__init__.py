@@ -52,11 +52,17 @@ from ._dense import (
     spfloat_densemm, spfloat_densemm_p,
 )
 from ._error import (
+    BrainEventError,
     MathError,
+    KernelError,
     KernelNotAvailableError,
     KernelCompilationError,
     KernelFallbackExhaustedError,
     KernelExecutionError,
+    KernelToolchainError,
+    CompilationError,
+    KernelRegistrationError,
+    BenchmarkDataFnNotProvidedError,
     CUDANotInstalledError,
 )
 from ._event import (
@@ -236,11 +242,17 @@ __all__ = [
     'PallasLFSRRNG', 'get_pallas_lfsr_rng_class',
 
     # --- errors --- #
+    'BrainEventError',
     'MathError',
+    'KernelError',
     'KernelNotAvailableError',
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
     'KernelExecutionError',
+    'KernelToolchainError',
+    'CompilationError',
+    'KernelRegistrationError',
+    'BenchmarkDataFnNotProvidedError',
     'CUDANotInstalledError',
 
     # --- utilities --- #
