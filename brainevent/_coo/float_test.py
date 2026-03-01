@@ -14,8 +14,6 @@
 # ==============================================================================
 
 
-from importlib.metadata import version, PackageNotFoundError
-
 import brainstate
 import braintools
 import jax
