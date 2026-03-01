@@ -176,10 +176,10 @@ See also the ecosystem
    :maxdepth: 2
    :caption: CUDA/C++ Kernels
 
-   kernix/index.rst
-   tutorial/custom_operators_numba_cuda.ipynb
-   tutorial/custom_operators_numba.ipynb
-   tutorial/custom_operators_warp.ipynb
+   kernel/index.rst
+   kernel/custom_operators_numba_cuda.ipynb
+   kernel/custom_operators_numba.ipynb
+   kernel/custom_operators_warp.ipynb
 
 .. toctree::
    :hidden:
