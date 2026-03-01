@@ -18,7 +18,7 @@ Custom Kernel
 
 
 CPU Kernel via Numba
-------------------
+-------------------
 
 .. autosummary::
    :toctree: generated/
