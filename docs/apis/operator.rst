@@ -45,7 +45,7 @@ GPU Kernel via CUDA Source
 
 .. autofunction:: brainevent.load_cuda_dir
 
-CPU Kernel vis C++ Source
+CPU Kernel via C++ Source
 -------------------------
 
 .. autofunction:: brainevent.load_cpp_inline
