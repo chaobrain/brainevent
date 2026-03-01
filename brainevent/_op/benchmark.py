@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
+import nvtx
 import jax
 import numpy as np
 
@@ -1517,6 +1518,7 @@ def benchmark_function(
     n_runs: int,
     n_batch_per_run: int = 1,
     data: Tuple = (),
+    be_name = None,
 ) -> Tuple[float, float, float, float, Any]:
     """Benchmark a function and return timing statistics.
 
@@ -1549,6 +1551,7 @@ def benchmark_function(
     jax.block_until_ready(output)
 
     @jax.jit
+    @nvtx.annotate((f"{str(be_name)}"))
     def run_fn(*args):
         if n_batch_per_run == 1:
             res = fn(*args)

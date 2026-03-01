@@ -37,6 +37,7 @@ from brainevent import BenchmarkConfig, spfloat_fcnmm_p
 # (n_pre, n_post, n_conn, n_col)
 # n_col drives the second dimension of the dense matrix M.
 # Include vec4-friendly (n_col % 4 == 0) and non-aligned sizes.
+'''
 CONFIGS = [
     (1000,  1000,  50,   32),
     (1000,  1000, 100,  128),
@@ -48,20 +49,65 @@ CONFIGS = [
     (10000, 10000, 200,  64),
     (10000, 10000,  50, 256),
 ]
-
+'''
+import json
+current_name = 'spfloat_fcnmm'
+benchmark_data_type = 'typeB'
 DEFAULT_SPIKE_RATES = [0.01, 0.05, 0.10, 0.50]
+config_type = "config_2"
+# Spike rates to sweep.  At lower rates, the CUDA kernel's early-exit
+# optimisation should show the largest speedup over dense-style kernels.
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
+    with open(json_path, 'r') as f:
+        raw_data = json.load(f)
+        
+    if benchmark_data_type not in raw_data:
+        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
+        
+    if operator_name not in raw_data[benchmark_data_type]["operator"]:
+        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
+    
+    operator_data = raw_data[benchmark_data_type]
 
+    if config_key not in operator_data:
+        raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
+        
+    return operator_data[config_key]
+
+config_file_path = 'benchmark_config.json'
+parsed_config = load_benchmark_config(config_file_path, benchmark_data_type, current_name)
+
+dist_type = parsed_config.get('dist_type', 'uniform')
+transpose_list = parsed_config.get('transpose', [False, True])
+homo_list = parsed_config.get('homo_weight', [True, False])
+matrix_configs = parsed_config.get('configs', [])
+default_spike_rates = parsed_config.get('spike_rates', DEFAULT_SPIKE_RATES)
+runs = parsed_config.get('runs', 10)
+warmup = parsed_config.get('warmup', 10)
+batch = parsed_config.get('batch', 10)
+
+base_len_config = len(matrix_configs) * len(transpose_list) * len(homo_list)
 
 def _make_benchmark_data(*, platform, spike_rates=None):
     brainstate.environ.set(precision=32)  # change to 16 or 64 for other precisions
     if spike_rates is None:
-        spike_rates = DEFAULT_SPIKE_RATES
+        spike_rates = default_spike_rates
+
     rng = np.random.default_rng(42)
     dtype = brainstate.environ.dftype()
-    for n_pre, n_post, n_conn, n_col in CONFIGS:
+
+    for cfg in matrix_configs:
+        
+        n_pre = cfg['n_rows']
+        n_post = cfg['n_cols']
+        prob = cfg['density']
+        n_col = cfg['n_col']
+
+        n_conn = max(1, int(n_post * prob))
         indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
-        for transpose in (False, True):
-            for homo in (True, False):
+
+        for transpose in transpose_list:
+            for homo in homo_list:
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
@@ -77,8 +123,8 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                     name = (
                         f"{'T' if transpose else 'NT'},"
                         f"{'homo' if homo else 'hetero'},"
-                        f"{n_pre}x{n_post}x{n_conn},"
-                        f"ncol={n_col},"
+                        f"{n_pre}x{n_post}x{prob},"
+                        f"n_col={n_col},"
                         f"rate={rate:.0%}"
                     )
                     yield BenchmarkConfig(
@@ -88,7 +134,7 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                         data_kwargs={
                             'n_pre': n_pre,
                             'n_post': n_post,
-                            'n_conn': n_conn,
+                            'prob': prob,
                             'n_col': n_col,
                             'transpose': transpose,
                             'spike_rate': rate,
@@ -96,50 +142,35 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                     )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="spfloat_fcnmm backend benchmark")
-    parser.add_argument("--n_warmup", type=int, default=10)
-    parser.add_argument("--n_runs", type=int, default=20)
-    parser.add_argument(
-        "--spike_rates",
-        type=float,
-        nargs="+",
-        default=DEFAULT_SPIKE_RATES,
-        metavar="RATE",
-        help="Firing rates to sweep (e.g. 0.01 0.05 0.10 0.50)",
-    )
-    args = parser.parse_args()
-
-    try:
-        gpu = jax.devices("gpu")[0]
-    except RuntimeError:
-        print("ERROR: No GPU device found.")
-        return
-
-    print(f"spfloat_fcnmm benchmark  —  GPU: {gpu}")
-    print(f"warmup={args.n_warmup}  runs={args.n_runs}")
-    print(f"spike_rates={args.spike_rates}")
-
-    def _data_gen(*, platform):
-        yield from _make_benchmark_data(platform=platform, spike_rates=args.spike_rates)
-
-    spfloat_fcnmm_p.def_benchmark_data(_data_gen)
-
-    result = spfloat_fcnmm_p.benchmark(
-        platform='gpu',
-        n_warmup=args.n_warmup,
-        n_runs=args.n_runs,
-        n_batch_per_run=1,
-        compare_results=True,
-        verbose=True,
-    )
-    # result.print(
-    #     order_by=['transpose', 'spike_rate', 'shape', 'backend'],
-    #     highlight_best=True,
-    #     speedup_vs='jax_raw',
-    # )
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
+try:
+    gpu = jax.devices("gpu")[0]
+except RuntimeError:
+    print("ERROR: No GPU device found.")
 
 
-if __name__ == "__main__":
-    main()
+print(f"spfloat_fcnmm benchmark  —  GPU: {gpu}")
+print(f"warmup={warmup}  runs={runs}")
+print(f"spike_rates={default_spike_rates}")
+
+def _data_gen(*, platform):
+    yield from _make_benchmark_data(platform=platform, spike_rates=default_spike_rates)
+
+spfloat_fcnmm_p.def_benchmark_data(_data_gen)
+
+total_len_config = base_len_config * len(default_spike_rates)
+
+result = spfloat_fcnmm_p.benchmark_csv_output(
+    platform='gpu',
+    n_warmup=warmup,
+    n_runs=runs,
+    n_batch_per_run=batch,
+    compare_results=True,
+    verbose=False,
+    len_config = total_len_config
+)
+# result.print(
+#     order_by=['transpose', 'spike_rate', 'shape', 'backend'],
+#     highlight_best=True,
+#     speedup_vs='jax_raw',
+# )
+result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')

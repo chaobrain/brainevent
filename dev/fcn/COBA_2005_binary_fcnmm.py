@@ -46,9 +46,55 @@ if _PROJECT_ROOT not in sys.path:
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
 
-DEFAULT_SCALES = (1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100)
+current_name = 'COBA_binary_fcnmv'
+benchmark_data_type = 'typeC'
+config_type = "config_1"
+config_file_path = 'benchmark_config.json'
+
+#DEFAULT_SCALES = (1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100)
+DEFAULT_SCALES = (1,  4,  8,  20,  60, 100)
 DEFAULT_BACKENDS = ('cuda_raw', 'pallas', 'jax_raw')
 DEFAULT_CONNS = ('post', 'pre')
+warmup = 2
+runs = 3
+duration = 1e4
+BATCHSIZE = 10
+
+def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type):
+    with open(json_path, 'r') as f:
+        raw_data = json.load(f)
+        
+    if benchmark_data_type not in raw_data:
+        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
+        
+    if operator_name not in raw_data[benchmark_data_type]["operator"]:
+        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
+    
+    operator_data = raw_data[benchmark_data_type]
+
+    if config_key not in operator_data:
+        raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
+  
+    if 'scale' in operator_data[config_key]:
+        DEFAULT_SCALES = tuple(operator_data["scale"])
+
+    if 'backends' in operator_data[config_key]:
+        DEFAULT_BACKENDS = tuple(operator_data["backends"])
+
+    if 'conns' in operator_data[config_key]:
+        DEFAULT_CONNS = tuple(operator_data["conns"])
+
+    if 'warmup'in operator_data[config_key]:
+        WARMUP = operator_data["warmup"]
+
+    if 'runs'in operator_data[config_key]:
+        RUNS = operator_data["runs"]
+
+    if 'duration'in operator_data[config_key]:
+        DURATION = operator_data["duration"]
+
+    if 'batch-size'in operator_data[config_key]:
+        BATCHSIZE = operator_data["batch"-size]
 
 
 def _benchmark_single_backend(
@@ -114,6 +160,8 @@ def _summarize(rows: Iterable[dict], baseline_backend: str) -> list[dict]:
             'scale': int(scale),
             'size': size,
             'runs': len(records),
+            'elapsed_min_s': min(times),       
+            'elapsed_max_s': max(times), 
             'elapsed_mean_s': statistics.fmean(times),
             'elapsed_std_s': statistics.pstdev(times) if len(times) > 1 else 0.0,
             'firing_rate_mean_hz': statistics.fmean(rates),
@@ -141,88 +189,22 @@ def _write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-
-def _write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('w') as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-
-
-def _plot(summary: list[dict], output_dir: Path, baseline_backend: str) -> list[Path]:
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        print('matplotlib is not installed; skipping plots.')
-        return []
-
-    paths: list[Path] = []
-    conns = sorted({entry['conn'] for entry in summary})
-    for conn in conns:
-        conn_rows = [e for e in summary if e['conn'] == conn]
-        backends = sorted({e['backend'] for e in conn_rows})
-
-        fig1, ax1 = plt.subplots(figsize=(9, 5))
-        for backend in backends:
-            b_rows = sorted((e for e in conn_rows if e['backend'] == backend), key=lambda e: e['scale'])
-            ax1.plot(
-                [e['scale'] for e in b_rows],
-                [e['elapsed_mean_s'] for e in b_rows],
-                marker='o',
-                label=backend,
-            )
-        ax1.set_title(f'COBA 2005 binary_fcnmm runtime ({conn} conn)')
-        ax1.set_xlabel('Scale')
-        ax1.set_ylabel('Mean runtime (s)')
-        ax1.grid(True, alpha=0.3)
-        ax1.legend()
-        runtime_path = output_dir / f'runtime_{conn}.png'
-        fig1.tight_layout()
-        fig1.savefig(runtime_path, dpi=150)
-        plt.close(fig1)
-        paths.append(runtime_path)
-
-        speedup_rows = [
-            e for e in conn_rows if e['backend'] != baseline_backend and e['speedup_vs_baseline'] is not None
-        ]
-        if speedup_rows:
-            fig2, ax2 = plt.subplots(figsize=(9, 5))
-            for backend in sorted({e['backend'] for e in speedup_rows}):
-                b_rows = sorted((e for e in speedup_rows if e['backend'] == backend), key=lambda e: e['scale'])
-                ax2.plot(
-                    [e['scale'] for e in b_rows],
-                    [e['speedup_vs_baseline'] for e in b_rows],
-                    marker='o',
-                    label=f'{backend} vs {baseline_backend}',
-                )
-            ax2.axhline(1.0, color='k', linestyle='--', linewidth=1)
-            ax2.set_title(f'COBA 2005 binary_fcnmm speedup ({conn} conn)')
-            ax2.set_xlabel('Scale')
-            ax2.set_ylabel('Speedup (>1 is faster)')
-            ax2.grid(True, alpha=0.3)
-            ax2.legend()
-            speedup_path = output_dir / f'speedup_{conn}.png'
-            fig2.tight_layout()
-            fig2.savefig(speedup_path, dpi=150)
-            plt.close(fig2)
-            paths.append(speedup_path)
-    return paths
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description='Run and compare COBA_2005 binary_fcnmm backends.')
     parser.add_argument('--backends', nargs='+', default=list(DEFAULT_BACKENDS))
     parser.add_argument('--scales', nargs='+', type=int, default=list(DEFAULT_SCALES))
     parser.add_argument('--conns', nargs='+', choices=['post', 'pre'], default=list(DEFAULT_CONNS))
-    parser.add_argument('--batch-size', type=int, default=16)
-    parser.add_argument('--warmup', type=int, default=1)
-    parser.add_argument('--runs', type=int, default=3)
-    parser.add_argument('--duration-ms', type=float, default=1e4)
+    parser.add_argument('--warmup', type=int, default=warmup)
+    parser.add_argument('--runs', type=int, default=runs)
+    parser.add_argument('--duration-ms', type=float, default=duration)
     parser.add_argument('--baseline-backend', default='jax_raw')
     parser.add_argument('--output-dir', default='dev/fcn/results')
     parser.add_argument('--tag', default=None, help='Optional suffix for output files.')
     parser.add_argument('--no-plot', action='store_true')
-    args = parser.parse_args()
+    
+    parser.add_argument('--batch-size', type=int, default=BATCHSIZE)
 
+    args = parser.parse_args()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     tag = f'_{args.tag}' if args.tag else ''
     output_dir = Path(args.output_dir)
@@ -252,15 +234,8 @@ def main() -> None:
         raise RuntimeError('No benchmark results were collected.')
 
     summary = _summarize(all_rows, baseline_backend=args.baseline_backend)
-
-    raw_csv_path = output_dir / f'coba_2005_binary_fcnmm_raw_{timestamp}{tag}.csv'
     summary_csv_path = output_dir / f'coba_2005_binary_fcnmm_summary_{timestamp}{tag}.csv'
-    summary_json_path = output_dir / f'coba_2005_binary_fcnmm_summary_{timestamp}{tag}.json'
-    _write_csv(
-        raw_csv_path,
-        all_rows,
-        fieldnames=['backend', 'conn', 'scale', 'run_id', 'size', 'firing_rate_hz', 'elapsed_s'],
-    )
+
     _write_csv(
         summary_csv_path,
         summary,
@@ -270,45 +245,19 @@ def main() -> None:
             'scale',
             'size',
             'runs',
+            'elapsed_min_s',      
+            'elapsed_max_s', 
             'elapsed_mean_s',
             'elapsed_std_s',
             'firing_rate_mean_hz',
             'speedup_vs_baseline',
         ],
     )
-    _write_json(
-        summary_json_path,
-        {
-            'created_at': timestamp,
-            'backends': args.backends,
-            'conns': args.conns,
-            'scales': args.scales,
-            'batch_size': args.batch_size,
-            'warmup': args.warmup,
-            'runs': args.runs,
-            'duration_ms': args.duration_ms,
-            'baseline_backend': args.baseline_backend,
-            'failed_backends': failed_backends,
-            'summary': summary,
-        },
-    )
 
-    plot_paths: list[Path] = []
-    if not args.no_plot:
-        plot_paths = _plot(summary, output_dir=output_dir, baseline_backend=args.baseline_backend)
 
-    print(f'Raw results saved to: {raw_csv_path}')
     print(f'Summary saved to: {summary_csv_path}')
-    print(f'Summary JSON saved to: {summary_json_path}')
-    if plot_paths:
-        print('Plots saved:')
-        for p in plot_paths:
-            print(f'  - {p}')
-    if failed_backends:
-        print('Some backend/conn runs failed:')
-        for backend_conn, err in failed_backends:
-            print(f'  - {backend_conn}: {err}')
 
 
 if __name__ == '__main__':
+    #load_benchmark_config(config_file_path, benchmark_data_type, current_name)
     main()
