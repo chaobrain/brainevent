@@ -232,28 +232,10 @@ class KernelExecutionError(KernelError):
 class CUDANotInstalledError(KernelError):
     """Raised when a CUDA operation is requested but the package is not installed.
 
-    This exception is raised by :func:`~brainevent._op.util.load_cuda_inline`
-    when ``kernix`` or ``cuda.cpp`` is not available in the current
-    environment.
-
-    Parameters
-    ----------
-    message : str
-        A human-readable description indicating that CUDA is missing
-        and how to install it.
-
     See Also
     --------
     KernelNotAvailableError : General exception for unavailable backends.
 
-    Examples
-    --------
-    .. code-block:: python
-
-        >>> from brainevent._error import CUDANotInstalledError
-        >>> raise CUDANotInstalledError(
-        ...     "kernix is not installed. Install with: pip install kernix"
-        ... )  # doctest: +SKIP
     """
     __module__ = 'brainevent'
 
