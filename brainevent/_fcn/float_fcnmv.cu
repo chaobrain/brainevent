@@ -497,10 +497,11 @@ void fcnmv_scatter_hetero_auto##SUFFIX(                                         
 
 // SpMV FFI Instantiations
 // ---- float32 ----
-// @BE fcnmv_gather_homo_auto_f32
-FFI_GATHER_HOMO_AUTO  (_f32, float, 32 * sizeof(float))
-// @BE fcnmv_gather_hetero_auto_f32
-FFI_GATHER_HETERO_AUTO(_f32, float, 32 * sizeof(float))
+
+//FFI_GATHER_HOMO_AUTO  (_f32, float, 32 * sizeof(float))
+
+//FFI_GATHER_HETERO_AUTO(_f32, float, 32 * sizeof(float))
+
 // @BE fcnmv_scatter_homo_auto_f32
 FFI_SCATTER_HOMO_AUTO (_f32, float)
 // @BE fcnmv_scatter_hetero_auto_f32
@@ -638,3 +639,100 @@ void fcnmv_gather_auto_f32(
             _gather_basic_hetero_kern_f32<<<n_pre, 256, 32 * sizeof(float), s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn);
     }
 }
+
+
+#define DEFINE_GATHER_SCALAR_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO) \
+__global__ void _gather_scalar_hetero_kern##SUFFIX(                                     \
+    const int32_t* __restrict__ indices,                                                \
+    const WEIGHT_T* __restrict__ vector,                                                \
+    WEIGHT_T* __restrict__ output,                                                      \
+    const WEIGHT_T* __restrict__ weights,                                               \
+    int n_pre, int n_conn                                                               \
+) {                                                                                     \
+    int row = blockIdx.x * blockDim.x + threadIdx.x;                                    \
+    if (row >= n_pre) return;                                                           \
+                                                                                        \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                              \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                             \
+                                                                                        \
+    ACC_T val = ACC_ZERO;                                                               \
+    for (int k = 0; k < n_conn; ++k) {                                                  \
+        int32_t idx = __ldg(&i_row[k]);                                                 \
+        val += READ_W(__ldg(&w_row[k])) * READ_W(__ldg(&vector[idx]));                  \
+    }                                                                                   \
+    output[row] = WRITE_W(val);                                                         \
+}
+
+DEFINE_GATHER_SCALAR_HETERO(_f32, float, float, READ_F32, WRITE_F32, 0.0f)
+
+
+#define FFI_GATHER_HETERO_AUTO(SUFFIX, WEIGHT_C_T)                                \
+void fcnmv_gather_hetero_auto##SUFFIX(                                            \
+    const BE::Tensor weights, const BE::Tensor indices,                           \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                   \
+) {                                                                               \
+    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                     \
+    int n_pre       = static_cast<int>(indices.size(0));                          \
+    int n_conn      = static_cast<int>(indices.size(1));                          \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
+    const WEIGHT_C_T* d_vec = static_cast<const WEIGHT_C_T*>(vector.data_ptr());  \
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());    \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());        \
+                                                                                  \
+    int threads_per_block = 128;                                                  \
+    int blocks_per_grid = (n_pre + threads_per_block - 1) / threads_per_block;    \
+                                                                                  \
+    _gather_scalar_hetero_kern##SUFFIX<<<blocks_per_grid, threads_per_block, 0, s>>>( \
+        d_idx, d_vec, d_out, d_w, n_pre, n_conn);                                 \
+}
+
+// @BE fcnmv_gather_hetero_auto_f32
+FFI_GATHER_HETERO_AUTO(_f32, float)
+
+#define DEFINE_GATHER_SCALAR_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO) \
+__global__ void _gather_scalar_homo_kern##SUFFIX(                                     \
+    const int32_t* __restrict__ indices,                                              \
+    const WEIGHT_T* __restrict__ vector,                                              \
+    WEIGHT_T* __restrict__ output,                                                    \
+    const WEIGHT_T* __restrict__ weights,                                             \
+    int n_pre, int n_conn                                                             \
+) {                                                                                   \
+    int row = blockIdx.x * blockDim.x + threadIdx.x;                                  \
+    if (row >= n_pre) return;                                                         \
+                                                                                      \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                            \
+                                                                                      \
+    ACC_T val = ACC_ZERO;                                                             \
+    for (int k = 0; k < n_conn; ++k) {                                                \
+        int32_t idx = __ldg(&i_row[k]);                                               \
+        val += READ_W(__ldg(&vector[idx]));                                           \
+    }                                                                                 \
+                                                                                      \
+    WEIGHT_T w = READ_W(__ldg(weights));                                              \
+    output[row] = WRITE_W(val * w);                                                   \
+}
+
+DEFINE_GATHER_SCALAR_HOMO(_f32, float, float, READ_F32, WRITE_F32, 0.0f)
+
+#define FFI_GATHER_HOMO_AUTO(SUFFIX, WEIGHT_C_T)                                  \
+void fcnmv_gather_homo_auto##SUFFIX(                                              \
+    const BE::Tensor weights, const BE::Tensor indices,                           \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                   \
+) {                                                                               \
+    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                     \
+    int n_pre       = static_cast<int>(indices.size(0));                          \
+    int n_conn      = static_cast<int>(indices.size(1));                          \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
+    const WEIGHT_C_T* d_vec = static_cast<const WEIGHT_C_T*>(vector.data_ptr());  \
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());       \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());              \
+                                                                                  \
+    int threads_per_block = 128;                                                  \
+    int blocks_per_grid = (n_pre + threads_per_block - 1) / threads_per_block;    \
+                                                                                  \
+    _gather_scalar_homo_kern##SUFFIX<<<blocks_per_grid, threads_per_block, 0, s>>>( \
+        d_idx, d_vec, d_out, d_w, n_pre, n_conn);                                 \
+}
+
+// @BE fcnmv_gather_homo_auto_f32
+FFI_GATHER_HOMO_AUTO(_f32, float)
