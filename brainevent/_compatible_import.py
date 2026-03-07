@@ -16,9 +16,11 @@
 __all__ = [
     'Primitive',
     'Tracer',
+    'init_zero',
 ]
 
 import jax
+from jax.interpreters import ad
 
 if jax.__version_info__ < (0, 4, 38):
     from jax.core import Primitive
@@ -26,3 +28,12 @@ else:
     from jax.extend.core import Primitive
 
 from jax.core import Tracer
+
+
+def init_zero(a):
+    if jax.__version_info__ < (0, 4, 34):
+        return ad.Zero.from_value(a)
+    elif jax.__version_info__ < (0, 9, 1):
+        return ad.Zero.from_primal_value(a)
+    else:
+        return ad.Zero(a.aval)

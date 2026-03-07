@@ -24,7 +24,7 @@ import numpy as np
 from jax import tree_util
 from jax.interpreters import ad
 
-from brainevent._compatible_import import Primitive
+from brainevent._compatible_import import Primitive, init_zero
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -243,15 +243,7 @@ def _standard_jvp(jvp_rules, primitive: Primitive, primals, tangents, **params):
     r = functools.reduce(
         _add_tangents,
         tangents_out,
-        tree_util.tree_map(
-            # compatible with JAX 0.4.34
-            lambda a: (
-                ad.Zero.from_primal_value(a)
-                if jax.__version_info__ >= (0, 4, 34) else
-                ad.Zero.from_value(a)
-            ),
-            val_out
-        )
+        tree_util.tree_map(init_zero, val_out)
     )
     return val_out, r
 
