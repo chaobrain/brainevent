@@ -161,7 +161,7 @@ See also the ecosystem
 .. toctree::
    :hidden:
    :maxdepth: 2
-   :caption: Tutorials
+   :caption: Tutorials: Event-Driven Computation
 
    tutorial/01_eventarray_basics.ipynb
    tutorial/02_sparse_matrices.ipynb
@@ -174,7 +174,7 @@ See also the ecosystem
 .. toctree::
    :hidden:
    :maxdepth: 2
-   :caption: CUDA/C++ Kernels
+   :caption: Tutorials: Custom Kernels
 
    kernel/index.rst
    kernel/custom_operators_numba_cuda.ipynb
