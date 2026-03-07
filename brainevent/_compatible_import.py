@@ -36,4 +36,6 @@ def init_zero(a):
     elif jax.__version_info__ < (0, 9, 1):
         return ad.Zero.from_primal_value(a)
     else:
-        return ad.Zero(a.aval)
+        return ad.Zero(a.aval.to_tangent_aval())
+
+
