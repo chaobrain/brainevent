@@ -35,8 +35,7 @@ from COBA_2005_benchmark import make_simulation_batch_run
 
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
-batch_size = 16
-conn_num = 80
+batch_size, conn_num, data_type, duration = 16, 80, 'binary', 2e3 * u.ms
 
 
 def benchmark_post_conn():
@@ -46,9 +45,9 @@ def benchmark_post_conn():
         run = make_simulation_batch_run(
             scale=s,
             batch_size=batch_size,
-            data_type='binary',
+            data_type=data_type,
             efferent_target='post',
-            duration=1e3 * u.ms,
+            duration=duration,
             conn_num=conn_num,
         )
 
@@ -81,6 +80,79 @@ def benchmark_pre_conn():
         print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
 
 
+def run_benchmark(batch_size, conn_num, mode='post'):
+    print(f"\n{'=' * 70}")
+    print(f"  batch_size={batch_size}, conn_num={conn_num} "
+          f"({'warp' if conn_num <= 32 else 'basic'} kernel) "
+          f"[{mode}-synaptic]")
+    print(f"{'=' * 70}")
+
+    # Scales to benchmark (network sizes: scale * 4000 neurons)
+    SCALES = [1, 4, 10, 40, 100]
+
+    for s in SCALES:
+        dur = 1e3 * u.ms if mode == 'post' else 1e2 * u.ms
+        run = make_simulation_batch_run(
+            scale=s,
+            batch_size=batch_size,
+            data_type='binary',
+            efferent_target=mode,
+            duration=dur,
+            conn_num=conn_num,
+        )
+
+        # Warmup
+        jax.block_until_ready(run())
+
+        # Timed run
+        t0 = time.time()
+        n, rate = jax.block_until_ready(run())
+        t1 = time.time()
+        elapsed = t1 - t0
+        print(f"  scale={s:>3d}, neurons={n:>6d}, "
+              f"time={elapsed:>8.3f}s, rate={rate:.1f} Hz")
+
+
+def bench_fcnmm():
+    brainevent.config.set_backend('gpu', 'cuda_raw')
+
+    print("Binary FCNMM Kernel Benchmark")
+    print("=" * 70)
+
+    # Configurations to test
+    CONFIGS = [
+        # (batch_size, conn_num, description)
+        # --- Warp kernel path (conn_num <= 32) ---
+        (16, 16, "warp, small batch"),
+        (16, 32, "warp, boundary"),
+        (32, 16, "warp, large batch"),
+        (32, 32, "warp, large batch boundary"),
+        # --- Basic kernel path (conn_num > 32) ---
+        (16, 80, "basic, default"),
+        (16, 128, "basic, large conn"),
+        (32, 80, "basic, large batch"),
+        (32, 128, "basic, large batch+conn"),
+        (64, 80, "basic, very large batch"),
+    ]
+
+    # Test gather mode (post-synaptic / transpose=True)
+    for batch_size, conn_num, desc in CONFIGS:
+        run_benchmark(batch_size, conn_num, mode='post')
+
+    # Test scatter mode (pre-synaptic / transpose=False) for a subset
+    print("\n\n" + "#" * 70)
+    print("# Scatter mode (pre-synaptic)")
+    print("#" * 70)
+    scatter_configs = [
+        (16, 16, "warp"),
+        (16, 80, "basic"),
+        (32, 80, "basic large batch"),
+    ]
+    for batch_size, conn_num, desc in scatter_configs:
+        run_benchmark(batch_size, conn_num, mode='pre')
+
+
 if __name__ == '__main__':
-    benchmark_post_conn()
+    # benchmark_post_conn()
+    bench_fcnmm()
     # benchmark_pre_conn()
