@@ -14,13 +14,11 @@
 # ==============================================================================
 
 from .binary import binary_fcnmv, binary_fcnmv_p, binary_fcnmm, binary_fcnmm_p
-from .float import fcnmv, fcnmv_p, fcnmm, fcnmm_p
+from .float import fcnmv, fcnmm
 from .main import FixedNumConn, FixedPreNumConn, FixedPostNumConn
-from .sparse_float import spfloat_fcnmv, spfloat_fcnmv_p, spfloat_fcnmm, spfloat_fcnmm_p
 
 __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
     'binary_fcnmv', 'binary_fcnmv_p', 'binary_fcnmm', 'binary_fcnmm_p',
-    'fcnmv', 'fcnmv_p', 'fcnmm', 'fcnmm_p',
-    'spfloat_fcnmv', 'spfloat_fcnmv_p', 'spfloat_fcnmm', 'spfloat_fcnmm_p',
+    'fcnmv', 'fcnmm',
 ]

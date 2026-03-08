@@ -90,8 +90,6 @@ class CSR_Conn(brainstate.nn.Module):
         assert x.ndim in [1, 2], 'Input must be 1D or 2D.'
         if self.data_type == 'binary':
             fn = brainevent.binary_csrmv if x.ndim == 1 else brainevent.binary_csrmm
-        elif self.data_type == 'sparse_float':
-            fn = brainevent.spfloat_csrmv if x.ndim == 1 else brainevent.spfloat_csrmm
         else:
             fn = brainevent.csrmv if x.ndim == 1 else brainevent.csrmm
         transpose = (self.efferent_target == 'post')

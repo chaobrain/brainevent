@@ -23,14 +23,13 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._data import DataRepresentation
-from brainevent._event import BinaryArray, SparseFloat
+from brainevent._event import BinaryArray
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
 from .diag_add import csr_diag_position_v2, csr_diag_add_v2
 from .float import csrmv, csrmm
 from .slice import csr_slice_rows
-from .sparse_float import spfloat_csrmv, spfloat_csrmm
 from .spsolve import csr_solve
 from .yw2y import csrmv_yw2y
 
@@ -795,7 +794,6 @@ class CSR(CompressedSparseData):
     right-hand operand type:
 
     * :class:`~brainevent.BinaryArray` -- event-driven binary CSR MV/MM.
-    * :class:`~brainevent.SparseFloat` -- sparse-float CSR MV/MM.
     * Dense ``jax.Array`` / ``brainunit.Quantity`` -- standard float CSR
       MV/MM with automatic dtype promotion.
 
@@ -1154,13 +1152,12 @@ class CSR(CompressedSparseData):
         * 1-D array -- sparse matrix-vector product (MV).
         * 2-D array -- sparse matrix-matrix product (MM).
         * :class:`~brainevent.BinaryArray` -- event-driven binary kernel.
-        * :class:`~brainevent.SparseFloat` -- sparse-float kernel.
         * Dense ``jax.Array`` / ``brainunit.Quantity`` -- standard float
           kernel with automatic dtype promotion.
 
         Parameters
         ----------
-        other : jax.Array, brainunit.Quantity, BinaryArray, or SparseFloat
+        other : jax.Array, brainunit.Quantity, or BinaryArray
             The right-hand operand.  Must be 1-D or 2-D.
 
         Returns
@@ -1199,17 +1196,6 @@ class CSR(CompressedSparseData):
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_csrmv(self.data, self.indices, self.indptr, other,
-                                     shape=self.shape, backend=self.backend)
-            elif other.ndim == 2:
-                return spfloat_csrmm(self.data, self.indices, self.indptr, other,
-                                     shape=self.shape, backend=self.backend)
-            else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
-
         else:
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
@@ -1245,7 +1231,7 @@ class CSR(CompressedSparseData):
 
         Parameters
         ----------
-        other : jax.Array, brainunit.Quantity, BinaryArray, or SparseFloat
+        other : jax.Array, brainunit.Quantity, or BinaryArray
             The left-hand operand.  Must be 1-D or 2-D.
 
         Returns
@@ -1281,27 +1267,6 @@ class CSR(CompressedSparseData):
                 other = other.T
                 r = binary_csrmm(self.data, self.indices, self.indptr, other,
                                  shape=self.shape, transpose=True, backend=self.backend)
-                return r.T
-            else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
-
-        elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_csrmv(
-                    self.data, self.indices, self.indptr, other,
-                    shape=self.shape,
-                    transpose=True,
-                    backend=self.backend,
-                )
-            elif other.ndim == 2:
-                other = other.T
-                r = spfloat_csrmm(
-                    self.data, self.indices, self.indptr, other,
-                    shape=self.shape,
-                    transpose=True,
-                    backend=self.backend,
-                )
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1836,7 +1801,7 @@ class CSC(CompressedSparseData):
 
         Parameters
         ----------
-        other : jax.Array, brainunit.Quantity, BinaryArray, or SparseFloat
+        other : jax.Array, brainunit.Quantity, or BinaryArray
             The right-hand operand.  Must be 1-D or 2-D.
 
         Returns
@@ -1882,25 +1847,6 @@ class CSC(CompressedSparseData):
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_csrmv(
-                    data, self.indices, self.indptr, other,
-                    shape=self.shape[::-1],
-                    transpose=True,
-                    backend=self.backend,
-                )
-            elif other.ndim == 2:
-                return spfloat_csrmm(
-                    data, self.indices, self.indptr, other,
-                    shape=self.shape[::-1],
-                    transpose=True,
-                    backend=self.backend,
-                )
-            else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
-
         else:
 
             other = u.math.asarray(other)
@@ -1938,7 +1884,7 @@ class CSC(CompressedSparseData):
 
         Parameters
         ----------
-        other : jax.Array, brainunit.Quantity, BinaryArray, or SparseFloat
+        other : jax.Array, brainunit.Quantity, or BinaryArray
             The left-hand operand.  Must be 1-D or 2-D.
 
         Returns
@@ -1973,17 +1919,6 @@ class CSC(CompressedSparseData):
             elif other.ndim == 2:
                 return binary_csrmm(data, self.indices, self.indptr, other.T,
                                     shape=self.shape[::-1], transpose=False, backend=self.backend).T
-            else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
-
-        elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_csrmv(data, self.indices, self.indptr, other,
-                                     shape=self.shape[::-1], transpose=False, backend=self.backend)
-            elif other.ndim == 2:
-                return spfloat_csrmm(data, self.indices, self.indptr, other.T,
-                                     shape=self.shape[::-1], transpose=False, backend=self.backend).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 

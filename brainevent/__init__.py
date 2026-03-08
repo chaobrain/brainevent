@@ -33,8 +33,6 @@ from ._csr import (
     csrmv_yw2y, csrmv_yw2y_p,
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
-    spfloat_csrmv, spfloat_csrmv_p,
-    spfloat_csrmm, spfloat_csrmm_p,
     csr_slice_rows, csr_slice_rows_p,
 )
 from ._data import (
@@ -48,8 +46,6 @@ from ._dense import (
     indexed_binary_densemm, indexed_binary_densemm_p,
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
-    spfloat_densemv, spfloat_densemv_p,
-    spfloat_densemm, spfloat_densemm_p,
 )
 from ._error import (
     BrainEventError,
@@ -80,9 +76,7 @@ from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
     binary_fcnmv, binary_fcnmv_p,
     binary_fcnmm, binary_fcnmm_p,
-    fcnmv, fcnmv_p, fcnmm, fcnmm_p,
-    spfloat_fcnmv, spfloat_fcnmv_p,
-    spfloat_fcnmm, spfloat_fcnmm_p,
+    fcnmv, fcnmm,
 )
 from ._jit_normal import (
     JITCNormalR, JITCNormalC,
@@ -178,8 +172,6 @@ __all__ = [
     'csrmv_yw2y', 'csrmv_yw2y_p',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
-    'spfloat_csrmv', 'spfloat_csrmv_p',
-    'spfloat_csrmm', 'spfloat_csrmm_p',
     'csr_slice_rows', 'csr_slice_rows_p',
 
     # --- dense matrix --- #
@@ -189,8 +181,6 @@ __all__ = [
     'indexed_binary_densemm', 'indexed_binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
     'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
-    'spfloat_densemv', 'spfloat_densemv_p',
-    'spfloat_densemm', 'spfloat_densemm_p',
 
     # --- Just-In-Time Connectivity matrix --- #
     'JITCMatrix',
@@ -217,10 +207,8 @@ __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
     'binary_fcnmv', 'binary_fcnmv_p',
     'binary_fcnmm', 'binary_fcnmm_p',
-    'fcnmv', 'fcnmv_p',
-    'fcnmm', 'fcnmm_p',
-    'spfloat_fcnmv', 'spfloat_fcnmv_p',
-    'spfloat_fcnmm', 'spfloat_fcnmm_p',
+    'fcnmv',
+    'fcnmm',
 
     # --- operator customization routines --- #
     'XLACustomKernel', 'KernelEntry',

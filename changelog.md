@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Configurable LFSR RNG** for both Numba (`_numba_random.py`) and Pallas (`_pallas_random.py`) with three algorithm families: LFSR88 (~2^88 period), LFSR113 (~2^113 period), LFSR128 (~2^128 period) (#74)
 - **TPU backend support** for CSR operations (#72)
 - **Event representation classes**: `IndexedBinary1d/2d`, `IndexedSpFloat1d/2d` for indexed subsets of events, with `binary_array_index()` extraction function
-- **Fixed-connection matmul helpers** (`binary_fcnmv/mm`, `fcnmv/mm`, `spfloat_fcnmv/mm`) and JITC matmul helpers for scalar/normal/uniform connectivity (#61)
+- **Fixed-connection matmul helpers** (`binary_fcnmv/mm`, `fcnmv/mm`) and JITC matmul helpers for scalar/normal/uniform connectivity (#61)
 - **`namescope` JAX decorator** for per-backend JIT compilation caching (#62)
 - **Custom error types**: `KernelNotAvailableError`, `KernelCompilationError`, `KernelFallbackExhaustedError`, `KernelExecutionError`
 - Tutorial on BinaryArray usage and optimization techniques (#64)
@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Major codebase restructuring**: flat modules reorganized into coherent subpackages (`_coo/`, `_csr/`, `_dense/`, `_fcn/`, `_jit_scalar/`, `_jit_normal/`, `_jit_uniform/`, `_event/`) (#59, #69)
-- **Consistent function naming convention** across all operations: `binary_*mv/mm`, `*mv/mm`, `spfloat_*mv/mm`, `update_*_on_binary_pre/post`, with `_p` suffix for raw primitives (#62)
+- **Consistent function naming convention** across all operations: `binary_*mv/mm`, `*mv/mm`, `update_*_on_binary_pre/post`, with `_p` suffix for raw primitives (#62)
 - **`EventArray` renamed to `BinaryArray`** across the entire codebase (backward-compatible alias retained)
 - **JITC class renames**: `JITCHomoR/C` → `JITCScalarR/C`; module renames `_jitc_homo` → `_jit_scalar`, `_jitc_normal` → `_jit_normal`, `_jitc_uniform` → `_jit_uniform`
 - **Pallas RNG class renames**: `LFSR88RNG` → `PallasLFSR88RNG`, `LFSR113RNG` → `PallasLFSR113RNG`; new factory `PallasLFSRRNG(seed)`

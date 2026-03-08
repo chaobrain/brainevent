@@ -23,12 +23,12 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
+from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
-from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'csrmv',
@@ -458,6 +458,8 @@ def _csrmv_jax_kernel(
             return (jnp.zeros(m, dtype=out_dtype).at[row_ids].add(w * v_vals),)
 
     return kernel
+
+
 def _csrmv_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -560,14 +562,12 @@ def _csrmv_warp_kernel_generator(
     return kernel
 
 
-
 def _csrmv_cusparse_kernel(
     weight_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """cuSPARSE-backed kernel for CSR SpMV via jax.experimental.sparse (GPU only)."""
     import jax.experimental.sparse as jsparse
     m, k = shape
     is_homo = (weight_info.size == 1)
@@ -1203,6 +1203,7 @@ def _csrmm_warp_kernel_generator(
             return fn(weights, indices, indptr, B, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
+
 
 def _csrmm_pallas_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,

@@ -199,11 +199,14 @@ class TestBinary1DArrayIndexEdgeCases:
         assert count[0] == 0
         assert jnp.array_equal(count, expected_count)
 
-    def test_2d_array_not_implemented(self):
-        """Test that 2D array raises NotImplementedError."""
+    def test_2d_array_basic(self):
+        """Test that 2D array extraction works."""
         spikes = jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
-        with pytest.raises(NotImplementedError):
-            binary_array_index(spikes)
+        packed, active_ids, n_active = binary_array_index(spikes)
+        # Both rows have at least one non-zero column
+        assert n_active[0] == 2
+        # packed shape should be (2, 1) since ceil(2/32) = 1
+        assert packed.shape == (2, 1)
 
     def test_3d_array_error(self):
         """Test that 3D array raises ValueError."""

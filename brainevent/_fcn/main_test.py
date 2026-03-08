@@ -221,49 +221,6 @@ class Test_Operator_Behavior:
         jax.block_until_ready(
             (idx, data, dense, left_vector.value, right_vector.value, left_matrix.value, right_matrix.value))
 
-    def test_fixed_post_sparse_float_operator_behavior(self):
-        idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
-        data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
-        conn = brainevent.FixedPostNumConn((data, idx), shape=(3, 4))
-        dense = conn.todense()
-
-        left_vector = brainevent.SparseFloat(jnp.array([0.2, 0.0, 1.0], dtype=jnp.float32))
-        right_vector = brainevent.SparseFloat(jnp.array([0.0, 0.6, 0.0, 1.0], dtype=jnp.float32))
-        left_matrix = brainevent.SparseFloat(
-            jnp.array([[0.0, 1.0, 0.3], [1.0, 0.0, 0.0]], dtype=jnp.float32)
-        )
-        right_matrix = brainevent.SparseFloat(
-            jnp.array([[0.0, 1.0], [0.2, 0.0], [1.0, 0.0], [0.0, 0.4]], dtype=jnp.float32)
-        )
-
-        assert allclose(left_vector @ conn, left_vector.value @ dense)
-        assert allclose(conn @ right_vector, dense @ right_vector.value)
-        assert allclose(left_matrix @ conn, left_matrix.value @ dense)
-        assert allclose(conn @ right_matrix, dense @ right_matrix.value)
-        jax.block_until_ready(
-            (idx, data, dense, left_vector.value, right_vector.value, left_matrix.value, right_matrix.value))
-
-    def test_fixed_pre_sparse_float_operator_behavior(self):
-        idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
-        data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
-        conn = brainevent.FixedPreNumConn((data, idx), shape=(4, 3))
-        dense = conn.todense()
-
-        left_vector = brainevent.SparseFloat(jnp.array([0.0, 1.0, 0.4, 1.0], dtype=jnp.float32))
-        right_vector = brainevent.SparseFloat(jnp.array([1.0, 0.0, 0.7], dtype=jnp.float32))
-        left_matrix = brainevent.SparseFloat(
-            jnp.array([[1.0, 0.0, 0.5, 0.0], [0.0, 1.0, 0.0, 0.2]], dtype=jnp.float32)
-        )
-        right_matrix = brainevent.SparseFloat(
-            jnp.array([[0.2, 0.0], [1.0, 1.0], [0.0, 0.8]], dtype=jnp.float32)
-        )
-
-        assert allclose(left_vector @ conn, left_vector.value @ dense)
-        assert allclose(conn @ right_vector, dense @ right_vector.value)
-        assert allclose(left_matrix @ conn, left_matrix.value @ dense)
-        assert allclose(conn @ right_matrix, dense @ right_matrix.value)
-        jax.block_until_ready(
-            (idx, data, dense, left_vector.value, right_vector.value, left_matrix.value, right_matrix.value))
 
 
 class TestVector:

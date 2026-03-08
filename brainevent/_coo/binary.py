@@ -27,11 +27,9 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, \
-    jaxinfo_to_warpinfo
-from brainevent._op.benchmark import BenchmarkConfig
+    jaxinfo_to_warpinfo, BenchmarkConfig, load_cuda_file
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
-from brainevent._op._pipeline import load_cuda_file
 from .float import coomv, coomm
 
 __all__ = [
