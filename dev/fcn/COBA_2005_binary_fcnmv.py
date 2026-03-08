@@ -27,19 +27,29 @@
 
 import time
 
+import brainunit as u
 import jax
 
 import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
+brainevent.config.set_backend('gpu', 'warp')
 brainevent.config.set_backend('gpu', 'cuda_raw')
+
+conn_num = 80
 
 
 def benchmark_post_conn():
     print('Benchmarking post-synaptic connection updates...')
 
     for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-        run = make_simulation_run(scale=s, data_type='binary', efferent_target='post')
+        run = make_simulation_run(
+            scale=s,
+            data_type='binary',
+            efferent_target='post',
+            duration=1e3 * u.ms,
+            conn_num=conn_num
+        )
 
         jax.block_until_ready(run())
 
@@ -53,7 +63,13 @@ def benchmark_pre_conn():
     print('Benchmarking pre-synaptic connection updates...')
 
     for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-        run = make_simulation_run(scale=s, data_type='binary', efferent_target='pre')
+        run = make_simulation_run(
+            scale=s,
+            data_type='binary',
+            efferent_target='pre',
+            duration=1e2 * u.ms,
+            conn_num=conn_num,
+        )
 
         jax.block_until_ready(run())
 

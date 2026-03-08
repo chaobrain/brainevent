@@ -510,7 +510,6 @@ def _binary_fcnmv_cuda_kernel(
     )
 
     out_info = kwargs['outs']
-    n_conn = indices_info.shape[1]
     is_bool_spike = (spike_info.dtype == jnp.bool_)
     _dtype_sfx = {
         jnp.dtype('float16'): '_f16',
@@ -526,18 +525,12 @@ def _binary_fcnmv_cuda_kernel(
 
     if transpose:
         # Scatter mode: if is_active(spikes[i]) → output[indices[i,k]] += weights[i,k]
-        kernel_name = (
-            f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_warp{spike_sfx}{sfx}'
-            if n_conn <= 32
-            else f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_basic{spike_sfx}{sfx}'
-        )
+        # Always TPR (thread-per-row) — atomicAdd contention is the bottleneck at all n_conn.
+        kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}{spike_sfx}{sfx}'
     else:
         # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
-        kernel_name = (
-            f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}_warp{spike_sfx}{sfx}'
-            if n_conn <= 32
-            else f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}_basic{spike_sfx}{sfx}'
-        )
+        # Auto-dispatch inside CUDA: TPR for n_conn<=512, MR for n_conn>512.
+        kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}{spike_sfx}{sfx}'
 
     def kernel(weights, indices, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
@@ -762,7 +755,6 @@ See Also
 binary_fcnmv : High-level user-facing function wrapper.
 """
 )
-
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
 binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)

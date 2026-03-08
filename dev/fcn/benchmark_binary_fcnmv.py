@@ -142,6 +142,7 @@ def main():
         n_runs=args.n_runs,
         compare_results=True,
         verbose=True,
+        # backends=['cuda_raw', 'warp']
     )
     result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 
