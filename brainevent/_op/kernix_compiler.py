@@ -19,8 +19,8 @@ HIPBackend, and NinjaBuild.
 Adding a new backend
 --------------------
 1. Sub-class ``CompilerBackend`` and implement ``compile_source()``.
-2. Detect the new toolchain in ``_toolchain.py``.
-3. Select the new backend in ``_pipeline.py`` (or call it directly).
+2. Detect the new toolchain in ``kernix_toolchain.py``.
+3. Select the new backend in ``kernix_pipeline.py`` (or call it directly).
 """
 
 import os
@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from brainevent._error import CompilationError, KernelToolchainError
-from ._toolchain import CppToolchain, CudaToolchain, cxx_shared_flags, cxx_std_flag, nvcc_host_pic_flags, so_ext
+from .kernix_toolchain import CppToolchain, CudaToolchain, cxx_shared_flags, cxx_std_flag, nvcc_host_pic_flags, so_ext
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ class CompilerBackend(ABC):
     """Abstract base class for BE compiler backends.
 
     Each backend encapsulates one compilation toolchain (nvcc, g++, hipcc, …).
-    The high-level pipeline in :mod:`brainevent._op._pipeline`
+    The high-level pipeline in :mod:`brainevent._op.kernix_pipeline`
     selects the appropriate backend based on the requested platform.
 
     Subclasses must implement :meth:`compile_source`.  Optionally they can
@@ -72,7 +72,7 @@ class CompilerBackend(ABC):
         source : str
             Preprocessed C++/CUDA source (user code + auto-generated FFI
             wrappers, as produced by
-            :func:`~brainevent._op._codegen.preprocess_source`).
+            :func:`~brainevent._op.kernix_codegen.preprocess_source`).
         output_path : str
             Desired path for the output shared library.
         build_dir : str
@@ -271,7 +271,7 @@ class CUDABackend(CompilerBackend):
     Parameters
     ----------
     toolchain : CudaToolchain
-        Detected CUDA toolchain (from :func:`~._toolchain.detect_toolchain`).
+        Detected CUDA toolchain (from :func:`~.kernix_toolchain.detect_toolchain`).
     """
 
     platform_name = "cuda"
@@ -387,7 +387,7 @@ class CPPBackend(CompilerBackend):
     Parameters
     ----------
     toolchain : CppToolchain
-        Detected C++ toolchain (from :func:`~._toolchain.detect_cpp_toolchain`).
+        Detected C++ toolchain (from :func:`~.kernix_toolchain.detect_cpp_toolchain`).
     """
 
     platform_name = "cpu"
@@ -465,10 +465,10 @@ class HIPBackend(CompilerBackend):
 
     To implement HIP support:
 
-    1. Add ``detect_hip_toolchain()`` to :mod:`~._toolchain` that locates
+    1. Add ``detect_hip_toolchain()`` to :mod:`~.kernix_toolchain` that locates
        ``hipcc`` and the ROCm include directories.
     2. Implement HIP compilation logic in this class using ``hipcc``.
-    3. Update :func:`~brainevent._op._pipeline.load_cuda_inline` (or
+    3. Update :func:`~brainevent._op.kernix_pipeline.load_cuda_inline` (or
        add ``load_hip_inline``) to select :class:`HIPBackend` when
        ``platform="hip"`` is requested.
     """

@@ -33,7 +33,6 @@ import jax
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
 
-brainevent.config.set_backend('gpu', 'warp')
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
 batch_size = 16

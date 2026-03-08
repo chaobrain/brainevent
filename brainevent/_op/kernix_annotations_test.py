@@ -23,11 +23,11 @@ from brainevent._test_util import requires_gpu
 
 pytestmark = requires_gpu
 
-from brainevent._op._codegen import normalize_tokens
+from brainevent._op.kernix_codegen import normalize_tokens
 
 from brainevent._error import KernelError
-from brainevent._op._codegen import parse_annotations
-from brainevent._op._pipeline import load_cuda_inline
+from brainevent._op.kernix_codegen import parse_annotations
+from brainevent._op.kernix_pipeline import load_cuda_inline
 
 
 # --- Unit tests for normalize_tokens (no GPU needed) ---
