@@ -125,6 +125,21 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
 # scale=80, size=320000, time = 4.697195053100586 s, firing rate = 59.56940841674805 Hz
 # scale=100, size=400000, time = 5.40840220451355 s, firing rate = 59.569679260253906 Hz
 
+# --------------------
+# 2026/03/08, NVIDIA GeForce RTX 3080 Ti Laptop, brainevent 0.0.7, CUDA, jax 0.9.0, Ubuntu 24.04
+#
+# scale=1, size=4000, time = 1.4490950107574463 s, firing rate = 59.573604583740234 Hz
+# scale=2, size=8000, time = -0.3793013095855713 s, firing rate = 59.56932830810547 Hz
+# scale=4, size=16000, time = 1.6740055084228516 s, firing rate = 59.568016052246094 Hz
+# scale=6, size=24000, time = 1.543215036392212 s, firing rate = 59.5692138671875 Hz
+# scale=8, size=32000, time = 1.5829763412475586 s, firing rate = 59.568077087402344 Hz
+# scale=10, size=40000, time = 1.6613562107086182 s, firing rate = 59.57008361816406 Hz
+# scale=20, size=80000, time = 1.9681501388549805 s, firing rate = 59.569087982177734 Hz
+# scale=40, size=160000, time = 3.0623559951782227 s, firing rate = 59.57011795043945 Hz
+# scale=60, size=240000, time = 4.380564212799072 s, firing rate = 59.56999969482422 Hz
+# scale=80, size=320000, time = 5.683120965957642 s, firing rate = 59.5700569152832 Hz
+# scale=100, size=400000, time = 7.005706310272217 s, firing rate = 59.569969177246094 Hz
+
 # ------------------
 # AMD Ryzen 7 7840HS
 #

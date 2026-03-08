@@ -47,7 +47,7 @@ def benchmark_post_conn():
             scale=s,
             data_type='binary',
             efferent_target='post',
-            duration=1e3 * u.ms,
+            duration=1e4 * u.ms,
             conn_num=conn_num
         )
 
