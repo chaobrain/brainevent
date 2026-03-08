@@ -26,9 +26,11 @@ import numpy as np
 from brainevent._coo import COO
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
+from brainevent._event.bitpack_binary import BitPackedBinary
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm
+from .bitpack_binary import bitpack_binary_fcnmv
 from .float import fcnmv, fcnmm
 
 __all__ = [
@@ -750,6 +752,13 @@ class FixedPostNumConn(FixedNumConn):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
+        if isinstance(other, BitPackedBinary):
+            if other.ndim == 1:
+                return bitpack_binary_fcnmv(data, self.indices, other.packed, other.value,
+                                            shape=self.shape, transpose=False,
+                                            pack_axis=other.pack_axis)
+            raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
+
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
@@ -797,6 +806,13 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
+
+        if isinstance(other, BitPackedBinary):
+            if other.ndim == 1:
+                return bitpack_binary_fcnmv(data, self.indices, other.packed, other.value,
+                                            shape=self.shape, transpose=True,
+                                            pack_axis=other.pack_axis)
+            raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
             other = other.value
@@ -1286,6 +1302,13 @@ class FixedPreNumConn(FixedNumConn):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
+        if isinstance(other, BitPackedBinary):
+            if other.ndim == 1:
+                return bitpack_binary_fcnmv(data, self.indices, other.packed, other.value,
+                                            shape=self.shape[::-1], transpose=True,
+                                            pack_axis=other.pack_axis)
+            raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
+
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
@@ -1335,6 +1358,13 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
+
+        if isinstance(other, BitPackedBinary):
+            if other.ndim == 1:
+                return bitpack_binary_fcnmv(data, self.indices, other.packed, other.value,
+                                            shape=self.shape[::-1], transpose=False,
+                                            pack_axis=other.pack_axis)
+            raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
             other = other.value

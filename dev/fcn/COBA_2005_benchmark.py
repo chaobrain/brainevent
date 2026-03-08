@@ -47,7 +47,7 @@ class FixedNumConn(brainstate.nn.Module):
         self.out_size = out_size
         self.efferent_target = efferent_target
         self.data_type = data_type
-        if data_type not in ('binary', 'sparse_float', 'float'):
+        if data_type not in ('binary', 'sparse_float', 'float', 'bitpack'):
             raise ValueError('data_type must be either "binary" or "sparse_float" or "float".')
         if efferent_target not in ('pre', 'post'):
             raise ValueError('The target of the connection must be either "pre" or "post".')
@@ -81,15 +81,17 @@ class FixedNumConn(brainstate.nn.Module):
             )
             self.indices = u.math.asarray(indices, dtype=np.int32)
             self.shape = (n_pre, n_post)
-            # csr = (
-            #     brainevent.FixedPostNumConn((conn_weight, indices), shape=(n_pre, n_post))
-            #     if self.efferent_target == 'post' else
-            #     brainevent.FixedPreNumConn((conn_weight, indices), shape=(n_pre, n_post))
-            # )
-            # self.conn = csr
 
     def update(self, x) -> Union[jax.Array, u.Quantity]:
         assert x.ndim in [1, 2], 'Input must be 1D or 2D.'
+        if self.data_type == 'bitpack':
+            assert x.ndim == 1, 'bitpack only supports 1D input.'
+            bp = brainevent.BitPackedBinary(x)
+            transpose = (self.efferent_target == 'post')
+            return brainevent.bitpack_binary_fcnmv(
+                self.weight.value, self.indices, bp.packed, bp.value,
+                shape=self.shape, transpose=transpose, pack_axis=bp.pack_axis,
+            )
         if self.data_type == 'binary':
             fn = brainevent.binary_fcnmv if x.ndim == 1 else brainevent.binary_fcnmm
         elif self.data_type == 'sparse_float':

@@ -65,6 +65,7 @@ from ._event import (
     EventRepresentation,
     IndexedEventRepresentation,
     BinaryArray,
+    BitPackedBinary,
     IndexedBinary1d,
     IndexedBinary2d,
     SparseFloat,
@@ -76,6 +77,7 @@ from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
     binary_fcnmv, binary_fcnmv_p,
     binary_fcnmm, binary_fcnmm_p,
+    bitpack_binary_fcnmv, bitpack_binary_fcnmv_p,
     fcnmv, fcnmm,
 )
 from ._jit_normal import (
@@ -144,6 +146,7 @@ __all__ = [
     'EventRepresentation',
     'IndexedEventRepresentation',
     'BinaryArray',
+    'BitPackedBinary',
     'IndexedBinary1d',
     'IndexedBinary2d',
     'SparseFloat',
@@ -207,6 +210,7 @@ __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
     'binary_fcnmv', 'binary_fcnmv_p',
     'binary_fcnmm', 'binary_fcnmm_p',
+    'bitpack_binary_fcnmv', 'bitpack_binary_fcnmv_p',
     'fcnmv',
     'fcnmm',
 
