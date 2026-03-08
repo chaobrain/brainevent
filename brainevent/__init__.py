@@ -76,7 +76,7 @@ from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
     binary_fcnmv, binary_fcnmv_p,
     binary_fcnmm, binary_fcnmm_p,
-    fcnmv, fcnmv_p, fcnmm, fcnmm_p,
+    fcnmv, fcnmm,
 )
 from ._jit_normal import (
     JITCNormalR, JITCNormalC,
@@ -207,8 +207,8 @@ __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
     'binary_fcnmv', 'binary_fcnmv_p',
     'binary_fcnmm', 'binary_fcnmm_p',
-    'fcnmv', 'fcnmv_p',
-    'fcnmm', 'fcnmm_p',
+    'fcnmv',
+    'fcnmm',
 
     # --- operator customization routines --- #
     'XLACustomKernel', 'KernelEntry',

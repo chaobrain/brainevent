@@ -27,11 +27,11 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, \
-    jaxinfo_to_warpinfo, BenchmarkConfig
+    BenchmarkConfig
+from brainevent._op import load_cuda_file
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
-from brainevent._op import load_cuda_file
-from .float import fcnmv_p_call, fcnmm_p_call
+from .float import fcnmv, fcnmm
 
 __all__ = [
     'binary_fcnmv',
@@ -423,7 +423,7 @@ def _binary_fcnmv_jax_kernel(
 
 
 def _binary_fcnmv_jvp_spikes(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
-    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
+    return fcnmv(weights, indices, spk_dot, shape=shape, transpose=transpose),
 
 
 def _binary_fcnmv_jvp_weights(w_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
@@ -442,9 +442,7 @@ def _binary_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transpo
         if type(ct) is ad.Zero:
             ct_spk = ad.Zero(spikes)
         else:
-            ct_spk = fcnmv_p_call(
-                weights, indices, ct, shape=shape, transpose=not transpose, backend=kwargs['backend'],
-            )[0]
+            ct_spk = fcnmv(weights, indices, ct, shape=shape, transpose=not transpose)
         return weights, indices, ct_spk
 
     else:
@@ -1053,7 +1051,7 @@ def _binary_fcnmm_pallas_kernel(
 
 
 def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
+    return fcnmm(weights, indices, matrix_dot, shape=shape, transpose=transpose),
 
 
 def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
@@ -1075,14 +1073,7 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
             ct_vector = ad.Zero(matrix)
 
         else:
-            ct_vector = fcnmm_p_call(
-                weights,
-                indices,
-                ct,
-                shape=shape,
-                transpose=not transpose,
-                backend=kwargs['backend']
-            )[0]
+            ct_vector = fcnmm(weights, indices, ct, shape=shape, transpose=not transpose)
 
         return weights, indices, ct_vector
     else:

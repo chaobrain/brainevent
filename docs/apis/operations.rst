@@ -222,7 +222,5 @@ Float matrix-vector / matrix-matrix multiplication.
    :toctree: generated/
 
    fcnmv
-   fcnmv_p
    fcnmm
-   fcnmm_p
 

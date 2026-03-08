@@ -763,9 +763,9 @@ class FixedPostNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return fcnmv(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
+                return fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
             elif other.ndim == 2:
-                return fcnmm(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
+                return fcnmm(data, self.indices, other, shape=self.shape, transpose=False)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -812,10 +812,10 @@ class FixedPostNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return fcnmv(data, self.indices, other, shape=self.shape, transpose=True, backend=self.backend)
+                return fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
             elif other.ndim == 2:
                 other = other.T
-                r = fcnmm(data, self.indices, other, shape=self.shape, transpose=True, backend=self.backend)
+                r = fcnmm(data, self.indices, other, shape=self.shape, transpose=True)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1301,9 +1301,9 @@ class FixedPreNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True, backend=self.backend)
+                return fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True)
             elif other.ndim == 2:
-                return fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True, backend=self.backend)
+                return fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -1352,10 +1352,10 @@ class FixedPreNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False, backend=self.backend)
+                return fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)
             elif other.ndim == 2:
                 other = other.T
-                r = fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=False, backend=self.backend)
+                r = fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=False)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
