@@ -142,7 +142,6 @@ def _bitpack_binary_fcnmv_cuda_kernel(
 def _bitpack_binary_fcnmv_numba_kernel(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
-    pack_axis: int,
     **kwargs
 ):
     import numba

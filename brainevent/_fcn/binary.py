@@ -25,11 +25,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
+from brainevent._misc import check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, \
     BenchmarkConfig
 from brainevent._op import load_cuda_file
-from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
 from .float import fcnmv, fcnmm
 
@@ -241,113 +240,6 @@ def _binary_fcnmv_numba_kernel(
 
     def kernel(weights, indices, spikes):
         return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, spikes)
-
-    return kernel
-
-
-def _binary_fcnmv_pallas_kernel(
-    transpose: int,
-    shape: Tuple[int, int],
-    weight_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
-
-    if len(shape) > 2:
-        raise ValueError("shape must be a tuple of length 2")
-    n_pre, n_post = shape
-    n_conn = indices_info.shape[1]
-    homo = weight_info.size == 1
-    block_dim = generate_block_dim(indices_info.shape[1], maximum=256)
-
-    if transpose:
-        # Sparse Matrix: [k, m]
-        # vector: [k]
-
-        def _raw_kernel(
-            weight_ref,  # [1] or [n_pre, n_conn]
-            index_ref,  # [n_pre, n_conn]
-            vector_ref,  # [n_pre]
-            _,
-            out_ref,  # [n_post]
-        ):
-            i_row = pl.program_id(0)
-            vector = vector_ref[i_row]
-            vector_is_bool = vector_ref.dtype == jnp.bool_
-
-            @pl.when(vector if vector_is_bool else vector > 0.)
-            def run():
-                if homo:
-                    wv = weight_ref[0]
-                    homo_data = jnp.ones(block_dim, dtype=weight_info.dtype) * wv
-
-                def loop_fn(i_col_block, _):
-                    i_col = i_col_block * block_dim
-                    mask = i_col + jnp.arange(block_dim) < n_conn
-                    ind = index_ref[i_row, pl.dslice(i_col, block_dim)]
-                    ind = jnp.where(mask, ind, 0)
-                    if homo:
-                        data = homo_data
-                    else:
-                        data = weight_ref[i_row, pl.dslice(i_col, block_dim)]
-                        data = jnp.where(mask, data, 0.0)
-                    atomic_add(out_ref, ind, data, mask=mask)
-
-                jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
-
-        def kernel(weights, indices, vector):
-            fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), input_output_aliases={3: 0},
-                                out_shape=kwargs['outs'], backend='triton')
-            out_info = kwargs['outs'][0]
-            placeholder = jnp.zeros(out_info.shape, out_info.dtype)
-            return fn(weights, indices, vector, placeholder)
-
-    else:
-        # Sparse Matrix: [m, k]
-        # vector: [k]
-
-        def _raw_kernel(
-            weight_ref,  # [1]
-            index_ref,  # [n_pre, n_conn]
-            vector_ref,  # [n_post]
-            out_ref,  # [n_pre]
-        ):
-            i_row = pl.program_id(0)
-
-            def loop_fn(i_col_block, out):
-                i_col = i_col_block * block_dim
-                mask = i_col + jnp.arange(block_dim) < n_conn
-                ind = index_ref[i_row, pl.dslice(i_col, block_dim)]
-                ind = jnp.where(mask, ind, 0)
-                vec = vector_ref[ind]
-                if vector_ref.dtype == jnp.bool_:
-                    vec = jnp.where(mask, vec, False)
-                else:
-                    vec = jnp.where(mask, vec, 0.0)
-                if homo:
-                    if vector_ref.dtype == jnp.bool_:
-                        return out + jnp.sum(jnp.asarray(vec, dtype=out_ref.dtype))
-                    else:
-                        return out + jnp.sum((vec > 0.).astype(out_ref.dtype))
-                else:
-                    weight = weight_ref[i_row, pl.dslice(i_col, block_dim)]
-                    weight = jnp.where(mask, weight, 0.0)
-                    if vector_ref.dtype == jnp.bool_:
-                        weight = jnp.where(vec, weight, 0.)
-                    else:
-                        weight = jnp.where(vec > 0., weight, 0.)
-                    return out + jnp.sum(weight)
-
-            i_row_sum = jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, 0.)
-            if homo:
-                i_row_sum = i_row_sum * weight_ref[0]
-            out_ref[i_row] = i_row_sum
-
-        def kernel(weights, indices, vector):
-            fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), out_shape=kwargs['outs'], backend='triton')
-            return fn(weights, indices, vector)
 
     return kernel
 
@@ -608,7 +500,6 @@ binary_fcnmv : High-level user-facing function wrapper.
 """
 )
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
-binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
 binary_fcnmv_p.def_cuda_raw_kernel(_binary_fcnmv_cuda_kernel, asdefault=True)
 binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'gpu', _binary_fcnmv_jax_kernel)
@@ -908,148 +799,6 @@ def _binary_fcnmm_jax_kernel(
     return kernel
 
 
-def _binary_fcnmm_pallas_kernel(
-    shape: MatrixShape,
-    transpose: bool,
-    weight_info: jax.ShapeDtypeStruct,
-    matrix_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-    atomic_add = getattr(pl, "atomic_add", None)
-    if atomic_add is None:
-        from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
-
-    if len(shape) > 2:
-        raise ValueError("shape must be a tuple of length 2")
-    n_pre, n_post = shape
-    n_conn = indices_info.shape[1]
-    homo = weight_info.size == 1
-    block_k = generate_block_dim(indices_info.shape[1], maximum=128)
-    block_n = generate_block_dim(matrix_info.shape[1], maximum=128)
-
-    if transpose:
-        #
-        # fixed pre connection number
-        #
-        # - CSR: [k, m]
-        # - matrix: [k, n]
-        #
-
-        def _raw_kernel(
-            weight_ref,  # [1] or [n_pre, n_conn]
-            index_ref,  # [n_pre, n_conn]
-            matrix_ref,  # [k, n]
-            _,
-            out_ref,  # [n_pre, n]
-        ):
-            i_k = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = i_n_block * block_n
-            i_n_mask = i_n_start + jnp.arange(block_n) < matrix_ref.shape[1]
-            if homo:
-                weight = jnp.full(block_k, weight_ref[0])
-
-            def loop_fn(i_index_block, _):
-                i_index_start = i_index_block * block_k
-                i_index_mask = i_index_start + jnp.arange(block_k) < n_conn
-                ind = index_ref[i_k, pl.dslice(i_index_start, block_k)]
-                ind = jnp.where(i_index_mask, ind, 0)
-                mat = matrix_ref[i_k, pl.dslice(i_n_start, block_n)]
-                mat = jnp.where(i_n_mask, mat, 0.0)
-                if matrix_ref.dtype != jnp.bool_:
-                    mat = (mat > 0.).astype(weight_ref.dtype)
-                else:
-                    mat = jnp.asarray(mat, dtype=weight_ref.dtype)
-                if homo:
-                    A = weight
-                else:
-                    A = weight_ref[i_k, pl.dslice(i_index_start, block_k)]
-                    A = jnp.where(i_index_mask, A, 0.0)
-                data = A[:, None] * mat[None, :]
-                atomic_add(out_ref, (ind, pl.dslice(i_n_start, block_n)), data,
-                           mask=i_index_mask[:, None] & i_n_mask[None, :])
-
-            jax.lax.fori_loop(0, pl.cdiv(n_conn, block_k), loop_fn, None)
-
-        def kernel(weights, indices, matrix):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
-                input_output_aliases={3: 0},
-                out_shape=kwargs['outs'],
-                backend='triton',
-            )
-            out_info = kwargs['outs'][0]
-            placeholder = jnp.zeros(out_info.shape, out_info.dtype)
-            return fn(weights, indices, matrix, placeholder)
-
-    else:
-
-        #
-        # fixed post connection number
-        #
-        # CSR: [m, k]
-        # matrix: [k, n]
-        #
-
-        def _raw_kernel(
-            weight_ref,  # [1] or [n_pre, n_conn]
-            index_ref,  # [n_pre, n_conn]
-            matrix_ref,  # [k, n]
-            _,
-            out_ref,  # [n_pre, n]
-        ):
-            i_m = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = i_n_block * block_n
-            i_n_mask = i_n_start + jnp.arange(block_n) < matrix_ref.shape[1]
-
-            def loop_fn(i_k_block, out):
-                i_k_start = i_k_block * block_k
-                i_k_mask = i_k_start + jnp.arange(block_k) < n_conn
-                ind = index_ref[i_m, pl.dslice(i_k_start, block_k)]
-                ind = jnp.where(i_k_mask, ind, 0)
-                mat = matrix_ref[ind, pl.dslice(i_n_start, block_n)]
-                mat = jnp.where(i_k_mask[:, None] & i_n_mask[None, :], mat, 0.0)
-                if matrix_ref.dtype != jnp.bool_:
-                    mat = (mat > 0.).astype(weight_ref.dtype)
-                else:
-                    mat = jnp.asarray(mat, dtype=weight_ref.dtype)
-                if homo:
-                    inc = mat.sum(axis=0)
-                else:
-                    weight = weight_ref[i_m, pl.dslice(i_k_start, block_k)]
-                    weight = jnp.where(i_k_mask, weight, 0.0)
-                    inc = (weight[:, None] * mat).sum(axis=0)
-                return out + inc
-
-            final_out = jax.lax.fori_loop(
-                0,
-                pl.cdiv(n_conn, block_k),
-                loop_fn,
-                jnp.zeros(block_n, dtype=weight_ref.dtype)
-            )
-            if homo:
-                final_out = final_out * weight_ref[0]
-            atomic_add(out_ref, (i_m, pl.dslice(i_n_start, block_n)), final_out, mask=i_n_mask)
-
-        def kernel(weights, indices, matrix):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
-                input_output_aliases={3: 0},
-                out_shape=kwargs['outs'],
-                backend='triton',
-            )
-            out_info = kwargs['outs'][0]
-            placeholder = jnp.zeros(out_info.shape, out_info.dtype)
-            return fn(weights, indices, matrix, placeholder)
-
-    return kernel
-
-
 def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
     return fcnmm(weights, indices, matrix_dot, shape=shape, transpose=transpose),
 
@@ -1253,7 +1002,6 @@ binary_fcnmm : High-level user-facing function wrapper.
 """
 )
 binary_fcnmm_p.def_numba_kernel(_binary_fcnmm_numba_kernel)
-binary_fcnmm_p.def_pallas_kernel('gpu', _binary_fcnmm_pallas_kernel)
 binary_fcnmm_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel, asdefault=True)
 binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
