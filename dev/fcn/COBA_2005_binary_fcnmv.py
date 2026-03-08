@@ -36,12 +36,9 @@ from COBA_2005_benchmark import make_simulation_run
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
 
-conn_num, data_type, duration = 80, 'binary', 1e4 * u.ms
-conn_num, data_type, duration = 80, 'bitpack', 1e4 * u.ms
-
-
-
-def benchmark_post_conn():
+def benchmark_post_conn(
+    conn_num=80, data_type='binary', duration=1e4 * u.ms
+):
     # --------------------------------
     # 2026/03/08, conn_num, data_type, duration = 80, 'binary', 1e4 * u.ms
     # --------------------------------
@@ -73,7 +70,38 @@ def benchmark_post_conn():
     # scale=60, size=240000, time = 4.094450235366821 s, firing rate = 59.57121276855469 Hz
     # scale=80, size=320000, time = 5.091517448425293 s, firing rate = 59.57069396972656 Hz
     # scale=100, size=400000, time = 6.501585245132446 s, firing rate = 59.56977462768555 Hz
+
+
     #
+    # --------------------------------
+    # 2026/02/13, AMD Ryzen 7 7840HS, brainevent 0.0.6, Numba 0.63.1, jax 0.9.0, 小新Win11野兽模式
+    # --------------------------------
+    #
+    # scale=1, size=4000, time = 7.121581077575684 s, firing rate = 59.563377380371094 Hz
+    # scale=2, size=8000, time = 11.442655324935913 s, firing rate = 59.57026672363281 Hz
+    # scale=4, size=16000, time = 15.775666236877441 s, firing rate = 59.571495056152344 Hz
+    # scale=6, size=24000, time = 19.378953218460083 s, firing rate = 59.57106018066406 Hz
+    # scale=8, size=32000, time = 22.951914310455322 s, firing rate = 59.57032775878906 Hz
+    # scale=10, size=40000, time = 26.57138180732727 s, firing rate = 59.57281494140625 Hz
+    # scale=20, size=80000, time = 39.93744134902954 s, firing rate = 59.56884765625 Hz
+    # scale=40, size=160000, time = 72.9319748878479 s, firing rate = 59.570556640625 Hz
+    # scale=60, size=240000, time = 105.03494596481323 s, firing rate = 59.57072067260742 Hz
+    # scale=80, size=320000, time = 127.52736496925354 s, firing rate = 59.57038879394531 Hz
+    # scale=100, size=400000, time = 159.3613338470459 s, firing rate = 59.569969177246094 Hz
+    #
+    # --------------------------------
+    # 2026/03/08, AMD Ryzen 7 7840HS, conn_num, data_type, duration = 80, 'binary', 1e4 * u.ms, jax 0.9.1, 小新Win11野兽模式
+    # --------------------------------
+    #
+    # scale=1, size=4000, time = 7.930975675582886 s, firing rate = 59.55842971801758 Hz
+    # scale=2, size=8000, time = 12.520666599273682 s, firing rate = 59.56388854980469 Hz
+    # scale=4, size=16000, time = 18.810335874557495 s, firing rate = 59.570133209228516 Hz
+    # scale=6, size=24000, time = 24.842906713485718 s, firing rate = 59.56852722167969 Hz
+    # scale=8, size=32000, time = 30.43906331062317 s, firing rate = 59.567989349365234 Hz
+    # scale=10, size=40000, time = 36.534552812576294 s, firing rate = 59.56911849975586 Hz
+    # scale=20, size=80000, time = 51.978811502456665 s, firing rate = 59.569488525390625 Hz
+    # scale=40, size=160000, time = 84.97480726242065 s, firing rate = 59.56957244873047 Hz
+    # scale=60, size=240000, time = 120.33725643157959 s, firing rate = 59.5693473815918 Hz
 
     print('Benchmarking post-synaptic connection updates...')
 
@@ -94,7 +122,7 @@ def benchmark_post_conn():
         print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
 
 
-def benchmark_pre_conn():
+def benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms):
     print('Benchmarking pre-synaptic connection updates...')
 
     for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
@@ -115,5 +143,6 @@ def benchmark_pre_conn():
 
 
 if __name__ == '__main__':
-    benchmark_post_conn()
+    benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms)
+    benchmark_post_conn(conn_num=80, data_type='bitpack', duration=1e4 * u.ms)
     # benchmark_pre_conn()

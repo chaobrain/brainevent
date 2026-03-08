@@ -153,7 +153,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
         #          output[indices[i,k]] += weights[...]
         if weight_info.size == 1:
             @numba.njit(fastmath=True)
-            def ell_mv(weights, indices, packed, spikes, posts):
+            def ell_mv(weights, indices, packed,posts):
                 posts[:] = 0.
                 w = weights[0]
                 n_pre = indices.shape[0]
@@ -166,7 +166,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
                             posts[indices[i, k]] += w
         else:
             @numba.njit(fastmath=True)
-            def ell_mv(weights, indices, packed, spikes, posts):
+            def ell_mv(weights, indices, packed, posts):
                 posts[:] = 0.
                 n_pre = indices.shape[0]
                 n_conn = indices.shape[1]
@@ -181,7 +181,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
         #         output[i] = sum_k weights[...] * is_active(packed, indices[i,k])
         if weight_info.size == 1:
             @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-            def ell_mv(weights, indices, packed, spikes, posts):
+            def ell_mv(weights, indices, packed, posts):
                 w = weights[0]
                 n_pre = indices.shape[0]
                 n_conn = indices.shape[1]
@@ -196,7 +196,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
                     posts[i] = r
         else:
             @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-            def ell_mv(weights, indices, packed, spikes, posts):
+            def ell_mv(weights, indices, packed, posts):
                 n_pre = indices.shape[0]
                 n_conn = indices.shape[1]
                 for i in numba.prange(n_pre):
@@ -210,7 +210,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
                     posts[i] = r
 
     def kernel(weights, indices, packed, spikes):
-        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, packed, spikes)
+        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, packed)
 
     return kernel
 
