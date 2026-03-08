@@ -65,16 +65,6 @@ Float matrix-vector / matrix-matrix multiplication.
    csrmv_yw2y
    csrmv_yw2y_p
 
-Sparse-float matrix-vector / matrix-matrix multiplication.
-
-.. autosummary::
-   :toctree: generated/
-
-   spfloat_csrmv
-   spfloat_csrmv_p
-   spfloat_csrmm
-   spfloat_csrmm_p
-
 Plasticity operations.
 
 .. autosummary::
@@ -123,16 +113,6 @@ Indexed binary operations.
    indexed_binary_densemv_p
    indexed_binary_densemm
    indexed_binary_densemm_p
-
-Dense-matrix @ sparse-float-vector / sparse-float-matrix.
-
-.. autosummary::
-   :toctree: generated/
-
-   spfloat_densemv
-   spfloat_densemv_p
-   spfloat_densemm
-   spfloat_densemm_p
 
 Plasticity operations.
 
@@ -246,12 +226,3 @@ Float matrix-vector / matrix-matrix multiplication.
    fcnmm
    fcnmm_p
 
-Sparse-float matrix-vector / matrix-matrix multiplication.
-
-.. autosummary::
-   :toctree: generated/
-
-   spfloat_fcnmv
-   spfloat_fcnmv_p
-   spfloat_fcnmm
-   spfloat_fcnmm_p
