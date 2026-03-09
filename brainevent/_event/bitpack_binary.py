@@ -18,14 +18,17 @@
 import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 
-from .base import EventRepresentation
+from brainevent._dense import binary_densemm, binary_densemv
+from brainevent._error import MathError
+from .base import EventRepresentation, extract_raw_value, is_known_type
 
 __all__ = [
     'BitPackedBinary',
+    'bitpack',
 ]
 
 
-def _bitpack_along_axis(arr, axis):
+def bitpack(arr, axis):
     """Pack a boolean array into uint32 words along the given axis.
 
     Each uint32 word stores 32 binary values.  Bit ``b`` of word ``w``
@@ -36,7 +39,7 @@ def _bitpack_along_axis(arr, axis):
     arr : jax.Array
         Input array (any dtype; non-zero values are treated as ``True``).
     axis : int
-        Axis along which to pack (already normalised to non-negative).
+        Axis along which to pack.
 
     Returns
     -------
@@ -45,6 +48,7 @@ def _bitpack_along_axis(arr, axis):
         ``ceil(arr.shape[axis] / 32)``.
     """
     arr = jnp.asarray(arr, dtype=jnp.bool_)
+    axis = axis % arr.ndim
     n = arr.shape[axis]
     n_packed = (n + 31) // 32
 
@@ -74,10 +78,9 @@ class BitPackedBinary(EventRepresentation):
     """Bit-packed binary event representation.
 
     ``BitPackedBinary`` stores binary spike data as uint32 words where each
-    word encodes 32 consecutive spikes.  Bit ``b`` of word ``w`` corresponds
-    to element ``w * 32 + b`` along the packed axis.  This 8x memory
-    reduction (vs bool) improves GPU cache utilisation, especially for
-    gather-mode FCN sparse kernels.
+    word encodes 32 consecutive spikes along a specified axis.  This 8x
+    memory reduction (vs bool) improves GPU cache utilisation, especially
+    for gather-mode FCN sparse kernels.
 
     Instances are typically created via :meth:`BinaryArray.bitpack` rather
     than direct construction.
@@ -86,8 +89,8 @@ class BitPackedBinary(EventRepresentation):
     ----------
     arr : jax.Array
         The original binary spike array (bool or 0/1).
-    axis : int, optional
-        Axis along which to pack.  Default is ``-1`` (last axis).
+    axis : int
+        Axis along which to pack.
 
     Notes
     -----
@@ -107,15 +110,11 @@ class BitPackedBinary(EventRepresentation):
     __slots__ = ('_value', '_packed', '_original_shape', '_pack_axis')
     __module__ = 'brainevent'
 
-    def __init__(self, arr, *, axis=-1):
-        # _value stores the original spike array (for gradient propagation)
+    def __init__(self, arr, *, axis: int):
         super().__init__(arr)
-        if arr.ndim not in (1, 2):
-            raise ValueError(f"bitpack() only supports 1-D and 2-D arrays, got {arr.ndim}-D.")
-        self._original_shape = tuple(arr.shape)
-        norm_axis = axis % len(self._original_shape)
-        self._packed = _bitpack_along_axis(self._value, norm_axis)
-        self._pack_axis = norm_axis
+        self._original_shape = tuple(self._value.shape)
+        self._pack_axis = axis % len(self._original_shape)
+        self._packed = bitpack(self._value, self._pack_axis)
 
     @property
     def packed(self):
@@ -124,20 +123,10 @@ class BitPackedBinary(EventRepresentation):
         Returns
         -------
         jax.Array
-            Packed uint32 data where each word stores 32 binary values.
+            Packed uint32 data where each word stores 32 binary values
+            along the pack axis.
         """
         return self._packed
-
-    @property
-    def original_shape(self):
-        """Shape of the original (unpacked) boolean array.
-
-        Returns
-        -------
-        tuple[int, ...]
-            The shape before bit-packing.
-        """
-        return self._original_shape
 
     @property
     def pack_axis(self):
@@ -149,6 +138,17 @@ class BitPackedBinary(EventRepresentation):
             Non-negative axis index.
         """
         return self._pack_axis
+
+    @property
+    def original_shape(self):
+        """Shape of the original (unpacked) boolean array.
+
+        Returns
+        -------
+        tuple[int, ...]
+            The shape before bit-packing.
+        """
+        return self._original_shape
 
     @property
     def shape(self):
@@ -175,23 +175,140 @@ class BitPackedBinary(EventRepresentation):
         return len(self._original_shape)
 
     def __matmul__(self, oc):
-        """Compute ``self @ oc``.
+        """Compute ``self @ oc`` using event-driven binary multiplication.
 
-        Returns ``NotImplemented`` to allow the right operand (e.g. a
-        ``FixedPostNumConn``) to handle the operation via ``__rmatmul__``.
+        Parameters
+        ----------
+        oc : array_like
+            Right operand, must be a 2-D dense weight matrix of shape
+            ``(k, n)`` where ``k == self.shape[-1]``.
+
+        Returns
+        -------
+        jax.Array
+            For a 1-D ``self`` of shape ``(k,)``: a vector of shape ``(n,)``.
+            For a 2-D ``self`` of shape ``(m, k)``: a matrix of shape ``(m, n)``.
+
+        Raises
+        ------
+        MathError
+            If ``self`` has more than 2 dimensions or is a scalar.
         """
-        return NotImplemented
+        if is_known_type(oc):
+            oc = extract_raw_value(oc)
+            if self.ndim not in (1, 2):
+                raise MathError(
+                    f"Matrix multiplication is only supported "
+                    f"for 1D and 2D arrays. Got {self.ndim}D array."
+                )
+            if self.ndim == 0:
+                raise MathError("Matrix multiplication is not supported for scalar arrays.")
+            assert oc.ndim == 2, (
+                f"Right operand must be a 2D array in "
+                f"matrix multiplication. Got {oc.ndim}D array."
+            )
+            assert self.shape[-1] == oc.shape[0], (
+                f"Incompatible dimensions for matrix multiplication: "
+                f"{self.shape[-1]} and {oc.shape[0]}."
+            )
+            if self.ndim == 1:
+                return binary_densemv(oc, self.value, transpose=True)
+            else:
+                return binary_densemm(oc, self.value.T, transpose=True).T
+        else:
+            return oc.__rmatmul__(self)
 
     def __rmatmul__(self, oc):
-        """Compute ``oc @ self``.
+        """Compute ``oc @ self`` using event-driven binary multiplication.
 
-        Returns ``NotImplemented`` to allow the left operand (e.g. a
-        ``FixedPostNumConn``) to handle the operation via ``__matmul__``.
+        Parameters
+        ----------
+        oc : array_like
+            Left operand, must be a 2-D dense weight matrix of shape
+            ``(m, k)`` where ``k == self.shape[0]``.
+
+        Returns
+        -------
+        jax.Array
+            For a 1-D ``self`` of shape ``(k,)``: a vector of shape ``(m,)``.
+            For a 2-D ``self`` of shape ``(k, n)``: a matrix of shape ``(m, n)``.
+
+        Raises
+        ------
+        MathError
+            If ``self`` has more than 2 dimensions or is a scalar.
         """
-        return NotImplemented
+        if is_known_type(oc):
+            oc = extract_raw_value(oc)
+            if self.ndim not in (1, 2):
+                raise MathError(
+                    f"Matrix multiplication is only supported "
+                    f"for 1D and 2D arrays. Got {self.ndim}D array."
+                )
+            if self.ndim == 0:
+                raise MathError("Matrix multiplication is not supported for scalar arrays.")
+            assert oc.ndim == 2, (
+                f"Left operand must be a 2D array in "
+                f"matrix multiplication. Got {oc.ndim}D array."
+            )
+            assert oc.shape[-1] == self.shape[0], (
+                f"Incompatible dimensions for matrix multiplication: "
+                f"{oc.shape[-1]} and {self.shape[0]}."
+            )
+            if self.ndim == 1:
+                return binary_densemv(oc, self.value, transpose=False)
+            else:
+                return binary_densemm(oc, self.value, transpose=False)
+        else:
+            return oc.__matmul__(self)
+
+    @property
+    def T(self):
+        """Transpose of the bit-packed binary array.
+
+        Returns
+        -------
+        BitPackedBinary
+            A new transposed instance.  The pack axis is mapped to its
+            position in the reversed axis order.
+        """
+        return self.transpose()
+
+    def transpose(self, *axes):
+        """Return a transposed ``BitPackedBinary``.
+
+        Parameters
+        ----------
+        *axes : int, optional
+            Axis permutation.  If omitted, reverses the axis order
+            (standard transpose).
+
+        Returns
+        -------
+        BitPackedBinary
+            A new instance with permuted axes.  Both ``value`` and
+            ``packed`` are transposed, and ``pack_axis`` is updated
+            to reflect its new position.
+        """
+        if not axes:
+            perm = tuple(reversed(range(self.ndim)))
+        elif len(axes) == 1 and isinstance(axes[0], (tuple, list)):
+            perm = tuple(axes[0])
+        else:
+            perm = tuple(axes)
+
+        # Find where the old pack_axis ends up in the new ordering
+        new_pack_axis = perm.index(self._pack_axis)
+
+        obj = object.__new__(BitPackedBinary)
+        obj._value = jnp.transpose(self._value, perm)
+        obj._original_shape = tuple(self._original_shape[i] for i in perm)
+        obj._packed = jnp.transpose(self._packed, perm)
+        obj._pack_axis = new_pack_axis
+        return obj
 
     def dot(self, oc):
-        pass
+        return self.__matmul__(oc)
 
     def tree_flatten(self):
         """Flatten this instance for JAX PyTree serialisation.
@@ -200,15 +317,16 @@ class BitPackedBinary(EventRepresentation):
         -------
         children : tuple
             ``(value, packed)`` — the original spike array and the
-            packed uint32 array.  Both are dynamic JAX-traced leaves.
+            packed uint32 array.
         aux_data : dict
             Contains ``original_shape`` and ``pack_axis``.
         """
+        children = (self._value, self._packed)
         aux = {
             'original_shape': self._original_shape,
             'pack_axis': self._pack_axis,
         }
-        return (self._value, self._packed), aux
+        return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):

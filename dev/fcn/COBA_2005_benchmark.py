@@ -86,7 +86,7 @@ class FixedNumConn(brainstate.nn.Module):
         assert x.ndim in [1, 2], 'Input must be 1D or 2D.'
         if self.data_type == 'bitpack':
             assert x.ndim == 1, 'bitpack only supports 1D input.'
-            bp = brainevent.BitPackedBinary(x)
+            bp = brainevent.BitPackedBinary(x, axis=0)
             transpose = (self.efferent_target == 'post')
             return brainevent.bitpack_binary_fcnmv(
                 self.weight.value, self.indices, bp.packed, bp.value,

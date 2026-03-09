@@ -89,8 +89,6 @@ class BinaryArray(EventRepresentation):
         packed representation can be used with FCN sparse matrices for
         improved GPU cache utilisation.
 
-        Supports 1-D and 2-D arrays.
-
         Parameters
         ----------
         axis : int, optional

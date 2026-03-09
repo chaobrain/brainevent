@@ -1054,7 +1054,7 @@ class FixedPreNumConn(FixedNumConn):
         assert u.get_unit(data) == u.get_unit(self.data)
         return FixedPreNumConn(
             (data, self.indices),
-                               shape=self.shape,
+            shape=self.shape,
             backend=self.backend,
             buffers=self.buffers
         )
@@ -1361,19 +1361,24 @@ class FixedPreNumConn(FixedNumConn):
 
         if isinstance(other, BitPackedBinary):
             if other.ndim == 1:
-                return bitpack_binary_fcnmv(data, self.indices, other.packed, other.value,
-                                            shape=self.shape[::-1], transpose=False,
-                                            pack_axis=other.pack_axis)
+                return bitpack_binary_fcnmv(
+                    data, self.indices, other.packed, other.value,
+                    shape=self.shape[::-1], transpose=False, pack_axis=other.pack_axis
+                )
             raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False,
-                                    backend=self.backend)
+                return binary_fcnmv(
+                    data, self.indices, other,
+                    shape=self.shape[::-1], transpose=False, backend=self.backend
+                )
             elif other.ndim == 2:
-                r = binary_fcnmm(data, self.indices, other.T, shape=self.shape[::-1], transpose=False,
-                                 backend=self.backend)
+                r = binary_fcnmm(
+                    data, self.indices, other.T,
+                    shape=self.shape[::-1], transpose=False, backend=self.backend
+                )
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")

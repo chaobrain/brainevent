@@ -18,7 +18,7 @@ from .base import EventRepresentation, IndexedEventRepresentation
 from .binary import BinaryArray
 from .binary_indexed import IndexedBinary1d, IndexedBinary2d
 from .binary_indexed_extraction import binary_array_index
-from .bitpack_binary import BitPackedBinary
+from .bitpack_binary import BitPackedBinary, bitpack
 from .sparse_float import SparseFloat
 from .sparse_float_indexed import IndexedSpFloat1d, IndexedSpFloat2d
 
@@ -27,6 +27,7 @@ __all__ = [
     'IndexedEventRepresentation',
     'BinaryArray',
     'BitPackedBinary',
+    'bitpack',
     'IndexedBinary1d',
     'IndexedBinary2d',
     'SparseFloat',
