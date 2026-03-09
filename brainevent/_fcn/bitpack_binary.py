@@ -37,7 +37,7 @@ __all__ = [
 ]
 
 
-@namescope(static_argnames=['shape', 'transpose', 'pack_axis'])
+@namescope(static_argnames=['shape', 'transpose'])
 def bitpack_binary_fcnmv(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -46,7 +46,6 @@ def bitpack_binary_fcnmv(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
-    pack_axis: int = 0,
 ) -> Union[jax.Array, u.Quantity]:
     """
     Event-driven sparse matrix--vector product with bit-packed binary spikes.
@@ -55,6 +54,9 @@ def bitpack_binary_fcnmv(
     where ``W`` is a sparse weight matrix stored in fixed-connection-number
     format and ``s`` is a bit-packed binary spike vector (uint32 words,
     32 spikes per word).
+
+    The spike vector is always packed along axis 0 (the only axis of a 1-D
+    vector).
 
     Parameters
     ----------
@@ -75,8 +77,6 @@ def bitpack_binary_fcnmv(
     transpose : bool, optional
         If ``False`` (default), compute ``W @ s`` (gather mode).
         If ``True``, compute ``W^T @ s`` (scatter mode).
-    pack_axis : int, optional
-        Axis along which ``spikes`` was packed.  Default is ``0``.
 
     Returns
     -------
@@ -92,7 +92,6 @@ def bitpack_binary_fcnmv(
         spikes,
         shape=shape,
         transpose=transpose,
-        pack_axis=pack_axis,
     )[0]
     return u.maybe_decimal(r * w_unit)
 
@@ -220,10 +219,10 @@ def _bitpack_binary_fcnmv_numba_kernel(
 # ---------------------------------------------------------------------------
 
 def _bitpack_binary_fcnmv_jvp_weights(
-    w_dot, weights, indices, packed, spikes, *, shape, transpose, pack_axis, **kwargs
+    w_dot, weights, indices, packed, spikes, *, shape, transpose, **kwargs
 ):
     return bitpack_binary_fcnmv_p_call(
-        w_dot, indices, packed, spikes, shape=shape, transpose=transpose, pack_axis=pack_axis,
+        w_dot, indices, packed, spikes, shape=shape, transpose=transpose,
     )
 
 
@@ -264,7 +263,7 @@ def _bitpack_binary_fcnmv_transpose_rule(
         ct_gmax = bitpack_binary_fcnmv_p_call(
             jnp.asarray(1., dtype=weight_info.dtype),
             indices, packed, spikes,
-            shape=shape, transpose=transpose, pack_axis=pack_axis,
+            shape=shape, transpose=transpose,
         )[0]
         ct_gmax = jnp.inner(ct, ct_gmax).reshape(*weight_info.shape)
     else:
@@ -318,7 +317,6 @@ def bitpack_binary_fcnmv_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
-    pack_axis: int = 0,
 ) -> Tuple[jax.Array]:
     """
     Low-level primitive call for bit-packed binary fcnmv.
@@ -337,8 +335,6 @@ def bitpack_binary_fcnmv_p_call(
         Logical ``(num_pre, num_post)`` shape.
     transpose : bool, optional
         Gather (False) or scatter (True) mode.
-    pack_axis : int, optional
-        Axis along which spikes were packed.
 
     Returns
     -------
@@ -361,7 +357,7 @@ def bitpack_binary_fcnmv_p_call(
         outs=[out],
         shape=shape,
         transpose=transpose,
-        pack_axis=pack_axis,
+        pack_axis=0,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         packed_info=jax.ShapeDtypeStruct(packed.shape, packed.dtype),
