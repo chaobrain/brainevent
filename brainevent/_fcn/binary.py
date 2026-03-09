@@ -853,16 +853,45 @@ def _binary_fcnmm_cuda_kernel(
             if n_conn <= 32
             else f'fcn_binary_mm.binary_fcnmm_scatter{mode_sfx}_basic{spike_sfx}{sfx}'
         )
-    else:
-        # Gather mode
-        kernel_name = (
-            f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_warp{spike_sfx}{sfx}'
-            if n_conn <= 32
-            else f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_basic{spike_sfx}{sfx}'
-        )
 
-    def kernel(weights, indices, matrix):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
+        def kernel(weights, indices, matrix):
+            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
+    else:
+        # Gather mode — use packed path for large matrices to fit in L2 cache
+        n_rows = matrix_info.shape[0]
+        n_batch = matrix_info.shape[1]
+        elem_size = {
+            np.dtype('bool'): 1, np.dtype('uint8'): 1,
+            np.dtype('float16'): 2, np.dtype('bfloat16'): 2,
+            np.dtype('float32'): 4, np.dtype('float64'): 8,
+        }.get(np.dtype(matrix_info.dtype), 4)
+        mat_bytes = n_rows * n_batch * elem_size
+        # Use packed path when spike matrix exceeds ~1MB (half L2 on most GPUs)
+        use_packed = (mat_bytes > 1024 * 1024)
+
+        if use_packed:
+            # Step 1: pack spikes into uint32 bitmasks
+            pack_sfx = '_bool' if is_bool_matrix else sfx
+            pack_name = f'fcn_binary_mm.binary_fcnmm_pack{pack_sfx}'
+            n_batch_words = (n_batch + 31) // 32
+            packed_info = jax.ShapeDtypeStruct((n_rows, n_batch_words), jnp.uint32)
+            # Step 2: run packed gather kernel
+            size_sfx = '_warp' if n_conn <= 32 else '_basic'
+            packed_gather_name = f'fcn_binary_mm.binary_fcnmm_gather_packed{mode_sfx}{size_sfx}{sfx}'
+
+            def kernel(weights, indices, matrix):
+                packed = jax.ffi.ffi_call(pack_name, packed_info)(matrix)
+                return jax.ffi.ffi_call(packed_gather_name, out_info)(weights, indices, packed)
+        else:
+            # Small matrix — use unpacked gather directly
+            kernel_name = (
+                f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_warp{spike_sfx}{sfx}'
+                if n_conn <= 32
+                else f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_basic{spike_sfx}{sfx}'
+            )
+
+            def kernel(weights, indices, matrix):
+                return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
 
     return kernel
 
