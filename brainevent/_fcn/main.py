@@ -754,9 +754,9 @@ class FixedPostNumConn(FixedNumConn):
 
         if isinstance(other, BitPackedBinary):
             if other.ndim == 1:
-                return bitpack_binary_fcnmv(data, self.indices, other.packed, other.value,
+                return bitpack_binary_fcnmv(data, self.indices, other.packed[0], other.value,
                                             shape=self.shape, transpose=False,
-                                            pack_axis=other.pack_axis)
+                                            pack_axis=0)
             raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
@@ -809,9 +809,9 @@ class FixedPostNumConn(FixedNumConn):
 
         if isinstance(other, BitPackedBinary):
             if other.ndim == 1:
-                return bitpack_binary_fcnmv(data, self.indices, other.packed, other.value,
+                return bitpack_binary_fcnmv(data, self.indices, other.packed[0], other.value,
                                             shape=self.shape, transpose=True,
-                                            pack_axis=other.pack_axis)
+                                            pack_axis=0)
             raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
@@ -1304,9 +1304,9 @@ class FixedPreNumConn(FixedNumConn):
 
         if isinstance(other, BitPackedBinary):
             if other.ndim == 1:
-                return bitpack_binary_fcnmv(data, self.indices, other.packed, other.value,
+                return bitpack_binary_fcnmv(data, self.indices, other.packed[0], other.value,
                                             shape=self.shape[::-1], transpose=True,
-                                            pack_axis=other.pack_axis)
+                                            pack_axis=0)
             raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
@@ -1362,8 +1362,8 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, BitPackedBinary):
             if other.ndim == 1:
                 return bitpack_binary_fcnmv(
-                    data, self.indices, other.packed, other.value,
-                    shape=self.shape[::-1], transpose=False, pack_axis=other.pack_axis
+                    data, self.indices, other.packed[0], other.value,
+                    shape=self.shape[::-1], transpose=False, pack_axis=0
                 )
             raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 

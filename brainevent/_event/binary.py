@@ -79,8 +79,8 @@ class BinaryArray(EventRepresentation):
     def __init__(self, value):
         super().__init__(value)
 
-    def bitpack(self, axis=-1):
-        """Pack binary values into uint32 words along *axis*.
+    def bitpack(self):
+        """Pack binary values into uint32 words along every axis.
 
         Each uint32 word stores 32 binary values.  Bit ``b`` of word ``w``
         corresponds to element ``w * 32 + b`` along the packed axis.
@@ -89,15 +89,11 @@ class BinaryArray(EventRepresentation):
         packed representation can be used with FCN sparse matrices for
         improved GPU cache utilisation.
 
-        Parameters
-        ----------
-        axis : int, optional
-            Axis along which to pack.  Default is ``-1`` (last axis).
-
         Returns
         -------
         BitPackedBinary
-            A new bit-packed event representation.
+            A new bit-packed event representation with one packed array
+            per axis.
 
         Examples
         --------
@@ -110,7 +106,7 @@ class BinaryArray(EventRepresentation):
             >>> type(bp)
             <class 'brainevent.BitPackedBinary'>
         """
-        return BitPackedBinary(self.value, axis=axis)
+        return BitPackedBinary(self.value)
 
     @property
     def T(self):

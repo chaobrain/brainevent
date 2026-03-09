@@ -78,9 +78,8 @@ class BitPackedBinary(EventRepresentation):
     """Bit-packed binary event representation.
 
     ``BitPackedBinary`` stores binary spike data as uint32 words where each
-    word encodes 32 consecutive spikes along a specified axis.  This 8x
-    memory reduction (vs bool) improves GPU cache utilisation, especially
-    for gather-mode FCN sparse kernels.
+    word encodes 32 consecutive spikes.  Packing is performed along **every**
+    axis, so the number of packed arrays equals the number of dimensions.
 
     Instances are typically created via :meth:`BinaryArray.bitpack` rather
     than direct construction.
@@ -89,15 +88,13 @@ class BitPackedBinary(EventRepresentation):
     ----------
     arr : jax.Array
         The original binary spike array (bool or 0/1).
-    axis : int
-        Axis along which to pack.
 
     Notes
     -----
-    The class stores both the original spike array (``value``) and the
-    packed uint32 representation (``packed``).  The original array is
-    used for autodiff (gradient propagation), while the packed array
-    is used for efficient CUDA kernel computation.
+    The class stores both the original spike array (``value``) and one
+    packed uint32 representation per axis (``packed``).  The original array
+    is used for autodiff (gradient propagation), while the packed arrays
+    are used for efficient CUDA kernel computation.
 
     The class is registered as a JAX PyTree node, so it is compatible with
     ``jax.jit``, ``jax.grad``, ``jax.vmap``, and other transformations.
@@ -107,37 +104,28 @@ class BitPackedBinary(EventRepresentation):
     BinaryArray : Unpacked binary event representation.
     BinaryArray.bitpack : Creates a ``BitPackedBinary`` from a ``BinaryArray``.
     """
-    __slots__ = ('_value', '_packed', '_original_shape', '_pack_axis')
+    __slots__ = ('_value', '_packed', '_original_shape')
     __module__ = 'brainevent'
 
-    def __init__(self, arr, *, axis: int):
+    def __init__(self, arr):
         super().__init__(arr)
         self._original_shape = tuple(self._value.shape)
-        self._pack_axis = axis % len(self._original_shape)
-        self._packed = bitpack(self._value, self._pack_axis)
+        self._packed = tuple(
+            bitpack(self._value, axis) for axis in range(self._value.ndim)
+        )
 
     @property
     def packed(self):
-        """The packed uint32 array.
+        """Tuple of packed uint32 arrays, one per axis.
 
         Returns
         -------
-        jax.Array
-            Packed uint32 data where each word stores 32 binary values
-            along the pack axis.
+        tuple[jax.Array, ...]
+            ``packed[i]`` is the uint32 array obtained by packing along
+            axis ``i``.  Its shape matches the original shape except that
+            dimension ``i`` is ``ceil(original_shape[i] / 32)``.
         """
         return self._packed
-
-    @property
-    def pack_axis(self):
-        """Axis along which the packing was performed.
-
-        Returns
-        -------
-        int
-            Non-negative axis index.
-        """
-        return self._pack_axis
 
     @property
     def original_shape(self):
@@ -158,7 +146,7 @@ class BitPackedBinary(EventRepresentation):
         -------
         tuple[int, ...]
             The shape of the original boolean array, not the packed
-            uint32 array.  This makes ``BitPackedBinary`` shape-compatible
+            uint32 arrays.  This makes ``BitPackedBinary`` shape-compatible
             with the original ``BinaryArray``.
         """
         return self._original_shape
@@ -269,8 +257,7 @@ class BitPackedBinary(EventRepresentation):
         Returns
         -------
         BitPackedBinary
-            A new transposed instance.  The pack axis is mapped to its
-            position in the reversed axis order.
+            A new transposed instance.
         """
         return self.transpose()
 
@@ -287,8 +274,7 @@ class BitPackedBinary(EventRepresentation):
         -------
         BitPackedBinary
             A new instance with permuted axes.  Both ``value`` and
-            ``packed`` are transposed, and ``pack_axis`` is updated
-            to reflect its new position.
+            all ``packed`` arrays are transposed accordingly.
         """
         if not axes:
             perm = tuple(reversed(range(self.ndim)))
@@ -297,14 +283,15 @@ class BitPackedBinary(EventRepresentation):
         else:
             perm = tuple(axes)
 
-        # Find where the old pack_axis ends up in the new ordering
-        new_pack_axis = perm.index(self._pack_axis)
-
         obj = object.__new__(BitPackedBinary)
         obj._value = jnp.transpose(self._value, perm)
         obj._original_shape = tuple(self._original_shape[i] for i in perm)
-        obj._packed = jnp.transpose(self._packed, perm)
-        obj._pack_axis = new_pack_axis
+        # new packed[i] corresponds to packing along new axis i,
+        # which was old axis perm[i]
+        obj._packed = tuple(
+            jnp.transpose(self._packed[perm[i]], perm)
+            for i in range(self.ndim)
+        )
         return obj
 
     def dot(self, oc):
@@ -316,15 +303,14 @@ class BitPackedBinary(EventRepresentation):
         Returns
         -------
         children : tuple
-            ``(value, packed)`` — the original spike array and the
-            packed uint32 array.
+            ``(value, packed[0], packed[1], ...)`` — the original spike
+            array followed by packed uint32 arrays for each axis.
         aux_data : dict
-            Contains ``original_shape`` and ``pack_axis``.
+            Contains ``original_shape``.
         """
-        children = (self._value, self._packed)
+        children = (self._value,) + self._packed
         aux = {
             'original_shape': self._original_shape,
-            'pack_axis': self._pack_axis,
         }
         return children, aux
 
@@ -337,17 +323,16 @@ class BitPackedBinary(EventRepresentation):
         aux_data : dict
             Static metadata produced by ``tree_flatten``.
         flat_contents : tuple
-            Dynamic leaves — the original spike array and packed uint32 array.
+            Dynamic leaves — the original spike array followed by
+            packed uint32 arrays for each axis.
 
         Returns
         -------
         BitPackedBinary
-            A new instance wrapping both arrays.
+            A new instance wrapping all arrays.
         """
-        value, packed = flat_contents
         obj = object.__new__(cls)
-        obj._value = value
-        obj._packed = packed
+        obj._value = flat_contents[0]
+        obj._packed = tuple(flat_contents[1:])
         obj._original_shape = aux_data['original_shape']
-        obj._pack_axis = aux_data['pack_axis']
         return obj
