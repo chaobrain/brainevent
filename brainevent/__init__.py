@@ -64,6 +64,7 @@ from ._event import (
     BinaryArray,
     BitPackedBinary,
     bitpack,
+    CompactBinary,
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
@@ -71,6 +72,8 @@ from ._fcn import (
     binary_fcnmm, binary_fcnmm_p,
     bitpack_binary_fcnmv, bitpack_binary_fcnmv_p,
     bitpack_binary_fcnmm, bitpack_binary_fcnmm_p,
+    compact_binary_fcnmv, compact_binary_fcnmv_p,
+    compact_binary_fcnmm, compact_binary_fcnmm_p,
     fcnmv, fcnmm,
 )
 from ._jit_normal import (
@@ -140,6 +143,7 @@ __all__ = [
     'BinaryArray',
     'BitPackedBinary',
     'bitpack',
+    'CompactBinary',
 
     # --- representing sparse data --- #
     'DataRepresentation',
@@ -197,6 +201,8 @@ __all__ = [
     'binary_fcnmm', 'binary_fcnmm_p',
     'bitpack_binary_fcnmv', 'bitpack_binary_fcnmv_p',
     'bitpack_binary_fcnmm', 'bitpack_binary_fcnmm_p',
+    'compact_binary_fcnmv', 'compact_binary_fcnmv_p',
+    'compact_binary_fcnmm', 'compact_binary_fcnmm_p',
     'fcnmv',
     'fcnmm',
 

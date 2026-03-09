@@ -17,10 +17,12 @@
 from .base import EventRepresentation
 from .binary import BinaryArray
 from .bitpack_binary import BitPackedBinary, bitpack
+from .compact_binary import CompactBinary
 
 __all__ = [
     'EventRepresentation',
     'BinaryArray',
     'BitPackedBinary',
     'bitpack',
+    'CompactBinary',
 ]
