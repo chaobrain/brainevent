@@ -47,8 +47,8 @@ class FixedNumConn(brainstate.nn.Module):
         self.out_size = out_size
         self.efferent_target = efferent_target
         self.data_type = data_type
-        if data_type not in ('binary', 'sparse_float', 'float', 'bitpack'):
-            raise ValueError('data_type must be either "binary" or "sparse_float" or "float".')
+        if data_type not in ('binary', 'float', 'bitpack', 'bitpack_a0', 'bitpack_a1'):
+            raise ValueError('data_type must be one of "binary", "float", "bitpack", "bitpack_a0", "bitpack_a1".')
         if efferent_target not in ('pre', 'post'):
             raise ValueError('The target of the connection must be either "pre" or "post".')
         if isinstance(conn_num, float):
@@ -84,18 +84,23 @@ class FixedNumConn(brainstate.nn.Module):
 
     def update(self, x) -> Union[jax.Array, u.Quantity]:
         assert x.ndim in [1, 2], 'Input must be 1D or 2D.'
-        if self.data_type == 'bitpack':
-            assert x.ndim == 1, 'bitpack only supports 1D input.'
+        if self.data_type in ('bitpack', 'bitpack_a0', 'bitpack_a1'):
             bp = brainevent.BitPackedBinary(x)
             transpose = (self.efferent_target == 'post')
-            return brainevent.bitpack_binary_fcnmv(
-                self.weight.value, self.indices, bp.packed[0], bp.value,
-                shape=self.shape, transpose=transpose, pack_axis=0,
-            )
+            if x.ndim == 1:
+                # 1D: only pack_axis=0 exists; batching rule promotes MV→MM automatically
+                return brainevent.bitpack_binary_fcnmv(
+                    self.weight.value, self.indices, bp.packed[0], bp.value,
+                    shape=self.shape, transpose=transpose, pack_axis=0,
+                )
+            else:
+                pack_axis = 1 if self.data_type == 'bitpack_a1' else 0
+                return brainevent.bitpack_binary_fcnmm(
+                    self.weight.value, self.indices, bp.packed[pack_axis], bp.value,
+                    shape=self.shape, transpose=transpose, pack_axis=pack_axis,
+                )
         if self.data_type == 'binary':
             fn = brainevent.binary_fcnmv if x.ndim == 1 else brainevent.binary_fcnmm
-        elif self.data_type == 'sparse_float':
-            fn = brainevent.sparse_float_fcnmv if x.ndim == 1 else brainevent.sparse_float_fcnmm
         else:
             fn = brainevent.float_fcnmv if x.ndim == 1 else brainevent.float_fcnmm
         transpose = (self.efferent_target == 'post')
