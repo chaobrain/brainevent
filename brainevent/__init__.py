@@ -69,9 +69,6 @@ from ._event import (
     bitpack,
     IndexedBinary1d,
     IndexedBinary2d,
-    SparseFloat,
-    IndexedSpFloat1d,
-    IndexedSpFloat2d,
     binary_array_index,
 )
 from ._fcn import (
@@ -79,6 +76,7 @@ from ._fcn import (
     binary_fcnmv, binary_fcnmv_p,
     binary_fcnmm, binary_fcnmm_p,
     bitpack_binary_fcnmv, bitpack_binary_fcnmv_p,
+    bitpack_binary_fcnmm, bitpack_binary_fcnmm_p,
     fcnmv, fcnmm,
 )
 from ._jit_normal import (
@@ -151,9 +149,6 @@ __all__ = [
     'bitpack',
     'IndexedBinary1d',
     'IndexedBinary2d',
-    'SparseFloat',
-    'IndexedSpFloat1d',
-    'IndexedSpFloat2d',
     'binary_array_index',
 
     # --- representing sparse data --- #
@@ -213,6 +208,7 @@ __all__ = [
     'binary_fcnmv', 'binary_fcnmv_p',
     'binary_fcnmm', 'binary_fcnmm_p',
     'bitpack_binary_fcnmv', 'bitpack_binary_fcnmv_p',
+    'bitpack_binary_fcnmm', 'bitpack_binary_fcnmm_p',
     'fcnmv',
     'fcnmm',
 

@@ -59,7 +59,6 @@ class BinaryArray(EventRepresentation):
 
     See Also
     --------
-    SparseFloat : Similar wrapper for sparse floating-point event arrays.
     binary_densemv : Underlying primitive for binary vector-matrix multiply.
     binary_densemm : Underlying primitive for binary matrix-matrix multiply.
 

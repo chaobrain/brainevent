@@ -29,7 +29,7 @@ from brainevent._csr import (
     update_csr_on_binary_pre, update_csr_on_binary_post
 )
 from brainevent._data import DataRepresentation
-from brainevent._event import BinaryArray, SparseFloat, EventRepresentation
+from brainevent._event import BinaryArray, EventRepresentation
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index
 from .binary import binary_coomv, binary_coomm
@@ -930,10 +930,6 @@ class COO(DataRepresentation):
                     )
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
-            elif isinstance(other, SparseFloat):
-                other = other.value
-                data, other = u.math.promote_dtypes(self.data, other)
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
                 other = u.math.asarray(other)
                 data, other = u.math.promote_dtypes(self.data, other)
@@ -958,10 +954,6 @@ class COO(DataRepresentation):
                 return binary_coomm(data, self.row, self.col, other, shape=self.shape, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
-        elif isinstance(other, SparseFloat):
-            other = other.value
-            data, other = u.math.promote_dtypes(self.data, other)
-            raise NotImplementedError(f"matmul with object of shape {other.shape}")
         else:
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
@@ -1020,10 +1012,6 @@ class COO(DataRepresentation):
                     return r.T
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
-            elif isinstance(other, SparseFloat):
-                other = other.value
-                data, other = u.math.promote_dtypes(self.data, other)
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
                 other = u.math.asarray(other)
                 data, other = u.math.promote_dtypes(self.data, other)
@@ -1058,12 +1046,6 @@ class COO(DataRepresentation):
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
-
-        elif isinstance(other, SparseFloat):
-            other = other.value
-            data, other = u.math.promote_dtypes(self.data, other)
-            raise NotImplementedError(f"matmul with object of shape {other.shape}")
-
         else:
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
