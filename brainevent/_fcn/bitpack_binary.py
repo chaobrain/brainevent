@@ -153,7 +153,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
         #          output[indices[i,k]] += weights[...]
         if weight_info.size == 1:
             @numba.njit(fastmath=True)
-            def ell_mv(weights, indices, packed, spikes, posts):
+            def ell_mv(weights, indices, packed, posts):
                 posts[:] = 0.
                 w = weights[0]
                 n_pre = indices.shape[0]
@@ -166,7 +166,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
                             posts[indices[i, k]] += w
         else:
             @numba.njit(fastmath=True)
-            def ell_mv(weights, indices, packed, spikes, posts):
+            def ell_mv(weights, indices, packed, posts):
                 posts[:] = 0.
                 n_pre = indices.shape[0]
                 n_conn = indices.shape[1]
@@ -181,7 +181,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
         #         output[i] = sum_k weights[...] * is_active(packed, indices[i,k])
         if weight_info.size == 1:
             @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-            def ell_mv(weights, indices, packed, spikes, posts):
+            def ell_mv(weights, indices, packed, posts):
                 w = weights[0]
                 n_pre = indices.shape[0]
                 n_conn = indices.shape[1]
@@ -196,7 +196,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
                     posts[i] = r
         else:
             @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-            def ell_mv(weights, indices, packed, spikes, posts):
+            def ell_mv(weights, indices, packed, posts):
                 n_pre = indices.shape[0]
                 n_conn = indices.shape[1]
                 for i in numba.prange(n_pre):
@@ -210,7 +210,7 @@ def _bitpack_binary_fcnmv_numba_kernel(
                     posts[i] = r
 
     def kernel(weights, indices, packed, spikes):
-        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, packed, spikes)
+        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, packed)
 
     return kernel
 
@@ -502,6 +502,172 @@ def _bitpack_binary_fcnmm_cuda_kernel(
 
 
 # ---------------------------------------------------------------------------
+# Numba CPU kernel for fcnmm
+# ---------------------------------------------------------------------------
+
+def _bitpack_binary_fcnmm_numba_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    pack_axis: int,
+    **kwargs
+):
+    import numba
+    import numpy as np
+
+    homo = weight_info.size == 1
+
+    if transpose:
+        # Scatter mode: Y[indices[i,k], j] += weights[i,k] * M[i, j]
+        # where M[i, j] is checked via packed.
+        if pack_axis == 1:
+            # packed shape: (n_pre, ceil(n_batch/32))
+            # check M[i, j]: packed[i, j>>5] & (1 << (j & 31))
+            if homo:
+                @numba.njit(fastmath=True)
+                def ell_mm(weights, indices, packed, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in range(n_pre):
+                        for j in range(n_batch):
+                            word = packed[i, j >> 5]
+                            bit = np.uint32(1) << np.uint32(j & 31)
+                            if word & bit:
+                                for k in range(n_conn):
+                                    posts[indices[i, k], j] += w
+            else:
+                @numba.njit(fastmath=True)
+                def ell_mm(weights, indices, packed, posts):
+                    posts[:] = 0.
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in range(n_pre):
+                        for j in range(n_batch):
+                            word = packed[i, j >> 5]
+                            bit = np.uint32(1) << np.uint32(j & 31)
+                            if word & bit:
+                                for k in range(n_conn):
+                                    posts[indices[i, k], j] += weights[i, k]
+        else:
+            # pack_axis == 0
+            # packed shape: (ceil(n_pre/32), n_batch)
+            # check M[i, j]: packed[i>>5, j] & (1 << (i & 31))
+            if homo:
+                @numba.njit(fastmath=True)
+                def ell_mm(weights, indices, packed, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in range(n_pre):
+                        word_idx = i >> 5
+                        bit = np.uint32(1) << np.uint32(i & 31)
+                        for j in range(n_batch):
+                            if packed[word_idx, j] & bit:
+                                for k in range(n_conn):
+                                    posts[indices[i, k], j] += w
+            else:
+                @numba.njit(fastmath=True)
+                def ell_mm(weights, indices, packed, posts):
+                    posts[:] = 0.
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in range(n_pre):
+                        word_idx = i >> 5
+                        bit = np.uint32(1) << np.uint32(i & 31)
+                        for j in range(n_batch):
+                            if packed[word_idx, j] & bit:
+                                for k in range(n_conn):
+                                    posts[indices[i, k], j] += weights[i, k]
+    else:
+        # Gather mode: Y[i, j] = sum_k weights[i,k] * M[indices[i,k], j]
+        # where M[idx, j] is checked via packed.
+        if pack_axis == 1:
+            # packed shape: (n_source, ceil(n_batch/32))
+            # check M[idx, j]: packed[idx, j>>5] & (1 << (j & 31))
+            if homo:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def ell_mm(weights, indices, packed, posts):
+                    w = weights[0]
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in numba.prange(n_pre):
+                        for j in range(n_batch):
+                            r = 0.
+                            for k in range(n_conn):
+                                idx = indices[i, k]
+                                word = packed[idx, j >> 5]
+                                bit = np.uint32(1) << np.uint32(j & 31)
+                                if word & bit:
+                                    r += w
+                            posts[i, j] = r
+            else:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def ell_mm(weights, indices, packed, posts):
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in numba.prange(n_pre):
+                        for j in range(n_batch):
+                            r = 0.
+                            for k in range(n_conn):
+                                idx = indices[i, k]
+                                word = packed[idx, j >> 5]
+                                bit = np.uint32(1) << np.uint32(j & 31)
+                                if word & bit:
+                                    r += weights[i, k]
+                            posts[i, j] = r
+        else:
+            # pack_axis == 0
+            # packed shape: (ceil(n_source/32), n_batch)
+            # check M[idx, j]: packed[idx>>5, j] & (1 << (idx & 31))
+            if homo:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def ell_mm(weights, indices, packed, posts):
+                    w = weights[0]
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in numba.prange(n_pre):
+                        for j in range(n_batch):
+                            r = 0.
+                            for k in range(n_conn):
+                                idx = indices[i, k]
+                                word = packed[idx >> 5, j]
+                                bit = np.uint32(1) << np.uint32(idx & 31)
+                                if word & bit:
+                                    r += w
+                            posts[i, j] = r
+            else:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def ell_mm(weights, indices, packed, posts):
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in numba.prange(n_pre):
+                        for j in range(n_batch):
+                            r = 0.
+                            for k in range(n_conn):
+                                idx = indices[i, k]
+                                word = packed[idx >> 5, j]
+                                bit = np.uint32(1) << np.uint32(idx & 31)
+                                if word & bit:
+                                    r += weights[i, k]
+                            posts[i, j] = r
+
+    def kernel(weights, indices, packed, matrix):
+        return numba_kernel(ell_mm, outs=kwargs['outs'])(weights, indices, packed)
+
+    return kernel
+
+
+# ---------------------------------------------------------------------------
 # JVP rules for fcnmm
 # ---------------------------------------------------------------------------
 
@@ -547,8 +713,7 @@ def _bitpack_binary_fcnmm_transpose_rule(
         ct_weight = ad.Zero(weights)
     elif homo:
         ct_weight = bitpack_binary_fcnmm_p_call(
-            jnp.ones([1], dtype=weight_info.dtype),
-            indices, packed, matrix,
+            jnp.ones([1], dtype=weight_info.dtype), indices, packed, matrix,
             shape=shape, transpose=transpose, pack_axis=pack_axis,
         )[0]
         ct_weight = jnp.sum(ct * ct_weight).reshape(*weight_info.shape)
@@ -564,8 +729,43 @@ def _bitpack_binary_fcnmm_transpose_rule(
 # Batching rule for fcnmm
 # ---------------------------------------------------------------------------
 
+def _bitpack_binary_fcnmm_batching_base_fn(args, pack_axis, axis=1, **kwargs):
+    from brainevent._event.bitpack_binary import bitpack as _bitpack
+    assert args[3].ndim == 3, 'Batching requires 3D matrix input.'
+    matrix = args[3]
+    m, maybe_batch1, maybe_batch2 = matrix.shape
+    M = matrix.reshape(m, maybe_batch1 * maybe_batch2)
+    new_packed = _bitpack(M, axis=pack_axis)
+    r = bitpack_binary_fcnmm_p_call(
+        args[0],
+        args[1],
+        new_packed,
+        M,
+        shape=kwargs['shape'],
+        transpose=kwargs['transpose'],
+        pack_axis=pack_axis,
+    )
+    r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
+    return [r], [axis]
+
+
 def _bitpack_binary_fcnmm_batching(args, axes, **kwargs):
-    return general_batching_rule(bitpack_binary_fcnmm_p, args, axes, **kwargs)
+    pack_axis = kwargs.get('pack_axis', 1)
+
+    if tuple(axes) == (None, None, 0, 0):
+        assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
+        args = list(args)
+        args[3] = jnp.transpose(args[3], (1, 0, 2))
+        return _bitpack_binary_fcnmm_batching_base_fn(args, pack_axis, **kwargs)
+
+    elif tuple(axes) == (None, None, 1, 1):
+        return _bitpack_binary_fcnmm_batching_base_fn(args, pack_axis, **kwargs)
+
+    elif tuple(axes) == (None, None, 2, 2):
+        return _bitpack_binary_fcnmm_batching_base_fn(args, pack_axis, axis=2, **kwargs)
+
+    else:
+        return general_batching_rule(bitpack_binary_fcnmm_p, args, axes, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +850,7 @@ gradient information through JVP and transpose rules — it is NOT passed
 to the CUDA kernel.
 """,
 )
+bitpack_binary_fcnmm_p.def_numba_kernel(_bitpack_binary_fcnmm_numba_kernel)
 bitpack_binary_fcnmm_p.def_cuda_raw_kernel(_bitpack_binary_fcnmm_cuda_kernel, asdefault=True)
 bitpack_binary_fcnmm_p.def_jvp_rule2(
     _bitpack_binary_fcnmm_jvp_weights,  # arg 0: weights
