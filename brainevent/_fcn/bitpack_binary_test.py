@@ -24,16 +24,12 @@ import pytest
 from brainevent._event.bitpack_binary import bitpack
 from brainevent._fcn.bitpack_binary import (
     bitpack_binary_fcnmv,
-    bitpack_binary_fcnmv_p,
     bitpack_binary_fcnmm,
-    bitpack_binary_fcnmm_p,
 )
 from brainevent._fcn.float import fcnmv, fcnmm
 from brainevent._test_util import generate_fixed_conn_num_indices
 
 platform = jax.default_backend()
-FCNMV_IMPLS = tuple(bitpack_binary_fcnmv_p.available_backends(platform))
-FCNMM_IMPLS = tuple(bitpack_binary_fcnmm_p.available_backends(platform))
 
 # Smaller shapes on CPU to keep tests fast
 if platform == 'cpu':
@@ -104,29 +100,14 @@ def _ref_mm(weights, indices, matrix, shape, transpose):
     return dense @ M  # (n_pre, n_post) @ (n_post, k) → (n_pre, k)
 
 
-def _impl_params(impls, name):
-    if impls:
-        return [pytest.param(impl, id=impl) for impl in impls]
-    return [pytest.param(
-        None,
-        marks=pytest.mark.skip(reason=f'No {name} on platform={platform}'),
-        id=f'no-{name}',
-    )]
-
-
-FCNMV_PARAMS = _impl_params(FCNMV_IMPLS, 'bitpack_binary_fcnmv')
-FCNMM_PARAMS = _impl_params(FCNMM_IMPLS, 'bitpack_binary_fcnmm')
-
-
 # ===========================================================================
 # 1. Forward correctness — fcnmv
 # ===========================================================================
 
-@pytest.mark.parametrize('impl', FCNMV_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_bitpack_fcnmv_forward(impl, homo_w, transpose, shape):
+def test_bitpack_fcnmv_forward(homo_w, transpose, shape):
     """bitpack_binary_fcnmv forward output matches dense reference."""
     m, n = shape
     indices = _mk_indices(shape)
@@ -137,7 +118,7 @@ def test_bitpack_fcnmv_forward(impl, homo_w, transpose, shape):
     packed = bitpack(spikes, axis=0)
 
     y = bitpack_binary_fcnmv(
-        weights, indices, packed, spikes,
+        weights, indices, packed, spikes, shape=shape, transpose=transpose,
     )
     y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
 
@@ -185,12 +166,11 @@ def test_bitpack_fcnmv_forward_all_ones(homo_w, transpose, shape):
 # 2. Forward correctness — fcnmm
 # ===========================================================================
 
-@pytest.mark.parametrize('impl', FCNMM_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('pack_axis', [0, 1])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_bitpack_fcnmm_forward(impl, homo_w, transpose, pack_axis, shape):
+def test_bitpack_fcnmm_forward(homo_w, transpose, pack_axis, shape):
     """bitpack_binary_fcnmm forward output matches dense reference."""
     m, n = shape
     indices = _mk_indices(shape)
@@ -201,7 +181,7 @@ def test_bitpack_fcnmm_forward(impl, homo_w, transpose, pack_axis, shape):
     packed = bitpack(matrix, axis=pack_axis)
 
     y = bitpack_binary_fcnmm(
-        weights, indices, packed, matrix,
+        weights, indices, packed, matrix, shape=shape, transpose=transpose, pack_axis=pack_axis,
     )
     y_ref = _ref_mm(weights, indices, matrix, shape, transpose)
 
