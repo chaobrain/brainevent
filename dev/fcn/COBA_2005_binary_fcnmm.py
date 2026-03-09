@@ -35,11 +35,41 @@ from COBA_2005_benchmark import make_simulation_batch_run
 
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
-batch_size, conn_num, data_type, duration = 16, 80, 'binary', 2e3 * u.ms
+batch_size, conn_num, data_type, duration = 16, 80, 'binary', 1e3 * u.ms
 
 
 def benchmark_post_conn():
-    
+    # --------------------------------
+    # 2026/03/08, batch_size, conn_num, data_type, duration = 16, 80, 'binary', 1e3 * u.ms
+    # --------------------------------
+    #
+    # scale=1, size=4000, time = 0.2206423282623291 s, firing rate = 59.4550666809082 Hz
+    # scale=2, size=8000, time = 0.31554341316223145 s, firing rate = 59.44181442260742 Hz
+    # scale=4, size=16000, time = 0.6682348251342773 s, firing rate = 59.4439697265625 Hz
+    # scale=6, size=24000, time = 0.9589388370513916 s, firing rate = 59.44413375854492 Hz
+    # scale=8, size=32000, time = 1.2952101230621338 s, firing rate = 59.44554901123047 Hz
+    # scale=10, size=40000, time = 1.708672285079956 s, firing rate = 59.44718551635742 Hz
+    # scale=20, size=80000, time = 3.7858314514160156 s, firing rate = 59.445011138916016 Hz
+    # scale=40, size=160000, time = 7.926112413406372 s, firing rate = 59.444637298583984 Hz
+    # scale=60, size=240000, time = 12.231749296188354 s, firing rate = 59.444488525390625 Hz
+    # scale=80, size=320000, time = 16.75143575668335 s, firing rate = 59.44343566894531 Hz
+    # scale=100, size=400000, time = 21.40729546546936 s, firing rate = 59.444156646728516 Hz
+    #
+    # --------------------------------
+    # 2026/03/09, batch_size, conn_num, data_type, duration = 16, 80, 'binary', 1e3 * u.ms
+    # --------------------------------
+    #
+    # scale=1, size=4000, time = 0.20499849319458008 s, firing rate = 59.44215774536133 Hz
+    # scale=2, size=8000, time = 0.26866841316223145 s, firing rate = 59.4437141418457 Hz
+    # scale=4, size=16000, time = 0.5763185024261475 s, firing rate = 59.44135665893555 Hz
+    # scale=6, size=24000, time = 0.8228826522827148 s, firing rate = 59.4480094909668 Hz
+    # scale=8, size=32000, time = 1.1048240661621094 s, firing rate = 59.441978454589844 Hz
+    # scale=10, size=40000, time = 1.4418222904205322 s, firing rate = 59.44264221191406 Hz
+    # scale=20, size=80000, time = 3.3926408290863037 s, firing rate = 59.442787170410156 Hz
+    # scale=40, size=160000, time = 7.364571809768677 s, firing rate = 59.44438552856445 Hz
+    # scale=60, size=240000, time = 11.60580325126648 s, firing rate = 59.443275451660156 Hz
+    # scale=80, size=320000, time = 15.990403890609741 s, firing rate = 59.44479751586914 Hz
+    # scale=100, size=400000, time = 20.511342525482178 s, firing rate = 59.44398880004883 Hz
     print('Benchmarking post-synaptic connection updates...')
 
     for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
@@ -378,6 +408,6 @@ def bench_fcnmm():
 
 
 if __name__ == '__main__':
-    # benchmark_post_conn()
-    bench_fcnmm()
+    benchmark_post_conn()
+    # bench_fcnmm()
     # benchmark_pre_conn()
