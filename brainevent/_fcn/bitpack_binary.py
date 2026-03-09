@@ -17,7 +17,7 @@
 
 
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Tuple, Union
 
 import brainunit as u
 import jax
@@ -134,7 +134,6 @@ def _bitpack_binary_fcnmv_cuda_kernel(
         )(weights, indices, packed, pack_axis=pack_axis)
 
     return kernel
-
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +276,37 @@ def _bitpack_binary_fcnmv_transpose_rule(
 
 
 # ---------------------------------------------------------------------------
+# Batching rule
+# ---------------------------------------------------------------------------
+
+def _bitpack_binary_fcnmv_batching(args, axes, **kwargs):
+    # When spikes and packed are batched (axis 0), promote MV → MM
+    if tuple(axes) == (None, None, 0, 0):
+        # packed: (batch, n_words), spikes: (batch, n_source) → transpose for MM layout
+        r = bitpack_binary_fcnmm_p_call(
+            args[0], args[1],
+            args[2].T,  # packed: (n_words, batch) → pack_axis=0 MM layout
+            args[3].T,  # matrix: (n_source, batch) → MM layout
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            pack_axis=0,
+        )
+        return r, [1]
+    elif tuple(axes) == (None, None, 1, 1):
+        r = bitpack_binary_fcnmm_p_call(
+            args[0], args[1],
+            args[2],  # packed: (n_words, batch) — already pack_axis=0 layout
+            args[3],  # matrix: (n_source, batch)
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            pack_axis=0,
+        )
+        return r, [1]
+    else:
+        return general_batching_rule(bitpack_binary_fcnmv_p, args, axes, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # Primitive call wrapper
 # ---------------------------------------------------------------------------
 
@@ -361,38 +391,11 @@ bitpack_binary_fcnmv_p.def_numba_kernel(_bitpack_binary_fcnmv_numba_kernel)
 bitpack_binary_fcnmv_p.def_cuda_raw_kernel(_bitpack_binary_fcnmv_cuda_kernel, asdefault=True)
 bitpack_binary_fcnmv_p.def_jvp_rule2(
     _bitpack_binary_fcnmv_jvp_weights,  # arg 0: weights
-    None,                                # arg 1: indices (not differentiable)
-    None,                                # arg 2: packed (not differentiable)
-    _bitpack_binary_fcnmv_jvp_spikes,   # arg 3: spikes (differentiable)
+    None,  # arg 1: indices (not differentiable)
+    None,  # arg 2: packed (not differentiable)
+    _bitpack_binary_fcnmv_jvp_spikes,  # arg 3: spikes (differentiable)
 )
 bitpack_binary_fcnmv_p.def_transpose_rule(_bitpack_binary_fcnmv_transpose_rule)
-def _bitpack_binary_fcnmv_batching(args, axes, **kwargs):
-    # When spikes and packed are batched (axis 0), promote MV → MM
-    if tuple(axes) == (None, None, 0, 0):
-        # packed: (batch, n_words), spikes: (batch, n_source) → transpose for MM layout
-        r = bitpack_binary_fcnmm_p_call(
-            args[0], args[1],
-            args[2].T,  # packed: (n_words, batch) → pack_axis=0 MM layout
-            args[3].T,  # matrix: (n_source, batch) → MM layout
-            shape=kwargs['shape'],
-            transpose=kwargs['transpose'],
-            pack_axis=0,
-        )
-        return r, [1]
-    elif tuple(axes) == (None, None, 1, 1):
-        r = bitpack_binary_fcnmm_p_call(
-            args[0], args[1],
-            args[2],  # packed: (n_words, batch) — already pack_axis=0 layout
-            args[3],  # matrix: (n_source, batch)
-            shape=kwargs['shape'],
-            transpose=kwargs['transpose'],
-            pack_axis=0,
-        )
-        return r, [1]
-    else:
-        return general_batching_rule(bitpack_binary_fcnmv_p, args, axes, **kwargs)
-
-
 bitpack_binary_fcnmv_p.def_batching_rule(_bitpack_binary_fcnmv_batching)
 bitpack_binary_fcnmv_p.def_call(bitpack_binary_fcnmv_p_call)
 bitpack_binary_fcnmv_p.def_tags('fcn', 'binary', 'bitpack')
@@ -650,9 +653,9 @@ to the CUDA kernel.
 bitpack_binary_fcnmm_p.def_cuda_raw_kernel(_bitpack_binary_fcnmm_cuda_kernel, asdefault=True)
 bitpack_binary_fcnmm_p.def_jvp_rule2(
     _bitpack_binary_fcnmm_jvp_weights,  # arg 0: weights
-    None,                                # arg 1: indices
-    None,                                # arg 2: packed
-    _bitpack_binary_fcnmm_jvp_matrix,   # arg 3: matrix
+    None,  # arg 1: indices
+    None,  # arg 2: packed
+    _bitpack_binary_fcnmm_jvp_matrix,  # arg 3: matrix
 )
 bitpack_binary_fcnmm_p.def_transpose_rule(_bitpack_binary_fcnmm_transpose_rule)
 bitpack_binary_fcnmm_p.def_batching_rule(_bitpack_binary_fcnmm_batching)
