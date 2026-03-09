@@ -42,8 +42,6 @@ from ._data import (
 from ._dense import (
     binary_densemv, binary_densemv_p,
     binary_densemm, binary_densemm_p,
-    indexed_binary_densemv, indexed_binary_densemv_p,
-    indexed_binary_densemm, indexed_binary_densemm_p,
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
 )
@@ -63,13 +61,9 @@ from ._error import (
 )
 from ._event import (
     EventRepresentation,
-    IndexedEventRepresentation,
     BinaryArray,
     BitPackedBinary,
     bitpack,
-    IndexedBinary1d,
-    IndexedBinary2d,
-    binary_array_index,
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
@@ -143,13 +137,9 @@ __all__ = [
 
     # --- representing events --- #
     'EventRepresentation',
-    'IndexedEventRepresentation',
     'BinaryArray',
     'BitPackedBinary',
     'bitpack',
-    'IndexedBinary1d',
-    'IndexedBinary2d',
-    'binary_array_index',
 
     # --- representing sparse data --- #
     'DataRepresentation',
@@ -177,8 +167,6 @@ __all__ = [
     # --- dense matrix --- #
     'binary_densemv', 'binary_densemv_p',
     'binary_densemm', 'binary_densemm_p',
-    'indexed_binary_densemv', 'indexed_binary_densemv_p',
-    'indexed_binary_densemm', 'indexed_binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
     'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
 

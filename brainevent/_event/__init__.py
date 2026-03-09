@@ -14,19 +14,13 @@
 # ==============================================================================
 
 
-from .base import EventRepresentation, IndexedEventRepresentation
+from .base import EventRepresentation
 from .binary import BinaryArray
-from .binary_indexed import IndexedBinary1d, IndexedBinary2d
-from .binary_indexed_extraction import binary_array_index
 from .bitpack_binary import BitPackedBinary, bitpack
 
 __all__ = [
     'EventRepresentation',
-    'IndexedEventRepresentation',
     'BinaryArray',
     'BitPackedBinary',
     'bitpack',
-    'IndexedBinary1d',
-    'IndexedBinary2d',
-    'binary_array_index',
 ]

@@ -752,16 +752,20 @@ def _bitpack_binary_fcnmm_batching(args, axes, **kwargs):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
         args[3] = jnp.transpose(args[3], (1, 0, 2))
-        return _bitpack_binary_fcnmm_batching_base_fn(args, pack_axis, **kwargs)
+        return _bitpack_binary_fcnmm_batching_base_fn(
+            args, pack_axis, shape=kwargs['shape'], transpose=kwargs['transpose'])
 
     elif tuple(axes) == (None, None, 1, 1):
-        return _bitpack_binary_fcnmm_batching_base_fn(args, pack_axis, **kwargs)
+        return _bitpack_binary_fcnmm_batching_base_fn(
+            args, pack_axis, shape=kwargs['shape'], transpose=kwargs['transpose'])
 
     elif tuple(axes) == (None, None, 2, 2):
-        return _bitpack_binary_fcnmm_batching_base_fn(args, pack_axis, axis=2, **kwargs)
+        return _bitpack_binary_fcnmm_batching_base_fn(
+            args, pack_axis, axis=2, shape=kwargs['shape'], transpose=kwargs['transpose'])
 
     else:
-        return general_batching_rule(bitpack_binary_fcnmm_p, args, axes, **kwargs)
+        return general_batching_rule(
+            bitpack_binary_fcnmm_p, args, axes, shape=kwargs['shape'], transpose=kwargs['transpose'])
 
 
 # ---------------------------------------------------------------------------

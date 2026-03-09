@@ -138,7 +138,6 @@ def test_bitpack_fcnmv_forward(impl, homo_w, transpose, shape):
 
     y = bitpack_binary_fcnmv(
         weights, indices, packed, spikes,
-        shape=shape, transpose=transpose, backend=impl,
     )
     y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
 
@@ -203,7 +202,6 @@ def test_bitpack_fcnmm_forward(impl, homo_w, transpose, pack_axis, shape):
 
     y = bitpack_binary_fcnmm(
         weights, indices, packed, matrix,
-        shape=shape, transpose=transpose, pack_axis=pack_axis, backend=impl,
     )
     y_ref = _ref_mm(weights, indices, matrix, shape, transpose)
 
