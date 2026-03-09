@@ -269,7 +269,7 @@ def _coo_on_pre_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
         )
 
     load_cuda_file(
-        Path(__file__).parent.joinpath('plasticity_binary_update_coo_on_binary_pre.cu'),
+        Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
         name='coo_plasticity_binary_pre',
     )
 
@@ -818,7 +818,7 @@ def _coo_on_post_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
         )
 
     load_cuda_file(
-        Path(__file__).parent.joinpath('plasticity_binary_update_coo_on_binary_post.cu'),
+        Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
         name='coo_plasticity_binary_post',
     )
 
