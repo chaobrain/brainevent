@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from brainevent._event.compact import _compact_1d_jax
 from brainevent._event.compact_binary import CompactBinary
 from brainevent._fcn.compact_binary import (
     compact_binary_fcnmv,
@@ -566,13 +567,15 @@ def test_compact_binary_fcnmv_vmap_over_spikes(homo_w, transpose, shape):
         batch_cbs.packed, batch_cbs.active_ids, batch_cbs.n_active, batch_cbs.value,
     )
 
-    # Compare against loop
+    # Compare against loop — compute per-element active_ids independently.
+    # Under vmap, the 1D compaction batching rule produces merged (row-level)
+    # active_ids, which are not per-element correct for MV scatter.
+    # The MV batching rule recomputes them, so vmap results are correct.
     y_loop = jnp.stack([
         compact_binary_fcnmv(
             weights, indices,
             jax.tree.map(lambda x: x[i], batch_cbs).packed,
-            jax.tree.map(lambda x: x[i], batch_cbs).active_ids,
-            jax.tree.map(lambda x: x[i], batch_cbs).n_active,
+            *_compact_1d_jax(batch_spikes[i], jax_impl=True),
             jax.tree.map(lambda x: x[i], batch_cbs).value,
             shape=shape, transpose=transpose,
         )

@@ -273,7 +273,18 @@ def _binary_1d_array_index_numba_kernel(
 
 
 def _binary_1d_array_index_batching(args, axes, **kwargs):
-    return general_batching_rule(binary_1d_array_index_p, args, axes, **kwargs)
+    ax_s, = axes
+    if ax_s is not None:
+        spikes = args[0]
+        if ax_s != 0:
+            spikes = jnp.moveaxis(spikes, ax_s, 0)
+        # (batch, n) → (n, batch) → 2D row-level compaction
+        spikes_2d = spikes.swapaxes(0, 1)
+        active_ids, n_active = binary_2d_compact_only_p_call(spikes_2d)
+        # Merged result: rows active in ANY batch element.
+        return (active_ids, n_active), (None, None)
+    else:
+        return general_batching_rule(binary_1d_array_index_p, args, axes, **kwargs)
 
 
 def binary_1d_array_index_p_call(spikes, *, backend: Optional[str] = None):
