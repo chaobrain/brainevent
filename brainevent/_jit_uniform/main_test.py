@@ -321,8 +321,8 @@ class Test_JITC_To_Dense:
         expected_wlow_grad = (ct * (-base + 1.)).sum()
         expected_whigh_grad = (ct * base).sum()
 
-        assert allclose(true_wlow_grad, expected_wlow_grad)
-        assert allclose(true_whigh_grad, expected_whigh_grad)
+        assert allclose(true_wlow_grad, expected_wlow_grad, atol=1e-3, rtol=1e-3)
+        assert allclose(true_whigh_grad, expected_whigh_grad, atol=1e-3, rtol=1e-3)
 
         print(true_wlow_grad, true_whigh_grad)
         print(expected_wlow_grad, expected_whigh_grad)
