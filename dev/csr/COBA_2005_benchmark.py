@@ -47,8 +47,8 @@ class CSR_Conn(brainstate.nn.Module):
         self.out_size = out_size
         self.efferent_target = efferent_target
         self.data_type = data_type
-        if data_type not in ('binary', 'sparse_float', 'float'):
-            raise ValueError('data_type must be either "binary" or "sparse_float" or "float".')
+        if data_type not in ('binary', 'float'):
+            raise ValueError('data_type must be either "binary" or "float".')
         if efferent_target not in ('pre', 'post'):
             raise ValueError('The target of the connection must be either "pre" or "post".')
         if isinstance(conn_num, float):

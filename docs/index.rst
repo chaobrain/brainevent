@@ -57,8 +57,6 @@ Core Components
   BrainEvent provides specialized array types for representing neural events:
 
   - ``BinaryArray``: Binary arrays representing spike events (1 = spike, 0 = no spike)
-  - ``BinaryArray``: General binary data with event-aware operations
-  - ``SparseFloat``: Float arrays with sparse semantics (zeros are skipped)
 
 **2. Sparse Data Structures**
   Multiple sparse matrix formats optimized for event-driven computation:

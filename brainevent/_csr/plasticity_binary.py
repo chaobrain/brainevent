@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+
+
 import numbers
 from functools import partial
 from pathlib import Path
@@ -317,7 +319,7 @@ def _csr_on_pre_cuda_kernel(
         )
 
     load_cuda_file(
-        Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_pre.cu'),
+        Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
         name='csr_plasticity_binary_pre',
     )
 
@@ -891,7 +893,7 @@ def _csr2csc_on_post_cuda_kernel(
         )
 
     load_cuda_file(
-        Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_post.cu'),
+        Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
         name='csr_plasticity_binary_post',
     )
 

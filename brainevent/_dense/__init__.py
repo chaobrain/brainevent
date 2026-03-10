@@ -17,10 +17,6 @@ from .binary import (
     binary_densemv, binary_densemv_p, binary_densemv_p_call,
     binary_densemm, binary_densemm_p, binary_densemm_p_call,
 )
-from .indexed_binary import (
-    indexed_binary_densemv, indexed_binary_densemv_p,
-    indexed_binary_densemm, indexed_binary_densemm_p,
-)
 from .plasticity_binary import (
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
@@ -29,8 +25,6 @@ from .plasticity_binary import (
 __all__ = [
     'binary_densemv', 'binary_densemv_p',
     'binary_densemm', 'binary_densemm_p',
-    'indexed_binary_densemv', 'indexed_binary_densemv_p',
-    'indexed_binary_densemm', 'indexed_binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
     'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
 ]

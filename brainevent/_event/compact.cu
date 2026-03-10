@@ -156,6 +156,113 @@ void compact_1d_float(
 }
 
 // ============================================================================
+// 2D Row-Level Compaction Only (no bitpack)
+// ============================================================================
+
+// Lightweight: one thread per row, serial check of n_batch columns.
+// Much lighter than the fused kernel when bitpack is not needed.
+
+__global__ void _compact_2d_only_bool_kern(
+    const uint8_t* __restrict__ B,
+    int32_t*       __restrict__ active_ids,
+    int32_t*       __restrict__ n_active,
+    int n_pre, int n_batch
+) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_pre) return;
+
+    const uint8_t* row_ptr = B + (size_t)row * n_batch;
+    bool row_active = false;
+    for (int j = 0; j < n_batch; j++) {
+        if (row_ptr[j] != 0) {
+            row_active = true;
+            break;
+        }
+    }
+    if (row_active) {
+        int pos = atomicAdd(n_active, 1);
+        active_ids[pos] = row;
+    }
+}
+
+__global__ void _compact_2d_only_float_kern(
+    const float* __restrict__ B,
+    int32_t*     __restrict__ active_ids,
+    int32_t*     __restrict__ n_active,
+    int n_pre, int n_batch
+) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_pre) return;
+
+    const float* row_ptr = B + (size_t)row * n_batch;
+    bool row_active = false;
+    for (int j = 0; j < n_batch; j++) {
+        if (row_ptr[j] != 0.0f) {
+            row_active = true;
+            break;
+        }
+    }
+    if (row_active) {
+        int pos = atomicAdd(n_active, 1);
+        active_ids[pos] = row;
+    }
+}
+
+// ---- FFI entry points for 2D compaction only ----
+
+// @BE compact_2d_only_bool
+void compact_2d_only_bool(
+    const BE::Tensor B,
+    BE::Tensor active_ids,
+    BE::Tensor n_active,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre = static_cast<int>(B.size(0));
+    int n_batch = static_cast<int>(B.size(1));
+
+    if (n_pre == 0 || n_batch == 0) return;
+
+    cudaMemsetAsync(n_active.data_ptr(), 0, sizeof(int32_t), s);
+
+    const uint8_t* d_B = static_cast<const uint8_t*>(B.data_ptr());
+    int32_t* d_ids = static_cast<int32_t*>(active_ids.data_ptr());
+    int32_t* d_cnt = static_cast<int32_t*>(n_active.data_ptr());
+
+    int bsz = 256;
+    int n_blocks = (n_pre + bsz - 1) / bsz;
+    _compact_2d_only_bool_kern<<<n_blocks, bsz, 0, s>>>(
+        d_B, d_ids, d_cnt, n_pre, n_batch);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// @BE compact_2d_only_float
+void compact_2d_only_float(
+    const BE::Tensor B,
+    BE::Tensor active_ids,
+    BE::Tensor n_active,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre = static_cast<int>(B.size(0));
+    int n_batch = static_cast<int>(B.size(1));
+
+    if (n_pre == 0 || n_batch == 0) return;
+
+    cudaMemsetAsync(n_active.data_ptr(), 0, sizeof(int32_t), s);
+
+    const float* d_B = static_cast<const float*>(B.data_ptr());
+    int32_t* d_ids = static_cast<int32_t*>(active_ids.data_ptr());
+    int32_t* d_cnt = static_cast<int32_t*>(n_active.data_ptr());
+
+    int bsz = 256;
+    int n_blocks = (n_pre + bsz - 1) / bsz;
+    _compact_2d_only_float_kern<<<n_blocks, bsz, 0, s>>>(
+        d_B, d_ids, d_cnt, n_pre, n_batch);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// ============================================================================
 // 2D Fused Bit-Pack + Row-Level Compaction
 // ============================================================================
 

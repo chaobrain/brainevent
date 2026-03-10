@@ -42,8 +42,6 @@ from ._data import (
 from ._dense import (
     binary_densemv, binary_densemv_p,
     binary_densemm, binary_densemm_p,
-    indexed_binary_densemv, indexed_binary_densemv_p,
-    indexed_binary_densemm, indexed_binary_densemm_p,
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
 )
@@ -63,19 +61,19 @@ from ._error import (
 )
 from ._event import (
     EventRepresentation,
-    IndexedEventRepresentation,
     BinaryArray,
-    IndexedBinary1d,
-    IndexedBinary2d,
-    SparseFloat,
-    IndexedSpFloat1d,
-    IndexedSpFloat2d,
-    binary_array_index,
+    BitPackedBinary,
+    bitpack,
+    CompactBinary,
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
     binary_fcnmv, binary_fcnmv_p,
     binary_fcnmm, binary_fcnmm_p,
+    bitpack_binary_fcnmv, bitpack_binary_fcnmv_p,
+    bitpack_binary_fcnmm, bitpack_binary_fcnmm_p,
+    compact_binary_fcnmv, compact_binary_fcnmv_p,
+    compact_binary_fcnmm, compact_binary_fcnmm_p,
     fcnmv, fcnmm,
 )
 from ._jit_normal import (
@@ -142,14 +140,10 @@ __all__ = [
 
     # --- representing events --- #
     'EventRepresentation',
-    'IndexedEventRepresentation',
     'BinaryArray',
-    'IndexedBinary1d',
-    'IndexedBinary2d',
-    'SparseFloat',
-    'IndexedSpFloat1d',
-    'IndexedSpFloat2d',
-    'binary_array_index',
+    'BitPackedBinary',
+    'bitpack',
+    'CompactBinary',
 
     # --- representing sparse data --- #
     'DataRepresentation',
@@ -177,8 +171,6 @@ __all__ = [
     # --- dense matrix --- #
     'binary_densemv', 'binary_densemv_p',
     'binary_densemm', 'binary_densemm_p',
-    'indexed_binary_densemv', 'indexed_binary_densemv_p',
-    'indexed_binary_densemm', 'indexed_binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
     'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
 
@@ -207,6 +199,10 @@ __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
     'binary_fcnmv', 'binary_fcnmv_p',
     'binary_fcnmm', 'binary_fcnmm_p',
+    'bitpack_binary_fcnmv', 'bitpack_binary_fcnmv_p',
+    'bitpack_binary_fcnmm', 'bitpack_binary_fcnmm_p',
+    'compact_binary_fcnmv', 'compact_binary_fcnmv_p',
+    'compact_binary_fcnmm', 'compact_binary_fcnmm_p',
     'fcnmv',
     'fcnmm',
 

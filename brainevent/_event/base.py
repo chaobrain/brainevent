@@ -113,7 +113,6 @@ class EventRepresentation(ABC):
     See Also
     --------
     BinaryArray : Concrete subclass for binary (0/1) event arrays.
-    SparseFloat : Concrete subclass for sparse floating-point event arrays.
 
     Examples
     --------
@@ -391,7 +390,6 @@ class IndexedEventRepresentation(EventRepresentation):
     --------
     EventRepresentation : Parent class without pre-computed indices.
     IndexedBinary1d : Concrete 1-D indexed binary event array.
-    IndexedSpFloat1d : Concrete 1-D indexed sparse-float event array.
     """
     __slots__ = ('_value',)
     __array_priority__ = 100

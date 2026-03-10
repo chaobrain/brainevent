@@ -20,6 +20,7 @@ from jax.tree_util import register_pytree_node_class
 from brainevent._dense import binary_densemm, binary_densemv
 from brainevent._error import MathError
 from .base import EventRepresentation, extract_raw_value, is_known_type
+from .bitpack_binary import BitPackedBinary
 
 __all__ = [
     'BinaryArray',
@@ -58,7 +59,6 @@ class BinaryArray(EventRepresentation):
 
     See Also
     --------
-    SparseFloat : Similar wrapper for sparse floating-point event arrays.
     binary_densemv : Underlying primitive for binary vector-matrix multiply.
     binary_densemm : Underlying primitive for binary matrix-matrix multiply.
 
@@ -77,6 +77,35 @@ class BinaryArray(EventRepresentation):
 
     def __init__(self, value):
         super().__init__(value)
+
+    def bitpack(self):
+        """Pack binary values into uint32 words along every axis.
+
+        Each uint32 word stores 32 binary values.  Bit ``b`` of word ``w``
+        corresponds to element ``w * 32 + b`` along the packed axis.
+
+        Creates and returns a new :class:`BitPackedBinary` instance.  The
+        packed representation can be used with FCN sparse matrices for
+        improved GPU cache utilisation.
+
+        Returns
+        -------
+        BitPackedBinary
+            A new bit-packed event representation with one packed array
+            per axis.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> import brainevent as be
+            >>> ba = be.BinaryArray(jnp.array([True, False, True]))
+            >>> bp = ba.bitpack()
+            >>> type(bp)
+            <class 'brainevent.BitPackedBinary'>
+        """
+        return BitPackedBinary(self.value)
 
     @property
     def T(self):
@@ -169,8 +198,10 @@ class BinaryArray(EventRepresentation):
 
             assert oc.ndim == 2, (f"Right operand must be a 2D array in "
                                   f"matrix multiplication. Got {oc.ndim}D array.")
-            assert self.shape[-1] == oc.shape[0], (f"Incompatible dimensions for matrix multiplication: "
-                                                   f"{self.shape[-1]} and {oc.shape[0]}.")
+            assert self.shape[-1] == oc.shape[0], (
+                f"Incompatible dimensions for matrix multiplication: "
+                f"{self.shape[-1]} and {oc.shape[0]}."
+            )
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:

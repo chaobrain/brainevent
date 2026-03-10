@@ -14,11 +14,17 @@
 # ==============================================================================
 
 from .binary import binary_fcnmv, binary_fcnmv_p, binary_fcnmm, binary_fcnmm_p
+from .bitpack_binary import bitpack_binary_fcnmv, bitpack_binary_fcnmv_p, bitpack_binary_fcnmm, bitpack_binary_fcnmm_p
+from .compact_binary import compact_binary_fcnmv, compact_binary_fcnmv_p, compact_binary_fcnmm, compact_binary_fcnmm_p
 from .float import fcnmv, fcnmm
 from .main import FixedNumConn, FixedPreNumConn, FixedPostNumConn
 
 __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
     'binary_fcnmv', 'binary_fcnmv_p', 'binary_fcnmm', 'binary_fcnmm_p',
+    'bitpack_binary_fcnmv', 'bitpack_binary_fcnmv_p',
+    'bitpack_binary_fcnmm', 'bitpack_binary_fcnmm_p',
+    'compact_binary_fcnmv', 'compact_binary_fcnmv_p',
+    'compact_binary_fcnmm', 'compact_binary_fcnmm_p',
     'fcnmv', 'fcnmm',
 ]
