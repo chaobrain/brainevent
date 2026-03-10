@@ -119,6 +119,7 @@ __global__ void _bg_tpr_hetero_packed_smem_kern##SUFFIX(                        
     const int32_t*  i_row = indices + (size_t)row * n_conn;                                   \
     const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                   \
     ACC_T val = ACC_ZERO;                                                                     \
+    _Pragma("unroll 4")                                                                       \
     for (int k = 0; k < n_conn; k++) {                                                        \
         int idx = __ldg(&i_row[k]);                                                           \
         if (IS_ACTIVE_PACKED_SMEM(smem_packed, idx))                                          \
@@ -141,6 +142,7 @@ __global__ void _bg_tpr_hetero_packed_kern##SUFFIX(                             
     const int32_t*  i_row = indices + (size_t)row * n_conn;                                  \
     const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                  \
     ACC_T val = ACC_ZERO;                                                                    \
+    _Pragma("unroll 4")                                                                      \
     for (int k = 0; k < n_conn; k++) {                                                       \
         int idx = __ldg(&i_row[k]);                                                          \
         if (IS_ACTIVE_PACKED(packed, idx))                                                   \
@@ -220,6 +222,7 @@ __global__ void _bg_mr_hetero_packed_smem_kern##SUFFIX(                         
     const int32_t*  i_row = indices + (size_t)row * n_conn;                                            \
     const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                            \
     ACC_T val = ACC_ZERO;                                                                              \
+    _Pragma("unroll 4")                                                                                \
     for (int k = lane; k < n_conn; k += 32) {                                                          \
         int idx = __ldg(&i_row[k]);                                                                    \
         if (IS_ACTIVE_PACKED_SMEM(smem_packed, idx))                                                   \
@@ -245,6 +248,7 @@ __global__ void _bg_mr_hetero_packed_kern##SUFFIX(                              
     const int32_t*  i_row = indices + (size_t)row * n_conn;                                       \
     const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                       \
     ACC_T val = ACC_ZERO;                                                                         \
+    _Pragma("unroll 4")                                                                            \
     for (int k = lane; k < n_conn; k += 32) {                                                     \
         int idx = __ldg(&i_row[k]);                                                               \
         if (IS_ACTIVE_PACKED(packed, idx))                                                        \

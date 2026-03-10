@@ -82,6 +82,7 @@ __global__ void _bgm_a1_warp_homo_kern##SUFFIX(                                 
         const int32_t* i_row = indices + (size_t)row * n_conn;                      \
         int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                    \
         ACC_T accum = (ACC_T)0;                                                     \
+        _Pragma("unroll 4")                                                         \
         for (int k = 0; k < n_conn; k++) {                                          \
             int src = __shfl_sync(0xffffffff, my_idx, k);                           \
             uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);        \
@@ -115,6 +116,7 @@ __global__ void _bgm_a1_warp_hetero_kern##SUFFIX(                               
         int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                  \
         ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;   \
         ACC_T accum  = (ACC_T)0;                                                    \
+        _Pragma("unroll 4")                                                         \
         for (int k = 0; k < n_conn; k++) {                                          \
             int   src = __shfl_sync(0xffffffff, my_idx, k);                         \
             ACC_T wk  = __shfl_sync(0xffffffff, my_w, k);                           \
@@ -135,9 +137,11 @@ __global__ void _bgm_a1_basic_homo_kern##SUFFIX(                                
     int n_pre, int n_conn, int n_batch, int n_batch_words                              \
 ) {                                                                                   \
     extern __shared__ char _smem_bytes[];                                              \
-    int32_t* s_idx    = reinterpret_cast<int32_t*>(_smem_bytes);                       \
-    size_t   red_off  = ((size_t)n_conn * sizeof(int32_t) + 7) & ~(size_t)7;           \
-    ACC_T*   smem_red = reinterpret_cast<ACC_T*>(_smem_bytes + red_off);               \
+    int32_t*  s_idx    = reinterpret_cast<int32_t*>(_smem_bytes);                      \
+    size_t    pk_off   = ((size_t)n_conn * sizeof(int32_t) + 3) & ~(size_t)3;          \
+    uint32_t* s_packed = reinterpret_cast<uint32_t*>(_smem_bytes + pk_off);            \
+    size_t    red_off  = (pk_off + (size_t)n_conn * sizeof(uint32_t) + 7) & ~(size_t)7;\
+    ACC_T*    smem_red = reinterpret_cast<ACC_T*>(_smem_bytes + red_off);              \
     int lane   = threadIdx.x & 31;                                                     \
     int warpid = threadIdx.x >> 5;                                                     \
     int nwarps = blockDim.x >> 5;                                                      \
@@ -147,13 +151,16 @@ __global__ void _bgm_a1_basic_homo_kern##SUFFIX(                                
     ACC_T w0 = READ_W(__ldg(&weights[0]));                                             \
     for (int row = blockIdx.x; row < n_pre; row += gridDim.x) {                        \
         const int32_t* i_row = indices + (size_t)row * n_conn;                         \
-        for (int i = threadIdx.x; i < n_conn; i += blockDim.x)                         \
-            s_idx[i] = __ldg(&i_row[i]);                                               \
+        for (int i = threadIdx.x; i < n_conn; i += blockDim.x) {                       \
+            int idx = __ldg(&i_row[i]);                                                \
+            s_idx[i] = idx;                                                            \
+            s_packed[i] = __ldg(&packed[(size_t)idx * n_batch_words + bw]);            \
+        }                                                                              \
         __syncthreads();                                                               \
         ACC_T accum = ACC_ZERO;                                                        \
+        _Pragma("unroll 4")                                                            \
         for (int k = warpid; k < n_conn; k += nwarps) {                                \
-            int src = s_idx[k];                                                        \
-            uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);           \
+            uint32_t word = s_packed[k];                                               \
             accum += (ACC_T)(col_valid & ((word >> lane) & 1u));                       \
         }                                                                              \
         __syncthreads();                                                               \
@@ -183,7 +190,10 @@ __global__ void _bgm_a1_basic_hetero_kern##SUFFIX(                              
     int32_t*  s_idx = reinterpret_cast<int32_t*>(_smem_bytes);                           \
     size_t wt_off = ((size_t)n_conn * sizeof(int32_t) + 7) & ~(size_t)7;                \
     WEIGHT_T* s_wt = reinterpret_cast<WEIGHT_T*>(_smem_bytes + wt_off);                 \
-    size_t red_off = wt_off + (size_t)n_conn * sizeof(WEIGHT_T);                         \
+    size_t pk_off = wt_off + (size_t)n_conn * sizeof(WEIGHT_T);                          \
+    pk_off = (pk_off + 3) & ~(size_t)3;                                                 \
+    uint32_t* s_packed = reinterpret_cast<uint32_t*>(_smem_bytes + pk_off);              \
+    size_t red_off = pk_off + (size_t)n_conn * sizeof(uint32_t);                         \
     red_off = (red_off + 7) & ~(size_t)7;                                               \
     ACC_T* smem_red = reinterpret_cast<ACC_T*>(_smem_bytes + red_off);                   \
     int lane   = threadIdx.x & 31;                                                       \
@@ -196,14 +206,16 @@ __global__ void _bgm_a1_basic_hetero_kern##SUFFIX(                              
         const int32_t*  i_row = indices + (size_t)row * n_conn;                          \
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                          \
         for (int i = threadIdx.x; i < n_conn; i += blockDim.x) {                         \
-            s_idx[i] = __ldg(&i_row[i]);                                                 \
+            int idx = __ldg(&i_row[i]);                                                  \
+            s_idx[i] = idx;                                                              \
             s_wt[i]  = __ldg(&w_row[i]);                                                 \
+            s_packed[i] = __ldg(&packed[(size_t)idx * n_batch_words + bw]);              \
         }                                                                                \
         __syncthreads();                                                                 \
         ACC_T accum = ACC_ZERO;                                                          \
+        _Pragma("unroll 4")                                                              \
         for (int k = warpid; k < n_conn; k += nwarps) {                                  \
-            int src = s_idx[k];                                                          \
-            uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);             \
+            uint32_t word = s_packed[k];                                                 \
             accum += READ_W(s_wt[k]) * (ACC_T)(col_valid & ((word >> lane) & 1u));       \
         }                                                                                \
         __syncthreads();                                                                 \
@@ -248,6 +260,7 @@ __global__ void _bgm_a0_warp_homo_kern##SUFFIX(                                 
         const int32_t* i_row = indices + (size_t)row * n_conn;                      \
         int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                    \
         ACC_T accum = (ACC_T)0;                                                     \
+        _Pragma("unroll 4")                                                         \
         for (int k = 0; k < n_conn; k++) {                                          \
             int src = __shfl_sync(0xffffffff, my_idx, k);                           \
             int word_row = src >> 5;                                                \
@@ -284,6 +297,7 @@ __global__ void _bgm_a0_warp_hetero_kern##SUFFIX(                               
         int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                  \
         ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;   \
         ACC_T accum  = (ACC_T)0;                                                    \
+        _Pragma("unroll 4")                                                         \
         for (int k = 0; k < n_conn; k++) {                                          \
             int   src = __shfl_sync(0xffffffff, my_idx, k);                         \
             ACC_T wk  = __shfl_sync(0xffffffff, my_w, k);                           \
@@ -323,6 +337,7 @@ __global__ void _bgm_a0_basic_homo_kern##SUFFIX(                                
             s_idx[i] = __ldg(&i_row[i]);                                               \
         __syncthreads();                                                               \
         ACC_T accum = ACC_ZERO;                                                        \
+        _Pragma("unroll 4")                                                            \
         for (int k = warpid; k < n_conn; k += nwarps) {                                \
             int src      = s_idx[k];                                                   \
             int word_row = src >> 5;                                                   \
@@ -376,6 +391,7 @@ __global__ void _bgm_a0_basic_hetero_kern##SUFFIX(                              
         }                                                                                \
         __syncthreads();                                                                 \
         ACC_T accum = ACC_ZERO;                                                          \
+        _Pragma("unroll 4")                                                              \
         for (int k = warpid; k < n_conn; k += nwarps) {                                  \
             int src      = s_idx[k];                                                     \
             int word_row = src >> 5;                                                     \
@@ -429,6 +445,7 @@ __global__ void _bsm_a1_warp_homo_kern##SUFFIX(                                 
         if (active_mask == 0) continue;                                             \
         const int32_t* i_row = indices + (size_t)row * n_conn;                      \
         int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                    \
+        _Pragma("unroll 4")                                                         \
         for (int k = 0; k < n_conn; k++) {                                          \
             int target = __shfl_sync(0xffffffff, my_idx, k);                        \
             if (active)                                                             \
@@ -463,6 +480,7 @@ __global__ void _bsm_a1_warp_hetero_kern##SUFFIX(                               
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                     \
         int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                  \
         ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;   \
+        _Pragma("unroll 4")                                                         \
         for (int k = 0; k < n_conn; k++) {                                          \
             int   target = __shfl_sync(0xffffffff, my_idx, k);                      \
             ACC_T wk     = __shfl_sync(0xffffffff, my_w, k);                        \
@@ -510,12 +528,10 @@ __global__ void _bsm_a1_basic_homo_kern##SUFFIX(                                
         for (int i = threadIdx.x; i < n_conn; i += blockDim.x)                       \
             s_idx[i] = __ldg(&i_row[i]);                                             \
         __syncthreads();                                                             \
-        for (int a = 0; a < n_active; a++) {                                         \
-            int j = s_active_j[a];                                                   \
-            for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                 \
-                int tgt = s_idx[k];                                                  \
-                ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + j], w0);                \
-            }                                                                        \
+        for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                     \
+            int tgt = s_idx[k];                                                      \
+            for (int a = 0; a < n_active; a++)                                        \
+                ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + s_active_j[a]], w0);     \
         }                                                                            \
         __syncthreads();                                                             \
     }                                                                                \
@@ -564,13 +580,11 @@ __global__ void _bsm_a1_basic_hetero_kern##SUFFIX(                              
             s_wt[i]  = __ldg(&w_row[i]);                                             \
         }                                                                            \
         __syncthreads();                                                             \
-        for (int a = 0; a < n_active; a++) {                                         \
-            int j = s_active_j[a];                                                   \
-            for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                 \
-                int tgt = s_idx[k];                                                  \
-                ACC_T wk = READ_W(s_wt[k]);                                          \
-                ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + j], wk);                \
-            }                                                                        \
+        for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                     \
+            int tgt = s_idx[k];                                                      \
+            ACC_T wk = READ_W(s_wt[k]);                                              \
+            for (int a = 0; a < n_active; a++)                                        \
+                ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + s_active_j[a]], wk);     \
         }                                                                            \
         __syncthreads();                                                             \
     }                                                                                \
@@ -610,6 +624,7 @@ __global__ void _bsm_a0_warp_homo_kern##SUFFIX(                                 
         if (active_mask == 0) continue;                                             \
         const int32_t* i_row = indices + (size_t)row * n_conn;                      \
         int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                    \
+        _Pragma("unroll 4")                                                         \
         for (int k = 0; k < n_conn; k++) {                                          \
             int target = __shfl_sync(0xffffffff, my_idx, k);                        \
             if (active)                                                             \
@@ -647,6 +662,7 @@ __global__ void _bsm_a0_warp_hetero_kern##SUFFIX(                               
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                     \
         int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                  \
         ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;   \
+        _Pragma("unroll 4")                                                         \
         for (int k = 0; k < n_conn; k++) {                                          \
             int   target = __shfl_sync(0xffffffff, my_idx, k);                      \
             ACC_T wk     = __shfl_sync(0xffffffff, my_w, k);                        \
@@ -693,12 +709,10 @@ __global__ void _bsm_a0_basic_homo_kern##SUFFIX(                                
         for (int i = threadIdx.x; i < n_conn; i += blockDim.x)                       \
             s_idx[i] = __ldg(&i_row[i]);                                             \
         __syncthreads();                                                             \
-        for (int a = 0; a < n_active; a++) {                                         \
-            int j = s_active_j[a];                                                   \
-            for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                 \
-                int tgt = s_idx[k];                                                  \
-                ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + j], w0);                \
-            }                                                                        \
+        for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                     \
+            int tgt = s_idx[k];                                                      \
+            for (int a = 0; a < n_active; a++)                                        \
+                ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + s_active_j[a]], w0);     \
         }                                                                            \
         __syncthreads();                                                             \
     }                                                                                \
@@ -747,13 +761,11 @@ __global__ void _bsm_a0_basic_hetero_kern##SUFFIX(                              
             s_wt[i]  = __ldg(&w_row[i]);                                             \
         }                                                                            \
         __syncthreads();                                                             \
-        for (int a = 0; a < n_active; a++) {                                         \
-            int j = s_active_j[a];                                                   \
-            for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                 \
-                int tgt = s_idx[k];                                                  \
-                ACC_T wk = READ_W(s_wt[k]);                                          \
-                ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + j], wk);                \
-            }                                                                        \
+        for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                     \
+            int tgt = s_idx[k];                                                      \
+            ACC_T wk = READ_W(s_wt[k]);                                              \
+            for (int a = 0; a < n_active; a++)                                        \
+                ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + s_active_j[a]], wk);     \
         }                                                                            \
         __syncthreads();                                                             \
     }                                                                                \
@@ -866,7 +878,9 @@ void bitpack_binary_fcnmm_gather_homo_a1##SUFFIX(                               
     } else {                                                                          \
         int bsz = 256; int nwarps = bsz >> 5;                                        \
         size_t idx_bytes = (size_t)n_conn * sizeof(int32_t);                          \
-        size_t red_off = (idx_bytes + 7) & ~(size_t)7;                                \
+        size_t pk_off = (idx_bytes + 3) & ~(size_t)3;                                 \
+        size_t pk_end = pk_off + (size_t)n_conn * sizeof(uint32_t);                   \
+        size_t red_off = (pk_end + 7) & ~(size_t)7;                                   \
         size_t shm = red_off + (size_t)nwarps * 32 * ACC_SIZE;                        \
         int grid_x = (n_pre < BGM_MAX_GRID_X) ? n_pre : BGM_MAX_GRID_X;              \
         dim3 grid(grid_x, batch_tiles);                                               \
@@ -901,7 +915,9 @@ void bitpack_binary_fcnmm_gather_hetero_a1##SUFFIX(                             
         int bsz = 256; int nwarps = bsz >> 5;                                        \
         size_t wt_off = ((size_t)n_conn * sizeof(int32_t) + 7) & ~(size_t)7;         \
         size_t idx_wt = wt_off + (size_t)n_conn * sizeof(WEIGHT_C_T);                \
-        size_t red_off = (idx_wt + 7) & ~(size_t)7;                                  \
+        size_t pk_off = (idx_wt + 3) & ~(size_t)3;                                   \
+        size_t pk_end = pk_off + (size_t)n_conn * sizeof(uint32_t);                   \
+        size_t red_off = (pk_end + 7) & ~(size_t)7;                                  \
         size_t shm = red_off + (size_t)nwarps * 32 * ACC_SIZE;                        \
         int grid_x = (n_pre < BGM_MAX_GRID_X) ? n_pre : BGM_MAX_GRID_X;              \
         dim3 grid(grid_x, batch_tiles);                                               \
