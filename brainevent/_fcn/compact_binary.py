@@ -25,7 +25,8 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._misc import namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_file
+from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_file, numba_kernel
+from brainevent.config import get_numba_parallel
 from .float import fcnmv, fcnmm
 
 __all__ = [
@@ -144,6 +145,83 @@ def _compact_binary_fcnmv_cuda_kernel(
         return jax.ffi.ffi_call(
             kernel_name, out_info
         )(weights, indices, packed, active_ids, n_active)
+
+    return kernel
+
+
+# ---------------------------------------------------------------------------
+# Numba CPU kernel
+# ---------------------------------------------------------------------------
+
+def _compact_binary_fcnmv_numba_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    import numba
+    import numpy as np
+
+    if transpose:
+        # Scatter: iterate only over active_ids rows
+        if weight_info.size == 1:
+            @numba.njit(fastmath=True)
+            def ell_mv(weights, indices, active_ids, n_active, posts):
+                posts[:] = 0.
+                n_act = n_active[0]
+                w = weights[0]
+                n_conn = indices.shape[1]
+                for a in range(n_act):
+                    i = active_ids[a]
+                    for k in range(n_conn):
+                        posts[indices[i, k]] += w
+        else:
+            @numba.njit(fastmath=True)
+            def ell_mv(weights, indices, active_ids, n_active, posts):
+                posts[:] = 0.
+                n_act = n_active[0]
+                n_conn = indices.shape[1]
+                for a in range(n_act):
+                    i = active_ids[a]
+                    for k in range(n_conn):
+                        posts[indices[i, k]] += weights[i, k]
+
+        def kernel(weights, indices, packed, active_ids, n_active, spikes):
+            return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, active_ids, n_active)
+
+    else:
+        # Gather: same as bitpack_binary — use packed for bit checking
+        if weight_info.size == 1:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            def ell_mv(weights, indices, packed, posts):
+                w = weights[0]
+                n_pre = indices.shape[0]
+                n_conn = indices.shape[1]
+                for i in numba.prange(n_pre):
+                    r = 0.
+                    for k in range(n_conn):
+                        idx = indices[i, k]
+                        word = packed[idx >> 5]
+                        bit = np.uint32(1) << np.uint32(idx & 31)
+                        if word & bit:
+                            r += w
+                    posts[i] = r
+        else:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            def ell_mv(weights, indices, packed, posts):
+                n_pre = indices.shape[0]
+                n_conn = indices.shape[1]
+                for i in numba.prange(n_pre):
+                    r = 0.
+                    for k in range(n_conn):
+                        idx = indices[i, k]
+                        word = packed[idx >> 5]
+                        bit = np.uint32(1) << np.uint32(idx & 31)
+                        if word & bit:
+                            r += weights[i, k]
+                    posts[i] = r
+
+        def kernel(weights, indices, packed, active_ids, n_active, spikes):
+            return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, packed)
 
     return kernel
 
@@ -342,6 +420,7 @@ packed, active_ids, n_active, spikes)``.
   JVP and transpose rules — it is NOT passed to the CUDA kernel.
 """,
 )
+compact_binary_fcnmv_p.def_numba_kernel(_compact_binary_fcnmv_numba_kernel)
 compact_binary_fcnmv_p.def_cuda_raw_kernel(_compact_binary_fcnmv_cuda_kernel, asdefault=True)
 compact_binary_fcnmv_p.def_jvp_rule2(
     _compact_binary_fcnmv_jvp_weights,  # arg 0: weights
@@ -459,6 +538,176 @@ def _compact_binary_fcnmm_cuda_kernel(
         return jax.ffi.ffi_call(kernel_name, out_info)(
             weights, indices, packed, active_ids, n_active
         )
+
+    return kernel
+
+
+# ---------------------------------------------------------------------------
+# Numba CPU kernel for fcnmm
+# ---------------------------------------------------------------------------
+
+def _compact_binary_fcnmm_numba_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    pack_axis: int,
+    **kwargs
+):
+    import numba
+    import numpy as np
+
+    homo = weight_info.size == 1
+
+    if transpose:
+        # Scatter mode: iterate over active rows, check packed for batch column activity
+        if pack_axis == 1:
+            # packed shape: (n_source, ceil(n_batch/32))
+            if homo:
+                @numba.njit(fastmath=True)
+                def ell_mm(weights, indices, packed, active_ids, n_active, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    n_act = n_active[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for a in range(n_act):
+                        i = active_ids[a]
+                        for j in range(n_batch):
+                            word = packed[i, j >> 5]
+                            bit = np.uint32(1) << np.uint32(j & 31)
+                            if word & bit:
+                                for k in range(n_conn):
+                                    posts[indices[i, k], j] += w
+            else:
+                @numba.njit(fastmath=True)
+                def ell_mm(weights, indices, packed, active_ids, n_active, posts):
+                    posts[:] = 0.
+                    n_act = n_active[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for a in range(n_act):
+                        i = active_ids[a]
+                        for j in range(n_batch):
+                            word = packed[i, j >> 5]
+                            bit = np.uint32(1) << np.uint32(j & 31)
+                            if word & bit:
+                                for k in range(n_conn):
+                                    posts[indices[i, k], j] += weights[i, k]
+        else:
+            # pack_axis == 0
+            # packed shape: (ceil(n_source/32), n_batch)
+            if homo:
+                @numba.njit(fastmath=True)
+                def ell_mm(weights, indices, packed, active_ids, n_active, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    n_act = n_active[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for a in range(n_act):
+                        i = active_ids[a]
+                        word_idx = i >> 5
+                        bit = np.uint32(1) << np.uint32(i & 31)
+                        for j in range(n_batch):
+                            if packed[word_idx, j] & bit:
+                                for k in range(n_conn):
+                                    posts[indices[i, k], j] += w
+            else:
+                @numba.njit(fastmath=True)
+                def ell_mm(weights, indices, packed, active_ids, n_active, posts):
+                    posts[:] = 0.
+                    n_act = n_active[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for a in range(n_act):
+                        i = active_ids[a]
+                        word_idx = i >> 5
+                        bit = np.uint32(1) << np.uint32(i & 31)
+                        for j in range(n_batch):
+                            if packed[word_idx, j] & bit:
+                                for k in range(n_conn):
+                                    posts[indices[i, k], j] += weights[i, k]
+
+        def kernel(weights, indices, packed, active_ids, n_active, matrix):
+            return numba_kernel(ell_mm, outs=kwargs['outs'])(
+                weights, indices, packed, active_ids, n_active
+            )
+
+    else:
+        # Gather mode: same as bitpack_binary — active_ids unused
+        if pack_axis == 1:
+            # packed shape: (n_source, ceil(n_batch/32))
+            if homo:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def ell_mm(weights, indices, packed, posts):
+                    w = weights[0]
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in numba.prange(n_pre):
+                        for j in range(n_batch):
+                            r = 0.
+                            for k in range(n_conn):
+                                idx = indices[i, k]
+                                word = packed[idx, j >> 5]
+                                bit = np.uint32(1) << np.uint32(j & 31)
+                                if word & bit:
+                                    r += w
+                            posts[i, j] = r
+            else:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def ell_mm(weights, indices, packed, posts):
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in numba.prange(n_pre):
+                        for j in range(n_batch):
+                            r = 0.
+                            for k in range(n_conn):
+                                idx = indices[i, k]
+                                word = packed[idx, j >> 5]
+                                bit = np.uint32(1) << np.uint32(j & 31)
+                                if word & bit:
+                                    r += weights[i, k]
+                            posts[i, j] = r
+        else:
+            # pack_axis == 0
+            # packed shape: (ceil(n_source/32), n_batch)
+            if homo:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def ell_mm(weights, indices, packed, posts):
+                    w = weights[0]
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in numba.prange(n_pre):
+                        for j in range(n_batch):
+                            r = 0.
+                            for k in range(n_conn):
+                                idx = indices[i, k]
+                                word = packed[idx >> 5, j]
+                                bit = np.uint32(1) << np.uint32(idx & 31)
+                                if word & bit:
+                                    r += w
+                            posts[i, j] = r
+            else:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def ell_mm(weights, indices, packed, posts):
+                    n_pre = indices.shape[0]
+                    n_conn = indices.shape[1]
+                    n_batch = posts.shape[1]
+                    for i in numba.prange(n_pre):
+                        for j in range(n_batch):
+                            r = 0.
+                            for k in range(n_conn):
+                                idx = indices[i, k]
+                                word = packed[idx >> 5, j]
+                                bit = np.uint32(1) << np.uint32(idx & 31)
+                                if word & bit:
+                                    r += weights[i, k]
+                            posts[i, j] = r
+
+        def kernel(weights, indices, packed, active_ids, n_active, matrix):
+            return numba_kernel(ell_mm, outs=kwargs['outs'])(weights, indices, packed)
 
     return kernel
 
@@ -676,6 +925,7 @@ packed, active_ids, n_active, matrix)``.
   passed to the CUDA kernel.
 """,
 )
+compact_binary_fcnmm_p.def_numba_kernel(_compact_binary_fcnmm_numba_kernel)
 compact_binary_fcnmm_p.def_cuda_raw_kernel(_compact_binary_fcnmm_cuda_kernel, asdefault=True)
 compact_binary_fcnmm_p.def_jvp_rule2(
     _compact_binary_fcnmm_jvp_weights,  # arg 0: weights
