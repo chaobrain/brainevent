@@ -29,7 +29,7 @@ from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
-from brainevent._op._pipeline import load_cuda_file
+from brainevent._op import load_cuda_file
 from .float import jitnmv_p_call, jitnmm_p_call
 
 __all__ = [
@@ -1100,7 +1100,7 @@ def _jitc_mm_normal_warp_kernel_generator(
 binary_jitnmv_p.def_numba_kernel(_jitc_mv_normal_numba_kernel_generator)
 binary_jitnmv_p.def_warp_kernel(_jitc_mv_normal_warp_kernel_generator)
 binary_jitnmv_p.def_pallas_kernel('gpu', _jitc_mv_normal_pallas_kernel_generator)
-binary_jitnmv_p.def_cuda_raw_kernel(_binary_jitnmv_cuda_kernel)
+binary_jitnmv_p.def_cuda_raw_kernel(_binary_jitnmv_cuda_kernel, asdefault=True)
 binary_jitnmv_p.def_jvp_rule2(_jitc_mv_normal_jvp_wloc, _jitc_mv_normal_jvp_wscale, None, _jitc_mv_normal_jvp_v, None)
 binary_jitnmv_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 binary_jitnmv_p.def_batching_rule(_jitc_mv_normal_batching)
@@ -1602,7 +1602,7 @@ binary_jitnmm : High-level user-facing function wrapper.
 binary_jitnmm_p.def_numba_kernel(_jitc_mm_normal_numba_kernel_generator)
 binary_jitnmm_p.def_warp_kernel(_jitc_mm_normal_warp_kernel_generator)
 binary_jitnmm_p.def_pallas_kernel('gpu', _jitc_mm_normal_pallas_kernel_generator)
-binary_jitnmm_p.def_cuda_raw_kernel(_binary_jitnmm_cuda_kernel)
+binary_jitnmm_p.def_cuda_raw_kernel(_binary_jitnmm_cuda_kernel, asdefault=True)
 binary_jitnmm_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale, None, _jitc_mm_normal_jvp_B, None)
 binary_jitnmm_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
 binary_jitnmm_p.def_batching_rule(_jitc_mm_normal_batching)

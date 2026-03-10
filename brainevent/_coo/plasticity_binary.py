@@ -26,7 +26,7 @@ import numpy as np
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._op._pipeline import load_cuda_file
+from brainevent._op import load_cuda_file
 
 __all__ = [
     'update_coo_on_binary_pre',
@@ -571,7 +571,7 @@ def _coo_on_post_warp_kernel(
 update_coo_on_binary_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
 update_coo_on_binary_pre_p.def_warp_kernel(_coo_on_pre_warp_kernel)
 update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel)
-update_coo_on_binary_pre_p.def_cuda_raw_kernel(_coo_on_pre_cuda_kernel)
+update_coo_on_binary_pre_p.def_cuda_raw_kernel(_coo_on_pre_cuda_kernel, asdefault=True)
 update_coo_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _coo_on_pre_jax_kernel)
 update_coo_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _coo_on_pre_jax_kernel)
 update_coo_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _coo_on_pre_jax_kernel)
@@ -990,7 +990,7 @@ update_coo_on_binary_post : High-level user-facing function wrapper.
 update_coo_on_binary_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
 update_coo_on_binary_post_p.def_warp_kernel(_coo_on_post_warp_kernel)
 update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel)
-update_coo_on_binary_post_p.def_cuda_raw_kernel(_coo_on_post_cuda_kernel)
+update_coo_on_binary_post_p.def_cuda_raw_kernel(_coo_on_post_cuda_kernel, asdefault=True)
 update_coo_on_binary_post_p.def_kernel('jax_raw', 'cpu', _coo_on_post_jax_kernel)
 update_coo_on_binary_post_p.def_kernel('jax_raw', 'gpu', _coo_on_post_jax_kernel)
 update_coo_on_binary_post_p.def_kernel('jax_raw', 'tpu', _coo_on_post_jax_kernel)

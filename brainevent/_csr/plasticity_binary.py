@@ -26,7 +26,7 @@ from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
-from brainevent._op._pipeline import load_cuda_file
+from brainevent._op import load_cuda_file
 
 __all__ = [
     'update_csr_on_binary_pre',
@@ -578,7 +578,7 @@ update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
 update_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
 update_csr_on_binary_pre_p.def_pallas_kernel('gpu', partial(_csr_on_pre_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_pre_p.def_pallas_kernel('tpu', partial(_csr_on_pre_pallas_kernel_generator, 'mosaic_tpu'))
-update_csr_on_binary_pre_p.def_cuda_raw_kernel(_csr_on_pre_cuda_kernel)
+update_csr_on_binary_pre_p.def_cuda_raw_kernel(_csr_on_pre_cuda_kernel, asdefault=True)
 update_csr_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _csr_on_pre_jax_kernel)
 update_csr_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _csr_on_pre_jax_kernel)
 update_csr_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _csr_on_pre_jax_kernel)
@@ -1051,7 +1051,7 @@ update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_gener
 update_csr_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 update_csr_on_binary_post_p.def_pallas_kernel('gpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_post_p.def_pallas_kernel('tpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'mosaic_tpu'))
-update_csr_on_binary_post_p.def_cuda_raw_kernel(_csr2csc_on_post_cuda_kernel)
+update_csr_on_binary_post_p.def_cuda_raw_kernel(_csr2csc_on_post_cuda_kernel, asdefault=True)
 update_csr_on_binary_post_p.def_kernel('jax_raw', 'cpu', _csr2csc_on_post_jax_kernel)
 update_csr_on_binary_post_p.def_kernel('jax_raw', 'gpu', _csr2csc_on_post_jax_kernel)
 update_csr_on_binary_post_p.def_kernel('jax_raw', 'tpu', _csr2csc_on_post_jax_kernel)

@@ -197,9 +197,12 @@ class IndexedSpFloat2d(IndexedEventRepresentation):
         value,
         *,
         row_indices=None,
+        backend=None,
     ):
         super().__init__(value)
-        self._spike_indices, self._spike_count = binary_2d_array_index_p_call(self._value)
+        self._packed, self._spike_indices, self._spike_count = binary_2d_array_index_p_call(
+            self._value, backend=backend
+        )
 
     @property
     def spike_indices(self):
@@ -276,6 +279,7 @@ class IndexedSpFloat2d(IndexedEventRepresentation):
             Contains ``_spike_indices`` and ``_spike_count``.
         """
         aux = {
+            '_packed': self._packed,
             '_spike_indices': self._spike_indices,
             '_spike_count': self._spike_count,
         }
@@ -288,7 +292,7 @@ class IndexedSpFloat2d(IndexedEventRepresentation):
         Parameters
         ----------
         aux_data : dict
-            Static metadata including spike indices and count.
+            Static metadata including packed, spike indices and count.
         flat_contents : tuple
             The dynamic array leaf.
 

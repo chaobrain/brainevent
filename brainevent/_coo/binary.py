@@ -27,11 +27,9 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, \
-    jaxinfo_to_warpinfo
-from brainevent._op.benchmark import BenchmarkConfig
+    jaxinfo_to_warpinfo, BenchmarkConfig, load_cuda_file
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
-from brainevent._op._pipeline import load_cuda_file
 from .float import coomv, coomm
 
 __all__ = [
@@ -1179,7 +1177,7 @@ binary_coomv_p.def_numba_kernel(_coomv_numba_kernel)
 binary_coomv_p.def_warp_kernel(_coomv_warp_kernel)
 binary_coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 binary_coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
-binary_coomv_p.def_cuda_raw_kernel(_coomv_cuda_kernel)
+binary_coomv_p.def_cuda_raw_kernel(_coomv_cuda_kernel, asdefault=True)
 binary_coomv_p.def_kernel('jax_raw', 'cpu', _binary_coomv_jax_kernel)
 binary_coomv_p.def_kernel('jax_raw', 'gpu', _binary_coomv_jax_kernel)
 binary_coomv_p.def_kernel('jax_raw', 'tpu', _binary_coomv_jax_kernel)
@@ -2183,7 +2181,7 @@ binary_coomm_p.def_numba_kernel(_coomm_numba_kernel)
 binary_coomm_p.def_warp_kernel(_coomm_warp_kernel)
 binary_coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 binary_coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
-binary_coomm_p.def_cuda_raw_kernel(_coomm_cuda_kernel)
+binary_coomm_p.def_cuda_raw_kernel(_coomm_cuda_kernel, asdefault=True)
 binary_coomm_p.def_kernel('jax_raw', 'cpu', _binary_coomm_jax_kernel)
 binary_coomm_p.def_kernel('jax_raw', 'gpu', _binary_coomm_jax_kernel)
 binary_coomm_p.def_kernel('jax_raw', 'tpu', _binary_coomm_jax_kernel)

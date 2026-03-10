@@ -23,257 +23,64 @@
 #
 # - Vogels, T. P. and Abbott, L. F. (2005), Signal propagation and logic gating in networks of integrate-and-fire neurons., J. Neurosci., 25, 46, 10786–95
 #
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
-import argparse
-import csv
-import json
-import statistics
-import sys
+
+
 import time
-from collections import defaultdict
-from datetime import datetime
-from pathlib import Path
-from typing import Iterable
 
-import jax
 import brainunit as u
-
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+import jax
 
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
 
-current_name = 'COBA_binary_fcnmm'
-benchmark_data_type = 'typeC'
-config_type = "config_1"
-config_file_path = 'benchmark_config.json'
+brainevent.config.set_backend('gpu', 'cuda_raw')
 
-#DEFAULT_SCALES = (1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100)
-default_scale = (1, 2, 4, 8, 10, 12)
-#default_scale = (12,)
-DEFAULT_BACKENDS = ('cuda_raw', 'jax_raw', 'unbranch_cuda', '_binary_fcnmm_cuda_spstyle') # 
-DEFAULT_CONNS = ('pre',)
-warmup = 1
-runs = 1
-duration = 100 #0.001
-BATCHSIZE = 10
-data_type = 'binary'
-
-probs = (0.001, 0.0125, 0.025, 0.075, 0.1)
-#probs = (0.1 ,)
-n_E = 3200
-
-sf=f'unbranch-sp:{probs}_duration{duration}'
-
-homo = False
-
-def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type):
-    with open(json_path, 'r') as f:
-        raw_data = json.load(f)
-        
-    if benchmark_data_type not in raw_data:
-        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
-        
-    if operator_name not in raw_data[benchmark_data_type]["operator"]:
-        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
-    
-    operator_data = raw_data[benchmark_data_type]
-
-    if config_key not in operator_data:
-        raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
-  
-    if 'scale' in operator_data[config_key]:
-        DEFAULT_SCALES = tuple(operator_data["scale"])
-
-    if 'backends' in operator_data[config_key]:
-        DEFAULT_BACKENDS = tuple(operator_data["backends"])
-
-    if 'conns' in operator_data[config_key]:
-        DEFAULT_CONNS = tuple(operator_data["conns"])
-
-    if 'warmup'in operator_data[config_key]:
-        WARMUP = operator_data["warmup"]
-
-    if 'runs'in operator_data[config_key]:
-        RUNS = operator_data["runs"]
-
-    if 'duration'in operator_data[config_key]:
-        DURATION = operator_data["duration"]
-
-    if 'batch-size'in operator_data[config_key]:
-        BATCHSIZE = operator_data["batch-size"]
+batch_size = 16
+conn_num = 80
 
 
-def _benchmark_single_backend(
-    backend: str,
-    scales: Iterable[int],
-    conn: str,
-    batch_size: int,
-    duration_ms: float,
-    warmup: int,
-    runs: int,
-) -> list[dict]:
-    brainevent.config.set_backend('gpu', backend)
-    rows: list[dict] = []
-    for prob in probs:
-        for scale in scales:
-            conn_num=int(scale * prob * n_E)
-            run = make_simulation_batch_run(
-                scale,
-                batch_size,
-                data_type,
-                conn,
-                duration=duration_ms * u.ms,
-                homo= homo,
-                conn_num=conn_num,
-            )
-            for _ in range(warmup):
-                jax.block_until_ready(run())
-            for run_id in range(1, runs + 1):
-                t0 = time.perf_counter()
-                out = jax.block_until_ready(run())
-                elapsed_s = time.perf_counter() - t0
-                if isinstance(out, tuple) and len(out) == 2:
-                    n, rate = out
-                else:
-                    n = int(4000 * scale)
-                    rate = out
-                row = {
-                    'backend': backend,
-                    'conn': conn,
-                    'scale': int(scale),
-                    'run_id': run_id,
-                    'size': int(n),
-                    'firing_rate_hz': float(rate),
-                    'elapsed_s': elapsed_s,
-                    'conn_numbers': int(conn_num),
-                }
-                rows.append(row)
-                print(
-                    f"backend={backend}, conn={conn}, conn_num={conn_num}, scale={scale}, run={run_id}/{runs}, "
-                    f"time={elapsed_s:.6f}s, firing_rate={float(rate):.6f}Hz"
-                )
-    return rows
+def benchmark_post_conn():
+    print('Benchmarking post-synaptic connection updates...')
+
+    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+        run = make_simulation_batch_run(
+            scale=s,
+            batch_size=batch_size,
+            data_type='binary',
+            efferent_target='post',
+            duration=1e3 * u.ms,
+            conn_num=conn_num,
+        )
+
+        jax.block_until_ready(run())
+
+        t0 = time.time()
+        n, rate = jax.block_until_ready(run())
+        t1 = time.time()
+        print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
 
 
-def _summarize(rows: Iterable[dict], baseline_backend: str) -> list[dict]:
-    grouped: dict[tuple, list[dict]] = defaultdict(list)
-    for row in rows:
-        grouped[(row['backend'], row['conn'], row['scale'], row.get('conn_numbers'))].append(row)
+def benchmark_pre_conn():
+    print('Benchmarking pre-synaptic connection updates...')
 
-    summary: list[dict] = []
-    for (backend, conn, scale, conn_num), records in sorted(grouped.items()):
-        times = [float(r['elapsed_s']) for r in records]
-        rates = [float(r['firing_rate_hz']) for r in records]
-        size = int(records[0]['size'])
-        entry = {
-            'backend': backend,
-            'conn': conn,
-            'scale': int(scale),
-            'size': size,
-            'runs': len(records),
-            'elapsed_min_s': min(times),       
-            'elapsed_max_s': max(times), 
-            'elapsed_mean_s': statistics.fmean(times),
-            'elapsed_std_s': statistics.pstdev(times) if len(times) > 1 else 0.0,
-            'firing_rate_mean_hz': statistics.fmean(rates),
-            'conn_numbers': conn_num
-        }
-        summary.append(entry)
+    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+        run = make_simulation_batch_run(
+            scale=s,
+            batch_size=batch_size,
+            data_type='binary',
+            efferent_target='pre',
+            duration=1e2 * u.ms,
+            conn_num=conn_num,
+        )
 
-    baseline_lookup = {
-        (e['conn'], e['scale'], e['conn_numbers']): e['elapsed_mean_s']
-        for e in summary
-        if e['backend'] == baseline_backend
-    }
-    for entry in summary:
-        baseline = baseline_lookup.get((entry['conn'], entry['scale'], entry['conn_numbers']))
-        if baseline is None:
-            entry['speedup_vs_baseline'] = None
-        else:
-            entry['speedup_vs_baseline'] = baseline / entry['elapsed_mean_s']
-    return summary
+        jax.block_until_ready(run())
 
-
-def _write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description='Run and compare COBA_2005 binary_fcnmm backends.')
-    parser.add_argument('--backends', nargs='+', default=list(DEFAULT_BACKENDS))
-    parser.add_argument('--scales', nargs='+', type=int, default=list(default_scale))
-    parser.add_argument('--conns', nargs='+', choices=['post', 'pre'], default=list(DEFAULT_CONNS))
-    parser.add_argument('--warmup', type=int, default=warmup)
-    parser.add_argument('--runs', type=int, default=runs)
-    parser.add_argument('--duration-ms', type=float, default=duration)
-    parser.add_argument('--baseline-backend', default='jax_raw')
-    parser.add_argument('--output-dir', default='dev/fcn/results')
-    parser.add_argument('--tag', default=None, help='Optional suffix for output files.')
-    parser.add_argument('--no-plot', action='store_true')
-    
-    parser.add_argument('--batch-size', type=int, default=BATCHSIZE)
-
-    args = parser.parse_args()
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    tag = f'_{args.tag}' if args.tag else ''
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    all_rows: list[dict] = []
-    failed_backends: list[tuple[str, str]] = []
-    for backend in args.backends:
-        for conn in args.conns:
-            print(f'Running backend={backend}, conn={conn} ...')
-            try:
-                rows = _benchmark_single_backend(
-                    backend=backend,
-                    scales=args.scales,
-                    conn=conn,
-                    batch_size=args.batch_size,
-                    duration_ms=args.duration_ms,
-                    warmup=args.warmup,
-                    runs=args.runs,
-                )
-                all_rows.extend(rows)
-            except Exception as e:  # noqa: BLE001
-                failed_backends.append((f'{backend}/{conn}', repr(e)))
-                print(f'Failed backend={backend}, conn={conn}: {e!r}')
-
-    if not all_rows:
-        raise RuntimeError('No benchmark results were collected.')
-
-    summary = _summarize(all_rows, baseline_backend=args.baseline_backend)
-    summary_csv_path = output_dir / f'coba_2005_binary_fcnmm_summary_{timestamp}_{data_type}_{duration}_{sf}.csv'
-    _write_csv(
-        summary_csv_path,
-        summary,
-        fieldnames=[
-            'backend',
-            'conn',
-            'scale',
-            'size',
-            'runs',
-            'elapsed_min_s',      
-            'elapsed_max_s', 
-            'elapsed_mean_s',
-            'elapsed_std_s',
-            'firing_rate_mean_hz',
-            'speedup_vs_baseline',
-            'conn_numbers'
-        ],
-    )
-
-
-    print(f'Summary saved to: {summary_csv_path}')
+        t0 = time.time()
+        n, rate = jax.block_until_ready(run())
+        t1 = time.time()
+        print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
 
 
 if __name__ == '__main__':
-    #load_benchmark_config(config_file_path, benchmark_data_type, current_name)
-    main()
+    benchmark_post_conn()
+    # benchmark_pre_conn()

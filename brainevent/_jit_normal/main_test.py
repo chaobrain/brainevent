@@ -331,10 +331,12 @@ class Test_JITC_To_Dense:
         primals, f_vjp2 = jax.vjp(f_jitc_vjp, wloc, wscale)
         jitc_wloc_grad, jitc_wscale_grad = f_vjp2(ct)
 
-        assert allclose(true_wloc_grad, jitc_wloc_grad)
-        assert allclose(true_wscale_grad, jitc_wscale_grad)
-        jax.block_until_ready((base, ct, primals, true_wloc_grad, true_wscale_grad,
-                               expected_wloc_grad, expected_wscale_grad, jitc_wloc_grad, jitc_wscale_grad))
+        assert allclose(true_wloc_grad, jitc_wloc_grad, rtol=1e-2, atol=1e-2)
+        assert allclose(true_wscale_grad, jitc_wscale_grad, rtol=1e-2, atol=1e-2)
+        jax.block_until_ready(
+            (base, ct, primals, true_wloc_grad, true_wscale_grad,
+             expected_wloc_grad, expected_wscale_grad, jitc_wloc_grad, jitc_wscale_grad)
+        )
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])

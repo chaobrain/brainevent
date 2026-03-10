@@ -1,3 +1,17 @@
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 """
 FCN Matrix-Vector Multiplication Benchmark
 ==========================================
@@ -15,8 +29,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import json
-
 _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
@@ -29,54 +41,25 @@ import brainstate
 
 from brainevent import fcnmv_p, BenchmarkConfig
 
-current_name = 'fcnmv'
-benchmark_data_type = 'typeA'
-config_type = "config_2"
+CONFIGS = [
+    (500, 1000, 10),
+    (1000, 1000, 50),
+    (1000, 1000, 100),
+    (1000, 1000, 128),
+    (5000, 5000, 200),
+    (5000, 5000, 500),
+    (10000, 10000, 1000),
+]
 
-def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
-    with open(json_path, 'r') as f:
-        raw_data = json.load(f)
-        
-    if benchmark_data_type not in raw_data:
-        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
-        
-    if operator_name not in raw_data[benchmark_data_type]["operator"]:
-        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
-    
-    operator_data = raw_data[benchmark_data_type]
-
-    if config_key not in operator_data:
-        raise KeyError(f"Configuration block '{config_key}' not found config_key '{config_key}'.")
-        
-    return operator_data[config_key]
-
-config_file_path = 'benchmark_config.json'
-parsed_config = load_benchmark_config(config_file_path, benchmark_data_type, current_name)
-
-dist_type = parsed_config.get('dist_type', 'uniform')
-transpose_list = parsed_config.get('transpose', [False, True])
-homo_list = parsed_config.get('homo_weight', [True, False])
-matrix_configs = parsed_config.get('configs', [])
-runs = parsed_config.get('runs', 10)
-warmup = parsed_config.get('warmup', 10)
-batch = parsed_config.get('batch', 10)
-
-len_config = len(matrix_configs) * len(transpose_list) * len(homo_list)
 
 def _make_benchmark_data(*, platform):
     brainstate.environ.set(precision=32)  # change to 16 or 64 for other precisions
     rng = np.random.default_rng(42)
     dtype = brainstate.environ.dftype()
-    
-    for cfg in matrix_configs:
-        n_pre = cfg['n_rows']
-        n_post = cfg['n_cols']
-        prob = cfg['density']
-
-        n_conn = max(1, int(n_post * prob))
+    for n_pre, n_post, n_conn in CONFIGS:
         indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
-        for transpose in transpose_list:
-            for homo in homo_list:
+        for transpose in (False, True):
+            for homo in (True, False):
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
@@ -84,40 +67,45 @@ def _make_benchmark_data(*, platform):
                 v_size = n_post if not transpose else n_pre
                 vector = jnp.asarray(rng.standard_normal(v_size), dtype=dtype)
                 name = (
-                        f"TNT={'T' if transpose else 'NT'},"
-                        f"homo_or_hetero={'homo' if homo else 'hetero'},"
-                        f"scale={n_pre}x{n_post},"
-                        f"prob={prob},"
+                    f"{'T' if transpose else 'NT'},"
+                    f"{'homo' if homo else 'hetero'},"
+                    f"{n_pre}x{n_post}x{n_conn}"
                 )
                 yield BenchmarkConfig(
                     name=name,
                     args=(weights, indices, vector),
                     kernel_kwargs={'shape': (n_pre, n_post), 'transpose': transpose},
-                    data_kwargs={'n_pre': n_pre, 'n_post': n_post, 'prob': prob},
+                    data_kwargs={'n_pre': n_pre, 'n_post': n_post, 'n_conn': n_conn},
                 )
 
 
+def main():
+    parser = argparse.ArgumentParser(description="fcnmv backend benchmark")
+    parser.add_argument("--n_warmup", type=int, default=10)
+    parser.add_argument("--n_runs", type=int, default=1)
+    args = parser.parse_args()
 
-try:
-    gpu = jax.devices("gpu")[0]
-except RuntimeError:
-    print("ERROR: No GPU device found.")
+    try:
+        gpu = jax.devices("gpu")[0]
+    except RuntimeError:
+        print("ERROR: No GPU device found.")
+        return
 
-print(f"fcnmv benchmark  —  GPU: {gpu}")
-print(f"warmup={warmup}  runs={runs}")
+    print(f"fcnmv benchmark  —  GPU: {gpu}")
+    print(f"warmup={args.n_warmup}  runs={args.n_runs}")
 
-fcnmv_p.def_benchmark_data(_make_benchmark_data)
+    fcnmv_p.def_benchmark_data(_make_benchmark_data)
 
-result = fcnmv_p.benchmark_csv_output(
-    platform='gpu',
-    n_warmup=warmup,
-    n_runs=runs,
-    n_batch_per_run = batch,
-    compare_results=True,
-    verbose=False,
-    len_config = len_config
-)
-# result.print(order_by=['transpose', 'shape', 'backend'], highlight_best=True, speedup_vs='jax_raw')
-result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
+    result = fcnmv_p.benchmark(
+        platform='gpu',
+        n_warmup=args.n_warmup,
+        n_runs=args.n_runs,
+        compare_results=True,
+        verbose=True,
+    )
+    # result.print(order_by=['transpose', 'shape', 'backend'], highlight_best=True, speedup_vs='jax_raw')
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 
 
+if __name__ == "__main__":
+    main()

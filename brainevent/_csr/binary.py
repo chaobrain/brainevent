@@ -29,7 +29,7 @@ from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
-from brainevent._op._pipeline import load_cuda_file
+from brainevent._op import load_cuda_file
 from .float import csrmv, csrmm
 
 __all__ = [
@@ -1206,7 +1206,7 @@ binary_csrmv : High-level user-facing function wrapper.
 binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
 binary_csrmv_p.def_warp_kernel(_csrmv_warp_kernel)
 binary_csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_gpu_kernel)
-binary_csrmv_p.def_cuda_raw_kernel(_binary_csrmv_cuda_kernel)
+binary_csrmv_p.def_cuda_raw_kernel(_binary_csrmv_cuda_kernel, asdefault=True)
 binary_csrmv_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_jax_kernel)
@@ -2226,7 +2226,7 @@ binary_csrmm : High-level user-facing function wrapper.
 binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
 binary_csrmm_p.def_warp_kernel(_csrmm_warp_kernel)
 binary_csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_gpu_kernel)
-binary_csrmm_p.def_cuda_raw_kernel(_binary_csrmm_cuda_kernel)
+binary_csrmm_p.def_cuda_raw_kernel(_binary_csrmm_cuda_kernel, asdefault=True)
 binary_csrmm_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_jax_kernel)
 binary_csrmm_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_jax_kernel)
 binary_csrmm_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_jax_kernel)

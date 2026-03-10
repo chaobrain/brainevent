@@ -39,63 +39,67 @@ GPU Kernel via Numba CUDA
 GPU Kernel via CUDA Source
 --------------------------
 
-.. autofunction:: brainevent.load_cuda_inline
+.. autosummary::
+   :toctree: generated/
 
-.. autofunction:: brainevent.load_cuda_file
-
-.. autofunction:: brainevent.load_cuda_dir
+   load_cuda_inline
+   load_cuda_file
+   load_cuda_dir
 
 CPU Kernel via C++ Source
 -------------------------
 
-.. autofunction:: brainevent.load_cpp_inline
+.. autosummary::
+   :toctree: generated/
 
-.. autofunction:: brainevent.load_cpp_file
+   load_cpp_inline
+   load_cpp_file
 
 
 Runtime
 -------
 
-.. autoclass:: brainevent.CompiledModule
-   :members:
-   :undoc-members:
+.. autosummary::
+   :toctree: generated/
+   :template: classtemplate.rst
 
-.. autofunction:: brainevent.register_ffi_target
+   CompiledModule
 
-.. autofunction:: brainevent.list_registered_targets
+.. autosummary::
+   :toctree: generated/
+
+   register_ffi_target
+   list_registered_targets
 
 
 Cache Utilities
 ---------------
 
-.. autofunction:: brainevent.clear_cache
+.. autosummary::
+   :toctree: generated/
 
-.. autofunction:: brainevent.set_cache_dir
-
-.. autofunction:: brainevent.get_cache_dir
+   clear_cache
+   set_cache_dir
+   get_cache_dir
 
 
 Diagnostics
 -----------
 
-.. autofunction:: brainevent.print_diagnostics
+.. autosummary::
+   :toctree: generated/
+
+   print_diagnostics
 
 
 Exceptions
 ----------
 
-.. autoclass:: brainevent.BrainEventError
-   :members:
-   :show-inheritance:
+.. autosummary::
+   :toctree: generated/
+   :template: classtemplate.rst
 
-.. autoclass:: brainevent.CompilationError
-   :members:
-   :show-inheritance:
-
-.. autoclass:: brainevent.KernelToolchainError
-   :members:
-   :show-inheritance:
-
-.. autoclass:: brainevent.KernelRegistrationError
-   :members:
-   :show-inheritance:
+   BrainEventError
+   CompilationError
+   KernelToolchainError
+   KernelRegistrationError

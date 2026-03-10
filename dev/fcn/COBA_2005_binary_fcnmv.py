@@ -38,6 +38,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+import brainunit as u
 import jax
 import brainunit as u
 
@@ -48,136 +49,10 @@ if _PROJECT_ROOT not in sys.path:
 import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
-current_name = 'COBA_binary_fcnmv'
-benchmark_data_type = 'typeC'
-config_type = "config_1"
-config_file_path = 'benchmark_config.json'
-data_type = 'binary'
+brainevent.config.set_backend('gpu', 'warp')
+brainevent.config.set_backend('gpu', 'cuda_raw')
 
-default_scale = (2.5,)
-
-defaule_backen = ('cuda_raw', 
-                  'jax_raw',
-    #'binary_fcnmv_1t1r',
-    #'binary_fcnmv_1t1r_unroll4',
-    #'binary_fcnmv_1t1r_unroll2',
-    
-    #'binary_fcnmv_128_4',
-    #'binary_fcnmv_256_8',
-    #'binary_fcnmv_256_4',
-    #'binary_fcnmv_128_2',
-    
-    #'raw_cuda_unbranch',
-    #'raw_cuda_template',
-    #'raw_cuda_bit',
-    #'raw_cuda_untail'
-
-    )
-'''
-defaule_backen = ('cuda_raw', 
-                  'jax_raw',
-    '_spfloat_fcnmv_cuda_shared',
-    '_spfloat_fcnmv_cuda_unbranch',
-    )
-'''
-conns = ('pre',)
-warmup = 1
-runs = 1
-duration = 0.0004 
-#注意是10000倍
-#conn_numbers = 400
-
-probs = (0.001, 0.0125, 0.025, 0.075, 0.1)
-probs = (0.1,)
-n_E = 3200
-
-sf=f'muti_op_operator_with_prob:{probs}_duration{duration}'
-
-homo = False
-
-def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type):
-    with open(json_path, 'r') as f:
-        raw_data = json.load(f)
-        
-    if benchmark_data_type not in raw_data:
-        raise KeyError(f"Type '{benchmark_data_type}' not found in configuration file.")
-        
-    if operator_name not in raw_data[benchmark_data_type]["operator"]:
-        raise KeyError(f"operator '{benchmark_data_type}' not found in configuration file.")
-    
-    operator_data = raw_data[benchmark_data_type]
-
-    if config_key not in operator_data:
-        raise KeyError(f"Configuration block '{config_key}' not found under operator '{operator_name}'.")
-  
-    config = operator_data[config_key]
-    
-    if 'scale' in operator_data[config_key]:
-        default_scale = tuple(config["scale"])
-
-    if 'backends' in operator_data[config_key]:
-        DEFAULT_BACKENDS = tuple(config["backends"])
-
-    if 'conns' in operator_data[config_key]:
-        DEFAULT_CONNS = tuple(config["conns"])
-
-    if 'warmup'in operator_data[config_key]:
-        WARMUP = config["warmup"]
-
-    if 'runs'in operator_data[config_key]:
-        RUNS = config["runs"]
-
-    if 'duration'in operator_data[config_key]:
-        DURATION = config["duration"]
-
-def _benchmark_single_backend(
-    backend: str,
-    scales: Iterable[int],
-    conn: str,
-    duration_ms: float,
-    warmup: int,
-    runs: int,
-) -> list[dict]:
-    brainevent.config.set_backend('gpu', backend)
-    rows: list[dict] = []
-    for conn_prob in probs:
-        for scale in scales:
-            conn_num = int(scale * conn_prob * n_E)
-            run = make_simulation_run(
-                scale=scale,
-                data_type=data_type,
-                efferent_target=conn,
-                duration=duration_ms * u.ms,
-                homo= homo,
-                conn_num =  conn_num
-            )
-            for _ in range(warmup):
-                jax.block_until_ready(run())
-            for run_id in range(1, runs + 1):
-                t0 = time.perf_counter()
-                out = jax.block_until_ready(run())
-                elapsed_s = time.perf_counter() - t0
-                if isinstance(out, tuple) and len(out) == 2:
-                    n, rate = out
-                else:
-                    n = int(4000 * scale)
-                    rate = out
-                row = {
-                    'backend': backend,
-                    'conn': conn,
-                    'scale': int(scale),
-                    'run_id': run_id,
-                    'size': int(n),
-                    'firing_rate_hz': float(rate),
-                    'elapsed_s': elapsed_s,
-                    'conn_numbers' : conn_num,
-                }
-                rows.append(row)
-                print(
-                    f"backend={backend}, conn={conn},conn_nums = {conn_num}, scale={scale}, run={run_id}/{runs}, "
-                    f"time={elapsed_s:.6f}s, firing_rate={float(rate):.6f}Hz"
-                )
-    return rows
+conn_num = 80
 
 
 def _summarize(rows: Iterable[dict], baseline_backend: str) -> list[dict]:
@@ -185,25 +60,14 @@ def _summarize(rows: Iterable[dict], baseline_backend: str) -> list[dict]:
     for row in rows:
         grouped[(row['backend'], row['conn'], row['scale'], row.get('conn_numbers'))].append(row)
 
-    summary: list[dict] = []
-    for (backend, conn, scale, conn_num), records in sorted(grouped.items()):
-        times = [float(r['elapsed_s']) for r in records]
-        rates = [float(r['firing_rate_hz']) for r in records]
-        size = int(records[0]['size'])
-        entry = {
-            'backend': backend,
-            'conn': conn,
-            'scale': int(scale),
-            'size': size,
-            'runs': len(records),
-            'elapsed_min_s': min(times),       
-            'elapsed_max_s': max(times),        
-            'elapsed_mean_s': statistics.fmean(times),
-            'elapsed_std_s': statistics.pstdev(times) if len(times) > 1 else 0.0,
-            'firing_rate_mean_hz': statistics.fmean(rates),
-            'conn_numbers': conn_num
-        }
-        summary.append(entry)
+    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+        run = make_simulation_run(
+            scale=s,
+            data_type='binary',
+            efferent_target='post',
+            duration=1e4 * u.ms,
+            conn_num=conn_num
+        )
 
     baseline_lookup = {
         (e['conn'], e['scale'], e['conn_numbers']): e['elapsed_mean_s']
@@ -226,19 +90,14 @@ def _write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description='Run and compare COBA_2005 binary_fcnmv backends.')
-    parser.add_argument('--backends', nargs='+', default=list(defaule_backen))
-    parser.add_argument('--scales', nargs='+', type=int, default=list(default_scale))
-    parser.add_argument('--conns', nargs='+', choices=['post', 'pre'], default=list(conns))
-    parser.add_argument('--warmup', type=int, default=warmup)
-    parser.add_argument('--runs', type=int, default=runs)
-    parser.add_argument('--duration-ms', type=float, default=duration)
-    parser.add_argument('--baseline-backend', default='jax_raw')
-    parser.add_argument('--output-dir', default='dev/fcn/results')
-    parser.add_argument('--tag', default=None, help='Optional suffix for output files.')
-    parser.add_argument('--no-plot', action='store_true')
-    args = parser.parse_args()
+    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+        run = make_simulation_run(
+            scale=s,
+            data_type='binary',
+            efferent_target='pre',
+            duration=1e2 * u.ms,
+            conn_num=conn_num,
+        )
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     tag = f'_{args.tag}' if args.tag else ''

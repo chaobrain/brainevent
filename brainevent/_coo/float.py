@@ -30,7 +30,7 @@ from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel,
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
-from brainevent._op._pipeline import load_cuda_file
+from brainevent._op import load_cuda_file
 
 __all__ = [
     "coomv",
@@ -1026,7 +1026,7 @@ coomv_p.def_numba_kernel(_coomv_numba_kernel)
 coomv_p.def_warp_kernel(_coomv_warp_kernel)
 coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
-coomv_p.def_cuda_raw_kernel(_coomv_cuda_kernel)
+coomv_p.def_cuda_raw_kernel(_coomv_cuda_kernel, asdefault=True)
 coomv_p.def_kernel('jax_raw', 'cpu', _coomv_jax_kernel)
 coomv_p.def_kernel('jax_raw', 'gpu', _coomv_jax_kernel)
 coomv_p.def_kernel('jax_raw', 'tpu', _coomv_jax_kernel)
@@ -1808,7 +1808,7 @@ coomm_p.def_numba_kernel(_coomm_numba_kernel)
 coomm_p.def_warp_kernel(_coomm_warp_kernel)
 coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
-coomm_p.def_cuda_raw_kernel(_coomm_cuda_kernel)
+coomm_p.def_cuda_raw_kernel(_coomm_cuda_kernel, asdefault=True)
 coomm_p.def_kernel('jax_raw', 'cpu', _coomm_jax_kernel)
 coomm_p.def_kernel('jax_raw', 'gpu', _coomm_jax_kernel)
 coomm_p.def_kernel('jax_raw', 'tpu', _coomm_jax_kernel)

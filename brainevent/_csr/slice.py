@@ -26,7 +26,7 @@ from brainevent._misc import namescope
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
-from brainevent._op._pipeline import load_cuda_file
+from brainevent._op import load_cuda_file
 
 __all__ = [
     'csr_slice_rows',
@@ -421,7 +421,7 @@ csr_slice_rows_grad_p : Companion gradient primitive used by the transpose rule.
 csr_slice_rows_p.def_numba_kernel(_csr_slice_rows_numba_kernel_generator)
 csr_slice_rows_p.def_warp_kernel(_csr_slice_rows_warp_kernel_generator)
 csr_slice_rows_p.def_pallas_kernel('gpu', _csr_slice_rows_pallas_kernel_generator)
-csr_slice_rows_p.def_cuda_raw_kernel(_csr_slice_rows_cuda_kernel_generator)
+csr_slice_rows_p.def_cuda_raw_kernel(_csr_slice_rows_cuda_kernel_generator, asdefault=True)
 csr_slice_rows_p.def_jvp_rule2(_csr_slice_rows_jvp_data, None, None, None)
 csr_slice_rows_p.def_transpose_rule(_csr_slice_rows_transpose_rule)
 csr_slice_rows_p.def_batching_rule(_csr_slice_rows_batching)
@@ -748,7 +748,7 @@ csr_slice_rows : High-level user-facing function wrapper.
 csr_slice_rows_grad_p.def_numba_kernel(_csr_slice_rows_grad_numba_kernel_generator)
 csr_slice_rows_grad_p.def_warp_kernel(_csr_slice_rows_grad_warp_kernel_generator)
 csr_slice_rows_grad_p.def_pallas_kernel('gpu', _csr_slice_rows_grad_pallas_kernel_generator)
-csr_slice_rows_grad_p.def_cuda_raw_kernel(_csr_slice_rows_grad_cuda_kernel_generator)
+csr_slice_rows_grad_p.def_cuda_raw_kernel(_csr_slice_rows_grad_cuda_kernel_generator, asdefault=True)
 csr_slice_rows_grad_p.def_jvp_rule2(_csr_slice_rows_grad_jvp_ct, None, None, None)
 csr_slice_rows_grad_p.def_transpose_rule(_csr_slice_rows_grad_transpose_rule)
 csr_slice_rows_grad_p.def_batching_rule(_csr_slice_rows_grad_batching)

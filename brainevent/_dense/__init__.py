@@ -25,10 +25,6 @@ from .plasticity_binary import (
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
 )
-from .sparse_float import (
-    spfloat_densemv, spfloat_densemv_p,
-    spfloat_densemm, spfloat_densemm_p,
-)
 
 __all__ = [
     'binary_densemv', 'binary_densemv_p',
@@ -37,6 +33,4 @@ __all__ = [
     'indexed_binary_densemm', 'indexed_binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
     'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
-    'spfloat_densemv', 'spfloat_densemv_p',
-    'spfloat_densemm', 'spfloat_densemm_p',
 ]

@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brainevent._fcn.float import fcnmv, fcnmv_p, fcnmm_p, fcnmm_p_call
+from brainevent._fcn.float import fcnmv, fcnmm
 from brainevent._test_util import (
     generate_fixed_conn_num_indices,
     vector_fcn,
@@ -35,8 +35,6 @@ from brainevent._test_util import (
 )
 
 platform = jax.default_backend()
-FCNMV_IMPLEMENTATIONS = tuple(fcnmv_p.available_backends(platform))
-FCNMM_IMPLEMENTATIONS = tuple(fcnmm_p.available_backends(platform))
 
 if platform == 'cpu':
     shapes = [
@@ -46,10 +44,7 @@ if platform == 'cpu':
 else:
     shapes = [
         (20, 40),
-        # (50, 30),
-        # (200, 400),
         (500, 300),
-        # (2000, 4000),
         (5000, 3000),
     ]
 
@@ -60,55 +55,22 @@ def _make_data(homo_w, shape):
     return braintools.init.Normal(0.0, 1.0)(shape)
 
 
-def _vector_fcn_api(x, data, indices, shape, implementation):
-    return fcnmv(
-        data,
-        indices,
-        x,
-        shape=shape,
-        transpose=True,
-        backend=implementation,
-    )
+def _vector_fcn_api(x, data, indices, shape):
+    return fcnmv(data, indices, x, shape=shape, transpose=True)
 
 
-def _fcn_vector_api(x, data, indices, shape, implementation):
-    return fcnmv(
-        data,
-        indices,
-        x,
-        shape=shape,
-        transpose=False,
-        backend=implementation,
-    )
+def _fcn_vector_api(x, data, indices, shape):
+    return fcnmv(data, indices, x, shape=shape, transpose=False)
 
 
-def _matrix_fcn_api(x, data, indices, shape, implementation):
-    return fcnmm_p_call(
-        data,
-        indices,
-        x.T,
-        shape=shape,
-        transpose=True,
-        backend=implementation,
-    )[0].T
+def _matrix_fcn_api(x, data, indices, shape):
+    return fcnmm(data, indices, x.T, shape=shape, transpose=True).T
 
 
-def _fcn_matrix_api(x, data, indices, shape, implementation):
-    return fcnmm_p_call(
-        data,
-        indices,
-        x,
-        shape=shape,
-        transpose=False,
-        backend=implementation,
-    )[0]
+def _fcn_matrix_api(x, data, indices, shape):
+    return fcnmm(data, indices, x, shape=shape, transpose=False)
 
 
-@pytest.mark.skipif(
-    not FCNMV_IMPLEMENTATIONS,
-    reason=f'No fcnmv implementation on platform={platform}',
-)
-@pytest.mark.parametrize('implementation', FCNMV_IMPLEMENTATIONS)
 class TestVector:
     def _generate_x(self, shape, require_float=False):
         if isinstance(shape, (tuple, list)):
@@ -118,24 +80,24 @@ class TestVector:
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('shape', shapes)
-    def test_vector_csr(self, implementation, homo_w, shape):
+    def test_vector_csr(self, homo_w, shape):
         m, n = shape
         for x in self._generate_x(m):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
             data = _make_data(homo_w, indices.shape)
-            y = _vector_fcn_api(x, data, indices, (m, n), implementation)
+            y = _vector_fcn_api(x, data, indices, (m, n))
             y_true = vector_fcn(x, data, indices, (m, n))
             assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
             jax.block_until_ready((x, indices, data, y, y_true))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('shape', shapes)
-    def test_csr_vector(self, implementation, homo_w, shape):
+    def test_csr_vector(self, homo_w, shape):
         m, n = shape
         for v in self._generate_x(n):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
             data = _make_data(homo_w, indices.shape)
-            y = _fcn_vector_api(v, data, indices, (m, n), implementation)
+            y = _fcn_vector_api(v, data, indices, (m, n))
             y_true = fcn_vector(v, data, indices, (m, n))
             assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
             jax.block_until_ready((v, indices, data, y, y_true))
@@ -143,16 +105,16 @@ class TestVector:
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('shape', shapes)
-    def test_vjp(self, implementation, transpose, homo_w, shape):
+    def test_vjp(self, transpose, homo_w, shape):
         n_in, n_out = shape
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1))
         w = _make_data(homo_w, indices.shape)
 
         def f_api(x, data):
             if transpose:
-                r = _vector_fcn_api(x, data, indices, shape, implementation)
+                r = _vector_fcn_api(x, data, indices, shape)
             else:
-                r = _fcn_vector_api(x, data, indices, shape, implementation)
+                r = _fcn_vector_api(x, data, indices, shape)
             return r.sum()
 
         def f_ref(x, data):
@@ -172,15 +134,15 @@ class TestVector:
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('shape', shapes)
-    def test_jvp(self, implementation, transpose, homo_w, shape):
+    def test_jvp(self, transpose, homo_w, shape):
         n_in, n_out = shape
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1))
         w = _make_data(homo_w, indices.shape)
 
         def f_api(x, data):
             if transpose:
-                return _vector_fcn_api(x, data, indices, shape, implementation)
-            return _fcn_vector_api(x, data, indices, shape, implementation)
+                return _vector_fcn_api(x, data, indices, shape)
+            return _fcn_vector_api(x, data, indices, shape)
 
         def f_ref(x, data):
             if transpose:
@@ -201,7 +163,7 @@ class TestVector:
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('batch_size', [32])
-    def test_batching_weight(self, implementation, homo_w, shape, batch_size):
+    def test_batching_weight(self, homo_w, shape, batch_size):
         m, n = shape
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
         data = (
@@ -212,7 +174,7 @@ class TestVector:
 
         x_left = brainstate.random.rand(m)
         y = jax.jit(jax.vmap(
-            lambda w: _vector_fcn_api(x_left, w, indices, (m, n), implementation)
+            lambda w: _vector_fcn_api(x_left, w, indices, (m, n))
         ))(data)
         y_true = jax.jit(jax.vmap(
             lambda w: vector_fcn(x_left, w, indices, (m, n))
@@ -221,7 +183,7 @@ class TestVector:
 
         x_right = brainstate.random.rand(n)
         y = jax.jit(jax.vmap(
-            lambda w: _fcn_vector_api(x_right, w, indices, (m, n), implementation)
+            lambda w: _fcn_vector_api(x_right, w, indices, (m, n))
         ))(data)
         y_true = jax.jit(jax.vmap(
             lambda w: fcn_vector(x_right, w, indices, (m, n))
@@ -233,7 +195,7 @@ class TestVector:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('batch_size', [32])
     @pytest.mark.parametrize('batch_axis', [0, 1])
-    def test_batching_vector(self, implementation, homo_w, shape, batch_size, batch_axis):
+    def test_batching_vector(self, homo_w, shape, batch_size, batch_axis):
         m, n = shape
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
         data = _make_data(homo_w, indices.shape)
@@ -241,7 +203,7 @@ class TestVector:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=batch_axis)
         def f_compare_vector(x):
-            y = _vector_fcn_api(x, data, indices, (m, n), implementation)
+            y = _vector_fcn_api(x, data, indices, (m, n))
             y_true = vector_fcn(x, data, indices, (m, n))
             return y, y_true
 
@@ -255,11 +217,6 @@ class TestVector:
         jax.block_until_ready((indices, data, xs, y, y_true))
 
 
-@pytest.mark.skipif(
-    not FCNMM_IMPLEMENTATIONS,
-    reason=f'No fcnmm implementation on platform={platform}',
-)
-@pytest.mark.parametrize('implementation', FCNMM_IMPLEMENTATIONS)
 class TestMatrix:
     def _generate_x(self, shape, require_float=False):
         if isinstance(shape, (tuple, list)):
@@ -270,12 +227,12 @@ class TestMatrix:
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('k', [10])
-    def test_matrix_csr(self, implementation, homo_w, shape, k):
+    def test_matrix_csr(self, homo_w, shape, k):
         m, n = shape
         for x in self._generate_x([k, m]):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
             data = _make_data(homo_w, indices.shape)
-            y = _matrix_fcn_api(x, data, indices, (m, n), implementation)
+            y = _matrix_fcn_api(x, data, indices, (m, n))
             y_true = matrix_fcn(x, data, indices, (m, n))
             assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
             jax.block_until_ready((x, indices, data, y, y_true))
@@ -283,12 +240,12 @@ class TestMatrix:
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('k', [10])
-    def test_csr_matrix(self, implementation, homo_w, shape, k):
+    def test_csr_matrix(self, homo_w, shape, k):
         m, n = shape
         for matrix in self._generate_x([n, k]):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
             data = _make_data(homo_w, indices.shape)
-            y = _fcn_matrix_api(matrix, data, indices, (m, n), implementation)
+            y = _fcn_matrix_api(matrix, data, indices, (m, n))
             y_true = fcn_matrix(matrix, data, indices, (m, n))
             assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
             jax.block_until_ready((matrix, indices, data, y, y_true))
@@ -297,16 +254,16 @@ class TestMatrix:
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('k', [10])
-    def test_vjp(self, implementation, transpose, homo_w, shape, k):
+    def test_vjp(self, transpose, homo_w, shape, k):
         n_in, n_out = shape
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1))
         w = _make_data(homo_w, indices.shape)
 
         def f_api(x, data):
             if transpose:
-                r = _matrix_fcn_api(x, data, indices, shape, implementation)
+                r = _matrix_fcn_api(x, data, indices, shape)
             else:
-                r = _fcn_matrix_api(x, data, indices, shape, implementation)
+                r = _fcn_matrix_api(x, data, indices, shape)
             return r.sum()
 
         def f_ref(x, data):
@@ -327,15 +284,15 @@ class TestMatrix:
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('k', [10])
-    def test_jvp(self, implementation, transpose, homo_w, shape, k):
+    def test_jvp(self, transpose, homo_w, shape, k):
         n_in, n_out = shape
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1))
         w = _make_data(homo_w, indices.shape)
 
         def f_api(x, data):
             if transpose:
-                return _matrix_fcn_api(x, data, indices, shape, implementation)
-            return _fcn_matrix_api(x, data, indices, shape, implementation)
+                return _matrix_fcn_api(x, data, indices, shape)
+            return _fcn_matrix_api(x, data, indices, shape)
 
         def f_ref(x, data):
             if transpose:
@@ -357,7 +314,7 @@ class TestMatrix:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('batch_size', [32])
     @pytest.mark.parametrize('k', [32])
-    def test_batching_weight(self, implementation, homo_w, shape, batch_size, k):
+    def test_batching_weight(self, homo_w, shape, batch_size, k):
         m, n = shape
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
 
@@ -369,7 +326,7 @@ class TestMatrix:
 
         x_left = brainstate.random.rand(k, m)
         y = jax.jit(jax.vmap(
-            lambda w: _matrix_fcn_api(x_left, w, indices, (m, n), implementation)
+            lambda w: _matrix_fcn_api(x_left, w, indices, (m, n))
         ))(data)
         y_true = jax.jit(jax.vmap(
             lambda w: matrix_fcn(x_left, w, indices, (m, n))
@@ -378,7 +335,7 @@ class TestMatrix:
 
         x_right = brainstate.random.rand(n, k)
         y = jax.jit(jax.vmap(
-            lambda w: _fcn_matrix_api(x_right, w, indices, (m, n), implementation)
+            lambda w: _fcn_matrix_api(x_right, w, indices, (m, n))
         ))(data)
         y_true = jax.jit(jax.vmap(
             lambda w: fcn_matrix(x_right, w, indices, (m, n))
@@ -391,7 +348,7 @@ class TestMatrix:
     @pytest.mark.parametrize('batch_size', [32])
     @pytest.mark.parametrize('k', [32])
     @pytest.mark.parametrize('batch_axis', [0, 1, 2])
-    def test_batching_vector(self, implementation, homo_w, shape, batch_size, k, batch_axis):
+    def test_batching_vector(self, homo_w, shape, batch_size, k, batch_axis):
         m, n = shape
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
         data = _make_data(homo_w, indices.shape)
@@ -399,7 +356,7 @@ class TestMatrix:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=batch_axis)
         def f_compare_matrix(x):
-            y = _matrix_fcn_api(x, data, indices, (m, n), implementation)
+            y = _matrix_fcn_api(x, data, indices, (m, n))
             y_true = matrix_fcn(x, data, indices, (m, n))
             return y, y_true
 
@@ -416,7 +373,7 @@ class TestMatrix:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=batch_axis)
         def f_compare_fcn_matrix(x):
-            y = _fcn_matrix_api(x, data, indices, (m, n), implementation)
+            y = _fcn_matrix_api(x, data, indices, (m, n))
             y_true = fcn_matrix(x, data, indices, (m, n))
             return y, y_true
 
