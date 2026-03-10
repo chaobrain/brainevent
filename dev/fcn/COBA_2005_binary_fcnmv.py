@@ -23,7 +23,9 @@
 #
 # - Vogels, T. P. and Abbott, L. F. (2005), Signal propagation and logic gating in networks of integrate-and-fire neurons., J. Neurosci., 25, 46, 10786–95
 #
+import os
 
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 import argparse
 import csv
@@ -50,13 +52,48 @@ current_name = 'COBA_binary_fcnmv'
 benchmark_data_type = 'typeC'
 config_type = "config_1"
 config_file_path = 'benchmark_config.json'
+data_type = 'binary'
 
-default_scale = (1,  4,  8,  20,  60, 100)
-defaule_backen = ('cuda_raw', 'pallas', 'jax_raw')
-conns = ('post', 'pre')
-warmup = 2
-runs = 3
-duration = 1e4
+default_scale = (2.5,)
+
+defaule_backen = ('cuda_raw', 
+                  'jax_raw',
+    #'binary_fcnmv_1t1r',
+    #'binary_fcnmv_1t1r_unroll4',
+    #'binary_fcnmv_1t1r_unroll2',
+    
+    #'binary_fcnmv_128_4',
+    #'binary_fcnmv_256_8',
+    #'binary_fcnmv_256_4',
+    #'binary_fcnmv_128_2',
+    
+    #'raw_cuda_unbranch',
+    #'raw_cuda_template',
+    #'raw_cuda_bit',
+    #'raw_cuda_untail'
+
+    )
+'''
+defaule_backen = ('cuda_raw', 
+                  'jax_raw',
+    '_spfloat_fcnmv_cuda_shared',
+    '_spfloat_fcnmv_cuda_unbranch',
+    )
+'''
+conns = ('pre',)
+warmup = 1
+runs = 1
+duration = 0.0004 
+#注意是10000倍
+#conn_numbers = 400
+
+probs = (0.001, 0.0125, 0.025, 0.075, 0.1)
+probs = (0.1,)
+n_E = 3200
+
+sf=f'muti_op_operator_with_prob:{probs}_duration{duration}'
+
+homo = False
 
 def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type):
     with open(json_path, 'r') as f:
@@ -103,48 +140,53 @@ def _benchmark_single_backend(
 ) -> list[dict]:
     brainevent.config.set_backend('gpu', backend)
     rows: list[dict] = []
-    for scale in scales:
-        run = make_simulation_run(
-            scale=scale,
-            data_type='binary',
-            efferent_target=conn,
-            duration=duration_ms * u.ms,
-        )
-        for _ in range(warmup):
-            jax.block_until_ready(run())
-        for run_id in range(1, runs + 1):
-            t0 = time.perf_counter()
-            out = jax.block_until_ready(run())
-            elapsed_s = time.perf_counter() - t0
-            if isinstance(out, tuple) and len(out) == 2:
-                n, rate = out
-            else:
-                n = int(4000 * scale)
-                rate = out
-            row = {
-                'backend': backend,
-                'conn': conn,
-                'scale': int(scale),
-                'run_id': run_id,
-                'size': int(n),
-                'firing_rate_hz': float(rate),
-                'elapsed_s': elapsed_s,
-            }
-            rows.append(row)
-            print(
-                f"backend={backend}, conn={conn}, scale={scale}, run={run_id}/{runs}, "
-                f"time={elapsed_s:.6f}s, firing_rate={float(rate):.6f}Hz"
+    for conn_prob in probs:
+        for scale in scales:
+            conn_num = int(scale * conn_prob * n_E)
+            run = make_simulation_run(
+                scale=scale,
+                data_type=data_type,
+                efferent_target=conn,
+                duration=duration_ms * u.ms,
+                homo= homo,
+                conn_num =  conn_num
             )
+            for _ in range(warmup):
+                jax.block_until_ready(run())
+            for run_id in range(1, runs + 1):
+                t0 = time.perf_counter()
+                out = jax.block_until_ready(run())
+                elapsed_s = time.perf_counter() - t0
+                if isinstance(out, tuple) and len(out) == 2:
+                    n, rate = out
+                else:
+                    n = int(4000 * scale)
+                    rate = out
+                row = {
+                    'backend': backend,
+                    'conn': conn,
+                    'scale': int(scale),
+                    'run_id': run_id,
+                    'size': int(n),
+                    'firing_rate_hz': float(rate),
+                    'elapsed_s': elapsed_s,
+                    'conn_numbers' : conn_num,
+                }
+                rows.append(row)
+                print(
+                    f"backend={backend}, conn={conn},conn_nums = {conn_num}, scale={scale}, run={run_id}/{runs}, "
+                    f"time={elapsed_s:.6f}s, firing_rate={float(rate):.6f}Hz"
+                )
     return rows
 
 
 def _summarize(rows: Iterable[dict], baseline_backend: str) -> list[dict]:
     grouped: dict[tuple, list[dict]] = defaultdict(list)
     for row in rows:
-        grouped[(row['backend'], row['conn'], row['scale'])].append(row)
+        grouped[(row['backend'], row['conn'], row['scale'], row.get('conn_numbers'))].append(row)
 
     summary: list[dict] = []
-    for (backend, conn, scale), records in sorted(grouped.items()):
+    for (backend, conn, scale, conn_num), records in sorted(grouped.items()):
         times = [float(r['elapsed_s']) for r in records]
         rates = [float(r['firing_rate_hz']) for r in records]
         size = int(records[0]['size'])
@@ -159,16 +201,17 @@ def _summarize(rows: Iterable[dict], baseline_backend: str) -> list[dict]:
             'elapsed_mean_s': statistics.fmean(times),
             'elapsed_std_s': statistics.pstdev(times) if len(times) > 1 else 0.0,
             'firing_rate_mean_hz': statistics.fmean(rates),
+            'conn_numbers': conn_num
         }
         summary.append(entry)
 
     baseline_lookup = {
-        (e['conn'], e['scale']): e['elapsed_mean_s']
+        (e['conn'], e['scale'], e['conn_numbers']): e['elapsed_mean_s']
         for e in summary
         if e['backend'] == baseline_backend
     }
     for entry in summary:
-        baseline = baseline_lookup.get((entry['conn'], entry['scale']))
+        baseline = baseline_lookup.get((entry['conn'], entry['scale'], entry['conn_numbers']))
         if baseline is None:
             entry['speedup_vs_baseline'] = None
         else:
@@ -228,7 +271,7 @@ def main() -> None:
 
     summary = _summarize(all_rows, baseline_backend=args.baseline_backend)
 
-    summary_csv_path = output_dir / f'coba_2005_binary_fcnmv_summary_{timestamp}{tag}.csv'
+    summary_csv_path = output_dir / f'coba_2005_binary_fcnmv_summary_{timestamp}_{data_type}_{duration}_{sf}.csv'
 
     _write_csv(
         summary_csv_path,
@@ -245,6 +288,7 @@ def main() -> None:
             'elapsed_std_s',
             'firing_rate_mean_hz',
             'speedup_vs_baseline',
+            'conn_numbers'
         ],
     )
 

@@ -3,7 +3,7 @@
         "operator": ["spfloat_fcnmv", "binary_fcnmv", "fcnmv"],
         "config_1": {
             "warmup": 10,
-            "runs": 20,
+            "runs": 10,
             "dist_type": "uniform",
             "configs": [
                 {
@@ -14,12 +14,12 @@
                 {
                     "n_rows": 1000,
                     "n_cols": 1000,
-                    "density": 0.01
+                    "density": 0.4
                 },
                 {
                     "n_rows": 1000,
                     "n_cols": 1000,
-                    "density": 0.001
+                    "density": 0.8
                 },
                 {
                     "n_rows": 1000,
@@ -29,12 +29,12 @@
                 {
                     "n_rows": 1000,
                     "n_cols": 5000,
-                    "density": 0.01
+                    "density": 0.4
                 },
                 {
                     "n_rows": 1000,
                     "n_cols": 5000,
-                    "density": 0.001
+                    "density": 0.8
                 },
                 {
                     "n_rows": 5000,
@@ -44,12 +44,12 @@
                 {
                     "n_rows": 5000,
                     "n_cols": 5000,
-                    "density": 0.01
+                    "density": 0.4
                 },
                 {
                     "n_rows": 5000,
                     "n_cols": 5000,
-                    "density": 0.001
+                    "density": 0.8
                 },
                 {
                     "n_rows": 10000,
@@ -59,12 +59,12 @@
                 {
                     "n_rows": 10000,
                     "n_cols": 5000,
-                    "density": 0.01
+                    "density": 0.4
                 },
                 {
                     "n_rows": 10000,
                     "n_cols": 5000,
-                    "density": 0.001
+                    "density": 0.8
                 },
                 {
                     "n_rows": 10000,
@@ -74,52 +74,32 @@
                 {
                     "n_rows": 10000,
                     "n_cols": 10000,
-                    "density": 0.01
+                    "density": 0.4
                 },
                 {
                     "n_rows": 10000,
                     "n_cols": 10000,
-                    "density": 0.001
-                }
-                ,
-                {
-                    "n_rows": 50000,
-                    "n_cols": 100000,
-                    "density": 0.01
-                },
-                {
-                    "n_rows": 50000,
-                    "n_cols": 100000,
-                    "density": 0.001
+                    "density": 0.8
                 }
             ],
             "transpose": [
                 false, true
             ],
             "homo_weight": [
-                true, false
-            ]
+                false,true
+            ],
+            "spike_rate":[0.01, 0.05, 0.10, 0.50]
         },
         "config_2": {
             "warmup": 1,
-            "runs": 2,
-            "batch": 1,
+            "runs": 1,
+            "batch": 3,
             "dist_type": "uniform",
             "configs": [
                 {
                     "n_rows": 10000,
                     "n_cols": 10000,
                     "density": 0.1
-                },
-                {
-                    "n_rows": 10000,
-                    "n_cols": 10000,
-                    "density": 0.01
-                },
-                {
-                    "n_rows": 10000,
-                    "n_cols": 10000,
-                    "density": 0.001
                 }
             ],
             "transpose": [
@@ -127,85 +107,104 @@
             ],
             "homo_weight": [
                 false
-            ]
+            ],
+            "spike_rate":[0.01,0.05,0.10]
         }
     },
     "typeB": {
         "operator": ["spfloat_fcnmm", "binary_fcnmm", "fcnmm"],
         "config_1": {
-            "warmup": 10,
-            "runs": 20,
+            "warmup": 2,
+            "runs": 4,
             "dist_type": "uniform",
             "configs": [
                 {
-                    "n_rows": 1000,
-                    "n_cols": 1000,
-                    "density": 0.1,
-                    "n_col": 50
-                },
-                {
-                    "n_rows": 1000,
-                    "n_cols": 1000,
-                    "density": 0.01,
-                    "n_col": 50
-                },
-                {
-                    "n_rows": 1000,
-                    "n_cols": 1000,
-                    "density": 0.001,
-                    "n_col": 50
-                },
-                {
-                    "n_rows": 1000,
-                    "n_cols": 5000,
-                    "density": 0.1,
-                    "n_col": 100
-                },
-                {
-                    "n_rows": 1000,
-                    "n_cols": 5000,
-                    "density": 0.01,
-                    "n_col": 100
-                },
-                {
-                    "n_rows": 1000,
-                    "n_cols": 5000,
-                    "density": 0.001,
-                    "n_col": 100
-                },
-                {
-                    "n_rows": 5000,
-                    "n_cols": 5000,
+                    "n_rows": 2000,
+                    "n_cols": 2000,
                     "density": 0.1,
                     "n_col": 500
                 },
                 {
-                    "n_rows": 5000,
-                    "n_cols": 5000,
+                    "n_rows": 2000,
+                    "n_cols": 2000,
                     "density": 0.01,
                     "n_col": 500
                 },
                 {
-                    "n_rows": 5000,
-                    "n_cols": 5000,
+                    "n_rows": 2000,
+                    "n_cols": 2000,
                     "density": 0.001,
                     "n_col": 500
                 },
                 {
-                    "n_rows": 10000,
-                    "n_cols": 5000,
+                    "n_rows": 2000,
+                    "n_cols": 4000,
                     "density": 0.1,
                     "n_col": 1000
                 },
                 {
-                    "n_rows": 10000,
-                    "n_cols": 5000,
+                    "n_rows": 2000,
+                    "n_cols": 4000,
                     "density": 0.01,
                     "n_col": 1000
                 },
                 {
-                    "n_rows": 10000,
-                    "n_cols": 5000,
+                    "n_rows": 2000,
+                    "n_cols": 4000,
+                    "density": 0.001,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 4000,
+                    "n_cols": 4000,
+                    "density": 0.1,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 4000,
+                    "n_cols": 4000,
+                    "density": 0.01,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 4000,
+                    "n_cols": 4000,
+                    "density": 0.001,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 4000,
+                    "n_cols": 6000,
+                    "density": 0.1,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 4000,
+                    "n_cols": 6000,
+                    "density": 0.01,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 4000,
+                    "n_cols": 6000,
+                    "density": 0.001,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 6000,
+                    "n_cols": 6000,
+                    "density": 0.1,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 6000,
+                    "n_cols": 6000,
+                    "density": 0.01,
+                    "n_col": 1000
+                },
+                {
+                    "n_rows": 6000,
+                    "n_cols": 6000,
                     "density": 0.001,
                     "n_col": 1000
                 }
@@ -215,7 +214,8 @@
             ],
             "homo_weight": [
                 true, false
-            ]
+            ],
+            "spike_rate":[0.01, 0.05, 0.10, 0.5]
         },
         "config_2": {
             "warmup": 1,
@@ -241,7 +241,8 @@
             ],
             "homo_weight": [
                 false
-            ]
+            ],
+            "spike_rate":[0.01, 0.05, 0.10, 0.50]
         },
             "config_3": {
             "warmup": 10,
@@ -320,7 +321,8 @@
             ],
             "homo_weight": [
                 true, false
-            ]
+            ],
+            "spike_rate":[0.01, 0.05, 0.10, 0.50]
         }
     },
     "typeC": {

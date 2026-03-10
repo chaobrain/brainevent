@@ -31,7 +31,7 @@ from brainevent import fcnmv_p, BenchmarkConfig
 
 current_name = 'fcnmv'
 benchmark_data_type = 'typeA'
-config_type = "config_1"
+config_type = "config_2"
 
 def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
     with open(json_path, 'r') as f:
@@ -84,9 +84,10 @@ def _make_benchmark_data(*, platform):
                 v_size = n_post if not transpose else n_pre
                 vector = jnp.asarray(rng.standard_normal(v_size), dtype=dtype)
                 name = (
-                    f"{'T' if transpose else 'NT'},"
-                    f"{'homo' if homo else 'hetero'},"
-                    f"{n_pre}x{n_post}x{prob}"
+                        f"TNT={'T' if transpose else 'NT'},"
+                        f"homo_or_hetero={'homo' if homo else 'hetero'},"
+                        f"scale={n_pre}x{n_post},"
+                        f"prob={prob},"
                 )
                 yield BenchmarkConfig(
                     name=name,

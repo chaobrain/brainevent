@@ -23,7 +23,8 @@ Usage
     python dev/fcn/benchmark_binary_fcnmm.py --n_warmup 5 --n_runs 50
     python dev/fcn/benchmark_binary_fcnmm.py --spike_rate 0.05 --n_batch 64
 """
-
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import argparse
 import sys
 from pathlib import Path
@@ -89,13 +90,13 @@ runs = parsed_config.get('runs', 10)
 warmup = parsed_config.get('warmup', 10)
 batch = parsed_config.get('batch', 10)
 len_config = len(matrix_configs) * len(transpose_list) * len(homo_list) * len(bool_event_list)
-spike_rate = 0.1
+
+spike_rates = parsed_config.get('spike_rate', [0.01, 0.05, 0.10, 0.50])
 
 def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
     brainstate.environ.set(precision=32)  # change to 16 or 64 for other precisions
     rng = np.random.default_rng(42)
     dtype = brainstate.environ.dftype()
-    spike_rates = (spike_rate,) if spike_rate is not None else (0.01, 0.05, 0.1)
     n_batches = (n_batch,) if n_batch is not None else (16, 64)
 
     for spike_rate in spike_rates:
@@ -124,11 +125,13 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
                                 mat = jnp.asarray(np.where(mask, np.abs(raw), 0.0), dtype=dtype)
 
                             name = (
-                                f"{'T' if transpose else 'NT'},"
-                                f"{'homo' if homo else 'hetero'},"
-                                f"{'bool' if bool_event else 'float'},"
+                                f"TNT={'T' if transpose else 'NT'},"
+                                f"homo_or_hetero={'homo' if homo else 'hetero'},"
+                                f"bool_event={'bool' if bool_event else 'float'},"
+                                f"scale={n_pre}x{n_post},"
+                                f"prob={prob},"
+                                f"spike_rate={spike_rate:.0%},"
                                 f"batch={n_b},"
-                                f"{n_pre}x{n_post}x{prob}"
                             )
                             yield BenchmarkConfig(
                                 name=name,
@@ -154,19 +157,18 @@ except RuntimeError:
 
 print(f"binary_fcnmm benchmark  —  GPU: {gpu}")
 print(f"warmup={warmup}  runs={runs}  "
-        f"spike_rate={spike_rate:.0%}  n_batch={batch}")
+        f" n_batch={batch}")
 print()
 
 def _data_gen(*, platform):
     yield from _make_benchmark_data(
         platform=platform,
-        spike_rate=spike_rate,
         n_batch=batch,
     )
 
 binary_fcnmm_p.def_benchmark_data(_data_gen)
 
-total_len_config = len_config * (1 if spike_rate is not None else 3)
+total_len_config = len_config * len(spike_rates)
 
 result = binary_fcnmm_p.benchmark_csv_output(
     platform='gpu',

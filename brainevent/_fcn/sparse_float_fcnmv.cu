@@ -299,55 +299,6 @@ DEFINE_SPFLOAT_SCATTER_BASIC_HETERO(_bf16, __nv_bfloat16, float, READ_BF16, WRIT
 DEFINE_SPFLOAT_SCATTER_WARP_HOMO  (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, atomic_add_bf16, 0.0f)
 DEFINE_SPFLOAT_SCATTER_WARP_HETERO(_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, atomic_add_bf16, 0.0f)
 
-// ---------------------------------------------------------------------------
-// Gather shared (float32 only): shared-memory tiling of indices and weights.
-// ---------------------------------------------------------------------------
-__global__ void _spfloat_gather_shared_homo_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
-    extern __shared__ char smem_raw[];
-    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_raw);
-    float*   s_red = reinterpret_cast<float*>(smem_raw + blockDim.x * sizeof(int32_t));
-    int row = blockIdx.x; if (row >= n_pre) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    float w0 = __ldg(&weights[0]); float val = 0.0f;
-    for (int base = 0; base < n_conn; base += blockDim.x) {
-        int k = base + threadIdx.x;
-        if (k < n_conn) s_idx[threadIdx.x] = __ldg(&i_row[k]);
-        __syncthreads();
-        int tile = min((int)blockDim.x, n_conn - base);
-        if (threadIdx.x < tile) { float sp = __ldg(&vector[s_idx[threadIdx.x]]); if (sp != 0.0f) val += sp; }
-        __syncthreads();
-    }
-    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
-    if (lane == 0) s_red[warpid] = val; __syncthreads();
-    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? s_red[lane] : 0.0f;
-    if (warpid == 0) val = warp_reduce_sum_f32(val);
-    if (threadIdx.x == 0) output[row] = w0 * val;
-}
-
-__global__ void _spfloat_gather_shared_hetero_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
-    extern __shared__ char smem_raw[];
-    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_raw);
-    float*   s_wt  = reinterpret_cast<float*>(smem_raw + blockDim.x * sizeof(int32_t));
-    float*   s_red = reinterpret_cast<float*>(smem_raw + blockDim.x * (sizeof(int32_t) + sizeof(float)));
-    int row = blockIdx.x; if (row >= n_pre) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = weights + (size_t)row * n_conn;
-    float val = 0.0f;
-    for (int base = 0; base < n_conn; base += blockDim.x) {
-        int k = base + threadIdx.x;
-        if (k < n_conn) { s_idx[threadIdx.x] = __ldg(&i_row[k]); s_wt[threadIdx.x] = __ldg(&w_row[k]); }
-        __syncthreads();
-        int tile = min((int)blockDim.x, n_conn - base);
-        if (threadIdx.x < tile) { float sp = __ldg(&vector[s_idx[threadIdx.x]]); if (sp != 0.0f) val += s_wt[threadIdx.x] * sp; }
-        __syncthreads();
-    }
-    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
-    if (lane == 0) s_red[warpid] = val; __syncthreads();
-    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? s_red[lane] : 0.0f;
-    if (warpid == 0) val = warp_reduce_sum_f32(val);
-    if (threadIdx.x == 0) output[row] = val;
-}
-
 // SpMV FFI Entry Macros
 // ---- FFI macro: gather homo auto ----
 #define FFI_SPFLOAT_GATHER_HOMO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                                                     \
@@ -472,6 +423,55 @@ FFI_SPFLOAT_SCATTER_HOMO_AUTO (_bf16, __nv_bfloat16)
 // @BE spfloat_fcnmv_scatter_hetero_auto_bf16
 FFI_SPFLOAT_SCATTER_HETERO_AUTO(_bf16, __nv_bfloat16)
 
+// ---------------------------------------------------------------------------
+// Gather shared (float32 only): shared-memory tiling of indices and weights.
+// ---------------------------------------------------------------------------
+__global__ void _spfloat_gather_shared_homo_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
+    extern __shared__ char smem_raw[];
+    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_raw);
+    float*   s_red = reinterpret_cast<float*>(smem_raw + blockDim.x * sizeof(int32_t));
+    int row = blockIdx.x; if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    float w0 = __ldg(&weights[0]); float val = 0.0f;
+    for (int base = 0; base < n_conn; base += blockDim.x) {
+        int k = base + threadIdx.x;
+        if (k < n_conn) s_idx[threadIdx.x] = __ldg(&i_row[k]);
+        __syncthreads();
+        int tile = min((int)blockDim.x, n_conn - base);
+        if (threadIdx.x < tile) { float sp = __ldg(&vector[s_idx[threadIdx.x]]); if (sp != 0.0f) val += sp; }
+        __syncthreads();
+    }
+    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
+    if (lane == 0) s_red[warpid] = val; __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? s_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum_f32(val);
+    if (threadIdx.x == 0) output[row] = w0 * val;
+}
+
+__global__ void _spfloat_gather_shared_hetero_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
+    extern __shared__ char smem_raw[];
+    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_raw);
+    float*   s_wt  = reinterpret_cast<float*>(smem_raw + blockDim.x * sizeof(int32_t));
+    float*   s_red = reinterpret_cast<float*>(smem_raw + blockDim.x * (sizeof(int32_t) + sizeof(float)));
+    int row = blockIdx.x; if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = weights + (size_t)row * n_conn;
+    float val = 0.0f;
+    for (int base = 0; base < n_conn; base += blockDim.x) {
+        int k = base + threadIdx.x;
+        if (k < n_conn) { s_idx[threadIdx.x] = __ldg(&i_row[k]); s_wt[threadIdx.x] = __ldg(&w_row[k]); }
+        __syncthreads();
+        int tile = min((int)blockDim.x, n_conn - base);
+        if (threadIdx.x < tile) { float sp = __ldg(&vector[s_idx[threadIdx.x]]); if (sp != 0.0f) val += s_wt[threadIdx.x] * sp; }
+        __syncthreads();
+    }
+    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
+    if (lane == 0) s_red[warpid] = val; __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? s_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum_f32(val);
+    if (threadIdx.x == 0) output[row] = val;
+}
+
 // SpMV f32-specific specializations
 // @BE spfloat_fcnmv_gather_shared_homo_f32
 void spfloat_fcnmv_gather_shared_homo_f32(
@@ -506,3 +506,202 @@ void spfloat_fcnmv_gather_shared_hetero_f32(
         static_cast<const float*>(weights.data_ptr()),
         n_pre, n_conn);
 }
+
+
+
+// ----------------------------------------------------------------------------------------------------
+/// cuda_spfloat_unbranch
+/// Unbranched gather-basic kernels: pre-compute iteration counts, unroll main
+/// loop by 2, and handle tail separately to eliminate per-element bounds checks.
+/// Assumes blockDim.x == 256 (8 warps per block).
+///
+
+#define DEFINE_SPFLOAT_GATHER_BASIC_HOMO_UNBRANCH(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, WARP_RED, ACC_ZERO) \
+__global__ void _spfloat_gather_basic_homo_unbranch_kern##SUFFIX(                                               \
+    const int32_t* __restrict__ indices,                                                                        \
+    const WEIGHT_T* __restrict__ vector,                                                                        \
+    WEIGHT_T* __restrict__ output,                                                                              \
+    const WEIGHT_T* __restrict__ weights,                                                                       \
+    int n_pre, int n_conn                                                                                       \
+) {                                                                                                             \
+    extern __shared__ char _smem_bytes[];                                                                       \
+    ACC_T* smem_red = reinterpret_cast<ACC_T*>(_smem_bytes);                                                    \
+    int row = blockIdx.x;                                                                                       \
+    if (row >= n_pre) return;                                                                                   \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                                                      \
+    ACC_T w = READ_W(__ldg(&weights[0]));                                                                       \
+    int warp_id = threadIdx.x >> 5;                                                                             \
+    int lane    = threadIdx.x & 31;                                                                             \
+    int tid     = threadIdx.x;                                                                                  \
+    ACC_T val = ACC_ZERO;                                                                                       \
+    int main_iters = n_conn >> 8;                                                                               \
+    int tail = n_conn & 255;                                                                                    \
+    int k = tid;                                                                                                \
+    int limit = main_iters & ~1;                                                                                \
+    for (int i = 0; i < limit; i += 2) {                                                                       \
+        int32_t idx0 = __ldg(&i_row[k]);                                                                       \
+        int32_t idx1 = __ldg(&i_row[k + 256]);                                                                  \
+        ACC_T sp0 = READ_W(__ldg(&vector[idx0]));                                                               \
+        ACC_T sp1 = READ_W(__ldg(&vector[idx1]));                                                               \
+        unsigned ballot0 = __ballot_sync(0xffffffff, sp0 != ACC_ZERO);                                         \
+        if (ballot0 && sp0 != ACC_ZERO) val += w * sp0;                                                        \
+        unsigned ballot1 = __ballot_sync(0xffffffff, sp1 != ACC_ZERO);                                         \
+        if (ballot1 && sp1 != ACC_ZERO) val += w * sp1;                                                        \
+        k += 512;                                                                                               \
+    }                                                                                                           \
+    if (main_iters & 1) {                                                                                       \
+        int32_t idx = __ldg(&i_row[k]);                                                                         \
+        ACC_T sp = READ_W(__ldg(&vector[idx]));                                                                 \
+        unsigned ballot = __ballot_sync(0xffffffff, sp != ACC_ZERO);                                            \
+        if (ballot && sp != ACC_ZERO) val += w * sp;                                                            \
+        k += 256;                                                                                               \
+    }                                                                                                           \
+    if (tid < tail) {                                                                                           \
+        int32_t idx = __ldg(&i_row[k]);                                                                         \
+        ACC_T sp = READ_W(__ldg(&vector[idx]));                                                                 \
+        if (sp != ACC_ZERO) val += w * sp;                                                                      \
+    }                                                                                                           \
+    val = WARP_RED(val);                                                                                        \
+    if (lane == 0) smem_red[warp_id] = val;                                                                     \
+    __syncthreads();                                                                                            \
+    int n_warps_in_block = blockDim.x >> 5;                                                                     \
+    val = (threadIdx.x < n_warps_in_block) ? smem_red[lane] : ACC_ZERO;                                         \
+    if (warp_id == 0) val = WARP_RED(val);                                                                      \
+    if (threadIdx.x == 0) output[row] = WRITE_W(val);                                                           \
+}
+
+#define DEFINE_SPFLOAT_GATHER_BASIC_HETERO_UNBRANCH(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, WARP_RED, ACC_ZERO) \
+__global__ void _spfloat_gather_basic_hetero_unbranch_kern##SUFFIX(                                               \
+    const int32_t* __restrict__ indices,                                                                          \
+    const WEIGHT_T* __restrict__ vector,                                                                          \
+    WEIGHT_T* __restrict__ output,                                                                                \
+    const WEIGHT_T* __restrict__ weights,                                                                         \
+    int n_pre, int n_conn                                                                                         \
+) {                                                                                                               \
+    extern __shared__ char _smem_bytes[];                                                                         \
+    ACC_T* smem_red = reinterpret_cast<ACC_T*>(_smem_bytes);                                                      \
+    int row = blockIdx.x;                                                                                         \
+    if (row >= n_pre) return;                                                                                     \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                                                        \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                                       \
+    int warp_id = threadIdx.x >> 5;                                                                               \
+    int lane    = threadIdx.x & 31;                                                                               \
+    int tid     = threadIdx.x;                                                                                    \
+    ACC_T val = ACC_ZERO;                                                                                         \
+    int main_iters = n_conn >> 8;                                                                                 \
+    int tail = n_conn & 255;                                                                                      \
+    int k = tid;                                                                                                  \
+    int limit = main_iters & ~1;                                                                                  \
+    for (int i = 0; i < limit; i += 2) {                                                                          \
+        int32_t idx0 = __ldg(&i_row[k]);                                                                          \
+        int32_t idx1 = __ldg(&i_row[k + 256]);                                                                    \
+        ACC_T sp0 = READ_W(__ldg(&vector[idx0]));                                                                 \
+        ACC_T sp1 = READ_W(__ldg(&vector[idx1]));                                                                 \
+        unsigned ballot0 = __ballot_sync(0xffffffff, sp0 != ACC_ZERO);                                           \
+        if (ballot0 && sp0 != ACC_ZERO) val += READ_W(__ldg(&w_row[k])) * sp0;                                   \
+        unsigned ballot1 = __ballot_sync(0xffffffff, sp1 != ACC_ZERO);                                           \
+        if (ballot1 && sp1 != ACC_ZERO) val += READ_W(__ldg(&w_row[k + 256])) * sp1;                             \
+        k += 512;                                                                                                 \
+    }                                                                                                             \
+    if (main_iters & 1) {                                                                                         \
+        int32_t idx = __ldg(&i_row[k]);                                                                           \
+        ACC_T sp = READ_W(__ldg(&vector[idx]));                                                                   \
+        unsigned ballot = __ballot_sync(0xffffffff, sp != ACC_ZERO);                                              \
+        if (ballot && sp != ACC_ZERO) val += READ_W(__ldg(&w_row[k])) * sp;                                      \
+        k += 256;                                                                                                 \
+    }                                                                                                             \
+    if (tid < tail) {                                                                                             \
+        int32_t idx = __ldg(&i_row[k]);                                                                           \
+        ACC_T sp = READ_W(__ldg(&vector[idx]));                                                                   \
+        if (sp != ACC_ZERO) val += READ_W(__ldg(&w_row[k])) * sp;                                                \
+    }                                                                                                             \
+    val = WARP_RED(val);                                                                                          \
+    if (lane == 0) smem_red[warp_id] = val;                                                                       \
+    __syncthreads();                                                                                              \
+    int n_warps_in_block = blockDim.x >> 5;                                                                       \
+    val = (threadIdx.x < n_warps_in_block) ? smem_red[lane] : ACC_ZERO;                                           \
+    if (warp_id == 0) val = WARP_RED(val);                                                                        \
+    if (threadIdx.x == 0) output[row] = WRITE_W(val);                                                             \
+}
+
+// Unbranch Instantiations
+// ---- float32 ----
+DEFINE_SPFLOAT_GATHER_BASIC_HOMO_UNBRANCH  (_f32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_SPFLOAT_GATHER_BASIC_HETERO_UNBRANCH(_f32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+
+// ---- float64 ----
+DEFINE_SPFLOAT_GATHER_BASIC_HOMO_UNBRANCH  (_f64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_SPFLOAT_GATHER_BASIC_HETERO_UNBRANCH(_f64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+
+// ---- float16 ----
+DEFINE_SPFLOAT_GATHER_BASIC_HOMO_UNBRANCH  (_f16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_SPFLOAT_GATHER_BASIC_HETERO_UNBRANCH(_f16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+
+// ---- bfloat16 ----
+DEFINE_SPFLOAT_GATHER_BASIC_HOMO_UNBRANCH  (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_SPFLOAT_GATHER_BASIC_HETERO_UNBRANCH(_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+
+
+// ---- FFI macro: gather homo auto unbranch ----
+#define FFI_SPFLOAT_GATHER_HOMO_AUTO_UNBRANCH(SUFFIX, WEIGHT_C_T, SHM_SIZE)                                                     \
+void spfloat_fcnmv_gather_homo_auto_unbranch##SUFFIX(                                                                           \
+    const BE::Tensor weights, const BE::Tensor indices,                                                                         \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                                                 \
+) {                                                                                                                             \
+    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                                   \
+    int n_pre       = static_cast<int>(indices.size(0));                                                                        \
+    int n_conn      = static_cast<int>(indices.size(1));                                                                        \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                                                  \
+    const WEIGHT_C_T* d_vec = static_cast<const WEIGHT_C_T*>(vector.data_ptr());                                                \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                                                      \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                                               \
+    if (n_conn <= 64)                                                                                                           \
+        _spfloat_gather_warp_homo_kern##SUFFIX<<<n_pre, 32, 0, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn);                   \
+    else                                                                                                                        \
+        _spfloat_gather_basic_homo_unbranch_kern##SUFFIX<<<n_pre, 256, SHM_SIZE, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn); \
+}
+
+// ---- FFI macro: gather hetero auto unbranch ----
+#define FFI_SPFLOAT_GATHER_HETERO_AUTO_UNBRANCH(SUFFIX, WEIGHT_C_T, SHM_SIZE)                                                     \
+void spfloat_fcnmv_gather_hetero_auto_unbranch##SUFFIX(                                                                           \
+    const BE::Tensor weights, const BE::Tensor indices,                                                                           \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                                                   \
+) {                                                                                                                               \
+    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                                     \
+    int n_pre       = static_cast<int>(indices.size(0));                                                                          \
+    int n_conn      = static_cast<int>(indices.size(1));                                                                          \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                                                    \
+    const WEIGHT_C_T* d_vec = static_cast<const WEIGHT_C_T*>(vector.data_ptr());                                                  \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                                                        \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                                                 \
+    if (n_conn <= 64)                                                                                                             \
+        _spfloat_gather_warp_hetero_kern##SUFFIX<<<n_pre, 32, 0, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn);                   \
+    else                                                                                                                          \
+        _spfloat_gather_basic_hetero_unbranch_kern##SUFFIX<<<n_pre, 256, SHM_SIZE, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn); \
+}
+
+// Unbranch FFI Instantiations
+// ---- float32 ----
+// @BE spfloat_fcnmv_gather_homo_auto_unbranch_f32
+FFI_SPFLOAT_GATHER_HOMO_AUTO_UNBRANCH  (_f32, float, 32 * sizeof(float))
+// @BE spfloat_fcnmv_gather_hetero_auto_unbranch_f32
+FFI_SPFLOAT_GATHER_HETERO_AUTO_UNBRANCH(_f32, float, 32 * sizeof(float))
+
+// ---- float64 ----
+// @BE spfloat_fcnmv_gather_homo_auto_unbranch_f64
+FFI_SPFLOAT_GATHER_HOMO_AUTO_UNBRANCH  (_f64, double, 32 * sizeof(double))
+// @BE spfloat_fcnmv_gather_hetero_auto_unbranch_f64
+FFI_SPFLOAT_GATHER_HETERO_AUTO_UNBRANCH(_f64, double, 32 * sizeof(double))
+
+// ---- float16 ----
+// @BE spfloat_fcnmv_gather_homo_auto_unbranch_f16
+FFI_SPFLOAT_GATHER_HOMO_AUTO_UNBRANCH  (_f16, __half, 32 * sizeof(float))
+// @BE spfloat_fcnmv_gather_hetero_auto_unbranch_f16
+FFI_SPFLOAT_GATHER_HETERO_AUTO_UNBRANCH(_f16, __half, 32 * sizeof(float))
+
+// ---- bfloat16 ----
+// @BE spfloat_fcnmv_gather_homo_auto_unbranch_bf16
+FFI_SPFLOAT_GATHER_HOMO_AUTO_UNBRANCH  (_bf16, __nv_bfloat16, 32 * sizeof(float))
+// @BE spfloat_fcnmv_gather_hetero_auto_unbranch_bf16
+FFI_SPFLOAT_GATHER_HETERO_AUTO_UNBRANCH(_bf16, __nv_bfloat16, 32 * sizeof(float))
+

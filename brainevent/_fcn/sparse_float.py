@@ -739,10 +739,79 @@ def _spfloat_fcnmm_warp_kernel(
 
     return kernel
 
+def _spfloat_fcnmv_cuda_shared(
+    transpose: bool,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_fcnmv.cu'),
+        name='fcn_sparse_float_mv',
+    )
+
+    out_info = kwargs['outs']
+    weight_info = kwargs['weight_info']
+    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    homo = weight_info.size == 1
+    mode_sfx = '_homo' if homo else '_hetero'
+
+    if transpose:
+        # Scatter mode: y[idx[i,k]] += w[i,k] * s[i]  (skip when s[i] == 0)
+        kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_scatter{mode_sfx}{sfx}'
+        #spfloat_fcnmv_gather_shared_hetero_f32
+    else:
+        # Gather mode: y[i] = sum_k w[i,k] * s[idx[i,k]]  (skip when s == 0)
+        #spfloat_fcnmv_gather_shared_hetero_auto_f16
+        kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_gather_shared{mode_sfx}_f32'
+
+    def kernel(weights, indices, vector):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
+
+    return kernel
+
+def _spfloat_fcnmv_cuda_unbranch(
+    transpose: bool,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_fcnmv.cu'),
+        name='fcn_sparse_float_mv',
+    )
+
+    out_info = kwargs['outs']
+    weight_info = kwargs['weight_info']
+    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    homo = weight_info.size == 1
+    mode_sfx = '_homo' if homo else '_hetero'
+
+    if transpose:
+        # Scatter mode: y[idx[i,k]] += w[i,k] * s[i]  (skip when s[i] == 0)
+        kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_scatter{mode_sfx}{sfx}'
+        #spfloat_fcnmv_gather_shared_hetero_f32
+    else:
+        #spfloat_fcnmv_gather_homo_auto_unbranch_f32
+        # Gather mode: y[i] = sum_k w[i,k] * s[idx[i,k]]  (skip when s == 0)
+        kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_gather{mode_sfx}_auto_unbranch{sfx}'
+
+    def kernel(weights, indices, vector):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
+
+    return kernel
+
 spfloat_fcnmv_p.def_numba_kernel(_spfloat_fcnmv_numba_kernel)
-spfloat_fcnmv_p.def_warp_kernel(_spfloat_fcnmv_warp_kernel)
+#spfloat_fcnmv_p.def_warp_kernel(_spfloat_fcnmv_warp_kernel)
 spfloat_fcnmv_p.def_pallas_kernel('gpu', _spfloat_fcnmv_pallas_kernel)
 spfloat_fcnmv_p.def_cuda_raw_kernel(_spfloat_fcnmv_cuda_kernel)
+
+spfloat_fcnmv_p.def_kernel('_spfloat_fcnmv_cuda_shared', 'gpu', _spfloat_fcnmv_cuda_shared)
+
+
+spfloat_fcnmv_p.def_kernel('_spfloat_fcnmv_cuda_unbranch', 'gpu', _spfloat_fcnmv_cuda_unbranch)
+
+
 spfloat_fcnmv_p.def_kernel('jax_raw', 'cpu', _spfloat_fcnmv_jax_kernel)
 spfloat_fcnmv_p.def_kernel('jax_raw', 'gpu', _spfloat_fcnmv_jax_kernel)
 spfloat_fcnmv_p.def_kernel('jax_raw', 'tpu', _spfloat_fcnmv_jax_kernel)

@@ -39,6 +39,7 @@ __all__ = [
     'fcnmm_p',
 ]
 
+#import oping
 
 @namescope(static_argnames=['shape', 'transpose'])
 def fcnmv(
@@ -1293,7 +1294,9 @@ fcnmm : High-level user-facing function wrapper.
 fcnmm_p.def_numba_kernel(_fcnmm_numba_kernel)
 fcnmm_p.def_warp_kernel(_fcnmm_warp_kernel)
 fcnmm_p.def_pallas_kernel('gpu', _fcnmm_pallas_kernel)
+
 fcnmm_p.def_cuda_raw_kernel(_fcnmm_cuda_kernel)
+
 fcnmm_p.def_kernel('jax_raw', 'cpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'gpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'tpu', _fcnmm_jax_kernel)

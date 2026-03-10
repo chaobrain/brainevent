@@ -61,7 +61,7 @@ dist_type = parsed_config.get('dist_type', 'uniform')
 transpose_list = parsed_config.get('transpose', [False, True])
 homo_list = parsed_config.get('homo_weight', [True, False])
 matrix_configs = parsed_config.get('configs', [])
-default_spike_rates = parsed_config.get('spike_rates', DEFAULT_SPIKE_RATES)
+default_spike_rates = parsed_config.get('spike_rate', DEFAULT_SPIKE_RATES)
 runs = parsed_config.get('runs', 10)
 warmup = parsed_config.get('warmup', 10)
 batch = parsed_config.get('batch', 10)
@@ -69,8 +69,8 @@ base_len_config = len(matrix_configs) * len(transpose_list) * len(homo_list)
 
 def _make_benchmark_data(*, platform, spike_rates=None):
     brainstate.environ.set(precision=16) 
-    if spike_rates is None:
-        spike_rates = default_spike_rates
+
+    spike_rates = default_spike_rates
         
     rng = np.random.default_rng(42)
     dtype = brainstate.environ.dftype()
@@ -98,10 +98,11 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                     vector = jnp.asarray(v_raw * mask, dtype=dtype)
                     
                     name = (
-                        f"{'T' if transpose else 'NT'},"
-                        f"{'homo' if homo else 'hetero'},"
-                        f"{n_pre}x{n_post}x{prob},"
-                        f"rate={rate:.0%}"
+                        f"TNT={'T' if transpose else 'NT'},"
+                        f"homo_or_hetero={'homo' if homo else 'hetero'},"
+                        f"scale={n_pre}x{n_post},"
+                        f"prob={prob},"
+                        f"spike_rate={rate:.0%}"
                     )
                     yield BenchmarkConfig(
                         name=name,
@@ -110,7 +111,7 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                         data_kwargs={
                             'n_pre': n_pre,
                             'n_post': n_post,
-                            'prob': prob,
+                            'pro': prob,
                             'transpose': transpose,
                             'spike_rate': rate,
                         },

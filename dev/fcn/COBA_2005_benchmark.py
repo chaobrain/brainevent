@@ -41,7 +41,7 @@ class FixedNumConn(brainstate.nn.Module):
         allow_multi_conn: bool = True,
     ):
         super().__init__()
-
+        homo = False
         # network parameters
         self.in_size = in_size
         self.out_size = out_size
@@ -93,9 +93,9 @@ class FixedNumConn(brainstate.nn.Module):
         if self.data_type == 'binary':
             fn = brainevent.binary_fcnmv if x.ndim == 1 else brainevent.binary_fcnmm
         elif self.data_type == 'sparse_float':
-            fn = brainevent.sparse_float_fcnmv if x.ndim == 1 else brainevent.sparse_float_fcnmm
+            fn = brainevent.spfloat_fcnmv if x.ndim == 1 else brainevent.spfloat_fcnmm
         else:
-            fn = brainevent.float_fcnmv if x.ndim == 1 else brainevent.float_fcnmm
+            fn = brainevent.fcnmv if x.ndim == 1 else brainevent.fcnmm
         transpose = (self.efferent_target == 'post')
         return fn(self.weight.value, self.indices, x, shape=self.shape, transpose=transpose)
 
@@ -148,16 +148,17 @@ class EINet(brainstate.nn.Module):
             self.N(inp)
             self.rate.value += self.N.get_spike()
 
-
 def make_simulation_run(
     scale: float,
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    homo:bool = True,
+    conn_num: int = 80
 ):
     @brainstate.transform.jit
     def run():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, homo = homo, conn_num=conn_num)
         net.init_all_states()
 
         def fn(t):
@@ -177,9 +178,11 @@ def make_training_run(
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    homo:bool = True,
+    conn_num: int = 80
 ):
     def loss_fn():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, homo = homo, conn_num=conn_num)
         net.init_all_states()
 
         def fn(t):
@@ -206,10 +209,12 @@ def make_simulation_batch_run(
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    homo:bool = True,
+    conn_num: int = 80
 ):
     @brainstate.transform.jit
     def run():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, homo = homo, conn_num=conn_num)
         mapper = brainstate.nn.Map(net, init_map_size=batch_size)
         mapper.init_all_states()
 
@@ -232,9 +237,12 @@ def make_training_batch_run(
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    homo:bool = True,
+    conn_num: int = 80
+    
 ):
     def loss_fn():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, homo = homo, conn_num=conn_num)
         mapper = brainstate.nn.Map(net, init_map_size=batch_size)
         mapper.init_all_states()
 

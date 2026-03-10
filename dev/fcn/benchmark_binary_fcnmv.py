@@ -23,7 +23,8 @@ Usage
     python dev/fcn/benchmark_binary_fcnmv.py --n_warmup 5 --n_runs 50
     python dev/fcn/benchmark_binary_fcnmv.py --spike_rate 0.05
 """
-
+import os
+#os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import argparse
 import sys
 from pathlib import Path
@@ -32,6 +33,7 @@ import json
 _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
+
 
 import jax
 import jax.numpy as jnp
@@ -73,15 +75,14 @@ bool_event_list = parsed_config.get('bool_event', [True, False]) # binary_fcnmv 
 runs = parsed_config.get('runs', 10)
 warmup = parsed_config.get('warmup', 10)
 batch = parsed_config.get('batch', 10)
-spike_rate = 0.1
+spike_rates = parsed_config.get('spike_rate', [0.01, 0.05, 0.10, 0.50])
 
 len_config = len(matrix_configs) * len(transpose_list) * len(homo_list) * len(bool_event_list)
 
-def _make_benchmark_data(*, platform, spike_rate=None):
+def _make_benchmark_data(*, platform):
     brainstate.environ.set(precision=32)  # change to 16 or 64 for other precisions
     rng = np.random.default_rng(42)
     dtype = brainstate.environ.dftype()
-    spike_rates = (spike_rate,) if spike_rate is not None else (0.01, 0.05, 0.1)
 
     for spike_rate in spike_rates:
         for cfg in matrix_configs:
@@ -110,10 +111,12 @@ def _make_benchmark_data(*, platform, spike_rate=None):
                             spikes = jnp.asarray(np.where(mask, np.abs(raw), 0.0), dtype=dtype)
 
                         name = (
-                            f"{'T' if transpose else 'NT'},"
-                            f"{'homo' if homo else 'hetero'},"
-                            f"{'bool' if bool_event else 'float'},"
-                            f"{n_pre}x{n_post}x{prob}"
+                            f"TNT={'T' if transpose else 'NT'},"
+                            f"homo_or_hetero={'homo' if homo else 'hetero'},"
+                            f"bool_event={'bool' if bool_event else 'float'},"
+                            f"scale={n_pre}x{n_post},"
+                            f"prob={prob},"
+                            f"spike_rate={spike_rate:.0%}"
                         )
                         yield BenchmarkConfig(
                             name=name,
@@ -136,17 +139,17 @@ except RuntimeError:
 
 
 print(f"binary_fcnmv benchmark  —  GPU: {gpu}")
-print(f"warmup={warmup}  runs={runs}  spike_rate={spike_rate:.0%}")
+print(f"warmup={warmup}  runs={runs}")
 print()
 
 # Inject our benchmark data generator (spike_rate-aware)
 def _data_gen(*, platform):
-    yield from _make_benchmark_data(platform=platform, spike_rate=spike_rate)
+    yield from _make_benchmark_data(platform=platform)
 
 binary_fcnmv_p.def_benchmark_data(_data_gen)
 
 # Note: len_config is adjusted with spike_rates length for the exact total configurations generated
-total_len_config = len_config * (1 if spike_rate is not None else 3)
+total_len_config = len_config * len(spike_rates)
 
 result = binary_fcnmv_p.benchmark_csv_output(
     platform='gpu',

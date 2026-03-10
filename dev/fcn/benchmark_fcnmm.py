@@ -10,7 +10,8 @@ Usage
     python dev/fcn/benchmark_fcnmm.py
     python dev/fcn/benchmark_fcnmm.py --n_warmup 5 --n_runs 50
 """
-
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import argparse
 import sys
 from pathlib import Path
@@ -30,7 +31,7 @@ from brainevent import fcnmm_p, BenchmarkConfig
 # (n_pre, n_post, n_conn, n_col)
 current_name = 'fcnmm'
 benchmark_data_type = 'typeB'
-config_type = "config_2"
+config_type = "config_1"
 def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
     with open(json_path, 'r') as f:
         raw_data = json.load(f)
@@ -83,9 +84,11 @@ def _make_benchmark_data(*, platform):
                 b_rows = n_post if not transpose else n_pre
                 matrix = jnp.asarray(rng.standard_normal((b_rows, n_col)), dtype=dtype)
                 name = (
-                    f"{'T' if transpose else 'NT'},"
-                    f"{'homo' if homo else 'hetero'},"
-                    f"{n_pre}x{n_post}x{prob},ncol={n_col}"
+                    f"TNT={'T' if transpose else 'NT'},"
+                    f"homo_or_hetero={'homo' if homo else 'hetero'},"
+                    f"scale={n_pre}x{n_post},"
+                    f"prob={prob},"
+                    f"ncol={n_col}"
                 )
                 yield BenchmarkConfig(
                     name=name,

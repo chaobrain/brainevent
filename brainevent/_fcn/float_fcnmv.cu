@@ -303,97 +303,6 @@ DEFINE_SCATTER_WARP_HETERO(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf
 DEFINE_SCATTER_GS_HOMO     (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 DEFINE_SCATTER_GS_HETERO   (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 
-// SpMV Specializations (f32 only)
-__global__ void _gather_shared_homo_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
-    extern __shared__ char smem_raw[];
-    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_raw);
-    float*   s_red = reinterpret_cast<float*>(smem_raw + blockDim.x * sizeof(int32_t));
-    int row = blockIdx.x; if (row >= n_pre) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    float val = 0.0f;
-    for (int base = 0; base < n_conn; base += blockDim.x) {
-        int k = base + threadIdx.x;
-        if (k < n_conn) { s_idx[threadIdx.x] = __ldg(&i_row[k]); }
-        __syncthreads();
-        int tile = min((int)blockDim.x, n_conn - base);
-        if (threadIdx.x < tile) val += __ldg(&vector[s_idx[threadIdx.x]]);
-        __syncthreads();
-    }
-    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
-    if (lane == 0) s_red[warpid] = val; __syncthreads();
-    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? s_red[lane] : 0.0f;
-    if (warpid == 0) val = warp_reduce_sum_f32(val);
-    if (threadIdx.x == 0) output[row] = __ldg(&weights[0]) * val;
-}
-
-__global__ void _gather_shared_hetero_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
-    extern __shared__ char smem_raw[];
-    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_raw);
-    float*   s_wt  = reinterpret_cast<float*>(smem_raw + blockDim.x * sizeof(int32_t));
-    float*   s_red = reinterpret_cast<float*>(smem_raw + blockDim.x * (sizeof(int32_t) + sizeof(float)));
-    int row = blockIdx.x; if (row >= n_pre) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = weights + (size_t)row * n_conn;
-    float val = 0.0f;
-    for (int base = 0; base < n_conn; base += blockDim.x) {
-        int k = base + threadIdx.x;
-        if (k < n_conn) { s_idx[threadIdx.x] = __ldg(&i_row[k]); s_wt[threadIdx.x] = __ldg(&w_row[k]); }
-        __syncthreads();
-        int tile = min((int)blockDim.x, n_conn - base);
-        if (threadIdx.x < tile) val += s_wt[threadIdx.x] * __ldg(&vector[s_idx[threadIdx.x]]);
-        __syncthreads();
-    }
-    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
-    if (lane == 0) s_red[warpid] = val; __syncthreads();
-    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? s_red[lane] : 0.0f;
-    if (warpid == 0) val = warp_reduce_sum_f32(val);
-    if (threadIdx.x == 0) output[row] = val;
-}
-
-__global__ void _gather_vec4_homo_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
-    extern __shared__ float smem_red[];
-    int row = blockIdx.x; if (row >= n_pre) return;
-    size_t base = (size_t)row * n_conn;
-    const int4* i4 = (const int4*)(indices + base);
-    int n4 = n_conn >> 2; float val = 0.0f;
-    for (int k = threadIdx.x; k < n4; k += blockDim.x) {
-        int4 idx = __ldg(&i4[k]);
-        val += __ldg(&vector[idx.x]) + __ldg(&vector[idx.y])
-             + __ldg(&vector[idx.z]) + __ldg(&vector[idx.w]);
-    }
-    for (int k = (n4 << 2) + threadIdx.x; k < n_conn; k += blockDim.x) {
-        val += __ldg(&vector[__ldg(&indices[base + k])]);
-    }
-    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
-    if (lane == 0) smem_red[warpid] = val; __syncthreads();
-    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? smem_red[lane] : 0.0f;
-    if (warpid == 0) val = warp_reduce_sum_f32(val);
-    if (threadIdx.x == 0) output[row] = __ldg(&weights[0]) * val;
-}
-
-__global__ void _gather_vec4_hetero_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
-    extern __shared__ float smem_red[];
-    int row = blockIdx.x; if (row >= n_pre) return;
-    size_t base = (size_t)row * n_conn;
-    const int4* i4 = (const int4*)(indices + base);
-    const float4* w4 = (const float4*)(weights + base);
-    int n4 = n_conn >> 2; float val = 0.0f;
-    for (int k = threadIdx.x; k < n4; k += blockDim.x) {
-        int4 idx = __ldg(&i4[k]);
-        float4 ww = __ldg(&w4[k]);
-        val += ww.x * __ldg(&vector[idx.x]) + ww.y * __ldg(&vector[idx.y])
-             + ww.z * __ldg(&vector[idx.z]) + ww.w * __ldg(&vector[idx.w]);
-    }
-    for (int k = (n4 << 2) + threadIdx.x; k < n_conn; k += blockDim.x) {
-        val += __ldg(&weights[base + k]) * __ldg(&vector[__ldg(&indices[base + k])]);
-    }
-    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
-    if (lane == 0) smem_red[warpid] = val; __syncthreads();
-    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? smem_red[lane] : 0.0f;
-    if (warpid == 0) val = warp_reduce_sum_f32(val);
-    if (threadIdx.x == 0) output[row] = val;
-}
-
 // SpMV FFI Entries
 // ---- FFI macro: gather homo auto ----
 #define FFI_GATHER_HOMO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                        \
@@ -498,9 +407,11 @@ void fcnmv_scatter_hetero_auto##SUFFIX(                                         
 // SpMV FFI Instantiations
 // ---- float32 ----
 
-//FFI_GATHER_HOMO_AUTO  (_f32, float, 32 * sizeof(float))
+// @BE fcnmv_gather_homo_auto_f32
+FFI_GATHER_HOMO_AUTO  (_f32, float, 32 * sizeof(float))
 
-//FFI_GATHER_HETERO_AUTO(_f32, float, 32 * sizeof(float))
+// @BE fcnmv_gather_hetero_auto_f32
+FFI_GATHER_HETERO_AUTO(_f32, float, 32 * sizeof(float))
 
 // @BE fcnmv_scatter_homo_auto_f32
 FFI_SCATTER_HOMO_AUTO (_f32, float)
@@ -536,6 +447,101 @@ FFI_GATHER_HETERO_AUTO(_bf16, __nv_bfloat16, 32 * sizeof(float))
 FFI_SCATTER_HOMO_AUTO (_bf16, __nv_bfloat16)
 // @BE fcnmv_scatter_hetero_auto_bf16
 FFI_SCATTER_HETERO_AUTO(_bf16, __nv_bfloat16)
+
+
+
+
+
+// SpMV Specializations (f32 only)
+__global__ void _gather_shared_homo_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
+    extern __shared__ char smem_raw[];
+    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_raw);
+    float*   s_red = reinterpret_cast<float*>(smem_raw + blockDim.x * sizeof(int32_t));
+    int row = blockIdx.x; if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    float val = 0.0f;
+    for (int base = 0; base < n_conn; base += blockDim.x) {
+        int k = base + threadIdx.x;
+        if (k < n_conn) { s_idx[threadIdx.x] = __ldg(&i_row[k]); }
+        __syncthreads();
+        int tile = min((int)blockDim.x, n_conn - base);
+        if (threadIdx.x < tile) val += __ldg(&vector[s_idx[threadIdx.x]]);
+        __syncthreads();
+    }
+    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
+    if (lane == 0) s_red[warpid] = val; __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? s_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum_f32(val);
+    if (threadIdx.x == 0) output[row] = __ldg(&weights[0]) * val;
+}
+
+__global__ void _gather_shared_hetero_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
+    extern __shared__ char smem_raw[];
+    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_raw);
+    float*   s_wt  = reinterpret_cast<float*>(smem_raw + blockDim.x * sizeof(int32_t));
+    float*   s_red = reinterpret_cast<float*>(smem_raw + blockDim.x * (sizeof(int32_t) + sizeof(float)));
+    int row = blockIdx.x; if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = weights + (size_t)row * n_conn;
+    float val = 0.0f;
+    for (int base = 0; base < n_conn; base += blockDim.x) {
+        int k = base + threadIdx.x;
+        if (k < n_conn) { s_idx[threadIdx.x] = __ldg(&i_row[k]); s_wt[threadIdx.x] = __ldg(&w_row[k]); }
+        __syncthreads();
+        int tile = min((int)blockDim.x, n_conn - base);
+        if (threadIdx.x < tile) val += s_wt[threadIdx.x] * __ldg(&vector[s_idx[threadIdx.x]]);
+        __syncthreads();
+    }
+    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
+    if (lane == 0) s_red[warpid] = val; __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? s_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum_f32(val);
+    if (threadIdx.x == 0) output[row] = val;
+}
+
+__global__ void _gather_vec4_homo_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
+    extern __shared__ float smem_red[];
+    int row = blockIdx.x; if (row >= n_pre) return;
+    size_t base = (size_t)row * n_conn;
+    const int4* i4 = (const int4*)(indices + base);
+    int n4 = n_conn >> 2; float val = 0.0f;
+    for (int k = threadIdx.x; k < n4; k += blockDim.x) {
+        int4 idx = __ldg(&i4[k]);
+        val += __ldg(&vector[idx.x]) + __ldg(&vector[idx.y])
+             + __ldg(&vector[idx.z]) + __ldg(&vector[idx.w]);
+    }
+    for (int k = (n4 << 2) + threadIdx.x; k < n_conn; k += blockDim.x) {
+        val += __ldg(&vector[__ldg(&indices[base + k])]);
+    }
+    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
+    if (lane == 0) smem_red[warpid] = val; __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? smem_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum_f32(val);
+    if (threadIdx.x == 0) output[row] = __ldg(&weights[0]) * val;
+}
+
+__global__ void _gather_vec4_hetero_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {
+    extern __shared__ float smem_red[];
+    int row = blockIdx.x; if (row >= n_pre) return;
+    size_t base = (size_t)row * n_conn;
+    const int4* i4 = (const int4*)(indices + base);
+    const float4* w4 = (const float4*)(weights + base);
+    int n4 = n_conn >> 2; float val = 0.0f;
+    for (int k = threadIdx.x; k < n4; k += blockDim.x) {
+        int4 idx = __ldg(&i4[k]);
+        float4 ww = __ldg(&w4[k]);
+        val += ww.x * __ldg(&vector[idx.x]) + ww.y * __ldg(&vector[idx.y])
+             + ww.z * __ldg(&vector[idx.z]) + ww.w * __ldg(&vector[idx.w]);
+    }
+    for (int k = (n4 << 2) + threadIdx.x; k < n_conn; k += blockDim.x) {
+        val += __ldg(&weights[base + k]) * __ldg(&vector[__ldg(&indices[base + k])]);
+    }
+    int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5; val = warp_reduce_sum_f32(val);
+    if (lane == 0) smem_red[warpid] = val; __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5; val = (threadIdx.x < n_warps) ? smem_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum_f32(val);
+    if (threadIdx.x == 0) output[row] = val;
+}
 
 // SpMV f32-specific specializations
 // @BE fcnmv_gather_shared_homo_f32
@@ -639,100 +645,3 @@ void fcnmv_gather_auto_f32(
             _gather_basic_hetero_kern_f32<<<n_pre, 256, 32 * sizeof(float), s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn);
     }
 }
-
-
-#define DEFINE_GATHER_SCALAR_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO) \
-__global__ void _gather_scalar_hetero_kern##SUFFIX(                                     \
-    const int32_t* __restrict__ indices,                                                \
-    const WEIGHT_T* __restrict__ vector,                                                \
-    WEIGHT_T* __restrict__ output,                                                      \
-    const WEIGHT_T* __restrict__ weights,                                               \
-    int n_pre, int n_conn                                                               \
-) {                                                                                     \
-    int row = blockIdx.x * blockDim.x + threadIdx.x;                                    \
-    if (row >= n_pre) return;                                                           \
-                                                                                        \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                              \
-    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                             \
-                                                                                        \
-    ACC_T val = ACC_ZERO;                                                               \
-    for (int k = 0; k < n_conn; ++k) {                                                  \
-        int32_t idx = __ldg(&i_row[k]);                                                 \
-        val += READ_W(__ldg(&w_row[k])) * READ_W(__ldg(&vector[idx]));                  \
-    }                                                                                   \
-    output[row] = WRITE_W(val);                                                         \
-}
-
-DEFINE_GATHER_SCALAR_HETERO(_f32, float, float, READ_F32, WRITE_F32, 0.0f)
-
-
-#define FFI_GATHER_HETERO_AUTO(SUFFIX, WEIGHT_C_T)                                \
-void fcnmv_gather_hetero_auto##SUFFIX(                                            \
-    const BE::Tensor weights, const BE::Tensor indices,                           \
-    const BE::Tensor vector,  BE::Tensor output, int64_t stream                   \
-) {                                                                               \
-    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                     \
-    int n_pre       = static_cast<int>(indices.size(0));                          \
-    int n_conn      = static_cast<int>(indices.size(1));                          \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
-    const WEIGHT_C_T* d_vec = static_cast<const WEIGHT_C_T*>(vector.data_ptr());  \
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());    \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());        \
-                                                                                  \
-    int threads_per_block = 128;                                                  \
-    int blocks_per_grid = (n_pre + threads_per_block - 1) / threads_per_block;    \
-                                                                                  \
-    _gather_scalar_hetero_kern##SUFFIX<<<blocks_per_grid, threads_per_block, 0, s>>>( \
-        d_idx, d_vec, d_out, d_w, n_pre, n_conn);                                 \
-}
-
-// @BE fcnmv_gather_hetero_auto_f32
-FFI_GATHER_HETERO_AUTO(_f32, float)
-
-#define DEFINE_GATHER_SCALAR_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO) \
-__global__ void _gather_scalar_homo_kern##SUFFIX(                                     \
-    const int32_t* __restrict__ indices,                                              \
-    const WEIGHT_T* __restrict__ vector,                                              \
-    WEIGHT_T* __restrict__ output,                                                    \
-    const WEIGHT_T* __restrict__ weights,                                             \
-    int n_pre, int n_conn                                                             \
-) {                                                                                   \
-    int row = blockIdx.x * blockDim.x + threadIdx.x;                                  \
-    if (row >= n_pre) return;                                                         \
-                                                                                      \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                            \
-                                                                                      \
-    ACC_T val = ACC_ZERO;                                                             \
-    for (int k = 0; k < n_conn; ++k) {                                                \
-        int32_t idx = __ldg(&i_row[k]);                                               \
-        val += READ_W(__ldg(&vector[idx]));                                           \
-    }                                                                                 \
-                                                                                      \
-    WEIGHT_T w = READ_W(__ldg(weights));                                              \
-    output[row] = WRITE_W(val * w);                                                   \
-}
-
-DEFINE_GATHER_SCALAR_HOMO(_f32, float, float, READ_F32, WRITE_F32, 0.0f)
-
-#define FFI_GATHER_HOMO_AUTO(SUFFIX, WEIGHT_C_T)                                  \
-void fcnmv_gather_homo_auto##SUFFIX(                                              \
-    const BE::Tensor weights, const BE::Tensor indices,                           \
-    const BE::Tensor vector,  BE::Tensor output, int64_t stream                   \
-) {                                                                               \
-    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                     \
-    int n_pre       = static_cast<int>(indices.size(0));                          \
-    int n_conn      = static_cast<int>(indices.size(1));                          \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
-    const WEIGHT_C_T* d_vec = static_cast<const WEIGHT_C_T*>(vector.data_ptr());  \
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());       \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());              \
-                                                                                  \
-    int threads_per_block = 128;                                                  \
-    int blocks_per_grid = (n_pre + threads_per_block - 1) / threads_per_block;    \
-                                                                                  \
-    _gather_scalar_homo_kern##SUFFIX<<<blocks_per_grid, threads_per_block, 0, s>>>( \
-        d_idx, d_vec, d_out, d_w, n_pre, n_conn);                                 \
-}
-
-// @BE fcnmv_gather_homo_auto_f32
-FFI_GATHER_HOMO_AUTO(_f32, float)

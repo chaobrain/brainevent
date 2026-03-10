@@ -763,13 +763,64 @@ binary_fcnmv : High-level user-facing function wrapper.
 """
 )
 
+from .oping import (
+    binary_1t1r_pipeline,
+    binary_fcnmv_1t1r,
+    binary_fcnmv_1t1r_unroll4,
+    binary_fcnmv_128_2,
+    binary_fcnmv_128_4,
+    binary_fcnmv_256_4,
+    binary_fcnmv_256_8,
+    binary_fcnmv_1t1r_unroll2,
+    raw_cuda_unbranch,
+    raw_cuda_template,
+    #raw_cuda_l2,
+    raw_cuda_bit,
+    raw_cuda_untail,
+)
+'''
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
+
 binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
+'''
 binary_fcnmv_p.def_cuda_raw_kernel(_binary_fcnmv_cuda_kernel)
-binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)
+
 binary_fcnmv_p.def_kernel('jax_raw', 'gpu', _binary_fcnmv_jax_kernel)
+'''
+binary_fcnmv_p.def_kernel('raw_cuda_unbranch', 'gpu', raw_cuda_unbranch)
+
+binary_fcnmv_p.def_kernel('raw_cuda_untail', 'gpu', raw_cuda_untail)
+
+#binary_fcnmv_p.def_kernel('binary_1t1r_pipeline', 'gpu', binary_1t1r_pipeline)
+
+#binary_fcnmv_p.def_kernel('binary_fcnmv_1t1r', 'gpu', binary_fcnmv_1t1r)
+
+#binary_fcnmv_p.def_kernel('binary_fcnmv_1t1r_unroll2', 'gpu', binary_fcnmv_1t1r_unroll2)
+
+binary_fcnmv_p.def_kernel('binary_fcnmv_1t1r_unroll4', 'gpu', binary_fcnmv_1t1r_unroll4)
+
+binary_fcnmv_p.def_kernel('binary_fcnmv_256_8', 'gpu', binary_fcnmv_256_8)
+
+binary_fcnmv_p.def_kernel('binary_fcnmv_256_4', 'gpu', binary_fcnmv_256_4)
+
+binary_fcnmv_p.def_kernel('binary_fcnmv_128_4', 'gpu', binary_fcnmv_128_4)
+
+binary_fcnmv_p.def_kernel('binary_fcnmv_128_2', 'gpu', binary_fcnmv_128_2)
+
+binary_fcnmv_p.def_kernel('raw_cuda_template', 'gpu', raw_cuda_template)
+
+binary_fcnmv_p.def_kernel('raw_cuda_bit', 'gpu', raw_cuda_bit)
+
+
+binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)
+
 binary_fcnmv_p.def_kernel('jax_raw', 'tpu', _binary_fcnmv_jax_kernel)
+
+
+'''
+
+
 binary_fcnmv_p.def_jvp_rule2(_binary_fcnmv_jvp_weights, None, _binary_fcnmv_jvp_spikes, None)
 binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
 binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
@@ -1416,11 +1467,120 @@ See Also
 binary_fcnmm : High-level user-facing function wrapper.
 """
 )
+
+
+def _binary_fcnmm_cuda_unbranch(
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_fcnmm.cu'),
+        name='fcn_binary_mm',
+    )
+
+    out_info = kwargs['outs']
+    n_conn = indices_info.shape[1]
+    is_bool_matrix = (matrix_info.dtype == jnp.bool_)
+    _dtype_sfx = {
+        np.dtype('float16'): '_f16',
+        np.dtype('float32'): '_f32',
+        np.dtype('float64'): '_f64',
+        np.dtype('bfloat16'): '_bf16'
+    }
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    homo = weight_info.size == 1
+    mode_sfx = '_homo' if homo else '_hetero'
+    spike_sfx = '_bool' if is_bool_matrix else '_float'
+
+    if transpose:
+        # Scatter mode
+        kernel_name = (
+            f'fcn_binary_mm.binary_fcnmm_scatter{mode_sfx}_warp{spike_sfx}{sfx}'
+            if n_conn <= 32
+            else f'fcn_binary_mm.binary_fcnmm_scatter{mode_sfx}_basic{spike_sfx}{sfx}'
+        )
+    else:
+        # Gather mode binary_fcnmm_gather_homo_unbranch_bool_f32
+        
+        kernel_name = (
+            f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_warp{spike_sfx}{sfx}'
+            if n_conn <= 32
+            else f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_unbranch{spike_sfx}{sfx}'
+        )
+        
+        #kernel_name = f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_unbranch{spike_sfx}{sfx}'
+
+    def kernel(weights, indices, matrix):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
+
+    return kernel
+
+
+def _binary_fcnmm_cuda_spstyle(
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_fcnmm.cu'),
+        name='fcn_binary_mm',
+    )
+
+    out_info = kwargs['outs']
+    n_conn = indices_info.shape[1]
+    is_bool_matrix = (matrix_info.dtype == jnp.bool_)
+    _dtype_sfx = {
+        np.dtype('float16'): '_f16',
+        np.dtype('float32'): '_f32',
+        np.dtype('float64'): '_f64',
+        np.dtype('bfloat16'): '_bf16'
+    }
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    homo = weight_info.size == 1
+    mode_sfx = '_homo' if homo else '_hetero'
+    spike_sfx = '_bool' if is_bool_matrix else '_float'
+
+    if transpose:
+        # Scatter mode
+        kernel_name = (
+            f'fcn_binary_mm.binary_fcnmm_scatter{mode_sfx}_warp{spike_sfx}{sfx}'
+            if n_conn <= 32
+            else f'fcn_binary_mm.binary_fcnmm_scatter{mode_sfx}_basic{spike_sfx}{sfx}'
+        )
+    else:
+        # Gather mode binary_fcnmm_gather_homo_unbranch_bool_f32
+        #binary_fcnmm_gather_hetero_spfloat_style_bool_f16
+        #fcn_binary_mm.binary_fcnmm_gather_homo_spfloat_style_bool_f32
+        
+        kernel_name = (
+            f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_warp{spike_sfx}{sfx}'
+            if n_conn <= 32
+            else f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_spfloat_style{spike_sfx}{sfx}'
+        )
+        
+        #kernel_name = f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_unbranch{spike_sfx}{sfx}'
+        #_bgm_basic_hetero_kern_spfloat_style_bool_f32
+
+    def kernel(weights, indices, matrix):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
+
+    return kernel
+
 binary_fcnmm_p.def_numba_kernel(_binary_fcnmm_numba_kernel)
 binary_fcnmm_p.def_pallas_kernel('gpu', _binary_fcnmm_pallas_kernel)
 binary_fcnmm_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
+
+binary_fcnmm_p.def_kernel('unbranch_cuda', 'gpu', _binary_fcnmm_cuda_unbranch)
+
+binary_fcnmm_p.def_kernel('_binary_fcnmm_cuda_spstyle', 'gpu', _binary_fcnmm_cuda_spstyle)
+
 binary_fcnmm_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
 binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)

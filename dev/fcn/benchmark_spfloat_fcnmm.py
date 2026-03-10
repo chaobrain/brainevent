@@ -18,7 +18,8 @@ Usage
     python dev/fcn/benchmark_spfloat_fcnmm.py --spike_rates 0.01 0.05 0.10 0.50
 """
 
-
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import argparse
 import sys
 from pathlib import Path
@@ -54,7 +55,7 @@ import json
 current_name = 'spfloat_fcnmm'
 benchmark_data_type = 'typeB'
 DEFAULT_SPIKE_RATES = [0.01, 0.05, 0.10, 0.50]
-config_type = "config_2"
+config_type = "config_1"
 # Spike rates to sweep.  At lower rates, the CUDA kernel's early-exit
 # optimisation should show the largest speedup over dense-style kernels.
 def load_benchmark_config(json_path: str, benchmark_data_type: str, operator_name: str, config_key: str = config_type) -> dict:
@@ -81,17 +82,17 @@ dist_type = parsed_config.get('dist_type', 'uniform')
 transpose_list = parsed_config.get('transpose', [False, True])
 homo_list = parsed_config.get('homo_weight', [True, False])
 matrix_configs = parsed_config.get('configs', [])
-default_spike_rates = parsed_config.get('spike_rates', DEFAULT_SPIKE_RATES)
+default_spike_rates = parsed_config.get('spike_rate', DEFAULT_SPIKE_RATES)
 runs = parsed_config.get('runs', 10)
 warmup = parsed_config.get('warmup', 10)
 batch = parsed_config.get('batch', 10)
 
 base_len_config = len(matrix_configs) * len(transpose_list) * len(homo_list)
 
-def _make_benchmark_data(*, platform, spike_rates=None):
+def _make_benchmark_data(*, platform):
     brainstate.environ.set(precision=32)  # change to 16 or 64 for other precisions
-    if spike_rates is None:
-        spike_rates = default_spike_rates
+
+    spike_rates = default_spike_rates
 
     rng = np.random.default_rng(42)
     dtype = brainstate.environ.dftype()
@@ -121,11 +122,12 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                     mask = (rng.random((m_rows, n_col)) < rate)
                     matrix = jnp.asarray(m_raw * mask, dtype=dtype)
                     name = (
-                        f"{'T' if transpose else 'NT'},"
-                        f"{'homo' if homo else 'hetero'},"
-                        f"{n_pre}x{n_post}x{prob},"
-                        f"n_col={n_col},"
-                        f"rate={rate:.0%}"
+                        f"TNT={'T' if transpose else 'NT'},"
+                        f"homo_or_hetero={'homo' if homo else 'hetero'},"
+                        f"scale={n_pre}x{n_post},"
+                        f"prob={prob},"
+                        f"ncol={n_col},"
+                        f"spike_rate={rate:.0%}"
                     )
                     yield BenchmarkConfig(
                         name=name,
@@ -153,7 +155,7 @@ print(f"warmup={warmup}  runs={runs}")
 print(f"spike_rates={default_spike_rates}")
 
 def _data_gen(*, platform):
-    yield from _make_benchmark_data(platform=platform, spike_rates=default_spike_rates)
+    yield from _make_benchmark_data(platform=platform)
 
 spfloat_fcnmm_p.def_benchmark_data(_data_gen)
 
