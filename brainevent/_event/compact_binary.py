@@ -20,7 +20,10 @@ import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 
 from .bitpack_binary import bitpack
-from .compact import _compact_2d_jax, _compact_1d_jax
+from .compact import (
+    _compact_1d_jax,
+    binary_2d_array_index_p_call,
+)
 
 __all__ = [
     'CompactBinary',
@@ -110,12 +113,56 @@ class CompactBinary:
         x = jnp.asarray(x)
         if x.ndim == 1:
             packed = bitpack(x, axis=0)
+            # Use JAX prefix-sum for 1D (cheaper under vmap than CUDA
+            # primitive, which would launch sequential kernels per batch).
             active_ids, n_active = _compact_1d_jax(x)
             return cls(packed, active_ids, n_active, x,
                        n_orig=x.shape[0], batch_size=None, bit_width=32)
         elif x.ndim == 2:
-            packed = bitpack(x, axis=1)
-            active_ids, n_active = _compact_2d_jax(x)
+            # Fused CUDA kernel: bitpack + compaction in one launch
+            packed, active_ids, n_active = binary_2d_array_index_p_call(x)
+            return cls(packed, active_ids, n_active, x,
+                       n_orig=x.shape[0], batch_size=x.shape[1], bit_width=32)
+        else:
+            raise ValueError(
+                f"CompactBinary only supports 1D and 2D arrays, got {x.ndim}D."
+            )
+
+    @classmethod
+    def from_array_light(cls, x, bit_width=32):
+        """Create a ``CompactBinary`` with deferred compaction.
+
+        For 1D input, skips computing ``active_ids`` / ``n_active``
+        (uses zeros). This is faster under ``jax.vmap`` because the
+        MV→MM batching rule recomputes compaction for the merged matrix.
+
+        For 2D input, identical to :meth:`from_array`.
+
+        Parameters
+        ----------
+        x : jax.Array
+            Binary array of shape ``(n,)`` or ``(n, batch_size)``.
+        bit_width : int, optional
+            Must be 32.
+
+        Returns
+        -------
+        CompactBinary
+        """
+        if bit_width != 32:
+            raise ValueError(f"Only bit_width=32 is supported, got {bit_width}.")
+        x = jnp.asarray(x)
+        if x.ndim == 1:
+            packed = bitpack(x, axis=0)
+            n = x.shape[0]
+            # Skip compaction — use zeros. The MV→MM batching rule
+            # recomputes compaction for the merged 2D matrix.
+            active_ids = jnp.zeros(n, dtype=jnp.int32)
+            n_active = jnp.zeros(1, dtype=jnp.int32)
+            return cls(packed, active_ids, n_active, x,
+                       n_orig=n, batch_size=None, bit_width=32)
+        elif x.ndim == 2:
+            packed, active_ids, n_active = binary_2d_array_index_p_call(x)
             return cls(packed, active_ids, n_active, x,
                        n_orig=x.shape[0], batch_size=x.shape[1], bit_width=32)
         else:

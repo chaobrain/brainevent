@@ -47,8 +47,8 @@ class FixedNumConn(brainstate.nn.Module):
         self.out_size = out_size
         self.efferent_target = efferent_target
         self.data_type = data_type
-        if data_type not in ('binary', 'float', 'bitpack', 'bitpack_a0', 'bitpack_a1'):
-            raise ValueError('data_type must be one of "binary", "float", "bitpack", "bitpack_a0", "bitpack_a1".')
+        if data_type not in ('binary', 'float', 'bitpack', 'bitpack_a0', 'bitpack_a1', 'compact'):
+            raise ValueError('data_type must be one of "binary", "float", "bitpack", "bitpack_a0", "bitpack_a1", "compact".')
         if efferent_target not in ('pre', 'post'):
             raise ValueError('The target of the connection must be either "pre" or "post".')
         if isinstance(conn_num, float):
@@ -84,14 +84,30 @@ class FixedNumConn(brainstate.nn.Module):
 
     def update(self, x) -> Union[jax.Array, u.Quantity]:
         assert x.ndim in [1, 2], 'Input must be 1D or 2D.'
+        transpose = (self.efferent_target == 'post')
+        if self.data_type == 'compact':
+            # from_array_light skips 1D compaction (zeros for active_ids/n_active).
+            # The MV→MM batching rule recomputes compaction for the merged matrix.
+            cb = brainevent.CompactBinary.from_array_light(x)
+            if x.ndim == 1:
+                return brainevent.compact_binary_fcnmv(
+                    self.weight.value, self.indices,
+                    cb.packed, cb.active_ids, cb.n_active, cb.value,
+                    shape=self.shape, transpose=transpose,
+                )
+            else:
+                return brainevent.compact_binary_fcnmm(
+                    self.weight.value, self.indices,
+                    cb.packed, cb.active_ids, cb.n_active, cb.value,
+                    shape=self.shape, transpose=transpose, pack_axis=1,
+                )
         if self.data_type in ('bitpack', 'bitpack_a0', 'bitpack_a1'):
             bp = brainevent.BitPackedBinary(x)
-            transpose = (self.efferent_target == 'post')
             if x.ndim == 1:
-                # 1D: only pack_axis=0 exists; batching rule promotes MV→MM automatically
+                # 1D: batching rule promotes MV→MM automatically
                 return brainevent.bitpack_binary_fcnmv(
                     self.weight.value, self.indices, bp.packed[0], bp.value,
-                    shape=self.shape, transpose=transpose, pack_axis=0,
+                    shape=self.shape, transpose=transpose,
                 )
             else:
                 pack_axis = 1 if self.data_type == 'bitpack_a1' else 0
@@ -103,7 +119,6 @@ class FixedNumConn(brainstate.nn.Module):
             fn = brainevent.binary_fcnmv if x.ndim == 1 else brainevent.binary_fcnmm
         else:
             fn = brainevent.float_fcnmv if x.ndim == 1 else brainevent.float_fcnmm
-        transpose = (self.efferent_target == 'post')
         return fn(self.weight.value, self.indices, x, shape=self.shape, transpose=transpose)
 
 

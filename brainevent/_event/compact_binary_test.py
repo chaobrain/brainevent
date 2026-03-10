@@ -85,14 +85,14 @@ class TestAllOnes:
         x = jnp.ones(64, dtype=jnp.bool_)
         cb = CompactBinary.from_array(x)
         assert int(cb.n_active[0]) == 64
-        ids = np.array(cb.active_ids[:64])
+        ids = np.sort(np.array(cb.active_ids[:64]))
         np.testing.assert_array_equal(ids, np.arange(64))
 
     def test_2d(self):
         x = jnp.ones((32, 8), dtype=jnp.bool_)
         cb = CompactBinary.from_array(x)
         assert int(cb.n_active[0]) == 32
-        ids = np.array(cb.active_ids[:32])
+        ids = np.sort(np.array(cb.active_ids[:32]))
         np.testing.assert_array_equal(ids, np.arange(32))
 
 

@@ -221,7 +221,37 @@ def _compact_binary_fcnmv_transpose_rule(
 # ---------------------------------------------------------------------------
 
 def _compact_binary_fcnmv_batching(args, axes, **kwargs):
-    return general_batching_rule(compact_binary_fcnmv_p, args, axes, **kwargs)
+    # args = (weights, indices, packed, active_ids, n_active, spikes)
+    # Promote MV → MM when packed (arg2) and spikes (arg5) are batched.
+    # Reuse per-batch packed (transposed). Compute compaction only for scatter.
+    ax_w, ax_i, ax_p, ax_a, ax_n, ax_s = axes
+    if (ax_w is None and ax_i is None and ax_p is not None and ax_s is not None):
+        packed = args[2] if ax_p == 0 else jnp.moveaxis(args[2], ax_p, 0)
+        spikes = args[5] if ax_s == 0 else jnp.moveaxis(args[5], ax_s, 0)
+
+        # packed: (batch, n_words) → (n_words, batch) — reuse, pack_axis=0
+        reused_packed = packed.swapaxes(0, 1)
+        # spikes: (batch, n_source) → (n_source, batch) for MM layout
+        M = spikes.swapaxes(0, 1)
+        n_source = M.shape[0]
+
+        if kwargs['transpose']:
+            # Scatter mode: needs active_ids for row-skipping.
+            # Use lightweight CUDA compaction-only kernel.
+            from brainevent._event.compact import binary_2d_compact_only_p_call
+            new_active_ids, new_n_active = binary_2d_compact_only_p_call(M)
+        else:
+            # Gather mode: active_ids/n_active unused by kernel — skip compaction.
+            new_active_ids = jnp.zeros(n_source, dtype=jnp.int32)
+            new_n_active = jnp.zeros(1, dtype=jnp.int32)
+
+        r = compact_binary_fcnmm_p_call(
+            args[0], args[1], reused_packed, new_active_ids, new_n_active, M,
+            shape=kwargs['shape'], transpose=kwargs['transpose'], pack_axis=0,
+        )
+        return r, [1]
+    else:
+        return general_batching_rule(compact_binary_fcnmv_p, args, axes, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -505,16 +535,15 @@ def _compact_binary_fcnmm_transpose_rule(
 # ---------------------------------------------------------------------------
 
 def _compact_binary_fcnmm_batching_base_fn(args, pack_axis, axis=1, **kwargs):
-    from brainevent._event.bitpack_binary import bitpack as _bitpack
-    from brainevent._event.compact import _compact_2d_jax
+    from brainevent._event.compact import binary_2d_array_index_p_call
 
     # args = (weights, indices, packed, active_ids, n_active, matrix)
     assert args[5].ndim == 3, 'Batching requires 3D matrix input.'
     matrix = args[5]
     m, maybe_batch1, maybe_batch2 = matrix.shape
     M = matrix.reshape(m, maybe_batch1 * maybe_batch2)
-    new_packed = _bitpack(M, axis=pack_axis)
-    new_active_ids, new_n_active = _compact_2d_jax(M)
+    # Fused CUDA kernel: bitpack + compaction in one launch
+    new_packed, new_active_ids, new_n_active = binary_2d_array_index_p_call(M)
     r = compact_binary_fcnmm_p_call(
         args[0],
         args[1],
@@ -524,7 +553,7 @@ def _compact_binary_fcnmm_batching_base_fn(args, pack_axis, axis=1, **kwargs):
         M,
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
-        pack_axis=pack_axis,
+        pack_axis=1,
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
