@@ -123,11 +123,11 @@ if __name__ == '__main__':
     benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cuda_raw')
     benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cuda_raw')
 
-    benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
-    benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
+    # benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
+    # benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
 
-    benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cusparse')
-    benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cusparse')
+    # benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cusparse')
+    # benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cusparse')
 
     benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='pallas')
     benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='pallas')
