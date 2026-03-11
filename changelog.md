@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.7] - 2026-03-12
+
+### Added
+
+- **CUDA kernel compilation pipeline (`cuda_raw` backend)**: Native nvcc-based compilation system. Compile `.cu` files on-the-fly with source-hash caching, automatic XLA FFI registration, and multi-dtype dispatch (f16, bf16, f32, f64). Key APIs: `load_cuda_file`, `load_cuda_inline`, `load_cuda_dir`, `load_cpp_file`, `load_cpp_inline` (#88)
+- **BitPacked binary event representations**: `BitPackedBinary` compresses 32 spike values into a single uint32 word (32x memory reduction). `CompactBinary` combines bitpacking with stream compaction to skip inactive rows in scatter kernels. Factory methods: `BitPackedBinary.from_array(x)`, `CompactBinary.from_array(x)`, and standalone `bitpack()` utility (#97)
+- **BitPack FCN kernels**: `bitpack_binary_fcnmv`, `bitpack_binary_fcnmm`, `compact_binary_fcnmv`, `compact_binary_fcnmm` with both Numba CPU and CUDA GPU backends for event-driven matmul on packed spike representations (#97)
+- **Parallel RNN training (`brainevent.pararnn`)**: O(log T) parallel training via Newton's method and parallel prefix reduction. Includes `parallel_rnn()` single-function API, `AutoRNNCell` with automatic Jacobian structure detection (diagonal, block-diagonal, dense), pre-built cells (`GRUDiagMH`, `LSTMCIFGDiagMH`), fused CUDA kernels for GRU/LSTM forward and backward passes, and configurable Newton solver (#85)
+- **Warp kernel support** for CSR matrix-vector multiplication and various binary/sparse operations across COO, CSR, Dense, and FCN modules (#86)
+- **Shared CUDA headers** (`brainevent/include/`): `common.h` (`BE::Tensor`, `BE::DType`, error-check macros), `cuda_common.h` (warp reductions, dtype macros, atomics), `dispatch.h` (type dispatch macros) for consistent CUDA kernel development
+- **CUDA compilation diagnostics**: `print_diagnostics()`, `get_cache_dir()`, `set_cache_dir()`, `clear_cache()` for cache management; `CompiledModule`, `register_ffi_target`, `list_registered_targets` for FFI target management
+- Tutorials for custom GPU operators with Warp and Numba CUDA (#83)
+
+### Changed
+
+- **CUDA raw as default GPU backend**: All operations (COO, CSR, Dense, FCN, JIT*) now default to `cuda_raw` backend on GPU, with automatic fallback to numba/pallas when CUDA is unavailable (#94)
+- **Namespace migration**: `brainevent.kernix` namespace moved into `brainevent._op` and re-exported directly under `brainevent.*` (e.g., `brainevent.load_cuda_file`). Old `kernix` namespace removed (#96)
+- **Backend rename**: `"tvmffi"` backend renamed to `"cuda_raw"` throughout the codebase (#87, #96)
+- **Versioned cache directory**: Compiled kernel cache moved from `~/.cache/brainevent/` to `~/.cache/brainevent/<version>/` to prevent cross-version incompatibilities
+- **FCN kernel launch optimization**: Scatter/gather kernels switched from block-per-row (`<<<n_pre, 256>>>`) to thread-per-row (`<<<ceil(n_pre/256), 256>>>`) strategy for moderate n_conn (33–512), yielding up to 6.4x speedup on COBA benchmarks (#84, #97)
+- **FCN interface streamlining**: Unified `fcnmv`/`fcnmm` dispatch to optimal kernel based on input type (dense, bitpacked, or compact) (#96)
+- **JAX >= 0.9.1 compatibility**: Added JAX Zero init helper and refactored JVP utilities for forward compatibility (#93)
+- **JIT/CSR CUDA module splitting**: Reorganized CUDA kernel files for JIT and CSR operations into separate modules with updated Warp kernel implementations (#86)
+
+### Removed
+
+- `sparse_float` module and all related operations
+- `IndexedBinary1d`, `IndexedBinary2d`, `IndexedSpFloat1d`, `IndexedSpFloat2d` classes (replaced by bitpack/compact representations)
+- `brainevent.kernix` namespace (absorbed into `brainevent._op`, re-exported at top level)
+- `ell_mv` function (superseded by FCN operations)
+
+### Fixed
+
+- **Binary FCN CUDA kernel correctness**: Fixed kernel launch parameter issues causing incorrect results in scatter/gather operations (#87)
+- **Warp tile operation bug in JIT modules**: Cooperative tile ops produced diagonal-like output when launch dimensions < 32; replaced with scalar loops (#86)
+- **CSR matrix-vector multiplication tolerance**: Enhanced assertion tolerance for numerical stability in tests
+
 ## [0.0.6] - 2026-02-14
 
 ### Added
@@ -165,6 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version Comparison Links
 
+- [0.0.7](https://github.com/chaobrain/brainevent/compare/v0.0.6...v0.0.7)
 - [0.0.6](https://github.com/chaobrain/brainevent/compare/v0.0.5...v0.0.6)
 - [0.0.5](https://github.com/chaobrain/brainevent/compare/V0.0.4...v0.0.5)
 - [0.0.4](https://github.com/chaobrain/brainevent/compare/V0.1.0...V0.0.4)

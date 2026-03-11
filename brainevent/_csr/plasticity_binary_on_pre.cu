@@ -53,49 +53,6 @@
 // =========================================================================
 // CSR Pre-Synaptic Plasticity Kernels
 // =========================================================================
-//
-// Performance Summary (5000x5000 @ 10% spike density, 459 active neurons):
-// ------------------------------------------------------------------------
-// Baseline:    2.59 ms
-// Optimized:   2.30 ms
-// Speedup:     1.13× (13% improvement)
-// Efficiency:  ~0.18% of theoretical roofline (4.1 μs @ 900 GB/s peak BW)
-//
-// Optimization Techniques Applied:
-// ---------------------------------
-// 1. __ldg() read-only cache routing for trace/indices/indptr arrays
-// 2. Loop unrolling (4×/128×/1024× for thread/warp/block variants)
-// 3. Warp ballot early-exit to skip inactive warps
-// 4. Software pipelining to overlap index loads with computation
-// 5. Instruction-level parallelism (ILP) to hide memory latency
-//
-// Fundamental Barriers (preventing further optimization):
-// --------------------------------------------------------
-// 1. Random Memory Access (CSR Gather Pattern):
-//    - trace[indices[pos]] has random column access (gather operation)
-//    - Cannot be coalesced without changing to CSC format (transpose)
-//    - Would require Python layer changes to pre-transpose weight matrix
-//
-// 2. CUDA Per-Call Overhead:
-//    - FFI overhead ~2.2 ms dominates kernel execution (~0.1 ms actual)
-//    - Irreducible without infrastructure changes:
-//      * Batching multiple updates into single kernel call (higher-level fusion)
-//      * Persistent kernels or CUDA Graphs (requires JIT compilation changes)
-//      * Replacing CUDA with direct JAX custom calls (major refactor)
-//
-// 3. Sparse Event Density:
-//    - At 10% spike density, only 459/5000 neurons active
-//    - Limited parallelism prevents full GPU saturation
-//    - Application-dependent constraint (biological realism)
-//
-// Future Directions:
-// ------------------
-// - Algorithm: Switch to CSC format for pre-update to enable coalesced trace access
-// - Format: Use SELL-C-σ or ELL for regular sparsity patterns
-// - Software: Implement kernel fusion at operator scheduler level to batch updates
-// - Hardware: Exploit persistent kernels (sm_70+) or CUDA Graphs for multi-step SNN
-//
-// =========================================================================
 
 #define DEFINE_CSR_ON_PRE_THREAD(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                   READ_W, WRITE_W)                            \

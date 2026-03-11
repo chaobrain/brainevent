@@ -148,8 +148,8 @@ def _bitpack_binary_fcnmv_numba_kernel(
     import numpy as np
 
     if transpose:
-        # Scatter: for each pre-neuron i, if bit i is active in packed,
-        #          output[indices[i,k]] += weights[...]
+        # Scatter: word-level scanning — skip zero words entirely.
+        # At typical 2% spike rate, ~98% of uint32 words are zero.
         if weight_info.size == 1:
             @numba.njit(fastmath=True)
             def ell_mv(weights, indices, packed, posts):
@@ -157,27 +157,40 @@ def _bitpack_binary_fcnmv_numba_kernel(
                 w = weights[0]
                 n_pre = indices.shape[0]
                 n_conn = indices.shape[1]
-                for i in range(n_pre):
-                    word = packed[i >> 5]
-                    bit = np.uint32(1) << np.uint32(i & 31)
-                    if word & bit:
-                        for k in range(n_conn):
-                            posts[indices[i, k]] += w
+                n_words = packed.shape[0]
+                for w_idx in range(n_words):
+                    word = packed[w_idx]
+                    if word == np.uint32(0):
+                        continue
+                    base = w_idx << 5
+                    upper = min(np.int64(32), n_pre - base)
+                    for b in range(upper):
+                        if word & (np.uint32(1) << np.uint32(b)):
+                            i = base + b
+                            for k in range(n_conn):
+                                posts[indices[i, k]] += w
         else:
             @numba.njit(fastmath=True)
             def ell_mv(weights, indices, packed, posts):
                 posts[:] = 0.
                 n_pre = indices.shape[0]
                 n_conn = indices.shape[1]
-                for i in range(n_pre):
-                    word = packed[i >> 5]
-                    bit = np.uint32(1) << np.uint32(i & 31)
-                    if word & bit:
-                        for k in range(n_conn):
-                            posts[indices[i, k]] += weights[i, k]
+                n_words = packed.shape[0]
+                for w_idx in range(n_words):
+                    word = packed[w_idx]
+                    if word == np.uint32(0):
+                        continue
+                    base = w_idx << 5
+                    upper = min(np.int64(32), n_pre - base)
+                    for b in range(upper):
+                        if word & (np.uint32(1) << np.uint32(b)):
+                            i = base + b
+                            for k in range(n_conn):
+                                posts[indices[i, k]] += weights[i, k]
     else:
-        # Gather: for each pre-neuron i,
-        #         output[i] = sum_k weights[...] * is_active(packed, indices[i,k])
+        # Gather: branchless bit extraction — eliminates branch misprediction.
+        # For homo: integer counting + single multiply is faster than
+        # conditional FP accumulation.
         if weight_info.size == 1:
             @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, packed, posts):
@@ -185,14 +198,13 @@ def _bitpack_binary_fcnmv_numba_kernel(
                 n_pre = indices.shape[0]
                 n_conn = indices.shape[1]
                 for i in numba.prange(n_pre):
-                    r = 0.
+                    count = np.int32(0)
                     for k in range(n_conn):
                         idx = indices[i, k]
-                        word = packed[idx >> 5]
-                        bit = np.uint32(1) << np.uint32(idx & 31)
-                        if word & bit:
-                            r += w
-                    posts[i] = r
+                        count += np.int32(
+                            (packed[idx >> 5] >> np.uint32(idx & 31)) & np.uint32(1)
+                        )
+                    posts[i] = w * count
         else:
             @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, packed, posts):
@@ -515,6 +527,10 @@ def _bitpack_binary_fcnmm_numba_kernel(
     if transpose:
         # Scatter mode: Y[indices[i,k], j] += weights[i,k] * M[i, j]
         # where M[i, j] is checked via packed.
+        # NOTE: word-level loop nesting was benchmarked but caused index
+        # cache thrashing at high spike rates (0.44x regression at 50%).
+        # The original per-neuron iteration has a tighter inner loop and
+        # better cache locality for indices[i, :].
         if pack_axis == 1:
             # packed shape: (n_pre, ceil(n_batch/32))
             # check M[i, j]: packed[i, j>>5] & (1 << (j & 31))
@@ -581,11 +597,12 @@ def _bitpack_binary_fcnmm_numba_kernel(
                                 for k in range(n_conn):
                                     posts[indices[i, k], j] += weights[i, k]
     else:
-        # Gather mode: Y[i, j] = sum_k weights[i,k] * M[indices[i,k], j]
-        # where M[idx, j] is checked via packed.
+        # Gather mode: optimized word-level processing.
         if pack_axis == 1:
             # packed shape: (n_source, ceil(n_batch/32))
-            # check M[idx, j]: packed[idx, j>>5] & (1 << (j & 31))
+            # Key optimization: process 32 batch elements per word load.
+            # Original loaded the same word 32 times for consecutive j
+            # in the same word group. Now: one load per (connection, word_col).
             if homo:
                 @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mm(weights, indices, packed, posts):
@@ -593,36 +610,51 @@ def _bitpack_binary_fcnmm_numba_kernel(
                     n_pre = indices.shape[0]
                     n_conn = indices.shape[1]
                     n_batch = posts.shape[1]
+                    n_batch_words = packed.shape[1]
                     for i in numba.prange(n_pre):
-                        for j in range(n_batch):
-                            r = 0.
+                        for jw in range(n_batch_words):
+                            # Branchless counting: accumulate integer
+                            # counts for 32 batch elements per word load.
+                            counts = np.zeros(32, dtype=np.int32)
                             for k in range(n_conn):
                                 idx = indices[i, k]
-                                word = packed[idx, j >> 5]
-                                bit = np.uint32(1) << np.uint32(j & 31)
-                                if word & bit:
-                                    r += w
-                            posts[i, j] = r
+                                word = packed[idx, jw]
+                                for b in range(32):
+                                    counts[b] += np.int32(
+                                        (word >> np.uint32(b)) & np.uint32(1)
+                                    )
+                            jbase = jw << 5
+                            upper = min(np.int64(32), n_batch - jbase)
+                            for b in range(upper):
+                                posts[i, jbase + b] = w * counts[b]
             else:
                 @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mm(weights, indices, packed, posts):
                     n_pre = indices.shape[0]
                     n_conn = indices.shape[1]
                     n_batch = posts.shape[1]
+                    n_batch_words = packed.shape[1]
                     for i in numba.prange(n_pre):
-                        for j in range(n_batch):
-                            r = 0.
+                        for jw in range(n_batch_words):
+                            acc = np.zeros(32, dtype=np.float64)
                             for k in range(n_conn):
                                 idx = indices[i, k]
-                                word = packed[idx, j >> 5]
-                                bit = np.uint32(1) << np.uint32(j & 31)
-                                if word & bit:
-                                    r += weights[i, k]
-                            posts[i, j] = r
+                                word = packed[idx, jw]
+                                wk = weights[i, k]
+                                for b in range(32):
+                                    acc[b] += wk * np.float64(
+                                        (word >> np.uint32(b)) & np.uint32(1)
+                                    )
+                            jbase = jw << 5
+                            upper = min(np.int64(32), n_batch - jbase)
+                            for b in range(upper):
+                                posts[i, jbase + b] = acc[b]
         else:
             # pack_axis == 0
             # packed shape: (ceil(n_source/32), n_batch)
-            # check M[idx, j]: packed[idx>>5, j] & (1 << (idx & 31))
+            # Key optimization: swap loop order (k outer, j inner)
+            # so that word_idx and bit_pos are computed once per connection,
+            # and packed[word_idx, j] is a sequential row scan — cache friendly.
             if homo:
                 @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mm(weights, indices, packed, posts):
@@ -631,15 +663,18 @@ def _bitpack_binary_fcnmm_numba_kernel(
                     n_conn = indices.shape[1]
                     n_batch = posts.shape[1]
                     for i in numba.prange(n_pre):
+                        # Zero output row
                         for j in range(n_batch):
-                            r = 0.
-                            for k in range(n_conn):
-                                idx = indices[i, k]
-                                word = packed[idx >> 5, j]
-                                bit = np.uint32(1) << np.uint32(idx & 31)
-                                if word & bit:
-                                    r += w
-                            posts[i, j] = r
+                            posts[i, j] = 0.
+                        # Accumulate: k outer, j inner for cache locality
+                        for k in range(n_conn):
+                            idx = indices[i, k]
+                            word_idx = idx >> 5
+                            bit_pos = np.uint32(idx & 31)
+                            for j in range(n_batch):
+                                posts[i, j] += w * np.float64(
+                                    (packed[word_idx, j] >> bit_pos) & np.uint32(1)
+                                )
             else:
                 @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mm(weights, indices, packed, posts):
@@ -647,15 +682,19 @@ def _bitpack_binary_fcnmm_numba_kernel(
                     n_conn = indices.shape[1]
                     n_batch = posts.shape[1]
                     for i in numba.prange(n_pre):
+                        # Zero output row
                         for j in range(n_batch):
-                            r = 0.
-                            for k in range(n_conn):
-                                idx = indices[i, k]
-                                word = packed[idx >> 5, j]
-                                bit = np.uint32(1) << np.uint32(idx & 31)
-                                if word & bit:
-                                    r += weights[i, k]
-                            posts[i, j] = r
+                            posts[i, j] = 0.
+                        # Accumulate: k outer, j inner for cache locality
+                        for k in range(n_conn):
+                            idx = indices[i, k]
+                            word_idx = idx >> 5
+                            bit_pos = np.uint32(idx & 31)
+                            wk = weights[i, k]
+                            for j in range(n_batch):
+                                posts[i, j] += wk * np.float64(
+                                    (packed[word_idx, j] >> bit_pos) & np.uint32(1)
+                                )
 
     def kernel(weights, indices, packed, matrix):
         return numba_kernel(ell_mm, outs=kwargs['outs'])(weights, indices, packed)

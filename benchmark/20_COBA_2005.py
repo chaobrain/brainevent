@@ -187,3 +187,28 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
 # scale=80, size=320000, time = 109.23221325874329 s, firing rate = 59.57052993774414 Hz
 # scale=100, size=400000, time = 135.50585222244263 s, firing rate = 59.57082748413086 Hz
 
+# Benchmarking post-synaptic connection updates...
+# scale=1, size=4000, time = 9.985211610794067 s, firing rate = 59.57695388793945 Hz
+# scale=2, size=8000, time = 12.40793752670288 s, firing rate = 59.5691032409668 Hz
+# scale=4, size=16000, time = 18.022706031799316 s, firing rate = 59.564735412597656 Hz
+# scale=6, size=24000, time = 26.125961780548096 s, firing rate = 59.56888961791992 Hz
+# scale=8, size=32000, time = 34.59971022605896 s, firing rate = 59.567378997802734 Hz
+# scale=10, size=40000, time = 81.79130792617798 s, firing rate = 59.571388244628906 Hz
+# scale=20, size=80000, time = 119.63693189620972 s, firing rate = 59.56892395019531 Hz
+# scale=40, size=160000, time = 187.47031545639038 s, firing rate = 59.5693473815918 Hz
+# scale=60, size=240000, time = 97.79553365707397 s, firing rate = 59.5697135925293 Hz
+# scale=80, size=320000, time = 122.33466482162476 s, firing rate = 59.56986999511719 Hz
+# scale=100, size=400000, time = 157.08220672607422 s, firing rate = 59.570743560791016 Hz
+#
+# Benchmarking post-synaptic connection updates...
+# scale=1, size=4000, time = 9.316056728363037 s, firing rate = 59.566551208496094 Hz
+# scale=2, size=8000, time = 16.969330549240112 s, firing rate = 59.56789016723633 Hz
+# scale=4, size=16000, time = 27.558910131454468 s, firing rate = 59.57040786743164 Hz
+# scale=6, size=24000, time = 29.9679172039032 s, firing rate = 59.571659088134766 Hz
+# scale=8, size=32000, time = 36.468177795410156 s, firing rate = 59.57052230834961 Hz
+# scale=10, size=40000, time = 41.919124364852905 s, firing rate = 59.56884765625 Hz
+# scale=20, size=80000, time = 57.6779043674469 s, firing rate = 59.56968688964844 Hz
+# scale=40, size=160000, time = 87.61587262153625 s, firing rate = 59.570556640625 Hz
+# scale=60, size=240000, time = 118.9288821220398 s, firing rate = 59.57035827636719 Hz
+# scale=80, size=320000, time = 148.35498189926147 s, firing rate = 59.570308685302734 Hz
+# scale=100, size=400000, time = 172.89504647254944 s, firing rate = 59.57025909423828 Hz
