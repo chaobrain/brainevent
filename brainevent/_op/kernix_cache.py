@@ -42,7 +42,7 @@ class CompilationCache:
         self.base_dir = Path(
             base_dir
             or os.environ.get("BRAINEVENT_CACHE_DIR")
-            or str(Path.home() / ".cache" / "brainevent")
+            or str(Path.home() / ".cache" / "brainevent" / __version__)
         )
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
