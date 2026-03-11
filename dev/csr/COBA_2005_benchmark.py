@@ -150,10 +150,11 @@ def make_simulation_run(
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    conn_num: int = 80,
 ):
     @brainstate.transform.jit
     def run():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num)
         net.init_all_states()
 
         def fn(t):
@@ -163,7 +164,7 @@ def make_simulation_run(
             times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
             brainstate.transform.for_loop(fn, times)
 
-        return net.rate.value.sum() / net.num / duration.to_decimal(u.second)
+        return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second)
 
     return run
 
@@ -173,9 +174,10 @@ def make_training_run(
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    conn_num: int = 80,
 ):
     def loss_fn():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, conn_num=conn_num, data_type=data_type, efferent_target=efferent_target)
         net.init_all_states()
 
         def fn(t):
@@ -202,10 +204,11 @@ def make_simulation_batch_run(
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    conn_num: int = 80,
 ):
     @brainstate.transform.jit
     def run():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num)
         mapper = brainstate.nn.Map(net, init_map_size=batch_size)
         mapper.init_all_states()
 
@@ -217,7 +220,7 @@ def make_simulation_batch_run(
             times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
             brainstate.transform.for_loop(fn, times)
 
-        return net.rate.value.sum() / net.num / duration.to_decimal(u.second) / batch_size
+        return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second) / batch_size
 
     return run
 
@@ -228,9 +231,10 @@ def make_training_batch_run(
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    conn_num: int = 80,
 ):
     def loss_fn():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num)
         mapper = brainstate.nn.Map(net, init_map_size=batch_size)
         mapper.init_all_states()
 
