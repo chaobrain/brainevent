@@ -126,6 +126,10 @@ def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None)
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
+    # Ensure spikes are bool or float — integer types (uint8, int8, int32, etc.)
+    # must be cast to bool to match kernel expectations.
+    if not jnp.issubdtype(spk_val.dtype, jnp.floating) and spk_val.dtype != jnp.bool_:
+        spk_val = spk_val.astype(jnp.bool_)
     r = binary_densemv_p_call(weight_val, spk_val, transpose=transpose, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
@@ -785,6 +789,10 @@ def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None)
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
+    # Ensure spikes are bool or float — integer types (uint8, int8, int32, etc.)
+    # must be cast to bool to match kernel expectations.
+    if not jnp.issubdtype(spk_val.dtype, jnp.floating) and spk_val.dtype != jnp.bool_:
+        spk_val = spk_val.astype(jnp.bool_)
     r = binary_densemm_p_call(weight_val, spk_val, transpose=transpose, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 

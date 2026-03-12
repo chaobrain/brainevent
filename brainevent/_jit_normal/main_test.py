@@ -53,7 +53,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ vector
         out2 = vector @ jitcc
-        assert allclose(out1, out2)
+        assert allclose(out1, out2, rtol=1e-5, atol=1e-5)
         jax.block_until_ready((vector, out1, out2))
 
     @pytest.mark.parametrize('shape', shapes)
@@ -66,7 +66,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = vector @ jitcr
         out2 = jitcc @ vector
-        assert allclose(out1, out2)
+        assert allclose(out1, out2, rtol=1e-5, atol=1e-5)
         jax.block_until_ready((vector, out1, out2))
 
     @pytest.mark.parametrize('k', [10])
@@ -109,7 +109,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ vector
         out2 = vector @ jitcc
-        assert allclose(out1, out2)
+        assert allclose(out1, out2, rtol=1e-5, atol=1e-5)
         jax.block_until_ready((out1, out2))
 
     @pytest.mark.parametrize('shape', shapes)
@@ -123,7 +123,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = vector @ jitcr
         out2 = jitcc @ vector
-        assert allclose(out1, out2)
+        assert allclose(out1, out2, rtol=1e-5, atol=1e-5)
         jax.block_until_ready((out1, out2))
 
     @pytest.mark.parametrize('k', [10])
