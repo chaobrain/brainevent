@@ -47,8 +47,8 @@ def _coo_matvec_impl(data, row, col, v, *, spinfo, transpose):
     return jnp.zeros(out_shape, dv.dtype).at[row].add(dv)
 
 
-@brainstate.transform.jit(static_argnames=['shape'], static_argnums=4)
-def vector_coo(x, w, row, col, shape):
+@brainstate.transform.jit(static_argnames=['shape'])
+def vector_coo(x, w, row, col, *, shape):
     """Reference implementation of transposed COO matrix-vector product.
 
     Computes ``y = A.T @ x`` where ``A`` is a COO sparse matrix defined
@@ -80,8 +80,8 @@ def vector_coo(x, w, row, col, shape):
         return _coo_matvec_impl(w, row, col, x, spinfo=shape, transpose=True)
 
 
-@brainstate.transform.jit(static_argnames=['shape'], static_argnums=4)
-def coo_vector(x, w, row, col, shape):
+@brainstate.transform.jit(static_argnames=['shape'])
+def coo_vector(x, w, row, col, *, shape):
     """Reference implementation of COO matrix-vector product.
 
     Computes ``y = A @ x`` where ``A`` is a COO sparse matrix defined
@@ -113,8 +113,8 @@ def coo_vector(x, w, row, col, shape):
         return _coo_matvec_impl(w, row, col, x, spinfo=shape, transpose=False)
 
 
-@brainstate.transform.jit(static_argnames=['shape'], static_argnums=4)
-def matrix_coo(xs, w, row, col, shape):
+@brainstate.transform.jit(static_argnames=['shape'])
+def matrix_coo(xs, w, row, col, *, shape):
     """Reference implementation of transposed COO matrix-matrix product.
 
     Computes ``Y = A.T @ X`` where ``A`` is a COO sparse matrix defined
@@ -156,8 +156,8 @@ def matrix_coo(xs, w, row, col, shape):
     return output
 
 
-@brainstate.transform.jit(static_argnames=['shape'], static_argnums=4)
-def coo_matrix(xs, w, row, col, shape):
+@brainstate.transform.jit(static_argnames=['shape'])
+def coo_matrix(xs, w, row, col, *, shape):
     """Reference implementation of COO matrix-matrix product.
 
     Computes ``Y = A @ X`` where ``A`` is a COO sparse matrix defined

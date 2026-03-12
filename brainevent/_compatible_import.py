@@ -17,10 +17,28 @@ __all__ = [
     'Primitive',
     'Tracer',
     'init_zero',
+    'pallas_triton_params',
+    'pallas_mosaic_tpu_params',
 ]
 
 import jax
 from jax.interpreters import ad
+
+
+def pallas_triton_params():
+    if jax.__version_info__ < (0, 9, 1):
+        return dict(backend='triton')
+    else:
+        from jax.experimental.pallas import triton as pltriton
+        return dict(compiler_params=pltriton.CompilerParams())
+
+
+def pallas_mosaic_tpu_params():
+    if jax.__version_info__ < (0, 9, 1):
+        return dict(backend='mosaic_tpu')
+    else:
+        from jax.experimental.pallas import tpu as pltpu
+        return dict(compiler_params=pltpu.TPUCompilerParams())
 
 if jax.__version_info__ < (0, 4, 38):
     from jax.core import Primitive

@@ -44,7 +44,7 @@ class TestVectorCOO:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = coomv(data, row, col, x, shape=(m, n), transpose=True, backend=implementation)
-        y2 = vector_coo(x, data, row, col, (m, n))
+        y2 = vector_coo(x, data, row, col, shape=(m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((x, row, col, y, y2))
 
@@ -57,7 +57,7 @@ class TestVectorCOO:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = coomv(data, row, col, v, shape=(m, n), transpose=False, backend=implementation)
-        y2 = coo_vector(v, data, row, col, (m, n))
+        y2 = coo_vector(v, data, row, col, shape=(m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((v, row, col, y, y2))
 
@@ -72,7 +72,7 @@ class TestVectorCOO:
         y = jax.vmap(
             lambda x: coomv(data, row, col, x, shape=(m, n), transpose=True, backend=implementation)
         )(xs)
-        y2 = jax.vmap(lambda x: vector_coo(x, data, row, col, (m, n)))(xs)
+        y2 = jax.vmap(lambda x: vector_coo(x, data, row, col, shape=(m, n)))(xs)
 
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((xs, row, col, y, y2))
@@ -88,7 +88,7 @@ class TestVectorCOO:
         x = x.at[3 if transpose else 7].set(1.0)
         data = 2.5 if homo_w else jnp.array([2.5])
         y = coomv(data, row, col, x, shape=(m, n), transpose=transpose, backend=implementation)
-        y2 = vector_coo(x, data, row, col, (m, n)) if transpose else coo_vector(x, data, row, col, (m, n))
+        y2 = vector_coo(x, data, row, col, shape=(m, n)) if transpose else coo_vector(x, data, row, col, shape=(m, n))
         assert jax.block_until_ready(jnp.allclose(y, y2, atol=1e-6))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
@@ -114,7 +114,7 @@ class TestVectorCOO:
         x = jnp.asarray(rng.standard_normal(n), dtype=jnp.float32)
         data = 1.5 if homo_w else jnp.asarray(rng.standard_normal(nnz), dtype=jnp.float32)
         y = coomv(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
-        y2 = coo_vector(x, data, row, col, (m, n))
+        y2 = coo_vector(x, data, row, col, shape=(m, n))
         assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
@@ -126,7 +126,7 @@ class TestVectorCOO:
         x = jnp.ones(n, dtype=jnp.float32)
         data = 1.0 if homo_w else jnp.ones(nnz, dtype=jnp.float32)
         y = coomv(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
-        y2 = coo_vector(x, data, row, col, (m, n))
+        y2 = coo_vector(x, data, row, col, shape=(m, n))
         assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
@@ -141,7 +141,7 @@ class TestVectorCOO:
         x = jnp.asarray(rng.standard_normal(n), dtype=jnp.float32)
         data = 1.5 if homo_w else jnp.asarray(rng.standard_normal(nnz), dtype=jnp.float32)
         y = coomv(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
-        y2 = coo_vector(x, data, row, col, (m, n))
+        y2 = coo_vector(x, data, row, col, shape=(m, n))
         assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
@@ -156,7 +156,7 @@ class TestVectorCOO:
             x = jnp.asarray(rng.standard_normal(n), dtype=dtype)
             data = jnp.asarray(1.5, dtype=dtype) if homo_w else jnp.asarray(rng.standard_normal(60), dtype=dtype)
             y = coomv(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
-            y2 = coo_vector(x, data, row, col, (m, n))
+            y2 = coo_vector(x, data, row, col, shape=(m, n))
             assert y.dtype == dtype
             assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
@@ -252,7 +252,7 @@ class TestMatrixCOO:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = coomm(data, row, col, x.T, shape=(m, n), transpose=True, backend=implementation).T
-        y2 = matrix_coo(x, data, row, col, (m, n))
+        y2 = matrix_coo(x, data, row, col, shape=(m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((x, row, col, y, y2))
 
@@ -265,6 +265,6 @@ class TestMatrixCOO:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = coomm(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
-        y2 = coo_matrix(x, data, row, col, (m, n))
+        y2 = coo_matrix(x, data, row, col, shape=(m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((x, row, col, y, y2))

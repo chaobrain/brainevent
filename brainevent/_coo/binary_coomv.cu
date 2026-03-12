@@ -62,6 +62,13 @@
 #include "brainevent/common.h"
 
 // ============================================================================
+// Grid cap: limit blocks to avoid GPU scheduler over-subscription.
+// The grid-stride loop in each kernel ensures all NNZ entries are processed.
+// ============================================================================
+
+#define COOMV_MAX_GRID  2048
+
+// ============================================================================
 // Homogeneous kernels — scalar weight data[0] broadcast to all connections
 // ============================================================================
 
@@ -213,7 +220,7 @@ void binary_coomv_homo_atomic_nt##SUFFIX(                                       
     cudaMemsetAsync(d_out, 0, (size_t)m * OUT_BYTES_PER_ELEM, s);                   \
     if (nnz == 0) return;                                                           \
     int block = 256;                                                                \
-    int grid  = (nnz + block - 1) / block;                                          \
+    int grid  = min((nnz + block - 1) / block, COOMV_MAX_GRID);                                          \
     _coomv_homo_atomic_nt_kern##SUFFIX<<<grid, block, 0, s>>>(                      \
         static_cast<const WEIGHT_C_T*>(data.data_ptr()),                            \
         static_cast<const int32_t*>(row_idx.data_ptr()),                            \

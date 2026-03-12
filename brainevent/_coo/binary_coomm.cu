@@ -71,6 +71,7 @@
 #define COOMM_CT_BLOCK_N   32
 #define COOMM_WPE_WARPS    8
 #define COOMM_WPE_COLS     32
+#define COOMM_MAX_GRID_X   2048
 
 // ============================================================================
 // Homogeneous kernels — scalar weight data[0] broadcast to all connections
@@ -85,23 +86,26 @@ __global__ void _coomm_homo_ct_nt_kern##SUFFIX(                                 
     WEIGHT_T*                    out,                                                              \
     int nnz, int n                                                                                 \
 ) {                                                                                                \
-    int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K;                                                 \
     int col_start = blockIdx.y * COOMM_CT_BLOCK_N;                                                 \
     int t         = threadIdx.x;                                                                   \
     int my_col    = col_start + t;                                                                 \
     bool col_valid = (my_col < n);                                                                 \
     ACC_T homo_w = READ_W(data[0]);                                                                \
-    int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                                    \
-    if (nnz_end > nnz) nnz_end = nnz;                                                              \
-    for (int s = nnz_start; s < nnz_end; s++) {                                                    \
-        int src = col[s];                                                                          \
-        int dst = row[s];                                                                          \
-        SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                     \
-        bool active = IS_ACTIVE(spike) && col_valid;                                               \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                       \
-        if (ballot == 0u) continue;                                                                \
-        if (active) {                                                                              \
-            ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, homo_w);                                 \
+    const int stride_x = gridDim.x * COOMM_CT_BLOCK_K;                                             \
+    for (int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K; nnz_start < nnz;                           \
+         nnz_start += stride_x) {                                                                  \
+        int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                                \
+        if (nnz_end > nnz) nnz_end = nnz;                                                          \
+        for (int s = nnz_start; s < nnz_end; s++) {                                                \
+            int src = col[s];                                                                      \
+            int dst = row[s];                                                                      \
+            SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                 \
+            bool active = IS_ACTIVE(spike) && col_valid;                                           \
+            uint32_t ballot = __ballot_sync(0xffffffff, active);                                   \
+            if (ballot == 0u) continue;                                                            \
+            if (active) {                                                                          \
+                ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, homo_w);                             \
+            }                                                                                      \
         }                                                                                          \
     }                                                                                              \
 }
@@ -115,23 +119,26 @@ __global__ void _coomm_homo_ct_t_kern##SUFFIX(                                  
     WEIGHT_T*                    out,                                                             \
     int nnz, int n                                                                                \
 ) {                                                                                               \
-    int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K;                                                \
     int col_start = blockIdx.y * COOMM_CT_BLOCK_N;                                                \
     int t         = threadIdx.x;                                                                  \
     int my_col    = col_start + t;                                                                \
     bool col_valid = (my_col < n);                                                                \
     ACC_T homo_w = READ_W(data[0]);                                                               \
-    int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                                   \
-    if (nnz_end > nnz) nnz_end = nnz;                                                             \
-    for (int s = nnz_start; s < nnz_end; s++) {                                                   \
-        int src = row[s];                                                                         \
-        int dst = col[s];                                                                         \
-        SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                    \
-        bool active = IS_ACTIVE(spike) && col_valid;                                              \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                      \
-        if (ballot == 0u) continue;                                                               \
-        if (active) {                                                                             \
-            ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, homo_w);                                \
+    const int stride_x = gridDim.x * COOMM_CT_BLOCK_K;                                            \
+    for (int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K; nnz_start < nnz;                          \
+         nnz_start += stride_x) {                                                                 \
+        int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                               \
+        if (nnz_end > nnz) nnz_end = nnz;                                                         \
+        for (int s = nnz_start; s < nnz_end; s++) {                                               \
+            int src = row[s];                                                                     \
+            int dst = col[s];                                                                     \
+            SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                \
+            bool active = IS_ACTIVE(spike) && col_valid;                                          \
+            uint32_t ballot = __ballot_sync(0xffffffff, active);                                  \
+            if (ballot == 0u) continue;                                                           \
+            if (active) {                                                                         \
+                ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, homo_w);                            \
+            }                                                                                     \
         }                                                                                         \
     }                                                                                             \
 }
@@ -149,18 +156,20 @@ __global__ void _coomm_homo_wpe_nt_kern##SUFFIX(                                
     int lane     = threadIdx.x & 31;                                                                \
     int col_start = blockIdx.y * COOMM_WPE_COLS;                                                    \
     int my_col    = col_start + lane;                                                               \
-    if (warp_id >= nnz) return;                                                                     \
     bool col_valid = (my_col < n);                                                                  \
-    int s   = warp_id;                                                                              \
-    int src = col[s];                                                                               \
-    int dst = row[s];                                                                               \
-    SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                          \
-    bool active = IS_ACTIVE(spike) && col_valid;                                                    \
-    uint32_t ballot = __ballot_sync(0xffffffff, active);                                            \
-    if (ballot == 0u) return;                                                                       \
-    if (active) {                                                                                   \
-        ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[0]));                             \
-    }                                                                                               \
+    const int total_warps = gridDim.x * COOMM_WPE_WARPS;                                            \
+    ACC_T homo_w = READ_W(data[0]);                                                                  \
+    for (int s = warp_id; s < nnz; s += total_warps) {                                               \
+        int src = col[s];                                                                            \
+        int dst = row[s];                                                                            \
+        SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                       \
+        bool active = IS_ACTIVE(spike) && col_valid;                                                 \
+        uint32_t ballot = __ballot_sync(0xffffffff, active);                                         \
+        if (ballot == 0u) continue;                                                                  \
+        if (active) {                                                                                \
+            ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, homo_w);                                   \
+        }                                                                                            \
+    }                                                                                                \
 }
 
 #define DEFINE_COOMM_HOMO_WPE_T(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
@@ -176,18 +185,20 @@ __global__ void _coomm_homo_wpe_t_kern##SUFFIX(                                 
     int lane      = threadIdx.x & 31;                                                              \
     int col_start = blockIdx.y * COOMM_WPE_COLS;                                                   \
     int my_col    = col_start + lane;                                                              \
-    if (warp_id >= nnz) return;                                                                    \
     bool col_valid = (my_col < n);                                                                 \
-    int s   = warp_id;                                                                             \
-    int src = row[s];                                                                              \
-    int dst = col[s];                                                                              \
-    SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                         \
-    bool active = IS_ACTIVE(spike) && col_valid;                                                   \
-    uint32_t ballot = __ballot_sync(0xffffffff, active);                                           \
-    if (ballot == 0u) return;                                                                      \
-    if (active) {                                                                                  \
-        ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[0]));                            \
-    }                                                                                              \
+    const int total_warps = gridDim.x * COOMM_WPE_WARPS;                                           \
+    ACC_T homo_w = READ_W(data[0]);                                                                 \
+    for (int s = warp_id; s < nnz; s += total_warps) {                                              \
+        int src = row[s];                                                                           \
+        int dst = col[s];                                                                           \
+        SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                      \
+        bool active = IS_ACTIVE(spike) && col_valid;                                                \
+        uint32_t ballot = __ballot_sync(0xffffffff, active);                                        \
+        if (ballot == 0u) continue;                                                                 \
+        if (active) {                                                                               \
+            ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, homo_w);                                  \
+        }                                                                                           \
+    }                                                                                               \
 }
 
 // ============================================================================
@@ -203,22 +214,25 @@ __global__ void _coomm_hetero_ct_nt_kern##SUFFIX(                               
     WEIGHT_T*                    out,                                                                \
     int nnz, int n                                                                                   \
 ) {                                                                                                  \
-    int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K;                                                   \
     int col_start = blockIdx.y * COOMM_CT_BLOCK_N;                                                   \
     int t         = threadIdx.x;                                                                     \
     int my_col    = col_start + t;                                                                   \
     bool col_valid = (my_col < n);                                                                   \
-    int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                                      \
-    if (nnz_end > nnz) nnz_end = nnz;                                                                \
-    for (int s = nnz_start; s < nnz_end; s++) {                                                      \
-        int src = col[s];                                                                            \
-        int dst = row[s];                                                                            \
-        SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                       \
-        bool active = IS_ACTIVE(spike) && col_valid;                                                 \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                         \
-        if (ballot == 0u) continue;                                                                  \
-        if (active) {                                                                                \
-            ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[s]));                          \
+    const int stride_x = gridDim.x * COOMM_CT_BLOCK_K;                                               \
+    for (int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K; nnz_start < nnz;                             \
+         nnz_start += stride_x) {                                                                    \
+        int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                                  \
+        if (nnz_end > nnz) nnz_end = nnz;                                                            \
+        for (int s = nnz_start; s < nnz_end; s++) {                                                  \
+            int src = col[s];                                                                        \
+            int dst = row[s];                                                                        \
+            SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                   \
+            bool active = IS_ACTIVE(spike) && col_valid;                                             \
+            uint32_t ballot = __ballot_sync(0xffffffff, active);                                     \
+            if (ballot == 0u) continue;                                                              \
+            if (active) {                                                                            \
+                ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[s]));                      \
+            }                                                                                        \
         }                                                                                            \
     }                                                                                                \
 }
@@ -232,22 +246,25 @@ __global__ void _coomm_hetero_ct_t_kern##SUFFIX(                                
     WEIGHT_T*                    out,                                                               \
     int nnz, int n                                                                                  \
 ) {                                                                                                 \
-    int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K;                                                  \
     int col_start = blockIdx.y * COOMM_CT_BLOCK_N;                                                  \
     int t         = threadIdx.x;                                                                    \
     int my_col    = col_start + t;                                                                  \
     bool col_valid = (my_col < n);                                                                  \
-    int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                                     \
-    if (nnz_end > nnz) nnz_end = nnz;                                                               \
-    for (int s = nnz_start; s < nnz_end; s++) {                                                     \
-        int src = row[s];                                                                           \
-        int dst = col[s];                                                                           \
-        SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                      \
-        bool active = IS_ACTIVE(spike) && col_valid;                                                \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                        \
-        if (ballot == 0u) continue;                                                                 \
-        if (active) {                                                                               \
-            ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[s]));                         \
+    const int stride_x = gridDim.x * COOMM_CT_BLOCK_K;                                              \
+    for (int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K; nnz_start < nnz;                            \
+         nnz_start += stride_x) {                                                                   \
+        int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                                 \
+        if (nnz_end > nnz) nnz_end = nnz;                                                           \
+        for (int s = nnz_start; s < nnz_end; s++) {                                                 \
+            int src = row[s];                                                                       \
+            int dst = col[s];                                                                       \
+            SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                  \
+            bool active = IS_ACTIVE(spike) && col_valid;                                            \
+            uint32_t ballot = __ballot_sync(0xffffffff, active);                                    \
+            if (ballot == 0u) continue;                                                             \
+            if (active) {                                                                           \
+                ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[s]));                     \
+            }                                                                                       \
         }                                                                                           \
     }                                                                                               \
 }
@@ -265,18 +282,19 @@ __global__ void _coomm_hetero_wpe_nt_kern##SUFFIX(                              
     int lane     = threadIdx.x & 31;                                                                  \
     int col_start = blockIdx.y * COOMM_WPE_COLS;                                                      \
     int my_col    = col_start + lane;                                                                 \
-    if (warp_id >= nnz) return;                                                                       \
     bool col_valid = (my_col < n);                                                                    \
-    int s   = warp_id;                                                                                \
-    int src = col[s];                                                                                 \
-    int dst = row[s];                                                                                 \
-    SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                            \
-    bool active = IS_ACTIVE(spike) && col_valid;                                                      \
-    uint32_t ballot = __ballot_sync(0xffffffff, active);                                              \
-    if (ballot == 0u) return;                                                                         \
-    if (active) {                                                                                     \
-        ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[s]));                               \
-    }                                                                                                 \
+    const int total_warps = gridDim.x * COOMM_WPE_WARPS;                                              \
+    for (int s = warp_id; s < nnz; s += total_warps) {                                                 \
+        int src = col[s];                                                                              \
+        int dst = row[s];                                                                              \
+        SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                         \
+        bool active = IS_ACTIVE(spike) && col_valid;                                                   \
+        uint32_t ballot = __ballot_sync(0xffffffff, active);                                           \
+        if (ballot == 0u) continue;                                                                    \
+        if (active) {                                                                                  \
+            ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[s]));                            \
+        }                                                                                              \
+    }                                                                                                  \
 }
 
 #define DEFINE_COOMM_HETERO_WPE_T(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
@@ -292,18 +310,19 @@ __global__ void _coomm_hetero_wpe_t_kern##SUFFIX(                               
     int lane      = threadIdx.x & 31;                                                                \
     int col_start = blockIdx.y * COOMM_WPE_COLS;                                                     \
     int my_col    = col_start + lane;                                                                \
-    if (warp_id >= nnz) return;                                                                      \
     bool col_valid = (my_col < n);                                                                   \
-    int s   = warp_id;                                                                               \
-    int src = row[s];                                                                                \
-    int dst = col[s];                                                                                \
-    SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                           \
-    bool active = IS_ACTIVE(spike) && col_valid;                                                     \
-    uint32_t ballot = __ballot_sync(0xffffffff, active);                                             \
-    if (ballot == 0u) return;                                                                        \
-    if (active) {                                                                                    \
-        ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[s]));                              \
-    }                                                                                                \
+    const int total_warps = gridDim.x * COOMM_WPE_WARPS;                                             \
+    for (int s = warp_id; s < nnz; s += total_warps) {                                                \
+        int src = row[s];                                                                             \
+        int dst = col[s];                                                                             \
+        SPIKE_T spike = col_valid ? B[(int64_t)src * n + my_col] : (SPIKE_T)0;                        \
+        bool active = IS_ACTIVE(spike) && col_valid;                                                  \
+        uint32_t ballot = __ballot_sync(0xffffffff, active);                                          \
+        if (ballot == 0u) continue;                                                                   \
+        if (active) {                                                                                 \
+            ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, READ_W(data[s]));                           \
+        }                                                                                             \
+    }                                                                                                 \
 }
 
 // ============================================================================
@@ -402,7 +421,7 @@ void binary_coomm_homo_ct_nt##SUFFIX(                                           
     if (nnz == 0) return;                                                       \
     dim3 block(COOMM_CT_BLOCK_N, 1, 1);                                         \
     dim3 grid(                                                                  \
-        (nnz + COOMM_CT_BLOCK_K - 1) / COOMM_CT_BLOCK_K,                        \
+        min((nnz + COOMM_CT_BLOCK_K - 1) / COOMM_CT_BLOCK_K, COOMM_MAX_GRID_X),                        \
         (n   + COOMM_CT_BLOCK_N - 1) / COOMM_CT_BLOCK_N,                        \
         1                                                                       \
     );                                                                          \
@@ -433,7 +452,7 @@ void binary_coomm_homo_ct_t##SUFFIX(                                           \
     if (nnz == 0) return;                                                      \
     dim3 block(COOMM_CT_BLOCK_N, 1, 1);                                        \
     dim3 grid(                                                                 \
-        (nnz + COOMM_CT_BLOCK_K - 1) / COOMM_CT_BLOCK_K,                       \
+        min((nnz + COOMM_CT_BLOCK_K - 1) / COOMM_CT_BLOCK_K, COOMM_MAX_GRID_X),                       \
         (n   + COOMM_CT_BLOCK_N - 1) / COOMM_CT_BLOCK_N,                       \
         1                                                                      \
     );                                                                         \
@@ -464,7 +483,7 @@ void binary_coomm_homo_wpe_nt##SUFFIX(                                          
     if (nnz == 0) return;                                                        \
     dim3 block(COOMM_WPE_WARPS * 32, 1, 1);                                      \
     dim3 grid(                                                                   \
-        (nnz + COOMM_WPE_WARPS - 1) / COOMM_WPE_WARPS,                           \
+        min((nnz + COOMM_WPE_WARPS - 1) / COOMM_WPE_WARPS, COOMM_MAX_GRID_X),                           \
         (n   + COOMM_WPE_COLS  - 1) / COOMM_WPE_COLS,                            \
         1                                                                        \
     );                                                                           \
@@ -495,7 +514,7 @@ void binary_coomm_homo_wpe_t##SUFFIX(                                           
     if (nnz == 0) return;                                                       \
     dim3 block(COOMM_WPE_WARPS * 32, 1, 1);                                     \
     dim3 grid(                                                                  \
-        (nnz + COOMM_WPE_WARPS - 1) / COOMM_WPE_WARPS,                          \
+        min((nnz + COOMM_WPE_WARPS - 1) / COOMM_WPE_WARPS, COOMM_MAX_GRID_X),                          \
         (n   + COOMM_WPE_COLS  - 1) / COOMM_WPE_COLS,                           \
         1                                                                       \
     );                                                                          \
@@ -530,7 +549,7 @@ void binary_coomm_hetero_ct_nt##SUFFIX(                                         
     if (nnz == 0) return;                                                         \
     dim3 block(COOMM_CT_BLOCK_N, 1, 1);                                           \
     dim3 grid(                                                                    \
-        (nnz + COOMM_CT_BLOCK_K - 1) / COOMM_CT_BLOCK_K,                          \
+        min((nnz + COOMM_CT_BLOCK_K - 1) / COOMM_CT_BLOCK_K, COOMM_MAX_GRID_X),                          \
         (n   + COOMM_CT_BLOCK_N - 1) / COOMM_CT_BLOCK_N,                          \
         1                                                                         \
     );                                                                            \
@@ -561,7 +580,7 @@ void binary_coomm_hetero_ct_t##SUFFIX(                                          
     if (nnz == 0) return;                                                        \
     dim3 block(COOMM_CT_BLOCK_N, 1, 1);                                          \
     dim3 grid(                                                                   \
-        (nnz + COOMM_CT_BLOCK_K - 1) / COOMM_CT_BLOCK_K,                         \
+        min((nnz + COOMM_CT_BLOCK_K - 1) / COOMM_CT_BLOCK_K, COOMM_MAX_GRID_X),                         \
         (n   + COOMM_CT_BLOCK_N - 1) / COOMM_CT_BLOCK_N,                         \
         1                                                                        \
     );                                                                           \
@@ -592,7 +611,7 @@ void binary_coomm_hetero_wpe_nt##SUFFIX(                                        
     if (nnz == 0) return;                                                          \
     dim3 block(COOMM_WPE_WARPS * 32, 1, 1);                                        \
     dim3 grid(                                                                     \
-        (nnz + COOMM_WPE_WARPS - 1) / COOMM_WPE_WARPS,                             \
+        min((nnz + COOMM_WPE_WARPS - 1) / COOMM_WPE_WARPS, COOMM_MAX_GRID_X),                             \
         (n   + COOMM_WPE_COLS  - 1) / COOMM_WPE_COLS,                              \
         1                                                                          \
     );                                                                             \
@@ -623,7 +642,7 @@ void binary_coomm_hetero_wpe_t##SUFFIX(                                         
     if (nnz == 0) return;                                                         \
     dim3 block(COOMM_WPE_WARPS * 32, 1, 1);                                       \
     dim3 grid(                                                                    \
-        (nnz + COOMM_WPE_WARPS - 1) / COOMM_WPE_WARPS,                            \
+        min((nnz + COOMM_WPE_WARPS - 1) / COOMM_WPE_WARPS, COOMM_MAX_GRID_X),                            \
         (n   + COOMM_WPE_COLS  - 1) / COOMM_WPE_COLS,                             \
         1                                                                         \
     );                                                                            \

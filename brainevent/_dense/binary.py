@@ -24,8 +24,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, jaxinfo_to_warpinfo
+from brainevent._misc import namescope
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
 from brainevent._op import load_cuda_file
@@ -126,6 +126,10 @@ def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None)
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
+    # Ensure spikes are bool or float — integer types (uint8, int8, int32, etc.)
+    # must be cast to bool to match kernel expectations.
+    if not jnp.issubdtype(spk_val.dtype, jnp.floating) and spk_val.dtype != jnp.bool_:
+        spk_val = spk_val.astype(jnp.bool_)
     r = binary_densemv_p_call(weight_val, spk_val, transpose=transpose, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
@@ -172,82 +176,6 @@ def _binary_densemv_numba_kernel(
 
     def run(weights, spikes):
         return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
-
-    return run
-
-
-def _binary_densemv_pallas_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-
-    if transpose:
-        # weights[k,n], spikes[k] -> out[n]
-        n = weight_info.shape[1]
-        block_dim = generate_block_dim(n, maximum=1024)
-
-        def kernel(weight_ref, spike_ref, out_ref):
-            i_col_block = pl.program_id(0)
-            i_col_start = i_col_block * block_dim
-            i_col_mask = i_col_start + jnp.arange(block_dim) < weight_ref.shape[1]
-
-            def loop_fn(i_spike, temp):
-                spike = spike_ref[i_spike]
-                weight_row = weight_ref[i_spike, pl.ds(i_col_start, block_dim)]
-                weight_row = jnp.where(i_col_mask, weight_row, 0.0)
-                return jax.lax.cond(
-                    spike if (spike_ref.dtype == jnp.bool_) else spike > 0.,
-                    lambda out: out + weight_row,
-                    lambda out: out,
-                    temp,
-                )
-
-            i_col_out = jax.lax.fori_loop(
-                0,
-                spike_ref.shape[0],
-                loop_fn,
-                jnp.zeros((block_dim,), dtype=weight_ref.dtype)
-            )
-            out_ref[pl.ds(i_col_start, block_dim)] = jnp.where(i_col_mask, i_col_out, 0.0)
-
-        def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'], backend='triton')
-            return fn(weights, spikes)
-
-    else:
-        # weights[m,k], spikes[k] -> out[m]
-        m = weight_info.shape[0]
-        mat_block_dim = generate_block_dim(m, maximum=1024)
-
-        def kernel(weight_ref, spike_ref, out_ref):
-            i_row_block = pl.program_id(0)
-            i_row_start = i_row_block * mat_block_dim
-            i_row_mask = i_row_start + jnp.arange(mat_block_dim) < weight_ref.shape[0]
-
-            def loop_fn(i_spike, temp):
-                spike = spike_ref[i_spike]
-                weight_col = weight_ref[pl.ds(i_row_start, mat_block_dim), i_spike]
-                weight_col = jnp.where(i_row_mask, weight_col, 0.0)
-                return jax.lax.cond(
-                    spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
-                    lambda out: out + weight_col,
-                    lambda out: out,
-                    temp
-                )
-
-            i_row_out = jax.lax.fori_loop(
-                0,
-                spike_ref.shape[0],
-                loop_fn,
-                jnp.zeros((mat_block_dim,), dtype=weight_ref.dtype)
-            )
-            out_ref[pl.ds(i_row_start, mat_block_dim)] = jnp.where(i_row_mask, i_row_out, 0.0)
-
-        def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'], backend='triton')
-            return fn(weights, spikes)
 
     return run
 
@@ -477,210 +405,7 @@ See Also
 binary_densemv : High-level user-facing function wrapper.
 """
 )
-def _binary_densemv_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    spk_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    spike_length = spk_info.shape[0]
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        # weights[k,n], spikes[k] -> out[n]
-        n = weight_info.shape[1]
-
-        if spk_info.dtype == jnp.bool_:
-            @warp.kernel
-            def kernel(
-                weights: weight_warp_info,
-                spikes: spike_warp_info,
-                out: out_warp_info,
-            ):
-                j = warp.tid()
-                r = weights.dtype(0.)
-                for i in range(spike_length):
-                    if spikes[i]:
-                        r += weights[i, j]
-                out[j] = r
-        else:
-            @warp.kernel
-            def kernel(
-                weights: weight_warp_info,
-                spikes: spike_warp_info,
-                out: out_warp_info,
-            ):
-                j = warp.tid()
-                r = weights.dtype(0.)
-                for i in range(spike_length):
-                    if spikes[i] > 0.:
-                        r += weights[i, j]
-                out[j] = r
-
-        def run(weights, spikes):
-            out_info = kwargs['outs'][0]
-            fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out': out_info.shape})
-            return fn(weights, spikes)
-
-    else:
-        # weights[m,k], spikes[k] -> out[m]
-        m = weight_info.shape[0]
-
-        if spk_info.dtype == jnp.bool_:
-            @warp.kernel
-            def kernel(
-                weights: weight_warp_info,
-                spikes: spike_warp_info,
-                out: out_warp_info,
-            ):
-                i = warp.tid()
-                r = weights.dtype(0.)
-                for j in range(spike_length):
-                    if spikes[j]:
-                        r += weights[i, j]
-                out[i] = r
-        else:
-            @warp.kernel
-            def kernel(
-                weights: weight_warp_info,
-                spikes: spike_warp_info,
-                out: out_warp_info,
-            ):
-                i = warp.tid()
-                r = weights.dtype(0.)
-                for j in range(spike_length):
-                    if spikes[j] > 0.:
-                        r += weights[i, j]
-                out[i] = r
-
-        def run(weights, spikes):
-            out_info = kwargs['outs'][0]
-            fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out': out_info.shape})
-            return fn(weights, spikes)
-
-    return run
-
-
-def _binary_densemm_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    spk_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        # weights[k,m].T @ spikes[k,n] -> out[m,n]
-        k = weight_info.shape[0]
-        m = weight_info.shape[1]
-        n = spk_info.shape[1]
-
-        if spk_info.dtype == jnp.bool_:
-            spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
-            spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
-
-            @warp.kernel
-            def kernel(
-                weights: weight_warp_info,
-                spikes: spike_warp_info,
-                out: out_warp_info,
-            ):
-                i_m, i_n = warp.tid()
-                r = weights.dtype(0.)
-                for i_k in range(k):
-                    if spikes[i_k, i_n] > 0.:
-                        r += weights[i_k, i_m]
-                out[i_m, i_n] = r
-
-            def run(weights, spikes):
-                spikes = spikes.astype(jnp.float32)
-                out_info = kwargs['outs'][0]
-                fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
-                return fn(weights, spikes)
-        else:
-            spike_warp_info = jaxinfo_to_warpinfo(spk_info)
-
-            @warp.kernel
-            def kernel(
-                weights: weight_warp_info,
-                spikes: spike_warp_info,
-                out: out_warp_info,
-            ):
-                i_m, i_n = warp.tid()
-                r = weights.dtype(0.)
-                for i_k in range(k):
-                    if spikes[i_k, i_n] > 0.:
-                        r += weights[i_k, i_m]
-                out[i_m, i_n] = r
-
-            def run(weights, spikes):
-                out_info = kwargs['outs'][0]
-                fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
-                return fn(weights, spikes)
-
-    else:
-        # weights[m,k] @ spikes[k,n] -> out[m,n]
-        k = spk_info.shape[0]
-        n = spk_info.shape[1]
-        m = weight_info.shape[0]
-
-        if spk_info.dtype == jnp.bool_:
-            spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
-            spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
-
-            @warp.kernel
-            def kernel(
-                weights: weight_warp_info,
-                spikes: spike_warp_info,
-                out: out_warp_info
-            ):
-                i_m, i_n = warp.tid()
-                r = weights.dtype(0.)
-                for i_k in range(k):
-                    if spikes[i_k, i_n] > 0.:
-                        r += weights[i_m, i_k]
-                out[i_m, i_n] = r
-
-            def run(weights, spikes):
-                spikes = spikes.astype(jnp.float32)
-                out_info = kwargs['outs'][0]
-                fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
-                return fn(weights, spikes)
-        else:
-            spike_warp_info = jaxinfo_to_warpinfo(spk_info)
-
-            @warp.kernel
-            def kernel(
-                weights: weight_warp_info,
-                spikes: spike_warp_info,
-                out: out_warp_info
-            ):
-                i_m, i_n = warp.tid()
-                r = weights.dtype(0.)
-                for i_k in range(k):
-                    if spikes[i_k, i_n] > 0.:
-                        r += weights[i_m, i_k]
-                out[i_m, i_n] = r
-
-            def run(weights, spikes):
-                out_info = kwargs['outs'][0]
-                fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
-                return fn(weights, spikes)
-
-    return run
-
 binary_densemv_p.def_numba_kernel(_binary_densemv_numba_kernel)
-binary_densemv_p.def_warp_kernel(_binary_densemv_warp_kernel)
-binary_densemv_p.def_pallas_kernel('gpu', _binary_densemv_pallas_kernel)
 binary_densemv_p.def_cuda_raw_kernel(_binary_densemv_cuda_kernel, asdefault=True)
 binary_densemv_p.def_kernel('jax_raw', 'cpu', _binary_densemv_jax_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'gpu', _binary_densemv_jax_kernel)
@@ -785,6 +510,10 @@ def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None)
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
+    # Ensure spikes are bool or float — integer types (uint8, int8, int32, etc.)
+    # must be cast to bool to match kernel expectations.
+    if not jnp.issubdtype(spk_val.dtype, jnp.floating) and spk_val.dtype != jnp.bool_:
+        spk_val = spk_val.astype(jnp.bool_)
     r = binary_densemm_p_call(weight_val, spk_val, transpose=transpose, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
@@ -841,77 +570,6 @@ def _binary_densemm_numba_kernel(
 
     def run(weights, spikes):
         return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
-
-    return run
-
-
-def _binary_densemm_pallas_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    spk_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-
-    if transpose:
-        # weights[k,m].T @ spikes[k,n] -> out[m,n]
-        k = weight_info.shape[0]
-        m = weight_info.shape[1]
-        n = spk_info.shape[1]
-
-        def kernel(
-            weight_ref,  # [k, m]
-            spike_ref,  # [k, n]
-            out_ref,  # [m, n]
-        ):
-            i_n = pl.program_id(0)
-            i_m = pl.program_id(1)
-
-            def loop_fn(i_k, temp):
-                spike = spike_ref[i_k, i_n]
-                weight = weight_ref[i_k, i_m]
-                return temp + jnp.where(spike > 0., weight, 0.0)
-
-            out_ref[i_m, i_n] = jax.lax.fori_loop(
-                0, k, loop_fn, jnp.zeros((), dtype=weight_ref.dtype)
-            )
-
-        def run(weights, spikes):
-            # Convert bool to float to avoid Pallas Triton boolean buffer corruption
-            if spikes.dtype == jnp.bool_:
-                spikes = jnp.asarray(spikes, dtype=weights.dtype)
-            fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'], backend='triton')
-            return fn(weights, spikes)
-
-    else:
-        # weights[m,k] @ spikes[k,n] -> out[m,n]
-        k = spk_info.shape[0]
-        n = spk_info.shape[1]
-        m = weight_info.shape[0]
-
-        def kernel(
-            weight_ref,  # [m, k]
-            spike_ref,  # [k, n]
-            out_ref,  # [m, n]
-        ):
-            i_n = pl.program_id(0)
-            i_m = pl.program_id(1)
-
-            def loop_fn(i_k, temp):
-                spike = spike_ref[i_k, i_n]
-                weight = weight_ref[i_m, i_k]
-                return temp + jnp.where(spike > 0., weight, 0.0)
-
-            out_ref[i_m, i_n] = jax.lax.fori_loop(
-                0, k, loop_fn, jnp.zeros((), dtype=weight_ref.dtype)
-            )
-
-        def run(weights, spikes):
-            # Convert bool to float to avoid Pallas Triton boolean buffer corruption
-            if spikes.dtype == jnp.bool_:
-                spikes = jnp.asarray(spikes, dtype=weights.dtype)
-            fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'], backend='triton')
-            return fn(weights, spikes)
 
     return run
 
@@ -1322,8 +980,6 @@ binary_densemm : High-level user-facing function wrapper.
 """
 )
 binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
-binary_densemm_p.def_warp_kernel(_binary_densemm_warp_kernel)
-binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
 binary_densemm_p.def_cuda_raw_kernel(_binary_densemm_cuda_kernel, asdefault=True)
 binary_densemm_p.def_kernel('jax_raw', 'cpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'gpu', _binary_densemm_jax_kernel)

@@ -63,7 +63,7 @@ def test_vector_coo_matches_dense(homo_w, allow_duplicates):
 
     dense = _dense_from_coo(row, col, data, shape)
     y_ref = x @ dense
-    y = vector_coo(jnp.asarray(x), w, row, col, shape)
+    y = vector_coo(jnp.asarray(x), w, row, col, shape=shape)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
     jax.block_until_ready((y,))
 
@@ -85,7 +85,7 @@ def test_coo_vector_matches_dense(homo_w, allow_duplicates):
 
     dense = _dense_from_coo(row, col, data, shape)
     y_ref = dense @ v
-    y = coo_vector(jnp.asarray(v), w, row, col, shape)
+    y = coo_vector(jnp.asarray(v), w, row, col, shape=shape)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
     jax.block_until_ready((y,))
 
@@ -107,7 +107,7 @@ def test_matrix_coo_matches_dense(homo_w, allow_duplicates):
 
     dense = _dense_from_coo(row, col, data, shape)
     y_ref = xs @ dense
-    y = matrix_coo(jnp.asarray(xs), w, row, col, shape)
+    y = matrix_coo(jnp.asarray(xs), w, row, col, shape=shape)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
     jax.block_until_ready((y,))
 
@@ -129,7 +129,7 @@ def test_coo_matrix_matches_dense(homo_w, allow_duplicates):
 
     dense = _dense_from_coo(row, col, data, shape)
     y_ref = dense @ xs
-    y = coo_matrix(jnp.asarray(xs), w, row, col, shape)
+    y = coo_matrix(jnp.asarray(xs), w, row, col, shape=shape)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
     jax.block_until_ready((y,))
 
@@ -144,19 +144,19 @@ def test_empty_coo_outputs_zeros():
     xs_left = jnp.arange(2 * shape[0], dtype=jnp.float32).reshape(2, shape[0])
     xs_right = jnp.arange(shape[1] * 2, dtype=jnp.float32).reshape(shape[1], 2)
 
-    out_vector = vector_coo(x, 1.0, row, col, shape)
+    out_vector = vector_coo(x, 1.0, row, col, shape=shape)
     assert out_vector.shape == (shape[1],)
     assert jnp.all(out_vector == 0)
 
-    out_coo_vector = coo_vector(v, jnp.array([], dtype=jnp.float32), row, col, shape)
+    out_coo_vector = coo_vector(v, jnp.array([], dtype=jnp.float32), row, col, shape=shape)
     assert out_coo_vector.shape == (shape[0],)
     assert jnp.all(out_coo_vector == 0)
 
-    out_matrix = matrix_coo(xs_left, 1.0, row, col, shape)
+    out_matrix = matrix_coo(xs_left, 1.0, row, col, shape=shape)
     assert out_matrix.shape == (xs_left.shape[0], shape[1])
     assert jnp.all(out_matrix == 0)
 
-    out_coo_matrix = coo_matrix(xs_right, jnp.array([], dtype=jnp.float32), row, col, shape)
+    out_coo_matrix = coo_matrix(xs_right, jnp.array([], dtype=jnp.float32), row, col, shape=shape)
     assert out_coo_matrix.shape == (shape[0], xs_right.shape[1])
     assert jnp.all(out_coo_matrix == 0)
     jax.block_until_ready((x, v, xs_left, xs_right, out_vector, out_coo_vector, out_matrix, out_coo_matrix))
@@ -171,7 +171,7 @@ def test_matrix_coo_jit_matches_dense():
     dense = jnp.zeros(shape, dtype=jnp.float32).at[row, col].add(w)
     y_ref = xs @ dense
 
-    f = jax.jit(lambda x: matrix_coo(x, w, row, col, shape))
+    f = jax.jit(lambda x: matrix_coo(x, w, row, col, shape=shape))
     y = f(xs)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
     jax.block_until_ready((xs, w, dense, y_ref, y))
@@ -186,7 +186,7 @@ def test_coo_matrix_jit_matches_dense():
     dense = jnp.zeros(shape, dtype=jnp.float32).at[row, col].add(w)
     y_ref = dense @ xs
 
-    f = jax.jit(lambda x: coo_matrix(x, w, row, col, shape))
+    f = jax.jit(lambda x: coo_matrix(x, w, row, col, shape=shape))
     y = f(xs)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
     jax.block_until_ready((xs, w, dense, y_ref, y))
@@ -199,7 +199,7 @@ def test_matrix_coo_grad_matches_dense():
     w = jnp.linspace(0.1, 0.6, num=row.shape[0], dtype=jnp.float32)
 
     def f(xs, w):
-        return matrix_coo(xs, w, row, col, shape).sum()
+        return matrix_coo(xs, w, row, col, shape=shape).sum()
 
     def f_ref(xs, w):
         dense = jnp.zeros(shape, dtype=xs.dtype).at[row, col].add(w)
@@ -220,7 +220,7 @@ def test_coo_matrix_grad_matches_dense():
     w = jnp.linspace(0.2, 0.7, num=row.shape[0], dtype=jnp.float32)
 
     def f(xs, w):
-        return coo_matrix(xs, w, row, col, shape).sum()
+        return coo_matrix(xs, w, row, col, shape=shape).sum()
 
     def f_ref(xs, w):
         dense = jnp.zeros(shape, dtype=xs.dtype).at[row, col].add(w)

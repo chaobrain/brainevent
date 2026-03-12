@@ -23,6 +23,7 @@ from jax.interpreters import xla, batching, ad, mlir
 
 from brainevent._compatible_import import Primitive
 from brainevent._error import KernelFallbackExhaustedError
+from brainevent._registry import register_primitive
 from brainevent._typing import KernelGenerator
 from brainevent.config import get_backend
 from .benchmark import BenchmarkRecord, BenchmarkResult, benchmark_function
@@ -188,7 +189,6 @@ class XLACustomKernel:
         # benchmark data generator function
         self._benchmark_data_fn: Optional[Callable] = None
         # Auto-register in global registry
-        from brainevent._registry import register_primitive
         register_primitive(name, self)
 
     def _abstract_eval(self, *ins, outs: OutType, **kwargs):

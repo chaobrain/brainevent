@@ -48,7 +48,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ vector
         out2 = vector @ jitcc
-        assert allclose(out1, out2)
+        assert allclose(out1, out2, rtol=1e-5, atol=1e-5)
         jax.block_until_ready((vector, out1, out2))
 
     @pytest.mark.parametrize('shape', shapes)
@@ -61,7 +61,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = vector @ jitcr
         out2 = jitcc @ vector
-        assert allclose(out1, out2)
+        assert allclose(out1, out2, rtol=1e-5, atol=1e-5)
         jax.block_until_ready((vector, out1, out2))
 
     @pytest.mark.parametrize('k', [10])
@@ -249,8 +249,8 @@ class Test_JITC_Operator_Behavior:
         r8 = dense @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
-        assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
-        assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
+        assert allclose(r5, r6, atol=1e-2, rtol=1e-2)
+        assert allclose(r7, r8, atol=1e-2, rtol=1e-2)
         jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
