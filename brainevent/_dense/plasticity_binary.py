@@ -22,13 +22,13 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._compatible_import import pallas_triton_params
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import (
     XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig,
-    jaxinfo_to_warpinfo,
 )
-from brainevent.config import get_numba_parallel
 from brainevent._op import load_cuda_file
+from brainevent.config import get_numba_parallel
 
 __all__ = [
     'update_dense_on_binary_pre',
@@ -192,7 +192,7 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
             grid=(pl.cdiv(weight_info.shape[1], block_dim),),
             input_output_aliases={0: 0},
             out_shape=kwargs['outs'],
-            backend='triton',
+            **pallas_triton_params(),
         )
         return fn(weight, spike, trace)
 
@@ -552,7 +552,7 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
             grid=(pl.cdiv(weight_info.shape[0], block_dim),),
             input_output_aliases={0: 0},
             out_shape=kwargs['outs'],
-            backend='triton',
+            **pallas_triton_params(),
         )
         return fn(weight, trace, spike)
 

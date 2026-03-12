@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._compatible_import import pallas_triton_params
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, jaxinfo_to_warpinfo
@@ -314,7 +315,7 @@ def _csrmv_pallas_kernel_generator(
                 grid=grid,
                 input_output_aliases={4: 0},
                 out_shape=kwargs['outs'],
-                backend='triton'
+                **pallas_triton_params()
             )
 
             return fn(data, indices, indptr, vector, placeholder)
@@ -1314,7 +1315,7 @@ def _csrmm_pallas_kernel_generator(
                 grid=(launch_rows, pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
                 out_shape=kwargs['outs'],
-                backend='triton'
+                **pallas_triton_params()
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
@@ -1435,7 +1436,7 @@ def _csrmm_pallas_kernel_generator(
             # Not transpose, B shape matches shape[1]. Indptr matches shape[0].
             launch_rows = shape[0]
             fn = pl.pallas_call(mm, grid=(launch_rows, pl.cdiv(n, block_dim_n)), out_shape=kwargs['outs'],
-                                backend='triton')
+                                **pallas_triton_params())
             return fn(data, indices, indptr, B)
 
     return kernel

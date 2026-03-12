@@ -24,13 +24,14 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from brainevent._compatible_import import pallas_mosaic_tpu_params
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, \
     jaxinfo_to_warpinfo
+from brainevent._op import load_cuda_file
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
-from brainevent._op import load_cuda_file
 
 __all__ = [
     "coomv",
@@ -469,127 +470,6 @@ def _coomv_warp_kernel(
     return kernel
 
 
-def _coomv_pallas_gpu_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    row_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plgpu
-
-    nnz = row_info.shape[0]
-    block_dim = generate_block_dim(nnz)
-    block_dim = 32 if block_dim < 32 else block_dim
-
-    if transpose:
-        if weight_info.size == 1:
-            # coo.T @ v (homogeneous weights)
-            def mv(
-                data_ref,  # [1]
-                row_ref,  # [nnz]
-                col_ref,  # [nnz]
-                vector_ref,  # [m]
-                _,  # [k]
-                posts_ref,  # [k]
-            ):
-                i = pl.program_id(0)
-                i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                vals = plgpu.load(vector_ref.at[rows], mask=mask, other=0)
-                data = jnp.asarray(vals, dtype=posts_ref.dtype) * jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
-                plgpu.atomic_add(posts_ref, cols, data, mask=mask)
-
-        else:
-            # coo.T @ v (heterogeneous weights)
-            def mv(
-                data_ref,  # [nnz]
-                row_ref,  # [nnz]
-                col_ref,  # [nnz]
-                vector_ref,  # [m]
-                _,  # [k]
-                posts_ref,  # [k]
-            ):
-                i = pl.program_id(0)
-                i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                weights = plgpu.load(data_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                vals = plgpu.load(vector_ref.at[rows], mask=mask, other=0)
-                data = jnp.asarray(vals, dtype=posts_ref.dtype) * jnp.asarray(weights, dtype=posts_ref.dtype)
-                plgpu.atomic_add(posts_ref, cols, data, mask=mask)
-
-        def kernel(data, row, col, vector):
-            fn = pl.pallas_call(
-                mv,
-                grid=(pl.cdiv(nnz, block_dim),),
-                input_output_aliases={4: 0},
-                out_shape=kwargs['outs'],
-                backend='triton',
-            )
-            posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-            return fn(data, row, col, vector, posts)
-
-        return kernel
-
-    else:
-        # coo @ v (non-transpose)
-        if weight_info.size == 1:
-            # coo @ v (homogeneous weights)
-            def mv(
-                data_ref,  # [1]
-                row_ref,  # [nnz]
-                col_ref,  # [nnz]
-                vector_ref,  # [k]
-                _,  # [m]
-                posts_ref,  # [m]
-            ):
-                i = pl.program_id(0)
-                i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                vals = plgpu.load(vector_ref.at[cols], mask=mask, other=0)
-                data = jnp.asarray(vals, dtype=posts_ref.dtype) * jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
-                plgpu.atomic_add(posts_ref, rows, data, mask=mask)
-
-        else:
-            # coo @ v (heterogeneous weights)
-            def mv(
-                data_ref,  # [nnz]
-                row_ref,  # [nnz]
-                col_ref,  # [nnz]
-                vector_ref,  # [k]
-                _,  # [m]
-                posts_ref,  # [m]
-            ):
-                i = pl.program_id(0)
-                i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                weights = plgpu.load(data_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
-                vals = plgpu.load(vector_ref.at[cols], mask=mask, other=0)
-                data = jnp.asarray(vals, dtype=posts_ref.dtype) * jnp.asarray(weights, dtype=posts_ref.dtype)
-                plgpu.atomic_add(posts_ref, rows, data, mask=mask)
-
-        def kernel(data, row, col, vector):
-            fn = pl.pallas_call(
-                mv,
-                grid=(pl.cdiv(nnz, block_dim),),
-                input_output_aliases={4: 0},
-                out_shape=kwargs['outs'],
-                backend='triton',
-            )
-            posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-            return fn(data, row, col, vector, posts)
-
-        return kernel
-
-
 def _coomv_pallas_tpu_kernel(
     weight_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
@@ -682,7 +562,7 @@ def _coomv_pallas_tpu_kernel(
             grid=(out_len,),
             input_output_aliases={4: 0},
             out_shape=kwargs['outs'],
-            backend='mosaic_tpu',
+            **pallas_mosaic_tpu_params(),
         )
         posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
         return fn(data, row, col, vector, posts)
@@ -1024,7 +904,6 @@ coomv : High-level user-facing function wrapper.
 
 coomv_p.def_numba_kernel(_coomv_numba_kernel)
 coomv_p.def_warp_kernel(_coomv_warp_kernel)
-coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
 coomv_p.def_cuda_raw_kernel(_coomv_cuda_kernel, asdefault=True)
 coomv_p.def_kernel('jax_raw', 'cpu', _coomv_jax_kernel)
@@ -1170,172 +1049,6 @@ def _coomm_warp_kernel(
     return kernel
 
 
-def _coomm_pallas_gpu_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    matrix_info: jax.ShapeDtypeStruct,
-    row_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plgpu
-
-    nnz = row_info.shape[0]
-    n = matrix_info.shape[1]
-    block_dim = generate_block_dim(nnz)
-    block_dim = 32 if block_dim < 32 else block_dim
-    block_dim_n = generate_block_dim(n, 512)
-
-    if transpose:
-        if weight_info.size == 1:
-            # coo.T @ B (homogeneous weights)
-            def mm(
-                data_ref,  # [1]
-                row_ref,  # [nnz]
-                col_ref,  # [nnz]
-                B_ref,  # [m, n]
-                _,  # [k, n]
-                posts_ref,  # [k, n]
-            ):
-                i = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-
-                i_start = i * block_dim
-                w = jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
-
-                def loop_fn(idx, _):
-                    elem = i_start + idx
-                    valid = elem < nnz
-                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
-                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
-                    vals = plgpu.load(B_ref.at[row_idx, pl.ds(i_col_start, block_dim_n)], mask=col_mask, other=0)
-                    data = jnp.asarray(vals, dtype=posts_ref.dtype) * w
-                    lane_mask = col_mask & valid
-                    plgpu.atomic_add(posts_ref, (col_idx, pl.ds(i_col_start, block_dim_n)), data, mask=lane_mask)
-
-                jax.lax.fori_loop(0, block_dim, loop_fn, None)
-
-        else:
-            # coo.T @ B (heterogeneous weights)
-            def mm(
-                data_ref,  # [nnz]
-                row_ref,  # [nnz]
-                col_ref,  # [nnz]
-                B_ref,  # [m, n]
-                _,  # [k, n]
-                posts_ref,  # [k, n]
-            ):
-                i = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-
-                i_start = i * block_dim
-
-                def loop_fn(idx, _):
-                    elem = i_start + idx
-                    valid = elem < nnz
-                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
-                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
-                    w = jnp.asarray(plgpu.load(data_ref.at[elem], mask=valid, other=0), dtype=posts_ref.dtype)
-                    vals = plgpu.load(B_ref.at[row_idx, pl.ds(i_col_start, block_dim_n)], mask=col_mask, other=0)
-                    data = jnp.asarray(vals, dtype=posts_ref.dtype) * w
-                    lane_mask = col_mask & valid
-                    plgpu.atomic_add(posts_ref, (col_idx, pl.ds(i_col_start, block_dim_n)), data, mask=lane_mask)
-
-                jax.lax.fori_loop(0, block_dim, loop_fn, None)
-
-        def kernel(data, row, col, B):
-            fn = pl.pallas_call(
-                mm,
-                grid=(pl.cdiv(nnz, block_dim), pl.cdiv(n, block_dim_n)),
-                input_output_aliases={4: 0},
-                out_shape=kwargs['outs'],
-                backend='triton',
-            )
-            posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-            return fn(data, row, col, B, posts)
-
-        return kernel
-
-    else:
-        # coo @ B (non-transpose)
-        if weight_info.size == 1:
-            # coo @ B (homogeneous weights)
-            def mm(
-                data_ref,  # [1]
-                row_ref,  # [nnz]
-                col_ref,  # [nnz]
-                B_ref,  # [k, n]
-                _,  # [m, n]
-                posts_ref,  # [m, n]
-            ):
-                i = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-
-                i_start = i * block_dim
-                w = jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
-
-                def loop_fn(idx, _):
-                    elem = i_start + idx
-                    valid = elem < nnz
-                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
-                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
-                    vals = plgpu.load(B_ref.at[col_idx, pl.ds(i_col_start, block_dim_n)], mask=col_mask, other=0)
-                    data = jnp.asarray(vals, dtype=posts_ref.dtype) * w
-                    lane_mask = col_mask & valid
-                    plgpu.atomic_add(posts_ref, (row_idx, pl.ds(i_col_start, block_dim_n)), data, mask=lane_mask)
-
-                jax.lax.fori_loop(0, block_dim, loop_fn, None)
-
-        else:
-            # coo @ B (heterogeneous weights)
-            def mm(
-                data_ref,  # [nnz]
-                row_ref,  # [nnz]
-                col_ref,  # [nnz]
-                B_ref,  # [k, n]
-                _,  # [m, n]
-                posts_ref,  # [m, n]
-            ):
-                i = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-
-                i_start = i * block_dim
-
-                def loop_fn(idx, _):
-                    elem = i_start + idx
-                    valid = elem < nnz
-                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
-                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
-                    w = jnp.asarray(plgpu.load(data_ref.at[elem], mask=valid, other=0), dtype=posts_ref.dtype)
-                    vals = plgpu.load(B_ref.at[col_idx, pl.ds(i_col_start, block_dim_n)], mask=col_mask, other=0)
-                    data = jnp.asarray(vals, dtype=posts_ref.dtype) * w
-                    lane_mask = col_mask & valid
-                    plgpu.atomic_add(posts_ref, (row_idx, pl.ds(i_col_start, block_dim_n)), data, mask=lane_mask)
-
-                jax.lax.fori_loop(0, block_dim, loop_fn, None)
-
-        def kernel(data, row, col, B):
-            fn = pl.pallas_call(
-                mm,
-                grid=(pl.cdiv(nnz, block_dim), pl.cdiv(n, block_dim_n)),
-                input_output_aliases={4: 0},
-                out_shape=kwargs['outs'],
-                backend='triton',
-            )
-            posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-            return fn(data, row, col, B, posts)
-
-        return kernel
-
-
 def _coomm_pallas_tpu_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
@@ -1440,7 +1153,7 @@ def _coomm_pallas_tpu_kernel(
             grid=(out_rows, pl.cdiv(n, block_dim_n)),
             input_output_aliases={4: 0},
             out_shape=kwargs['outs'],
-            backend='mosaic_tpu',
+            **pallas_mosaic_tpu_params(),
         )
         posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
         return fn(data, row, col, B, posts)
@@ -1806,7 +1519,6 @@ coomm : High-level user-facing function wrapper.
 )
 coomm_p.def_numba_kernel(_coomm_numba_kernel)
 coomm_p.def_warp_kernel(_coomm_warp_kernel)
-coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
 coomm_p.def_cuda_raw_kernel(_coomm_cuda_kernel, asdefault=True)
 coomm_p.def_kernel('jax_raw', 'cpu', _coomm_jax_kernel)

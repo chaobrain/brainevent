@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._compatible_import import pallas_triton_params
 from brainevent._misc import namescope
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
@@ -174,7 +175,7 @@ def _csr_slice_rows_pallas_kernel_generator(
             grid=(num_selected,),
             input_output_aliases={4: 0},
             out_shape=kwargs['outs'],
-            backend='triton',
+            **pallas_triton_params(),
         )
         return fn(data, indices, indptr, row_indices, jnp.zeros(out_info.shape, dtype=out_info.dtype))
 
@@ -468,7 +469,7 @@ def _csr_slice_rows_grad_pallas_kernel_generator(
             grid=(num_selected,),
             input_output_aliases={4: 0},
             out_shape=kwargs['outs'],
-            backend='triton',
+            **pallas_triton_params(),
         )
         return fn(ct, indices, indptr, row_indices, zeros)
 

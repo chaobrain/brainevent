@@ -228,7 +228,7 @@ class TestCOOBinaryVectorOperator:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = brainevent.BinaryArray(x) @ coo
-        y2 = vector_coo(x, coo.data, row, col, (m, n))
+        y2 = vector_coo(x, coo.data, row, col, shape=(m, n))
         assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
         jax.block_until_ready((x, row, col, y, y2))
 
@@ -241,7 +241,7 @@ class TestCOOBinaryVectorOperator:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = jax.vmap(lambda x: brainevent.BinaryArray(x) @ coo)(xs)
-        y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, (m, n)))(xs)
+        y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, shape=(m, n)))(xs)
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((xs, row, col, y, y2))
 
@@ -254,7 +254,7 @@ class TestCOOBinaryVectorOperator:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = coo @ brainevent.BinaryArray(v)
-        y2 = coo_vector(v, coo.data, row, col, (m, n))
+        y2 = coo_vector(v, coo.data, row, col, shape=(m, n))
         assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
         jax.block_until_ready((v, row, col, y, y2))
 
@@ -345,7 +345,7 @@ class TestCOOBinaryMatrixOperator:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = brainevent.BinaryArray(x) @ coo
-        y2 = matrix_coo(x.astype(float), coo.data, row, col, (m, n))
+        y2 = matrix_coo(x.astype(float), coo.data, row, col, shape=(m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((x, row, col, y, y2))
 
@@ -358,6 +358,6 @@ class TestCOOBinaryMatrixOperator:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = coo @ brainevent.BinaryArray(matrix)
-        y2 = coo_matrix(matrix.astype(float), coo.data, row, col, (m, n))
+        y2 = coo_matrix(matrix.astype(float), coo.data, row, col, shape=(m, n))
         assert jnp.allclose(y, y2)
         jax.block_until_ready((matrix, row, col, y, y2))

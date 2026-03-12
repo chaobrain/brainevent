@@ -23,6 +23,7 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from brainevent._compatible_import import pallas_triton_params
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
@@ -493,7 +494,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
             grid=(pl.cdiv(dim, block_size),),
             input_output_aliases={5: 0},
             out_shape=kwargs['outs'],
-            backend='triton',
+            **pallas_triton_params(),
         )
         placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
         return fn(w_loc, w_scale, clen, vector, seed, placeholder)
@@ -1033,7 +1034,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
             grid=grid,
             input_output_aliases={5: 0},
             out_shape=kwargs['outs'],
-            backend='triton',
+            **pallas_triton_params(),
         )
         placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
         return fn(w_loc, w_scale, clen, B, seed, placeholder)
