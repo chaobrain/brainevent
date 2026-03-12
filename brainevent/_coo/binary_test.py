@@ -230,6 +230,25 @@ class TestVectorCOO:
         )
 
 
+    @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_coomv_large_nnz(self, implementation, homo_w, transpose):
+        """Large NNZ (> 2048*256 = 524288) to exercise grid-stride loop with grid capping."""
+        m, n = 500, 600
+        rng = np.random.default_rng(99)
+        nnz = 600000  # exceeds COOMV_MAX_GRID * 256
+        row = rng.integers(0, m, size=nnz, dtype=np.int32)
+        col = rng.integers(0, n, size=nnz, dtype=np.int32)
+        v_size = m if transpose else n
+        x = jnp.asarray(rng.random(v_size) > 0.5, dtype=jnp.bool_)
+        data = 1.5 if homo_w else jnp.asarray(rng.standard_normal(nnz), dtype=jnp.float32)
+        y = binary_coomv(data, row, col, x, shape=(m, n), transpose=transpose, backend=implementation)
+        ref_fn = vector_coo if transpose else coo_vector
+        y2 = ref_fn(x, data, row, col, (m, n))
+        assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-4, atol=1e-4))
+
+
 class TestMatrixCOO:
     @pytest.mark.parametrize('implementation', COOMM_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -256,3 +275,68 @@ class TestMatrixCOO:
         y2 = coo_matrix(x.astype(float), data, row, col, (m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((x, row, col, y, y2))
+
+    @pytest.mark.parametrize('implementation', COOMM_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_coomm_vmap(self, implementation, homo_w):
+        n_batch, m, n, k = 8, 20, 40, 5
+        xs = brainstate.random.rand(n_batch, n, k) < 0.1
+        row, col = _get_coo(m, n, 0.1)
+
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
+        y = jax.vmap(
+            lambda x: binary_coomm(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
+        )(xs)
+        y2 = jax.vmap(lambda x: coo_matrix(x.astype(float), data, row, col, (m, n)))(xs)
+        assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.parametrize('implementation', COOMM_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_coomm_empty(self, implementation, transpose):
+        m, n, k = 10, 20, 5
+        row = np.array([], dtype=np.int32)
+        col = np.array([], dtype=np.int32)
+        b_rows = m if transpose else n
+        x = jnp.ones((b_rows, k), dtype=jnp.bool_)
+        data = jnp.array([1.0])
+        y = binary_coomm(data, row, col, x, shape=(m, n), transpose=transpose, backend=implementation)
+        out_rows = n if transpose else m
+        assert jax.block_until_ready(jnp.allclose(y, jnp.zeros((out_rows, k))))
+
+    @pytest.mark.parametrize('implementation', COOMM_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_coomm_large_nnz(self, implementation, homo_w, transpose):
+        """Large NNZ to exercise grid-stride loops in CT and WPE kernels."""
+        m, n, k = 200, 300, 10
+        rng = np.random.default_rng(77)
+        nnz = 100000
+        row = rng.integers(0, m, size=nnz, dtype=np.int32)
+        col = rng.integers(0, n, size=nnz, dtype=np.int32)
+        data = 1.5 if homo_w else jnp.asarray(rng.standard_normal(nnz), dtype=jnp.float32)
+        if transpose:
+            # A.T @ B: B is (m, k), output is (n, k)
+            x = jnp.asarray(rng.random((k, m)) > 0.5, dtype=jnp.bool_)
+            y = binary_coomm(data, row, col, x.T, shape=(m, n), transpose=True, backend=implementation).T
+            y2 = matrix_coo(x.astype(float), data, row, col, (m, n))
+        else:
+            # A @ B: B is (n, k), output is (m, k)
+            x = jnp.asarray(rng.random((n, k)) > 0.5, dtype=jnp.bool_)
+            y = binary_coomm(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
+            y2 = coo_matrix(x.astype(float), data, row, col, (m, n))
+        assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+
+    @pytest.mark.parametrize('implementation', COOMM_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('n_cols', [1, 32, 64, 65, 128])
+    def test_coomm_ncols_dispatch(self, implementation, n_cols):
+        """Test CT/WPE dispatch boundary at n_cols=64."""
+        m, n = 50, 100
+        rng = np.random.default_rng(55)
+        nnz = 500
+        row = rng.integers(0, m, size=nnz, dtype=np.int32)
+        col = rng.integers(0, n, size=nnz, dtype=np.int32)
+        x = jnp.asarray(rng.random((n, n_cols)) > 0.5, dtype=jnp.bool_)
+        data = jnp.asarray(rng.standard_normal(nnz), dtype=jnp.float32)
+        y = binary_coomm(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
+        y2 = coo_matrix(x.astype(float), data, row, col, (m, n))
+        assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
