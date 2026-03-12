@@ -21,8 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._compatible_import import pallas_triton_params
-from brainevent._misc import generate_block_dim, namescope
+from brainevent._misc import namescope
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel
 from brainevent._op.benchmark import BenchmarkConfig
@@ -161,100 +160,6 @@ def _csrmv_yw2y_numba_kernels(
 
         def kernel(y, w, indices, indptr):
             return numba_kernel(mm, outs=kwargs['outs'])(y, w, indptr)
-
-    return kernel
-
-
-def _csrmv_yw2y_pallas_kernels(
-    shape: MatrixShape,
-    transpose: bool,
-    y_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import load, store
-
-    block_dim = generate_block_dim(y_info.shape[0], 128)
-
-    if transpose:
-        def mm(
-            y_ref,
-            w_ref,
-            indices_ref,
-            indptr_ref,
-            posts_ref,
-        ):
-            i_block = pl.program_id(0)
-            num_blocks_grid = indptr_ref.shape[0] - 1
-
-            def _body():
-                i_start = indptr_ref[i_block]
-                i_end = indptr_ref[i_block + 1]
-                num_blocks = (i_end - i_start + block_dim - 1) // block_dim
-
-                def loop_fn(i, _):
-                    offset = i_start + i * block_dim
-                    mask = (offset + jnp.arange(block_dim)) < i_end
-
-                    w = load(w_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0.0)
-                    index = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
-
-                    # Indirect Read Guard
-                    valid_idx = index < y_ref.shape[0]
-                    safe_index = jnp.minimum(index, y_ref.shape[0] - 1)
-
-                    # Combine Masks
-                    final_mask = mask & valid_idx
-
-                    y = y_ref[safe_index]
-                    y = jnp.where(final_mask, y, 0.0)
-
-                    store(posts_ref.at[pl.ds(offset, block_dim)], w * y, mask=final_mask)
-
-                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
-
-            # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
-            jax.lax.cond(i_block < num_blocks_grid, _body, lambda: None)
-
-        def kernel(y, w, indices, indptr):
-            fn = pl.pallas_call(
-                mm,
-                grid=(shape[0],),
-                out_shape=kwargs['outs'],
-                **pallas_triton_params()
-            )
-            return fn(y, w, indices, indptr)
-    else:
-        def mm(
-            y_ref,
-            w_ref,
-            indptr_ref,
-            posts_ref,
-        ):
-            i_block = pl.program_id(0)
-            num_blocks_grid = indptr_ref.shape[0] - 1
-
-            def _body():
-                i_start = indptr_ref[i_block]
-                i_end = indptr_ref[i_block + 1]
-                num_blocks = (i_end - i_start + block_dim - 1) // block_dim
-                y_scalar = y_ref[i_block]
-
-                def loop_fn(i, _):
-                    offset = i_start + i * block_dim
-                    mask = (offset + jnp.arange(block_dim)) < i_end
-
-                    w = load(w_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0.0)
-                    store(posts_ref.at[pl.ds(offset, block_dim)], w * y_scalar, mask=mask)
-
-                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
-
-            # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
-            jax.lax.cond(i_block < num_blocks_grid, _body, lambda: None)
-
-        def kernel(y, w, indices, indptr):
-            fn = pl.pallas_call(mm, grid=(shape[0],), out_shape=kwargs['outs'])
-            return fn(y, w, indptr)
 
     return kernel
 
@@ -525,7 +430,6 @@ csrmv_yw2y : High-level user-facing function wrapper.
 """
 )
 csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
-csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
 csrmv_yw2y_p.def_cuda_raw_kernel(_csrmv_yw2y_cuda_kernel, asdefault=True)
 csrmv_yw2y_p.def_kernel('jax_raw', 'cpu', _csrmv_yw2y_jax_kernel)
 csrmv_yw2y_p.def_kernel('jax_raw', 'gpu', _csrmv_yw2y_jax_kernel)

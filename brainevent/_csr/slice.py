@@ -22,7 +22,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._compatible_import import pallas_triton_params
 from brainevent._misc import namescope
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
@@ -116,68 +115,6 @@ def _csr_slice_rows_numba_kernel_generator(
 
     def kernel(data, indices, indptr, row_indices):
         return numba_kernel(slice_rows, outs=kwargs['outs'])(data, indices, indptr, row_indices)
-
-    return kernel
-
-
-def _csr_slice_rows_pallas_kernel_generator(
-    row_indices_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
-    **kwargs,
-):
-    from jax.experimental import pallas as pl
-
-    m, n = shape
-    num_selected = row_indices_info.shape[0]
-    homo = kwargs['data_info'].shape[0] == 1
-
-    if homo:
-        def slice_rows_pallas(data_ref, indices_ref, indptr_ref, row_indices_ref, _, out_ref):
-            k = pl.program_id(0)
-            r = row_indices_ref[k]
-            w = data_ref[0]
-
-            i_start = jnp.where(r < m, indptr_ref[jnp.minimum(r, m - 1)], 0)
-            i_end = jnp.where(r < m, indptr_ref[jnp.minimum(r + 1, m)], 0)
-            nnz_in_row = i_end - i_start
-
-            def body_fn(j, _):
-                idx = i_start + j
-                col = indices_ref[idx]
-                valid = (j < nnz_in_row) & (r >= 0) & (r < m)
-                out_ref[k, col] = jnp.where(valid, out_ref[k, col] + w, out_ref[k, col])
-
-            max_nnz = jnp.where(r < m, nnz_in_row, 0)
-            jax.lax.fori_loop(0, max_nnz, body_fn, None)
-    else:
-        def slice_rows_pallas(data_ref, indices_ref, indptr_ref, row_indices_ref, _, out_ref):
-            k = pl.program_id(0)
-            r = row_indices_ref[k]
-
-            i_start = jnp.where(r < m, indptr_ref[jnp.minimum(r, m - 1)], 0)
-            i_end = jnp.where(r < m, indptr_ref[jnp.minimum(r + 1, m)], 0)
-            nnz_in_row = i_end - i_start
-
-            def body_fn(j, _):
-                idx = i_start + j
-                col = indices_ref[idx]
-                val = data_ref[idx]
-                valid = (j < nnz_in_row) & (r >= 0) & (r < m)
-                out_ref[k, col] = jnp.where(valid, out_ref[k, col] + val, out_ref[k, col])
-
-            max_nnz = jnp.where(r < m, nnz_in_row, 0)
-            jax.lax.fori_loop(0, max_nnz, body_fn, None)
-
-    def kernel(data, indices, indptr, row_indices):
-        out_info = kwargs['outs'][0]
-        fn = pl.pallas_call(
-            slice_rows_pallas,
-            grid=(num_selected,),
-            input_output_aliases={4: 0},
-            out_shape=kwargs['outs'],
-            **pallas_triton_params(),
-        )
-        return fn(data, indices, indptr, row_indices, jnp.zeros(out_info.shape, dtype=out_info.dtype))
 
     return kernel
 
@@ -428,50 +365,6 @@ def _csr_slice_rows_grad_numba_kernel_generator(
 
     def kernel(ct, indices, indptr, row_indices):
         return numba_kernel(grad_slice, outs=kwargs['outs'])(ct, indices, indptr, row_indices)
-
-    return kernel
-
-
-def _csr_slice_rows_grad_pallas_kernel_generator(
-    row_indices_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
-    **kwargs,
-):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
-
-    m, n = shape
-    num_selected = row_indices_info.shape[0]
-
-    def grad_slice_pallas(ct_ref, indices_ref, indptr_ref, row_indices_ref, _, ct_data_ref):
-        k = pl.program_id(0)
-        r = row_indices_ref[k]
-
-        i_start = jnp.where(r < m, indptr_ref[jnp.minimum(r, m - 1)], 0)
-        i_end = jnp.where(r < m, indptr_ref[jnp.minimum(r + 1, m)], 0)
-        nnz_in_row = i_end - i_start
-
-        def body_fn(j, _):
-            idx = i_start + j
-            col = indices_ref[idx]
-            val = ct_ref[k, col]
-            valid = (j < nnz_in_row) & (r >= 0) & (r < m)
-            atomic_add(ct_data_ref, (idx,), jnp.where(valid, val, 0.0))
-
-        max_nnz = jnp.where(r < m, nnz_in_row, 0)
-        jax.lax.fori_loop(0, max_nnz, body_fn, None)
-
-    def kernel(ct, indices, indptr, row_indices):
-        out_info = kwargs['outs'][0]
-        zeros = jnp.zeros(out_info.shape, dtype=out_info.dtype)
-        fn = pl.pallas_call(
-            grad_slice_pallas,
-            grid=(num_selected,),
-            input_output_aliases={4: 0},
-            out_shape=kwargs['outs'],
-            **pallas_triton_params(),
-        )
-        return fn(ct, indices, indptr, row_indices, zeros)
 
     return kernel
 

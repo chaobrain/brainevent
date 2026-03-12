@@ -23,12 +23,11 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
-from brainevent._compatible_import import Tracer, pallas_triton_params
+from brainevent._compatible_import import Tracer
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import generate_block_dim, namescope
+from brainevent._misc import namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
-from brainevent._pallas_random import get_pallas_lfsr_rng_class
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._typing import Data, MatrixShape
 from brainevent._op import load_cuda_file
 
@@ -461,76 +460,6 @@ def _jitn_numba_kernel_generator(corder: bool = True, **kwargs):
     return run
 
 
-def _jitn_pallas_kernel_generator(
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
-
-    dim = out_info.shape[0] if corder else out_info.shape[1]
-    block_size = generate_block_dim(dim, maximum=128)
-    n_block = pl.cdiv(dim, block_size)
-
-    if corder:
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, seed_ref, _, post_ref):
-            m = post_ref.shape[1]
-            w_loc = w_loc_ref[0]
-            w_scale = w_scale_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_row_block = pl.program_id(0)
-            i_rows = i_row_block * block_size + jnp.arange(block_size)
-            i_row_mask = i_rows < dim
-
-            def body(_step, data):
-                i_cols, i_col_mask, rng = data
-                val = rng.normal(w_loc, w_scale)
-                safe_cols = jnp.where(i_col_mask, i_cols, 0)
-                post_ref[i_rows, safe_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[i_rows, safe_cols])
-                i_cols += rng.random_integers(1, clen0)
-                return i_cols, i_cols < m, rng
-
-            rng = _PallasLFSRRNG(seed0 + i_rows * m)
-            i_cols = rng.random_integers(0, clen0)
-            i_col_mask = i_cols < m
-            jax.lax.fori_loop(0, m, body, (i_cols, i_col_mask, rng))
-
-    else:
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, seed_ref, _, post_ref):
-            n = post_ref.shape[0]
-            w_loc = w_loc_ref[0]
-            w_scale = w_scale_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_col_block = pl.program_id(0)
-            i_cols = i_col_block * block_size + jnp.arange(block_size)
-            i_col_mask = i_cols < dim
-
-            def body(_step, data):
-                i_rows, i_row_mask, rng = data
-                val = rng.normal(w_loc, w_scale)
-                safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                post_ref[safe_rows, i_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[safe_rows, i_cols])
-                i_rows = i_rows + rng.random_integers(1, clen0)
-                return i_rows, i_rows < n, rng
-
-            rng = _PallasLFSRRNG(seed0 + i_cols * n)
-            i_rows = rng.random_integers(0, clen0)
-            i_row_mask = i_rows < n
-            jax.lax.fori_loop(0, n, body, (i_rows, i_row_mask, rng))
-
-    def run(w_loc, w_scale, clen, seed):
-        fn = pl.pallas_call(kernel, grid=(n_block,), input_output_aliases={4: 0}, out_shape=kwargs['outs'],
-                            **pallas_triton_params())
-        out = kwargs['outs'][0]
-        placeholder = jnp.zeros(out.shape, out.dtype)
-        return fn(w_loc, w_scale, clen, seed, placeholder)
-
-    return run
-
-
 def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs):
     out = jnp.ones_like(out_info) * w_loc_dot
     return [out]
@@ -763,7 +692,6 @@ jitn : High-level user-facing function wrapper.
 )
 jitn_p.def_numba_kernel(_jitn_numba_kernel_generator)
 jitn_p.def_cuda_raw_kernel(_jitn_cuda_kernel, asdefault=True)
-jitn_p.def_pallas_kernel('tpu', _jitn_pallas_kernel_generator)
 jitn_p.def_jvp_rule2(_jitn_jvp_wlow, _jitn_jvp_whigh, None, None)
 jitn_p.def_transpose_rule(_jitn_transpose)
 jitn_p.def_batching_rule(_jitn_batching)
@@ -821,81 +749,6 @@ def _jitnmv_numba_kernel_generator(
 
     def run(w_loc, w_scale, clen, vector, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
-
-    return run
-
-
-def _jitnmv_pallas_kernel_generator(
-    vector_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
-    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
-
-    dim = (out_info.shape[0] if corder else vector_info.shape[0])
-    block_size = generate_block_dim(dim, maximum=128)
-
-    if corder:
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-            num_row = vector_ref.shape[0]
-            w_loc = w_loc_ref[0]
-            w_scale = w_scale_ref[0]
-            clen = clen_ref[0]
-            seed = seed_ref[0]
-            i_col_block = pl.program_id(0)
-            i_cols = i_col_block * block_size + jnp.arange(block_size)
-            i_col_mask = i_cols < dim
-
-            def body(_step, data):
-                i_rows, i_row_mask, rng, out = data
-                v = jnp.where(i_row_mask, vector_ref[i_rows], 0.)
-                out += v * rng.normal(w_loc, w_scale)
-                i_rows += rng.random_integers(1, clen)
-                return i_rows, i_rows < num_row, rng, out
-
-            rng = _PallasLFSRRNG(seed + i_cols * num_row)
-            i_rows = rng.random_integers(0, clen)
-            i_row_mask = i_rows < num_row
-            out = jnp.zeros(block_size, dtype=post_ref.dtype)
-            out = jax.lax.fori_loop(0, num_row, body, (i_rows, i_row_mask, rng, out))[-1]
-            post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
-
-    else:
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-            num_col = post_ref.shape[0]
-            w_loc = w_loc_ref[0]
-            w_scale = w_scale_ref[0]
-            clen = clen_ref[0]
-            seed = seed_ref[0]
-            i_row_block = pl.program_id(0)
-            i_rows = i_row_block * block_size + jnp.arange(block_size)
-            i_row_mask = i_rows < dim
-            vector = jnp.where(i_row_mask, vector_ref[i_rows], 0.)
-
-            def body(_step, data):
-                i_cols, i_col_mask, rng = data
-                atomic_add(post_ref, (i_cols,), vector * rng.normal(w_loc, w_scale), mask=i_row_mask & i_col_mask)
-                i_cols += rng.random_integers(1, clen)
-                return i_cols, i_cols < num_col, rng
-
-            rng = _PallasLFSRRNG(seed + i_rows * num_col)
-            i_cols = rng.random_integers(0, clen)
-            i_col_mask = i_cols < num_col
-            jax.lax.fori_loop(0, num_col, body, (i_cols, i_col_mask, rng))
-
-    def run(w_loc, w_scale, clen, vector, seed):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(pl.cdiv(dim, block_size),),
-            input_output_aliases={5: 0},
-            out_shape=kwargs['outs'],
-            **pallas_triton_params(),
-        )
-        placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
-        return fn(w_loc, w_scale, clen, vector, seed, placeholder)
 
     return run
 
@@ -1172,7 +1025,6 @@ jitnmv : High-level user-facing function wrapper.
 )
 jitnmv_p.def_numba_kernel(_jitnmv_numba_kernel_generator)
 jitnmv_p.def_cuda_raw_kernel(_jitnmv_cuda_kernel, asdefault=True)
-jitnmv_p.def_pallas_kernel('tpu', _jitnmv_pallas_kernel_generator)
 jitnmv_p.def_jvp_rule2(_jitnmv_jvp_wloc, _jitnmv_jvp_wscale, None, _jitnmv_jvp_v, None)
 jitnmv_p.def_transpose_rule(_jitnmv_transpose_rules)
 jitnmv_p.def_batching_rule(_jitnmv_batching)
@@ -1236,114 +1088,6 @@ def _jitnmm_numba_kernel_generator(
 
     def run(w_loc, w_scale, clen, B, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, B, seed)
-
-    return run
-
-
-def _jitnmm_pallas_kernel_generator(
-    B_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
-    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
-
-    B_cols = B_info.shape[1]
-
-    if corder:
-        # Match jitn corder=True: vectorize over rows with identical RNG seeding.
-        # Grid: (row_blocks, B_cols). Each kernel block processes one B column,
-        # using vector RNG identical to jitn. Accumulates into 1D local array
-        # to avoid 2D local arrays (dynamic_slice unsupported in Pallas Triton).
-        out_rows = out_info.shape[0]
-        row_block = generate_block_dim(out_rows, maximum=128)
-        grid = (pl.cdiv(out_rows, row_block), B_cols)
-
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-            k = B_ref.shape[0]
-            w_loc0 = w_loc_ref[0]
-            w_scale0 = w_scale_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_row_block = pl.program_id(0)
-            col_j = pl.program_id(1)  # scalar B column index
-
-            # Row indices — VECTOR, matching jitn exactly
-            i_rows = i_row_block * row_block + jnp.arange(row_block)
-            i_row_mask = i_rows < out_rows
-            safe_rows = jnp.where(i_row_mask, i_rows, 0)
-
-            # Seed each (row, col_j) thread with an additional column stride.
-            rng = _PallasLFSRRNG(seed0 + i_rows * k)
-            i_cols = rng.random_integers(0, clen0)  # [row_block]
-            i_col_mask = i_cols < k
-
-            out = jnp.zeros(row_block, dtype=post_ref.dtype)
-
-            def body(_step, data):
-                i_cols, i_col_mask, rng, out = data
-                w = rng.normal(w_loc0, w_scale0)  # [row_block]
-                safe_cols = jnp.where(i_col_mask, i_cols, 0)
-                b_vals = B_ref[safe_cols, col_j]  # [row_block] vector gather
-                out += jnp.where(i_col_mask & i_row_mask, w * b_vals, 0.)
-                i_cols += rng.random_integers(1, clen0)
-                return i_cols, i_cols < k, rng, out
-
-            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
-            atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
-
-    else:
-        # Match jitn corder=False: vectorize over k-dim columns with identical
-        # RNG seeding. Grid: (k_blocks, B_cols). Each block processes one B column.
-        k_dim = B_info.shape[0]
-        k_block = generate_block_dim(k_dim, maximum=128)
-        grid = (pl.cdiv(k_dim, k_block), B_cols)
-
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-            m = post_ref.shape[0]
-            w_loc0 = w_loc_ref[0]
-            w_scale0 = w_scale_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_k_block = pl.program_id(0)
-            col_j = pl.program_id(1)  # scalar B column index
-
-            i_ks = i_k_block * k_block + jnp.arange(k_block)
-            i_k_mask = i_ks < k_dim
-            safe_ks = jnp.where(i_k_mask, i_ks, 0)
-
-            # Preload B values for this column (1D vector gather)
-            b_vals = B_ref[safe_ks, col_j]  # [k_block]
-
-            # Seed each (k, col_j) thread with an additional column stride.
-            rng = _PallasLFSRRNG(seed0 + i_ks * m)
-            i_rows = rng.random_integers(0, clen0)
-            i_row_mask = i_rows < m
-
-            def body(_step, data):
-                i_rows, i_row_mask, rng = data
-                w = rng.normal(w_loc0, w_scale0)  # [k_block]
-                vals = jnp.where(i_k_mask & i_row_mask, w * b_vals, 0.)
-                safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                atomic_add(post_ref, (safe_rows, col_j), vals,
-                           mask=i_k_mask & i_row_mask)
-                i_rows += rng.random_integers(1, clen0)
-                return i_rows, i_rows < m, rng
-
-            jax.lax.fori_loop(0, m, body, (i_rows, i_row_mask, rng))
-
-    def run(w_loc, w_scale, clen, B, seed):
-        fn = pl.pallas_call(
-            kernel,
-            grid=grid,
-            input_output_aliases={5: 0},
-            out_shape=kwargs['outs'],
-            **pallas_triton_params(),
-        )
-        placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
-        return fn(w_loc, w_scale, clen, B, seed, placeholder)
 
     return run
 
@@ -1606,7 +1350,6 @@ jitnmm : High-level user-facing function wrapper.
 )
 jitnmm_p.def_numba_kernel(_jitnmm_numba_kernel_generator)
 jitnmm_p.def_cuda_raw_kernel(_jitnmm_cuda_kernel, asdefault=True)
-jitnmm_p.def_pallas_kernel('tpu', _jitnmm_pallas_kernel_generator)
 jitnmm_p.def_jvp_rule2(_jitnmm_jvp_wloc, _jitnmm_jvp_wscale, None, _jitnmm_jvp_B, None)
 jitnmm_p.def_transpose_rule(_jitnmm_transpose_rules)
 jitnmm_p.def_batching_rule(_jitnmm_batching)

@@ -25,7 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import namescope
-from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent._op import load_cuda_file

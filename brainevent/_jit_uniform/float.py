@@ -23,12 +23,10 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
-from brainevent._compatible_import import pallas_triton_params
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import generate_block_dim, namescope
+from brainevent._misc import namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
-from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 from brainevent._op import load_cuda_file
 
@@ -455,109 +453,6 @@ def _jitu_numba_kernel_generator(
     return kernel
 
 
-def _jitu_pallas_kernel_generator(
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    """
-    Generate a Pallas Triton GPU kernel for materializing a JIT uniform connectivity matrix.
-
-    Parameters
-    ----------
-    out_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the output matrix.
-    corder : bool, optional
-        If True, vectorize over rows. If False, vectorize over columns.
-        Default is True.
-    **kwargs
-        Additional keyword arguments, must include ``outs`` specifying
-        output shape/dtype information.
-
-    Returns
-    -------
-    callable
-        A function ``run(w_low, w_high, clen, seed)`` that launches the
-        Pallas kernel on GPU and returns the dense matrix.
-
-    Notes
-    -----
-    Uses the globally configured LFSR RNG for random number
-    generation within the Pallas kernel. The kernel is launched with a 1-D
-    grid where each block processes ``block_size`` rows or columns.
-    """
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
-
-    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
-
-    dim = out_info.shape[0] if corder else out_info.shape[1]
-    block_size = generate_block_dim(dim, maximum=128)
-
-    if corder:
-        def kernel(w_low_ref, w_high_ref, clen_ref, seed_ref, _, post_ref):
-            m = post_ref.shape[1]
-            w_low = w_low_ref[0]
-            w_high = w_high_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_row_block = pl.program_id(0)
-            i_rows = i_row_block * block_size + jnp.arange(block_size)
-            i_row_mask = i_rows < dim
-            safe_rows = jnp.where(i_row_mask, i_rows, 0)
-
-            def body(_step, data):
-                i_cols, i_col_mask, rng = data
-                val = rng.uniform(w_low, w_high)
-                safe_cols = jnp.where(i_col_mask, i_cols, 0)
-                atomic_add(post_ref, (safe_rows, safe_cols), val, mask=i_row_mask & i_col_mask)
-                i_cols += rng.random_integers(1, clen0)
-                return i_cols, i_cols < m, rng
-
-            rng = _PallasLFSRRNG(seed0 + i_rows * m)
-            i_cols = rng.random_integers(0, clen0)
-            i_col_mask = i_cols < m
-            jax.lax.fori_loop(0, m, body, (i_cols, i_col_mask, rng))
-
-    else:
-        def kernel(w_low_ref, w_high_ref, clen_ref, seed_ref, _, post_ref):
-            n = post_ref.shape[0]
-            w_low = w_low_ref[0]
-            w_high = w_high_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_col_block = pl.program_id(0)
-            i_cols = i_col_block * block_size + jnp.arange(block_size)
-            i_col_mask = i_cols < dim
-            safe_cols = jnp.where(i_col_mask, i_cols, 0)
-
-            def body(_step, data):
-                i_rows, i_row_mask, rng = data
-                val = rng.uniform(w_low, w_high)
-                safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                atomic_add(post_ref, (safe_rows, safe_cols), val, mask=i_row_mask & i_col_mask)
-                i_rows = i_rows + rng.random_integers(1, clen0)
-                return i_rows, i_rows < n, rng
-
-            rng = _PallasLFSRRNG(seed0 + i_cols * n)
-            i_rows = rng.random_integers(0, clen0)
-            i_row_mask = i_rows < n
-            jax.lax.fori_loop(0, n, body, (i_rows, i_row_mask, rng))
-
-    def run(w_low, w_high, clen, seed):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(pl.cdiv(dim, block_size),),
-            input_output_aliases={4: 0},
-            out_shape=kwargs['outs'],
-            **pallas_triton_params(),
-        )
-        placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
-        return fn(w_low, w_high, clen, seed, placeholder)
-
-    return run
-
-
 def _jitu_jvp_wlow(w_low_dot, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
     """
     JVP rule for the ``w_low`` argument of the JIT-uniform dense matrix generation.
@@ -935,7 +830,6 @@ jitu : High-level user-facing function wrapper.
 )
 jitu_p.def_numba_kernel(_jitu_numba_kernel_generator)
 jitu_p.def_cuda_raw_kernel(_jitu_cuda_kernel, asdefault=True)
-jitu_p.def_pallas_kernel('tpu', _jitu_pallas_kernel_generator)
 jitu_p.def_jvp_rule2(_jitu_jvp_wlow, _jitu_jvp_whigh, None, None)
 jitu_p.def_transpose_rule(_jitu_transpose)
 jitu_p.def_batching_rule(_jitu_batching)
@@ -1015,111 +909,6 @@ def _jitumv_numba_kernel_generator(
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, vector, seed)
 
     return kernel
-
-
-def _jitumv_pallas_kernel_generator(
-    vector_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    """
-    Generate a Pallas Triton GPU kernel for float JIT-uniform matrix-vector product.
-
-    Parameters
-    ----------
-    vector_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the input vector.
-    out_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the output array.
-    corder : bool, optional
-        If True, vectorize over output elements. If False, vectorize over
-        input elements using atomic adds. Default is True.
-    **kwargs
-        Additional keyword arguments, must include ``outs`` specifying
-        output shape/dtype information.
-
-    Returns
-    -------
-    callable
-        A function ``run(w_low, w_high, clen, vector, seed)`` that
-        launches the Pallas kernel on GPU and returns the result.
-
-    Notes
-    -----
-    Uses the globally configured LFSR RNG for random number
-    generation within the Pallas kernel. The kernel is launched with a 1-D
-    grid where each block processes ``block_size`` elements.
-    """
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
-
-    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
-
-    dim = (out_info.shape[0] if corder else vector_info.shape[0])
-    block_size = generate_block_dim(dim, maximum=128)
-
-    if corder:
-        def kernel(w_low_ref, w_high_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-            num_row = vector_ref.shape[0]
-            w_low = w_low_ref[0]
-            w_high = w_high_ref[0]
-            clen = clen_ref[0]
-            seed = seed_ref[0]
-            i_col_block = pl.program_id(0)
-            i_cols = i_col_block * block_size + jnp.arange(block_size)
-            i_col_mask = i_cols < dim
-
-            def body(_step, data):
-                i_rows, i_row_mask, rng, out = data
-                safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                v = jnp.where(i_row_mask, vector_ref[safe_rows], 0.)
-                out += jnp.where(i_row_mask, v * rng.uniform(w_low, w_high), 0.)
-                i_rows += rng.random_integers(1, clen)
-                return i_rows, i_rows < num_row, rng, out
-
-            rng = _PallasLFSRRNG(seed + i_cols * num_row)
-            i_rows = rng.random_integers(0, clen)
-            i_row_mask = i_rows < num_row
-            out = jnp.zeros(block_size, dtype=post_ref.dtype)
-            _, _, _, out = jax.lax.fori_loop(0, num_row, body, (i_rows, i_row_mask, rng, out))
-            post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
-
-    else:
-        def kernel(w_low_ref, w_high_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-            num_col = post_ref.shape[0]
-            w_low = w_low_ref[0]
-            w_high = w_high_ref[0]
-            clen = clen_ref[0]
-            seed = seed_ref[0]
-            i_row_block = pl.program_id(0)
-            i_rows = i_row_block * block_size + jnp.arange(block_size)
-            i_row_mask = i_rows < dim
-            vector = jnp.where(i_row_mask, vector_ref[i_rows], 0.)
-
-            def body(_step, data):
-                i_cols, i_col_mask, rng = data
-                atomic_add(post_ref, (i_cols,), vector * rng.uniform(w_low, w_high), mask=i_row_mask & i_col_mask)
-                i_cols += rng.random_integers(1, clen)
-                return i_cols, i_cols < num_col, rng
-
-            rng = _PallasLFSRRNG(seed + i_rows * num_col)
-            i_cols = rng.random_integers(0, clen)
-            i_col_mask = i_cols < num_col
-            jax.lax.fori_loop(0, num_col, body, (i_cols, i_col_mask, rng))
-
-    def run(w_low, w_high, clen, vector, seed):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(pl.cdiv(dim, block_size),),
-            input_output_aliases={5: 0},
-            out_shape=kwargs['outs'],
-            **pallas_triton_params(),
-        )
-        placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
-        return fn(w_low, w_high, clen, vector, seed, placeholder)
-
-    return run
 
 
 def _jitumv_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
@@ -1569,7 +1358,6 @@ jitumv : High-level user-facing function wrapper.
 )
 jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
 jitumv_p.def_cuda_raw_kernel(_jitumv_cuda_kernel, asdefault=True)
-jitumv_p.def_pallas_kernel('tpu', _jitumv_pallas_kernel_generator)
 jitumv_p.def_jvp_rule2(_jitumv_jvp_wlow, _jitumv_jvp_whigh, None, _jitumv_jvp_v, None)
 jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
 jitumv_p.def_batching_rule(_jitumv_batching)
@@ -1653,140 +1441,6 @@ def _jitumm_numba_kernel_generator(
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)
 
     return kernel
-
-
-def _jitumm_pallas_kernel_generator(
-    B_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    """
-    Generate a Pallas Triton GPU kernel for float JIT-uniform matrix-matrix product.
-
-    Parameters
-    ----------
-    B_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the input matrix ``B``.
-    out_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the output matrix.
-    corder : bool, optional
-        If True, vectorize over output rows. If False, vectorize over the
-        shared dimension ``k`` using atomic adds. Default is True.
-    **kwargs
-        Additional keyword arguments, must include ``outs`` specifying
-        output shape/dtype information.
-
-    Returns
-    -------
-    callable
-        A function ``run(w_low, w_high, clen, B, seed)`` that launches
-        the Pallas kernel on GPU and returns the result.
-
-    Notes
-    -----
-    The grid is 2-D: ``(row_or_k_blocks, B_cols)``. Each kernel block
-    processes one column of ``B`` using vector RNG identical to the
-    ``_jit_normal`` implementation.
-    """
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
-
-    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
-
-    B_cols = B_info.shape[1]
-
-    if corder:
-        # Match _jit_normal float.py _jitnmm_pallas corder=True:
-        # Grid: (row_blocks, B_cols). Each kernel block processes one B column,
-        # using vector RNG identical to jitn. Accumulates into 1D local array.
-        out_rows = out_info.shape[0]
-        row_block = generate_block_dim(out_rows, maximum=128)
-        grid = (pl.cdiv(out_rows, row_block), B_cols)
-
-        def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-            k = B_ref.shape[0]
-            w_low0 = w_low_ref[0]
-            w_high0 = w_high_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_row_block = pl.program_id(0)
-            col_j = pl.program_id(1)  # scalar B column index
-
-            # Row indices --- VECTOR
-            i_rows = i_row_block * row_block + jnp.arange(row_block)
-            i_row_mask = i_rows < out_rows
-            safe_rows = jnp.where(i_row_mask, i_rows, 0)
-
-            rng = _PallasLFSRRNG(seed0 + i_rows * k)
-            i_cols = rng.random_integers(0, clen0)  # [row_block]
-            i_col_mask = i_cols < k
-
-            out = jnp.zeros(row_block, dtype=post_ref.dtype)
-
-            def body(_step, data):
-                i_cols, i_col_mask, rng, out = data
-                w = rng.uniform(w_low0, w_high0)  # [row_block]
-                safe_cols = jnp.where(i_col_mask, i_cols, 0)
-                b_vals = B_ref[safe_cols, col_j]  # [row_block] vector gather
-                out += jnp.where(i_col_mask & i_row_mask, w * b_vals, 0.)
-                i_cols += rng.random_integers(1, clen0)
-                return i_cols, i_cols < k, rng, out
-
-            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
-            atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
-
-    else:
-        # Match _jit_normal float.py _jitnmm_pallas corder=False:
-        # Grid: (k_blocks, B_cols). Each block processes one B column.
-        k_dim = B_info.shape[0]
-        k_block = generate_block_dim(k_dim, maximum=128)
-        grid = (pl.cdiv(k_dim, k_block), B_cols)
-
-        def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-            m = post_ref.shape[0]
-            w_low0 = w_low_ref[0]
-            w_high0 = w_high_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_k_block = pl.program_id(0)
-            col_j = pl.program_id(1)  # scalar B column index
-
-            i_ks = i_k_block * k_block + jnp.arange(k_block)
-            i_k_mask = i_ks < k_dim
-            safe_ks = jnp.where(i_k_mask, i_ks, 0)
-
-            # Preload B values for this column (1D vector gather)
-            b_vals = B_ref[safe_ks, col_j]  # [k_block]
-
-            rng = _PallasLFSRRNG(seed0 + i_ks * m)
-            i_rows = rng.random_integers(0, clen0)
-            i_row_mask = i_rows < m
-
-            def body(_step, data):
-                i_rows, i_row_mask, rng = data
-                w = rng.uniform(w_low0, w_high0)  # [k_block]
-                vals = jnp.where(i_k_mask & i_row_mask, w * b_vals, 0.)
-                safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                atomic_add(post_ref, (safe_rows, col_j), vals,
-                           mask=i_k_mask & i_row_mask)
-                i_rows += rng.random_integers(1, clen0)
-                return i_rows, i_rows < m, rng
-
-            jax.lax.fori_loop(0, m, body, (i_rows, i_row_mask, rng))
-
-    def run(w_low, w_high, clen, B, seed):
-        fn = pl.pallas_call(
-            kernel,
-            grid=grid,
-            input_output_aliases={5: 0},
-            out_shape=kwargs['outs'],
-            **pallas_triton_params(),
-        )
-        placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
-        return fn(w_low, w_high, clen, B, seed, placeholder)
-
-    return run
 
 
 def _jitumm_jvp_wlow(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
@@ -2259,7 +1913,6 @@ jitumm : High-level user-facing function wrapper.
 """
 )
 jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
-jitumm_p.def_pallas_kernel('tpu', _jitumm_pallas_kernel_generator)
 jitumm_p.def_cuda_raw_kernel(_jitumm_cuda_kernel, asdefault=True)
 jitumm_p.def_jvp_rule2(_jitumm_jvp_wlow, _jitumm_jvp_whigh, None, _jitumm_jvp_B, None)
 jitumm_p.def_transpose_rule(_jitumm_transpose_rules)

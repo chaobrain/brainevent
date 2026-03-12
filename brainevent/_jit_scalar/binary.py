@@ -23,12 +23,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._compatible_import import pallas_triton_params
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import generate_block_dim, namescope
+from brainevent._misc import namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
-from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 from brainevent._op import load_cuda_file
 from .float import jitsmv_p_call, jitsmm_p_call
@@ -392,121 +390,6 @@ def _jitsmv_numba_kernel(
 
     def kernel(weight, clen, vector, seed, _):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, vector, seed)
-
-    return kernel
-
-
-def _jitsmv_pallas_kernel(
-    vector_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    """
-    Build a Pallas (Triton) GPU kernel for binary event-driven scalar JIT matrix-vector product.
-
-    Parameters
-    ----------
-    vector_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the input vector.
-    out_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the output array.
-    corder : bool, default=True
-        If True, vectorize over output elements. If False, vectorize over
-        input elements with atomic additions.
-    **kwargs : dict
-        Additional keyword arguments, must include ``'outs'``.
-
-    Returns
-    -------
-    callable
-        A kernel function with signature
-        ``(weight, clen, vector, seed, _) -> tuple``.
-    """
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
-
-    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
-
-    dim = out_info.shape[0] if corder else vector_info.shape[0]
-    block_size = generate_block_dim(dim, maximum=128)
-    vector_is_bool = vector_info.dtype == jnp.bool_
-
-    if corder:
-        def pallas_kernel_fn(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-            num_row = vector_ref.shape[0]
-            weight = weight_ref[0]
-            clen = clen_ref[0]
-            seed = seed_ref[0]
-            i_col_block = pl.program_id(0)
-            i_cols = i_col_block * block_size + jnp.arange(block_size)
-            i_col_mask = i_cols < dim
-
-            def body(_step, data):
-                i_rows, i_row_mask, rng, res = data
-                safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                v = vector_ref[safe_rows]
-                v = jnp.where(i_row_mask, v, False if vector_is_bool else 0.)
-                if not vector_is_bool:
-                    v = v > 0.
-                res = jnp.where(v, res + weight, res)
-                i_rows = i_rows + rng.random_integers(1, clen)
-                return i_rows, i_rows < num_row, rng, res
-
-            rng = _PallasLFSRRNG(seed + i_cols * num_row)
-            i_rows = rng.random_integers(0, clen)
-            i_row_mask = i_rows < num_row
-            _, _, _, out = jax.lax.fori_loop(
-                0, num_row, body,
-                (i_rows, i_row_mask, rng, jnp.zeros(block_size, dtype=post_ref.dtype))
-            )
-            post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
-
-        def kernel(weight, clen, vector, seed, _):
-            fn = pl.pallas_call(
-                pallas_kernel_fn,
-                grid=(pl.cdiv(dim, block_size),),
-                input_output_aliases={4: 0},
-                out_shape=kwargs['outs'],
-                **pallas_triton_params(),
-            )
-            return fn(weight, clen, vector, seed, _)
-    else:
-        def pallas_kernel_fn(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-            num_col = post_ref.shape[0]
-            weight = weight_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_row_block = pl.program_id(0)
-            i_rows = i_row_block * block_size + jnp.arange(block_size)
-            i_row_mask = i_rows < dim
-            safe_rows = jnp.where(i_row_mask, i_rows, 0)
-            v = vector_ref[safe_rows]
-            if vector_ref.dtype != jnp.bool_:
-                v = v > 0.
-            event_mask = i_row_mask & v
-
-            def body(_step, data):
-                i_cols, i_col_mask, rng = data
-                vals = jnp.full(block_size, weight, dtype=post_ref.dtype)
-                atomic_add(post_ref, (i_cols,), vals, mask=event_mask & i_col_mask)
-                i_cols = i_cols + rng.random_integers(1, clen0)
-                return i_cols, i_cols < num_col, rng
-
-            rng = _PallasLFSRRNG(seed0 + i_rows * num_col)
-            i_cols = rng.random_integers(0, clen0)
-            i_col_mask = i_cols < num_col
-            jax.lax.fori_loop(0, num_col, body, (i_cols, i_col_mask, rng))
-
-        def kernel(weight, clen, vector, seed, _):
-            fn = pl.pallas_call(
-                pallas_kernel_fn,
-                grid=(pl.cdiv(dim, block_size),),
-                input_output_aliases={4: 0},
-                out_shape=kwargs['outs'],
-                **pallas_triton_params(),
-            )
-            return fn(weight, clen, vector, seed, _)
 
     return kernel
 
@@ -930,7 +813,6 @@ binary_jitsmv : High-level user-facing function wrapper.
 )
 binary_jitsmv_p.def_numba_kernel(_jitsmv_numba_kernel)
 binary_jitsmv_p.def_cuda_raw_kernel(_binary_jitsmv_cuda_kernel, asdefault=True)
-binary_jitsmv_p.def_pallas_kernel('tpu', _jitsmv_pallas_kernel)
 binary_jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, None)
 binary_jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 binary_jitsmv_p.def_batching_rule(_jitsmv_batching)
@@ -1050,123 +932,6 @@ def _jitsmm_numba_kernel(
 
     def kernel(weight, clen, B, seed, _):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, B, seed)
-
-    return kernel
-
-
-def _jitsmm_pallas_kernel(
-    B_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    """
-    Build a Pallas (Triton) GPU kernel for binary event-driven scalar JIT matrix-matrix product.
-
-    Parameters
-    ----------
-    B_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the input matrix ``B``.
-    out_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the output matrix.
-    corder : bool, default=True
-        If True, vectorize over output rows. If False, vectorize over
-        input rows with atomic additions.
-    **kwargs : dict
-        Additional keyword arguments, must include ``'outs'``.
-
-    Returns
-    -------
-    callable
-        A kernel function with signature
-        ``(weight, clen, B, seed, _) -> tuple``.
-    """
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
-
-    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
-
-    B_cols = B_info.shape[1]
-
-    if corder:
-        # Match jits corder=True RNG pattern:
-        # seed by output row, loop over B rows (k), vectorized over output rows.
-        out_rows = out_info.shape[0]
-        row_block = generate_block_dim(out_rows, maximum=128)
-        grid = (pl.cdiv(out_rows, row_block), B_cols)
-
-        def pallas_kernel_fn(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-            k = B_ref.shape[0]
-            weight = weight_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_row_block = pl.program_id(0)
-            col_j = pl.program_id(1)
-
-            i_rows = i_row_block * row_block + jnp.arange(row_block)
-            i_row_mask = i_rows < out_rows
-            safe_rows = jnp.where(i_row_mask, i_rows, 0)
-            rng = _PallasLFSRRNG(seed0 + i_rows * k)
-            i_cols = rng.random_integers(0, clen0)
-            i_col_mask = i_cols < k
-            out = jnp.zeros(row_block, dtype=post_ref.dtype)
-
-            def body(_step, data):
-                i_cols, i_col_mask, rng, out = data
-                safe_cols = jnp.where(i_col_mask, i_cols, 0)
-                events = B_ref[safe_cols, col_j]
-                if B_ref.dtype != jnp.bool_:
-                    events = events > 0.
-                out = jnp.where(i_col_mask & i_row_mask & events, out + weight, out)
-                i_cols = i_cols + rng.random_integers(1, clen0)
-                return i_cols, i_cols < k, rng, out
-
-            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
-            atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
-    else:
-        # Match jits corder=False RNG pattern:
-        # seed by B row index k, loop over output rows, vectorized over k.
-        k_dim = B_info.shape[0]
-        k_block = generate_block_dim(k_dim, maximum=128)
-        grid = (pl.cdiv(k_dim, k_block), B_cols)
-
-        def pallas_kernel_fn(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-            m = post_ref.shape[0]
-            weight = weight_ref[0]
-            clen0 = clen_ref[0]
-            seed0 = seed_ref[0]
-            i_k_block = pl.program_id(0)
-            col_j = pl.program_id(1)
-
-            i_ks = i_k_block * k_block + jnp.arange(k_block)
-            i_k_mask = i_ks < k_dim
-            safe_ks = jnp.where(i_k_mask, i_ks, 0)
-            events = B_ref[safe_ks, col_j]
-            if B_ref.dtype != jnp.bool_:
-                events = events > 0.
-            rng = _PallasLFSRRNG(seed0 + i_ks * m)
-            i_rows = rng.random_integers(0, clen0)
-            i_row_mask = i_rows < m
-
-            def body(_step, data):
-                i_rows, i_row_mask, rng = data
-                vals = jnp.where(i_k_mask & i_row_mask & events, weight, 0.)
-                safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                atomic_add(post_ref, (safe_rows, col_j), vals, mask=i_k_mask & i_row_mask)
-                i_rows = i_rows + rng.random_integers(1, clen0)
-                return i_rows, i_rows < m, rng
-
-            jax.lax.fori_loop(0, m, body, (i_rows, i_row_mask, rng))
-
-    def kernel(weight, clen, B, seed, _):
-        fn = pl.pallas_call(
-            pallas_kernel_fn,
-            grid=grid,
-            input_output_aliases={4: 0},
-            out_shape=kwargs['outs'],
-            **pallas_triton_params(),
-        )
-        return fn(weight, clen, B, seed, _)
 
     return kernel
 
@@ -1540,7 +1305,6 @@ binary_jitsmm : High-level user-facing function wrapper.
 )
 binary_jitsmm_p.def_numba_kernel(_jitsmm_numba_kernel)
 binary_jitsmm_p.def_cuda_raw_kernel(_binary_jitsmm_cuda_kernel, asdefault=True)
-binary_jitsmm_p.def_pallas_kernel('tpu', _jitsmm_pallas_kernel)
 binary_jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
 binary_jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 binary_jitsmm_p.def_batching_rule(_jitsmm_batching)
