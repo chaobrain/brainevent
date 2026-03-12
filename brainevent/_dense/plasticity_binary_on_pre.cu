@@ -119,7 +119,7 @@ void update_dense_on_pre##SUFFIX(                                               
     const BE::Tensor weight,                                                      \
     const BE::Tensor spike,                                                       \
     const BE::Tensor trace,                                                       \
-    const BE::Tensor out_weight,                                                  \
+    BE::Tensor out_weight,                                                        \
     int64_t stream                                                                \
 ) {                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                      \
