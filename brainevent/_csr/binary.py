@@ -493,7 +493,7 @@ def _csrmv_pallas_kernel(
             posts_ref[i_row] = i_row_sum
 
     def kernel(data, indices, indptr, vector):
-        fn = pl.pallas_call(mm, grid=(m,), out_shape=kwargs['outs'], backend='triton')
+        fn = pl.pallas_call(mm, grid=(m,), out_shape=kwargs['outs'])
         return fn(data, indices, indptr, vector)
 
     return kernel
@@ -583,7 +583,7 @@ def _csrmv_pallas_gpu_kernel(
                     jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
         def kernel(data, indices, indptr, vector):
-            fn = pl.pallas_call(mm, grid=(m,), input_output_aliases={4: 0}, out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(mm, grid=(m,), input_output_aliases={4: 0}, out_shape=kwargs['outs'])
             out = kwargs['outs'][0]
             return fn(data, indices, indptr, vector, jnp.zeros(out.shape, dtype=out.dtype))
 

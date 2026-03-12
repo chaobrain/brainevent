@@ -217,7 +217,7 @@ def _binary_densemv_pallas_kernel(
             out_ref[pl.ds(i_col_start, block_dim)] = jnp.where(i_col_mask, i_col_out, 0.0)
 
         def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'])
             return fn(weights, spikes)
 
     else:
@@ -250,7 +250,7 @@ def _binary_densemv_pallas_kernel(
             out_ref[pl.ds(i_row_start, mat_block_dim)] = jnp.where(i_row_mask, i_row_out, 0.0)
 
         def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'])
             return fn(weights, spikes)
 
     return run
@@ -888,7 +888,7 @@ def _binary_densemm_pallas_kernel(
             # Convert bool to float to avoid Pallas Triton boolean buffer corruption
             if spikes.dtype == jnp.bool_:
                 spikes = jnp.asarray(spikes, dtype=weights.dtype)
-            fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'])
             return fn(weights, spikes)
 
     else:
@@ -918,7 +918,7 @@ def _binary_densemm_pallas_kernel(
             # Convert bool to float to avoid Pallas Triton boolean buffer corruption
             if spikes.dtype == jnp.bool_:
                 spikes = jnp.asarray(spikes, dtype=weights.dtype)
-            fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'])
             return fn(weights, spikes)
 
     return run

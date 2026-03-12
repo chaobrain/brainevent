@@ -418,7 +418,7 @@ def _csrmv_pallas_kernel_generator(
 
         def kernel(data, indices, indptr, vector):
             launch_rows = shape[0]
-            fn = pl.pallas_call(mv, grid=(launch_rows,), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(mv, grid=(launch_rows,), out_shape=kwargs['outs'])
             return fn(data, indices, indptr, vector)
 
     return kernel

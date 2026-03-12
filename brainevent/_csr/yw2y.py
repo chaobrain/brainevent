@@ -311,7 +311,7 @@ def _csrmv_yw2y_pallas_kernels(
             jax.lax.cond(i_block < num_blocks_grid, _body, lambda: None)
 
         def kernel(y, w, indices, indptr):
-            fn = pl.pallas_call(mm, grid=(shape[0],), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(mm, grid=(shape[0],), out_shape=kwargs['outs'])
             return fn(y, w, indptr)
 
     return kernel

@@ -384,87 +384,7 @@ See Also
 update_dense_on_binary_pre : High-level user-facing function wrapper.
 """
 )
-def _dense_on_pre_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    spike_info: jax.ShapeDtypeStruct,
-    trace_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    n_pre, n_post = weight_info.shape
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
-    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if spike_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(weight: weight_warp_info,
-                   spike: spike_warp_info,
-                   trace: trace_warp_info,
-                   out_w: out_warp_info):
-            i, j = warp.tid()
-            out_w[i, j] = weight[i, j] + trace[j] if spike[i] else weight[i, j]
-    else:
-        @warp.kernel
-        def kernel(weight: weight_warp_info,
-                   spike: spike_warp_info,
-                   trace: trace_warp_info,
-                   out_w: out_warp_info):
-            i, j = warp.tid()
-            out_w[i, j] = weight[i, j] + trace[j] if spike[i] != 0. else weight[i, j]
-
-    def run(weight, spike, trace):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=(n_pre, n_post), num_outputs=1, output_dims={'out_w': out_info.shape})
-        return fn(weight, spike, trace)
-
-    return run
-
-
-def _dense_on_post_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    spike_info: jax.ShapeDtypeStruct,
-    trace_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    n_pre, n_post = weight_info.shape
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if spike_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(weight: weight_warp_info,
-                   trace: trace_warp_info,
-                   spike: spike_warp_info,
-                   out_w: out_warp_info):
-            i, j = warp.tid()
-            out_w[i, j] = weight[i, j] + trace[i] if spike[j] else weight[i, j]
-    else:
-        @warp.kernel
-        def kernel(weight: weight_warp_info,
-                   trace: trace_warp_info,
-                   spike: spike_warp_info,
-                   out_w: out_warp_info):
-            i, j = warp.tid()
-            out_w[i, j] = weight[i, j] + trace[i] if spike[j] != 0. else weight[i, j]
-
-    def run(weight, trace, spike):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=(n_pre, n_post), num_outputs=1, output_dims={'out_w': out_info.shape})
-        return fn(weight, trace, spike)
-
-    return run
-
 update_dense_on_binary_pre_p.def_numba_kernel(_dense_on_pre_numba_kernel)
-update_dense_on_binary_pre_p.def_warp_kernel(_dense_on_pre_warp_kernel)
 update_dense_on_binary_pre_p.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel)
 update_dense_on_binary_pre_p.def_cuda_raw_kernel(_dense_on_pre_cuda_kernel, asdefault=True)
 update_dense_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _dense_on_pre_jax_kernel)
@@ -821,7 +741,6 @@ update_dense_on_binary_post : High-level user-facing function wrapper.
 """
 )
 update_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
-update_dense_on_binary_post_p.def_warp_kernel(_dense_on_post_warp_kernel)
 update_dense_on_binary_post_p.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel)
 update_dense_on_binary_post_p.def_cuda_raw_kernel(_dense_on_post_cuda_kernel, asdefault=True)
 update_dense_on_binary_post_p.def_kernel('jax_raw', 'cpu', _dense_on_post_jax_kernel)

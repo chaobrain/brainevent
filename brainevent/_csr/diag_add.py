@@ -440,40 +440,6 @@ def _csr_diag_add_numba_kernel_generator(
     return kernel
 
 
-def _csr_diag_add_pallas_kernel_generator(
-    csr_value_info: jax.ShapeDtypeStruct,
-    diag_pos_info: jax.ShapeDtypeStruct,
-    diag_value_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
-
-    total = diag_pos_info.shape[0]
-    block_dim = generate_block_dim(total, 512)
-
-    def diag_add_pallas(csr_value_ref, diag_position_ref, diag_value_ref, _, out_ref):
-        i_tile = pl.program_id(0)
-        i_tile_start = i_tile * block_dim
-        mask = (i_tile_start + jnp.arange(block_dim)) < total
-        positions = diag_position_ref[pl.ds(i_tile_start, block_dim)]
-        values = diag_value_ref[pl.ds(i_tile_start, block_dim)]
-        valid_mask = mask & (positions >= 0)
-        atomic_add(out_ref, positions, values, mask=valid_mask)
-
-    def kernel(csr_value, diag_position, diag_value):
-        fn = pl.pallas_call(
-            diag_add_pallas,
-            grid=(pl.cdiv(total, block_dim),),
-            input_output_aliases={3: 0},
-            out_shape=kwargs['outs'],
-            backend='triton',
-        )
-        return fn(csr_value, diag_position, diag_value, jnp.array(csr_value))
-
-    return kernel
-
-
 def _csr_diag_add_jvp_csr_value(dot, csr_value, diag_position, diag_value, **kwargs):
     return (dot,)
 
@@ -602,42 +568,7 @@ See Also
 csr_diag_add : High-level user-facing function wrapper.
 """
 )
-def _csr_diag_add_warp_kernel_generator(
-    csr_value_info: jax.ShapeDtypeStruct,
-    diag_pos_info: jax.ShapeDtypeStruct,
-    diag_value_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp  # pylint: disable=import-outside-toplevel
-    from warp.jax_experimental import jax_kernel
-
-    csr_value_warp_info = jaxinfo_to_warpinfo(csr_value_info)
-    diag_pos_warp_info = jaxinfo_to_warpinfo(diag_pos_info)
-    diag_value_warp_info = jaxinfo_to_warpinfo(diag_value_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    @warp.kernel
-    def diag_add_warp(
-        csr_value: csr_value_warp_info,
-        diag_position: diag_pos_warp_info,
-        diag_value: diag_value_warp_info,
-        out: out_warp_info
-    ):
-        i_diag = warp.tid()
-        pos = diag_position[i_diag]
-        if pos >= 0:
-            out[pos] += diag_value[i_diag]
-
-    def kernel(csr_value, diag_position, diag_value):
-        dim = diag_pos_info.shape[0]
-        fn = jax_kernel(diag_add_warp, launch_dims=[dim], num_outputs=1, in_out_argnames=['out'])
-        return fn(csr_value, diag_position, diag_value, jnp.array(csr_value))
-
-    return kernel
-
 csr_diag_add_p.def_numba_kernel(_csr_diag_add_numba_kernel_generator)
-csr_diag_add_p.def_warp_kernel(_csr_diag_add_warp_kernel_generator)
-csr_diag_add_p.def_pallas_kernel('gpu', _csr_diag_add_pallas_kernel_generator)
 csr_diag_add_p.def_jvp_rule2(_csr_diag_add_jvp_csr_value, None, _csr_diag_add_jvp_diag_value)
 csr_diag_add_p.def_call(csr_diag_add_call)
 csr_diag_add_p.def_tags('csr', 'diag')
