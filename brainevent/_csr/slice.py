@@ -158,7 +158,7 @@ def _csr_slice_rows_batching(args, axes, **kwargs):
         )
         out = result[0].reshape(batch_size, num_sel, kwargs['shape'][1])
         return (out,), (0,)
-    return general_batching_rule(csr_slice_rows_p, args, axes, **kwargs)
+    return general_batching_rule(csr_slice_rows_p.primitive, args, axes, **kwargs)
 
 
 def _csr_slice_rows_benchmark_data(*, platform):
