@@ -25,6 +25,12 @@
 #
 
 
+import sys
+from pathlib import Path
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import time
 
 import brainunit as u
@@ -32,8 +38,9 @@ import jax
 
 import brainevent
 from COBA_2005_benchmark import make_simulation_run
+from CsvOutput import CSV_record
 
-brainevent.config.set_backend('gpu', 'cuda_raw')
+brainevent.config.set_backend('gpu', 'jax_raw')
 
 
 def benchmark_post_conn(
@@ -104,6 +111,7 @@ def benchmark_post_conn(
     # scale=60, size=240000, time = 120.33725643157959 s, firing rate = 59.5693473815918 Hz
 
     print('Benchmarking post-synaptic connection updates...')
+    csv_recorder = CSV_record('binary_post', 'fcnmv', 'coba')
 
     for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
         run = make_simulation_run(
@@ -120,11 +128,13 @@ def benchmark_post_conn(
         n, rate = jax.block_until_ready(run())
         t1 = time.time()
         print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
-
+        csv_recorder.single_COBA_data_add('fcnmv', data_type, 'post' ,conn_num, s, t1 - t0, rate, 1e2)
+    csv_recorder.record_finish('default')
 
 def benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms):
     print('Benchmarking pre-synaptic connection updates...')
 
+    csv_recorder = CSV_record('binary_pre', 'fcnmv', 'coba')
     for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
         run = make_simulation_run(
             scale=s,
@@ -140,9 +150,12 @@ def benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms):
         n, rate = jax.block_until_ready(run())
         t1 = time.time()
         print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
+        csv_recorder.single_COBA_data_add('fcnmv', 'binary', 'pre' ,conn_num, s, t1 - t0, rate, 1e2)
+
+    csv_recorder.record_finish('default')
 
 
 if __name__ == '__main__':
     benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms)
     benchmark_post_conn(conn_num=80, data_type='bitpack', duration=1e4 * u.ms)
-    # benchmark_pre_conn()
+    benchmark_pre_conn()

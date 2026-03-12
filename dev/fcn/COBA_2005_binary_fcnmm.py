@@ -24,6 +24,11 @@
 # - Vogels, T. P. and Abbott, L. F. (2005), Signal propagation and logic gating in networks of integrate-and-fire neurons., J. Neurosci., 25, 46, 10786–95
 #
 
+import sys
+from pathlib import Path
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import time
 
@@ -33,9 +38,11 @@ import jax
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
 
-brainevent.config.set_backend('gpu', 'cuda_raw')
+brainevent.config.set_backend('gpu', 'jax_raw')
 
 batch_size, conn_num, data_type, duration = 16, 80, 'binary', 1e3 * u.ms
+
+from CsvOutput import CSV_record
 
 
 def benchmark_post_conn():
@@ -72,7 +79,9 @@ def benchmark_post_conn():
     # scale=100, size=400000, time = 20.511342525482178 s, firing rate = 59.44398880004883 Hz
     print('Benchmarking post-synaptic connection updates...')
 
-    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+    csv_recorder = CSV_record('binary_post', 'fcnmm', 'coba')
+
+    for s in [1, 2, 4, 6, 8, 10]:
         run = make_simulation_batch_run(
             scale=s,
             batch_size=batch_size,
@@ -87,13 +96,20 @@ def benchmark_post_conn():
         t0 = time.time()
         n, rate = jax.block_until_ready(run())
         t1 = time.time()
-        print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
-
+        elapsed = t1 - t0
+        print(f'scale={s}, size={n}, time = {elapsed} s, firing rate = {rate} Hz')
+        try:
+            csv_recorder.single_COBA_data_add('fcnmm', 'binary', 'post', conn_num, s, elapsed, rate, duration)
+        except Exception:
+            pass
+    csv_recorder.record_finish('default')
 
 def benchmark_pre_conn():
     print('Benchmarking pre-synaptic connection updates...')
 
-    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+    csv_recorder = CSV_record('binary_pre', 'fcnmm', 'coba')
+
+    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60]:
         run = make_simulation_batch_run(
             scale=s,
             batch_size=batch_size,
@@ -108,8 +124,16 @@ def benchmark_pre_conn():
         t0 = time.time()
         n, rate = jax.block_until_ready(run())
         t1 = time.time()
-        print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
-
+        elapsed = t1 - t0
+        print(f'scale={s}, size={n}, time = {elapsed} s, firing rate = {rate} Hz')
+        try:
+            csv_recorder.single_COBA_data_add('fcnmm', 'binary', 'pre', conn_num, s, elapsed, rate, 1e2 * u.ms)
+        except Exception:
+            pass
+    try:
+        csv_recorder.record_finish('default')
+    except Exception:
+        pass
 
 def run_benchmark(batch_size, conn_num, mode='post'):
     
@@ -121,6 +145,9 @@ def run_benchmark(batch_size, conn_num, mode='post'):
 
     # Scales to benchmark (network sizes: scale * 4000 neurons)
     SCALES = [1, 4, 10, 40, 100]
+
+    # CSV recorder for this configuration
+    csv_recorder = CSV_record(f'binary_bs{batch_size}_conn{conn_num}', 'fcnmm', 'benchmark')
 
     for s in SCALES:
         dur = 1e3 * u.ms if mode == 'post' else 1e2 * u.ms
@@ -143,6 +170,18 @@ def run_benchmark(batch_size, conn_num, mode='post'):
         elapsed = t1 - t0
         print(f"  scale={s:>3d}, neurons={n:>6d}, "
               f"time={elapsed:>8.3f}s, rate={rate:.1f} Hz")
+        # record to CSV
+        try:
+            csv_recorder.single_COBA_data_add('fcnmm', 'binary', mode, conn_num, s, elapsed, rate, dur)
+        except Exception:
+            # best-effort: avoid crashing benchmark on CSV failures
+            pass
+
+    # flush CSV for this config
+    try:
+        csv_recorder.record_finish('default')
+    except Exception:
+        pass
 
 
 def bench_fcnmm():
@@ -408,6 +447,7 @@ def bench_fcnmm():
 
 
 if __name__ == '__main__':
-    benchmark_post_conn()
-    # bench_fcnmm()
-    # benchmark_pre_conn()
+    #benchmark_post_conn()
+    benchmark_pre_conn()
+    #bench_fcnmm()
+    

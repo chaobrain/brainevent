@@ -432,3 +432,194 @@ FFI_BS_HETERO(_bool_bf16, __nv_bfloat16, uint8_t)
 FFI_BS_HOMO  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
 // @BE binary_fcnmv_scatter_hetero_float_bf16
 FFI_BS_HETERO(_float_bf16, __nv_bfloat16, __nv_bfloat16)
+
+
+// ----------------------------------------------------------------------------------------------------
+/// cuda_raw_unbranch
+///
+
+#define DEFINE_BG_MR_HOMO_RAW_UNBRANCH(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, WARP_RED, ACC_ZERO) \
+    __global__ void _bg_mr_homo_kern_raw_unbranch##SUFFIX(                                                               \
+        const int32_t *__restrict__ indices,                                                                             \
+        const SPIKE_T *__restrict__ spikes,                                                                              \
+        WEIGHT_T *__restrict__ output,                                                                                   \
+        const WEIGHT_T *__restrict__ weights,                                                                            \
+        int n_pre, int n_conn) {                                                                                         \
+        int row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);                                                   \
+        if (row >= n_pre)                                                                                                \
+            return;                                                                                                      \
+        int lane = threadIdx.x & 31;                                                                                     \
+        const int32_t *i_row = indices + (size_t)row * n_conn;                                                           \
+        ACC_T val = ACC_ZERO;                                                                                            \
+        int main_iters = n_conn >> 5;                                                                                    \
+        int tail = n_conn & 31;                                                                                          \
+        int k = lane;                                                                                                    \
+        int limit = main_iters & ~1;                                                                                     \
+        for (int i = 0; i < limit; i += 2)                                                                               \
+        {                                                                                                                \
+            int idx0 = __ldg(&i_row[k]);                                                                                 \
+            int idx1 = __ldg(&i_row[k + 32]);                                                                            \
+            SPIKE_T spk0 = __ldg(&spikes[idx0]);                                                                         \
+            SPIKE_T spk1 = __ldg(&spikes[idx1]);                                                                         \
+            if (IS_ACTIVE(spk0))                                                                                         \
+                val += (ACC_T)1;                                                                                         \
+            if (IS_ACTIVE(spk1))                                                                                         \
+                val += (ACC_T)1;                                                                                         \
+            k += 64;                                                                                                     \
+        }                                                                                                                \
+        if (main_iters & 1)                                                                                              \
+        {                                                                                                                \
+            int idx = __ldg(&i_row[k]);                                                                                  \
+            if (IS_ACTIVE(__ldg(&spikes[idx])))                                                                          \
+                val += (ACC_T)1;                                                                                         \
+            k += 32;                                                                                                     \
+        }                                                                                                                \
+        if (lane < tail)                                                                                                 \
+        {                                                                                                                \
+            int idx = __ldg(&i_row[k]);                                                                                  \
+            if (IS_ACTIVE(__ldg(&spikes[idx])))                                                                          \
+                val += (ACC_T)1;                                                                                         \
+        }                                                                                                                \
+        val = WARP_RED(val);                                                                                             \
+        if (lane == 0)                                                                                                   \
+            output[row] = WRITE_W(READ_W(weights[0]) * val);                                                             \
+    }
+    
+#define DEFINE_BG_MR_HETERO_RAW_UNBRANCH(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, WARP_RED, ACC_ZERO) \
+    __global__ void _bg_mr_hetero_kern_raw_unbranch##SUFFIX(                                                       \
+        const int32_t *__restrict__ indices,                                                                       \
+        const SPIKE_T *__restrict__ spikes,                                                                        \
+        WEIGHT_T *__restrict__ output,                                                                             \
+        const WEIGHT_T *__restrict__ weights,                                                                      \
+        int n_pre, int n_conn                                                                                      \
+    ) {                                                                                                            \
+        int row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);                                             \
+        if (row >= n_pre) return;                                                                                  \
+                                                                                                                   \
+        int lane = threadIdx.x & 31;                                                                               \
+        const int32_t* i_row = indices + (size_t)row * n_conn;                                                     \
+        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                                    \
+        ACC_T val = ACC_ZERO;                                                                                      \
+                                                                                                                   \
+        int main_iters = n_conn >> 5;                                                                              \
+        int tail = n_conn & 31;                                                                                    \
+        int k = lane;                                                                                              \
+        int limit = main_iters & ~1;                                                                               \
+                                                                                                                   \
+        for (int i = 0; i < limit; i += 2) {                                                                       \
+            int idx0 = __ldg(&i_row[k]);                                                                           \
+            int idx1 = __ldg(&i_row[k + 32]);                                                                      \
+            SPIKE_T spk0 = __ldg(&spikes[idx0]);                                                                   \
+            SPIKE_T spk1 = __ldg(&spikes[idx1]);                                                                   \
+                                                                                                                   \
+            if (IS_ACTIVE(spk0)) val += READ_W(__ldg(&w_row[k]));                                                  \
+            if (IS_ACTIVE(spk1)) val += READ_W(__ldg(&w_row[k + 32]));                                             \
+            k += 64;                                                                                               \
+        }                                                                                                          \
+                                                                                                                   \
+        if (main_iters & 1) {                                                                                      \
+            int idx = __ldg(&i_row[k]);                                                                            \
+            if (IS_ACTIVE(__ldg(&spikes[idx]))) val += READ_W(__ldg(&w_row[k]));                                   \
+            k += 32;                                                                                               \
+        }                                                                                                          \
+                                                                                                                   \
+        if (lane < tail) {                                                                                         \
+            int idx = __ldg(&i_row[k]);                                                                            \
+            if (IS_ACTIVE(__ldg(&spikes[idx]))) val += READ_W(__ldg(&w_row[k]));                                   \
+        }                                                                                                          \
+                                                                                                                   \
+        val = WARP_RED(val);                                                                                       \
+        if (lane == 0) output[row] = WRITE_W(val);                                                                 \
+    }
+
+#define FFI_BG_HOMO_BASIC_RAW_UNBRANCH(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                            \
+    void binary_fcnmv_gather_homo_basic_raw_unbranch##SUFFIX(                                                    \
+        const BE::Tensor weights, const BE::Tensor indices,                                                      \
+        const BE::Tensor spikes, BE::Tensor output, int64_t stream)                                              \
+    {                                                                                                            \
+        cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                 \
+        int n_pre = static_cast<int>(indices.size(0));                                                           \
+        int n_conn = static_cast<int>(indices.size(1));                                                          \
+        const WEIGHT_C_T *d_w = static_cast<const WEIGHT_C_T *>(weights.data_ptr());                             \
+        const int32_t *d_idx = static_cast<const int32_t *>(indices.data_ptr());                                 \
+        const SPIKE_C_T *d_spk = static_cast<const SPIKE_C_T *>(spikes.data_ptr());                              \
+        WEIGHT_C_T *d_out = static_cast<WEIGHT_C_T *>(output.data_ptr());                                        \
+        int bsz = 256;                                                                                           \
+        int rpb = bsz >> 5;                                                                                      \
+        int n_blocks = (n_pre + rpb - 1) / rpb;                                                                  \
+        _bg_mr_homo_kern_raw_unbranch##SUFFIX<<<n_blocks, bsz, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn); \
+    }
+
+#define FFI_BG_HETERO_BASIC_RAW_UNBRANCH(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                            \
+    void binary_fcnmv_gather_hetero_basic_raw_unbranch##SUFFIX(                                                    \
+        const BE::Tensor weights, const BE::Tensor indices,                                                        \
+        const BE::Tensor spikes, BE::Tensor output, int64_t stream)                                                \
+    {                                                                                                              \
+        cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                   \
+        int n_pre = static_cast<int>(indices.size(0));                                                             \
+        int n_conn = static_cast<int>(indices.size(1));                                                            \
+        const WEIGHT_C_T *d_w = static_cast<const WEIGHT_C_T *>(weights.data_ptr());                               \
+        const int32_t *d_idx = static_cast<const int32_t *>(indices.data_ptr());                                   \
+        const SPIKE_C_T *d_spk = static_cast<const SPIKE_C_T *>(spikes.data_ptr());                                \
+        WEIGHT_C_T *d_out = static_cast<WEIGHT_C_T *>(output.data_ptr());                                          \
+        int bsz = 256;                                                                                             \
+        int rpb = bsz >> 5;                                                                                        \
+        int n_blocks = (n_pre + rpb - 1) / rpb;                                                                    \
+        _bg_mr_hetero_kern_raw_unbranch##SUFFIX<<<n_blocks, bsz, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn); \
+    }
+
+DEFINE_BG_MR_HOMO_RAW_UNBRANCH(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_BG_MR_HETERO_RAW_UNBRANCH(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_BG_MR_HOMO_RAW_UNBRANCH(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_BG_MR_HETERO_RAW_UNBRANCH(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+
+DEFINE_BG_MR_HOMO_RAW_UNBRANCH(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_BG_MR_HETERO_RAW_UNBRANCH(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_BG_MR_HOMO_RAW_UNBRANCH(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_BG_MR_HETERO_RAW_UNBRANCH(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+
+DEFINE_BG_MR_HOMO_RAW_UNBRANCH(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_BG_MR_HETERO_RAW_UNBRANCH(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_BG_MR_HOMO_RAW_UNBRANCH(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_BG_MR_HETERO_RAW_UNBRANCH(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+
+DEFINE_BG_MR_HOMO_RAW_UNBRANCH(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_BG_MR_HETERO_RAW_UNBRANCH(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_BG_MR_HOMO_RAW_UNBRANCH(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_BG_MR_HETERO_RAW_UNBRANCH(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+
+// @BE binary_fcnmv_gather_homo_basic_raw_unbranch_bool_f32
+FFI_BG_HOMO_BASIC_RAW_UNBRANCH(_bool_f32, float, uint8_t)
+// @BE binary_fcnmv_gather_hetero_basic_raw_unbranch_bool_f32
+FFI_BG_HETERO_BASIC_RAW_UNBRANCH(_bool_f32, float, uint8_t)
+// @BE binary_fcnmv_gather_homo_basic_raw_unbranch_float_f32
+FFI_BG_HOMO_BASIC_RAW_UNBRANCH(_float_f32, float, float)
+// @BE binary_fcnmv_gather_hetero_basic_raw_unbranch_float_f32
+FFI_BG_HETERO_BASIC_RAW_UNBRANCH(_float_f32, float, float)
+
+// @BE binary_fcnmv_gather_homo_basic_raw_unbranch_bool_f64
+FFI_BG_HOMO_BASIC_RAW_UNBRANCH(_bool_f64, double, uint8_t)
+// @BE binary_fcnmv_gather_hetero_basic_raw_unbranch_bool_f64
+FFI_BG_HETERO_BASIC_RAW_UNBRANCH(_bool_f64, double, uint8_t)
+// @BE binary_fcnmv_gather_homo_basic_raw_unbranch_float_f64
+FFI_BG_HOMO_BASIC_RAW_UNBRANCH(_float_f64, double, double)
+// @BE binary_fcnmv_gather_hetero_basic_raw_unbranch_float_f64
+FFI_BG_HETERO_BASIC_RAW_UNBRANCH(_float_f64, double, double)
+
+// @BE binary_fcnmv_gather_homo_basic_raw_unbranch_bool_f16
+FFI_BG_HOMO_BASIC_RAW_UNBRANCH(_bool_f16, __half, uint8_t)
+// @BE binary_fcnmv_gather_hetero_basic_raw_unbranch_bool_f16
+FFI_BG_HETERO_BASIC_RAW_UNBRANCH(_bool_f16, __half, uint8_t)
+// @BE binary_fcnmv_gather_homo_basic_raw_unbranch_float_f16
+FFI_BG_HOMO_BASIC_RAW_UNBRANCH(_float_f16, __half, __half)
+// @BE binary_fcnmv_gather_hetero_basic_raw_unbranch_float_f16
+FFI_BG_HETERO_BASIC_RAW_UNBRANCH(_float_f16, __half, __half)
+
+// @BE binary_fcnmv_gather_homo_basic_raw_unbranch_bool_bf16
+FFI_BG_HOMO_BASIC_RAW_UNBRANCH(_bool_bf16, __nv_bfloat16, uint8_t)
+// @BE binary_fcnmv_gather_hetero_basic_raw_unbranch_bool_bf16
+FFI_BG_HETERO_BASIC_RAW_UNBRANCH(_bool_bf16, __nv_bfloat16, uint8_t)
+// @BE binary_fcnmv_gather_homo_basic_raw_unbranch_float_bf16
+FFI_BG_HOMO_BASIC_RAW_UNBRANCH(_float_bf16, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_fcnmv_gather_hetero_basic_raw_unbranch_float_bf16
+FFI_BG_HETERO_BASIC_RAW_UNBRANCH(_float_bf16, __nv_bfloat16, __nv_bfloat16)
