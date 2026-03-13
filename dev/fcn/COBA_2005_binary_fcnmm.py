@@ -46,6 +46,7 @@ from CsvOutput import CSV_record, ResultPrinting
 
 backends = ['jax_raw', 'cuda_raw']
 rp = ResultPrinting()
+homo = False
 
 
 def benchmark_post_conn():
@@ -87,8 +88,8 @@ def benchmark_post_conn():
     for backend in backends:
         brainevent.config.set_backend('gpu', backend)
         rp.print_header(operator='fcnmm', data_type=data_type, backend=backend,
-                        mode='post', batch_size=batch_size, conn_num=conn_num,
-                        duration_ms=dur_ms)
+                mode='post', batch_size=batch_size, conn_num=conn_num,
+                duration_ms=dur_ms, homo=('homo' if homo else 'hetero'))
         rp.print_table_header()
 
         for s in [1, 2, 4, 6, 8, 10]:
@@ -99,6 +100,7 @@ def benchmark_post_conn():
                 efferent_target='post',
                 duration=duration,
                 conn_num=conn_num,
+                homo=homo,
             )
 
             jax.block_until_ready(run())
@@ -109,7 +111,7 @@ def benchmark_post_conn():
             elapsed = t1 - t0
             rp.print_row(s, n, elapsed, float(rate))
             try:
-                csv_recorder.single_COBA_data_add('fcnmm', data_type, backend, 'post', conn_num, s, elapsed, float(rate), dur_ms)
+                csv_recorder.single_COBA_data_add('fcnmm', data_type, backend, 'post', conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
             except Exception:
                 pass
     csv_recorder.record_finish('default')
@@ -123,8 +125,8 @@ def benchmark_pre_conn():
     for backend in backends:
         brainevent.config.set_backend('gpu', backend)
         rp.print_header(operator='fcnmm', data_type='binary', backend=backend,
-                        mode='pre', batch_size=batch_size, conn_num=conn_num,
-                        duration_ms=dur_ms)
+                mode='pre', batch_size=batch_size, conn_num=conn_num,
+                duration_ms=dur_ms, homo=('homo' if homo else 'hetero'))
         rp.print_table_header()
 
         for s in [1, 2, 4, 6, 8, 10, 20, 40, 60]:
@@ -135,6 +137,7 @@ def benchmark_pre_conn():
                 efferent_target='pre',
                 duration=pre_duration,
                 conn_num=conn_num,
+                homo=homo,
             )
 
             jax.block_until_ready(run())
@@ -145,7 +148,7 @@ def benchmark_pre_conn():
             elapsed = t1 - t0
             rp.print_row(s, n, elapsed, float(rate))
             try:
-                csv_recorder.single_COBA_data_add('fcnmm', 'binary', backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms)
+                csv_recorder.single_COBA_data_add('fcnmm', 'binary', backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
             except Exception:
                 pass
     try:
@@ -167,8 +170,8 @@ def run_benchmark(batch_size, conn_num, mode='post'):
     for backend in backends:
         brainevent.config.set_backend('gpu', backend)
         rp.print_header(operator='fcnmm', data_type='binary', backend=backend,
-                        mode=mode, batch_size=batch_size, conn_num=conn_num,
-                        duration_ms=dur_ms, kernel=kernel)
+                mode=mode, batch_size=batch_size, conn_num=conn_num,
+                duration_ms=dur_ms, kernel=kernel, homo=('homo' if homo else 'hetero'))
         rp.print_table_header()
 
         for s in SCALES:
@@ -179,6 +182,7 @@ def run_benchmark(batch_size, conn_num, mode='post'):
                 efferent_target=mode,
                 duration=dur,
                 conn_num=conn_num,
+                homo=homo,
             )
 
             # Warmup
@@ -191,7 +195,7 @@ def run_benchmark(batch_size, conn_num, mode='post'):
             elapsed = t1 - t0
             rp.print_row(s, n, elapsed, float(rate))
             try:
-                csv_recorder.single_COBA_data_add('fcnmm', 'binary', backend, mode, conn_num, s, elapsed, float(rate), dur_ms)
+                csv_recorder.single_COBA_data_add('fcnmm', 'binary', backend, mode, conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
             except Exception:
                 pass
 

@@ -175,6 +175,7 @@ class EINet(brainstate.nn.Module):
 
 def make_simulation_run(
     scale: float,
+    homo: bool,
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
@@ -182,7 +183,7 @@ def make_simulation_run(
 ):
     @brainstate.transform.jit
     def run():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num, homo= homo)
         net.init_all_states()
 
         def fn(t):
@@ -199,12 +200,14 @@ def make_simulation_run(
 
 def make_training_run(
     scale: float,
+    homo: bool,
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    
 ):
     def loss_fn():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, homo= homo)
         net.init_all_states()
 
         def fn(t):
@@ -227,6 +230,7 @@ def make_training_run(
 
 def make_simulation_batch_run(
     scale: float,
+    homo: bool,
     batch_size: int = 16,
     data_type: str = 'binary',
     efferent_target: str = 'post',
@@ -235,7 +239,7 @@ def make_simulation_batch_run(
 ):
     @brainstate.transform.jit
     def run():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num, homo= homo)
         mapper = brainstate.nn.Map(net, init_map_size=batch_size)
         mapper.init_all_states()
 
@@ -254,6 +258,7 @@ def make_simulation_batch_run(
 
 def make_training_batch_run(
     scale: float,
+    homo: bool,
     batch_size: int = 16,
     data_type: str = 'binary',
     efferent_target: str = 'post',
@@ -261,7 +266,7 @@ def make_training_batch_run(
     conn_num: int = 80,
 ):
     def loss_fn():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num, homo= homo)
         mapper = brainstate.nn.Map(net, init_map_size=batch_size)
         mapper.init_all_states()
 

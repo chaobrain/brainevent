@@ -46,9 +46,10 @@ brainevent.config.set_backend('gpu', 'cuda_raw')
 
 backends = ['jax_raw', 'cuda_raw']
 rp = ResultPrinting(width=90)
+homo = False
 
 
-def benchmark_one(data_type, efferent_target, scales, batch_size=16, conn_num=80, duration=1e3 * u.ms):
+def benchmark_one(data_type, efferent_target, scales, batch_size=16, conn_num=80, duration=1e3 * u.ms, homo=False):
     results = {}
     for s in scales:
         run = make_simulation_batch_run(
@@ -58,6 +59,7 @@ def benchmark_one(data_type, efferent_target, scales, batch_size=16, conn_num=80
             efferent_target=efferent_target,
             duration=duration,
             conn_num=conn_num,
+            homo=homo,
         )
         # warmup
         jax.block_until_ready(run())
@@ -118,7 +120,7 @@ def compare_all(efferent_target='post', batch_size=16, conn_num=80, duration=1e3
             for dt in data_types:
                 csv_recorder.single_COBA_data_add(
                     'fcnmm', dt, backend, efferent_target, conn_num, s,
-                    times[dt], rates[dt], dur_ms
+                    times[dt], rates[dt], dur_ms, homo=('homo' if homo else 'hetero')
                 )
     csv_recorder.record_finish('default')
 

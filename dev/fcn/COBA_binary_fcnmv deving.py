@@ -45,14 +45,15 @@ brainevent.config.set_backend('gpu', 'cuda_raw')
 
 
 scales = [1, 60]
-backends = ['jax_raw', 'cuda_raw']
+backends = ['jax_raw']
 
-
+homo = False
+duration = 1 * u.ms
 rp = ResultPrinting()
 
 
 def benchmark_post_conn(
-    conn_num=80, data_type='binary', duration=1e4 * u.ms
+    conn_num=80, data_type='binary', duration=duration
 ): 
     print('Benchmarking post-synaptic connection updates...')
     csv_recorder = CSV_record('binary_post', 'fcnmv', 'coba')
@@ -68,7 +69,8 @@ def benchmark_post_conn(
                 data_type=data_type,
                 efferent_target='post',
                 duration=duration,
-                conn_num=conn_num
+                conn_num=conn_num,
+                homo = homo
             )
 
             jax.block_until_ready(run())
@@ -78,10 +80,10 @@ def benchmark_post_conn(
             t1 = time.time()
             elapsed = t1 - t0
             rp.print_row(s, n, elapsed, float(rate))
-            csv_recorder.single_COBA_data_add('fcnmv', data_type, backend, 'post', conn_num, s, elapsed, float(rate), dur_ms)
+            csv_recorder.single_COBA_data_add('fcnmv', data_type, backend, 'post', conn_num, s, elapsed, float(rate), dur_ms, homo= "homo" if homo else "hetero")
     csv_recorder.record_finish('default')
 
-def benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e2 * u.ms):
+def benchmark_pre_conn(conn_num=80, data_type='binary', duration=duration):
     print('Benchmarking pre-synaptic connection updates...')
 
     csv_recorder = CSV_record('binary_pre', 'fcnmv', 'coba')
@@ -98,6 +100,7 @@ def benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e2 * u.ms):
                 efferent_target='pre',
                 duration=duration,
                 conn_num=conn_num,
+                homo = homo
             )
 
             jax.block_until_ready(run())
@@ -107,7 +110,7 @@ def benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e2 * u.ms):
             t1 = time.time()
             elapsed = t1 - t0
             rp.print_row(s, n, elapsed, float(rate))
-            csv_recorder.single_COBA_data_add('fcnmv', data_type, backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms)
+            csv_recorder.single_COBA_data_add('fcnmv', data_type, backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms, homo= "homo" if homo else "hetero")
 
     csv_recorder.record_finish('default')
 
