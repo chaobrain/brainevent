@@ -27,7 +27,7 @@ from brainevent._event import BinaryArray
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
-from .diag_add import csr_diag_position_v2, csr_diag_add_v2
+from .diag_add import csr_diag_position, csr_diag_add
 from .float import csrmv, csrmm
 from .slice import csr_slice_rows
 from .spsolve import csr_solve
@@ -724,10 +724,10 @@ class CompressedSparseData(DataRepresentation):
         if not hasattr(self, 'diag_positions'):
             self.register_buffer(
                 'diag_positions',
-                csr_diag_position_v2(self.indptr, self.indices, shape=self.shape)
+                csr_diag_position(self.indptr, self.indices, shape=self.shape)
             )
         assert not isinstance(other, u.sparse.SparseMatrix), "diag_add does not support JAXSparse objects."
-        return self.with_data(csr_diag_add_v2(self.data, self.diag_positions, other))
+        return self.with_data(csr_diag_add(self.data, self.diag_positions, other))
 
     def solve(self, b: Union[jax.Array, u.Quantity]) -> Union[jax.Array, u.Quantity]:
         """

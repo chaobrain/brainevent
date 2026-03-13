@@ -53,8 +53,9 @@ homo = False
 
 
 def benchmark_post_conn(
-    conn_num=80, data_type='binary', duration=1e4 * u.ms
-): # --------------------------------
+    conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cuda_raw',
+):
+    # --------------------------------
     # 2026/03/08, conn_num, data_type, duration = 80, 'binary', 1e4 * u.ms
     # --------------------------------
     #
@@ -117,6 +118,8 @@ def benchmark_post_conn(
     # scale=20, size=80000, time = 51.978811502456665 s, firing rate = 59.569488525390625 Hz
     # scale=40, size=160000, time = 84.97480726242065 s, firing rate = 59.56957244873047 Hz
     # scale=60, size=240000, time = 120.33725643157959 s, firing rate = 59.5693473815918 Hz
+
+    brainevent.config.set_backend('gpu', backend)
     print('Benchmarking post-synaptic connection updates...')
     csv_recorder = CSV_record('binary_post', 'fcnmv', 'coba')
     dur_ms = float(duration / u.ms)
@@ -180,6 +183,7 @@ def benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e2 * u.ms):
 
 
 if __name__ == '__main__':
-    #benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms)
-    #benchmark_post_conn(conn_num=80, data_type='bitpack', duration=1e4 * u.ms)
-    benchmark_pre_conn()
+    benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
+    benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cuda_raw')
+    # benchmark_post_conn(conn_num=80, data_type='bitpack', duration=1e4 * u.ms)
+    # benchmark_pre_conn()

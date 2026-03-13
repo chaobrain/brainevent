@@ -171,27 +171,15 @@ import re
 import jax
 
 def dump_jax_ir(func, args=(), kwargs=None, prefix="dump"):
-    """
-    捕获并导出 JAX 函数的 JAXPR 和 HLO 状态。
-    
-    参数:
-        func: 需要分析的 JAX 函数（通常是被 @jax.jit 装饰的函数，或具有 lower 方法的对象）。
-        args: 传递给 func 的位置参数元组。
-        kwargs: 传递给 func 的关键字参数字典。
-        prefix: 导出文件名的前缀。
-    """
+
     if kwargs is None:
         kwargs = {}
         
     ansi_escape_pattern = re.compile(r'\x1b\[[0-9;]*m')
     
-    # 确定输出绝对路径
     jaxpr_path = os.path.abspath(f"{prefix}_jaxpr.txt")
     hlo_path = os.path.abspath(f"{prefix}_hlo.txt")
 
-    # ---------------------------------------------------------
-    # 状态捕获阶段 1：生成并清洗 JAXPR
-    # ---------------------------------------------------------
     print("Tracing JAXPR (Frontend Logic State)...")
     jaxpr_ir = jax.make_jaxpr(func)(*args, **kwargs)
     clean_jaxpr_str = ansi_escape_pattern.sub('', str(jaxpr_ir))
@@ -200,9 +188,6 @@ def dump_jax_ir(func, args=(), kwargs=None, prefix="dump"):
         f.write(clean_jaxpr_str)
     print(f"[*] Clean JAXPR saved to: {jaxpr_path}")
 
-    # ---------------------------------------------------------
-    # 状态捕获阶段 2：降级并导出 HLO
-    # ---------------------------------------------------------
     print("Lowering to HLO (XLA Physical Fusion State)...")
     lowered_executable = func.lower(*args, **kwargs)
     hlo_text = lowered_executable.as_text()
@@ -212,10 +197,3 @@ def dump_jax_ir(func, args=(), kwargs=None, prefix="dump"):
     print(f"[*] HLO saved to: {hlo_path}")
     
     return jaxpr_path, hlo_path
-
-# =========================================
-# 调用示例：
-# =========================================
-# run = make_simulation_run(...)
-# 假设 run 不需要额外参数即可执行：
-# dump_jax_ir(run, args=(), prefix="coba_benchmark")

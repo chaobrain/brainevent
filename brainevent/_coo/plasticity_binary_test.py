@@ -269,8 +269,8 @@ class Test_coo_gpu_backend_parity:
         pre_spike = jnp.asarray(rng.random(n_pre) > 0.5, dtype=jnp.bool_)
         post_spike = jnp.asarray(rng.random(n_post) > 0.5, dtype=jnp.bool_)
 
-        out_pre = update_coo_on_binary_pre(weight, pre_ids, post_ids, pre_spike, post_trace, backend='pallas')
-        out_post = update_coo_on_binary_post(weight, pre_ids, post_ids, pre_trace, post_spike, backend='pallas')
+        out_pre = update_coo_on_binary_pre(weight, pre_ids, post_ids, pre_spike, post_trace)
+        out_post = update_coo_on_binary_post(weight, pre_ids, post_ids, pre_trace, post_spike)
 
         ref_pre = weight + jnp.where(pre_spike[pre_ids], post_trace[post_ids], 0)
         ref_post = weight + jnp.where(post_spike[post_ids], pre_trace[pre_ids], 0)
