@@ -23,7 +23,14 @@ from brainevent._test_util import requires_gpu
 pytestmark = requires_gpu
 
 import jax
-jax.config.update("jax_enable_x64", True)
+
+
+@pytest.fixture(autouse=True)
+def _enable_x64():
+    """Ensure 64-bit types are available for every test in this module."""
+    jax.config.update("jax_enable_x64", True)
+    yield
+    # intentionally do not restore — other test modules may rely on x64
 
 
 # --- CUDA kernel that copies input to output for any dtype ---

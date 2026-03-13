@@ -35,13 +35,17 @@ import numpy as np
 import pytest
 from brainevent._test_util import requires_gpu
 
-# float64, uint64, int64, complex128 require x64 mode.
-jax.config.update("jax_enable_x64", True)
-
 pytestmark = requires_gpu
 
 from brainevent._error import KernelError
 import brainevent as jkb
+
+
+@pytest.fixture(autouse=True)
+def _enable_x64():
+    """Ensure 64-bit types are available for every test in this module."""
+    jax.config.update("jax_enable_x64", True)
+    yield
 
 # ---------------------------------------------------------------------------
 # Shared CUDA source
