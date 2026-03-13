@@ -42,7 +42,10 @@ brainevent.config.set_backend('gpu', 'jax_raw')
 
 batch_size, conn_num, data_type, duration = 16, 80, 'binary', 1e3 * u.ms
 
-from CsvOutput import CSV_record
+from CsvOutput import CSV_record, ResultPrinting
+
+backends = ['jax_raw', 'cuda_raw']
+rp = ResultPrinting()
 
 
 def benchmark_post_conn():
@@ -80,68 +83,80 @@ def benchmark_post_conn():
     print('Benchmarking post-synaptic connection updates...')
 
     csv_recorder = CSV_record('binary_post', 'fcnmm', 'coba')
+    dur_ms = float(duration / u.ms)
+    for backend in backends:
+        brainevent.config.set_backend('gpu', backend)
+        rp.print_header(operator='fcnmm', data_type=data_type, backend=backend,
+                        mode='post', batch_size=batch_size, conn_num=conn_num,
+                        duration_ms=dur_ms)
+        rp.print_table_header()
 
-    for s in [1, 2, 4, 6, 8, 10]:
-        run = make_simulation_batch_run(
-            scale=s,
-            batch_size=batch_size,
-            data_type=data_type,
-            efferent_target='post',
-            duration=duration,
-            conn_num=conn_num,
-        )
+        for s in [1, 2, 4, 6, 8, 10]:
+            run = make_simulation_batch_run(
+                scale=s,
+                batch_size=batch_size,
+                data_type=data_type,
+                efferent_target='post',
+                duration=duration,
+                conn_num=conn_num,
+            )
 
-        jax.block_until_ready(run())
+            jax.block_until_ready(run())
 
-        t0 = time.time()
-        n, rate = jax.block_until_ready(run())
-        t1 = time.time()
-        elapsed = t1 - t0
-        print(f'scale={s}, size={n}, time = {elapsed} s, firing rate = {rate} Hz')
-        try:
-            csv_recorder.single_COBA_data_add('fcnmm', 'binary', 'post', conn_num, s, elapsed, rate, duration)
-        except Exception:
-            pass
+            t0 = time.time()
+            n, rate = jax.block_until_ready(run())
+            t1 = time.time()
+            elapsed = t1 - t0
+            rp.print_row(s, n, elapsed, float(rate))
+            try:
+                csv_recorder.single_COBA_data_add('fcnmm', data_type, backend, 'post', conn_num, s, elapsed, float(rate), dur_ms)
+            except Exception:
+                pass
     csv_recorder.record_finish('default')
 
 def benchmark_pre_conn():
     print('Benchmarking pre-synaptic connection updates...')
 
     csv_recorder = CSV_record('binary_pre', 'fcnmm', 'coba')
+    pre_duration = 1e2 * u.ms
+    dur_ms = float(pre_duration / u.ms)
+    for backend in backends:
+        brainevent.config.set_backend('gpu', backend)
+        rp.print_header(operator='fcnmm', data_type='binary', backend=backend,
+                        mode='pre', batch_size=batch_size, conn_num=conn_num,
+                        duration_ms=dur_ms)
+        rp.print_table_header()
 
-    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60]:
-        run = make_simulation_batch_run(
-            scale=s,
-            batch_size=batch_size,
-            data_type='binary',
-            efferent_target='pre',
-            duration=1e2 * u.ms,
-            conn_num=conn_num,
-        )
+        for s in [1, 2, 4, 6, 8, 10, 20, 40, 60]:
+            run = make_simulation_batch_run(
+                scale=s,
+                batch_size=batch_size,
+                data_type='binary',
+                efferent_target='pre',
+                duration=pre_duration,
+                conn_num=conn_num,
+            )
 
-        jax.block_until_ready(run())
+            jax.block_until_ready(run())
 
-        t0 = time.time()
-        n, rate = jax.block_until_ready(run())
-        t1 = time.time()
-        elapsed = t1 - t0
-        print(f'scale={s}, size={n}, time = {elapsed} s, firing rate = {rate} Hz')
-        try:
-            csv_recorder.single_COBA_data_add('fcnmm', 'binary', 'pre', conn_num, s, elapsed, rate, 1e2 * u.ms)
-        except Exception:
-            pass
+            t0 = time.time()
+            n, rate = jax.block_until_ready(run())
+            t1 = time.time()
+            elapsed = t1 - t0
+            rp.print_row(s, n, elapsed, float(rate))
+            try:
+                csv_recorder.single_COBA_data_add('fcnmm', 'binary', backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms)
+            except Exception:
+                pass
     try:
         csv_recorder.record_finish('default')
     except Exception:
         pass
 
 def run_benchmark(batch_size, conn_num, mode='post'):
-    
-    print(f"\n{'=' * 70}")
-    print(f"  batch_size={batch_size}, conn_num={conn_num} "
-          f"({'warp' if conn_num <= 32 else 'basic'} kernel) "
-          f"[{mode}-synaptic]")
-    print(f"{'=' * 70}")
+    dur = 1e3 * u.ms if mode == 'post' else 1e2 * u.ms
+    dur_ms = float(dur / u.ms)
+    kernel = 'warp' if conn_num <= 32 else 'basic'
 
     # Scales to benchmark (network sizes: scale * 4000 neurons)
     SCALES = [1, 4, 10, 40, 100]
@@ -149,33 +164,36 @@ def run_benchmark(batch_size, conn_num, mode='post'):
     # CSV recorder for this configuration
     csv_recorder = CSV_record(f'binary_bs{batch_size}_conn{conn_num}', 'fcnmm', 'benchmark')
 
-    for s in SCALES:
-        dur = 1e3 * u.ms if mode == 'post' else 1e2 * u.ms
-        run = make_simulation_batch_run(
-            scale=s,
-            batch_size=batch_size,
-            data_type='binary',
-            efferent_target=mode,
-            duration=dur,
-            conn_num=conn_num,
-        )
+    for backend in backends:
+        brainevent.config.set_backend('gpu', backend)
+        rp.print_header(operator='fcnmm', data_type='binary', backend=backend,
+                        mode=mode, batch_size=batch_size, conn_num=conn_num,
+                        duration_ms=dur_ms, kernel=kernel)
+        rp.print_table_header()
 
-        # Warmup
-        jax.block_until_ready(run())
+        for s in SCALES:
+            run = make_simulation_batch_run(
+                scale=s,
+                batch_size=batch_size,
+                data_type='binary',
+                efferent_target=mode,
+                duration=dur,
+                conn_num=conn_num,
+            )
 
-        # Timed run
-        t0 = time.time()
-        n, rate = jax.block_until_ready(run())
-        t1 = time.time()
-        elapsed = t1 - t0
-        print(f"  scale={s:>3d}, neurons={n:>6d}, "
-              f"time={elapsed:>8.3f}s, rate={rate:.1f} Hz")
-        # record to CSV
-        try:
-            csv_recorder.single_COBA_data_add('fcnmm', 'binary', mode, conn_num, s, elapsed, rate, dur)
-        except Exception:
-            # best-effort: avoid crashing benchmark on CSV failures
-            pass
+            # Warmup
+            jax.block_until_ready(run())
+
+            # Timed run
+            t0 = time.time()
+            n, rate = jax.block_until_ready(run())
+            t1 = time.time()
+            elapsed = t1 - t0
+            rp.print_row(s, n, elapsed, float(rate))
+            try:
+                csv_recorder.single_COBA_data_add('fcnmm', 'binary', backend, mode, conn_num, s, elapsed, float(rate), dur_ms)
+            except Exception:
+                pass
 
     # flush CSV for this config
     try:

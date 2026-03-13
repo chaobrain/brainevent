@@ -40,8 +40,12 @@ import jax
 
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
+from CsvOutput import CSV_record, ResultPrinting
 
 brainevent.config.set_backend('gpu', 'cuda_raw')
+
+backends = ['jax_raw', 'cuda_raw']
+rp = ResultPrinting(width=90)
 
 
 def benchmark_one(data_type, efferent_target, scales, batch_size=16, conn_num=80, duration=1e3 * u.ms):
@@ -68,39 +72,55 @@ def benchmark_one(data_type, efferent_target, scales, batch_size=16, conn_num=80
 def compare_all(efferent_target='post', batch_size=16, conn_num=80, duration=1e3 * u.ms):
     mode = 'gather' if efferent_target == 'post' else 'scatter'
     scales = [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]
-
+    dur_ms = float(duration / u.ms)
     data_types = ['binary', 'bitpack_a0', 'compact']
-    all_results = {}
-    for dt in data_types:
-        print(f'Running {dt} ({mode})...')
-        all_results[dt] = benchmark_one(
-            dt, efferent_target, scales,
-            batch_size=batch_size, conn_num=conn_num, duration=duration,
-        )
 
-    # Print comparison table
-    print(f'\n{"=" * 90}')
-    print(f'  {mode.upper()} mode | batch_size={batch_size}, conn_num={conn_num}, duration={duration}')
-    print(f'{"=" * 90}')
-    header = f'{"Scale":>5s} | {"Neurons":>7s}'
-    for dt in data_types:
-        header += f' | {dt:>10s}'
-    header += ' | compact vs binary | compact vs bitpack'
-    print(header)
-    print('-' * len(header))
+    csv_recorder = CSV_record(f'compact_{efferent_target}_bs{batch_size}_conn{conn_num}', 'fcnmm', 'coba')
 
-    for s in scales:
-        n = all_results['binary'][s][0]
-        row = f'{s:>5d} | {n:>7d}'
-        times = {}
+    for backend in backends:
+        brainevent.config.set_backend('gpu', backend)
+
+        all_results = {}
         for dt in data_types:
-            t = all_results[dt][s][1]
-            times[dt] = t
-            row += f' | {t:>9.3f}s'
-        speedup_vs_binary = times['binary'] / times['compact'] if times['compact'] > 0 else float('inf')
-        speedup_vs_bitpack = times['bitpack_a0'] / times['compact'] if times['compact'] > 0 else float('inf')
-        row += f' |             {speedup_vs_binary:>5.2f}x |              {speedup_vs_bitpack:>5.2f}x'
-        print(row)
+            print(f'Running {dt} ({mode}, {backend})...')
+            all_results[dt] = benchmark_one(
+                dt, efferent_target, scales,
+                batch_size=batch_size, conn_num=conn_num, duration=duration,
+            )
+
+        # Print comparison table
+        print(f'\n{"=" * 90}')
+        print(f'  operator=fcnmm | mode={mode} | backend={backend}')
+        print(f'  batch_size={batch_size} | conn_num={conn_num} | duration={dur_ms:.1f} ms')
+        print(f'{"=" * 90}')
+        header = f'{"Scale":>5s} | {"Neurons":>7s}'
+        for dt in data_types:
+            header += f' | {dt:>10s}'
+        header += ' | compact vs binary | compact vs bitpack'
+        print(header)
+        print('-' * len(header))
+
+        for s in scales:
+            n = all_results['binary'][s][0]
+            row = f'{s:>5d} | {n:>7d}'
+            times = {}
+            rates = {}
+            for dt in data_types:
+                t = all_results[dt][s][1]
+                r = all_results[dt][s][2]
+                times[dt] = t
+                rates[dt] = r
+                row += f' | {t:>9.3f}s'
+            speedup_vs_binary = times['binary'] / times['compact'] if times['compact'] > 0 else float('inf')
+            speedup_vs_bitpack = times['bitpack_a0'] / times['compact'] if times['compact'] > 0 else float('inf')
+            row += f' |             {speedup_vs_binary:>5.2f}x |              {speedup_vs_bitpack:>5.2f}x'
+            print(row)
+            for dt in data_types:
+                csv_recorder.single_COBA_data_add(
+                    'fcnmm', dt, backend, efferent_target, conn_num, s,
+                    times[dt], rates[dt], dur_ms
+                )
+    csv_recorder.record_finish('default')
 
 
 if __name__ == '__main__':

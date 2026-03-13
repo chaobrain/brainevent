@@ -1,4 +1,46 @@
 
+class ResultPrinting:
+    """Formatted benchmark result printer for COBA tests.
+
+    Usage::
+
+        rp = ResultPrinting()
+        rp.print_header(operator='fcnmv', data_type='binary', backend='cuda_raw',
+                        mode='post', conn_num=80, duration_ms=1000.0)
+        rp.print_table_header()
+        rp.print_row(scale=1, neurons=4000, elapsed=0.215, rate=59.4)
+    """
+
+    def __init__(self, width: int = 70) -> None:
+        self.width = width
+
+    def print_header(self, *, operator: str, data_type: str, backend: str,
+                     mode: str, conn_num: int, duration_ms: float,
+                     batch_size: int | None = None, **extra) -> None:
+        """Print parameter condition header block."""
+        print(f'\n{"=" * self.width}')
+        print(f'  operator={operator} | data_type={data_type} | backend={backend}')
+        parts: list[str] = [f'mode={mode:<8s}']
+        if batch_size is not None:
+            parts.append(f'batch_size={batch_size}')
+        parts.append(f'conn_num={conn_num}')
+        parts.append(f'duration={duration_ms:.1f} ms')
+        for k, v in extra.items():
+            parts.append(f'{k}={v}')
+        print('  ' + ' | '.join(parts))
+        print(f'{"=" * self.width}')
+
+    def print_table_header(self) -> None:
+        """Print column header for the standard result table."""
+        print(f'  {"Scale":>5s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
+        print(f'  {"-----":>5s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
+
+    @staticmethod
+    def print_row(scale: int, neurons: int, elapsed: float, rate: float) -> None:
+        """Print one benchmark result row."""
+        print(f'  {scale:>5d} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
+
+
 class CSV_record():
     """Generic CSV recorder used by benchmarks.
 
@@ -23,7 +65,7 @@ class CSV_record():
         self.suffix = suffix
         # default common fields
         self.fieldnames: list[str] = [
-            'operator', 'data_type', 'synaptic_type', 'scale', 'conn_num',
+            'operator', 'data_type', 'backend', 'synaptic_type', 'scale', 'conn_num',
             'elapsed_s', 'firing_rate', 'duration', 'homo'
         ]
         self.rows: list[dict] = []
@@ -68,6 +110,7 @@ class CSV_record():
 
     def single_COBA_data_add(self, operator: str,
                              data_type: str,
+                             backend: str,
                              synaptic_type: str,
                              conn_num: int,
                              scale: int,
@@ -80,6 +123,7 @@ class CSV_record():
         row = {
             'operator': operator,
             'data_type': data_type,
+            'backend': backend,
             'testing_type': self.testing_type,
             'synaptic_type': synaptic_type,
             'scale': scale,

@@ -40,54 +40,76 @@ import jax
 
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
+from CsvOutput import CSV_record, ResultPrinting
 
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
+backends = ['jax_raw', 'cuda_raw']
+rp = ResultPrinting()
+
 
 def benchmark_post_conn(data_type, batch_size=16, conn_num=80, duration=1e3 * u.ms):
-    print(f'\n{"=" * 70}')
-    print(f'  data_type={data_type}, batch_size={batch_size}, conn_num={conn_num}')
-    print(f'{"=" * 70}')
+    dur_ms = float(duration / u.ms)
+    csv_recorder = CSV_record(f'bitpack_post_bs{batch_size}_conn{conn_num}', 'fcnmm', 'coba')
 
-    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-        run = make_simulation_batch_run(
-            scale=s,
-            batch_size=batch_size,
-            data_type=data_type,
-            efferent_target='post',
-            duration=duration,
-            conn_num=conn_num,
-        )
+    for backend in backends:
+        brainevent.config.set_backend('gpu', backend)
+        rp.print_header(operator='fcnmm', data_type=data_type, backend=backend,
+                        mode='post', batch_size=batch_size, conn_num=conn_num,
+                        duration_ms=dur_ms)
+        rp.print_table_header()
 
-        jax.block_until_ready(run())
+        for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+            run = make_simulation_batch_run(
+                scale=s,
+                batch_size=batch_size,
+                data_type=data_type,
+                efferent_target='post',
+                duration=duration,
+                conn_num=conn_num,
+            )
 
-        t0 = time.time()
-        n, rate = jax.block_until_ready(run())
-        t1 = time.time()
-        print(f'  scale={s:>3d}, size={n:>6d}, time={t1 - t0:>8.3f}s, rate={rate:.1f} Hz')
+            jax.block_until_ready(run())
+
+            t0 = time.time()
+            n, rate = jax.block_until_ready(run())
+            t1 = time.time()
+            elapsed = t1 - t0
+            rp.print_row(s, n, elapsed, float(rate))
+            csv_recorder.single_COBA_data_add('fcnmm', data_type, backend, 'post', conn_num, s, elapsed, float(rate), dur_ms)
+    csv_recorder.record_finish('default')
 
 
 def benchmark_pre_conn(data_type, batch_size=16, conn_num=80, duration=1e2 * u.ms):
-    print(f'\n{"=" * 70}')
-    print(f'  data_type={data_type}, batch_size={batch_size}, conn_num={conn_num} [pre-synaptic]')
-    print(f'{"=" * 70}')
+    dur_ms = float(duration / u.ms)
+    csv_recorder = CSV_record(f'bitpack_pre_bs{batch_size}_conn{conn_num}', 'fcnmm', 'coba')
 
-    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-        run = make_simulation_batch_run(
-            scale=s,
-            batch_size=batch_size,
-            data_type=data_type,
-            efferent_target='pre',
-            duration=duration,
-            conn_num=conn_num,
-        )
+    for backend in backends:
+        brainevent.config.set_backend('gpu', backend)
+        rp.print_header(operator='fcnmm', data_type=data_type, backend=backend,
+                        mode='pre', batch_size=batch_size, conn_num=conn_num,
+                        duration_ms=dur_ms)
+        rp.print_table_header()
 
-        jax.block_until_ready(run())
+        for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+            run = make_simulation_batch_run(
+                scale=s,
+                batch_size=batch_size,
+                data_type=data_type,
+                efferent_target='pre',
+                duration=duration,
+                conn_num=conn_num,
+            )
 
-        t0 = time.time()
-        n, rate = jax.block_until_ready(run())
-        t1 = time.time()
-        print(f'  scale={s:>3d}, size={n:>6d}, time={t1 - t0:>8.3f}s, rate={rate:.1f} Hz')
+            jax.block_until_ready(run())
+
+            t0 = time.time()
+            n, rate = jax.block_until_ready(run())
+            t1 = time.time()
+            elapsed = t1 - t0
+            rp.print_row(s, n, elapsed, float(rate))
+            csv_recorder.single_COBA_data_add('fcnmm', data_type, backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms)
+    csv_recorder.record_finish('default')
 
 
 def compare_bitpack_vs_binary():
