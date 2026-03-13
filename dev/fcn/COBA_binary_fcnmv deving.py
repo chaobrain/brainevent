@@ -32,20 +32,20 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 import time
-
+import os
 import brainunit as u
 import jax
 
 import brainevent
 from COBA_2005_benchmark import make_simulation_run
-from CsvOutput import CSV_record, ResultPrinting
+from CsvOutput import CSV_record, ResultPrinting , dump_jax_ir
 
 #brainevent.config.set_backend('gpu', 'jax_raw')
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
 
-scales = [1, 60]
-backends = ['jax_raw']
+scales = [60,]
+backends = ['cuda_raw']
 
 homo = False
 duration = 1 * u.ms
@@ -103,15 +103,19 @@ def benchmark_pre_conn(conn_num=80, data_type='binary', duration=duration):
                 homo = homo
             )
 
-            jax.block_until_ready(run())
+            # ----------------------------------------------
+            dump_jax_ir(run, prefix="COBA_fcnmv_binary")
+            # ----------------------------------------------
 
+            #jax.block_until_ready(run())
+            '''
             t0 = time.time()
             n, rate = jax.block_until_ready(run())
             t1 = time.time()
             elapsed = t1 - t0
             rp.print_row(s, n, elapsed, float(rate))
             csv_recorder.single_COBA_data_add('fcnmv', data_type, backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms, homo= "homo" if homo else "hetero")
-
+            '''
     csv_recorder.record_finish('default')
 
 
