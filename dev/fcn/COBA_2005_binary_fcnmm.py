@@ -46,7 +46,7 @@ from CsvOutput import CSV_record, ResultPrinting
 
 backends = ['jax_raw', 'cuda_raw']
 rp = ResultPrinting()
-homo = False
+homo = True
 
 
 def benchmark_post_conn():

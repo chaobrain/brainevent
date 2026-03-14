@@ -45,11 +45,11 @@ brainevent.config.set_backend('gpu', 'cuda_raw')
 
 
 scales = [1, 4,  8,  20,  60, 100]
-backends = ['jax_raw', 'cuda_raw']
+backends = ['jax_raw', 'cuda_raw', 'cuda_wprNT']
 
 
 rp = ResultPrinting()
-homo = False
+homo = True
 
 
 def benchmark_post_conn(
@@ -179,11 +179,11 @@ def benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e2 * u.ms):
             rp.print_row(s, n, elapsed, float(rate))
             csv_recorder.single_COBA_data_add('fcnmv', data_type, backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
 
-    csv_recorder.record_finish('default')
+    csv_recorder.record_finish('temp')
 
 
 if __name__ == '__main__':
-    benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
-    benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cuda_raw')
-    # benchmark_post_conn(conn_num=80, data_type='bitpack', duration=1e4 * u.ms)
-    # benchmark_pre_conn()
+    #benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
+    #benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cuda_raw')
+    #benchmark_post_conn(conn_num=80, data_type='bitpack', duration=1e4 * u.ms)
+    benchmark_pre_conn(conn_num=80,data_type='binary',duration=1e3 * u.ms,)

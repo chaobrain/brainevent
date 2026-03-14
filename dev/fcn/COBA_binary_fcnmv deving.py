@@ -41,13 +41,14 @@ from COBA_2005_benchmark import make_simulation_run
 from CsvOutput import CSV_record, ResultPrinting , dump_jax_ir
 
 #brainevent.config.set_backend('gpu', 'jax_raw')
-brainevent.config.set_backend('gpu', 'cuda_raw')
+#brainevent.config.set_backend('gpu', 'cuda_raw')
 
 
 scales = [60,]
-backends = ['cuda_raw']
+#backends = ['jax_raw']
+backends = ['cuda_op']
 
-homo = False
+homo = True
 duration = 1 * u.ms
 rp = ResultPrinting()
 
@@ -81,7 +82,7 @@ def benchmark_post_conn(
             elapsed = t1 - t0
             rp.print_row(s, n, elapsed, float(rate))
             csv_recorder.single_COBA_data_add('fcnmv', data_type, backend, 'post', conn_num, s, elapsed, float(rate), dur_ms, homo= "homo" if homo else "hetero")
-    csv_recorder.record_finish('default')
+    csv_recorder.record_finish('nsight')
 
 def benchmark_pre_conn(conn_num=80, data_type='binary', duration=duration):
     print('Benchmarking pre-synaptic connection updates...')
@@ -104,19 +105,19 @@ def benchmark_pre_conn(conn_num=80, data_type='binary', duration=duration):
             )
 
             # ----------------------------------------------
-            dump_jax_ir(run, prefix="COBA_fcnmv_binary")
+            #dump_jax_ir(run, prefix="COBA_fcnmv_binary_jax")
             # ----------------------------------------------
 
             #jax.block_until_ready(run())
-            '''
+            
             t0 = time.time()
             n, rate = jax.block_until_ready(run())
             t1 = time.time()
             elapsed = t1 - t0
             rp.print_row(s, n, elapsed, float(rate))
             csv_recorder.single_COBA_data_add('fcnmv', data_type, backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms, homo= "homo" if homo else "hetero")
-            '''
-    csv_recorder.record_finish('default')
+            ''''''
+    csv_recorder.record_finish('nsight')
 
 
 if __name__ == '__main__':
