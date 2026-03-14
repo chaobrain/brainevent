@@ -1270,3 +1270,237 @@ FFI_PACK_SPIKES(_f64, double, _f64)
 FFI_PACK_SPIKES(_f16, __half, _f16)
 // @BE binary_fcnmm_pack_bf16
 FFI_PACK_SPIKES(_bf16, __nv_bfloat16, _bf16)
+
+
+// --------------------------------------------------------------------------------------------------------
+//UNBRANCH
+
+#define DEFINE_BGM_BASIC_HOMO_UNBRANCH(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO) \
+__global__ void _bgm_basic_homo_kern_unbranch##SUFFIX(                                                 \
+    const int32_t* __restrict__ indices,                                                               \
+    const SPIKE_T* __restrict__ matrix,                                                                \
+    WEIGHT_T* __restrict__ output,                                                                     \
+    const WEIGHT_T* __restrict__ weights,                                                              \
+    int n_pre, int n_conn, int n_batch                                                                 \
+) {                                                                                                    \
+    extern __shared__ char _smem_bytes[];                                                              \
+    int32_t* s_idx = reinterpret_cast<int32_t*>(_smem_bytes);                                          \
+    int row = blockIdx.x;                                                                              \
+    if (row >= n_pre) return;                                                                          \
+                                                                                                       \
+    int lane   = threadIdx.x & 31;                                                                     \
+    int warpid = threadIdx.x >> 5;                                                                     \
+    int nwarps = blockDim.x >> 5;                                                                      \
+    int j = (int)blockIdx.y * 32 + lane;                                                               \
+    bool col_valid = (j < n_batch);                                                                    \
+    int  safe_j    = col_valid ? j : 0;                                                                \
+                                                                                                       \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                                            \
+    for (int i = threadIdx.x; i < n_conn; i += blockDim.x) s_idx[i] = __ldg(&i_row[i]);                \
+    __syncthreads();                                                                                   \
+                                                                                                       \
+    ACC_T accum = ACC_ZERO;                                                                            \
+                                                                                                       \
+    int main_iters = n_conn / nwarps;                                                                  \
+    int tail = n_conn % nwarps;                                                                        \
+    int limit = main_iters & ~1;                                                                       \
+    int k = warpid;                                                                                    \
+                                                                                                       \
+    for (int i = 0; i < limit; i += 2) {                                                               \
+        int src0 = s_idx[k];                                                                           \
+        int src1 = s_idx[k + nwarps];                                                                  \
+        if (col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)src0 * n_batch + safe_j]))) accum += (ACC_T)1;\
+        if (col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)src1 * n_batch + safe_j]))) accum += (ACC_T)1;\
+        k += (nwarps << 1);                                                                            \
+    }                                                                                                  \
+    if (main_iters & 1) {                                                                              \
+        int src = s_idx[k];                                                                            \
+        if (col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]))) accum += (ACC_T)1; \
+        k += nwarps;                                                                                   \
+    }                                                                                                  \
+    if (warpid < tail) {                                                                               \
+        int src = s_idx[k];                                                                            \
+        if (col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]))) accum += (ACC_T)1; \
+    }                                                                                                  \
+                                                                                                       \
+    __syncthreads();                                                                                   \
+    ACC_T* smem_red = reinterpret_cast<ACC_T*>(_smem_bytes);                                           \
+    smem_red[warpid * 32 + lane] = accum;                                                              \
+    __syncthreads();                                                                                   \
+                                                                                                       \
+    if (warpid == 0) {                                                                                 \
+        ACC_T sum = ACC_ZERO;                                                                          \
+        for (int w = 0; w < nwarps; w++) sum += smem_red[w * 32 + lane];                               \
+        if (col_valid) output[(size_t)row * n_batch + j] = WRITE_W(READ_W(__ldg(&weights[0])) * sum);  \
+    }                                                                                                  \
+}
+
+#define DEFINE_BGM_BASIC_HETERO_UNBRANCH(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO) \
+__global__ void _bgm_basic_hetero_kern_unbranch##SUFFIX(                                               \
+    const int32_t* __restrict__ indices,                                                               \
+    const SPIKE_T* __restrict__ matrix,                                                                \
+    WEIGHT_T* __restrict__ output,                                                                     \
+    const WEIGHT_T* __restrict__ weights,                                                              \
+    int n_pre, int n_conn, int n_batch                                                                 \
+) {                                                                                                    \
+    extern __shared__ char _smem_bytes[];                                                              \
+    int32_t* s_idx = reinterpret_cast<int32_t*>(_smem_bytes);                                          \
+    int row = blockIdx.x;                                                                              \
+    if (row >= n_pre) return;                                                                          \
+                                                                                                       \
+    int lane   = threadIdx.x & 31;                                                                     \
+    int warpid = threadIdx.x >> 5;                                                                     \
+    int nwarps = blockDim.x >> 5;                                                                      \
+    int j = (int)blockIdx.y * 32 + lane;                                                               \
+    bool col_valid = (j < n_batch);                                                                    \
+    int  safe_j    = col_valid ? j : 0;                                                                \
+                                                                                                       \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                                            \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                            \
+    for (int i = threadIdx.x; i < n_conn; i += blockDim.x) s_idx[i] = __ldg(&i_row[i]);                \
+    __syncthreads();                                                                                   \
+                                                                                                       \
+    ACC_T accum = ACC_ZERO;                                                                            \
+                                                                                                       \
+    int main_iters = n_conn / nwarps;                                                                  \
+    int tail = n_conn % nwarps;                                                                        \
+    int limit = main_iters & ~1;                                                                       \
+    int k = warpid;                                                                                    \
+                                                                                                       \
+    for (int i = 0; i < limit; i += 2) {                                                               \
+        int src0 = s_idx[k];                                                                           \
+        int src1 = s_idx[k + nwarps];                                                                  \
+        if (col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)src0 * n_batch + safe_j])))                   \
+            accum += READ_W(__ldg(&w_row[k]));                                                         \
+        if (col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)src1 * n_batch + safe_j])))                   \
+            accum += READ_W(__ldg(&w_row[k + nwarps]));                                                \
+        k += (nwarps << 1);                                                                            \
+    }                                                                                                  \
+    if (main_iters & 1) {                                                                              \
+        int src = s_idx[k];                                                                            \
+        if (col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j])))                   \
+            accum += READ_W(__ldg(&w_row[k]));                                                         \
+        k += nwarps;                                                                                   \
+    }                                                                                                  \
+    if (warpid < tail) {                                                                               \
+        int src = s_idx[k];                                                                            \
+        if (col_valid && IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j])))                   \
+            accum += READ_W(__ldg(&w_row[k]));                                                         \
+    }                                                                                                  \
+                                                                                                       \
+    __syncthreads();                                                                                   \
+    ACC_T* smem_red = reinterpret_cast<ACC_T*>(_smem_bytes);                                           \
+    smem_red[warpid * 32 + lane] = accum;                                                              \
+    __syncthreads();                                                                                   \
+                                                                                                       \
+    if (warpid == 0) {                                                                                 \
+        ACC_T sum = ACC_ZERO;                                                                          \
+        for (int w = 0; w < nwarps; w++) sum += smem_red[w * 32 + lane];                               \
+        if (col_valid) output[(size_t)row * n_batch + j] = WRITE_W(sum);                               \
+    }                                                                                                  \
+}
+
+#define FFI_BGM_HOMO_UNBRANCH(SUFFIX, WEIGHT_C_T, SPIKE_C_T, ACC_SIZE) \
+void binary_fcnmm_gather_homo_unbranch##SUFFIX( \
+    const BE::Tensor weights, const BE::Tensor indices, \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream \
+) { \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int n_pre   = static_cast<int>(indices.size(0)); \
+    int n_conn  = static_cast<int>(indices.size(1)); \
+    int n_batch = static_cast<int>(matrix.size(1)); \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr()); \
+    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr()); \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr()); \
+    int bsz = 256; int nwarps = bsz >> 5; \
+    size_t idx_bytes = (size_t)n_conn * sizeof(int32_t); \
+    size_t red_bytes = (size_t)nwarps * 32 * ACC_SIZE; \
+    size_t shm = (idx_bytes > red_bytes) ? idx_bytes : red_bytes; \
+    int batch_tiles = (n_batch + 31) / 32; dim3 grid(n_pre, batch_tiles); \
+    _bgm_basic_homo_kern_unbranch##SUFFIX<<<grid, bsz, shm, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch); \
+}
+
+#define FFI_BGM_HETERO_UNBRANCH(SUFFIX, WEIGHT_C_T, SPIKE_C_T, ACC_SIZE) \
+void binary_fcnmm_gather_hetero_unbranch##SUFFIX( \
+    const BE::Tensor weights, const BE::Tensor indices, \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream \
+) { \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    int n_pre   = static_cast<int>(indices.size(0)); \
+    int n_conn  = static_cast<int>(indices.size(1)); \
+    int n_batch = static_cast<int>(matrix.size(1)); \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr()); \
+    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr()); \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr()); \
+    int bsz = 256; int nwarps = bsz >> 5; \
+    size_t idx_bytes = (size_t)n_conn * sizeof(int32_t); \
+    size_t red_bytes = (size_t)nwarps * 32 * ACC_SIZE; \
+    size_t shm = (idx_bytes > red_bytes) ? idx_bytes : red_bytes; \
+    int batch_tiles = (n_batch + 31) / 32; dim3 grid(n_pre, batch_tiles); \
+    _bgm_basic_hetero_kern_unbranch##SUFFIX<<<grid, bsz, shm, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch); \
+}
+
+DEFINE_BGM_BASIC_HOMO_UNBRANCH  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_BGM_BASIC_HETERO_UNBRANCH(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_BGM_BASIC_HOMO_UNBRANCH  (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_BGM_BASIC_HETERO_UNBRANCH(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f)
+
+// ---- float64 ----
+DEFINE_BGM_BASIC_HOMO_UNBRANCH  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_BGM_BASIC_HETERO_UNBRANCH(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_BGM_BASIC_HOMO_UNBRANCH  (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_BGM_BASIC_HETERO_UNBRANCH(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0)
+
+// ---- float16 ----
+DEFINE_BGM_BASIC_HOMO_UNBRANCH  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_BGM_BASIC_HETERO_UNBRANCH(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_BGM_BASIC_HOMO_UNBRANCH  (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_BGM_BASIC_HETERO_UNBRANCH(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
+
+// ---- bfloat16 ----
+DEFINE_BGM_BASIC_HOMO_UNBRANCH  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_BGM_BASIC_HETERO_UNBRANCH(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_BGM_BASIC_HOMO_UNBRANCH  (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_BGM_BASIC_HETERO_UNBRANCH(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+
+// ---- float32 ----
+// @BE binary_fcnmm_gather_homo_unbranch_bool_f32
+FFI_BGM_HOMO_UNBRANCH  (_bool_f32, float, uint8_t, sizeof(float))
+// @BE binary_fcnmm_gather_hetero_unbranch_bool_f32
+FFI_BGM_HETERO_UNBRANCH(_bool_f32, float, uint8_t, sizeof(float))
+// @BE binary_fcnmm_gather_homo_unbranch_float_f32
+FFI_BGM_HOMO_UNBRANCH  (_float_f32, float, float, sizeof(float))
+// @BE binary_fcnmm_gather_hetero_unbranch_float_f32
+FFI_BGM_HETERO_UNBRANCH(_float_f32, float, float, sizeof(float))
+// ---- float64 ----
+// @BE binary_fcnmm_gather_homo_unbranch_bool_f64
+FFI_BGM_HOMO_UNBRANCH  (_bool_f64, double, uint8_t, sizeof(double))
+// @BE binary_fcnmm_gather_hetero_unbranch_bool_f64
+FFI_BGM_HETERO_UNBRANCH(_bool_f64, double, uint8_t, sizeof(double))
+// @BE binary_fcnmm_gather_homo_unbranch_float_f64
+FFI_BGM_HOMO_UNBRANCH  (_float_f64, double, double, sizeof(double))
+// @BE binary_fcnmm_gather_hetero_unbranch_float_f64
+FFI_BGM_HETERO_UNBRANCH(_float_f64, double, double, sizeof(double))
+// ---- float16 ----
+// @BE binary_fcnmm_gather_homo_unbranch_bool_f16
+FFI_BGM_HOMO_UNBRANCH  (_bool_f16, __half, uint8_t, sizeof(float))
+// @BE binary_fcnmm_gather_hetero_unbranch_bool_f16
+FFI_BGM_HETERO_UNBRANCH(_bool_f16, __half, uint8_t, sizeof(float))
+// @BE binary_fcnmm_gather_homo_unbranch_float_f16
+FFI_BGM_HOMO_UNBRANCH  (_float_f16, __half, __half, sizeof(float))
+// @BE binary_fcnmm_gather_hetero_unbranch_float_f16
+FFI_BGM_HETERO_UNBRANCH(_float_f16, __half, __half, sizeof(float))
+// ---- bfloat16 ----
+// @BE binary_fcnmm_gather_homo_unbranch_bool_bf16
+FFI_BGM_HOMO_UNBRANCH  (_bool_bf16, __nv_bfloat16, uint8_t, sizeof(float))
+// @BE binary_fcnmm_gather_hetero_unbranch_bool_bf16
+FFI_BGM_HETERO_UNBRANCH(_bool_bf16, __nv_bfloat16, uint8_t, sizeof(float))
+// @BE binary_fcnmm_gather_homo_unbranch_float_bf16
+FFI_BGM_HOMO_UNBRANCH  (_float_bf16, __nv_bfloat16, __nv_bfloat16, sizeof(float))
+// @BE binary_fcnmm_gather_hetero_unbranch_float_bf16
+FFI_BGM_HETERO_UNBRANCH(_float_bf16, __nv_bfloat16, __nv_bfloat16, sizeof(float))
+
+
+// --------------------------------------------------------------------------------------------------------
