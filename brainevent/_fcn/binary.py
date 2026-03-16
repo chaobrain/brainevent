@@ -274,10 +274,11 @@ def _binary_fcnmv_cuda_kernel(
     else:
         # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
         # Auto-dispatch inside CUDA: TPR for n_conn<=512, MR for n_conn>512.
-        kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}{spike_sfx}{sfx}'
+        kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}_bool{sfx}'
 
     def kernel(weights, indices, spikes):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
+        bool_spk = u.math.asarray(spikes, dtype=bool)
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, bool_spk)
 
     return kernel
 
@@ -292,22 +293,25 @@ def _binary_fcnmv_jax_kernel(
 
     def kernel(weights, indices, spikes):
         # Convert spikes to float: bool→{0,1}, float→{0,1} based on >0
+        bool_spk = u.math.asarray(spikes, dtype=bool)
+        '''
         if spikes.dtype == jnp.bool_:
             spk_f = spikes.astype(weights.dtype)
         else:
             spk_f = (spikes > 0).astype(weights.dtype)
+        '''
 
         if transpose:
             # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
-            masked = jnp.broadcast_to(spk_f[:, None] * weights, indices.shape)
+            masked = jnp.broadcast_to(bool_spk[:, None] * weights, indices.shape)
             return jax.ops.segment_sum(masked.ravel(), indices.ravel(), num_segments=n_post),
         else:
             # Gather: y[i] = sum_k weights[i,k] * spk_f[indices[i,k]]
             if weights.size == 1:
                 w = weights[0]
-                return jax.vmap(lambda ind: w * jnp.sum(spk_f[ind]))(indices),
+                return jax.vmap(lambda ind: w * jnp.sum(bool_spk[ind]))(indices),
             else:
-                return jax.vmap(lambda w, ind: jnp.sum(w * spk_f[ind]))(weights, indices),
+                return jax.vmap(lambda w, ind: jnp.sum(w * bool_spk[ind]))(weights, indices),
 
     return kernel
 
@@ -498,53 +502,9 @@ binary_fcnmv : High-level user-facing function wrapper.
 """
 )
 
-def _binary_fcnmv_cuda_kernel_wpr(
-    transpose: bool,
-    spike_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('binary_fcnmv.cu'),
-        name='fcn_binary_mv',
-    )
-
-    out_info = kwargs['outs']
-    is_bool_spike = (spike_info.dtype == jnp.bool_)
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16'
-    }
-    weight_info = kwargs['weight_info']
-    sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    homo = weight_info.size == 1
-    mode_sfx = '_homo' if homo else '_hetero'
-    spike_sfx = '_bool' if is_bool_spike else '_float'
-
-    if transpose:
-        # Scatter mode: if is_active(spikes[i]) → output[indices[i,k]] += weights[i,k]
-        # Always TPR (thread-per-row) — atomicAdd contention is the bottleneck at all n_conn.
-        kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}{spike_sfx}{sfx}'
-    else:
-        # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
-        # Auto-dispatch inside CUDA: TPR for n_conn<=512, MR for n_conn>512.
-        #binary_fcnmv_gather_homo_basic_raw_unbranch_bool_f16
-        kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}_wpr{spike_sfx}{sfx}'
-
-    def kernel(weights, indices, spikes):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
-
-    return kernel
-
 
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_cuda_raw_kernel(_binary_fcnmv_cuda_kernel, asdefault=True)
-
-
-binary_fcnmv_p.def_kernel('cuda_wprNT', 'gpu', _binary_fcnmv_cuda_kernel_wpr)
-
 binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'gpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'tpu', _binary_fcnmv_jax_kernel)

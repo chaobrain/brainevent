@@ -73,7 +73,7 @@ class FixedNumConn(brainstate.nn.Module):
         with jax.ensure_compile_time_eval():
             assert allow_multi_conn
             indices = brainstate.random.randint(0, n_post, size=(n_pre, self.conn_num))
-            conn_weight = conn_weight_base / conn_num_base * self.conn_num
+            conn_weight = conn_weight_base * conn_num_base / self.conn_num
             if not homo:
                 conn_weight = u.math.full((n_pre, self.conn_num), conn_weight)
             self.weight = brainstate.ParamState(

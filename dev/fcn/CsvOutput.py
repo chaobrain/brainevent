@@ -1,45 +1,8 @@
 
-class ResultPrinting:
-    """Formatted benchmark result printer for COBA tests.
-
-    Usage::
-
-        rp = ResultPrinting()
-        rp.print_header(operator='fcnmv', data_type='binary', backend='cuda_raw',
-                        mode='post', conn_num=80, duration_ms=1000.0)
-        rp.print_table_header()
-        rp.print_row(scale=1, neurons=4000, elapsed=0.215, rate=59.4)
-    """
-
-    def __init__(self, width: int = 70) -> None:
-        self.width = width
-
-    def print_header(self, *, operator: str, data_type: str, backend: str,
-                     mode: str, conn_num: int, duration_ms: float,
-                     batch_size: int | None = None, **extra) -> None:
-        """Print parameter condition header block."""
-        print(f'\n{"=" * self.width}')
-        print(f'  operator={operator} | data_type={data_type} | backend={backend}')
-        parts: list[str] = [f'mode={mode:<8s}']
-        if batch_size is not None:
-            parts.append(f'batch_size={batch_size}')
-        parts.append(f'conn_num={conn_num}')
-        parts.append(f'duration={duration_ms:.1f} ms')
-        for k, v in extra.items():
-            parts.append(f'{k}={v}')
-        print('  ' + ' | '.join(parts))
-        print(f'{"=" * self.width}')
-
-    def print_table_header(self) -> None:
-        """Print column header for the standard result table."""
-        print(f'  {"Scale":>5s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
-        print(f'  {"-----":>5s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
-
-    @staticmethod
-    def print_row(scale: int, neurons: int, elapsed: float, rate: float) -> None:
-        """Print one benchmark result row."""
-        print(f'  {scale:>5d} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
-
+import os
+import re
+import jax
+from pathlib import Path
 
 class CSV_record():
     """Generic CSV recorder used by benchmarks.
@@ -49,20 +12,39 @@ class CSV_record():
     - configurable output directory
     - append or overwrite mode
     - convenience helper `single_COBA_data_add` kept for compatibility
+    - automatic handling of brainunit Quantity objects (extracts numeric values)
+    - automatic append mode detection for existing files
     """
+    
+    @staticmethod
+    def _extract_value(param):
+        """Extract numeric value from parameter, handling brainunit.Quantity objects.
+        
+        If the parameter is a brainunit Quantity object, extracts the magnitude.
+        Otherwise returns the parameter as-is.
+        """
+        if hasattr(param, '__class__') and param.__class__.__name__ == 'Quantity':
+            return param.magnitude
+        return param
+    
     def __init__(
         self,
         CSV_name: str,
         operator: str,
         testing_type: str,
+        duration: float,
+        conn: int,
         suffix: str = '',
         output_dir: str | None = None,
         append: bool = False,
+        
     ) -> None:
-        from pathlib import Path
-
         self.name = CSV_name
         self.suffix = suffix
+        self.conn = conn
+        # Handle brainunit Quantity objects
+        self.duration = self._extract_value(duration)
+
         # default common fields
         self.fieldnames: list[str] = [
             'operator', 'data_type', 'backend', 'synaptic_type', 'scale', 'conn_num',
@@ -82,6 +64,8 @@ class CSV_record():
         self.output_dir = Path(output_dir) if output_dir else base / 'results'
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.append = append
+
+        self.width = 70
 
     def _write_csv(self, file_name: str, rows: list[dict], fieldnames: list[str], mode: str = 'w') -> None:
         import csv
@@ -119,24 +103,27 @@ class CSV_record():
                              duration: float,
                              homo: str = 'default',
                              **kwargs):
-        """Backwards-compatible helper used by existing benchmarks."""
+        """Backwards-compatible helper used by existing benchmarks.
+        
+        Automatically extracts numeric values from brainunit Quantity objects.
+        """
         row = {
-            'operator': operator,
+            'operator': self.operator_name,
             'data_type': data_type,
             'backend': backend,
             'testing_type': self.testing_type,
             'synaptic_type': synaptic_type,
             'scale': scale,
             'conn_num': conn_num,
-            'elapsed_s': elapsed_s,
-            'firing_rate': firing_rate,
-            'duration': duration,
+            'elapsed_s': self._extract_value(elapsed_s),
+            'firing_rate': self._extract_value(firing_rate),
+            'duration': self._extract_value(duration),
             'homo': homo,
         }
 
-        # merge extras
+        # merge extras, also extract values from them
         for key, value in kwargs.items():
-            row[key] = value
+            row[key] = self._extract_value(value)
 
         self.add_row(row)
 
@@ -148,6 +135,8 @@ class CSV_record():
         - When suffix is 'default' (or empty), results are **always appended** to
           ``{testing_type}_default.csv`` so that multiple operators / data-types
           are aggregated into one file for unified comparison.
+        - For other files, automatically detects if the target file exists and
+          appends if it does.
         """
         suf = suffix if suffix else self.suffix
 
@@ -155,20 +144,47 @@ class CSV_record():
 
         if file_name:
             out_name = file_name
-            mode = 'a' if self.append else 'w'
+            # Check if file exists and determine mode
+            file_path = self.output_dir / f'{file_name}.csv'
+            mode = 'a' if file_path.exists() else 'w'
         elif is_default:
             # Aggregate everything into <testing_type>_default.csv (always append)
             out_name = f'{self.testing_type}_default'
             mode = 'a'
         else:
             out_name = f'{self.testing_type}_{self.operator_name}_{self.name}_{suf}'
-            mode = 'a' if self.append else 'w'
+            # Check if file exists and determine mode
+            file_path = self.output_dir / f'{out_name}.csv'
+            mode = 'a' if file_path.exists() else 'w'
 
         self._write_csv(out_name, self.rows, self.fieldnames, mode=mode)
 
-import os
-import re
-import jax
+
+    def print_header(self, *, operator: str, data_type: str, backend: str,
+                     mode: str, conn_num: int, duration_ms: float,
+                     batch_size: int | None = None, **extra) -> None:
+        """Print parameter condition header block."""
+        print(f'\n{"=" * self.width}')
+        print(f'  operator={self.operator_name} | data_type={data_type} | backend={backend}')
+        parts: list[str] = [f'mode={mode:<8s}']
+        if batch_size is not None:
+            parts.append(f'batch_size={batch_size}')
+        parts.append(f'conn_num={conn_num}')
+        parts.append(f'duration={duration_ms:.1f} ms')
+        for k, v in extra.items():
+            parts.append(f'{k}={v}')
+        print('  ' + ' | '.join(parts))
+        print(f'{"=" * self.width}')
+
+    def print_table_header(self) -> None:
+        """Print column header for the standard result table."""
+        print(f'  {"Scale":>5s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
+        print(f'  {"-----":>5s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
+
+    @staticmethod
+    def print_row(scale: int, neurons: int, elapsed: float, rate: float) -> None:
+        """Print one benchmark result row."""
+        print(f'  {scale:>5d} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
 
 def dump_jax_ir(func, args=(), kwargs=None, prefix="dump"):
 

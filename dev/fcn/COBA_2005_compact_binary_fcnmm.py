@@ -40,89 +40,124 @@ import jax
 
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
-from CsvOutput import CSV_record, ResultPrinting
+import CsvOutput as RP
 
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
 backends = ['jax_raw', 'cuda_raw']
-rp = ResultPrinting(width=90)
-homo = False
+scales = [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]
 
 
-def benchmark_one(data_type, efferent_target, scales, batch_size=16, conn_num=80, duration=1e3 * u.ms, homo=False):
-    results = {}
-    for s in scales:
-        run = make_simulation_batch_run(
-            scale=s,
-            batch_size=batch_size,
-            data_type=data_type,
-            efferent_target=efferent_target,
-            duration=duration,
-            conn_num=conn_num,
-            homo=homo,
-        )
-        # warmup
-        jax.block_until_ready(run())
-        # timed run
-        t0 = time.time()
-        n, rate = jax.block_until_ready(run())
-        t1 = time.time()
-        results[s] = (n, t1 - t0, float(rate))
-    return results
+def benchmark_post_conn(
+    conn_num=80, 
+    data_type='compact', 
+    batch_size=16, 
+    duration=1e3 * u.ms, 
+    homo: bool = False, 
+    backend: str | None = None
+):
+    print('Benchmarking post-synaptic connection updates...')
+
+    dur_ms = float(duration / u.ms) if hasattr(duration, '__class__') and duration.__class__.__name__ == 'Quantity' else duration
+    csv_recorder = RP.CSV_record(f'compact_post_bs{batch_size}_conn{conn_num}', 'fcnmm', 'coba', duration=duration, conn=conn_num)
+
+    backends_to_use = [backend] if backend is not None else backends
+
+    for back in backends_to_use:
+        brainevent.config.set_backend('gpu', back)
+
+        csv_recorder.print_header(operator='fcnmm', data_type=data_type, backend=back,
+                                  mode='post', batch_size=batch_size, conn_num=conn_num, duration_ms=dur_ms,
+                                  homo=('homo' if homo else 'hetero'))
+        csv_recorder.print_table_header()
+
+        for s in scales:
+            run = make_simulation_batch_run(
+                scale=s,
+                batch_size=batch_size,
+                data_type=data_type,
+                efferent_target='post',
+                duration=duration,
+                conn_num=conn_num,
+                homo=homo,
+            )
+            # warmup
+            jax.block_until_ready(run())
+            # timed run
+            t0 = time.time()
+            n, rate = jax.block_until_ready(run())
+            t1 = time.time()
+            elapsed = t1 - t0
+            
+            csv_recorder.print_row(s, n, elapsed, float(rate))
+            csv_recorder.single_COBA_data_add(
+                'fcnmm', data_type, back, 'post', conn_num, s,
+                elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero')
+            )
+    csv_recorder.record_finish('default')
+
+
+def benchmark_pre_conn(
+    conn_num=80, 
+    data_type='compact', 
+    batch_size=16, 
+    duration=1e2 * u.ms, 
+    homo: bool = False, 
+    backend: str | None = None
+):
+    print('Benchmarking pre-synaptic connection updates...')
+
+    dur_ms = float(duration / u.ms) if hasattr(duration, '__class__') and duration.__class__.__name__ == 'Quantity' else duration
+    csv_recorder = RP.CSV_record(f'compact_pre_bs{batch_size}_conn{conn_num}', 'fcnmm', 'coba', duration=duration, conn=conn_num)
+
+    backends_to_use = [backend] if backend is not None else backends
+
+    for back in backends_to_use:
+        brainevent.config.set_backend('gpu', back)
+
+        csv_recorder.print_header(operator='fcnmm', data_type=data_type, backend=back,
+                                  mode='scatter', batch_size=batch_size, conn_num=conn_num, duration_ms=dur_ms,
+                                  homo=('homo' if homo else 'hetero'))
+        csv_recorder.print_table_header()
+
+        for s in scales:
+            run = make_simulation_batch_run(
+                scale=s,
+                batch_size=batch_size,
+                data_type=data_type,
+                efferent_target='pre',
+                duration=duration,
+                conn_num=conn_num,
+                homo=homo,
+            )
+            # warmup
+            jax.block_until_ready(run())
+            # timed run
+            t0 = time.time()
+            n, rate = jax.block_until_ready(run())
+            t1 = time.time()
+            elapsed = t1 - t0
+            
+            csv_recorder.print_row(s, n, elapsed, float(rate))
+            csv_recorder.single_COBA_data_add(
+                'fcnmm', data_type, back, 'pre', conn_num, s,
+                elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero')
+            )
+    csv_recorder.record_finish('default')
 
 
 def compare_all(efferent_target='post', batch_size=16, conn_num=80, duration=1e3 * u.ms):
-    mode = 'gather' if efferent_target == 'post' else 'scatter'
-    scales = [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]
-    dur_ms = float(duration / u.ms)
+    # This wrapper maintains the original script's behavior of running all types
+    # but uses the new benchmark functions.
     data_types = ['binary', 'bitpack_a0', 'compact']
-
-    csv_recorder = CSV_record(f'compact_{efferent_target}_bs{batch_size}_conn{conn_num}', 'fcnmm', 'coba')
-
-    for backend in backends:
-        brainevent.config.set_backend('gpu', backend)
-
-        all_results = {}
+    
+    if efferent_target == 'post':
         for dt in data_types:
-            print(f'Running {dt} ({mode}, {backend})...')
-            all_results[dt] = benchmark_one(
-                dt, efferent_target, scales,
-                batch_size=batch_size, conn_num=conn_num, duration=duration,
-            )
-
-        # Print comparison table
-        print(f'\n{"=" * 90}')
-        print(f'  operator=fcnmm | mode={mode} | backend={backend}')
-        print(f'  batch_size={batch_size} | conn_num={conn_num} | duration={dur_ms:.1f} ms')
-        print(f'{"=" * 90}')
-        header = f'{"Scale":>5s} | {"Neurons":>7s}'
+            benchmark_post_conn(conn_num=conn_num, data_type=dt, batch_size=batch_size, duration=duration)
+    else:
         for dt in data_types:
-            header += f' | {dt:>10s}'
-        header += ' | compact vs binary | compact vs bitpack'
-        print(header)
-        print('-' * len(header))
-
-        for s in scales:
-            n = all_results['binary'][s][0]
-            row = f'{s:>5d} | {n:>7d}'
-            times = {}
-            rates = {}
-            for dt in data_types:
-                t = all_results[dt][s][1]
-                r = all_results[dt][s][2]
-                times[dt] = t
-                rates[dt] = r
-                row += f' | {t:>9.3f}s'
-            speedup_vs_binary = times['binary'] / times['compact'] if times['compact'] > 0 else float('inf')
-            speedup_vs_bitpack = times['bitpack_a0'] / times['compact'] if times['compact'] > 0 else float('inf')
-            row += f' |             {speedup_vs_binary:>5.2f}x |              {speedup_vs_bitpack:>5.2f}x'
-            print(row)
-            for dt in data_types:
-                csv_recorder.single_COBA_data_add(
-                    'fcnmm', dt, backend, efferent_target, conn_num, s,
-                    times[dt], rates[dt], dur_ms, homo=('homo' if homo else 'hetero')
-                )
-    csv_recorder.record_finish('default')
+            # Note: pre mode often uses shorter duration in original script
+            benchmark_pre_conn(conn_num=conn_num, data_type=dt, batch_size=batch_size, duration=duration)
 
 
 if __name__ == '__main__':
@@ -130,10 +165,10 @@ if __name__ == '__main__':
     print('# CompactBinary vs BitPackBinary vs Binary — COBA 2005 Benchmark')
     print('#' * 90)
 
-    # Post-synaptic (gather mode) — compact should match bitpack
+    # Post-synaptic (gather mode)
     compare_all(efferent_target='post', batch_size=16, conn_num=80)
 
     print('\n\n')
 
-    # Pre-synaptic (scatter mode) — compact should be faster (skips inactive rows)
+    # Pre-synaptic (scatter mode)
     compare_all(efferent_target='pre', batch_size=16, conn_num=80, duration=1e2 * u.ms)

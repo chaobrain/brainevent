@@ -76,7 +76,7 @@ class COO_Conn(brainstate.nn.Module):
             # COO format: row[k] = source neuron, col[k] = target neuron
             row = np.repeat(np.arange(n_pre, dtype=np.int32), self.conn_num)
             col = brainstate.random.randint(0, n_post, size=(nse,))
-            conn_weight = conn_weight_base / conn_num_base * self.conn_num
+            conn_weight = conn_weight_base * conn_num_base / self.conn_num
             if not homo:
                 conn_weight = u.math.full((nse,), conn_weight)
             self.weight = brainstate.ParamState(

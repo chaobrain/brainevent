@@ -38,18 +38,12 @@ import jax
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
 
-brainevent.config.set_backend('gpu', 'jax_raw')
-
-batch_size, conn_num, data_type, duration = 16, 80, 'binary', 1e3 * u.ms
-
-from CsvOutput import CSV_record, ResultPrinting
-
+# Global configuration
+scales_post = [1, 2, 4, 6, 8, 10]
+scales_pre = [1, 2, 4, 6, 8, 10, 20, 40, 60]
 backends = ['jax_raw', 'cuda_raw']
-rp = ResultPrinting()
-homo = True
 
-
-def benchmark_post_conn():
+def benchmark_post_conn(batch_size=16, conn_num=80, data_type='binary', duration=1e3 * u.ms, homo: bool = True, backend: str | None = None):
     # --------------------------------
     # 2026/03/08, batch_size, conn_num, data_type, duration = 16, 80, 'binary', 1e3 * u.ms
     # --------------------------------
@@ -83,16 +77,21 @@ def benchmark_post_conn():
     # scale=100, size=400000, time = 20.511342525482178 s, firing rate = 59.44398880004883 Hz
     print('Benchmarking post-synaptic connection updates...')
 
-    csv_recorder = CSV_record('binary_post', 'fcnmm', 'coba')
-    dur_ms = float(duration / u.ms)
-    for backend in backends:
-        brainevent.config.set_backend('gpu', backend)
-        rp.print_header(operator='fcnmm', data_type=data_type, backend=backend,
+    import CsvOutput as rp
+    dur_ms = float(duration / u.ms) if hasattr(duration, '__class__') and duration.__class__.__name__ == 'Quantity' else duration
+    csv_recorder = rp.CSV_record('binary_post', 'fcnmm', 'coba', duration=duration, conn=conn_num)
+    
+    # Determine which backends to use
+    backends_to_use = [backend] if backend is not None else backends
+    
+    for back in backends_to_use:
+        brainevent.config.set_backend('gpu', back)
+        csv_recorder.print_header(operator='fcnmm', data_type=data_type, backend=back,
                 mode='post', batch_size=batch_size, conn_num=conn_num,
                 duration_ms=dur_ms, homo=('homo' if homo else 'hetero'))
-        rp.print_table_header()
+        csv_recorder.print_table_header()
 
-        for s in [1, 2, 4, 6, 8, 10]:
+        for s in scales_post:
             run = make_simulation_batch_run(
                 scale=s,
                 batch_size=batch_size,
@@ -109,33 +108,33 @@ def benchmark_post_conn():
             n, rate = jax.block_until_ready(run())
             t1 = time.time()
             elapsed = t1 - t0
-            rp.print_row(s, n, elapsed, float(rate))
-            try:
-                csv_recorder.single_COBA_data_add('fcnmm', data_type, backend, 'post', conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
-            except Exception:
-                pass
-    csv_recorder.record_finish('default')
+            csv_recorder.print_row(s, n, elapsed, float(rate))
+            csv_recorder.single_COBA_data_add('fcnmm', data_type, back, 'post', conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
+    csv_recorder.record_finish('test')
 
-def benchmark_pre_conn():
+def benchmark_pre_conn(batch_size=16, conn_num=80, data_type='binary', duration=1e3 * u.ms, homo: bool = True, backend: str | None = None):
     print('Benchmarking pre-synaptic connection updates...')
-
-    csv_recorder = CSV_record('binary_pre', 'fcnmm', 'coba')
-    pre_duration = 1e2 * u.ms
-    dur_ms = float(pre_duration / u.ms)
-    for backend in backends:
-        brainevent.config.set_backend('gpu', backend)
-        rp.print_header(operator='fcnmm', data_type='binary', backend=backend,
+    import CsvOutput as rp
+    dur_ms = float(duration / u.ms) if hasattr(duration, '__class__') and duration.__class__.__name__ == 'Quantity' else duration
+    csv_recorder = rp.CSV_record('binary_post', 'fcnmm', 'coba', duration=duration, conn=conn_num)
+    
+    # Determine which backends to use
+    backends_to_use = [backend] if backend is not None else backends
+    
+    for back in backends_to_use:
+        brainevent.config.set_backend('gpu', back)
+        csv_recorder.print_header(operator='fcnmm', data_type='binary', backend=back,
                 mode='pre', batch_size=batch_size, conn_num=conn_num,
                 duration_ms=dur_ms, homo=('homo' if homo else 'hetero'))
-        rp.print_table_header()
+        csv_recorder.print_table_header()
 
-        for s in [1, 2, 4, 6, 8, 10, 20, 40, 60]:
+        for s in scales_pre:
             run = make_simulation_batch_run(
                 scale=s,
                 batch_size=batch_size,
                 data_type='binary',
                 efferent_target='pre',
-                duration=pre_duration,
+                duration=duration,
                 conn_num=conn_num,
                 homo=homo,
             )
@@ -146,33 +145,33 @@ def benchmark_pre_conn():
             n, rate = jax.block_until_ready(run())
             t1 = time.time()
             elapsed = t1 - t0
-            rp.print_row(s, n, elapsed, float(rate))
-            try:
-                csv_recorder.single_COBA_data_add('fcnmm', 'binary', backend, 'pre', conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
-            except Exception:
-                pass
-    try:
-        csv_recorder.record_finish('default')
-    except Exception:
-        pass
+            csv_recorder.print_row(s, n, elapsed, float(rate))
+            csv_recorder.single_COBA_data_add('fcnmm', 'binary', back, 'pre', conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
+    csv_recorder.record_finish('default')
 
-def run_benchmark(batch_size, conn_num, mode='post'):
+def run_benchmark(batch_size, conn_num, mode='post', homo: bool = True, backend: str | None = None):
+
+    import CsvOutput as rp
+
     dur = 1e3 * u.ms if mode == 'post' else 1e2 * u.ms
-    dur_ms = float(dur / u.ms)
+    dur_ms = float(dur / u.ms) if hasattr(dur, '__class__') and dur.__class__.__name__ == 'Quantity' else dur
     kernel = 'warp' if conn_num <= 32 else 'basic'
 
     # Scales to benchmark (network sizes: scale * 4000 neurons)
     SCALES = [1, 4, 10, 40, 100]
 
     # CSV recorder for this configuration
-    csv_recorder = CSV_record(f'binary_bs{batch_size}_conn{conn_num}', 'fcnmm', 'benchmark')
+    csv_recorder = rp.CSV_record(f'binary_bs{batch_size}_conn{conn_num}', 'fcnmm', 'benchmark', duration=dur, conn=conn_num)
 
-    for backend in backends:
-        brainevent.config.set_backend('gpu', backend)
-        rp.print_header(operator='fcnmm', data_type='binary', backend=backend,
+    # Determine which backends to use
+    backends_to_use = [backend] if backend is not None else backends
+
+    for back in backends_to_use:
+        brainevent.config.set_backend('gpu', back)
+        csv_recorder.print_header(operator='fcnmm', data_type='binary', backend=back,
                 mode=mode, batch_size=batch_size, conn_num=conn_num,
                 duration_ms=dur_ms, kernel=kernel, homo=('homo' if homo else 'hetero'))
-        rp.print_table_header()
+        csv_recorder.print_table_header()
 
         for s in SCALES:
             run = make_simulation_batch_run(
@@ -193,17 +192,11 @@ def run_benchmark(batch_size, conn_num, mode='post'):
             n, rate = jax.block_until_ready(run())
             t1 = time.time()
             elapsed = t1 - t0
-            rp.print_row(s, n, elapsed, float(rate))
-            try:
-                csv_recorder.single_COBA_data_add('fcnmm', 'binary', backend, mode, conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
-            except Exception:
-                pass
+            csv_recorder.print_row(s, n, elapsed, float(rate))
+            csv_recorder.single_COBA_data_add('fcnmm', 'binary', back, mode, conn_num, s, elapsed, float(rate), dur_ms, homo=('homo' if homo else 'hetero'))
 
     # flush CSV for this config
-    try:
-        csv_recorder.record_finish('default')
-    except Exception:
-        pass
+    csv_recorder.record_finish('default')
 
 
 def bench_fcnmm():
@@ -453,7 +446,7 @@ def bench_fcnmm():
 
     # Test gather mode (post-synaptic / transpose=True)
     for batch_size, conn_num, desc in CONFIGS:
-        run_benchmark(batch_size, conn_num, mode='post')
+        run_benchmark(batch_size, conn_num, mode='post', backend=None)
 
     # Test scatter mode (pre-synaptic / transpose=False) for a subset
     print("\n\n" + "#" * 70)
@@ -465,11 +458,11 @@ def bench_fcnmm():
         (32, 80, "basic large batch"),
     ]
     for batch_size, conn_num, desc in scatter_configs:
-        run_benchmark(batch_size, conn_num, mode='pre')
+        run_benchmark(batch_size, conn_num, mode='pre', backend=None)
 
 
 if __name__ == '__main__':
-    #benchmark_post_conn()
-    benchmark_pre_conn()
+    benchmark_post_conn(batch_size=16, conn_num=80, data_type='binary', duration=1e3 * u.ms, homo = True)
+    #benchmark_pre_conn(batch_size=16, conn_num=80, data_type='binary', duration=1e3 * u.ms, homo = True)
     #bench_fcnmm()
     
