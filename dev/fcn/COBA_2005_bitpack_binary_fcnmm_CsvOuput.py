@@ -40,54 +40,100 @@ import jax
 
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
+import CsvOutput as RP
 
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
-
-def benchmark_post_conn(data_type, batch_size=16, conn_num=80, duration=1e3 * u.ms):
-    print(f'\n{"=" * 70}')
-    print(f'  data_type={data_type}, batch_size={batch_size}, conn_num={conn_num}')
-    print(f'{"=" * 70}')
-
-    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-        run = make_simulation_batch_run(
-            scale=s,
-            batch_size=batch_size,
-            data_type=data_type,
-            efferent_target='post',
-            duration=duration,
-            conn_num=conn_num,
-        )
-
-        jax.block_until_ready(run())
-
-        t0 = time.time()
-        n, rate = jax.block_until_ready(run())
-        t1 = time.time()
-        print(f'  scale={s:>3d}, size={n:>6d}, time={t1 - t0:>8.3f}s, rate={rate:.1f} Hz')
+backends = ['jax_raw', 'cuda_raw']
+scales = [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]
 
 
-def benchmark_pre_conn(data_type, batch_size=16, conn_num=80, duration=1e2 * u.ms):
-    print(f'\n{"=" * 70}')
-    print(f'  data_type={data_type}, batch_size={batch_size}, conn_num={conn_num} [pre-synaptic]')
-    print(f'{"=" * 70}')
+def benchmark_post_conn(
+    conn_num=80, 
+    data_type='bitpack_a0', 
+    batch_size=16, 
+    duration=1e3 * u.ms, 
+    homo: bool = False, 
+    backend: str | None = None
+):
+    csv_recorder = RP.CSV_record(f'bitpack_post_bs{batch_size}_conn{conn_num}', 'fcnmm', 'coba', duration=duration, conn=conn_num)
 
-    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-        run = make_simulation_batch_run(
-            scale=s,
-            batch_size=batch_size,
-            data_type=data_type,
-            efferent_target='pre',
-            duration=duration,
-            conn_num=conn_num,
-        )
+    backends_to_use = [backend] if backend is not None else backends
 
-        jax.block_until_ready(run())
+    for back in backends_to_use:
+        brainevent.config.set_backend('gpu', back)
+        csv_recorder.print_header(operator='fcnmm', data_type=data_type, backend=back,
+                mode='post', batch_size=batch_size, conn_num=conn_num,
+                duration=duration, homo=('homo' if homo else 'hetero'))
+        csv_recorder.print_table_header()
 
-        t0 = time.time()
-        n, rate = jax.block_until_ready(run())
-        t1 = time.time()
-        print(f'  scale={s:>3d}, size={n:>6d}, time={t1 - t0:>8.3f}s, rate={rate:.1f} Hz')
+        for s in scales:
+            run = make_simulation_batch_run(
+                scale=s,
+                batch_size=batch_size,
+                data_type=data_type,
+                efferent_target='post',
+                duration=duration,
+                conn_num=conn_num,
+                homo=homo,
+            )
+
+            jax.block_until_ready(run())
+
+            t0 = time.time()
+            n, rate = jax.block_until_ready(run())
+            t1 = time.time()
+            elapsed = t1 - t0
+            csv_recorder.print_row(s, n, elapsed, float(rate))
+            csv_recorder.single_COBA_data_add(
+                'fcnmm', data_type, back, 'post', conn_num, s,
+                elapsed, float(rate), duration, homo=('homo' if homo else 'hetero')
+            )
+    csv_recorder.record_finish('default')
+
+
+def benchmark_pre_conn(
+    conn_num=80, 
+    data_type='bitpack_a0', 
+    batch_size=16, 
+    duration=1e2 * u.ms, 
+    homo: bool = False, 
+    backend: str | None = None
+):
+    csv_recorder = RP.CSV_record(f'bitpack_pre_bs{batch_size}_conn{conn_num}', 'fcnmm', 'coba', duration=duration, conn=conn_num)
+
+    backends_to_use = [backend] if backend is not None else backends
+
+    for back in backends_to_use:
+        brainevent.config.set_backend('gpu', back)
+        csv_recorder.print_header(operator='fcnmm', data_type=data_type, backend=back,
+                mode='pre', batch_size=batch_size, conn_num=conn_num,
+                duration=duration, homo=('homo' if homo else 'hetero'))
+        csv_recorder.print_table_header()
+
+        for s in scales:
+            run = make_simulation_batch_run(
+                scale=s,
+                batch_size=batch_size,
+                data_type=data_type,
+                efferent_target='pre',
+                duration=duration,
+                conn_num=conn_num,
+                homo=homo,
+            )
+
+            jax.block_until_ready(run())
+
+            t0 = time.time()
+            n, rate = jax.block_until_ready(run())
+            t1 = time.time()
+            elapsed = t1 - t0
+            csv_recorder.print_row(s, n, elapsed, float(rate))
+            csv_recorder.single_COBA_data_add(
+                'fcnmm', data_type, back, 'pre', conn_num, s,
+                elapsed, float(rate), duration, homo=('homo' if homo else 'hetero')
+            )
+    csv_recorder.record_finish('default')
 
 
 def compare_bitpack_vs_binary():
@@ -136,10 +182,10 @@ def compare_bitpack_vs_binary():
     conn_num = 80
 
     # Binary baseline
-    benchmark_post_conn('binary', batch_size=batch_size, conn_num=conn_num)
+    benchmark_post_conn(conn_num=conn_num, data_type='binary', batch_size=batch_size)
 
     # Bitpack (pack_axis=0 via batching rule MV→MM promotion)
-    benchmark_post_conn('bitpack_a0', batch_size=batch_size, conn_num=conn_num)
+    benchmark_post_conn(conn_num=conn_num, data_type='bitpack_a0', batch_size=batch_size)
 
     print('\n\n')
     print('#' * 70)
@@ -147,10 +193,10 @@ def compare_bitpack_vs_binary():
     print('#' * 70)
 
     # Binary baseline
-    benchmark_pre_conn('binary', batch_size=batch_size, conn_num=conn_num)
+    benchmark_pre_conn(conn_num=conn_num, data_type='binary', batch_size=batch_size)
 
     # Bitpack
-    benchmark_pre_conn('bitpack_a0', batch_size=batch_size, conn_num=conn_num)
+    benchmark_pre_conn(conn_num=conn_num, data_type='bitpack_a0', batch_size=batch_size)
 
 
 def compare_different_configs():
@@ -321,9 +367,9 @@ def compare_different_configs():
 
     for batch_size, conn_num in configs:
         for data_type in ['binary', 'bitpack_a0']:
-            benchmark_post_conn(data_type, batch_size=batch_size, conn_num=conn_num)
+            benchmark_post_conn(conn_num=conn_num, data_type=data_type, batch_size=batch_size)
 
 
 if __name__ == '__main__':
-    # compare_bitpack_vs_binary()
+    compare_bitpack_vs_binary()
     compare_different_configs()

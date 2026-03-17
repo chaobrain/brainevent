@@ -161,16 +161,28 @@ class CSV_record():
 
 
     def print_header(self, *, operator: str, data_type: str, backend: str,
-                     mode: str, conn_num: int, duration_ms: float,
+                     mode: str, conn_num: int, duration=None, duration_ms: float | None = None,
                      batch_size: int | None = None, **extra) -> None:
-        """Print parameter condition header block."""
+        """Print parameter condition header block.
+
+        Accepts either ``duration`` (a numeric value or brainunit Quantity) or
+        the legacy ``duration_ms`` float.  When both are supplied, ``duration``
+        takes precedence.
+        """
+        if duration is not None:
+            dur_ms_val = float(self._extract_value(duration))
+        elif duration_ms is not None:
+            dur_ms_val = float(duration_ms)
+        else:
+            dur_ms_val = float(self._extract_value(self.duration))
+
         print(f'\n{"=" * self.width}')
         print(f'  operator={self.operator_name} | data_type={data_type} | backend={backend}')
         parts: list[str] = [f'mode={mode:<8s}']
         if batch_size is not None:
             parts.append(f'batch_size={batch_size}')
         parts.append(f'conn_num={conn_num}')
-        parts.append(f'duration={duration_ms:.1f} ms')
+        parts.append(f'duration={dur_ms_val:.1f} ms')
         for k, v in extra.items():
             parts.append(f'{k}={v}')
         print('  ' + ' | '.join(parts))

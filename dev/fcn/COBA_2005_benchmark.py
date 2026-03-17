@@ -175,11 +175,11 @@ class EINet(brainstate.nn.Module):
 
 def make_simulation_run(
     scale: float,
-    homo: bool,
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
     conn_num: int = 80,
+    homo: bool = True
 ):
     @brainstate.transform.jit
     def run():
@@ -200,11 +200,10 @@ def make_simulation_run(
 
 def make_training_run(
     scale: float,
-    homo: bool,
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
-    
+    homo: bool = True
 ):
     def loss_fn():
         net = EINet(scale, data_type=data_type, efferent_target=efferent_target, homo= homo)
@@ -230,12 +229,12 @@ def make_training_run(
 
 def make_simulation_batch_run(
     scale: float,
-    homo: bool,
     batch_size: int = 16,
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
     conn_num: int = 80,
+    homo: bool = True
 ):
     @brainstate.transform.jit
     def run():
@@ -258,12 +257,12 @@ def make_simulation_batch_run(
 
 def make_training_batch_run(
     scale: float,
-    homo: bool,
     batch_size: int = 16,
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
     conn_num: int = 80,
+    homo: bool = True
 ):
     def loss_fn():
         net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num, homo= homo)
