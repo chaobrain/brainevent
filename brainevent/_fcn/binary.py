@@ -274,11 +274,11 @@ def _binary_fcnmv_cuda_kernel(
     else:
         # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
         # Auto-dispatch inside CUDA: TPR for n_conn<=512, MR for n_conn>512.
-        kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}_bool{sfx}'
+        kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}{spike_sfx}{sfx}'
 
     def kernel(weights, indices, spikes):
-        bool_spk = u.math.asarray(spikes, dtype=bool)
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, bool_spk)
+        #bool_spk = u.math.asarray(spikes, dtype=bool)
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
 
     return kernel
 
@@ -293,25 +293,25 @@ def _binary_fcnmv_jax_kernel(
 
     def kernel(weights, indices, spikes):
         # Convert spikes to float: bool→{0,1}, float→{0,1} based on >0
-        bool_spk = u.math.asarray(spikes, dtype=bool)
-        '''
+        #bool_spk = u.math.asarray(spikes, dtype=bool)
+        
         if spikes.dtype == jnp.bool_:
             spk_f = spikes.astype(weights.dtype)
         else:
             spk_f = (spikes > 0).astype(weights.dtype)
-        '''
+        
 
         if transpose:
             # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
-            masked = jnp.broadcast_to(bool_spk[:, None] * weights, indices.shape)
+            masked = jnp.broadcast_to(spikes[:, None] * weights, indices.shape)
             return jax.ops.segment_sum(masked.ravel(), indices.ravel(), num_segments=n_post),
         else:
             # Gather: y[i] = sum_k weights[i,k] * spk_f[indices[i,k]]
             if weights.size == 1:
                 w = weights[0]
-                return jax.vmap(lambda ind: w * jnp.sum(bool_spk[ind]))(indices),
+                return jax.vmap(lambda ind: w * jnp.sum(spikes[ind]))(indices),
             else:
-                return jax.vmap(lambda w, ind: jnp.sum(w * bool_spk[ind]))(weights, indices),
+                return jax.vmap(lambda w, ind: jnp.sum(w * spikes[ind]))(weights, indices),
 
     return kernel
 
