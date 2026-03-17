@@ -37,7 +37,7 @@ brainevent.config.set_backend('gpu', 'cuda_raw')
 
 
 def benchmark_post_conn(
-    conn_num=80, data_type='binary', duration=1 * u.ms, backend='cuda_raw',
+    conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cuda_raw',
 ):
     # --------------------------------
     # 2026/03/08, conn_num, data_type, duration = 80, 'binary', 1e4 * u.ms

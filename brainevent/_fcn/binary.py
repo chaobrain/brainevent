@@ -303,15 +303,15 @@ def _binary_fcnmv_jax_kernel(
 
         if transpose:
             # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
-            masked = jnp.broadcast_to(spikes[:, None] * weights, indices.shape)
+            masked = jnp.broadcast_to(spk_f[:, None] * weights, indices.shape)
             return jax.ops.segment_sum(masked.ravel(), indices.ravel(), num_segments=n_post),
         else:
             # Gather: y[i] = sum_k weights[i,k] * spk_f[indices[i,k]]
             if weights.size == 1:
                 w = weights[0]
-                return jax.vmap(lambda ind: w * jnp.sum(spikes[ind]))(indices),
+                return jax.vmap(lambda ind: w * jnp.sum(spk_f[ind]))(indices),
             else:
-                return jax.vmap(lambda w, ind: jnp.sum(w * spikes[ind]))(weights, indices),
+                return jax.vmap(lambda w, ind: jnp.sum(w * spk_f[ind]))(weights, indices),
 
     return kernel
 

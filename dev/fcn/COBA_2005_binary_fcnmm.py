@@ -35,7 +35,7 @@ from COBA_2005_benchmark import make_simulation_batch_run
 
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
-batch_size, conn_num, data_type, duration = 16, 80, 'binary', 1e4 * u.ms
+batch_size, conn_num, data_type, duration = 16, 80, 'binary', 1e3 * u.ms
 
 
 def benchmark_post_conn():
