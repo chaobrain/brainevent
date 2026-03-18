@@ -277,7 +277,7 @@ def _binary_fcnmv_cuda_kernel(
         kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}{spike_sfx}{sfx}'
 
     def kernel(weights, indices, spikes):
-        #bool_spk = u.math.asarray(spikes, dtype=bool)
+        #spikes = u.math.asarray(spikes, dtype=bool)
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
 
     return kernel

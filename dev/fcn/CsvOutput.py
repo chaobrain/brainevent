@@ -33,7 +33,7 @@ class CSV_record():
         operator: str,
         testing_type: str,
         duration: float,
-        conn: int,
+        conn: int | None = None,
         suffix: str = '',
         output_dir: str | None = None,
         append: bool = False,
@@ -161,7 +161,7 @@ class CSV_record():
 
 
     def print_header(self, *, operator: str, data_type: str, backend: str,
-                     mode: str, conn_num: int, duration=None, duration_ms: float | None = None,
+                     mode: str, conn_num: int | None = None, duration=None, duration_ms: float | None = None,
                      batch_size: int | None = None, **extra) -> None:
         """Print parameter condition header block.
 
@@ -181,22 +181,30 @@ class CSV_record():
         parts: list[str] = [f'mode={mode:<8s}']
         if batch_size is not None:
             parts.append(f'batch_size={batch_size}')
-        parts.append(f'conn_num={conn_num}')
+        if conn_num is not None:
+            parts.append(f'conn_num={conn_num}')
         parts.append(f'duration={dur_ms_val:.1f} ms')
         for k, v in extra.items():
             parts.append(f'{k}={v}')
         print('  ' + ' | '.join(parts))
         print(f'{"=" * self.width}')
 
-    def print_table_header(self) -> None:
+    def print_table_header(self, show_conn: bool = False) -> None:
         """Print column header for the standard result table."""
-        print(f'  {"Scale":>5s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
-        print(f'  {"-----":>5s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
+        if show_conn:
+            print(f'  {"Scale":>5s} | {"ConnNum":>8s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
+            print(f'  {"-----":>5s}-+-{"--------":>8s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
+        else:
+            print(f'  {"Scale":>5s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
+            print(f'  {"-----":>5s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
 
     @staticmethod
-    def print_row(scale: int, neurons: int, elapsed: float, rate: float) -> None:
+    def print_row(scale: int, neurons: int, elapsed: float, rate: float, conn_num=None) -> None:
         """Print one benchmark result row."""
-        print(f'  {scale:>5d} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
+        if conn_num is not None:
+            print(f'  {scale:>5d} | {conn_num:>8g} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
+        else:
+            print(f'  {scale:>5d} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
 
 def dump_jax_ir(func, args=(), kwargs=None, prefix="dump"):
 
