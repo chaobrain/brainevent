@@ -277,6 +277,7 @@ def _binary_fcnmv_cuda_kernel(
         kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}{spike_sfx}{sfx}'
 
     def kernel(weights, indices, spikes):
+        #spikes = u.math.asarray(spikes, dtype=bool)
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
 
     return kernel
@@ -292,10 +293,13 @@ def _binary_fcnmv_jax_kernel(
 
     def kernel(weights, indices, spikes):
         # Convert spikes to float: bool→{0,1}, float→{0,1} based on >0
+        #bool_spk = u.math.asarray(spikes, dtype=bool)
+        
         if spikes.dtype == jnp.bool_:
             spk_f = spikes.astype(weights.dtype)
         else:
             spk_f = (spikes > 0).astype(weights.dtype)
+        
 
         if transpose:
             # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
@@ -497,6 +501,8 @@ See Also
 binary_fcnmv : High-level user-facing function wrapper.
 """
 )
+
+
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_cuda_raw_kernel(_binary_fcnmv_cuda_kernel, asdefault=True)
 binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)

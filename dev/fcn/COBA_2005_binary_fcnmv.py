@@ -146,5 +146,5 @@ def benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms):
 if __name__ == '__main__':
     benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
     benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='cuda_raw')
-    # benchmark_post_conn(conn_num=80, data_type='bitpack', duration=1e4 * u.ms)
-    # benchmark_pre_conn()
+    benchmark_post_conn(conn_num=80, data_type='bitpack', duration=1e4 * u.ms)
+    benchmark_pre_conn()

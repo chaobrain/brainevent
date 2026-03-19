@@ -73,7 +73,7 @@ class FixedNumConn(brainstate.nn.Module):
         with jax.ensure_compile_time_eval():
             assert allow_multi_conn
             indices = brainstate.random.randint(0, n_post, size=(n_pre, self.conn_num))
-            conn_weight = conn_weight_base / conn_num_base * self.conn_num
+            conn_weight = conn_weight_base * conn_num_base / self.conn_num
             if not homo:
                 conn_weight = u.math.full((n_pre, self.conn_num), conn_weight)
             self.weight = brainstate.ParamState(
@@ -179,10 +179,11 @@ def make_simulation_run(
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
     conn_num: int = 80,
+    homo: bool = True
 ):
     @brainstate.transform.jit
     def run():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num, homo= homo)
         net.init_all_states()
 
         def fn(t):
@@ -202,9 +203,10 @@ def make_training_run(
     data_type: str = 'binary',
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
+    homo: bool = True
 ):
     def loss_fn():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, homo= homo)
         net.init_all_states()
 
         def fn(t):
@@ -232,10 +234,11 @@ def make_simulation_batch_run(
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
     conn_num: int = 80,
+    homo: bool = True
 ):
     @brainstate.transform.jit
     def run():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num, homo= homo)
         mapper = brainstate.nn.Map(net, init_map_size=batch_size)
         mapper.init_all_states()
 
@@ -259,9 +262,10 @@ def make_training_batch_run(
     efferent_target: str = 'post',
     duration: u.Quantity = 1e4 * u.ms,
     conn_num: int = 80,
+    homo: bool = True
 ):
     def loss_fn():
-        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num)
+        net = EINet(scale, data_type=data_type, efferent_target=efferent_target, conn_num=conn_num, homo= homo)
         mapper = brainstate.nn.Map(net, init_map_size=batch_size)
         mapper.init_all_states()
 

@@ -432,3 +432,4 @@ FFI_BS_HETERO(_bool_bf16, __nv_bfloat16, uint8_t)
 FFI_BS_HOMO  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
 // @BE binary_fcnmv_scatter_hetero_float_bf16
 FFI_BS_HETERO(_float_bf16, __nv_bfloat16, __nv_bfloat16)
+

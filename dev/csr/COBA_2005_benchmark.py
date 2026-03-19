@@ -76,7 +76,7 @@ class CSR_Conn(brainstate.nn.Module):
             # CSR format: indptr marks row boundaries (each row has exactly conn_num entries)
             indptr = np.arange(n_pre + 1, dtype=np.int32) * self.conn_num
             flat_indices = brainstate.random.randint(0, n_post, size=(nse,))
-            conn_weight = conn_weight_base / conn_num_base * self.conn_num
+            conn_weight = conn_weight_base * conn_num_base / self.conn_num
             if not homo:
                 conn_weight = u.math.full((nse,), conn_weight)
             self.weight = brainstate.ParamState(
