@@ -270,14 +270,15 @@ def _binary_fcnmv_cuda_kernel(
     if transpose:
         # Scatter mode: if is_active(spikes[i]) → output[indices[i,k]] += weights[i,k]
         # Always TPR (thread-per-row) — atomicAdd contention is the bottleneck at all n_conn.
-        kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}{spike_sfx}{sfx}'
+        #kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}{spike_sfx}{sfx}'
+        kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_bool{sfx}'
     else:
         # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
         # Auto-dispatch inside CUDA: TPR for n_conn<=512, MR for n_conn>512.
-        kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}{spike_sfx}{sfx}'
+        kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}_bool{sfx}'
 
     def kernel(weights, indices, spikes):
-        #spikes = u.math.asarray(spikes, dtype=bool)
+        spikes = u.math.asarray(spikes, dtype=bool)
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
 
     return kernel
@@ -300,6 +301,7 @@ def _binary_fcnmv_jax_kernel(
         else:
             spk_f = (spikes > 0).astype(weights.dtype)
         
+        spk_f = u.math.asarray(spikes, dtype=bool)
 
         if transpose:
             # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]

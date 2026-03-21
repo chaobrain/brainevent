@@ -40,7 +40,6 @@ import jax
 
 import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
-import CsvOutput as RP
 
 brainevent.config.set_backend('gpu', 'cuda_raw')
 
@@ -60,6 +59,7 @@ def benchmark_post_conn(
     backend: str | None = None,
     probs_or_conn='conn'
 ):
+    import dev.fcn.BenchmarkTools as BT
     print('Benchmarking post-synaptic connection updates...')
 
     backends_to_use = [backend] if backend is not None else backends
@@ -71,7 +71,7 @@ def benchmark_post_conn(
         use_conn_nums = False
         probs_to_use = [conn_prob] if conn_prob is not None else probs
 
-    csv_recorder = RP.CSV_record(f'compact_post_bs{batch_size}', 'fcnmm', 'coba', duration=duration, conn=conn_num)
+    csv_recorder = BT.CSV_record(f'compact_post_bs{batch_size}', 'fcnmm', 'coba', duration=duration, conn=conn_num)
 
     for back in backends_to_use:
         brainevent.config.set_backend('gpu', back)
@@ -158,6 +158,7 @@ def benchmark_pre_conn(
     backend: str | None = None,
     probs_or_conn='conn'
 ):
+    import dev.fcn.BenchmarkTools as BT
     print('Benchmarking pre-synaptic connection updates...')
 
     backends_to_use = [backend] if backend is not None else backends
@@ -169,7 +170,7 @@ def benchmark_pre_conn(
         use_conn_nums = False
         probs_to_use = [conn_prob] if conn_prob is not None else probs
 
-    csv_recorder = RP.CSV_record(f'compact_pre_bs{batch_size}', 'fcnmm', 'coba', duration=duration, conn=conn_num)
+    csv_recorder = BT.CSV_record(f'compact_pre_bs{batch_size}', 'fcnmm', 'coba', duration=duration, conn=conn_num)
 
     for back in backends_to_use:
         brainevent.config.set_backend('gpu', back)

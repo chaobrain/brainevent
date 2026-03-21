@@ -38,13 +38,17 @@
  *                       Coalesced memory access dominates at large n_conn.
  *
  *   Scatter:
- *     All n_conn     -> TPR (thread-per-row): one thread per row, serial atomicAdd loop.
- *                       atomicAdd contention at L2 cache is the bottleneck, not read
- *                       bandwidth, so parallelizing the inner loop gains nothing.
+ *     n_conn <= threshold -> TPR (thread-per-row): one thread per row, serial atomicAdd loop.
+ *                            Wins when n_conn is small; low fan-out keeps atomicAdd contention low.
+ *     n_conn > threshold  -> WPR (warp-per-row): one warp per row, 32 lanes stride n_conn,
+ *                            each lane issues its own atomicAdd — amortizes warp overhead at
+ *                            large n_conn.  Launch: <<<ceil(n_pre/8), 256>>>
+ *                            threshold = cubic polynomial of n_pre, fit from benchmark data
+ *                            (see boundary_dis.py).
  *
  * Benchmark crossover (n_pre=n_post=100K, 50% spike rate):
  *   Gather TPR vs MR: TPR wins for n_conn <= 512, MR wins 2x at 1024, 4.3x at 4096.
- *   Scatter TPR vs warp-per-row: roughly equal at all n_conn.
+ *   Scatter TPR vs WPR: crossover n_conn is a cubic function of n_pre (see boundary_dis.py).
  */
 
 #include "cuda_common.h"
@@ -156,11 +160,57 @@ __global__ void _bg_mr_hetero_kern##SUFFIX(                                     
 // output[indices[i,k]] += weights[i,k] * is_active(spikes[i])
 // ============================================================================
 
-// --- Scatter, thread-per-row (TPR): one thread per row, serial loop + atomicAdd ---
-// Used for ALL n_conn values.  atomicAdd contention is the bottleneck, not read
-// bandwidth, so parallelizing the inner loop across a warp gains nothing.
-// Launch: <<<ceil(n_pre/256), 256>>>
+// --- Scatter: WPR (warp-per-row) and TPR (thread-per-row) ---
+// WPR: one warp (32 threads) per row; each lane strides n_conn with step 32 and issues its own
+//      atomicAdd.  Wins when n_conn > threshold(n_pre).  Launch: <<<ceil(n_pre/8), 256>>>
+// TPR: one thread per row, serial atomicAdd loop.  Wins for small n_conn.
+//      Launch: <<<ceil(n_pre/256), 256>>>
 
+
+#define DEFINE_BS_WPR_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_wpr_homo_kern##SUFFIX(                                                    \
+    const int32_t* __restrict__ indices,                                                      \
+    const SPIKE_T* __restrict__ spikes,                                                       \
+    WEIGHT_T* __restrict__ output,                                                       \
+    const WEIGHT_T* __restrict__ weights,                                                     \
+    int n_pre, int n_conn                                                                     \
+) {                                                                                           \
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;                                          \
+    int row = tid / 32;                                                                       \
+    int lane = tid % 32;                                                                      \
+    if (row >= n_pre) return;                                                                 \
+    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                              \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                                    \
+    ACC_T w0 = READ_W(weights[0]);                                                            \
+    for (int k = lane; k < n_conn; k += 32) {                                                 \
+        int idx = __ldg(&i_row[k]);                                                           \
+        ATOMIC_ADD_W(&output[idx], w0);                                                       \
+    }                                                                                         \
+}
+
+#define DEFINE_BS_WPR_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_wpr_hetero_kern##SUFFIX(                                                    \
+    const int32_t*  __restrict__ indices,                                                       \
+    const SPIKE_T*  __restrict__ spikes,                                                        \
+    WEIGHT_T*       __restrict__ output,                                                        \
+    const WEIGHT_T* __restrict__ weights,                                                       \
+    int n_pre, int n_conn                                                                       \
+) {                                                                                             \
+    int tid  = blockIdx.x * blockDim.x + threadIdx.x;                                           \
+    int row  = tid / 32;                                                                        \
+    int lane = tid % 32;                                                                        \
+    if (row >= n_pre) return;                                                                   \
+    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                                \
+    const int32_t*  i_row = indices + (size_t)row * n_conn;                                     \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                     \
+    for (int k = lane; k < n_conn; k += 32) {                                                   \
+        int   idx = __ldg(&i_row[k]);                                                           \
+        ACC_T  wk = READ_W(__ldg(&w_row[k]));                                                   \
+        ATOMIC_ADD_W(&output[idx], wk);                                                         \
+    }                                                                                           \
+}
+
+/**/
 #define DEFINE_BS_TPR_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
 __global__ void _bs_tpr_homo_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                      \
@@ -179,6 +229,7 @@ __global__ void _bs_tpr_homo_kern##SUFFIX(                                      
         ATOMIC_ADD_W(&output[idx], w0);                                                       \
     }                                                                                         \
 }
+
 
 #define DEFINE_BS_TPR_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
 __global__ void _bs_tpr_hetero_kern##SUFFIX(                                                    \
@@ -215,8 +266,12 @@ DEFINE_BG_MR_HOMO      (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32
 DEFINE_BG_MR_HETERO    (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_BS_TPR_HOMO     (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
 DEFINE_BS_TPR_HETERO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_BS_WPR_HOMO     (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_BS_WPR_HETERO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
 DEFINE_BS_TPR_HOMO     (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
 DEFINE_BS_TPR_HETERO   (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
+DEFINE_BS_WPR_HOMO     (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
+DEFINE_BS_WPR_HETERO   (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
 
 // ---- float64 ----
 DEFINE_BG_TPR_HOMO     (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
@@ -229,8 +284,12 @@ DEFINE_BG_MR_HOMO      (_float_f64, double, IS_ACTIVE_F64, double, double, READ_
 DEFINE_BG_MR_HETERO    (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_BS_TPR_HOMO     (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
 DEFINE_BS_TPR_HETERO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_WPR_HOMO     (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_WPR_HETERO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
 DEFINE_BS_TPR_HOMO     (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
 DEFINE_BS_TPR_HETERO   (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_WPR_HOMO     (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_WPR_HETERO   (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
 
 // ---- float16 ----
 DEFINE_BG_TPR_HOMO     (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
@@ -243,8 +302,12 @@ DEFINE_BG_MR_HOMO      (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F
 DEFINE_BG_MR_HETERO    (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_BS_TPR_HOMO     (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
 DEFINE_BS_TPR_HETERO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
+DEFINE_BS_WPR_HOMO     (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
+DEFINE_BS_WPR_HETERO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
 DEFINE_BS_TPR_HOMO     (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
 DEFINE_BS_TPR_HETERO   (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_BS_WPR_HOMO     (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_BS_WPR_HETERO   (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
 
 // ---- bfloat16 ----
 DEFINE_BG_TPR_HOMO     (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
@@ -257,8 +320,12 @@ DEFINE_BG_MR_HOMO      (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat1
 DEFINE_BG_MR_HETERO    (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_BS_TPR_HOMO     (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 DEFINE_BS_TPR_HETERO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_BS_WPR_HOMO     (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_BS_WPR_HETERO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 DEFINE_BS_TPR_HOMO     (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 DEFINE_BS_TPR_HETERO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_BS_WPR_HOMO     (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_BS_WPR_HETERO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 
 
 // ============================================================================
@@ -315,46 +382,71 @@ void binary_fcnmv_gather_hetero##SUFFIX(                                        
     }                                                                                             \
 }
 
-// ---- FFI macro: scatter homo (always TPR) ----
-#define FFI_BS_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                               \
-void binary_fcnmv_scatter_homo##SUFFIX(                                                           \
-    const BE::Tensor weights, const BE::Tensor indices,                                           \
-    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                   \
-) {                                                                                               \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
-    int n_pre  = static_cast<int>(indices.size(0));                                               \
-    int n_conn = static_cast<int>(indices.size(1));                                               \
-    int n_post = static_cast<int>(output.size(0));                                                \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                 \
-    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                    \
-    const SPIKE_C_T*  d_spk = static_cast<const SPIKE_C_T*>(spikes.data_ptr());                   \
-    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                        \
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                            \
-    int bsz = 256;                                                                                \
-    int n_blocks = (n_pre + bsz - 1) / bsz;                                                      \
-    _bs_tpr_homo_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                           \
-        d_idx, d_spk, d_out, d_w, n_pre, n_conn);                                                \
+#define FFI_BS_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                              \
+void binary_fcnmv_scatter_homo##SUFFIX(                                                         \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
+) {                                                                                             \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
+    int n_pre  = static_cast<int>(indices.size(0));                                             \
+    int n_conn = static_cast<int>(indices.size(1));                                             \
+    int n_post = static_cast<int>(output.size(0));                                              \
+                                                                                                \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());               \
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());                     \
+    const SPIKE_C_T* d_spk = static_cast<const SPIKE_C_T*>(spikes.data_ptr());                  \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                            \
+                                                                                                \
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                          \
+                                                                                                \
+    if (n_pre == 0) return;                                                                     \
+                                                                                                \
+    int bsz = 256;                                                                              \
+    /* 一次函数边界: c = (1539/521) * s, 其中 s = n_pre / 4000 */                                  \
+    /* 整理得: n_conn * 521 * 4000 > n_pre * 1539 */                                              \
+    if (1) {                                    \
+        int warps_per_block = bsz / 32;                                                         \
+        int n_blocks_wpr = (n_pre + warps_per_block - 1) / warps_per_block;                     \
+        _bs_wpr_homo_kern##SUFFIX<<<n_blocks_wpr, bsz, 0, s>>>(                                 \
+            d_idx, d_spk, d_out, d_w, n_pre, n_conn);                                           \
+    } else {                                                                                    \
+        int n_blocks_tpr = (n_pre + bsz - 1) / bsz;                                             \
+        _bs_tpr_homo_kern##SUFFIX<<<n_blocks_tpr, bsz, 0, s>>>(                                 \
+            d_idx, d_spk, d_out, d_w, n_pre, n_conn);                                           \
+    }                                                                                           \
 }
 
-// ---- FFI macro: scatter hetero (always TPR) ----
-#define FFI_BS_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                             \
-void binary_fcnmv_scatter_hetero##SUFFIX(                                                         \
-    const BE::Tensor weights, const BE::Tensor indices,                                           \
-    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                   \
-) {                                                                                               \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
-    int n_pre  = static_cast<int>(indices.size(0));                                               \
-    int n_conn = static_cast<int>(indices.size(1));                                               \
-    int n_post = static_cast<int>(output.size(0));                                                \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                 \
-    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                    \
-    const SPIKE_C_T*  d_spk = static_cast<const SPIKE_C_T*>(spikes.data_ptr());                   \
-    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                        \
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                            \
-    int bsz = 256;                                                                                \
-    int n_blocks = (n_pre + bsz - 1) / bsz;                                                      \
-    _bs_tpr_hetero_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                         \
-        d_idx, d_spk, d_out, d_w, n_pre, n_conn);                                                \
+// ---- FFI macro: scatter hetero (auto-select TPR or WPR based on correct scaled linear boundary) ----
+#define FFI_BS_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                            \
+void binary_fcnmv_scatter_hetero##SUFFIX(                                                       \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
+) {                                                                                             \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
+    int n_pre  = static_cast<int>(indices.size(0));                                             \
+    int n_conn = static_cast<int>(indices.size(1));                                             \
+    int n_post = static_cast<int>(output.size(0));                                              \
+                                                                                                \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());               \
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());                     \
+    const SPIKE_C_T* d_spk = static_cast<const SPIKE_C_T*>(spikes.data_ptr());                  \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                            \
+                                                                                                \
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                          \
+                                                                                                \
+    if (n_pre == 0) return;                                                                     \
+                                                                                                \
+    int bsz = 256;                                                                              \
+    if ((int64_t)n_conn * 2084000 > (int64_t)n_pre * 1539) {                                    \
+        int warps_per_block = bsz / 32;                                                         \
+        int n_blocks_wpr = (n_pre + warps_per_block - 1) / warps_per_block;                     \
+        _bs_wpr_hetero_kern##SUFFIX<<<n_blocks_wpr, bsz, 0, s>>>(                               \
+            d_idx, d_spk, d_out, d_w, n_pre, n_conn);                                           \
+    } else {                                                                                    \
+        int n_blocks_tpr = (n_pre + bsz - 1) / bsz;                                             \
+        _bs_tpr_hetero_kern##SUFFIX<<<n_blocks_tpr, bsz, 0, s>>>(                               \
+            d_idx, d_spk, d_out, d_w, n_pre, n_conn);                                           \
+    }                                                                                           \
 }
 
 // ============================================================================

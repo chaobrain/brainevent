@@ -37,7 +37,6 @@ class CSV_record():
         suffix: str = '',
         output_dir: str | None = None,
         append: bool = False,
-        
     ) -> None:
         self.name = CSV_name
         self.suffix = suffix
@@ -64,6 +63,7 @@ class CSV_record():
         self.output_dir = Path(output_dir) if output_dir else base / 'results'
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.append = append
+        self._tags: dict = {}
 
         self.width = 70
 
@@ -73,24 +73,54 @@ class CSV_record():
 
         file_path = Path(self.output_dir) / f'{file_name}.csv'
         write_header = True
+        effective_fieldnames = list(fieldnames)
+
         if mode == 'a' and file_path.exists():
-            # if appending and file exists, do not write header again
             write_header = False
+            # Read existing fieldnames to maintain schema consistency
+            with file_path.open('r', newline='', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                existing_fields = next(reader, [])
+            if existing_fields:
+                # Union: existing fields first, then any new fields not yet present
+                merged = list(existing_fields)
+                for fn in fieldnames:
+                    if fn not in merged:
+                        merged.append(fn)
+                effective_fieldnames = merged
 
         with file_path.open(mode, newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, restval=None)
+            writer = csv.DictWriter(f, fieldnames=effective_fieldnames, restval='default')
             if write_header:
                 writer.writeheader()
             writer.writerows(rows)
 
         print(f"result has been saved: {file_path}")
 
+    def add_tag(self, tag_name: str, tag_value) -> None:
+        """Set a persistent tag that will be automatically included in all subsequent rows.
+
+        Call this before ``single_COBA_data_add`` (or ``add_row``) to attach
+        an extra labeled field to every row recorded afterward.
+        ``fieldnames`` is updated immediately so the column appears in the CSV.
+        """
+        self._tags[tag_name] = tag_value
+        if tag_name not in self.fieldnames:
+            self.fieldnames.append(tag_name)
+
     def add_row(self, row: dict) -> None:
-        """Add a generic row (dict). New keys will be added to fieldnames."""
-        for key in row.keys():
+        """Add a generic row (dict). New keys will be added to fieldnames.
+
+        Active tags (set via ``add_tag``) are merged into the row automatically;
+        explicit values in *row* take precedence over tag values.
+        """
+        # Merge active tags first, then let row values override
+        merged_row = dict(self._tags)
+        merged_row.update(row)
+        for key in merged_row.keys():
             if key not in self.fieldnames:
                 self.fieldnames.append(key)
-        self.rows.append(row)
+        self.rows.append(merged_row)
 
     def single_COBA_data_add(self, operator: str,
                              data_type: str,
@@ -233,3 +263,94 @@ def dump_jax_ir(func, args=(), kwargs=None, prefix="dump"):
     print(f"[*] HLO saved to: {hlo_path}")
     
     return jaxpr_path, hlo_path
+
+def generate_params(
+    dis_type: str = 'log',
+    _N: int = 4000,
+    limit_gb: float = 24,
+    target_samples: int = 500,
+    data_size: int = 4,
+    scale_max: int = 2000,
+    conn_max: int = 4000,
+) -> list:
+    """
+    Generates a list of valid (scale, conn_num) parameter states within VRAM limits.
+
+    Boundary conditions
+    -------------------
+    - matrix_memory_bytes = conn_num * scale * _N * data_size * 2 <= limit_bytes
+    - conn_num <= _N * scale
+
+    Parameters
+    ----------
+    dis_type : str
+        Sampling strategy: 'uniform' (linear grid), 'log' (geometric grid),
+        or 'monte_carlo' (random sampling).
+    _N : int
+        Number of neurons per scale unit.
+    limit_gb : float
+        VRAM limit in gigabytes.
+    target_samples : int
+        Approximate number of valid states to generate (actual count ≈ ±50).
+    data_size : int
+        Bytes per element (4 for float32/int32, 1 for bool/int8).
+    scale_max : int
+        Upper bound of scale search range.
+    conn_max : int
+        Upper bound of conn_num search range.
+
+    Returns
+    -------
+    list of (scale, conn_num) tuples, sorted by memory footprint.
+    """
+    import numpy as np
+
+    limit_bytes = limit_gb * (1024 ** 3)
+
+    def is_valid(s, c):
+        matrix_memory_bytes = c * s * _N * data_size * 2
+        return matrix_memory_bytes <= limit_bytes and c <= _N * s
+
+    if dis_type == 'monte_carlo':
+        valid_states = set()
+        while len(valid_states) < target_samples:
+            s = int(np.random.uniform(1, scale_max + 1))
+            c = int(np.random.uniform(1, conn_max + 1))
+            if is_valid(s, c):
+                valid_states.add((s, c))
+        sorted_states = sorted(list(valid_states), key=lambda state: state[0] * state[1])
+        print(f"Generated {len(sorted_states)} valid parameter states under {limit_gb}GB boundary.")
+        return sorted_states
+
+    # For grid-based methods: the valid region is a curved hyperbolic area;
+    # ~3x oversampling of grid points relative to target gives ~±50 accuracy after filtering.
+    grid_res = int(np.sqrt(target_samples * 3))
+
+    if dis_type == 'uniform':
+        scales_raw = np.unique(np.linspace(1, scale_max, num=grid_res, dtype=int))
+        conn_nums_raw = np.unique(np.linspace(1, conn_max, num=grid_res, dtype=int))
+    elif dis_type == 'log':
+        scales_raw = np.unique(np.geomspace(1, scale_max, num=grid_res, dtype=int))
+        conn_nums_raw = np.unique(np.geomspace(1, conn_max, num=grid_res, dtype=int))
+    else:
+        raise ValueError(f"Unknown dis_type: '{dis_type}'. Choose from 'uniform', 'log', 'monte_carlo'.")
+
+    valid_states = [
+        (int(s), int(c))
+        for s in scales_raw
+        for c in conn_nums_raw
+        if is_valid(s, c)
+    ]
+    valid_states.sort(key=lambda state: state[0] * state[1])
+    print(f"Generated {len(valid_states)} valid parameter states under {limit_gb}GB boundary.")
+    return valid_states
+
+def memory_limit( conn_nums, scale:int ,_N:int = 4000 , limit: int = 16, data_type: str = 'float'):
+    if data_type == 'float': data_size = 4
+    if data_type == 'int': data_size = 4
+    if data_type == 'bool': data_size = 1
+    if data_type == 'char': data_size = 1
+    if conn_nums * data_size * scale * _N * 2 > limit * (1024 ** 3):
+        return True
+    else:
+        return False

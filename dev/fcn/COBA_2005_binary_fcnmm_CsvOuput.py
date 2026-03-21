@@ -79,7 +79,7 @@ def benchmark_post_conn(batch_size=16, conn_num=None, conn_prob=None, data_type=
     # scale=100, size=400000, time = 20.511342525482178 s, firing rate = 59.44398880004883 Hz
     print('Benchmarking post-synaptic connection updates...')
 
-    import CsvOutput as rp
+    import dev.fcn.BenchmarkTools as BT
 
     backends_to_use = [backend] if backend is not None else backends
 
@@ -90,7 +90,7 @@ def benchmark_post_conn(batch_size=16, conn_num=None, conn_prob=None, data_type=
         use_conn_nums = False
         probs_to_use = [conn_prob] if conn_prob is not None else probs
 
-    csv_recorder = rp.CSV_record('binary_post', 'fcnmm', 'coba', duration=duration, conn=conn_num)
+    csv_recorder = BT.CSV_record('binary_post', 'fcnmm', 'coba', duration=duration, conn=conn_num)
 
     for back in backends_to_use:
         brainevent.config.set_backend('gpu', back)
@@ -160,7 +160,7 @@ def benchmark_post_conn(batch_size=16, conn_num=None, conn_prob=None, data_type=
 
 def benchmark_pre_conn(batch_size=16, conn_num=None, conn_prob=None, data_type='binary', duration=1e3 * u.ms, homo: bool = True, backend: str | None = None, probs_or_conn='conn'):
     print('Benchmarking pre-synaptic connection updates...')
-    import CsvOutput as rp
+    import dev.fcn.BenchmarkTools as BT
 
     backends_to_use = [backend] if backend is not None else backends
 
@@ -171,7 +171,7 @@ def benchmark_pre_conn(batch_size=16, conn_num=None, conn_prob=None, data_type='
         use_conn_nums = False
         probs_to_use = [conn_prob] if conn_prob is not None else probs
 
-    csv_recorder = rp.CSV_record('binary_pre', 'fcnmm', 'coba', duration=duration, conn=conn_num)
+    csv_recorder = BT.CSV_record('binary_pre', 'fcnmm', 'coba', duration=duration, conn=conn_num)
 
     for back in backends_to_use:
         brainevent.config.set_backend('gpu', back)
@@ -241,7 +241,7 @@ def benchmark_pre_conn(batch_size=16, conn_num=None, conn_prob=None, data_type='
 
 def run_benchmark(batch_size, conn_num=None, mode='post', homo: bool = True, backend: str | None = None):
 
-    import CsvOutput as rp
+    import dev.fcn.BenchmarkTools as BT
 
     conn_nums_to_use = [conn_num] if conn_num is not None else conn_nums
     dur = 1e3 * u.ms if mode == 'post' else 1e2 * u.ms
@@ -256,7 +256,7 @@ def run_benchmark(batch_size, conn_num=None, mode='post', homo: bool = True, bac
         kernel = 'warp' if cn <= 32 else 'basic'
 
         # CSV recorder for this configuration
-        csv_recorder = rp.CSV_record(f'binary_bs{batch_size}_conn{cn}', 'fcnmm', 'benchmark', duration=dur, conn=cn)
+        csv_recorder = BT.CSV_record(f'binary_bs{batch_size}_conn{cn}', 'fcnmm', 'benchmark', duration=dur, conn=cn)
 
         for back in backends_to_use:
             brainevent.config.set_backend('gpu', back)
