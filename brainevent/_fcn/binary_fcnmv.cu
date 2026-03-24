@@ -404,7 +404,7 @@ void binary_fcnmv_scatter_homo##SUFFIX(                                         
     int bsz = 256;                                                                              \
     /* 一次函数边界: c = (1539/521) * s, 其中 s = n_pre / 4000 */                                  \
     /* 整理得: n_conn * 521 * 4000 > n_pre * 1539 */                                              \
-    if (1) {                                    \
+    if ((int64_t)n_conn * 2084000 > (int64_t)n_pre * 1539) {                                    \
         int warps_per_block = bsz / 32;                                                         \
         int n_blocks_wpr = (n_pre + warps_per_block - 1) / warps_per_block;                     \
         _bs_wpr_homo_kern##SUFFIX<<<n_blocks_wpr, bsz, 0, s>>>(                                 \
@@ -415,8 +415,8 @@ void binary_fcnmv_scatter_homo##SUFFIX(                                         
             d_idx, d_spk, d_out, d_w, n_pre, n_conn);                                           \
     }                                                                                           \
 }
+//(int64_t)n_conn * 2084000 > (int64_t)n_pre * 1539
 
-// ---- FFI macro: scatter hetero (auto-select TPR or WPR based on correct scaled linear boundary) ----
 #define FFI_BS_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                            \
 void binary_fcnmv_scatter_hetero##SUFFIX(                                                       \
     const BE::Tensor weights, const BE::Tensor indices,                                         \

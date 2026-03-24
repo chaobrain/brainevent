@@ -40,7 +40,7 @@ import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
 
-backends = ['jax_raw']
+backends = ['cuda_raw']
 
 def benchmark_post_conn(
     conn_num=None,
@@ -90,7 +90,7 @@ def benchmark_post_conn(
                 t1 = time.time()
                 elapsed = t1 - t0
                 
-                csv_recorder.add_tag('warp_or_thread', 'jax')
+                csv_recorder.add_tag('warp_or_thread', 'tpr')
                 csv_recorder.print_row(s, n, elapsed, float(rate), conn_num=cn)
                 csv_recorder.single_COBA_data_add(
                     'fcnmv', data_type, back, 'post', cn, s, elapsed, float(rate), duration, 
@@ -100,7 +100,7 @@ def benchmark_post_conn(
                 print(f'  [Error] VRAM Boundary Exception at scale={s}, conn_num={cn}: {e}')
                 continue
 
-    csv_recorder.record_finish('boundary_boolmode_wort')
+    csv_recorder.record_finish('boundary_boolmode-default')
 
 def benchmark_pre_conn(
         conn_num=None, 
@@ -112,7 +112,7 @@ def benchmark_pre_conn(
         probs_or_conn='conn',
         _N : int = 4000,
         limit_gb: int = 16,
-        target_samples: int = 500
+        target_samples: int = 50
         ):
     print('Benchmarking pre-synaptic connection updates...')
     import dev.fcn.BenchmarkTools as BT
@@ -120,7 +120,7 @@ def benchmark_pre_conn(
     backends_to_use = [backend] if backend is not None else backends
 
     
-    valid_states = BT.generate_params(_N=_N, limit_gb=limit_gb, target_samples=target_samples)
+    valid_states = BT.generate_params(dis_type= 'uniform' ,_N=_N, limit_gb=limit_gb, target_samples=target_samples)
 
     csv_recorder = BT.CSV_record('binary_pre', 'fcnmv', 'coba', duration=duration, conn=conn_num)
 
@@ -152,18 +152,20 @@ def benchmark_pre_conn(
                 
                 csv_recorder.print_row(s, n, elapsed, float(rate), conn_num=cn)
                 csv_recorder.single_COBA_data_add(
-                    'fcnmv', data_type, back, 'post', cn, s, elapsed, float(rate), duration, 
+                    'fcnmv', data_type, back, 'pre', cn, s, elapsed, float(rate), duration, 
                     homo=('homo' if homo else 'hetero')
                 )
             except Exception as e:
                 print(f'  [Error] VRAM Boundary Exception at scale={s}, conn_num={cn}: {e}')
                 continue
 
-    csv_recorder.record_finish('boundary_mapping')
+    csv_recorder.record_finish('boundary_floatmode_bitpack')
 
 
 if __name__ == '__main__':
     #benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
     benchmark_post_conn(data_type='binary', duration=1e2 * u.ms)
-    #benchmark_pre_conn(conn_num=80, data_type='bitpack', duration=1e3 * u.ms)
-    #benchmark_pre_conn(data_type='binary',duration=1e3 * u.ms,)
+    #benchmark_post_conn(data_type='compact', duration=1e2 * u.ms)
+    #benchmark_pre_conn(data_type='bitpack', duration=1e2 * u.ms)
+    #benchmark_pre_conn(data_type='binary',duration=1e2 * u.ms)
+    

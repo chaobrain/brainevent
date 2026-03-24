@@ -40,10 +40,10 @@ import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
 
-scales = [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]
-backends = ['cuda_raw','jax_raw']
+scales = [1140]
+backends = ['cuda_raw']
 
-conn_nums = [80]
+conn_nums = [686]
 
 probs = [0.001, 0.004,  0.016 ,0.064, 0.128, 0.256, 0.512]
 
@@ -138,7 +138,7 @@ def benchmark_post_conn(
                         print(f'  [Error] scale={s}, conn_num={actual_conn_num}: {e}')
                         continue
 
-    csv_recorder.record_finish('warp_32_256')
+    csv_recorder.record_finish('float_mode_single_point_with_spconn-scale')
 
 def benchmark_pre_conn(
         conn_num=None, 
@@ -233,8 +233,8 @@ def benchmark_pre_conn(
 
 
 if __name__ == '__main__':
-    #benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
-    benchmark_post_conn(data_type='binary', duration=1e3 * u.ms, probs_or_conn='conn')
+    benchmark_post_conn(data_type='compact', duration=1e2 * u.ms, probs_or_conn='conn')
+    benchmark_post_conn(data_type='binary', duration=1e2 * u.ms, probs_or_conn='conn')
     #benchmark_pre_conn(conn_num=80, data_type='bitpack', duration=1e3 * u.ms)
     #benchmark_pre_conn(data_type='binary',duration=1e3 * u.ms, probs_or_conn='conn')
     #benchmark_pre_conn(data_type='bitpack',duration=1e3 * u.ms, probs_or_conn='conn')
