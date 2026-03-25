@@ -7,6 +7,7 @@ from typing import Optional
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+from matplotlib import ticker as mticker
 from scipy.interpolate import griddata
 
 
@@ -23,7 +24,7 @@ class PerformanceBoundaryApp:
 
     # ─────────────────────────────────────────────────────────────────────────
     def _setup_ui(self):
-        # ── 全局控制栏 ────────────────────────────────────────────────────────
+        # ── Global Controls ──────────────────────────────────────────────────
         ctrl = ttk.LabelFrame(self.root, text="Global Settings", padding=8)
         ctrl.pack(side=tk.TOP, fill=tk.X, padx=5, pady=4)
 
@@ -48,8 +49,8 @@ class PerformanceBoundaryApp:
         self.entry_custom_lines = ttk.Entry(ctrl, width=16)
         self.entry_custom_lines.insert(0, "")
         self.entry_custom_lines.pack(side=tk.LEFT)
-        ttk.Label(ctrl, text="(逗号分隔值，仅插值/加速比图)",
-                  foreground='gray').pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Label(ctrl, text="(Comma-separated values, only for interpolation/speedup plots)",
+              foreground='gray').pack(side=tk.LEFT, padx=(2, 0))
 
         ttk.Button(ctrl, text="Update Plots", command=self.update_plots).pack(side=tk.LEFT, padx=12)
 
@@ -61,7 +62,7 @@ class PerformanceBoundaryApp:
         self.entry_dpi.insert(0, "150")
         self.entry_dpi.pack(side=tk.LEFT)
 
-        # ── 对比配置区（Compare Field → Target / Baseline）────────────────────
+        # ── Comparison Configuration (Compare Field → Target / Baseline) ──────
         cmp_bar = ttk.LabelFrame(self.root, text="Comparison Configuration", padding=8)
         cmp_bar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=4)
 
@@ -80,9 +81,14 @@ class PerformanceBoundaryApp:
         self.combo_baseline = ttk.Combobox(cmp_bar, state="readonly", width=18)
         self.combo_baseline.pack(side=tk.LEFT)
 
-        # ── 加速比配色设置栏 ────────────────────────────────────────────────────
+        # ── Speedup Color Settings ─────────────────────────────────────────────
         sp_bar = ttk.LabelFrame(self.root, text="Speedup Color Settings", padding=8)
         sp_bar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=4)
+
+        self.var_auto_speedup = tk.BooleanVar(value=True)
+        ttk.Checkbutton(sp_bar, text="Auto (compute extrema from data)",
+                        variable=self.var_auto_speedup,
+                        command=self._on_auto_speedup_changed).pack(side=tk.LEFT, padx=(0, 10))
 
         ttk.Label(sp_bar, text="Yellow Deepest (speedup ≤):").pack(side=tk.LEFT, padx=(0, 2))
         self.entry_yellow_depth = ttk.Entry(sp_bar, width=7)
@@ -95,18 +101,19 @@ class PerformanceBoundaryApp:
         self.entry_blue_depth.pack(side=tk.LEFT)
 
         ttk.Label(sp_bar,
-                  text="  加速比 = 1 → 白色；< Yellow Deepest 值 → 最深黄色；> Blue Deepest 值 → 最深蓝色",
-                  foreground='gray').pack(side=tk.LEFT, padx=(12, 0))
+              text="  If Auto checked: compute extrema from data (yellow ≤ 0.5 / blue ≥ 1.5); otherwise use manual inputs on the left",
+              foreground='gray').pack(side=tk.LEFT, padx=(12, 0))
+        self._on_auto_speedup_changed()
 
-        # ── 动态数据过滤栏 ─────────────────────────────────────────────────────
+        # ── Dynamic Data Slicing Filters ────────────────────────────────────────
         self.flt_outer = ttk.LabelFrame(self.root, text="Data Slicing Filters", padding=8)
         self.flt_outer.pack(side=tk.TOP, fill=tk.X, padx=5, pady=4)
         self.filter_row = ttk.Frame(self.flt_outer)
         self.filter_row.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(self.filter_row, text="(加载 CSV 后自动填充过滤选项)",
-                  foreground='gray').pack(side=tk.LEFT)
+        ttk.Label(self.filter_row, text="(Filter options populated after loading CSV)",
+              foreground='gray').pack(side=tk.LEFT)
 
-        # ── 图表容器 ──────────────────────────────────────────────────────────
+        # ── Plot container ────────────────────────────────────────────────────
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=4)
 
@@ -129,7 +136,6 @@ class PerformanceBoundaryApp:
                 'cbar': None, 'hover_cid': None, 'scatter': None,
             }
 
-    # ── 对比字段变更响应 ──────────────────────────────────────────────────────
     def _on_compare_field_changed(self, event=None):
         if self.df is None:
             return
@@ -144,20 +150,19 @@ class PerformanceBoundaryApp:
             self.combo_baseline.current(min(1, len(vals) - 1))
         self._rebuild_filter_row()
 
-    # ── 重建动态过滤栏 ────────────────────────────────────────────────────────
     def _rebuild_filter_row(self):
         for widget in self.filter_row.winfo_children():
             widget.destroy()
         self.comboboxes = {}
         if self.df is None:
-            ttk.Label(self.filter_row, text="(加载 CSV 后自动填充过滤选项)",
+            ttk.Label(self.filter_row, text="(Filter options populated after loading CSV)",
                       foreground='gray').pack(side=tk.LEFT)
             return
         compare_field = self.combo_compare_field.get()
         exclude = self._AXIS_COLS | ({compare_field} if compare_field else set())
         filter_cols = [c for c in self.df.columns if c not in exclude]
         if not filter_cols:
-            ttk.Label(self.filter_row, text="(无额外过滤列)",
+            ttk.Label(self.filter_row, text="(No additional filter columns)",
                       foreground='gray').pack(side=tk.LEFT)
             return
         for col in filter_cols:
@@ -171,7 +176,11 @@ class PerformanceBoundaryApp:
             cb.pack()
             self.comboboxes[col] = cb
 
-    # ── 导出图片 ──────────────────────────────────────────────────────────────
+    def _on_auto_speedup_changed(self):
+        state = 'disabled' if self.var_auto_speedup.get() else 'normal'
+        self.entry_yellow_depth.config(state=state)
+        self.entry_blue_depth.config(state=state)
+
     def export_image(self):
         idx = self.notebook.index(self.notebook.select())
         tab = list(self.tabs.values())[idx]
@@ -180,7 +189,7 @@ class PerformanceBoundaryApp:
             if dpi <= 0:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Input Error", "DPI 必须为正整数。")
+            messagebox.showerror("Input Error", "DPI must be a positive integer.")
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".png",
@@ -188,9 +197,8 @@ class PerformanceBoundaryApp:
         )
         if path:
             tab['fig'].savefig(path, dpi=dpi, bbox_inches='tight')
-            messagebox.showinfo("Exported", f"已保存: {path}  ({dpi} DPI)")
+            messagebox.showinfo("Exported", f"Saved: {path}  ({dpi} DPI)")
 
-    # ── 加载数据 ──────────────────────────────────────────────────────────────
     def load_data(self):
         path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")])
         if not path:
@@ -200,19 +208,18 @@ class PerformanceBoundaryApp:
             required = {'scale', 'conn_num', 'elapsed_s'}
             missing = required - set(self.df.columns)
             if missing:
-                raise ValueError(f"CSV 缺少列: {missing}")
-            # 可比较字段 = 所有非轴列
+                raise ValueError(f"CSV missing columns: {missing}")
+            # Comparison fields = all non-axis columns
             cmp_cols = [c for c in self.df.columns if c not in self._AXIS_COLS]
             self.combo_compare_field['values'] = cmp_cols
             if cmp_cols:
                 self.combo_compare_field.current(0)
             self._on_compare_field_changed()
-            messagebox.showinfo("Success", f"已加载 {len(self.df)} 行。")
+            messagebox.showinfo("Success", f"Loaded {len(self.df)} rows.")
             self.update_plots()
         except Exception as e:
             messagebox.showerror("Data Load Error", str(e))
 
-    # ── 副标题生成 ────────────────────────────────────────────────────────────
     def _subtitle(self, include_baseline: bool = False) -> str:
         parts = [f"{c} = {cb.get()}"
                  for c, cb in self.comboboxes.items() if cb.get()]
@@ -222,7 +229,6 @@ class PerformanceBoundaryApp:
             parts.append(f"Baseline [{cmp_field}]: {self.combo_baseline.get()}")
         return "  │  ".join(parts)
 
-    # ── 刷新所有图表 ──────────────────────────────────────────────────────────
     def update_plots(self):
         if self.df is None or self.df.empty:
             return
@@ -233,7 +239,7 @@ class PerformanceBoundaryApp:
             messagebox.showerror("Input Error", "N 或 VRAM 限制输入无效。")
             return
 
-        # ── 先移除旧 colorbar，再清空坐标轴（避免叠加）────────────────────────
+        # ── Remove old colorbars and clear axes (avoid overplotting) ──────────
         for tab in self.tabs.values():
             if tab['cbar'] is not None:
                 try:
@@ -249,7 +255,7 @@ class PerformanceBoundaryApp:
                 tab['hover_cid'] = None
             tab['ax'].clear()
 
-        # ── 公共过滤 ──────────────────────────────────────────────────────────
+        # ── Common filtering ──────────────────────────────────────────────────
         mask = pd.Series(True, index=self.df.index)
         for col, cb in self.comboboxes.items():
             val = cb.get()
@@ -262,14 +268,14 @@ class PerformanceBoundaryApp:
         base_val   = self.combo_baseline.get()
 
         if not cmp_field:
-            messagebox.showwarning("No Compare Field", "请先选择对比字段。")
+            messagebox.showwarning("No Compare Field", "Please select a compare field first.")
             return
 
         df_t = df_f[df_f[cmp_field].astype(str) == str(target_val)]
         df_b = df_f[df_f[cmp_field].astype(str) == str(base_val)]
 
         if df_t.empty:
-            messagebox.showwarning("No Data", "目标数据子集为空。")
+            messagebox.showwarning("No Data", "Target data subset is empty.")
             for t in self.tabs.values():
                 t['canvas'].draw()
             return
@@ -292,14 +298,13 @@ class PerformanceBoundaryApp:
                                    z_label="Elapsed Time (s)", cmap_name='Blues',
                                    subtitle=sub_raw, **kw_common)
 
-        # ── 基于插值网格计算加速比 ─────────────────────────────────────────────
         ax_sp = self.tabs["Speedup Interp"]['ax']
         if df_b.empty:
-            ax_sp.text(0.5, 0.5, "Baseline 数据子集为空。",
+            ax_sp.text(0.5, 0.5, "Baseline data subset is empty.",
                        ha='center', va='center', transform=ax_sp.transAxes, fontsize=11)
             self.tabs["Speedup Interp"]['canvas'].draw()
         elif len(xt) < 4 or len(df_b) < 4:
-            ax_sp.text(0.5, 0.5, "数据点不足 4 个，无法插值。",
+            ax_sp.text(0.5, 0.5, "Not enough data points (<4) for interpolation.",
                        ha='center', va='center', transform=ax_sp.transAxes, fontsize=11)
             self.tabs["Speedup Interp"]['canvas'].draw()
         else:
@@ -329,7 +334,6 @@ class PerformanceBoundaryApp:
                 subtitle=sub_sp, **kw_common,
             )
 
-    # ── 边界线 ────────────────────────────────────────────────────────────────
     def _draw_boundaries(self, ax, _N, limit_gb, x_min, x_max):
         xv = np.linspace(max(0.01, x_min * 0.9), x_max * 1.25, 600)
         ax.plot(xv, xv * _N,
@@ -339,7 +343,6 @@ class PerformanceBoundaryApp:
                 color='red', lw=2, label=f'VRAM = {limit_gb} GB  (float32)')
         ax.legend(loc='upper right', fontsize=8)
 
-    # ── 等高线 + 区间统计标注（通用）────────────────────────────────────────
     def _draw_contours_and_labels(self, ax, grid_x, grid_y, grid_z_masked, z_pts):
         """Draw contour lines and per-band μ / deviation annotations.
 
@@ -370,38 +373,7 @@ class PerformanceBoundaryApp:
                         levels=levels, colors='black', linewidths=1.0, alpha=0.75)
         ax.clabel(cs, inline=True, fontsize=7, fmt="%.3g")
 
-        bounds = np.concatenate([[-np.inf], levels, [np.inf]])
-        for i in range(len(bounds) - 1):
-            lo, hi   = bounds[i], bounds[i + 1]
-            last_seg = (i == len(bounds) - 2)
-            pt_mask  = (z_pts >= lo) if last_seg else ((z_pts >= lo) & (z_pts < hi))
-            pts      = z_pts[pt_mask]
-            if len(pts) == 0:
-                continue
-
-            mu      = float(np.mean(pts))
-            dev_pos = float(np.max(pts)) - mu
-            dev_neg = mu - float(np.min(pts))
-
-            g_lo   = lo if not np.isinf(lo) else z_lo - 1e-9
-            g_hi   = hi if not np.isinf(hi) else z_hi + 1e-9
-            region = (np.isfinite(grid_z_masked) &
-                      (grid_z_masked >= g_lo) & (grid_z_masked < g_hi))
-            if not region.any():
-                continue
-
-            cx = float(np.mean(grid_x[region]))
-            cy = float(np.mean(grid_y[region]))
-            ax.text(
-                cx, cy,
-                f"μ = {mu:.3g}\n+{dev_pos:.2g} / −{dev_neg:.2g}",
-                fontsize=7, ha='center', va='center', color='white', zorder=6,
-                bbox=dict(boxstyle='round,pad=0.25', fc='black', alpha=0.55),
-            )
-
-    # ── 自定义虚线等值线（仅插值图 / 加速比图）────────────────────────────────
     def _draw_custom_contours(self, ax, grid_x, grid_y, grid_z_masked):
-        """按用户输入的逗号分隔数值绘制黑色虚线等值线。"""
         raw = self.entry_custom_lines.get().strip()
         if not raw:
             return
@@ -423,7 +395,6 @@ class PerformanceBoundaryApp:
                         linewidths=1.4, linestyles='dashed', alpha=0.9, zorder=5)
         ax.clabel(cs, inline=True, fontsize=7, fmt="%.3g")
 
-    # ── 鼠标悬停：散点图 ──────────────────────────────────────────────────────
     def _setup_scatter_hover(self, tab, x, y, z, z_label):
         canvas, ax = tab['canvas'], tab['ax']
         sc = tab['scatter']
@@ -458,7 +429,6 @@ class PerformanceBoundaryApp:
 
         tab['hover_cid'] = canvas.mpl_connect("motion_notify_event", on_hover)
 
-    # ── 鼠标悬停：插值图 ──────────────────────────────────────────────────────
     def _setup_interp_hover(self, tab, grid_x, grid_y, grid_z, z_label):
         canvas, ax = tab['canvas'], tab['ax']
         annot = ax.annotate(
@@ -497,7 +467,6 @@ class PerformanceBoundaryApp:
 
         tab['hover_cid'] = canvas.mpl_connect("motion_notify_event", on_hover)
 
-    # ── 渲染：散点图 ──────────────────────────────────────────────────────────
     def _render_scatter(self, tab, x, y, z, _N, limit_gb, x_min, x_max, y_max,
                         z_label, cmap_name, subtitle):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
@@ -521,13 +490,12 @@ class PerformanceBoundaryApp:
         self._setup_scatter_hover(tab, x, y, z, z_label)
         canvas.draw()
 
-    # ── 渲染：插值图（原始时间）──────────────────────────────────────────────
     def _render_interpolation(self, tab, x, y, z, _N, limit_gb, x_min, x_max, y_max,
                               z_label, cmap_name, subtitle):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
 
         if len(x) < 4:
-            ax.text(0.5, 0.5, "数据点不足 4 个，无法插值。",
+            ax.text(0.5, 0.5, "less than 4",
                     ha='center', va='center', transform=ax.transAxes, fontsize=11)
             canvas.draw()
             return
@@ -555,38 +523,48 @@ class PerformanceBoundaryApp:
         self._setup_interp_hover(tab, grid_x, grid_y, grid_z_masked, z_label)
         canvas.draw()
 
-    # ── 渲染：加速比插值图（基于预计算网格）─────────────────────────────────
     def _render_speedup_interp(self, tab, grid_x, grid_y, grid_z_masked,
                                _N, limit_gb, x_min, x_max, y_max, subtitle):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
         z_label = "Speedup  (Baseline / Target)"
 
-        # ── 自定义配色：深黄 ← 白（=1） → 深蓝 ──────────────────────────────
         cmap_sp = LinearSegmentedColormap.from_list(
             'speedup_bwy', ['#FFAA00', 'white', '#1565C0']
         )
-        try:
-            yellow_min = float(self.entry_yellow_depth.get())
-            blue_max   = float(self.entry_blue_depth.get())
-        except ValueError:
-            yellow_min, blue_max = 0.5, 2.0
+        z_finite = grid_z_masked[np.isfinite(grid_z_masked)]
+        if self.var_auto_speedup.get():
+            if len(z_finite) > 0:
+                yellow_min = min(float(z_finite.min()), 0.5)
+                blue_max   = max(float(z_finite.max()), 1.5)
+            else:
+                yellow_min, blue_max = 0.5, 1.5
+        else:
+            try:
+                yellow_min = float(self.entry_yellow_depth.get())
+                blue_max   = float(self.entry_blue_depth.get())
+            except ValueError:
+                yellow_min, blue_max = 0.5, 2.0
         yellow_min = min(yellow_min, 0.9999)   # 必须 < 1.0
         blue_max   = max(blue_max,   1.0001)   # 必须 > 1.0
         if yellow_min >= blue_max:
             yellow_min, blue_max = 0.5, 2.0
 
-        # 超出范围截断 → 显示最深颜色
         grid_sp_clipped = np.where(
             np.isfinite(grid_z_masked),
             np.clip(grid_z_masked, yellow_min, blue_max),
             np.nan,
         )
-        norm        = TwoSlopeNorm(vmin=yellow_min, vcenter=1.0, vmax=blue_max)
-        im          = ax.pcolormesh(grid_x, grid_y, grid_sp_clipped,
-                                    shading='auto', cmap=cmap_sp, norm=norm)
-        tab['cbar'] = tab['fig'].colorbar(im, ax=ax, label=z_label)
+        norm = TwoSlopeNorm(vmin=yellow_min, vcenter=1.0, vmax=blue_max)
+        im   = ax.pcolormesh(grid_x, grid_y, grid_sp_clipped,
+                             shading='auto', cmap=cmap_sp, norm=norm)
+        n_side   = 4
+        y_ticks  = np.linspace(yellow_min, 1.0, n_side + 1)[:-1]
+        b_ticks  = np.linspace(1.0, blue_max, n_side + 1)
+        cb_ticks = np.unique(np.round(np.concatenate([y_ticks, b_ticks]), 6))
+        cbar     = tab['fig'].colorbar(im, ax=ax, label=z_label, ticks=cb_ticks)
+        cbar.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.3g'))
+        tab['cbar'] = cbar
 
-        # 使用网格内有限值作为等高线统计参考
         z_finite = grid_z_masked[np.isfinite(grid_z_masked)]
         self._draw_contours_and_labels(ax, grid_x, grid_y, grid_z_masked, z_pts=z_finite)
         self._draw_custom_contours(ax, grid_x, grid_y, grid_z_masked)
