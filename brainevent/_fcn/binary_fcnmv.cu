@@ -402,8 +402,6 @@ void binary_fcnmv_scatter_homo##SUFFIX(                                         
     if (n_pre == 0) return;                                                                     \
                                                                                                 \
     int bsz = 256;                                                                              \
-    /* 一次函数边界: c = (1539/521) * s, 其中 s = n_pre / 4000 */                                  \
-    /* 整理得: n_conn * 521 * 4000 > n_pre * 1539 */                                              \
     if ((int64_t)n_conn * 2084000 > (int64_t)n_pre * 1539) {                                    \
         int warps_per_block = bsz / 32;                                                         \
         int n_blocks_wpr = (n_pre + warps_per_block - 1) / warps_per_block;                     \
