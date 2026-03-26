@@ -279,6 +279,7 @@ def _binary_fcnmv_cuda_kernel(
 
     def kernel(weights, indices, spikes):
         spikes = u.math.asarray(spikes, dtype=bool)
+        
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
 
     return kernel

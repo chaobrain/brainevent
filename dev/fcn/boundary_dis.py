@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, colorchooser
 from typing import Optional
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -20,6 +20,7 @@ class PerformanceBoundaryApp:
         self.root.geometry("1440x960")
         self.df: Optional[pd.DataFrame] = None
         self.comboboxes: dict = {}   # dynamic filter comboboxes
+        self.extra_curves: list = []  # extra boundary curves list
         self._setup_ui()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -103,7 +104,82 @@ class PerformanceBoundaryApp:
         ttk.Label(sp_bar,
               text="  If Auto checked: compute extrema from data (yellow ≤ 0.5 / blue ≥ 1.5); otherwise use manual inputs on the left",
               foreground='gray').pack(side=tk.LEFT, padx=(12, 0))
+
+        ttk.Separator(sp_bar, orient='vertical').pack(side=tk.LEFT, fill='y', padx=8, pady=2)
+
+        ttk.Label(sp_bar, text="Data Type:").pack(side=tk.LEFT, padx=(0, 2))
+        self.combo_dtype = ttk.Combobox(sp_bar, state="readonly", width=8,
+                                        values=['float32', 'int32', 'int8'])
+        self.combo_dtype.current(0)
+        self.combo_dtype.pack(side=tk.LEFT)
+
+        ttk.Label(sp_bar, text="Topology:").pack(side=tk.LEFT, padx=(8, 2))
+        self.combo_topology = ttk.Combobox(sp_bar, state="readonly", width=8,
+                                           values=['homo', 'hetero'])
+        self.combo_topology.current(0)
+        self.combo_topology.pack(side=tk.LEFT)
         self._on_auto_speedup_changed()
+
+        # ── Extra Boundary Curves (multi-curve list) ──────────────────────────
+        ext_bar = ttk.LabelFrame(self.root, text="Extra Boundary Curves", padding=8)
+        ext_bar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=4)
+
+        # — Listbox (left) —
+        list_frame = ttk.Frame(ext_bar)
+        list_frame.pack(side=tk.LEFT, padx=(0, 8))
+        self.extra_curves_listbox = tk.Listbox(list_frame, height=4, width=40,
+                                               selectmode=tk.SINGLE, exportselection=False)
+        self.extra_curves_listbox.pack(side=tk.LEFT, fill=tk.Y)
+        _sb = ttk.Scrollbar(list_frame, orient=tk.VERTICAL,
+                            command=self.extra_curves_listbox.yview)
+        _sb.pack(side=tk.LEFT, fill=tk.Y)
+        self.extra_curves_listbox.config(yscrollcommand=_sb.set)
+        self.extra_curves_listbox.bind("<<ListboxSelect>>", self._on_extra_curve_selected)
+        ttk.Label(list_frame, text="Click item to edit; deselect to add new",
+                  foreground='gray').pack(anchor='w', pady=(2, 0))
+
+        # — Editor (center) —
+        editor = ttk.Frame(ext_bar)
+        editor.pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(editor, text="VRAM (GB):").grid(row=0, column=0, sticky='e', padx=(0, 2), pady=2)
+        self.entry_extra_limit = ttk.Entry(editor, width=7)
+        self.entry_extra_limit.insert(0, "16")
+        self.entry_extra_limit.grid(row=0, column=1, padx=2, pady=2)
+
+        ttk.Label(editor, text="Data Type:").grid(row=0, column=2, sticky='e', padx=(8, 2), pady=2)
+        self.combo_extra_dtype = ttk.Combobox(editor, state="readonly", width=8,
+                                              values=['float32', 'int32', 'int8'])
+        self.combo_extra_dtype.current(0)
+        self.combo_extra_dtype.grid(row=0, column=3, padx=2, pady=2)
+
+        ttk.Label(editor, text="Topology:").grid(row=0, column=4, sticky='e', padx=(8, 2), pady=2)
+        self.combo_extra_topology = ttk.Combobox(editor, state="readonly", width=8,
+                                                 values=['homo', 'hetero'])
+        self.combo_extra_topology.current(0)
+        self.combo_extra_topology.grid(row=0, column=5, padx=2, pady=2)
+
+        ttk.Label(editor, text="Color:").grid(row=1, column=0, sticky='e', padx=(0, 2), pady=2)
+        self.entry_extra_color = ttk.Entry(editor, width=10)
+        self.entry_extra_color.insert(0, "#E53935")
+        self.entry_extra_color.grid(row=1, column=1, padx=2, pady=2)
+        ttk.Button(editor, text="Pick…", command=self._pick_extra_color,
+                   width=5).grid(row=1, column=2, padx=2, pady=2)
+
+        ttk.Label(editor, text="Label:").grid(row=1, column=3, sticky='e', padx=(4, 2), pady=2)
+        self.entry_extra_label = ttk.Entry(editor, width=24)
+        self.entry_extra_label.insert(0, "")
+        self.entry_extra_label.grid(row=1, column=4, columnspan=2, padx=2, pady=2, sticky='ew')
+
+        # — Buttons (right) —
+        btn_f = ttk.Frame(ext_bar)
+        btn_f.pack(side=tk.LEFT, padx=8)
+        ttk.Button(btn_f, text="Add / Save", command=self._extra_curve_add_save,
+                   width=12).pack(fill=tk.X, pady=2)
+        ttk.Button(btn_f, text="Delete", command=self._extra_curve_delete,
+                   width=12).pack(fill=tk.X, pady=2)
+        ttk.Button(btn_f, text="Clear All", command=self._extra_curve_clear_all,
+                   width=12).pack(fill=tk.X, pady=2)
 
         # ── Dynamic Data Slicing Filters ────────────────────────────────────────
         self.flt_outer = ttk.LabelFrame(self.root, text="Data Slicing Filters", padding=8)
@@ -180,6 +256,89 @@ class PerformanceBoundaryApp:
         state = 'disabled' if self.var_auto_speedup.get() else 'normal'
         self.entry_yellow_depth.config(state=state)
         self.entry_blue_depth.config(state=state)
+
+    @staticmethod
+    def _dtype_size(dtype_str: str) -> int:
+        """Return bytes-per-element for the given dtype label."""
+        return {'float32': 4, 'int32': 4, 'int8': 1}.get(dtype_str, 4)
+
+    @staticmethod
+    def _topology_times(topo_str: str) -> int:
+        """Return memory-multiplier for homo (1) or hetero (2) topology."""
+        return 2 if topo_str == 'hetero' else 1
+
+    def _get_boundary_params(self):
+        """Read data_size and times from the main boundary UI controls."""
+        return (self._dtype_size(self.combo_dtype.get()),
+                self._topology_times(self.combo_topology.get()))
+
+    # ── Extra boundary curve list helpers ─────────────────────────────────────
+    @staticmethod
+    def _extra_curve_display(c: dict) -> str:
+        return f"{c['limit_gb']} GB | {c['dtype']} | {c['topology']}  →  {c['label']}"
+
+    def _refresh_extra_listbox(self):
+        self.extra_curves_listbox.delete(0, tk.END)
+        for c in self.extra_curves:
+            self.extra_curves_listbox.insert(tk.END, self._extra_curve_display(c))
+
+    def _on_extra_curve_selected(self, event=None):
+        sel = self.extra_curves_listbox.curselection()
+        if not sel:
+            return
+        c = self.extra_curves[sel[0]]
+        self.entry_extra_limit.delete(0, tk.END)
+        self.entry_extra_limit.insert(0, str(c['limit_gb']))
+        self.combo_extra_dtype.set(c['dtype'])
+        self.combo_extra_topology.set(c['topology'])
+        self.entry_extra_color.delete(0, tk.END)
+        self.entry_extra_color.insert(0, c['color'])
+        self.entry_extra_label.delete(0, tk.END)
+        self.entry_extra_label.insert(0, c['label'])
+
+    def _pick_extra_color(self):
+        current = self.entry_extra_color.get().strip() or '#E53935'
+        result = colorchooser.askcolor(color=current, title="Pick Curve Color",
+                                       parent=self.root)
+        if result and result[1]:
+            self.entry_extra_color.delete(0, tk.END)
+            self.entry_extra_color.insert(0, result[1])
+
+    def _extra_curve_add_save(self):
+        try:
+            limit_gb = float(self.entry_extra_limit.get())
+        except ValueError:
+            messagebox.showerror("Input Error", "VRAM must be a valid number.")
+            return
+        dtype    = self.combo_extra_dtype.get()
+        topology = self.combo_extra_topology.get()
+        color    = self.entry_extra_color.get().strip() or '#E53935'
+        label    = self.entry_extra_label.get().strip()
+        if not label:
+            label = f"{limit_gb} GB / {dtype} / {topology}"
+        c = dict(limit_gb=limit_gb, dtype=dtype, topology=topology,
+                 color=color, label=label)
+        sel = self.extra_curves_listbox.curselection()
+        if sel:
+            self.extra_curves[sel[0]] = c
+        else:
+            self.extra_curves.append(c)
+        self._refresh_extra_listbox()
+
+    def _extra_curve_delete(self):
+        sel = self.extra_curves_listbox.curselection()
+        if not sel:
+            messagebox.showinfo("Delete", "Select a curve from the list first.")
+            return
+        self.extra_curves.pop(sel[0])
+        self._refresh_extra_listbox()
+
+    def _extra_curve_clear_all(self):
+        if not self.extra_curves:
+            return
+        if messagebox.askyesno("Clear All", "Remove all extra boundary curves?"):
+            self.extra_curves.clear()
+            self._refresh_extra_listbox()
 
     def export_image(self):
         idx = self.notebook.index(self.notebook.select())
@@ -317,7 +476,8 @@ class PerformanceBoundaryApp:
             grid_zb = griddata((xb, yb), zb, (grid_x, grid_y), method='linear')
 
             limit_bytes = limit_gb * (1024 ** 3)
-            valid = (grid_y <= grid_x * _N) & (grid_y * grid_x * 8 * _N <= limit_bytes)
+            data_size, times = self._get_boundary_params()
+            valid = (grid_y <= grid_x * _N) & (grid_y * grid_x * data_size * times * _N <= limit_bytes)
 
             with np.errstate(divide='ignore', invalid='ignore'):
                 grid_sp = np.where(
@@ -338,9 +498,27 @@ class PerformanceBoundaryApp:
         xv = np.linspace(max(0.01, x_min * 0.9), x_max * 1.25, 600)
         ax.plot(xv, xv * _N,
                 color='gold', lw=2, label=f'conn = scale × N  (N={_N:,} elem/scale)')
+        data_size, times = self._get_boundary_params()
         limit_bytes = limit_gb * (1024 ** 3)
-        ax.plot(xv, limit_bytes / (8 * xv * _N),
-                color='red', lw=2, label=f'VRAM = {limit_gb} GB  (float32)')
+        dtype_label = self.combo_dtype.get()
+        topo_label  = self.combo_topology.get()
+        yv_main = limit_bytes / (data_size * times * xv * _N)
+        ax.plot(xv, yv_main, color='red', lw=2,
+                label=f'VRAM = {limit_gb} GB  ({dtype_label}, {topo_label})')
+        mid = len(xv) // 3
+        ax.text(xv[mid], yv_main[mid], f"{limit_gb} GB",
+                fontsize=7, ha='center', va='bottom', color='red',
+                fontweight='bold', zorder=6)
+        for c in self.extra_curves:
+            e_data_size   = self._dtype_size(c['dtype'])
+            e_times       = self._topology_times(c['topology'])
+            e_limit_bytes = c['limit_gb'] * (1024 ** 3)
+            yv_extra      = e_limit_bytes / (e_data_size * e_times * xv * _N)
+            ax.plot(xv, yv_extra, color=c['color'], lw=2, linestyle='dashed',
+                    label=c['label'])
+            ax.text(xv[mid], yv_extra[mid], f"{c['limit_gb']} GB",
+                    fontsize=7, ha='center', va='bottom', color=c['color'],
+                    fontweight='bold', zorder=6)
         ax.legend(loc='upper right', fontsize=8)
 
     def _draw_contours_and_labels(self, ax, grid_x, grid_y, grid_z_masked, z_pts):
@@ -504,7 +682,8 @@ class PerformanceBoundaryApp:
         grid_z  = griddata((x, y), z, (grid_x, grid_y), method='linear')
 
         limit_bytes = limit_gb * (1024 ** 3)
-        valid = (grid_y <= grid_x * _N) & (grid_y * grid_x * 8 * _N <= limit_bytes)
+        data_size, times = self._get_boundary_params()
+        valid = (grid_y <= grid_x * _N) & (grid_y * grid_x * data_size * times * _N <= limit_bytes)
         grid_z_masked = np.where(valid, grid_z, np.nan)
 
         im          = ax.pcolormesh(grid_x, grid_y, grid_z_masked, shading='auto', cmap=cmap_name)

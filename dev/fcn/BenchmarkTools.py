@@ -56,11 +56,11 @@ class CSV_record():
 
         # output dir default: same folder as this file /results
         try:
-            base = Path(__file__).resolve().parent
+            self.base = Path(__file__).resolve().parent
         except NameError:
-            base = Path.cwd()
+            self.base = Path.cwd()
 
-        self.output_dir = Path(output_dir) if output_dir else base / 'results'
+        self.output_dir = Path(output_dir) if output_dir else self.base / 'results'
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.append = append
         self._tags: dict = {}
@@ -157,7 +157,7 @@ class CSV_record():
 
         self.add_row(row)
 
-    def record_finish(self, suffix: str = '', file_name: str | None = None) -> None:
+    def record_finish(self, dir:str = '', suffix: str = '', file_name: str | None = None) -> None:
         """Write accumulated rows to disk.
 
         - `suffix` will be used in auto-generated filename if provided.
@@ -168,6 +168,10 @@ class CSV_record():
         - For other files, automatically detects if the target file exists and
           appends if it does.
         """
+        if dir is not '':
+            self.output_dir = self.base / dir
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            
         suf = suffix if suffix else self.suffix
 
         is_default = (suf == 'default' or not suf)
@@ -272,6 +276,7 @@ def generate_params(
     data_size: int = 4,
     scale_max: int = 2000,
     conn_max: int = 4000,
+    homo: bool = True
 ) -> list:
     """
     Generates a list of valid (scale, conn_num) parameter states within VRAM limits.
@@ -307,8 +312,12 @@ def generate_params(
 
     limit_bytes = limit_gb * (1024 ** 3)
 
-    def is_valid(s, c):
-        matrix_memory_bytes = c * s * _N * data_size * 2
+    def is_valid(s, c, homo):
+        if homo:
+            times = 1
+        else:
+            times = 2
+        matrix_memory_bytes = c * s * _N * data_size * times #1 if homo else 2
         return matrix_memory_bytes <= limit_bytes and c <= _N * s
 
     if dis_type == 'monte_carlo':
@@ -316,7 +325,7 @@ def generate_params(
         while len(valid_states) < target_samples:
             s = int(np.random.uniform(1, scale_max + 1))
             c = int(np.random.uniform(1, conn_max + 1))
-            if is_valid(s, c):
+            if is_valid(s, c, homo):
                 valid_states.add((s, c))
         sorted_states = sorted(list(valid_states), key=lambda state: state[0] * state[1])
         print(f"Generated {len(sorted_states)} valid parameter states under {limit_gb}GB boundary.")
@@ -339,7 +348,7 @@ def generate_params(
         (int(s), int(c))
         for s in scales_raw
         for c in conn_nums_raw
-        if is_valid(s, c)
+        if is_valid(s, c, homo)
     ]
     valid_states.sort(key=lambda state: state[0] * state[1])
     print(f"Generated {len(valid_states)} valid parameter states under {limit_gb}GB boundary.")

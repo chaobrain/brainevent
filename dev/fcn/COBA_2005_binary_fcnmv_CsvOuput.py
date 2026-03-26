@@ -85,6 +85,7 @@ def benchmark_post_conn(
 
                 for s in scales:
                     try:
+                        print(jax.devices())
                         run = make_simulation_run(
                             scale=s,
                             data_type=data_type,
@@ -233,7 +234,7 @@ def benchmark_pre_conn(
 
 
 if __name__ == '__main__':
-    benchmark_post_conn(data_type='compact', duration=1e2 * u.ms, probs_or_conn='conn')
+    #benchmark_post_conn(data_type='compact', duration=1e2 * u.ms, probs_or_conn='conn')
     benchmark_post_conn(data_type='binary', duration=1e2 * u.ms, probs_or_conn='conn')
     #benchmark_pre_conn(conn_num=80, data_type='bitpack', duration=1e3 * u.ms)
     #benchmark_pre_conn(data_type='binary',duration=1e3 * u.ms, probs_or_conn='conn')

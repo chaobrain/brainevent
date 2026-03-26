@@ -31,6 +31,13 @@ _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+'''
+import os
+os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+import os
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+'''
+
 import time
 
 import brainunit as u
@@ -40,8 +47,8 @@ import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
 
-backends = ['cuda_raw']
-
+backends = ['jax_raw']
+homo = True
 def benchmark_post_conn(
     conn_num=None,
     conn_prob=None,
@@ -51,7 +58,7 @@ def benchmark_post_conn(
     backend: str | None = None,
     probs_or_conn='conn',
     _N : int = 4000,
-    limit_gb: int = 24,
+    limit_gb: int = 17,
     target_samples: int = 50
 ):
     import dev.fcn.BenchmarkTools as BT
@@ -60,7 +67,7 @@ def benchmark_post_conn(
 
     backends_to_use = [backend] if backend is not None else backends
 
-    valid_states = BT.generate_params(dis_type= 'uniform' ,_N=_N, limit_gb=limit_gb, target_samples=target_samples)
+    valid_states = BT.generate_params(dis_type= 'uniform' ,_N=_N, limit_gb=limit_gb, target_samples=target_samples ,homo=homo)
 
     csv_recorder = BT.CSV_record('binary_post', 'fcnmv', 'coba', duration=duration,)
 
@@ -90,17 +97,19 @@ def benchmark_post_conn(
                 t1 = time.time()
                 elapsed = t1 - t0
                 
-                csv_recorder.add_tag('warp_or_thread', 'tpr')
+                #csv_recorder.add_tag('warp_or_thread', 'tpr')
                 csv_recorder.print_row(s, n, elapsed, float(rate), conn_num=cn)
                 csv_recorder.single_COBA_data_add(
                     'fcnmv', data_type, back, 'post', cn, s, elapsed, float(rate), duration, 
                     homo=('homo' if homo else 'hetero')
                 )
             except Exception as e:
-                print(f'  [Error] VRAM Boundary Exception at scale={s}, conn_num={cn}: {e}')
+                error_msg = str(e).lower()
+                #if "resource_exhausted" in error_msg or "resource exhausted" in error_msg or "out of memory" in error_msg or "oom" in error_msg:
+                #    jax.profiler.save_device_memory_profile(f"memory_snapshot-scale{s}-conn{cn}.prof")
                 continue
 
-    csv_recorder.record_finish('boundary_boolmode-default')
+    csv_recorder.record_finish(dir='result-stage2',file_name='homo-boundary-18-mvpost-cudawat')
 
 def benchmark_pre_conn(
         conn_num=None, 
@@ -156,15 +165,17 @@ def benchmark_pre_conn(
                     homo=('homo' if homo else 'hetero')
                 )
             except Exception as e:
-                print(f'  [Error] VRAM Boundary Exception at scale={s}, conn_num={cn}: {e}')
+                error_msg = str(e).lower()
+                if "resource_exhausted" in error_msg or "resource exhausted" in error_msg or "out of memory" in error_msg or "oom" in error_msg:
+                    jax.profiler.save_device_memory_profile(f"memory_snapshot-scale{s}-conn{cn}.prof")
                 continue
 
-    csv_recorder.record_finish('boundary_floatmode_bitpack')
+    csv_recorder.record_finish(dir='result-stage2',file_name='boundary_floatmode_bitpack')
 
 
 if __name__ == '__main__':
     #benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
-    benchmark_post_conn(data_type='binary', duration=1e2 * u.ms)
+    benchmark_post_conn(data_type='binary', duration=1e2 * u.ms, homo = homo)
     #benchmark_post_conn(data_type='compact', duration=1e2 * u.ms)
     #benchmark_pre_conn(data_type='bitpack', duration=1e2 * u.ms)
     #benchmark_pre_conn(data_type='binary',duration=1e2 * u.ms)
