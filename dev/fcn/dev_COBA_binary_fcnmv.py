@@ -40,13 +40,14 @@ import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
 
-scales = [1140]
+scales = [60,]
 backends = ['cuda_raw']
 
-conn_nums = [686]
+conn_nums = [80,]
 
 probs = [0.001, 0.004,  0.016 ,0.064, 0.128, 0.256, 0.512]
 
+duration=1 * u.ms
 
 def benchmark_post_conn(
     conn_num=None,
@@ -85,7 +86,6 @@ def benchmark_post_conn(
 
                 for s in scales:
                     try:
-                        print(jax.devices())
                         run = make_simulation_run(
                             scale=s,
                             data_type=data_type,
@@ -95,14 +95,13 @@ def benchmark_post_conn(
                             homo=homo
                         )
 
-                        jax.block_until_ready(run())
-
                         t0 = time.time()
                         n, rate = jax.block_until_ready(run())
                         t1 = time.time()
                         elapsed = t1 - t0
                         csv_recorder.print_row(s, n, elapsed, float(rate))
                         csv_recorder.single_COBA_data_add('fcnmv', data_type, back, 'post', cn, s, elapsed, float(rate), duration, homo=('homo' if homo else 'hetero'))
+
                     except Exception as e:
                         print(f'  [Error] scale={s}, conn_num={cn}: {e}')
                         continue
@@ -127,19 +126,18 @@ def benchmark_post_conn(
                             homo=homo
                         )
 
-                        jax.block_until_ready(run())
-
                         t0 = time.time()
                         n, rate = jax.block_until_ready(run())
                         t1 = time.time()
                         elapsed = t1 - t0
-                        csv_recorder.print_row(s, n, elapsed, float(rate), conn_num=actual_conn_num)
-                        csv_recorder.single_COBA_data_add('fcnmv', data_type, back, 'post', actual_conn_num, s, elapsed, float(rate), duration, homo=('homo' if homo else 'hetero'))
+                        csv_recorder.print_row(s, n, elapsed, float(rate))
+                        csv_recorder.single_COBA_data_add('fcnmv', data_type, back, 'post', cn, s, elapsed, float(rate), duration, homo=('homo' if homo else 'hetero'))                       
+
                     except Exception as e:
                         print(f'  [Error] scale={s}, conn_num={actual_conn_num}: {e}')
                         continue
 
-    csv_recorder.record_finish('float_mode_single_point_with_spconn-scale')
+    csv_recorder.record_finish('Nsight')
 
 def benchmark_pre_conn(
         conn_num=None, 
@@ -234,8 +232,8 @@ def benchmark_pre_conn(
 
 
 if __name__ == '__main__':
-    #benchmark_post_conn(data_type='compact', duration=1e2 * u.ms, probs_or_conn='conn')
-    benchmark_post_conn(data_type='binary', duration=1e2 * u.ms, probs_or_conn='conn')
+    benchmark_post_conn(conn_num=80, data_type='binary', duration=1 * u.ms)
+    #benchmark_post_conn(data_type='bitpack', duration=duration, probs_or_conn='conn')
     #benchmark_pre_conn(conn_num=80, data_type='bitpack', duration=1e3 * u.ms)
-    #benchmark_pre_conn(data_type='binary',duration=1e3 * u.ms, probs_or_conn='conn')
-    #benchmark_pre_conn(data_type='bitpack',duration=1e3 * u.ms, probs_or_conn='conn')
+    #benchmark_pre_conn(data_type='binary',duration=1e3 * u.ms,)
+    #benchmark_pre_conn(conn_num=80, data_type='binary', duration=1e3 * u.ms)

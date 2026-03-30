@@ -280,7 +280,7 @@ class CompareApp(tk.Tk):
         # Tab 1 – Latency
         self.t1_x_var      = tk.StringVar()
         self.t1_y_var      = tk.StringVar(value='mean_ms')
-        self.t1_color_var  = tk.StringVar(value='data_type')
+        self.t1_color_var  = tk.StringVar(value='backend')
         self.t1_hatch_var  = tk.StringVar(value=NONE_LABEL)
         self.t1_scale_var  = tk.StringVar(value='linear')
         self.t1_annot_var  = tk.BooleanVar(value=True)
@@ -289,7 +289,7 @@ class CompareApp(tk.Tk):
         self.t2_x_var      = tk.StringVar()
         self.t2_y_var      = tk.StringVar(value='mean_ms')
         self.t2_baseline_var = tk.StringVar()
-        self.t2_color_var  = tk.StringVar(value='data_type')
+        self.t2_color_var  = tk.StringVar(value='backend')
         self.t2_hatch_var  = tk.StringVar(value=NONE_LABEL)
         self.t2_scale_var  = tk.StringVar(value='linear')
         self.t2_annot_var  = tk.BooleanVar(value=True)
@@ -304,7 +304,7 @@ class CompareApp(tk.Tk):
         # Tab 4 - COBA Absolute
         self.c1_x_var = tk.StringVar()
         self.c1_y_var = tk.StringVar()
-        self.c1_color_var = tk.StringVar(value='data_type')
+        self.c1_color_var = tk.StringVar(value='backend')
         self.c1_hatch_var = tk.StringVar(value=NONE_LABEL)
         self.c1_scale_var = tk.StringVar(value='linear')
         self.c1_annot_var = tk.BooleanVar(value=True)
@@ -313,7 +313,7 @@ class CompareApp(tk.Tk):
         self.c2_x_var = tk.StringVar()
         self.c2_y_var = tk.StringVar()
         self.c2_baseline_var = tk.StringVar()
-        self.c2_color_var = tk.StringVar(value='data_type')
+        self.c2_color_var = tk.StringVar(value='backend')
         self.c2_hatch_var = tk.StringVar(value=NONE_LABEL)
         self.c2_scale_var = tk.StringVar(value='linear')
         self.c2_annot_var = tk.BooleanVar(value=True)
@@ -478,7 +478,7 @@ class CompareApp(tk.Tk):
             callback=self._on_operator_change,
         )
         r += 1
-        self._add_combo(af, "Target Data Type", self.t3_target_var, r, 0)
+        self._add_combo(af, "Target Backend", self.t3_target_var, r, 0)
         self._add_combo(af, "Baseline", self.t3_baseline_var, r, 2)
         r += 1
         ttk.Label(af, text="Yellow Ratio").grid(row=r, column=0, padx=4, pady=3, sticky='w')
@@ -597,7 +597,7 @@ class CompareApp(tk.Tk):
         self._add_combo(af, "Operator", self.operator_var, r, 0,
                         callback=self._on_operator_change)
         r += 1
-        self._add_combo(af, "Target Data Type", self.c3_target_var, r, 0)
+        self._add_combo(af, "Target Backend", self.c3_target_var, r, 0)
         self._add_combo(af, "Baseline", self.c3_baseline_var, r, 2)
         r += 1
         ttk.Label(af, text="Yellow Ratio").grid(row=r, column=0, padx=4, pady=3, sticky='w')
@@ -760,17 +760,14 @@ class CompareApp(tk.Tk):
         ]
         num_cols = [c for c in sub.columns if pd.api.types.is_numeric_dtype(sub[c])]
 
-        # Use data_type column for baseline/color, with backend as fallback
-        data_type_col = 'data_type' if 'data_type' in sub.columns else (
-            'backend' if 'backend' in sub.columns else None
-        )
-        data_type_vals = (
-            sorted(sub[data_type_col].dropna().unique().astype(str))
-            if data_type_col else []
+        # Use backend column for baseline/speedup calculations
+        backends = (
+            sorted(sub['backend'].dropna().unique().astype(str))
+            if 'backend' in sub.columns else []
         )
         x_default = self._preferred_x_default(cat_cols)
         y_abs_default, y_speed_default = self._preferred_numeric_defaults(num_cols)
-        color_default = data_type_col or (cat_cols[0] if cat_cols else '')
+        color_default = 'backend' if 'backend' in cat_cols else (cat_cols[0] if cat_cols else '')
 
         # Tab 1
         self._update_combo(self.t1_x_var, cat_cols, default=x_default)
@@ -781,16 +778,16 @@ class CompareApp(tk.Tk):
         # Tab 2
         self._update_combo(self.t2_x_var, cat_cols, default=x_default)
         self._update_combo(self.t2_y_var, num_cols, default=y_abs_default)
-        self._update_combo(self.t2_baseline_var, data_type_vals)
+        self._update_combo(self.t2_baseline_var, backends)
         self._update_combo(self.t2_color_var, cat_cols, default=color_default)
         self._update_combo(self.t2_hatch_var, [NONE_LABEL] + cat_cols, default=NONE_LABEL)
 
         # Tab 3
-        self._update_combo(self.t3_target_var, data_type_vals)
-        self._update_combo(self.t3_baseline_var, data_type_vals)
-        if self.t3_target_var.get() == self.t3_baseline_var.get() and len(data_type_vals) >= 2:
-            self.t3_target_var.set(data_type_vals[0])
-            self.t3_baseline_var.set(data_type_vals[1])
+        self._update_combo(self.t3_target_var, backends)
+        self._update_combo(self.t3_baseline_var, backends)
+        if self.t3_target_var.get() == self.t3_baseline_var.get() and len(backends) >= 2:
+            self.t3_target_var.set(backends[0])
+            self.t3_baseline_var.set(backends[1])
 
         # Tab 4
         self._update_combo(self.c1_x_var, cat_cols, default=x_default)
@@ -801,16 +798,16 @@ class CompareApp(tk.Tk):
         # Tab 5
         self._update_combo(self.c2_x_var, cat_cols, default=x_default)
         self._update_combo(self.c2_y_var, num_cols, default=y_speed_default)
-        self._update_combo(self.c2_baseline_var, data_type_vals)
+        self._update_combo(self.c2_baseline_var, backends)
         self._update_combo(self.c2_color_var, cat_cols, default=color_default)
         self._update_combo(self.c2_hatch_var, [NONE_LABEL] + cat_cols, default=NONE_LABEL)
 
         # Tab 6
-        self._update_combo(self.c3_target_var, data_type_vals)
-        self._update_combo(self.c3_baseline_var, data_type_vals)
-        if self.c3_target_var.get() == self.c3_baseline_var.get() and len(data_type_vals) >= 2:
-            self.c3_target_var.set(data_type_vals[0])
-            self.c3_baseline_var.set(data_type_vals[1])
+        self._update_combo(self.c3_target_var, backends)
+        self._update_combo(self.c3_baseline_var, backends)
+        if self.c3_target_var.get() == self.c3_baseline_var.get() and len(backends) >= 2:
+            self.c3_target_var.set(backends[0])
+            self.c3_baseline_var.set(backends[1])
 
         self._build_filters(sub, cat_cols)
 
@@ -853,7 +850,7 @@ class CompareApp(tk.Tk):
     def _get_heatmap_data(self) -> pd.DataFrame:
         sub = self._base_subset()
         # Keep axis columns free to form a complete matrix.
-        skip_filter_cols = {'backend', 'data_type', 'scale', 'spike_rate', 'conn_num', 'conn_numbers'}
+        skip_filter_cols = {'backend', 'scale', 'spike_rate', 'conn_num', 'conn_numbers'}
         for key, var in self.filter_vars.items():
             val = var.get()
             if val == ALL_LABEL or key in skip_filter_cols:
@@ -1121,7 +1118,7 @@ class CompareApp(tk.Tk):
         target_backend = self.t3_target_var.get()
         baseline_backend = self.t3_baseline_var.get()
         if not target_backend or not baseline_backend:
-            messagebox.showerror("Error", "Please select Target Data Type and Baseline.")
+            messagebox.showerror("Error", "Please select Target Backend and Baseline.")
             return
         if target_backend == baseline_backend:
             messagebox.showerror("Error", "Target Backend and Baseline must be different.")
@@ -1141,20 +1138,20 @@ class CompareApp(tk.Tk):
             return
 
         sub = self._get_heatmap_data()
-        dt_col = 'data_type' if 'data_type' in sub.columns else 'backend'
+        dt_col = 'backend'
         val_col_hm = 'mean_ms' if 'mean_ms' in sub.columns else 'elapsed_s'
         required = [dt_col, val_col_hm, 'scale', 'spike_rate']
         missing = [c for c in required if c not in sub.columns]
         if missing:
             messagebox.showerror(
                 "Error",
-                f"Missing columns for heatmap: {missing}. Need {dt_col}, {val_col_hm}, scale, spike_rate.",
+                f"Missing columns for heatmap: {missing}. Need backend, {val_col_hm}, scale, spike_rate.",
             )
             return
 
         sub = sub[sub[dt_col].astype(str).isin([target_backend, baseline_backend])].copy()
         if sub.empty:
-            messagebox.showerror("Error", "No data after filtering and data type selection.")
+            messagebox.showerror("Error", "No data after filtering and backend selection.")
             return
         if not self._ensure_unique_match(
             sub,
@@ -1374,10 +1371,10 @@ class CompareApp(tk.Tk):
         target_backend = self.c3_target_var.get()
         baseline_backend = self.c3_baseline_var.get()
         if not target_backend or not baseline_backend:
-            messagebox.showerror("Error", "Please select Target Data Type and Baseline.")
+            messagebox.showerror("Error", "Please select Target Backend and Baseline.")
             return
         if target_backend == baseline_backend:
-            messagebox.showerror("Error", "Target Data Type and Baseline must be different.")
+            messagebox.showerror("Error", "Target Backend and Baseline must be different.")
             return
 
         try:
@@ -1393,7 +1390,7 @@ class CompareApp(tk.Tk):
             )
             return
 
-        dt_col_c = 'data_type' if 'data_type' in self.df.columns else 'backend'
+        dt_col_c = 'backend'
         val_col_c = (
             'elapsed_s' if 'elapsed_s' in self.df.columns else
             ('elapsed_mean_s' if 'elapsed_mean_s' in self.df.columns else 'mean_ms')
@@ -1406,13 +1403,13 @@ class CompareApp(tk.Tk):
         if missing:
             messagebox.showerror(
                 "Error",
-                f"Missing columns for COBA heatmap: {missing}. Need {dt_col_c}, {val_col_c}, scale, {conn_col}.",
+                f"Missing columns for COBA heatmap: {missing}. Need backend, {val_col_c}, scale, {conn_col}.",
             )
             return
 
         sub = sub[sub[dt_col_c].astype(str).isin([target_backend, baseline_backend])].copy()
         if sub.empty:
-            messagebox.showerror("Error", "No data after filtering and data type selection.")
+            messagebox.showerror("Error", "No data after filtering and backend selection.")
             return
         if not self._ensure_unique_match(
             sub,
