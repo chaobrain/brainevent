@@ -32,6 +32,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 import time
+from typing import Any, Callable, cast
 
 import brainunit as u
 import jax
@@ -39,203 +40,123 @@ import jax
 import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
+scales = [1, 2, 4, 6, 8, 10, 20, 40, 60]
+backends = ['jax_raw', 'cuda_raw']
+conn_nums = [20, 40, 80, 160, 320, 640]
+probs = [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64]
+default_batch_sizes = [1, 4, 16]
 
-scales = [1140]
-backends = ['cuda_raw']
-
-conn_nums = [686]
-
-probs = [0.001, 0.004,  0.016 ,0.064, 0.128, 0.256, 0.512]
+CompiledRun = Callable[[], tuple[int, Any]]
 
 
-def benchmark_post_conn(
-    conn_num=None,
-    conn_prob=None,
-    data_type='binary',
-    duration=1e4 * u.ms,
-    homo: bool = True,
-    backend: str | None = None,
-    probs_or_conn='conn',
-    _N : int = 4000
-):
-    import dev.fcn.BenchmarkTools as BT
+def _run_and_block(run: CompiledRun) -> tuple[int, Any]:
+    result = run()
+    blocked_result = jax.block_until_ready(result)
+    return cast(tuple[int, Any], blocked_result)
 
-    print('Benchmarking post-synaptic connection updates...')
+def benchmark_conn(
+                        mode = 'post',
+                        conn_num=None,
+                        conn_prob=None,
+                        data_type='binary',
+                        duration=1e4 * u.ms,
+                        homo: bool = True,
+                        backend: str | None = None,
+                        params_type='conn',
+                        _N : int = 4000,
+                        limit_GB = 16,
+    ):
+    import BenchmarkTools as BT
 
-    backends_to_use = [backend] if backend is not None else backends
+    duration = cast(u.Quantity, duration)
+    csv_duration = cast(Any, duration)
 
-    if probs_or_conn == 'conn':
-        use_conn_nums = True
-        conn_nums_to_use = [conn_num] if conn_num is not None else conn_nums
-    else:
-        use_conn_nums = False
-        probs_to_use = [conn_prob] if conn_prob is not None else probs
+    print(f'Benchmarking {mode}-synaptic connection updates...')
 
-    csv_recorder = BT.CSV_record('binary_post', 'fcnmv', 'coba', duration=duration, conn=conn_num)
-
-    for back in backends_to_use:
-        brainevent.config.set_backend('gpu', back)
-
-        if use_conn_nums:
-            for cn in conn_nums_to_use:
-                csv_recorder.print_header(operator='fcnmv', data_type=data_type, backend=back,
-                        mode='post', conn_num=cn, duration=duration,
-                        homo=('homo' if homo else 'hetero'))
-                csv_recorder.print_table_header()
-
-                for s in scales:
-                    try:
-                        print(jax.devices())
-                        run = make_simulation_run(
-                            scale=s,
-                            data_type=data_type,
-                            efferent_target='post',
-                            duration=duration,
-                            conn_num=cn,
-                            homo=homo
-                        )
-
-                        jax.block_until_ready(run())
-
-                        t0 = time.time()
-                        n, rate = jax.block_until_ready(run())
-                        t1 = time.time()
-                        elapsed = t1 - t0
-                        csv_recorder.print_row(s, n, elapsed, float(rate))
-                        csv_recorder.single_COBA_data_add('fcnmv', data_type, back, 'post', cn, s, elapsed, float(rate), duration, homo=('homo' if homo else 'hetero'))
-                    except Exception as e:
-                        print(f'  [Error] scale={s}, conn_num={cn}: {e}')
-                        continue
-        else:
-            for prob in probs_to_use:
-                csv_recorder.print_header(operator='fcnmv', data_type=data_type, backend=back,
-                        mode='post', duration=duration,
-                        homo=('homo' if homo else 'hetero'), prob=prob)
-                csv_recorder.print_table_header(show_conn=True)
-
-                for s in scales:
-                    actual_conn_num = int(s * prob * _N)
-                    if actual_conn_num < 1 : actual_conn_num = 1
-                    if BT.memory_limit(actual_conn_num, scale=s): continue
-                    try:
-                        run = make_simulation_run(
-                            scale=s,
-                            data_type=data_type,
-                            efferent_target='post',
-                            duration=duration,
-                            conn_num=actual_conn_num,
-                            homo=homo
-                        )
-
-                        jax.block_until_ready(run())
-
-                        t0 = time.time()
-                        n, rate = jax.block_until_ready(run())
-                        t1 = time.time()
-                        elapsed = t1 - t0
-                        csv_recorder.print_row(s, n, elapsed, float(rate), conn_num=actual_conn_num)
-                        csv_recorder.single_COBA_data_add('fcnmv', data_type, back, 'post', actual_conn_num, s, elapsed, float(rate), duration, homo=('homo' if homo else 'hetero'))
-                    except Exception as e:
-                        print(f'  [Error] scale={s}, conn_num={actual_conn_num}: {e}')
-                        continue
-
-    csv_recorder.record_finish('float_mode_single_point_with_spconn-scale')
-
-def benchmark_pre_conn(
-        conn_num=None, 
-        conn_prob=None,
-        data_type='binary', 
-        duration=1e2 * u.ms, 
-        homo:bool = True, 
-        backend: str | None = None,
-        probs_or_conn='conn',
-        _N : int = 4000
-        ):
-    print('Benchmarking pre-synaptic connection updates...')
-    import dev.fcn.BenchmarkTools as BT
+    TPGenerator = BT.TestingParamsGenerator_mv(limit_GB=limit_GB, _N=_N, sample_points=100, conn_max=3000, scale_max=1000)
 
     backends_to_use = [backend] if backend is not None else backends
 
-    if probs_or_conn == 'conn':
-        use_conn_nums = True
+    if params_type == 'conn':
         conn_nums_to_use = [conn_num] if conn_num is not None else conn_nums
-    else:
-        use_conn_nums = False
+        valid_pairs = []
+        for s in scales:
+            for cn in conn_nums_to_use:
+                #if TPGenerator.is_valid_mm(s, b, cn, homo):
+                valid_pairs.append((s, None, cn))
+    elif params_type == 'prob':
         probs_to_use = [conn_prob] if conn_prob is not None else probs
+        valid_pairs = TPGenerator.make_simulation_params_probs(probs_to_use, scales, homo=homo)
+    elif params_type == 'dist':
+        valid_pairs = TPGenerator.generate_params(dis_type='uniform', target_samples=50, data_size = 4, homo=homo)
 
-    csv_recorder = BT.CSV_record('binary_pre', 'fcnmv', 'coba', duration=duration, conn=conn_num)
+
+    csv_recorder = BT.CSV_record(f'binary_{mode}', 'fcnmv', 'coba', duration=csv_duration, conn=conn_num)
+
+
+    homo_str = 'homo' if homo else 'hetero'
+    last_path = None
+    header_conn_num = conn_num if params_type == 'conn' and conn_num is not None else None
 
     for back in backends_to_use:
         brainevent.config.set_backend('gpu', back)
+        csv_recorder.print_header(operator='fcnmv', data_type=data_type, backend=back,
+                mode=mode, conn_num=header_conn_num, duration=duration,
+                homo=('homo' if homo else 'hetero'))
+        csv_recorder.print_table_header(show_conn=True)
 
-        if use_conn_nums:
-            for cn in conn_nums_to_use:
-                csv_recorder.print_header(operator='fcnmv', data_type=data_type, backend=back,
-                        mode='pre', conn_num=cn, duration=duration,
-                        homo=('homo' if homo else 'hetero'))
-                csv_recorder.print_table_header()
+        for scale, prob, cn in valid_pairs:
 
-                for s in scales:
-                    try:
-                        run = make_simulation_run(
-                            scale=s,
-                            data_type=data_type,
-                            efferent_target='pre',
-                            duration=duration,
-                            conn_num=cn,
-                            homo=homo,
-                        )
+            try:
+                run = cast(CompiledRun, make_simulation_run(
+                    scale=scale,
+                    data_type=data_type,
+                    efferent_target=mode,
+                    duration=duration,
+                    conn_num=cn,
+                    homo=homo,
+                ))
 
-                        jax.block_until_ready(run())
+                _run_and_block(run)
 
-                        t0 = time.time()
-                        n, rate = jax.block_until_ready(run())
-                        t1 = time.time()
-                        elapsed = t1 - t0
-                        csv_recorder.print_row(s, n, elapsed, float(rate))
-                        csv_recorder.single_COBA_data_add('fcnmv', data_type, back, 'pre', cn, s, elapsed, float(rate), duration, homo=('homo' if homo else 'hetero'))
-                    except Exception as e:
-                        print(f'  [Error] scale={s}, conn_num={cn}: {e}')
-                        continue
-        else:
-            for prob in probs_to_use:
-                csv_recorder.print_header(operator='fcnmv', data_type=data_type, backend=back,
-                        mode='pre', duration=duration,
-                        homo=('homo' if homo else 'hetero'), prob=prob)
-                csv_recorder.print_table_header(show_conn=True)
+                t0 = time.time()
+                n, rate = _run_and_block(run)
+                t1 = time.time()
+                elapsed = t1 - t0
 
-                for s in scales:
-                    actual_conn_num = int(s * prob * _N)  # non-linear: conn_num scales with network size
-                    if actual_conn_num < 1 : actual_conn_num = 1
-                    if BT.memory_limit(actual_conn_num, scale=s): continue
-                    try:
-                        run = make_simulation_run(
-                            scale=s,
-                            data_type=data_type,
-                            efferent_target='pre',
-                            duration=duration,
-                            conn_num=actual_conn_num,
-                            homo=homo,
-                        )
+                csv_recorder.add_tag('limit_GB', f'{limit_GB}')
 
-                        jax.block_until_ready(run())
+                #csv_recorder.add_tag('wat', f'tpr')
 
-                        t0 = time.time()
-                        n, rate = jax.block_until_ready(run())
-                        t1 = time.time()
-                        elapsed = t1 - t0
-                        csv_recorder.print_row(s, n, elapsed, float(rate), conn_num=actual_conn_num)
-                        csv_recorder.single_COBA_data_add('fcnmv', data_type, back, 'pre', actual_conn_num, s, elapsed, float(rate), duration, homo=('homo' if homo else 'hetero'))
-                    except Exception as e:
-                        print(f'  [Error] scale={s}, conn_num={actual_conn_num}: {e}')
-                        continue
+                csv_recorder.print_row(scale, n, elapsed, float(rate), conn_num=cn)
+                
+                csv_recorder.single_COBA_data_add('fcnmv', data_type, back, mode, cn, scale, elapsed, float(rate), csv_duration, homo=('homo' if homo else 'hetero'))
+                
+                #flush_file_name = f'forbit-jax-mv_{data_type}_{homo_str}_{back}_{mode}-float-input-{limit_GB}GB'
+                flush_file_name = 'test'
+                last_path = csv_recorder.flush_and_clear(flush_file_name, dir='test')
+            except Exception as e:
+                print(f'  [Error] scale={scale}, conn_num={cn}: {e}')
+                continue
 
-    csv_recorder.record_finish('test')
+    if last_path:
+        print(f'\nDone. Results saved to: {last_path}')
+
 
 
 if __name__ == '__main__':
-    #benchmark_post_conn(data_type='compact', duration=1e2 * u.ms, probs_or_conn='conn')
-    benchmark_post_conn(data_type='binary', duration=1e2 * u.ms, probs_or_conn='conn')
-    #benchmark_pre_conn(conn_num=80, data_type='bitpack', duration=1e3 * u.ms)
-    #benchmark_pre_conn(data_type='binary',duration=1e3 * u.ms, probs_or_conn='conn')
-    #benchmark_pre_conn(data_type='bitpack',duration=1e3 * u.ms, probs_or_conn='conn')
+
+    #benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 18)
+    #benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 9)
+    #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 9)
+    #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 7)
+
+    #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 18)
+    #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 9)
+    #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 9)
+    #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 7)
+
+    
+    benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_cuda_joint', limit_GB = 7)
+    #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax-cuda-joint', limit_GB = 9)
+#18 9 9 7

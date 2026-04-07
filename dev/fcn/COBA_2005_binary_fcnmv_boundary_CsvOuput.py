@@ -46,36 +46,63 @@ import jax
 import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
+#JAX_CAPTURED_CONSTANTS_REPORT_FRAMES = -1
 
-backends = ['jax_raw']
+backends = ['cuda_raw']
 homo = True
-def benchmark_post_conn(
+
+
+def _is_oom_error(exc: Exception) -> bool:
+    error_msg = str(exc).lower()
+    return any(token in error_msg for token in (
+        'resource_exhausted',
+        'resource exhausted',
+        'out of memory',
+        'oom',
+    ))
+
+
+def benchmark_conn(
     conn_num=None,
     conn_prob=None,
+    mode = 'pre',
     data_type='binary',
     duration=1e4 * u.ms,
     homo: bool = True,
     backend: str | None = None,
     probs_or_conn='conn',
     _N : int = 4000,
-    limit_gb: int = 17,
+    limit_gb: int = 16,
     target_samples: int = 50
 ):
-    import dev.fcn.BenchmarkTools as BT
+    import BenchmarkTools as BT
 
-    print('Benchmarking post-synaptic connection updates...')
+    if mode not in ('pre', 'post'):
+        raise ValueError("mode must be either 'pre' or 'post'.")
+
+    print(f'Benchmarking {mode}-synaptic connection updates...')
 
     backends_to_use = [backend] if backend is not None else backends
 
-    valid_states = BT.generate_params(dis_type= 'uniform' ,_N=_N, limit_gb=limit_gb, target_samples=target_samples ,homo=homo)
+    generator = BT.TestingParamsGenerator(limit_GB=limit_gb, _N=_N)
+    valid_states = generator.generate_boundary_params(
+        homo_or_not=homo,
+        _N=_N,
+        sample_points=target_samples,
+    )
+    if not valid_states:
+        raise ValueError(f'No valid boundary states generated under {limit_gb}GB.')
 
-    csv_recorder = BT.CSV_record('binary_post', 'fcnmv', 'coba', duration=duration,)
+    csv_recorder = BT.CSV_record(f'{data_type}_{mode}_boundary', 'fcnmv', 'coba', duration=duration)
+    csv_recorder.add_tag('VRAM-limit', limit_gb)
+    homo_str = 'homo' if homo else 'hetero'
+    last_path = None
 
     for back in backends_to_use:
         brainevent.config.set_backend('gpu', back)
         csv_recorder.print_header(
             operator='fcnmv', data_type=data_type, backend=back,
-            mode='post', duration=duration, homo=('homo' if homo else 'hetero')
+            mode=mode, duration=duration, homo=('homo' if homo else 'hetero')
         )
         csv_recorder.print_table_header(show_conn=True)
 
@@ -84,69 +111,7 @@ def benchmark_post_conn(
                 run = make_simulation_run(
                     scale=s,
                     data_type=data_type,
-                    efferent_target='post',
-                    duration=duration,
-                    conn_num=cn,
-                    homo=homo
-                )
-
-                jax.block_until_ready(run())
-
-                t0 = time.time()
-                n, rate = jax.block_until_ready(run())
-                t1 = time.time()
-                elapsed = t1 - t0
-                
-                #csv_recorder.add_tag('warp_or_thread', 'tpr')
-                csv_recorder.print_row(s, n, elapsed, float(rate), conn_num=cn)
-                csv_recorder.single_COBA_data_add(
-                    'fcnmv', data_type, back, 'post', cn, s, elapsed, float(rate), duration, 
-                    homo=('homo' if homo else 'hetero')
-                )
-            except Exception as e:
-                error_msg = str(e).lower()
-                #if "resource_exhausted" in error_msg or "resource exhausted" in error_msg or "out of memory" in error_msg or "oom" in error_msg:
-                #    jax.profiler.save_device_memory_profile(f"memory_snapshot-scale{s}-conn{cn}.prof")
-                continue
-
-    csv_recorder.record_finish(dir='result-stage2',file_name='homo-boundary-18-mvpost-cudawat')
-
-def benchmark_pre_conn(
-        conn_num=None, 
-        conn_prob=None,
-        data_type='binary', 
-        duration=1e2 * u.ms, 
-        homo:bool = True, 
-        backend: str | None = None,
-        probs_or_conn='conn',
-        _N : int = 4000,
-        limit_gb: int = 16,
-        target_samples: int = 50
-        ):
-    print('Benchmarking pre-synaptic connection updates...')
-    import dev.fcn.BenchmarkTools as BT
-
-    backends_to_use = [backend] if backend is not None else backends
-
-    
-    valid_states = BT.generate_params(dis_type= 'uniform' ,_N=_N, limit_gb=limit_gb, target_samples=target_samples)
-
-    csv_recorder = BT.CSV_record('binary_pre', 'fcnmv', 'coba', duration=duration, conn=conn_num)
-
-    for back in backends_to_use:
-        brainevent.config.set_backend('gpu', back)
-        csv_recorder.print_header(
-            operator='fcnmv', data_type=data_type, backend=back,
-            mode='pre', duration=duration, homo=('homo' if homo else 'hetero')
-        )
-        csv_recorder.print_table_header(show_conn=True)
-
-        for s, cn in valid_states:
-            try:
-                run = make_simulation_run(
-                    scale=s,
-                    data_type=data_type,
-                    efferent_target='pre',
+                    efferent_target=mode,
                     duration=duration,
                     conn_num=cn,
                     homo=homo
@@ -161,22 +126,32 @@ def benchmark_pre_conn(
                 
                 csv_recorder.print_row(s, n, elapsed, float(rate), conn_num=cn)
                 csv_recorder.single_COBA_data_add(
-                    'fcnmv', data_type, back, 'pre', cn, s, elapsed, float(rate), duration, 
+                    'fcnmv', data_type, back, mode, cn, s, elapsed, float(rate), duration, 
                     homo=('homo' if homo else 'hetero')
                 )
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "resource_exhausted" in error_msg or "resource exhausted" in error_msg or "out of memory" in error_msg or "oom" in error_msg:
-                    jax.profiler.save_device_memory_profile(f"memory_snapshot-scale{s}-conn{cn}.prof")
-                continue
 
-    csv_recorder.record_finish(dir='result-stage2',file_name='boundary_floatmode_bitpack')
+                flush_file_name = f'mv-boundary_{data_type}_{homo_str}_{back}_{mode}-float-input-16GB'
+
+                last_path = csv_recorder.flush_and_clear(flush_file_name, dir='result-boundary-mv-4.1-final')
+
+            except Exception as exc:
+                if _is_oom_error(exc):
+                    print(f'Skipping scale={s}, conn_num={cn} due to OOM: {exc}')
+                    continue
+                raise
+
+    if last_path is not None:
+        print(f'Results saved to: {last_path}')
+
+    #csv_recorder.record_finish(dir='result-stage2',file_name='post-boundary-compact-homo-jaxandcuda')
 
 
 if __name__ == '__main__':
     #benchmark_post_conn(conn_num=80, data_type='binary', duration=1e4 * u.ms, backend='jax_raw')
-    benchmark_post_conn(data_type='binary', duration=1e2 * u.ms, homo = homo)
-    #benchmark_post_conn(data_type='compact', duration=1e2 * u.ms)
-    #benchmark_pre_conn(data_type='bitpack', duration=1e2 * u.ms)
+    #benchmark_post_conn(data_type='binary', duration=1e2 * u.ms, homo = homo)
+    #benchmark_post_conn(data_type='compact', duration=1e2 * u.ms, homo = True)
+    #benchmark_conn(data_type='bitpack', mode='pre', duration=1e2 * u.ms, homo = True, backend='cuda_raw')
+    benchmark_conn(data_type='binary', mode='pre', duration=1e2 * u.ms, homo = True, backend='jax_raw')
+    #benchmark_pre_conn(data_type='compact', duration=1e2 * u.ms, homo= False)
     #benchmark_pre_conn(data_type='binary',duration=1e2 * u.ms)
     

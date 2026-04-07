@@ -134,6 +134,121 @@ def _bitpack_binary_fcnmv_cuda_kernel(
 
     return kernel
 
+# ---------------------------------------------------------------------------
+# JAX GPU kernel
+# ---------------------------------------------------------------------------
+'''
+def _binary_fcnmv_jax_kernel(
+    shape: Tuple[int, int],
+    transpose: bool,
+    **kwargs,
+):
+    """Pure JAX reference implementation for benchmarking comparison."""
+    n_pre, n_post = shape
+
+    def kernel(weights, indices, spikes):
+        # Convert spikes to float: bool→{0,1}, float→{0,1} based on >0
+        #bool_spk = u.math.asarray(spikes, dtype=bool)
+        
+        if spikes.dtype == jnp.bool_:
+            spk_f = spikes.astype(weights.dtype)
+        else:
+            spk_f = (spikes > 0).astype(weights.dtype)
+        
+        #spk_f = u.math.asarray(spikes, dtype=bool)
+
+        if transpose:
+            # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
+            masked = jnp.broadcast_to(spk_f[:, None] * weights, indices.shape)
+            return jax.ops.segment_sum(masked.ravel(), indices.ravel(), num_segments=n_post),
+        else:
+            # Gather: y[i] = sum_k weights[i,k] * spk_f[indices[i,k]]
+            if weights.size == 1:
+                w = weights[0]
+                return jax.vmap(lambda ind: w * jnp.sum(spk_f[ind]))(indices),
+            else:
+                return jax.vmap(lambda w, ind: jnp.sum(w * spk_f[ind]))(weights, indices),
+
+    return kernel
+'''
+# ---------------------------------------------------------------------------
+# JAX/Cuda GPU kernel
+# ---------------------------------------------------------------------------
+
+def bitpack_binary_fcnmv_jax_cuda_joint_kernel(
+    transpose: bool,
+    pack_axis: int,
+    shape: Tuple[int, int],
+    **kwargs,
+):
+    """Select a JAX or CUDA implementation for bit-packed fcnmv on GPU."""
+    n_pre, n_post = shape
+
+    def jax_kernel_part(weights, indices, packed, spikes):
+        # Convert spikes to float: bool→{0,1}, float→{0,1} based on >0
+        #bool_spk = u.math.asarray(spikes, dtype=bool)
+        
+        if spikes.dtype == jnp.bool_:
+            spk_f = spikes.astype(weights.dtype)
+        else:
+            spk_f = (spikes > 0).astype(weights.dtype)
+        
+        #spk_f = u.math.asarray(spikes, dtype=bool)
+
+        if weights.size == 1:
+            w = weights[0]
+            return jax.vmap(lambda ind: w * jnp.sum(spk_f[ind]))(indices),
+        else:
+            return jax.vmap(lambda w, ind: jnp.sum(w * spk_f[ind]))(weights, indices),
+
+    weight_info = kwargs['weight_info']
+    homo = weight_info.size == 1
+    indices_info = kwargs.get('indices_info', None)
+    n_conn = indices_info.shape[1] if indices_info is not None else 251
+    if not homo:
+        if (n_pre < 100 * 4000) or (n_pre < 500 * 4000 and n_pre > 250 * 4000 and n_conn < 500):
+            print("using jax")
+            return jax_kernel_part
+    else:
+        if (n_pre < 500 * 4000 and n_conn < 500):
+            print("using jax")
+            return jax_kernel_part
+    '''
+    if homo:
+        use_jax = (n_pre < 500 * 4000 and n_post < 500)
+        if use_jax:
+            print("using jax")
+            return jax_kernel_part
+    else:
+        use_jax = (n_pre < 500 * 4000 and n_post < 500) or (n_post > 1750)
+        if use_jax:
+            print("using jax")
+            return jax_kernel_part
+    '''
+    load_cuda_file(
+        Path(__file__).parent.joinpath('bitpack_binary_fcnmv.cu'),
+        name='fcn_bitpack_binary_mv',
+    )
+
+    out_info = kwargs['outs']
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16'
+    }
+    sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    mode_sfx = '_homo' if homo else '_hetero'
+    dir_sfx = '_gather'
+    kernel_name = f'fcn_bitpack_binary_mv.bitpack_binary_fcnmv{dir_sfx}{mode_sfx}{sfx}'
+
+    def cuda_kernel_part(weights, indices, packed, spikes):
+        print("using cuda")
+        return jax.ffi.ffi_call(
+            kernel_name, out_info
+        )(weights, indices, packed, pack_axis=pack_axis)
+
+    return cuda_kernel_part
 
 # ---------------------------------------------------------------------------
 # Numba CPU kernel
@@ -397,6 +512,7 @@ to the CUDA kernel.
 )
 bitpack_binary_fcnmv_p.def_numba_kernel(_bitpack_binary_fcnmv_numba_kernel)
 bitpack_binary_fcnmv_p.def_cuda_raw_kernel(_bitpack_binary_fcnmv_cuda_kernel, asdefault=True)
+bitpack_binary_fcnmv_p.def_kernel('jax_cuda_joint', 'gpu', bitpack_binary_fcnmv_jax_cuda_joint_kernel, asdefault=True)
 bitpack_binary_fcnmv_p.def_jvp_rule2(
     _bitpack_binary_fcnmv_jvp_weights,  # arg 0: weights
     None,  # arg 1: indices (not differentiable)
