@@ -512,7 +512,7 @@ to the CUDA kernel.
 )
 bitpack_binary_fcnmv_p.def_numba_kernel(_bitpack_binary_fcnmv_numba_kernel)
 bitpack_binary_fcnmv_p.def_cuda_raw_kernel(_bitpack_binary_fcnmv_cuda_kernel, asdefault=True)
-bitpack_binary_fcnmv_p.def_kernel('jax_cuda_joint', 'gpu', bitpack_binary_fcnmv_jax_cuda_joint_kernel, asdefault=True)
+#bitpack_binary_fcnmv_p.def_kernel('jax_cuda_joint', 'gpu', bitpack_binary_fcnmv_jax_cuda_joint_kernel, asdefault=True)
 bitpack_binary_fcnmv_p.def_jvp_rule2(
     _bitpack_binary_fcnmv_jvp_weights,  # arg 0: weights
     None,  # arg 1: indices (not differentiable)

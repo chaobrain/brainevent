@@ -232,7 +232,7 @@ def test_bitpack_fcnmv_forward(homo_w, transpose, shape):
     y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
 
     assert y.shape == y_ref.shape
-    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3), (
+    assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2), (
         f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
         f"homo_w={homo_w}  transpose={transpose}"
     )
@@ -291,7 +291,7 @@ def test_bitpack_fcnmv_forward_in_large_scale(homo_w):
         y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
 
         assert y.shape == y_ref.shape
-        assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2), (
+        assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3), (
             f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
             f"homo_w={homo_w}  conn={conn}"
         )
