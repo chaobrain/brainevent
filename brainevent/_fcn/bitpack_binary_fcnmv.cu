@@ -383,7 +383,7 @@ void bitpack_binary_fcnmv_gather_homo##SUFFIX(                                  
     const uint32_t*   d_pk  = static_cast<const uint32_t*>(packed.data_ptr());                    \
     WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                        \
     size_t smem_bytes = (size_t)n_words * sizeof(uint32_t);                                       \
-    if (n_conn <= 512) {                                                                          \
+    if (n_conn < 256 && n_pre < 625 * 40000) {                                                                          \
         int bsz = 256;                                                                            \
         int n_blocks = (n_pre + bsz - 1) / bsz;                                                  \
         if (smem_bytes <= 48u * 1024u) {                                                          \
@@ -422,7 +422,7 @@ void bitpack_binary_fcnmv_gather_hetero##SUFFIX(                                
     const uint32_t*   d_pk  = static_cast<const uint32_t*>(packed.data_ptr());                    \
     WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                        \
     size_t smem_bytes = (size_t)n_words * sizeof(uint32_t);                                       \
-    if (n_conn <= 512) {                                                                          \
+    if (n_conn <= 256) {                                                                          \
         int bsz = 256;                                                                            \
         int n_blocks = (n_pre + bsz - 1) / bsz;                                                  \
         if (smem_bytes <= 48u * 1024u) {                                                          \
@@ -443,6 +443,7 @@ void bitpack_binary_fcnmv_gather_hetero##SUFFIX(                                
         }                                                                                         \
     }                                                                                             \
 }
+//n_conn < 256 && n_pre < 625 * 40000
 
 // ---- FFI macro: scatter homo packed (always TPR) ----
 #define FFI_BS_HOMO_PACKED(SUFFIX, WEIGHT_C_T)                                                    \
