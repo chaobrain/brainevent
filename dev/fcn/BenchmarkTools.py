@@ -4,6 +4,24 @@ import re
 import jax
 from pathlib import Path
 
+MIN_GENERATED_SCALE = 20
+MIN_GENERATED_CONN = 20
+FIXED_GENERATED_BATCHES = (16, 32, 64, 128, 256)
+
+
+def _clamped_sampling_min(max_val: int, preferred_min: int) -> int:
+    if max_val < 1:
+        raise ValueError(f"max_val must be >= 1, got {max_val}")
+    return min(max_val, preferred_min)
+
+
+def _fixed_batch_candidates(batch_max: int) -> list[int]:
+    if batch_max < 1:
+        raise ValueError(f"batch_max must be >= 1, got {batch_max}")
+    batches = [b for b in FIXED_GENERATED_BATCHES if b <= batch_max]
+    return batches if batches else [batch_max]
+
+
 class CSV_record():
 
     @staticmethod
@@ -410,11 +428,14 @@ class TestingParamsGenerator_mv():
         """
         import numpy as np
 
+        min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
+        min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
+
         if dis_type == 'monte_carlo':
             valid_states = set()
             while len(valid_states) < target_samples:
-                s = int(np.random.uniform(1, self.scale_max + 1))
-                c = int(np.random.uniform(1, self.conn_max + 1))
+                s = int(np.random.uniform(min_scale, self.scale_max + 1))
+                c = int(np.random.uniform(min_conn, self.conn_max + 1))
                 if self.is_valid_mv(s, c, homo, data_size):
                     valid_states.add((s, None, c))
             sorted_states = sorted(list(valid_states), key=lambda state: state[0] * state[2])
@@ -426,11 +447,11 @@ class TestingParamsGenerator_mv():
         grid_res = int(np.sqrt(target_samples * 3))
 
         if dis_type == 'uniform':
-            scales_raw = np.unique(np.linspace(1, self.scale_max, num=grid_res, dtype=int))
-            conn_nums_raw = np.unique(np.linspace(1, self.conn_max, num=grid_res, dtype=int))
+            scales_raw = np.unique(np.linspace(min_scale, self.scale_max, num=grid_res, dtype=int))
+            conn_nums_raw = np.unique(np.linspace(min_conn, self.conn_max, num=grid_res, dtype=int))
         elif dis_type == 'log':
-            scales_raw = np.unique(np.geomspace(1, self.scale_max, num=grid_res, dtype=int))
-            conn_nums_raw = np.unique(np.geomspace(1, self.conn_max, num=grid_res, dtype=int))
+            scales_raw = np.unique(np.geomspace(min_scale, self.scale_max, num=grid_res, dtype=int))
+            conn_nums_raw = np.unique(np.geomspace(min_conn, self.conn_max, num=grid_res, dtype=int))
         else:
             raise ValueError(f"Unknown dis_type: '{dis_type}'. Choose from 'uniform', 'log', 'monte_carlo'.")
 
@@ -496,6 +517,8 @@ class TestingParamsGenerator_mv():
         import numpy as np
 
         times = 1 if homo_or_not else 2
+        min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
+        min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
 
         # K = budget expressed in units of (_N * data_size) bytes
         K = self._limit_bytes / (_N * data_size)
@@ -511,9 +534,9 @@ class TestingParamsGenerator_mv():
         # s_min: when *not* including the dense ref, large s → small conn,
         # which is fine; but very small s → conn > conn_max, wasting budget.
         if not include_dense_ref:
-            s_min = max(1, math.ceil(K / (times * self.conn_max)))
+            s_min = max(min_scale, math.ceil(K / (times * self.conn_max)))
         else:
-            s_min = 1
+            s_min = min_scale
 
         if s_min > s_max:
             raise ValueError(
@@ -527,7 +550,7 @@ class TestingParamsGenerator_mv():
         seen = set()
 
         for s_val in s_samples:
-            s_int = max(1, int(round(s_val)))
+            s_int = max(min_scale, int(round(s_val)))
             s_int = min(s_int, s_max)  # clamp
 
             # Compute max conn (floor to stay below the boundary)
@@ -543,7 +566,7 @@ class TestingParamsGenerator_mv():
 
             m = s_int * _N
 
-            if c_int > 0 and c_int <= m and s_int <= self.scale_max:
+            if c_int >= min_conn and c_int <= m and s_int <= self.scale_max:
                 pair = (s_int, c_int)
                 if pair not in seen:
                     seen.add(pair)
@@ -596,8 +619,8 @@ class TestingParamsGenerator_mv():
                                     data_size: int = 4):
         """Generate test parameters for progressive VRAM limit testing.
 
-        For each VRAM level, uses :meth:`generate_cs_pairs` to produce
-        ``(scale, conn)`` pairs near that VRAM boundary.
+        For each VRAM level, uses :meth:`generate_boundary_params` to produce
+        ``(scale, conn)`` boundary candidate pairs near that VRAM level.
 
         Parameters
         ----------
@@ -621,7 +644,7 @@ class TestingParamsGenerator_mv():
 
         result = OrderedDict()
         for vram_gb in vram_steps:
-            gen = TestingParamsGenerator(
+            gen = TestingParamsGenerator_mv(
                 limit_GB=vram_gb,
                 _N=self._N,
                 scale_max=self.scale_max,
@@ -711,29 +734,34 @@ class TestingParamsGenerator_mm:
         """
         import numpy as np
 
+        min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
+        min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
+        batch_choices = np.asarray(_fixed_batch_candidates(self.batch_max), dtype=int)
+
         if dis_type == 'monte_carlo':
             valid = set()
             while len(valid) < target_samples:
-                s = int(np.random.uniform(1, self.scale_max + 1))
-                b = int(np.random.uniform(1, self.batch_max + 1))
-                c = int(np.random.uniform(1, self.conn_max + 1))
+                s = int(np.random.uniform(min_scale, self.scale_max + 1))
+                b = int(np.random.choice(batch_choices))
+                c = int(np.random.uniform(min_conn, self.conn_max + 1))
                 if self.is_valid_mm(s, b, c, homo, data_size):
                     valid.add((s, b, c))
             result = sorted(valid, key=lambda t: t[0] * t[1] * t[2])
             print(f"Generated {len(result)} valid mm parameter states under {self._limit_GB}GB boundary.")
             return result
 
-        # For grid-based methods: cube-root oversampling
-        grid_res = max(3, int(round(target_samples ** (1.0 / 3) * 1.5)))
+        # Batch uses a fixed candidate set, so only scale/conn need continuous sampling.
+        target_plane_samples = max(1, int(round(target_samples / len(batch_choices))))
+        grid_res = max(3, int(round((target_plane_samples * 3) ** 0.5)))
 
         if dis_type == 'uniform':
-            scales_raw = np.unique(np.linspace(1, self.scale_max, num=grid_res, dtype=int))
-            batches_raw = np.unique(np.linspace(1, self.batch_max, num=grid_res, dtype=int))
-            conns_raw = np.unique(np.linspace(1, self.conn_max, num=grid_res, dtype=int))
+            scales_raw = np.unique(np.linspace(min_scale, self.scale_max, num=grid_res, dtype=int))
+            batches_raw = batch_choices
+            conns_raw = np.unique(np.linspace(min_conn, self.conn_max, num=grid_res, dtype=int))
         elif dis_type == 'log':
-            scales_raw = np.unique(np.geomspace(1, self.scale_max, num=grid_res, dtype=int))
-            batches_raw = np.unique(np.geomspace(1, self.batch_max, num=grid_res, dtype=int))
-            conns_raw = np.unique(np.geomspace(1, self.conn_max, num=grid_res, dtype=int))
+            scales_raw = np.unique(np.geomspace(min_scale, self.scale_max, num=grid_res, dtype=int))
+            batches_raw = batch_choices
+            conns_raw = np.unique(np.geomspace(min_conn, self.conn_max, num=grid_res, dtype=int))
         else:
             raise ValueError(f"Unknown dis_type: '{dis_type}'. Choose from 'uniform', 'log', 'monte_carlo'.")
 
@@ -791,42 +819,49 @@ class TestingParamsGenerator_mm:
         if rs <= 0 or rc <= 0 or rb <= 0:
             raise ValueError("All step_ratio values must be > 0")
 
-        def make_axis_points(max_val: int, n_points: int) -> np.ndarray:
-            """在 [1, max_val] 上均匀取 n_points 个整数点，并保证包含端点。"""
+        min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
+        min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
+        batches_raw = np.asarray(_fixed_batch_candidates(self.batch_max), dtype=int)
+        n_fixed_batches = len(batches_raw)
+
+        def make_axis_points(min_val: int, max_val: int, n_points: int) -> np.ndarray:
+            """在 [min_val, max_val] 上均匀取 n_points 个整数点，并保证包含端点。"""
             if max_val < 1:
                 raise ValueError(f"max_val must be >= 1, got {max_val}")
+            if min_val > max_val:
+                raise ValueError(f"min_val must be <= max_val, got min_val={min_val}, max_val={max_val}")
             if n_points <= 1:
-                return np.array([1, max_val], dtype=int) if max_val > 1 else np.array([1], dtype=int)
+                return np.array([min_val, max_val], dtype=int) if max_val > min_val else np.array([min_val], dtype=int)
 
-            pts = np.linspace(1, max_val, num=n_points)
+            pts = np.linspace(min_val, max_val, num=n_points)
             pts = np.rint(pts).astype(int)
-            pts[0] = 1
+            pts[0] = min_val
             pts[-1] = max_val
             return np.unique(pts)
 
         # 按比例分配三个维度的“采样密度”
-        # 希望 ns * nc * nb ≈ target_points
-        # 同时步长比例 ~ step_ratio
+        # batch 轴固定为预定义候选值，因此这里仅为 scale / conn 分配采样密度。
+        # 希望 ns * nc * len(batches_raw) ≈ target_points
         #
-        # 令三个维度采样点数与 1/ratio 成正比：
+        # 令两个维度采样点数与 1/ratio 成正比：
         # ratio 越大，步长越粗，点数越少
-        inv_rs, inv_rc, inv_rb = 1.0 / rs, 1.0 / rc, 1.0 / rb
-        base = (target_points / (inv_rs * inv_rc * inv_rb)) ** (1.0 / 3.0)
+        inv_rs, inv_rc = 1.0 / rs, 1.0 / rc
+        target_plane_points = max(1, int(round(target_points / n_fixed_batches)))
+        base = (target_plane_points / (inv_rs * inv_rc)) ** 0.5
 
         n_scale = max(2, int(round(base * inv_rs)))
         n_conn = max(2, int(round(base * inv_rc)))
-        n_batch = max(2, int(round(base * inv_rb)))
 
         # 微调，尽量让乘积接近 target_points
-        def prod(a, b, c):
-            return a * b * c
+        def prod(a, b):
+            return a * b * n_fixed_batches
 
-        counts = [n_scale, n_conn, n_batch]
-        invs = [inv_rs, inv_rc, inv_rb]
+        counts = [n_scale, n_conn]
+        invs = [inv_rs, inv_rc]
 
         # 若点数太少，不断给“最该加密”的维度加 1
         while prod(*counts) < target_points:
-            scores = [invs[i] / counts[i] for i in range(3)]
+            scores = [invs[i] / counts[i] for i in range(2)]
             idx = int(np.argmax(scores))
             counts[idx] += 1
 
@@ -835,7 +870,7 @@ class TestingParamsGenerator_mm:
             current = prod(*counts)
             best_idx = None
             best_over = current - target_points
-            for i in range(3):
+            for i in range(2):
                 if counts[i] <= 2:
                     continue
                 trial = counts.copy()
@@ -848,11 +883,10 @@ class TestingParamsGenerator_mm:
                 break
             counts[best_idx] -= 1
 
-        n_scale, n_conn, n_batch = counts
+        n_scale, n_conn = counts
 
-        scales_raw = make_axis_points(self.scale_max, n_scale)
-        conns_raw = make_axis_points(self.conn_max, n_conn)
-        batches_raw = make_axis_points(self.batch_max, n_batch)
+        scales_raw = make_axis_points(min_scale, self.scale_max, n_scale)
+        conns_raw = make_axis_points(min_conn, self.conn_max, n_conn)
 
         valid = [
             (int(s), int(b), int(c))

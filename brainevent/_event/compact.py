@@ -18,7 +18,9 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
+from brainevent._compatible_import import Tracer
 from brainevent._op import (
     XLACustomKernel,
     numba_kernel,
@@ -468,3 +470,509 @@ binary_2d_array_index_p.def_cuda_raw_kernel(_binary_2d_array_index_cuda_kernel)
 binary_2d_array_index_p.def_batching_rule(_binary_2d_array_index_batching)
 binary_2d_array_index_p.def_call(binary_2d_array_index_p_call)
 binary_2d_array_index_p.def_tags('event', 'binary')
+
+
+# ==============================================================================
+# 2D Pair-Stream Encoding Primitive
+# ==============================================================================
+
+def _binary_2d_pair_stream_encode_cuda_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('compact.cu'),
+        name='compact',
+    )
+
+    is_bool = (spikes_info.dtype == jnp.bool_)
+    kernel_name = ('compact.pair_stream_encode_2d_bool'
+                   if is_bool else
+                   'compact.pair_stream_encode_2d_float')
+    out_info = kwargs['outs']
+
+    def kernel(spikes):
+        if not is_bool and spikes.dtype != jnp.float32:
+            spikes = spikes.astype(jnp.float32)
+        return jax.ffi.ffi_call(kernel_name, out_info)(spikes)
+
+    return kernel
+
+
+def _binary_2d_pair_stream_encode_numba_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import numba
+
+    n_src, n_batch = spikes_info.shape
+
+    if spikes_info.dtype == jnp.bool_:
+        @numba.njit(fastmath=True)
+        def mv(spikes, pair_stream, n_pairs):
+            pair_stream[:] = 0
+            write_pos = 0
+            for row in range(n_src):
+                for col in range(n_batch):
+                    if spikes[row, col]:
+                        pair_stream[write_pos, 0] = row
+                        pair_stream[write_pos, 1] = col
+                        write_pos += 1
+            n_pairs[0] = write_pos
+    else:
+        @numba.njit(fastmath=True)
+        def mv(spikes, pair_stream, n_pairs):
+            pair_stream[:] = 0
+            write_pos = 0
+            for row in range(n_src):
+                for col in range(n_batch):
+                    if spikes[row, col] != 0.:
+                        pair_stream[write_pos, 0] = row
+                        pair_stream[write_pos, 1] = col
+                        write_pos += 1
+            n_pairs[0] = write_pos
+
+    def kernel(spikes):
+        return numba_kernel(mv, outs=kwargs['outs'])(spikes)
+
+    return kernel
+
+
+def _binary_2d_pair_stream_encode_batching(args, axes, **kwargs):
+    return general_batching_rule(binary_2d_pair_stream_encode_p, args, axes, **kwargs)
+
+
+def binary_2d_pair_stream_encode_p_call(
+    spikes,
+    *,
+    backend: Optional[str] = None,
+):
+    """Encode a dense 2D binary matrix into a compact `(row, col)` pair stream.
+
+    Parameters
+    ----------
+    spikes : jax.Array
+        2D boolean or numeric array of shape ``(n_src, n_batch)``.
+    backend : str or None, optional
+        Compute backend.
+
+    Returns
+    -------
+    pair_stream : jax.Array
+        Int32 array of shape ``(n_src * n_batch, 2)``. Only the first
+        ``n_pairs`` rows are valid and store zero-based ``(row, col)`` pairs.
+        CUDA emits a compact active-pair stream; valid-pair order is not
+        guaranteed to be row-major.
+    n_pairs : jax.Array
+        Int32 array of shape ``(1,)`` containing the number of valid pairs.
+    """
+    if spikes.ndim != 2:
+        raise ValueError(f'`spikes` must be 2D, got {spikes.ndim}D.')
+
+    n_src, n_batch = spikes.shape
+    pair_stream_info = jax.ShapeDtypeStruct([n_src * n_batch, 2], jnp.int32)
+    n_pairs_info = jax.ShapeDtypeStruct([1], jnp.int32)
+    return binary_2d_pair_stream_encode_p(
+        spikes,
+        outs=[pair_stream_info, n_pairs_info],
+        spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        pair_stream_info=pair_stream_info,
+        n_pairs_info=n_pairs_info,
+        backend=backend,
+    )
+
+
+binary_2d_pair_stream_encode_p = XLACustomKernel(
+    'binary_2d_pair_stream_encode',
+    doc="""Encode a dense 2D binary matrix into a compact `(row, col)` pair stream.
+
+Produces a static-capacity int32 buffer with shape ``(n_src * n_batch, 2)``
+plus a scalar valid-length output. Only the leading ``n_pairs`` rows are used.
+""",
+)
+binary_2d_pair_stream_encode_p.def_numba_kernel(_binary_2d_pair_stream_encode_numba_kernel)
+binary_2d_pair_stream_encode_p.def_cuda_raw_kernel(_binary_2d_pair_stream_encode_cuda_kernel)
+binary_2d_pair_stream_encode_p.def_batching_rule(_binary_2d_pair_stream_encode_batching)
+binary_2d_pair_stream_encode_p.def_call(binary_2d_pair_stream_encode_p_call)
+binary_2d_pair_stream_encode_p.def_tags('event', 'binary', 'streaming', 'pair')
+
+
+# ==============================================================================
+# 2D Row-Sparse Encoding Primitive
+# ==============================================================================
+
+def _binary_2d_row_sparse_encode_cuda_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    row_size: int,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('compact.cu'),
+        name='compact',
+    )
+
+    is_bool = (spikes_info.dtype == jnp.bool_)
+    kernel_name = ('compact.row_sparse_encode_2d_bool'
+                   if is_bool else
+                   'compact.row_sparse_encode_2d_float')
+    out_info = kwargs['outs']
+
+    def kernel(spikes):
+        if not is_bool and spikes.dtype != jnp.float32:
+            spikes = spikes.astype(jnp.float32)
+        return jax.ffi.ffi_call(kernel_name, out_info)(spikes)
+
+    return kernel
+
+
+def _binary_2d_row_sparse_encode_numba_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    row_size: int,
+    **kwargs
+):
+    import numba
+
+    n_src, n_batch = spikes_info.shape
+
+    if spikes_info.dtype == jnp.bool_:
+        @numba.njit(fastmath=True)
+        def mv(spikes, spike_indices):
+            spike_indices[:] = 0
+            for row in range(n_src):
+                write_pos = 0
+                for col in range(n_batch):
+                    if spikes[row, col]:
+                        spike_indices[row, write_pos] = col + 1
+                        write_pos += 1
+    else:
+        @numba.njit(fastmath=True)
+        def mv(spikes, spike_indices):
+            spike_indices[:] = 0
+            for row in range(n_src):
+                write_pos = 0
+                for col in range(n_batch):
+                    if spikes[row, col] != 0.:
+                        spike_indices[row, write_pos] = col + 1
+                        write_pos += 1
+
+    def kernel(spikes):
+        return numba_kernel(mv, outs=kwargs['outs'])(spikes)
+
+    return kernel
+
+
+def _binary_2d_row_sparse_encode_batching(args, axes, **kwargs):
+    return general_batching_rule(binary_2d_row_sparse_encode_p, args, axes, **kwargs)
+
+
+def _validate_binary_2d_row_sparse_capacity(spikes, row_size: int):
+    if spikes.shape[0] == 0:
+        return
+
+    def _raise_if_overflow(max_row_nnz):
+        max_row_nnz = int(max_row_nnz)
+        if max_row_nnz > row_size:
+            raise ValueError(
+                f'`row_size={row_size}` is too small for the input spikes; '
+                f'max row NNZ is {max_row_nnz}.'
+            )
+
+    if isinstance(spikes, Tracer):
+        # JAX 0.9.x can raise effect-lowering errors for ordered debug callbacks
+        # when this validation runs inside the structural custom-kernel path.
+        # Keep eager validation for concrete inputs and skip tracer-time checks.
+        return
+
+    max_row_nnz = int(np.max(np.sum(np.asarray(spikes) != 0, axis=1, dtype=np.int32), initial=0))
+    _raise_if_overflow(max_row_nnz)
+
+
+def binary_2d_row_sparse_encode_p_call(
+    spikes,
+    *,
+    row_size: int,
+    backend: Optional[str] = None,
+):
+    """Encode a dense 2D binary matrix into a fixed-width FCN spike layout.
+
+    Parameters
+    ----------
+    spikes : jax.Array
+        2D boolean or numeric array of shape ``(n_src, n_batch)``.
+    row_size : int
+        Fixed number of spike slots allocated per row.
+    backend : str or None, optional
+        Compute backend.
+
+    Returns
+    -------
+    spike_indices : jax.Array
+        Int32 array of shape ``(n_src, row_size)`` storing 1-based active
+        batch-column ids for each row, compacted to the front and zero-padded.
+    """
+    if row_size <= 0:
+        raise ValueError(f'`row_size` must be positive, got {row_size}.')
+    n_src, n_batch = spikes.shape
+    if row_size > n_batch:
+        raise ValueError(f'`row_size` must be <= n_batch={n_batch}, got {row_size}.')
+
+    _validate_binary_2d_row_sparse_capacity(spikes, row_size)
+
+    spike_indices_info = jax.ShapeDtypeStruct([n_src, row_size], jnp.int32)
+    return binary_2d_row_sparse_encode_p(
+        spikes,
+        outs=[spike_indices_info],
+        spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        spike_indices_info=spike_indices_info,
+        row_size=row_size,
+        backend=backend,
+    )
+
+
+binary_2d_row_sparse_encode_p = XLACustomKernel(
+    'binary_2d_row_sparse_encode',
+    doc="""Encode a dense 2D binary matrix into a fixed-width FCN spike layout.
+
+Produces a fixed-width int32 matrix of 1-based active batch-column ids,
+one row per source neuron, with zeros used as padding.
+""",
+)
+binary_2d_row_sparse_encode_p.def_numba_kernel(_binary_2d_row_sparse_encode_numba_kernel)
+binary_2d_row_sparse_encode_p.def_cuda_raw_kernel(_binary_2d_row_sparse_encode_cuda_kernel)
+binary_2d_row_sparse_encode_p.def_batching_rule(_binary_2d_row_sparse_encode_batching)
+binary_2d_row_sparse_encode_p.def_call(binary_2d_row_sparse_encode_p_call)
+binary_2d_row_sparse_encode_p.def_tags('event', 'binary')
+
+
+# ==============================================================================
+# 2D Dense-to-CSR Encoding (binary, values omitted)
+# ==============================================================================
+
+def _binary_2d_csr_row_count_cuda_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('compact.cu'),
+        name='compact',
+    )
+
+    is_bool = (spikes_info.dtype == jnp.bool_)
+    kernel_name = ('compact.csr_row_count_2d_bool'
+                   if is_bool else
+                   'compact.csr_row_count_2d_float')
+    out_info = kwargs['outs']
+
+    def kernel(spikes):
+        if not is_bool and spikes.dtype != jnp.float32:
+            spikes = spikes.astype(jnp.float32)
+        return jax.ffi.ffi_call(kernel_name, out_info)(spikes)
+
+    return kernel
+
+
+def _binary_2d_csr_row_count_numba_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import numba
+
+    n_src, n_batch = spikes_info.shape
+
+    if spikes_info.dtype == jnp.bool_:
+        @numba.njit(fastmath=True)
+        def mv(spikes, row_counts):
+            for row in range(n_src):
+                count = 0
+                for col in range(n_batch):
+                    if spikes[row, col]:
+                        count += 1
+                row_counts[row] = count
+    else:
+        @numba.njit(fastmath=True)
+        def mv(spikes, row_counts):
+            for row in range(n_src):
+                count = 0
+                for col in range(n_batch):
+                    if spikes[row, col] != 0.:
+                        count += 1
+                row_counts[row] = count
+
+    def kernel(spikes):
+        return numba_kernel(mv, outs=kwargs['outs'])(spikes)
+
+    return kernel
+
+
+def _binary_2d_csr_row_count_batching(args, axes, **kwargs):
+    return general_batching_rule(binary_2d_csr_row_count_p, args, axes, **kwargs)
+
+
+def binary_2d_csr_row_count_p_call(
+    spikes,
+    *,
+    backend: Optional[str] = None,
+):
+    """Count non-zero elements row-wise for a dense 2D binary matrix."""
+    if spikes.ndim != 2:
+        raise ValueError(f'`spikes` must be 2D, got {spikes.ndim}D.')
+    row_counts_info = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
+    return binary_2d_csr_row_count_p(
+        spikes,
+        outs=[row_counts_info],
+        spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        row_counts_info=row_counts_info,
+        backend=backend,
+    )
+
+
+binary_2d_csr_row_count_p = XLACustomKernel(
+    'binary_2d_csr_row_count',
+    doc="""Count row-wise NNZ for a dense 2D binary matrix.""",
+)
+binary_2d_csr_row_count_p.def_numba_kernel(_binary_2d_csr_row_count_numba_kernel)
+binary_2d_csr_row_count_p.def_cuda_raw_kernel(_binary_2d_csr_row_count_cuda_kernel)
+binary_2d_csr_row_count_p.def_batching_rule(_binary_2d_csr_row_count_batching)
+binary_2d_csr_row_count_p.def_call(binary_2d_csr_row_count_p_call)
+binary_2d_csr_row_count_p.def_tags('event', 'binary', 'csr')
+
+
+def _binary_2d_csr_fill_cuda_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('compact.cu'),
+        name='compact',
+    )
+
+    is_bool = (spikes_info.dtype == jnp.bool_)
+    kernel_name = ('compact.csr_fill_2d_bool'
+                   if is_bool else
+                   'compact.csr_fill_2d_float')
+    out_info = kwargs['outs']
+
+    def kernel(spikes, indptr):
+        if not is_bool and spikes.dtype != jnp.float32:
+            spikes = spikes.astype(jnp.float32)
+        return jax.ffi.ffi_call(kernel_name, out_info)(spikes, indptr)
+
+    return kernel
+
+
+def _binary_2d_csr_fill_numba_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import numba
+
+    n_src, n_batch = spikes_info.shape
+
+    if spikes_info.dtype == jnp.bool_:
+        @numba.njit(fastmath=True)
+        def mv(spikes, indptr, indices):
+            indices[:] = 0
+            for row in range(n_src):
+                write_pos = indptr[row]
+                for col in range(n_batch):
+                    if spikes[row, col]:
+                        indices[write_pos] = col
+                        write_pos += 1
+    else:
+        @numba.njit(fastmath=True)
+        def mv(spikes, indptr, indices):
+            indices[:] = 0
+            for row in range(n_src):
+                write_pos = indptr[row]
+                for col in range(n_batch):
+                    if spikes[row, col] != 0.:
+                        indices[write_pos] = col
+                        write_pos += 1
+
+    def kernel(spikes, indptr):
+        return numba_kernel(mv, outs=kwargs['outs'])(spikes, indptr)
+
+    return kernel
+
+
+def _binary_2d_csr_fill_batching(args, axes, **kwargs):
+    return general_batching_rule(binary_2d_csr_fill_p, args, axes, **kwargs)
+
+
+def binary_2d_csr_fill_p_call(
+    spikes,
+    indptr,
+    *,
+    backend: Optional[str] = None,
+):
+    """Fill a flat CSR index buffer from dense 2D binary spikes and row pointers."""
+    if spikes.ndim != 2:
+        raise ValueError(f'`spikes` must be 2D, got {spikes.ndim}D.')
+    if indptr.ndim != 1:
+        raise ValueError(f'`indptr` must be 1D, got {indptr.ndim}D.')
+    if indptr.shape[0] != spikes.shape[0] + 1:
+        raise ValueError(
+            f'`indptr.shape[0]` must equal spikes.shape[0] + 1 = {spikes.shape[0] + 1}, '
+            f'got {indptr.shape[0]}.'
+        )
+
+    indptr = jnp.asarray(indptr, dtype=jnp.int32)
+    indices_info = jax.ShapeDtypeStruct([spikes.shape[0] * spikes.shape[1]], jnp.int32)
+    return binary_2d_csr_fill_p(
+        spikes,
+        indptr,
+        outs=[indices_info],
+        spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        indices_info=indices_info,
+        backend=backend,
+    )
+
+
+binary_2d_csr_fill_p = XLACustomKernel(
+    'binary_2d_csr_fill',
+    doc="""Fill a flat CSR column-index buffer using precomputed row pointers.""",
+)
+binary_2d_csr_fill_p.def_numba_kernel(_binary_2d_csr_fill_numba_kernel)
+binary_2d_csr_fill_p.def_cuda_raw_kernel(_binary_2d_csr_fill_cuda_kernel)
+binary_2d_csr_fill_p.def_batching_rule(_binary_2d_csr_fill_batching)
+binary_2d_csr_fill_p.def_call(binary_2d_csr_fill_p_call)
+binary_2d_csr_fill_p.def_tags('event', 'binary', 'csr')
+
+
+def binary_2d_csr_encode_p_call(
+    spikes,
+    *,
+    backend: Optional[str] = None,
+):
+    """Encode a dense 2D binary matrix into a CSR-like event structure.
+
+    Returns a static-capacity CSR buffer suitable for ``jax.jit``:
+
+    - ``indices`` has shape ``(n_src * n_batch,)`` and stores valid column
+      ids in ``indices[:indptr[-1]]``.
+    - ``indptr`` has shape ``(n_src + 1,)`` and is a standard CSR row-pointer
+      array with ``indptr[0] == 0``.
+
+    ``indices`` tail elements beyond ``indptr[-1]`` are zero-filled.
+    """
+    if spikes.ndim != 2:
+        raise ValueError(f'`spikes` must be 2D, got {spikes.ndim}D.')
+
+    row_counts, = binary_2d_csr_row_count_p_call(
+        spikes,
+        backend=backend,
+    )
+    row_counts = jnp.asarray(row_counts, dtype=jnp.int32)
+    indptr = jnp.concatenate(
+        [jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)],
+        axis=0,
+    )
+    indices, = binary_2d_csr_fill_p_call(
+        spikes,
+        indptr,
+        backend=backend,
+    )
+    return indices, indptr

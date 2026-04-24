@@ -17,7 +17,7 @@
  * compact.cu -- Stream Compaction and Fused Bit-Pack + Compaction CUDA Kernels
  * =============================================================================
  *
- * This module provides two sets of CUDA kernels:
+ * This module provides five sets of CUDA kernels:
  *
  * 1. compact_1d: Stream compaction for 1D binary arrays.
  *    Extracts indices of all non-zero elements using __ballot_sync + atomicAdd.
@@ -31,6 +31,27 @@
  *    - Output: packed (uint32, shape (n_pre, n_batch_packed)),
  *              active_ids (int32, shape (n_pre,)),
  *              n_active (int32, shape (1,))
+ *
+ * 3. pair_stream_encode_2d: Compact COO-like streaming encoding for 2D binary
+ *    arrays. Each active element emits one zero-based (row, col) pair into a
+ *    static-capacity output buffer, along with a valid pair count. Valid pairs
+ *    are compacted, but parallel emission does not guarantee row-major order.
+ *    - Input: B (bool/uint8), shape (n_src, n_batch)
+ *    - Output: pair_stream (int32, shape (n_src * n_batch, 2)),
+ *              n_pairs (int32, shape (1,))
+ *
+ * 4. row_sparse_encode_2d: Fixed-width FCN spike encoding for 2D binary arrays.
+ *    Each warp processes one row and emits 1-based active batch-column ids in
+ *    ascending order, compacted to the front of a fixed-width row and padded
+ *    with zeros.
+ *    - Input: B (bool/uint8), shape (n_src, n_batch)
+ *    - Output: spike_indices (int32, shape (n_src, row_size))
+ *
+ * 5. dense-to-CSR encode (binary, values omitted): two warp-per-row passes for
+ *    row NNZ counting and CSR column-index filling.
+ *    - Input: B (bool/uint8), shape (n_src, n_batch)
+ *    - Output: row_counts (int32, shape (n_src,)) and CSR indices
+ *      (int32, shape (n_src * n_batch,))
  */
 
 #include <cuda_runtime.h>
@@ -423,4 +444,396 @@ void fused_bitpack_compact_2d_float(
     _fused_bitpack_compact_2d_float_kern<<<n_pre, bsz, 0, s>>>(
         d_B, d_packed, d_ids, d_cnt, n_pre, n_batch, n_batch_packed);
     BE_CHECK_KERNEL_LAUNCH();
+}
+
+// ============================================================================
+// 2D Row-Sparse Encoding
+// ============================================================================
+
+namespace {
+
+constexpr int kRowSparseWarpSize = 32;
+constexpr int kRowSparseWarpsPerBlock = 8;
+constexpr int kRowSparseBlockSize = kRowSparseWarpSize * kRowSparseWarpsPerBlock;
+constexpr int kRowSparseMaxGridX = 4096;
+
+template <typename SpikeT>
+struct RowSparseActivity;
+
+template <>
+struct RowSparseActivity<uint8_t> {
+    __device__ static bool is_active(uint8_t value) {
+        return value != 0;
+    }
+};
+
+template <>
+struct RowSparseActivity<float> {
+    __device__ static bool is_active(float value) {
+        return value != 0.0f;
+    }
+};
+
+template <typename SpikeT>
+__global__ void _pair_stream_encode_2d_kern(
+    const SpikeT* __restrict__ B,
+    int32_t* __restrict__ pair_stream,
+    int32_t* __restrict__ n_pairs,
+    int n_src,
+    int n_batch
+) {
+    const int warp_id = threadIdx.x >> 5;
+    const int lane = threadIdx.x & (kRowSparseWarpSize - 1);
+    const int warps_per_block = blockDim.x >> 5;
+
+    for (int base = static_cast<int>(blockIdx.x) * warps_per_block;
+         base < n_src;
+         base += static_cast<int>(gridDim.x) * warps_per_block) {
+        const int row = base + warp_id;
+        if (row >= n_src) {
+            continue;
+        }
+
+        const SpikeT* row_ptr = B + static_cast<size_t>(row) * n_batch;
+        for (int batch_base = 0; batch_base < n_batch; batch_base += kRowSparseWarpSize) {
+            const int col = batch_base + lane;
+            const bool active = (col < n_batch)
+                && RowSparseActivity<SpikeT>::is_active(__ldg(&row_ptr[col]));
+            const unsigned mask = __ballot_sync(0xffffffffu, active);
+            const int active_count = __popc(mask);
+
+            int base_out = 0;
+            if (lane == 0 && active_count > 0) {
+                base_out = atomicAdd(n_pairs, active_count);
+            }
+            base_out = __shfl_sync(0xffffffffu, base_out, 0);
+
+            if (active) {
+                const unsigned mask_below = (lane == 0) ? 0u : ((1u << lane) - 1u);
+                const int local_pos = __popc(mask & mask_below);
+                const size_t out_idx = static_cast<size_t>(base_out + local_pos) * 2;
+                pair_stream[out_idx] = row;
+                pair_stream[out_idx + 1] = col;
+            }
+        }
+    }
+}
+
+template <typename SpikeT>
+void pair_stream_encode_2d(
+    const BE::Tensor B,
+    BE::Tensor pair_stream,
+    BE::Tensor n_pairs,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    const int n_src = static_cast<int>(B.size(0));
+    const int n_batch = static_cast<int>(B.size(1));
+
+    BE_CUDA_CHECK(cudaMemsetAsync(n_pairs.data_ptr(), 0, sizeof(int32_t), s));
+
+    if (n_src == 0 || n_batch == 0) {
+        return;
+    }
+
+    const SpikeT* d_B = static_cast<const SpikeT*>(B.data_ptr());
+    int32_t* d_pair_stream = static_cast<int32_t*>(pair_stream.data_ptr());
+    int32_t* d_n_pairs = static_cast<int32_t*>(n_pairs.data_ptr());
+
+    const int raw_grid_x = (n_src + kRowSparseWarpsPerBlock - 1) / kRowSparseWarpsPerBlock;
+    const int grid_x = (raw_grid_x < kRowSparseMaxGridX) ? raw_grid_x : kRowSparseMaxGridX;
+    _pair_stream_encode_2d_kern<SpikeT><<<grid_x, kRowSparseBlockSize, 0, s>>>(
+        d_B, d_pair_stream, d_n_pairs, n_src, n_batch);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+template <typename SpikeT>
+__global__ void _row_sparse_encode_2d_kern(
+    const SpikeT* __restrict__ B,
+    int32_t* __restrict__ spike_indices,
+    int n_src,
+    int n_batch,
+    int row_size
+) {
+    const int warp_id = threadIdx.x >> 5;
+    const int lane = threadIdx.x & (kRowSparseWarpSize - 1);
+    const int warps_per_block = blockDim.x >> 5;
+
+    for (int base = static_cast<int>(blockIdx.x) * warps_per_block;
+         base < n_src;
+         base += static_cast<int>(gridDim.x) * warps_per_block) {
+        const int row = base + warp_id;
+        if (row >= n_src) {
+            continue;
+        }
+
+        const SpikeT* row_ptr = B + static_cast<size_t>(row) * n_batch;
+        int32_t* out_row = spike_indices + static_cast<size_t>(row) * row_size;
+        int nnz = 0;
+
+        for (int batch_base = 0; batch_base < n_batch; batch_base += kRowSparseWarpSize) {
+            const int col = batch_base + lane;
+            const bool active = (col < n_batch)
+                && RowSparseActivity<SpikeT>::is_active(__ldg(&row_ptr[col]));
+            const unsigned mask = __ballot_sync(0xffffffffu, active);
+            const int local_pos = __popc(mask & ((1u << lane) - 1u));
+            if (active && (nnz + local_pos) < row_size) {
+                out_row[nnz + local_pos] = col + 1;
+            }
+            nnz += __popc(mask);
+        }
+    }
+}
+
+template <typename SpikeT>
+void row_sparse_encode_2d(
+    const BE::Tensor B,
+    BE::Tensor spike_indices,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    const int n_src = static_cast<int>(B.size(0));
+    const int n_batch = static_cast<int>(B.size(1));
+    const int row_size = static_cast<int>(spike_indices.size(1));
+
+    BE_CUDA_CHECK(cudaMemsetAsync(
+        spike_indices.data_ptr(), 0,
+        static_cast<size_t>(n_src) * row_size * sizeof(int32_t), s));
+
+    if (n_src == 0 || n_batch == 0 || row_size == 0) {
+        return;
+    }
+
+    const SpikeT* d_B = static_cast<const SpikeT*>(B.data_ptr());
+    int32_t* d_spike_indices = static_cast<int32_t*>(spike_indices.data_ptr());
+
+    const int raw_grid_x = (n_src + kRowSparseWarpsPerBlock - 1) / kRowSparseWarpsPerBlock;
+    const int grid_x = (raw_grid_x < kRowSparseMaxGridX) ? raw_grid_x : kRowSparseMaxGridX;
+    _row_sparse_encode_2d_kern<SpikeT><<<grid_x, kRowSparseBlockSize, 0, s>>>(
+        d_B, d_spike_indices, n_src, n_batch, row_size);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+template <typename SpikeT>
+__global__ void _csr_row_count_2d_kern(
+    const SpikeT* __restrict__ B,
+    int32_t* __restrict__ row_counts,
+    int n_src,
+    int n_batch
+) {
+    const int warp_id = threadIdx.x >> 5;
+    const int lane = threadIdx.x & (kRowSparseWarpSize - 1);
+    const int warps_per_block = blockDim.x >> 5;
+
+    for (int base = static_cast<int>(blockIdx.x) * warps_per_block;
+         base < n_src;
+         base += static_cast<int>(gridDim.x) * warps_per_block) {
+        const int row = base + warp_id;
+        if (row >= n_src) {
+            continue;
+        }
+
+        const SpikeT* row_ptr = B + static_cast<size_t>(row) * n_batch;
+        int nnz = 0;
+
+        for (int batch_base = 0; batch_base < n_batch; batch_base += kRowSparseWarpSize) {
+            const int col = batch_base + lane;
+            const bool active = (col < n_batch)
+                && RowSparseActivity<SpikeT>::is_active(__ldg(&row_ptr[col]));
+            const unsigned mask = __ballot_sync(0xffffffffu, active);
+            if (lane == 0) {
+                nnz += __popc(mask);
+            }
+        }
+
+        if (lane == 0) {
+            row_counts[row] = nnz;
+        }
+    }
+}
+
+template <typename SpikeT>
+void csr_row_count_2d(
+    const BE::Tensor B,
+    BE::Tensor row_counts,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    const int n_src = static_cast<int>(B.size(0));
+    const int n_batch = static_cast<int>(B.size(1));
+
+    BE_CUDA_CHECK(cudaMemsetAsync(
+        row_counts.data_ptr(), 0,
+        static_cast<size_t>(n_src) * sizeof(int32_t), s));
+
+    if (n_src == 0 || n_batch == 0) {
+        return;
+    }
+
+    const SpikeT* d_B = static_cast<const SpikeT*>(B.data_ptr());
+    int32_t* d_row_counts = static_cast<int32_t*>(row_counts.data_ptr());
+
+    const int raw_grid_x = (n_src + kRowSparseWarpsPerBlock - 1) / kRowSparseWarpsPerBlock;
+    const int grid_x = (raw_grid_x < kRowSparseMaxGridX) ? raw_grid_x : kRowSparseMaxGridX;
+    _csr_row_count_2d_kern<SpikeT><<<grid_x, kRowSparseBlockSize, 0, s>>>(
+        d_B, d_row_counts, n_src, n_batch);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+template <typename SpikeT>
+__global__ void _csr_fill_2d_kern(
+    const SpikeT* __restrict__ B,
+    const int32_t* __restrict__ indptr,
+    int32_t* __restrict__ indices,
+    int n_src,
+    int n_batch
+) {
+    const int warp_id = threadIdx.x >> 5;
+    const int lane = threadIdx.x & (kRowSparseWarpSize - 1);
+    const int warps_per_block = blockDim.x >> 5;
+
+    for (int block_row = static_cast<int>(blockIdx.x) * warps_per_block;
+         block_row < n_src;
+         block_row += static_cast<int>(gridDim.x) * warps_per_block) {
+        const int row = block_row + warp_id;
+        if (row >= n_src) {
+            continue;
+        }
+
+        const SpikeT* row_ptr = B + static_cast<size_t>(row) * n_batch;
+        const int32_t base = __ldg(&indptr[row]);
+        int nnz = 0;
+
+        for (int batch_base = 0; batch_base < n_batch; batch_base += kRowSparseWarpSize) {
+            const int col = batch_base + lane;
+            const bool active = (col < n_batch)
+                && RowSparseActivity<SpikeT>::is_active(__ldg(&row_ptr[col]));
+            const unsigned mask = __ballot_sync(0xffffffffu, active);
+            const int local_pos = __popc(mask & ((1u << lane) - 1u));
+            if (active) {
+                indices[static_cast<size_t>(base + nnz + local_pos)] = col;
+            }
+            nnz += __popc(mask);
+        }
+    }
+}
+
+template <typename SpikeT>
+void csr_fill_2d(
+    const BE::Tensor B,
+    const BE::Tensor indptr,
+    BE::Tensor indices,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    const int n_src = static_cast<int>(B.size(0));
+    const int n_batch = static_cast<int>(B.size(1));
+
+    BE_CUDA_CHECK(cudaMemsetAsync(
+        indices.data_ptr(), 0,
+        static_cast<size_t>(n_src) * n_batch * sizeof(int32_t), s));
+
+    if (n_src == 0 || n_batch == 0) {
+        return;
+    }
+
+    const SpikeT* d_B = static_cast<const SpikeT*>(B.data_ptr());
+    const int32_t* d_indptr = static_cast<const int32_t*>(indptr.data_ptr());
+    int32_t* d_indices = static_cast<int32_t*>(indices.data_ptr());
+
+    const int raw_grid_x = (n_src + kRowSparseWarpsPerBlock - 1) / kRowSparseWarpsPerBlock;
+    const int grid_x = (raw_grid_x < kRowSparseMaxGridX) ? raw_grid_x : kRowSparseMaxGridX;
+    _csr_fill_2d_kern<SpikeT><<<grid_x, kRowSparseBlockSize, 0, s>>>(
+        d_B, d_indptr, d_indices, n_src, n_batch);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+}  // namespace
+
+// ---- FFI entry points for 2D row-sparse encoding ----
+
+// @BE row_sparse_encode_2d_bool
+void row_sparse_encode_2d_bool(
+    const BE::Tensor B,
+    BE::Tensor spike_indices,
+    int64_t stream
+) {
+    row_sparse_encode_2d<uint8_t>(
+        B, spike_indices, stream);
+}
+
+// @BE row_sparse_encode_2d_float
+void row_sparse_encode_2d_float(
+    const BE::Tensor B,
+    BE::Tensor spike_indices,
+    int64_t stream
+) {
+    row_sparse_encode_2d<float>(
+        B, spike_indices, stream);
+}
+
+// ---- FFI entry points for 2D dense-to-CSR encoding ----
+
+// @BE csr_row_count_2d_bool
+void csr_row_count_2d_bool(
+    const BE::Tensor B,
+    BE::Tensor row_counts,
+    int64_t stream
+) {
+    csr_row_count_2d<uint8_t>(
+        B, row_counts, stream);
+}
+
+// @BE csr_row_count_2d_float
+void csr_row_count_2d_float(
+    const BE::Tensor B,
+    BE::Tensor row_counts,
+    int64_t stream
+) {
+    csr_row_count_2d<float>(
+        B, row_counts, stream);
+}
+
+// @BE csr_fill_2d_bool
+void csr_fill_2d_bool(
+    const BE::Tensor B,
+    const BE::Tensor indptr,
+    BE::Tensor indices,
+    int64_t stream
+) {
+    csr_fill_2d<uint8_t>(
+        B, indptr, indices, stream);
+}
+
+// @BE csr_fill_2d_float
+void csr_fill_2d_float(
+    const BE::Tensor B,
+    const BE::Tensor indptr,
+    BE::Tensor indices,
+    int64_t stream
+) {
+    csr_fill_2d<float>(
+        B, indptr, indices, stream);
+}
+
+// @BE pair_stream_encode_2d_bool
+void pair_stream_encode_2d_bool(
+    const BE::Tensor B,
+    BE::Tensor pair_stream,
+    BE::Tensor n_pairs,
+    int64_t stream
+) {
+    pair_stream_encode_2d<uint8_t>(
+        B, pair_stream, n_pairs, stream);
+}
+
+// @BE pair_stream_encode_2d_float
+void pair_stream_encode_2d_float(
+    const BE::Tensor B,
+    BE::Tensor pair_stream,
+    BE::Tensor n_pairs,
+    int64_t stream
+) {
+    pair_stream_encode_2d<float>(
+        B, pair_stream, n_pairs, stream);
 }

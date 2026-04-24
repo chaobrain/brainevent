@@ -62,6 +62,13 @@ def _is_oom_error(exc: Exception) -> bool:
     ))
 
 
+def _announce_runtime_platform() -> str:
+    platform = jax.default_backend()
+    devices = ', '.join(str(device) for device in jax.devices())
+    print(f'Runtime platform: {platform}; devices: {devices}')
+    return platform
+
+
 def benchmark_conn(
     conn_num=None,
     conn_prob=None,
@@ -81,6 +88,7 @@ def benchmark_conn(
         raise ValueError("mode must be either 'pre' or 'post'.")
 
     print(f'Benchmarking {mode}-synaptic connection updates...')
+    runtime_platform = _announce_runtime_platform()
 
     backends_to_use = [backend] if backend is not None else backends
 
@@ -99,7 +107,7 @@ def benchmark_conn(
     last_path = None
 
     for back in backends_to_use:
-        brainevent.config.set_backend('gpu', back)
+        brainevent.config.set_backend(runtime_platform, back)
         csv_recorder.print_header(
             operator='fcnmv', data_type=data_type, backend=back,
             mode=mode, duration=duration, homo=('homo' if homo else 'hetero')
@@ -151,7 +159,7 @@ if __name__ == '__main__':
     #benchmark_post_conn(data_type='binary', duration=1e2 * u.ms, homo = homo)
     #benchmark_post_conn(data_type='compact', duration=1e2 * u.ms, homo = True)
     #benchmark_conn(data_type='bitpack', mode='pre', duration=1e2 * u.ms, homo = True, backend='cuda_raw')
-    benchmark_conn(data_type='binary', mode='pre', duration=1e2 * u.ms, homo = True, backend='jax_raw')
+    benchmark_conn(data_type='compact', mode='pre', duration=1e2 * u.ms, homo = True, backend='cuda_raw')
     #benchmark_pre_conn(data_type='compact', duration=1e2 * u.ms, homo= False)
     #benchmark_pre_conn(data_type='binary',duration=1e2 * u.ms)
     

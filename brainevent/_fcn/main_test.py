@@ -33,6 +33,8 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
     jax.config.update('jax_default_matmul_precision', 'highest')
 
 import brainevent
+import brainevent._fcn.main as fcn_main_mod
+from brainevent._misc import fixed_conn_num_to_csc
 from brainevent._test_util import (
     allclose,
     generate_fixed_conn_num_indices,
@@ -182,6 +184,283 @@ class Test_Illegal_Slots:
         assert allclose(x @ conn, x @ dense)
         assert allclose(conn @ v, dense @ v)
         jax.block_until_ready((idx, dense, x, v))
+
+
+class Test_Dual_Layout:
+    def test_default_layout_buffers_are_empty(self):
+        shape = (3, 4)
+        idx = generate_fixed_conn_num_indices(*shape, 2)
+        data = braintools.init.Normal(0., 1.)(idx.shape)
+        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
+
+        assert conn.maintain_dual_layout is False
+        assert conn.primary_layout == 'row'
+        assert conn.col_weights is None
+        assert conn.col_indices is None
+        assert conn.col_indptr is None
+
+    @pytest.mark.parametrize(
+        ('cls', 'shape', 'expected_shape'),
+        [
+            (brainevent.FixedPostNumConn, (3, 4), (3, 4)),
+            (brainevent.FixedPreNumConn, (4, 3), (3, 4)),
+        ],
+    )
+    def test_dual_layout_builds_expected_csc_mirror(self, cls, shape, expected_shape):
+        if cls is brainevent.FixedPostNumConn:
+            idx = generate_fixed_conn_num_indices(shape[0], shape[1], 2)
+        else:
+            idx = generate_fixed_conn_num_indices(shape[1], shape[0], 2)
+        data = braintools.init.Normal(0., 1.)(idx.shape)
+
+        conn = cls(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+
+        exp_w, exp_i, exp_p = fixed_conn_num_to_csc(conn.data, conn.indices, shape=expected_shape)
+        assert allclose(conn.col_weights, exp_w)
+        assert jnp.array_equal(conn.col_indices, exp_i)
+        assert jnp.array_equal(conn.col_indptr, exp_p)
+
+    @pytest.mark.parametrize('cls, shape', [
+        (brainevent.FixedPostNumConn, (3, 4)),
+        (brainevent.FixedPreNumConn, (4, 3)),
+    ])
+    def test_primary_layout_col_is_rejected(self, cls, shape):
+        if cls is brainevent.FixedPostNumConn:
+            idx = generate_fixed_conn_num_indices(shape[0], shape[1], 2)
+        else:
+            idx = generate_fixed_conn_num_indices(shape[1], shape[0], 2)
+
+        with pytest.raises(NotImplementedError, match='primary_layout="col"'):
+            cls(
+                (jnp.ones(idx.shape, dtype=jnp.float32), idx),
+                shape=shape,
+                primary_layout='col',
+            )
+
+    def test_fixed_post_dual_layout_binary_vector_matches_dense(self):
+        shape = (3, 4)
+        idx = jnp.array([[0, 1], [1, 3], [2, 0]], dtype=jnp.int32)
+        data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
+        conn = brainevent.FixedPostNumConn(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.7, 1.0], dtype=jnp.float32))
+        dense = conn.todense()
+
+        assert allclose(conn @ spikes, dense @ _binary_mask(spikes.value, dense.dtype))
+
+    def test_fixed_post_dual_layout_compact_vector_matches_dense(self):
+        shape = (3, 4)
+        idx = jnp.array([[0, 1], [1, 3], [2, 0]], dtype=jnp.int32)
+        data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
+        conn = brainevent.FixedPostNumConn(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+        spikes = jnp.array([1.0, 0.0, 0.7, 1.0], dtype=jnp.float32)
+        compact = brainevent.CompactBinary.from_array(spikes)
+        dense = conn.todense()
+
+        assert allclose(conn @ compact, dense @ _binary_mask(spikes, dense.dtype))
+
+    def test_fixed_pre_dual_layout_binary_vector_matches_dense(self):
+        shape = (4, 3)
+        idx = jnp.array([[0, 1], [2, 1], [3, 0]], dtype=jnp.int32)
+        data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
+        conn = brainevent.FixedPreNumConn(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.7, 1.0], dtype=jnp.float32))
+        dense = conn.todense()
+
+        assert allclose(spikes @ conn, _binary_mask(spikes.value, dense.dtype) @ dense)
+
+    def test_fixed_pre_dual_layout_compact_vector_matches_dense(self):
+        shape = (4, 3)
+        idx = jnp.array([[0, 1], [2, 1], [3, 0]], dtype=jnp.int32)
+        data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
+        conn = brainevent.FixedPreNumConn(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+        spikes = jnp.array([1.0, 0.0, 0.7, 1.0], dtype=jnp.float32)
+        compact = brainevent.CompactBinary.from_array(spikes)
+        dense = conn.todense()
+
+        assert allclose(compact @ conn, _binary_mask(spikes, dense.dtype) @ dense)
+
+    def test_fixed_post_compact_left_vector_uses_scatter_and_matches_dense(self, monkeypatch):
+        shape = (3, 4)
+        idx = jnp.array([[0, 1], [1, 3], [2, 0]], dtype=jnp.int32)
+        data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
+        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
+        spikes = jnp.array([1.0, 0.0, 0.7], dtype=jnp.float32)
+        compact = brainevent.CompactBinary.from_array(spikes)
+        dense = conn.todense()
+        calls = []
+        original = fcn_main_mod.compact_binary_fcnmv
+
+        def _spy(weights, indices, packed, active_ids, n_active, events, **kwargs):
+            calls.append(kwargs)
+            return original(weights, indices, packed, active_ids, n_active, events, **kwargs)
+
+        monkeypatch.setattr(fcn_main_mod, 'compact_binary_fcnmv', _spy)
+        y = compact @ conn
+
+        assert allclose(y, _binary_mask(spikes, dense.dtype) @ dense)
+        assert len(calls) == 1
+        assert calls[0]['transpose'] is True
+
+    def test_fixed_post_dual_layout_binary_forward_injects_csc_mirror(self, monkeypatch):
+        shape = (3, 4)
+        idx = generate_fixed_conn_num_indices(*shape, 2)
+        data = braintools.init.Normal(0., 1.)(idx.shape)
+        conn = brainevent.FixedPostNumConn(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.5, 1.0], dtype=jnp.float32))
+        calls = []
+        original = fcn_main_mod.binary_fcnmv
+
+        def _spy(weights, indices, events, **kwargs):
+            calls.append(kwargs)
+            return original(weights, indices, events, **kwargs)
+
+        monkeypatch.setattr(fcn_main_mod, 'binary_fcnmv', _spy)
+        conn @ spikes
+
+        assert len(calls) == 1
+        assert calls[0]['col_weights'] is conn.col_weights
+        assert calls[0]['col_indices'] is conn.col_indices
+        assert calls[0]['col_indptr'] is conn.col_indptr
+
+    def test_fixed_pre_dual_layout_compact_forward_injects_csc_mirror(self, monkeypatch):
+        shape = (4, 3)
+        idx = generate_fixed_conn_num_indices(shape[1], shape[0], 2)
+        data = braintools.init.Normal(0., 1.)(idx.shape)
+        conn = brainevent.FixedPreNumConn(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+        spikes = jnp.array([1.0, 0.0, 0.5, 1.0], dtype=jnp.float32)
+        compact = brainevent.CompactBinary.from_array(spikes)
+        calls = []
+        original = fcn_main_mod.compact_binary_fcnmv
+
+        def _spy(weights, indices, packed, active_ids, n_active, events, **kwargs):
+            calls.append(kwargs)
+            return original(weights, indices, packed, active_ids, n_active, events, **kwargs)
+
+        monkeypatch.setattr(fcn_main_mod, 'compact_binary_fcnmv', _spy)
+        compact @ conn
+
+        assert len(calls) == 1
+        assert calls[0]['col_weights'] is conn.col_weights
+        assert calls[0]['col_indices'] is conn.col_indices
+        assert calls[0]['col_indptr'] is conn.col_indptr
+
+    def test_dual_layout_forward_reuses_prebuilt_mirror(self, monkeypatch):
+        shape = (3, 4)
+        idx = generate_fixed_conn_num_indices(*shape, 2)
+        data = braintools.init.Normal(0., 1.)(idx.shape)
+        conn = brainevent.FixedPostNumConn(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.5, 1.0], dtype=jnp.float32))
+
+        def _fail(*args, **kwargs):
+            raise AssertionError('row->col conversion helper should not run during forward dual-layout MV')
+
+        monkeypatch.setattr(fcn_main_mod, '_build_col_major_fcn', _fail)
+        conn @ spikes
+
+    def test_with_data_rebuilds_dual_layout_mirror(self):
+        shape = (3, 4)
+        idx = generate_fixed_conn_num_indices(*shape, 2)
+        data = braintools.init.Normal(0., 1.)(idx.shape)
+        conn = brainevent.FixedPostNumConn(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+        new_data = data + 1.0
+        updated = conn.with_data(new_data)
+        exp_w, exp_i, exp_p = fixed_conn_num_to_csc(new_data, idx, shape=shape)
+
+        assert updated.maintain_dual_layout is True
+        assert updated.primary_layout == 'row'
+        assert allclose(updated.col_weights, exp_w)
+        assert jnp.array_equal(updated.col_indices, exp_i)
+        assert jnp.array_equal(updated.col_indptr, exp_p)
+        assert not allclose(updated.col_weights, conn.col_weights)
+
+    def test_transpose_preserves_config_and_rebuilds_dual_layout_mirror(self):
+        shape = (3, 4)
+        idx = generate_fixed_conn_num_indices(*shape, 2)
+        data = braintools.init.Normal(0., 1.)(idx.shape)
+        conn = brainevent.FixedPostNumConn(
+            (data, idx),
+            shape=shape,
+            maintain_dual_layout=True,
+        )
+        transposed = conn.T
+        exp_w, exp_i, exp_p = fixed_conn_num_to_csc(
+            transposed.data,
+            transposed.indices,
+            shape=transposed.shape[::-1],
+        )
+        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.5, 1.0], dtype=jnp.float32))
+        dense = transposed.todense()
+
+        assert transposed.maintain_dual_layout is True
+        assert transposed.primary_layout == 'row'
+        assert allclose(transposed.col_weights, exp_w)
+        assert jnp.array_equal(transposed.col_indices, exp_i)
+        assert jnp.array_equal(transposed.col_indptr, exp_p)
+        assert allclose(spikes @ transposed, _binary_mask(spikes.value, dense.dtype) @ dense)
+
+
+class Test_Init_Outside_JIT:
+    def test_fixed_post_init_rejects_first_construction_inside_jax_jit(self):
+        @jax.jit
+        def build():
+            idx = jnp.array([[0, 1], [1, 3]], dtype=jnp.int32)
+            data = jnp.array([[1., 2.], [3., 4.]], dtype=jnp.float32)
+            conn = brainevent.FixedPostNumConn((data, idx), shape=(2, 4))
+            return conn.nse
+
+        with pytest.raises(RuntimeError, match='must be first constructed outside'):
+            build()
+
+    def test_fixed_pre_init_rejects_first_construction_inside_brainstate_jit(self):
+        @brainstate.transform.jit
+        def build():
+            idx = jnp.array([[0, 1], [2, 1], [3, 0]], dtype=jnp.int32)
+            data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
+            conn = brainevent.FixedPreNumConn(
+                (data, idx),
+                shape=(4, 3),
+                maintain_dual_layout=True,
+            )
+            return conn.nse
+
+        with pytest.raises(RuntimeError, match='must be first constructed outside'):
+            build()
 
 
 class Test_Operator_Behavior:

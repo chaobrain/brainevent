@@ -16,19 +16,20 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from typing import Optional, Dict
+from typing import Optional, Dict, Literal, Tuple
 
 import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from brainevent._compatible_import import Tracer
 from brainevent._coo import COO
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
 from brainevent._event.bitpack_binary import BitPackedBinary
 from brainevent._event.compact_binary import CompactBinary
-from brainevent._misc import _coo_todense, COOInfo
+from brainevent._misc import _coo_todense, COOInfo, fixed_conn_num_to_csc
 from brainevent._typing import Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm
 from .bitpack_binary import bitpack_binary_fcnmv
@@ -39,6 +40,9 @@ __all__ = [
     'FixedPostNumConn',
     'FixedPreNumConn',
 ]
+
+_FCN_LAYOUT_BUFFER_NAMES = ('col_weights', 'col_indices', 'col_indptr')
+_FCN_PRIMARY_LAYOUTS = ('row', 'col')
 
 
 def _validate_fixed_conn_indices(
@@ -67,6 +71,64 @@ def _contains_invalid_indices(indices: Index, *, upper_bound: int) -> bool:
                 f'All indices must be in the range [0, {upper_bound - 1}]. '
                 f'But found indices with min {indices_np.min()} and max {indices_np.max()}.'
             )
+
+
+def _ensure_fixed_conn_initialized_outside_jit(indices: Index, *, kind: str) -> None:
+    if isinstance(indices, Tracer):
+        raise RuntimeError(
+            f'{kind} must be first constructed outside `jax.jit` / '
+            '`brainstate.transform.jit`. Initialization validates connectivity '
+            'and may materialize dual-layout CSC buffers from concrete indices. '
+            'Construct the connection object before entering the jitted function, '
+            'then reuse it inside JIT.'
+        )
+
+
+def _build_col_major_fcn(
+    weights: Data,
+    indices: Index,
+    shape: Tuple[int, int],
+    dtype=None,
+):
+    """Build a compact CSC mirror from row-major FCN data."""
+    weight_value, weight_unit = u.split_mantissa_unit(weights)
+    col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(
+        weight_value,
+        indices,
+        shape=shape,
+    )
+    if dtype is None:
+        dtype = weight_value.dtype
+    col_weights = u.maybe_decimal(u.math.asarray(col_weights, dtype=dtype) * weight_unit)
+    return (
+        col_weights,
+        u.math.asarray(col_indices, dtype=indices.dtype),
+        u.math.asarray(col_indptr, dtype=indices.dtype),
+    )
+
+
+def _validate_primary_layout(primary_layout: Literal['row', 'col']):
+    if primary_layout not in _FCN_PRIMARY_LAYOUTS:
+        raise ValueError(
+            f'primary_layout must be one of {_FCN_PRIMARY_LAYOUTS}, '
+            f'got {primary_layout!r}.'
+        )
+    if primary_layout == 'col':
+        raise NotImplementedError(
+            'primary_layout="col" is not supported in v1. '
+            'Only row-major public primary storage is currently supported; '
+            'col-major is available only as a maintained CSC mirror.'
+        )
+
+
+def _split_layout_buffers(buffers: Optional[Dict]) -> Dict:
+    if buffers is None:
+        return {}
+    return {
+        name: value
+        for name, value in buffers.items()
+        if name not in _FCN_LAYOUT_BUFFER_NAMES
+    }
 
 
 class FixedNumConn(DataRepresentation):
@@ -158,6 +220,44 @@ class FixedNumConn(DataRepresentation):
     indices: Index
     shape: MatrixShape
     backend: Optional[str]
+    maintain_dual_layout: bool
+    primary_layout: Literal['row', 'col']
+
+    def __init__(
+        self,
+        *args,
+        shape: MatrixShape,
+        buffers: Optional[Dict] = None,
+        maintain_dual_layout: bool = False,
+        primary_layout: Literal['row', 'col'] = 'row',
+        mirror_shape: Optional[MatrixShape] = None,
+    ):
+        _validate_primary_layout(primary_layout)
+        self.maintain_dual_layout = maintain_dual_layout
+        self.primary_layout = primary_layout
+
+        merged_buffers = {name: None for name in _FCN_LAYOUT_BUFFER_NAMES}
+        merged_buffers.update(_split_layout_buffers(buffers))
+        super().__init__(*args, shape=shape, buffers=merged_buffers)
+
+        if self.maintain_dual_layout:
+            col_weights, col_indices, col_indptr = _build_col_major_fcn(
+                self.data,
+                self.indices,
+                shape if mirror_shape is None else mirror_shape,
+            )
+            self.set_buffer('col_weights', col_weights)
+            self.set_buffer('col_indices', col_indices)
+            self.set_buffer('col_indptr', col_indptr)
+
+    def _col_mirror_kwargs(self) -> Dict:
+        if not self.maintain_dual_layout:
+            return {}
+        return {
+            'col_weights': self.col_weights,
+            'col_indices': self.col_indices,
+            'col_indptr': self.col_indptr,
+        }
 
     def tree_flatten(self):
         """
@@ -176,6 +276,8 @@ class FixedNumConn(DataRepresentation):
             'indices': self.indices,
             'shape': self.shape,
             'backend': self.backend,
+            'maintain_dual_layout': self.maintain_dual_layout,
+            'primary_layout': self.primary_layout,
         }
         return (self.data,), (aux, self.buffers)
 
@@ -446,6 +548,8 @@ class FixedPostNumConn(FixedNumConn):
         shape: MatrixShape,
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
+        maintain_dual_layout: bool = False,
+        primary_layout: Literal['row', 'col'] = 'row',
     ):
         """
         Initialize a FixedPostNumConn sparse matrix.
@@ -485,6 +589,7 @@ class FixedPostNumConn(FixedNumConn):
         else:
             args = (data, indices)
         self.data, self.indices = map(u.math.asarray, args)
+        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedPostNumConn')
         self.backend = backend
         _validate_fixed_conn_indices(self.indices, expected_rows=shape[0], kind='Post-synaptic')
         if self.data.size != 1 and self.data.shape != self.indices.shape:
@@ -492,7 +597,14 @@ class FixedPostNumConn(FixedNumConn):
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
-        super().__init__(args, shape=shape, buffers=buffers)
+        super().__init__(
+            args,
+            shape=shape,
+            buffers=buffers,
+            maintain_dual_layout=maintain_dual_layout,
+            primary_layout=primary_layout,
+            mirror_shape=shape,
+        )
 
         _contains_invalid_indices(self.indices, upper_bound=self.shape[1])
 
@@ -522,7 +634,9 @@ class FixedPostNumConn(FixedNumConn):
             (data, self.indices),
             shape=self.shape,
             backend=self.backend,
-            buffers=self.buffers
+            buffers=self.buffers,
+            maintain_dual_layout=self.maintain_dual_layout,
+            primary_layout=self.primary_layout,
         )
 
     def todense(self):
@@ -662,7 +776,9 @@ class FixedPostNumConn(FixedNumConn):
             (self.data, self.indices),
             shape=self.shape[::-1],
             backend=self.backend,
-            buffers=self.buffers
+            buffers=self.buffers,
+            maintain_dual_layout=self.maintain_dual_layout,
+            primary_layout=self.primary_layout,
         )
 
     def _unitary_op(self, op):
@@ -670,7 +786,9 @@ class FixedPostNumConn(FixedNumConn):
             (op(self.data), self.indices),
             shape=self.shape,
             backend=self.backend,
-            buffers=self.buffers
+            buffers=self.buffers,
+            maintain_dual_layout=self.maintain_dual_layout,
+            primary_layout=self.primary_layout,
         )
 
     def _binary_op(self, other, op):
@@ -683,7 +801,9 @@ class FixedPostNumConn(FixedNumConn):
                 (op(self.data, other), self.indices),
                 shape=self.shape,
                 backend=self.backend,
-                buffers=self.buffers
+                buffers=self.buffers,
+                maintain_dual_layout=self.maintain_dual_layout,
+                primary_layout=self.primary_layout,
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -693,7 +813,9 @@ class FixedPostNumConn(FixedNumConn):
                 (op(self.data, other), self.indices),
                 shape=self.shape,
                 backend=self.backend,
-                buffers=self.buffers
+                buffers=self.buffers,
+                maintain_dual_layout=self.maintain_dual_layout,
+                primary_layout=self.primary_layout,
             )
 
         else:
@@ -709,7 +831,9 @@ class FixedPostNumConn(FixedNumConn):
                 (op(other, self.data), self.indices),
                 shape=self.shape,
                 backend=self.backend,
-                buffers=self.buffers
+                buffers=self.buffers,
+                maintain_dual_layout=self.maintain_dual_layout,
+                primary_layout=self.primary_layout,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_post_num_to_coo(self)
@@ -718,7 +842,9 @@ class FixedPostNumConn(FixedNumConn):
                 (op(other, self.data), self.indices,),
                 shape=self.shape,
                 backend=self.backend,
-                buffers=self.buffers
+                buffers=self.buffers,
+                maintain_dual_layout=self.maintain_dual_layout,
+                primary_layout=self.primary_layout,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -760,6 +886,7 @@ class FixedPostNumConn(FixedNumConn):
                     data, self.indices,
                     other.packed, other.active_ids, other.n_active, other.value,
                     shape=self.shape, transpose=False,
+                    **self._col_mirror_kwargs(),
                 )
             elif other.ndim == 2:
                 return compact_binary_fcnmm(
@@ -772,14 +899,21 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, BitPackedBinary):
             if other.ndim == 1:
                 return bitpack_binary_fcnmv(data, self.indices, other.packed[0], other.value,
-                                            shape=self.shape, transpose=False,
-                                            pack_axis=0)
+                                            shape=self.shape, transpose=False)
             raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
+                return binary_fcnmv(
+                    data,
+                    self.indices,
+                    other,
+                    shape=self.shape,
+                    transpose=False,
+                    backend=self.backend,
+                    **self._col_mirror_kwargs(),
+                )
             elif other.ndim == 2:
                 return binary_fcnmm(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
             else:
@@ -843,8 +977,7 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, BitPackedBinary):
             if other.ndim == 1:
                 return bitpack_binary_fcnmv(data, self.indices, other.packed[0], other.value,
-                                            shape=self.shape, transpose=True,
-                                            pack_axis=0)
+                                            shape=self.shape, transpose=True)
             raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
@@ -1009,6 +1142,8 @@ class FixedPreNumConn(FixedNumConn):
         shape: MatrixShape,
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
+        maintain_dual_layout: bool = False,
+        primary_layout: Literal['row', 'col'] = 'row',
     ):
         """
         Initialize a FixedPreNumConn sparse matrix.
@@ -1048,6 +1183,7 @@ class FixedPreNumConn(FixedNumConn):
         else:
             args = (data, indices)
         self.data, self.indices = map(u.math.asarray, args)
+        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedPreNumConn')
         self.backend = backend
         _validate_fixed_conn_indices(
             self.indices,
@@ -1059,7 +1195,14 @@ class FixedPreNumConn(FixedNumConn):
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
-        super().__init__(args, shape=shape, buffers=buffers)
+        super().__init__(
+            args,
+            shape=shape,
+            buffers=buffers,
+            maintain_dual_layout=maintain_dual_layout,
+            primary_layout=primary_layout,
+            mirror_shape=shape[::-1],
+        )
 
         _contains_invalid_indices(self.indices, upper_bound=self.shape[0])
 
@@ -1089,7 +1232,9 @@ class FixedPreNumConn(FixedNumConn):
             (data, self.indices),
             shape=self.shape,
             backend=self.backend,
-            buffers=self.buffers
+            buffers=self.buffers,
+            maintain_dual_layout=self.maintain_dual_layout,
+            primary_layout=self.primary_layout,
         )
 
     def todense(self):
@@ -1242,7 +1387,9 @@ class FixedPreNumConn(FixedNumConn):
             (self.data, self.indices),
             shape=self.shape[::-1],
             backend=self.backend,
-            buffers=self.buffers
+            buffers=self.buffers,
+            maintain_dual_layout=self.maintain_dual_layout,
+            primary_layout=self.primary_layout,
         )
 
     def _unitary_op(self, op):
@@ -1250,7 +1397,9 @@ class FixedPreNumConn(FixedNumConn):
             (op(self.data), self.indices),
             shape=self.shape,
             backend=self.backend,
-            buffers=self.buffers
+            buffers=self.buffers,
+            maintain_dual_layout=self.maintain_dual_layout,
+            primary_layout=self.primary_layout,
         )
 
     def _binary_op(self, other, op):
@@ -1263,7 +1412,9 @@ class FixedPreNumConn(FixedNumConn):
                 (op(self.data, other), self.indices),
                 shape=self.shape,
                 backend=self.backend,
-                buffers=self.buffers
+                buffers=self.buffers,
+                maintain_dual_layout=self.maintain_dual_layout,
+                primary_layout=self.primary_layout,
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1273,7 +1424,9 @@ class FixedPreNumConn(FixedNumConn):
                 (op(self.data, other), self.indices),
                 shape=self.shape,
                 backend=self.backend,
-                buffers=self.buffers
+                buffers=self.buffers,
+                maintain_dual_layout=self.maintain_dual_layout,
+                primary_layout=self.primary_layout,
             )
 
         else:
@@ -1289,7 +1442,9 @@ class FixedPreNumConn(FixedNumConn):
                 (op(other, self.data), self.indices),
                 shape=self.shape,
                 backend=self.backend,
-                buffers=self.buffers
+                buffers=self.buffers,
+                maintain_dual_layout=self.maintain_dual_layout,
+                primary_layout=self.primary_layout,
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1299,7 +1454,9 @@ class FixedPreNumConn(FixedNumConn):
                 (op(other, self.data), self.indices,),
                 shape=self.shape,
                 backend=self.backend,
-                buffers=self.buffers
+                buffers=self.buffers,
+                maintain_dual_layout=self.maintain_dual_layout,
+                primary_layout=self.primary_layout,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -1353,8 +1510,7 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, BitPackedBinary):
             if other.ndim == 1:
                 return bitpack_binary_fcnmv(data, self.indices, other.packed[0], other.value,
-                                            shape=self.shape[::-1], transpose=True,
-                                            pack_axis=0)
+                                            shape=self.shape[::-1], transpose=True)
             raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
@@ -1413,6 +1569,7 @@ class FixedPreNumConn(FixedNumConn):
                     data, self.indices,
                     other.packed, other.active_ids, other.n_active, other.value,
                     shape=self.shape[::-1], transpose=False,
+                    **self._col_mirror_kwargs(),
                 )
             elif other.ndim == 2:
                 r = compact_binary_fcnmm(
@@ -1427,7 +1584,7 @@ class FixedPreNumConn(FixedNumConn):
             if other.ndim == 1:
                 return bitpack_binary_fcnmv(
                     data, self.indices, other.packed[0], other.value,
-                    shape=self.shape[::-1], transpose=False, pack_axis=0
+                    shape=self.shape[::-1], transpose=False
                 )
             raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
@@ -1436,7 +1593,10 @@ class FixedPreNumConn(FixedNumConn):
             if other.ndim == 1:
                 return binary_fcnmv(
                     data, self.indices, other,
-                    shape=self.shape[::-1], transpose=False, backend=self.backend
+                    shape=self.shape[::-1],
+                    transpose=False,
+                    backend=self.backend,
+                    **self._col_mirror_kwargs(),
                 )
             elif other.ndim == 2:
                 r = binary_fcnmm(

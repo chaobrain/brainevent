@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import brainunit as u
+import brainevent._fcn.compact_binary as compact_binary_mod
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -28,6 +29,7 @@ from brainevent._fcn.compact_binary import (
     compact_binary_fcnmm,
 )
 from brainevent._fcn.float import fcnmv, fcnmm
+from brainevent._misc import fixed_conn_num_to_csc
 from brainevent._test_util import generate_fixed_conn_num_indices
 
 platform = jax.default_backend()
@@ -83,6 +85,10 @@ def _dense_mat(weights, indices, shape):
     return jnp.zeros(shape, dtype=w.dtype).at[rows, cols].add(vals)
 
 
+def _build_col_major_fcn(weights, indices, shape):
+    return fixed_conn_num_to_csc(weights, indices, shape=shape)
+
+
 def _ref_mv(weights, indices, spikes, shape, transpose):
     """Reference dense matmul for MV."""
     dense = _dense_mat(weights, indices, shape)
@@ -110,6 +116,7 @@ def generate_cs_pairs(
     data_size: int = 4,
     num_points: int = 5,
     include_dense_ref: bool = False,
+    max_conn: int = 3000,
 ):
     """Generate ``(conn, m)`` pairs near the GPU memory boundary.
 
@@ -139,7 +146,7 @@ def generate_cs_pairs(
     scale_max : int
         Upper bound for the scale factor *s* (``m = s * _N``).
     conn_max : int
-        Maximum number of connections per row.
+        Maximum number of connections per row from the original search space.
     _N : int
         Base neuron count per scale unit.
     data_size : int
@@ -149,11 +156,20 @@ def generate_cs_pairs(
     include_dense_ref : bool
         If True, the budget also accounts for a dense ``(m, m)`` reference
         matrix of size ``m² * data_size``.
-    """ 
+    max_conn : int
+        Hard upper bound on returned ``conn`` values. Final ``conn`` will
+        satisfy ``conn <= min(conn_max, max_conn)``.
+    """
     import math
     import numpy as np
+
     limit_bytes = memory_limit * (1024 ** 3)
     times = 1 if homo_or_not else 2
+
+    # Hard cap for conn
+    conn_cap = min(conn_max, max_conn)
+    if conn_cap < 1:
+        raise ValueError(f"max_conn must be >= 1, got {max_conn}")
 
     # K = budget expressed in units of (_N * data_size) bytes
     K = limit_bytes / (_N * data_size)
@@ -166,17 +182,16 @@ def generate_cs_pairs(
         # conn = K / (s * times) >= 1  →  s <= K / times
         s_max = min(scale_max, int(K / times))
 
-    # s_min: when *not* including the dense ref, large s → small conn,
-    # which is fine; but very small s → conn > conn_max, wasting budget.
+    # s_min: when not including dense ref, small s may force conn too large.
     if not include_dense_ref:
-        s_min = max(1, math.ceil(K / (times * conn_max)))
+        s_min = max(1, math.ceil(K / (times * conn_cap)))
     else:
         s_min = 1
 
     if s_min > s_max:
         raise ValueError(
             f"No valid (conn, m) pairs: s_min={s_min} > s_max={s_max}. "
-            f"Try increasing memory_limit or decreasing scale_max/conn_max."
+            f"Try increasing memory_limit or decreasing scale_max/conn_max/max_conn."
         )
 
     s_samples = np.geomspace(s_min, s_max, num_points)
@@ -186,7 +201,7 @@ def generate_cs_pairs(
 
     for s_val in s_samples:
         s_int = max(1, int(round(s_val)))
-        s_int = min(s_int, s_max)  # clamp
+        s_int = min(s_int, s_max)
 
         # Compute max conn (floor to stay below the boundary)
         if include_dense_ref:
@@ -197,7 +212,8 @@ def generate_cs_pairs(
         else:
             c_int = int(K / (s_int * times))
 
-        c_int = min(c_int, conn_max)
+        # Apply both original conn_max and new hard max_conn
+        c_int = min(c_int, conn_cap)
 
         m = s_int * _N
 
@@ -237,6 +253,104 @@ def test_compact_binary_fcnmv_forward(homo_w, transpose, shape):
         f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
         f"homo_w={homo_w}  transpose={transpose}"
     )
+
+
+def test_compact_binary_fcnmv_scatter_1d_requires_full_compaction_metadata():
+    """1D scatter must use full compaction; the light path zeros active_ids/n_active."""
+    shape = (20, 40)
+    m, _ = shape
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w()
+    spikes = jnp.asarray((jnp.arange(m) % 3) == 0, dtype=jnp.float32)
+
+    cb_full = CompactBinary.from_array(spikes)
+    cb_light = CompactBinary.from_array_light(spikes)
+
+    y_full = compact_binary_fcnmv(
+        weights, indices, cb_full.packed, cb_full.active_ids, cb_full.n_active, cb_full.value,
+        shape=shape, transpose=True,
+    )
+    y_light = compact_binary_fcnmv(
+        weights, indices, cb_light.packed, cb_light.active_ids, cb_light.n_active, cb_light.value,
+        shape=shape, transpose=True,
+    )
+    y_ref = _ref_mv(weights, indices, spikes, shape, transpose=True)
+
+    assert int(jnp.asarray(cb_full.n_active)[0]) > 0
+    assert int(jnp.asarray(cb_light.n_active)[0]) == 0
+    assert jnp.allclose(y_full, y_ref, rtol=1e-3, atol=1e-3)
+    assert not jnp.allclose(y_light, y_ref, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('shape', SHAPES)
+def test_compact_binary_fcnmv_forward_column_scatter(homo_w, shape):
+    """Passing column-major mirrors keeps MV output consistent with dense reference."""
+    m, n = shape
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+    spikes = _mk_spikes(n)
+    cb = CompactBinary.from_array(spikes)
+    col_weights, col_indices, col_indptr = _build_col_major_fcn(weights, indices, shape)
+
+    y = compact_binary_fcnmv(
+        weights, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+        shape=shape, transpose=False,
+        col_weights=col_weights, col_indices=col_indices, col_indptr=col_indptr,
+    )
+    y_ref = _ref_mv(weights, indices, spikes, shape, transpose=False)
+
+    assert y.shape == y_ref.shape
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3), (
+        f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
+        f"homo_w={homo_w}  column_scatter=True"
+    )
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('shape', SHAPES)
+def test_compact_column_major_csc_mirror_has_expected_sizes(homo_w, shape):
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+    col_weights, col_indices, col_indptr = _build_col_major_fcn(weights, indices, shape)
+
+    nnz = indices.size
+    assert col_indices.ndim == 1
+    assert col_indices.size == nnz
+    assert col_indptr.ndim == 1
+    assert col_indptr.shape == (shape[1] + 1,)
+    assert int(np.asarray(col_indptr)[0]) == 0
+    assert int(np.asarray(col_indptr)[-1]) == nnz
+    if homo_w:
+        assert jnp.asarray(col_weights).size == 1
+    else:
+        assert jnp.asarray(col_weights).size == nnz
+
+
+def test_compact_binary_fcnmv_forward_column_scatter_reuses_prebuilt_csc(monkeypatch):
+    shape = (20, 40)
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w()
+    spikes = _mk_spikes(shape[1])
+    cb = CompactBinary.from_array(spikes)
+    col_weights, col_indices, col_indptr = _build_col_major_fcn(weights, indices, shape)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError('row->col conversion helper should not run during forward col_scatter')
+
+    monkeypatch.setattr(
+        compact_binary_mod,
+        '_compact_binary_fcnmv_col_weights_from_row_weights',
+        _fail,
+    )
+
+    y = compact_binary_fcnmv(
+        weights, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+        shape=shape, transpose=False,
+        col_weights=col_weights, col_indices=col_indices, col_indptr=col_indptr,
+    )
+    y_ref = _ref_mv(weights, indices, spikes, shape, transpose=False)
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
@@ -283,11 +397,12 @@ def test_compact_binary_fcnmv_forward_in_large_scale(homo_w):
     """compact_binary_fcnmv forward matches dense reference at large scale."""
     import gc
 
-    for conn, m in generate_cs_pairs(homo_or_not=homo_w, include_dense_ref=True):
+    for conn, m in generate_cs_pairs(homo_or_not=homo_w, include_dense_ref=True, max_conn=600):
         indices = generate_fixed_conn_num_indices(m, m, conn)
         weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+        col_weights, col_indices, col_indptr = _build_col_major_fcn(weights, indices, (m, m))
 
-        transpose = True
+        transpose = False
         shape = (m, m)
         spikes = _mk_spikes(m)
         cb = CompactBinary.from_array(spikes)
@@ -295,17 +410,18 @@ def test_compact_binary_fcnmv_forward_in_large_scale(homo_w):
         y = compact_binary_fcnmv(
             weights, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
             shape=shape, transpose=transpose,
+            col_weights=col_weights, col_indices=col_indices, col_indptr=col_indptr,
         )
         y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
 
         assert y.shape == y_ref.shape
-        assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2), (
+        assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3), (
             f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
             f"homo_w={homo_w}  conn={conn}"
         )
-        jax.block_until_ready((indices, weights, y, y_ref))
+        jax.block_until_ready((indices, weights, col_weights, col_indices, col_indptr, y, y_ref))
 
-        del indices, weights, spikes, cb, y, y_ref
+        del indices, weights, col_weights, col_indices, col_indptr, spikes, cb, y, y_ref
         gc.collect()
 
 
@@ -391,6 +507,37 @@ def test_compact_binary_fcnmv_jvp_weights(homo_w, transpose, shape):
     # Primals should still be correct forward pass
     y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
     assert jnp.allclose(primals_out, y_ref, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
+def test_compact_binary_fcnmv_jvp_weights_column_scatter(homo_w, shape):
+    m, n = shape
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+    _, col_indices, col_indptr = _build_col_major_fcn(weights, indices, shape)
+    spikes = _mk_spikes(n)
+    cb = CompactBinary.from_array(spikes)
+    w_dot = jnp.ones_like(weights) * 0.1
+
+    f = lambda w: compact_binary_fcnmv(
+        w, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+        shape=shape, transpose=False,
+        col_weights=_build_col_major_fcn(w, indices, shape)[0],
+        col_indices=col_indices, col_indptr=col_indptr,
+    )
+    primals_out, tangents_out = jax.jvp(f, (weights,), (w_dot,))
+
+    expected_tangent = compact_binary_fcnmv(
+        w_dot, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+        shape=shape, transpose=False,
+        col_weights=_build_col_major_fcn(w_dot, indices, shape)[0],
+        col_indices=col_indices, col_indptr=col_indptr,
+    )
+    y_ref = _ref_mv(weights, indices, spikes, shape, transpose=False)
+
+    assert jnp.allclose(primals_out, y_ref, rtol=1e-3, atol=1e-3)
+    assert jnp.allclose(tangents_out, expected_tangent, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
@@ -514,6 +661,37 @@ def test_compact_binary_fcnmv_vjp_weights(homo_w, transpose, shape):
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
+def test_compact_binary_fcnmv_vjp_weights_column_scatter(homo_w, shape):
+    m, n = shape
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+    _, col_indices, col_indptr = _build_col_major_fcn(weights, indices, shape)
+    spikes = _mk_spikes(n)
+    cb = CompactBinary.from_array(spikes)
+    ct = jnp.ones(m, dtype=jnp.float32)
+
+    f = lambda w: compact_binary_fcnmv(
+        w, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+        shape=shape, transpose=False,
+        col_weights=_build_col_major_fcn(w, indices, shape)[0],
+        col_indices=col_indices, col_indptr=col_indptr,
+    )
+    _, vjp_fn = jax.vjp(f, weights)
+    (ct_w,) = vjp_fn(ct)
+
+    f_dense = lambda w: _ref_mv(w, indices, spikes, shape, transpose=False)
+    _, vjp_dense = jax.vjp(f_dense, weights)
+    (ct_w_dense,) = vjp_dense(ct)
+
+    tol = 1e-3 if homo_w else 5e-2
+    assert ct_w.shape == weights.shape
+    assert jnp.allclose(ct_w, ct_w_dense, rtol=tol, atol=tol), (
+        f"max diff={jnp.max(jnp.abs(ct_w - ct_w_dense)):.4e}"
+    )
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
 def test_compact_binary_fcnmv_vjp_spikes(homo_w, transpose, shape):
@@ -564,6 +742,34 @@ def test_compact_binary_fcnmv_grad_weights(homo_w, transpose, shape):
     g = jax.grad(f)(weights)
     assert g.shape == weights.shape
     assert jnp.isfinite(g).all()
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+def test_compact_binary_fcnmv_grad_weights_column_scatter(homo_w):
+    shape = (20, 40)
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+    _, col_indices, col_indptr = _build_col_major_fcn(weights, indices, shape)
+    spikes = _mk_spikes(shape[1])
+    cb = CompactBinary.from_array(spikes)
+
+    f = lambda w: jnp.sum(
+        compact_binary_fcnmv(
+            w, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+            shape=shape, transpose=False,
+            col_weights=_build_col_major_fcn(w, indices, shape)[0],
+            col_indices=col_indices, col_indptr=col_indptr,
+        )
+    )
+    g = jax.grad(f)(weights)
+
+    f_dense = lambda w: jnp.sum(_ref_mv(w, indices, spikes, shape, transpose=False))
+    g_dense = jax.grad(f_dense)(weights)
+
+    tol = 1e-3 if homo_w else 5e-2
+    assert g.shape == weights.shape
+    assert jnp.isfinite(g).all()
+    assert jnp.allclose(g, g_dense, rtol=tol, atol=tol)
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
@@ -1059,6 +1265,39 @@ def test_compact_binary_fcnmv_grad_weights_finite_diff(homo_w, transpose):
     (ct_w_analytic,) = vjp_fn(ct)
 
     # Finite difference
+    eps = 1e-3
+    ct_w_fd = jnp.zeros_like(weights)
+    for idx in np.ndindex(*weights.shape):
+        wp = weights.at[idx].add(eps)
+        wm = weights.at[idx].add(-eps)
+        fd = (jnp.dot(ct, f(wp)) - jnp.dot(ct, f(wm))) / (2 * eps)
+        ct_w_fd = ct_w_fd.at[idx].set(fd)
+
+    tol = 1e-2 if homo_w else 5e-2
+    assert jnp.allclose(ct_w_analytic, ct_w_fd, rtol=tol, atol=tol), (
+        f"analytic={ct_w_analytic}  fd={ct_w_fd}"
+    )
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+def test_compact_binary_fcnmv_grad_weights_finite_diff_column_scatter(homo_w):
+    shape = (10, 20)
+    indices = _mk_indices(shape, n_conn=2)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices, seed=99)
+    _, col_indices, col_indptr = _build_col_major_fcn(weights, indices, shape)
+    spikes = _mk_spikes(shape[1], seed=99)
+    cb = CompactBinary.from_array(spikes)
+    ct = jnp.ones(shape[0])
+
+    f = lambda w: compact_binary_fcnmv(
+        w, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+        shape=shape, transpose=False,
+        col_weights=_build_col_major_fcn(w, indices, shape)[0],
+        col_indices=col_indices, col_indptr=col_indptr,
+    )
+    _, vjp_fn = jax.vjp(f, weights)
+    (ct_w_analytic,) = vjp_fn(ct)
+
     eps = 1e-3
     ct_w_fd = jnp.zeros_like(weights)
     for idx in np.ndindex(*weights.shape):

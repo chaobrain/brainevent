@@ -39,18 +39,35 @@ import brainevent
 from COBA_2005_benchmark import make_simulation_batch_run
 
 # Global configuration
-scales_post = [1, 2, 4, 6, 8, 10]
-scales_pre = [1, 2, 4, 6, 8, 10, 20, 40, 60]
-backends = ['jax_raw', 'cuda_raw']
-conn_nums = [20, 40, 80, 160, 320, 640]
-probs = [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64]
-default_batch_sizes = [1, 4, 16]
 
+scales_ALL = [400,600,800,100,200,]
+backends = ['jax_raw', 'cuda_raw']
+conn_nums = [20,40, 80, 160]
+probs = [0.001]
+default_batch_sizes = [64, 128, 256]
+'''
+scales_ALL = [1]
+conn_nums = [160]
+default_batch_sizes = [256]
+'''
 def benchmark_conn( mode = 'post',  
-                   conn_num=None, 
-                   conn_prob=None, 
-                   data_type='binary', 
-                   duration=1e3 * u.ms, homo: bool = True, backend: str | None = None, probs_or_conn='conn'):
+                   conn_num=None,
+                   conn_prob=None,
+                   batch_size=None,
+                   data_type='binary',
+                   duration=1e3 * u.ms,
+                   homo: bool = True,
+                   backend: str | None = None,
+                   params_type='conn',
+                   probs_or_conn=None,
+                   _N: int = 4000,
+                   limit_GB: int = 6,
+                   target_samples: int = 50,
+                   dis_type: str = 'uniform',
+                   data_size: int = 4,
+                   scale_max: int = 800,
+                   conn_max: int = 800,
+                   batch_max: int = 256):
 
     print('Benchmarking post-synaptic connection updates...')
 
@@ -58,15 +75,26 @@ def benchmark_conn( mode = 'post',
 
     backends_to_use = [backend] if backend is not None else backends
 
+    if probs_or_conn is not None:
+        params_type = probs_or_conn
+    if params_type == 'probs':
+        params_type = 'prob'
+
     if mode == 'post':
-        scales = scales_post
+        scales = scales_ALL
     else:
-        scales = scales_pre
+        scales = scales_ALL
 
-    batch_list = default_batch_sizes
-    TPGenerator = BT.TestingParamsGenerator_mm(limit_GB=6)
+    batch_list = [batch_size] if batch_size is not None else default_batch_sizes
+    TPGenerator = BT.TestingParamsGenerator_mm(
+        limit_GB=limit_GB,
+        _N=_N,
+        conn_max=conn_max,
+        scale_max=scale_max,
+        batch_max=batch_max,
+    )
 
-    if probs_or_conn == 'conn':
+    if params_type == 'conn':
         conn_nums_to_use = [conn_num] if conn_num is not None else conn_nums
         valid_pairs = []
         for s in scales:
@@ -74,9 +102,35 @@ def benchmark_conn( mode = 'post',
                 for cn in conn_nums_to_use:
                     #if TPGenerator.is_valid_mm(s, b, cn, homo):
                     valid_pairs.append((s, None, cn, b))
-    else:
+    elif params_type == 'prob':
         probs_to_use = [conn_prob] if conn_prob is not None else probs
-        valid_pairs = TPGenerator.make_simulation_params_probs(probs_to_use, scales, batch_list)
+        valid_pairs = TPGenerator.make_simulation_params_probs(
+            probs_to_use,
+            scales,
+            batch_list,
+            data_size=data_size,
+            homo=homo,
+        )
+    elif params_type == 'dist':
+        valid_states = TPGenerator.generate_params(
+            dis_type=dis_type,
+            target_samples=target_samples,
+            data_size=data_size,
+            homo=homo,
+        )
+        valid_pairs = [(scale, None, cn, batch) for scale, batch, cn in valid_states]
+    else:
+        raise ValueError(
+            f"Unknown params_type: {params_type!r}. "
+            "Choose from 'conn', 'prob', or 'dist'."
+        )
+
+    if not valid_pairs:
+        print(
+            f'No valid benchmark cases generated for params_type={params_type!r}. '
+            f'Please adjust limit_GB={limit_GB}, scales, batch sizes, or connection settings.'
+        )
+        return
 
     csv_recorder = BT.CSV_record(f'binary_{mode}', 'fcnmm', 'coba', duration=duration)
 
@@ -112,9 +166,9 @@ def benchmark_conn( mode = 'post',
                 
                 csv_recorder.single_COBA_data_add('fcnmm', data_type, back, mode, cn, scale, elapsed, float(rate), duration, homo=('homo' if homo else 'hetero'), batch_size=batch)
                 
-                flush_file_name = f'mm_{data_type}_{homo_str}_{back}_{mode}'
+                flush_file_name = f'mm_{data_type}_{homo_str}_{back}_{mode}_{params_type}'
 
-                last_path = csv_recorder.flush_and_clear(flush_file_name, dir='result-mm')
+                last_path = csv_recorder.flush_and_clear(flush_file_name, dir='result-mm-structural-dist')
             except Exception as e:
                 print(f'  [Error] scale={scale}, conn_num={cn}: {e}')
                 continue
@@ -122,53 +176,67 @@ def benchmark_conn( mode = 'post',
     if last_path:
         print(f'\nDone. Results saved to: {last_path}')
 
-'''
-def bench_fcnmm():
-
-    brainevent.config.set_backend('gpu', 'cuda_raw')
-
-    print("Binary FCNMM Kernel Benchmark")
-    print("=" * 70)
-
-    # Configurations to test
-    CONFIGS = [
-        # (batch_size, conn_num, description)
-        # --- Warp kernel path (conn_num <= 32) ---
-        (16, 16, "warp, small batch"),
-        (16, 32, "warp, boundary"),
-        (32, 16, "warp, large batch"),
-        (32, 32, "warp, large batch boundary"),
-        # --- Basic kernel path (conn_num > 32) ---
-        (16, 80, "basic, default"),
-        (16, 128, "basic, large conn"),
-        (32, 80, "basic, large batch"),
-        (32, 128, "basic, large batch+conn"),
-        (64, 80, "basic, very large batch"),
-    ]
-
-    # Test gather mode (post-synaptic / transpose=True)
-    for batch_size, conn_num, desc in CONFIGS:
-        run_benchmark(batch_size, conn_num, mode='post', backend=None)
-
-    # Test scatter mode (pre-synaptic / transpose=False) for a subset
-    print("\n\n" + "#" * 70)
-    print("# Scatter mode (pre-synaptic)")
-    print("#" * 70)
-    scatter_configs = [
-        (16, 16, "warp"),
-        (16, 80, "basic"),
-        (32, 80, "basic large batch"),
-    ]
-    for batch_size, conn_num, desc in scatter_configs:
-        run_benchmark(batch_size, conn_num, mode='pre', backend=None)
-'''
-
 if __name__ == '__main__':
-    benchmark_conn(data_type='compact',mode='post',  duration=1e2 * u.ms, homo = True, backend='cuda_raw', probs_or_conn='conn')
-    benchmark_conn(data_type='compact',mode='pre',  duration=1e2 * u.ms, homo = True, backend='cuda_raw', probs_or_conn='conn')
-    benchmark_conn(data_type='bitpack',mode='post',  duration=1e2 * u.ms, homo = True, backend='cuda_raw', probs_or_conn='conn')
-    benchmark_conn(data_type='bitpack',mode='pre',  duration=1e2 * u.ms, homo = True, backend='cuda_raw', probs_or_conn='conn')
+    #benchmark_conn(data_type='compact',mode='post',  duration=0.5 * u.ms, homo = True, backend='cuda_raw', probs_or_conn='conn')
+    #benchmark_conn(data_type='compact',mode='pre',  duration=1e2 * u.ms, homo = True, backend='cuda_raw', probs_or_conn='conn')
+    #benchmark_conn(data_type='bitpack',mode='post',  duration=1e2 * u.ms, homo = True, backend='cuda_raw', probs_or_conn='conn')
+    #benchmark_conn(data_type='bitpack',mode='pre',  duration=1e2 * u.ms, homo = True, backend='cuda_raw', probs_or_conn='conn')
+    '''
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=100 * u.ms,
+        homo=True,
+        backend='binary_fcnmm_atx_streaming-x_scatter',
+        params_type='conn',
+    )
+    
+    
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=100 * u.ms,
+        homo=True,
+        backend='binary_fcnmm_atx_fcn-x_scatter',
+        params_type='conn',
+    )
 
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=100 * u.ms,
+        homo=True,
+        backend='binary_fcnmm_atx_csr-x_scatter',
+        params_type='conn',
+    )
+    '''
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=100 * u.ms,
+        homo=True,
+        backend='binary_fcnmm_atx_csr_compact-x_scatter',
+        params_type='conn',
+    )
+    '''
+    benchmark_conn(
+        data_type='compact',
+        mode='post',
+        duration=100 * u.ms,
+        homo=True,
+        backend='cuda_raw',
+        params_type='conn',
+    )
+    benchmark_conn(
+        data_type='bitpack',
+        mode='post',
+        duration=100 * u.ms,
+        homo=True,
+        backend='cuda_raw',
+        params_type='conn',
+    )
+    '''
+''''''
     #benchmark_conn(data_type='binary',mode='post',  duration=1e2 * u.ms, homo = True, backend='jax_raw')
     #benchmark_pre_conn(batch_size=16, conn_num=80, data_type='binary', duration=1e3 * u.ms, homo = True)
     #bench_fcnmm()

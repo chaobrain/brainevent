@@ -25,20 +25,29 @@
 #
 
 
+import importlib.util
 import sys
+import time
 from pathlib import Path
+from typing import Any, Callable, cast
+
 _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
-
-import time
-from typing import Any, Callable, cast
 
 import brainunit as u
 import jax
 
 import brainevent
-from COBA_2005_benchmark import make_simulation_run
+
+_BENCHMARK_PATH = Path(__file__).with_name('COBA EI benchmark.py')
+_SPEC = importlib.util.spec_from_file_location('coba_ei_benchmark', _BENCHMARK_PATH)
+if _SPEC is None or _SPEC.loader is None:
+    raise ImportError(f'Unable to load benchmark module from {_BENCHMARK_PATH}')
+_BENCHMARK_MODULE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_BENCHMARK_MODULE)
+make_simulation_run = _BENCHMARK_MODULE.make_simulation_run
+
 scales = [1, 2, 4, 6, 8, 10, 20, 40, 60]
 backends = ['jax_raw', 'cuda_raw']
 conn_nums = [20, 40, 80, 160, 320, 640]
@@ -60,19 +69,20 @@ def _announce_runtime_platform() -> str:
     print(f'Runtime platform: {platform}; devices: {devices}')
     return platform
 
+
 def benchmark_conn(
-                        mode = 'post',
-                        conn_num=None,
-                        conn_prob=None,
-                        data_type='binary',
-                        duration=1e4 * u.ms,
-                        homo: bool = True,
-                        backend: str | None = None,
-                        params_type='conn',
-                        _N : int = 4000,
-                        limit_GB = 16,
-                        mv_layout: str = 'row_gather'
-    ):
+    mode='post',
+    conn_num=None,
+    conn_prob=None,
+    data_type='binary',
+    duration=1e4 * u.ms,
+    homo: bool = True,
+    backend: str | None = None,
+    params_type='conn',
+    _N: int = 4000,
+    limit_GB=16,
+    mv_layout: str = 'row_gather'
+):
     import BenchmarkTools as BT
 
     duration = cast(u.Quantity, duration)
@@ -81,7 +91,7 @@ def benchmark_conn(
     print(f'Benchmarking {mode}-synaptic connection updates...')
     runtime_platform = _announce_runtime_platform()
 
-    TPGenerator = BT.TestingParamsGenerator_mv(limit_GB=limit_GB, _N=_N, sample_points=10, conn_max=1000, scale_max=1000)
+    TPGenerator = BT.TestingParamsGenerator_mv(limit_GB=limit_GB, _N=_N, sample_points=100, conn_max=4000, scale_max=2000)
 
     backends_to_use = [backend] if backend is not None else backends
 
@@ -90,17 +100,16 @@ def benchmark_conn(
         valid_pairs = []
         for s in scales:
             for cn in conn_nums_to_use:
-                #if TPGenerator.is_valid_mm(s, b, cn, homo):
                 valid_pairs.append((s, None, cn))
     elif params_type == 'prob':
         probs_to_use = [conn_prob] if conn_prob is not None else probs
         valid_pairs = TPGenerator.make_simulation_params_probs(probs_to_use, scales, homo=homo)
     elif params_type == 'dist':
-        valid_pairs = TPGenerator.generate_params(dis_type='uniform', target_samples=10, data_size = 4, homo=homo)
+        valid_pairs = TPGenerator.generate_params(dis_type='uniform', target_samples=10, data_size=4, homo=homo)
+    else:
+        raise ValueError(f'Unsupported params_type: {params_type}')
 
-
-    csv_recorder = BT.CSV_record(f'binary_{mode}', 'fcnmv', 'coba', duration=csv_duration, conn=conn_num)
-
+    csv_recorder = BT.CSV_record(f'binary_{mode}', 'fcnmv', 'coba_ei', duration=csv_duration, conn=conn_num)
 
     homo_str = 'homo' if homo else 'hetero'
     last_path = None
@@ -108,13 +117,18 @@ def benchmark_conn(
 
     for back in backends_to_use:
         brainevent.config.set_backend(runtime_platform, back)
-        csv_recorder.print_header(operator='fcnmv', data_type=data_type, backend=back,
-                mode=mode, conn_num=header_conn_num, duration=duration,
-                homo=('homo' if homo else 'hetero'))
+        csv_recorder.print_header(
+            operator='fcnmv',
+            data_type=data_type,
+            backend=back,
+            mode=mode,
+            conn_num=header_conn_num,
+            duration=duration,
+            homo=('homo' if homo else 'hetero'),
+        )
         csv_recorder.print_table_header(show_conn=True)
 
         for scale, prob, cn in valid_pairs:
-
             try:
                 case_t0 = time.time()
                 run = cast(CompiledRun, make_simulation_run(
@@ -124,7 +138,7 @@ def benchmark_conn(
                     duration=duration,
                     conn_num=cn,
                     homo=homo,
-                    mv_layout=mv_layout
+                    mv_layout=mv_layout,
                 ))
 
                 first_run_t0 = time.time()
@@ -139,20 +153,26 @@ def benchmark_conn(
 
                 csv_recorder.add_tag('limit_GB', f'{limit_GB}')
                 csv_recorder.add_tag('mv_layout', f'{mv_layout}')
-                #csv_recorder.add_tag('wat', f'tpr')
 
                 csv_recorder.print_row(scale, n, elapsed, float(rate), conn_num=cn)
 
                 pre_flush_elapsed = time.time() - case_t0
                 csv_recorder.single_COBA_data_add(
-                    'fcnmv', data_type, back, mode, cn, scale, elapsed, float(rate), csv_duration,
+                    'fcnmv',
+                    data_type,
+                    back,
+                    mode,
+                    cn,
+                    scale,
+                    elapsed,
+                    float(rate),
+                    csv_duration,
                     homo=('homo' if homo else 'hetero'),
                     first_run_s=first_run_elapsed,
                     pre_flush_s=pre_flush_elapsed,
                 )
 
-                flush_file_name = f'benchmarker-test_{data_type}_{homo_str}_{back}_{mode}-{mv_layout}-float-input-{limit_GB}GB'
-                #flush_file_name = f'col-row_{data_type}_fcnmv_pre-{mv_layout}-{limit_GB}'
+                flush_file_name = f'benchmarker-test-coba-ei_{data_type}_{homo_str}_{back}_{mode}-{mv_layout}-float-input-{limit_GB}GB'
                 flush_t0 = time.time()
                 last_path = csv_recorder.flush_and_clear(flush_file_name, dir='benchmarker-test')
                 flush_t1 = time.time()
@@ -173,26 +193,24 @@ def benchmark_conn(
         print(f'\nDone. Results saved to: {last_path}')
 
 
-
 if __name__ == '__main__':
     #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 8, mv_layout = 'row_gather')
-    #benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 18)
+    benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 18)
     #benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 9)
     #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 8, mv_layout = 'row_gather')
     #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 7)
 
-    #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 18)
+    benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 18)
     #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 9)
     #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 9)
     #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 7)
-    
+
     #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 3, mv_layout = 'row_gather')
-    
+
     #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 8, mv_layout = 'col_scatter')
-    #benchmark_conn(data_type='compact', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 8, mv_layout = 'col_scatter')
+    #benchmark_conn(data_type='compact', mode='pre', duration=1e2 * u.ms, params_type='dist', homo=True, backend='cuda_raw', limit_GB=8, mv_layout='col_scatter')
     #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 8)
     #benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 8)
-    benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 8)
+
     #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_cuda_joint', limit_GB = 7)
     #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax-cuda-joint', limit_GB = 9)
-#18 9 9 7

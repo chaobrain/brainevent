@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 
 from brainevent._fcn.binary import binary_fcnmv, binary_fcnmv_p, binary_fcnmm, binary_fcnmm_p
+from brainevent._misc import fixed_conn_num_to_csc
 from brainevent._test_util import generate_fixed_conn_num_indices
 
 
@@ -87,6 +88,27 @@ def _dense_from_fixed_conn(weights, indices, shape):
     return jnp.zeros(shape, dtype=weights.dtype).at[rows, cols].add(values)
 
 
+def _mv_reference_from_col_major(col_weights, col_indices, col_indptr, events, shape):
+    events = _to_binary_events(events, jnp.asarray(col_weights).dtype)
+    out = np.zeros(shape[0], dtype=np.asarray(col_weights).dtype)
+    col_weights_np = np.asarray(col_weights)
+    col_indices_np = np.asarray(col_indices)
+    col_indptr_np = np.asarray(col_indptr)
+    events_np = np.asarray(events)
+    homo = col_weights_np.size == 1
+    scalar_weight = col_weights_np.reshape(-1)[0] if homo else None
+
+    for col in range(shape[1]):
+        if not events_np[col]:
+            continue
+        start = col_indptr_np[col]
+        end = col_indptr_np[col + 1]
+        for pos in range(start, end):
+            row = col_indices_np[pos]
+            out[row] += scalar_weight if homo else col_weights_np[pos]
+    return jnp.asarray(out)
+
+
 def _mv_reference(weights, indices, events, shape, transpose):
     dense = _dense_from_fixed_conn(weights, indices, shape)
     events = _to_binary_events(events, dense.dtype)
@@ -112,6 +134,7 @@ def generate_cs_pairs(
     data_size: int = 4,
     num_points: int = 5,
     include_dense_ref: bool = False,
+    max_conn: int = 3000,
 ):
     """Generate ``(conn, m)`` pairs near the GPU memory boundary.
 
@@ -141,7 +164,7 @@ def generate_cs_pairs(
     scale_max : int
         Upper bound for the scale factor *s* (``m = s * _N``).
     conn_max : int
-        Maximum number of connections per row.
+        Maximum number of connections per row from the original search space.
     _N : int
         Base neuron count per scale unit.
     data_size : int
@@ -151,12 +174,19 @@ def generate_cs_pairs(
     include_dense_ref : bool
         If True, the budget also accounts for a dense ``(m, m)`` reference
         matrix of size ``m² * data_size``.
+    max_conn : int
+        Hard upper bound on returned ``conn`` values. Final ``conn`` will
+        satisfy ``conn <= min(conn_max, max_conn)``.
     """
     
     import math
     import numpy as np
     limit_bytes = memory_limit * (1024 ** 3)
     times = 1 if homo_or_not else 2
+
+    conn_cap = min(conn_max, max_conn)
+    if conn_cap < 1:
+        raise ValueError(f"max_conn must be >= 1, got {max_conn}")
 
     # K = budget expressed in units of (_N * data_size) bytes
     K = limit_bytes / (_N * data_size)
@@ -169,17 +199,16 @@ def generate_cs_pairs(
         # conn = K / (s * times) >= 1  →  s <= K / times
         s_max = min(scale_max, int(K / times))
 
-    # s_min: when *not* including the dense ref, large s → small conn,
-    # which is fine; but very small s → conn > conn_max, wasting budget.
+    # s_min: when not including dense ref, small s may force conn too large.
     if not include_dense_ref:
-        s_min = max(1, math.ceil(K / (times * conn_max)))
+        s_min = max(1, math.ceil(K / (times * conn_cap)))
     else:
         s_min = 1
 
     if s_min > s_max:
         raise ValueError(
             f"No valid (conn, m) pairs: s_min={s_min} > s_max={s_max}. "
-            f"Try increasing memory_limit or decreasing scale_max/conn_max."
+            f"Try increasing memory_limit or decreasing scale_max/conn_max/max_conn."
         )
 
     s_samples = np.geomspace(s_min, s_max, num_points)
@@ -189,7 +218,7 @@ def generate_cs_pairs(
 
     for s_val in s_samples:
         s_int = max(1, int(round(s_val)))
-        s_int = min(s_int, s_max)  # clamp
+        s_int = min(s_int, s_max)
 
         # Compute max conn (floor to stay below the boundary)
         if include_dense_ref:
@@ -200,7 +229,7 @@ def generate_cs_pairs(
         else:
             c_int = int(K / (s_int * times))
 
-        c_int = min(c_int, conn_max)
+        c_int = min(c_int, conn_cap)
 
         m = s_int * _N
 
@@ -218,13 +247,13 @@ def generate_cs_pairs(
 @pytest.mark.parametrize('event_dtype', [bool, float])
 def test_binary_fcnmv_forward_matches_reference_in_large_scale(implementation, homo_w, event_dtype):
     import gc
-    for conn, m in generate_cs_pairs(homo_or_not=homo_w, include_dense_ref=True):
+    for conn, m in generate_cs_pairs(homo_or_not=homo_w, include_dense_ref=True, max_conn=600):
 
         indices = generate_fixed_conn_num_indices(m, m, conn)
         weights = _make_weights(indices, homo_w)
+        col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=(m, m))
 
-        # In this large-scale test we always use square matrices with transpose=True.
-        transpose = True
+        transpose = False
         shape = (m, m)
         event_size = m
         if event_dtype is bool:
@@ -240,14 +269,17 @@ def test_binary_fcnmv_forward_matches_reference_in_large_scale(implementation, h
             shape=(m, m),
             transpose=transpose,
             backend=implementation,
+            col_weights=col_weights,
+            col_indices=col_indices,
+            col_indptr=col_indptr,
         )
         y_ref = _mv_reference(weights, indices, events, shape, transpose)
         
         assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2)
         
-        jax.block_until_ready((indices, weights, events, y, y_ref))
+        jax.block_until_ready((indices, weights, events, col_weights, col_indices, col_indptr, y, y_ref))
         
-        del indices, weights, events, y, y_ref
+        del indices, weights, events, col_weights, col_indices, col_indptr, y, y_ref
         gc.collect()
 
 @pytest.mark.parametrize('implementation', FCNMV_PARAMS)
@@ -278,6 +310,151 @@ def test_binary_fcnmv_forward_matches_reference(implementation, homo_w, transpos
     y_ref = _mv_reference(weights, indices, events, shape, transpose)
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
     jax.block_until_ready((indices, weights, events, y, y_ref))
+
+
+@pytest.mark.parametrize('implementation', FCNMV_PARAMS)
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+@pytest.mark.parametrize('shape', SHAPES)
+def test_binary_fcnmv_forward_column_scatter_matches_reference(implementation, homo_w, event_dtype, shape):
+    m, n = shape
+    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
+    weights = _make_weights(indices, homo_w)
+    col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=shape)
+
+    if event_dtype is bool:
+        events = brainstate.random.rand(n) < 0.5
+    else:
+        raw = jnp.asarray(brainstate.random.rand(n), dtype=jnp.float32)
+        events = jnp.where(raw > 0.4, raw, 0.0)
+
+    y = binary_fcnmv(
+        weights,
+        indices,
+        events,
+        shape=shape,
+        transpose=False,
+        backend=implementation,
+        col_weights=col_weights,
+        col_indices=col_indices,
+        col_indptr=col_indptr,
+    )
+    y_ref = _mv_reference(weights, indices, events, shape, transpose=False)
+    y_col = _mv_reference_from_col_major(col_weights, col_indices, col_indptr, events, shape)
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+    assert jnp.allclose(y_col, y_ref, rtol=1e-6, atol=1e-6)
+    jax.block_until_ready((indices, weights, events, col_weights, col_indices, col_indptr, y, y_ref, y_col))
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('shape', SHAPES)
+def test_column_major_csc_mirror_has_expected_sizes(homo_w, shape):
+    indices = generate_fixed_conn_num_indices(shape[0], shape[1], max(1, int(shape[1] * 0.1)))
+    weights = _make_weights(indices, homo_w=homo_w)
+    col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=shape)
+
+    nnz = indices.size
+    assert col_indices.ndim == 1
+    assert col_indices.size == nnz
+    assert col_indptr.ndim == 1
+    assert col_indptr.shape == (shape[1] + 1,)
+    assert int(np.asarray(col_indptr)[0]) == 0
+    assert int(np.asarray(col_indptr)[-1]) == nnz
+    if homo_w:
+        assert jnp.asarray(col_weights).size == 1
+    else:
+        assert jnp.asarray(col_weights).size == nnz
+
+
+@pytest.mark.parametrize('implementation', FCNMV_PARAMS)
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+@pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
+def test_binary_fcnmv_column_scatter_jvp_weights_matches_reference(implementation, homo_w, event_dtype, shape):
+    m, n = shape
+    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
+    weights = _make_weights(indices, homo_w)
+    _, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=shape)
+
+    if event_dtype is bool:
+        events = brainstate.random.rand(n) < 0.5
+    else:
+        raw = jnp.asarray(brainstate.random.rand(n), dtype=jnp.float32)
+        events = jnp.where(raw > 0.4, raw, 0.0)
+
+    w_dot = jnp.ones_like(weights) * 0.1
+
+    f = lambda w: binary_fcnmv(
+        w,
+        indices,
+        events,
+        shape=shape,
+        transpose=False,
+        backend=implementation,
+        col_weights=fixed_conn_num_to_csc(w, indices, shape=shape)[0],
+        col_indices=col_indices,
+        col_indptr=col_indptr,
+    )
+    primals_out, tangents_out = jax.jvp(f, (weights,), (w_dot,))
+
+    expected_tangent = binary_fcnmv(
+        w_dot,
+        indices,
+        events,
+        shape=shape,
+        transpose=False,
+        backend=implementation,
+        col_weights=fixed_conn_num_to_csc(w_dot, indices, shape=shape)[0],
+        col_indices=col_indices,
+        col_indptr=col_indptr,
+    )
+    y_ref = _mv_reference(weights, indices, events, shape, transpose=False)
+
+    assert jnp.allclose(primals_out, y_ref, rtol=1e-3, atol=1e-3)
+    assert jnp.allclose(tangents_out, expected_tangent, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize('implementation', FCNMV_PARAMS)
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+@pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
+def test_binary_fcnmv_column_scatter_vjp_weights_matches_dense(implementation, homo_w, event_dtype, shape):
+    m, n = shape
+    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
+    weights = _make_weights(indices, homo_w)
+    _, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=shape)
+
+    if event_dtype is bool:
+        events = brainstate.random.rand(n) < 0.5
+    else:
+        raw = jnp.asarray(brainstate.random.rand(n), dtype=jnp.float32)
+        events = jnp.where(raw > 0.4, raw, 0.0)
+
+    ct = jnp.ones(m, dtype=jnp.float32)
+
+    f = lambda w: binary_fcnmv(
+        w,
+        indices,
+        events,
+        shape=shape,
+        transpose=False,
+        backend=implementation,
+        col_weights=fixed_conn_num_to_csc(w, indices, shape=shape)[0],
+        col_indices=col_indices,
+        col_indptr=col_indptr,
+    )
+    _, vjp_fn = jax.vjp(f, weights)
+    (ct_w,) = vjp_fn(ct)
+
+    f_dense = lambda w: _mv_reference(w, indices, events, shape, transpose=False)
+    _, vjp_dense = jax.vjp(f_dense, weights)
+    (ct_w_dense,) = vjp_dense(ct)
+
+    tol = 1e-3 if homo_w else 5e-2
+    assert ct_w.shape == weights.shape
+    assert jnp.allclose(ct_w, ct_w_dense, rtol=tol, atol=tol), (
+        f"max diff={jnp.max(jnp.abs(ct_w - ct_w_dense)):.4e}"
+    )
 
 
 @pytest.mark.parametrize('implementation', FCNMM_PARAMS)
