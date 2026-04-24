@@ -47,7 +47,9 @@ import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
 #JAX_CAPTURED_CONSTANTS_REPORT_FRAMES = -1
+#JAX_CAPTURED_CONSTANTS_REPORT_FRAMES = -1
 
+backends = ['cuda_raw']
 backends = ['cuda_raw']
 homo = True
 
@@ -73,6 +75,7 @@ def benchmark_conn(
     conn_num=None,
     conn_prob=None,
     mode = 'pre',
+    mode = 'pre',
     data_type='binary',
     duration=1e4 * u.ms,
     homo: bool = True,
@@ -80,8 +83,13 @@ def benchmark_conn(
     probs_or_conn='conn',
     _N : int = 4000,
     limit_gb: int = 16,
+    limit_gb: int = 16,
     target_samples: int = 50
 ):
+    import BenchmarkTools as BT
+
+    if mode not in ('pre', 'post'):
+        raise ValueError("mode must be either 'pre' or 'post'.")
     import BenchmarkTools as BT
 
     if mode not in ('pre', 'post'):
@@ -135,6 +143,7 @@ def benchmark_conn(
                 csv_recorder.print_row(s, n, elapsed, float(rate), conn_num=cn)
                 csv_recorder.single_COBA_data_add(
                     'fcnmv', data_type, back, mode, cn, s, elapsed, float(rate), duration, 
+                    'fcnmv', data_type, back, mode, cn, s, elapsed, float(rate), duration, 
                     homo=('homo' if homo else 'hetero')
                 )
 
@@ -151,6 +160,20 @@ def benchmark_conn(
     if last_path is not None:
         print(f'Results saved to: {last_path}')
 
+                flush_file_name = f'mv-boundary_{data_type}_{homo_str}_{back}_{mode}-float-input-16GB'
+
+                last_path = csv_recorder.flush_and_clear(flush_file_name, dir='result-boundary-mv-4.1-final')
+
+            except Exception as exc:
+                if _is_oom_error(exc):
+                    print(f'Skipping scale={s}, conn_num={cn} due to OOM: {exc}')
+                    continue
+                raise
+
+    if last_path is not None:
+        print(f'Results saved to: {last_path}')
+
+    #csv_recorder.record_finish(dir='result-stage2',file_name='post-boundary-compact-homo-jaxandcuda')
     #csv_recorder.record_finish(dir='result-stage2',file_name='post-boundary-compact-homo-jaxandcuda')
 
 

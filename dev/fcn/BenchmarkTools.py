@@ -24,8 +24,10 @@ def _fixed_batch_candidates(batch_max: int) -> list[int]:
 
 class CSV_record():
 
+
     @staticmethod
     def _extract_value(param):
+ 
  
         if hasattr(param, '__class__') and param.__class__.__name__ == 'Quantity':
             return param.magnitude
@@ -41,10 +43,12 @@ class CSV_record():
         output_dir: str | None = None,
         append: bool = False,
         conn: int | None = None,
+        conn: int | None = None,
     ) -> None:
         self.name = CSV_name
         self.suffix = suffix
         self.conn = conn
+        self.operator_name = operator
         self.operator_name = operator
         # Handle brainunit Quantity objects
         self.duration = self._extract_value(duration)
@@ -69,7 +73,27 @@ class CSV_record():
             ]
             self.operator_type = 'unknown'
         
+        if 'mv' in self.operator_name:   
+            self.fieldnames: list[str] = [
+                'operator', 'data_type', 'backend', 'synaptic_type', 'scale', 'conn_num',
+                'elapsed_s', 'firing_rate', 'duration', 'homo'
+            ]
+            self.operator_type = 'mv'
+        elif 'mm' in self.operator_name:
+            self.fieldnames: list[str] = [
+                'operator', 'data_type', 'backend', 'synaptic_type', 'scale', 'conn_num',
+                'batch_size', 'elapsed_s', 'firing_rate', 'duration', 'homo'
+            ]
+            self.operator_type = 'mm'
+        else:
+            self.fieldnames: list[str] = [
+                'operator', 'data_type', 'backend', 'synaptic_type', 'scale', 'conn_num',
+                'elapsed_s', 'firing_rate', 'duration', 'homo'
+            ]
+            self.operator_type = 'unknown'
+        
         self.rows: list[dict] = []
+
 
         self.testing_type = testing_type  
         if testing_type == 'COBA': self.testing_type = 'coba' # coba or benchmark
@@ -87,6 +111,7 @@ class CSV_record():
 
         self.width = 70
 
+    def _write_csv(self, file_name: str, rows: list[dict], fieldnames: list[str], mode: str = 'w', silent: bool = False) -> None:
     def _write_csv(self, file_name: str, rows: list[dict], fieldnames: list[str], mode: str = 'w', silent: bool = False) -> None:
         import csv
         from pathlib import Path
@@ -115,6 +140,8 @@ class CSV_record():
                 writer.writeheader()
             writer.writerows(rows)
 
+        if not silent:
+            print(f"result has been saved: {file_path}")
         if not silent:
             print(f"result has been saved: {file_path}")
 
@@ -154,11 +181,55 @@ class CSV_record():
                              duration: float,
                              homo: str = 'default',
                              batch_size: int = 1,
+                             batch_size: int = 1,
                              **kwargs):
         """Backwards-compatible helper used by existing benchmarks.
         
         Automatically extracts numeric values from brainunit Quantity objects.
         """
+        if self.operator_type == 'mv':   
+            row = {
+            'operator': self.operator_name,
+            'data_type': data_type,
+            'backend': backend,
+            'testing_type': self.testing_type,
+            'synaptic_type': synaptic_type,
+            'scale': scale,
+            'conn_num': conn_num,
+            'elapsed_s': self._extract_value(elapsed_s),
+            'firing_rate': self._extract_value(firing_rate),
+            'duration': self._extract_value(duration),
+            'homo': homo,
+        }
+        elif self.operator_type == 'mm':
+            row = {
+                'operator': self.operator_name,
+                'data_type': data_type,
+                'backend': backend,
+                'testing_type': self.testing_type,
+                'synaptic_type': synaptic_type,
+                'scale': scale,
+                'conn_num': conn_num,
+                'batch_size': batch_size,
+                'elapsed_s': self._extract_value(elapsed_s),
+                'firing_rate': self._extract_value(firing_rate),
+                'duration': self._extract_value(duration),
+                'homo': homo,
+            }
+        else:
+            row = {
+                'operator': self.operator_name,
+                'data_type': data_type,
+                'backend': backend,
+                'testing_type': self.testing_type,
+                'synaptic_type': synaptic_type,
+                'scale': scale,
+                'conn_num': conn_num,
+                'elapsed_s': self._extract_value(elapsed_s),
+                'firing_rate': self._extract_value(firing_rate),
+                'duration': self._extract_value(duration),
+                'homo': homo,
+            }
         if self.operator_type == 'mv':   
             row = {
             'operator': self.operator_name,
@@ -210,6 +281,7 @@ class CSV_record():
         self.add_row(row)
 
 
+
     def record_finish(self, dir:str = '', suffix: str = '', file_name: str | None = None) -> None:
         """Write accumulated rows to disk.
 
@@ -221,6 +293,9 @@ class CSV_record():
         - For other files, automatically detects if the target file exists and
           appends if it does.
         """
+        if not self.rows:
+            return
+        if dir != '':
         if not self.rows:
             return
         if dir != '':
@@ -247,6 +322,37 @@ class CSV_record():
             mode = 'a' if file_path.exists() else 'w'
 
         self._write_csv(out_name, self.rows, self.fieldnames, mode=mode)
+
+    def flush_and_clear(self, file_name: str, dir: str = '') -> 'Path | None':
+        """Immediately write buffered rows to disk and clear the buffer.
+
+        Use this for incremental flushing after each completed test round
+        instead of waiting for ``record_finish`` at the end.
+        If there are no buffered rows this is a no-op.
+
+        Parameters
+        ----------
+        file_name : str
+            Output filename (without .csv extension).
+        dir : str, optional
+            Sub-directory under ``self.base`` to write into.
+            If empty, uses the current ``self.output_dir``.
+        """
+        if not self.rows:
+            return
+        if dir:
+            target_dir = self.base / dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            target_dir = self.output_dir
+        file_path = target_dir / f'{file_name}.csv'
+        mode = 'a' if file_path.exists() else 'w'
+        _saved = self.output_dir
+        self.output_dir = target_dir
+        self._write_csv(file_name, self.rows, self.fieldnames, mode=mode, silent=True)
+        self.output_dir = _saved
+        self.rows = []
+        return file_path
 
     def flush_and_clear(self, file_name: str, dir: str = '') -> 'Path | None':
         """Immediately write buffered rows to disk and clear the buffer.
@@ -310,7 +416,15 @@ class CSV_record():
         print(f'{"=" * self.width}')
 
     def print_table_header(self, show_conn: bool = False, show_batch: bool = False) -> None:
+    def print_table_header(self, show_conn: bool = False, show_batch: bool = False) -> None:
         """Print column header for the standard result table."""
+        if show_batch and show_conn:
+            print(f'  {"Scale":>5s} | {"BatchSz":>7s} | {"ConnNum":>8s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
+            print(f'  {"-----":>5s}-+-{"-------":>7s}-+-{"--------":>8s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
+        elif show_batch:
+            print(f'  {"Scale":>5s} | {"BatchSz":>7s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
+            print(f'  {"-----":>5s}-+-{"-------":>7s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
+        elif show_conn:
         if show_batch and show_conn:
             print(f'  {"Scale":>5s} | {"BatchSz":>7s} | {"ConnNum":>8s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
             print(f'  {"-----":>5s}-+-{"-------":>7s}-+-{"--------":>8s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
@@ -326,7 +440,13 @@ class CSV_record():
 
     @staticmethod
     def print_row(scale: int, neurons: int, elapsed: float, rate: float, conn_num=None, batch_size=None) -> None:
+    def print_row(scale: int, neurons: int, elapsed: float, rate: float, conn_num=None, batch_size=None) -> None:
         """Print one benchmark result row."""
+        if batch_size is not None and conn_num is not None:
+            print(f'  {scale:>5d} | {batch_size:>7d} | {conn_num:>8g} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
+        elif batch_size is not None:
+            print(f'  {scale:>5d} | {batch_size:>7d} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
+        elif conn_num is not None:
         if batch_size is not None and conn_num is not None:
             print(f'  {scale:>5d} | {batch_size:>7d} | {conn_num:>8g} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
         elif batch_size is not None:
@@ -399,11 +519,66 @@ class TestingParamsGenerator_mv():
         """
         Generates a list of valid (scale, conn_num) parameter states within VRAM limits.
 
+class TestingParamsGenerator_mv():
+
+    def __init__(self,
+                 limit_GB: int,
+                 _N: int,
+                 scale_max: int = 2000,
+                 conn_max: int = 4000,
+                 sample_points:int = 50):
+        
+        self._limit_GB = limit_GB
+        self._N = _N
+        self._limit_bytes = self._limit_GB * (1024)**3
+        self.scale_max = scale_max
+        self.conn_max = conn_max
+        self.sample_points = sample_points
+    
+    def is_valid_mv(self, scale, conn, homo, data_size):
+        if homo:
+            times = 1
+        else:
+            times = 2
+        matrix_memory_bytes = conn * scale * self._N * data_size * times #1 if homo else 2
+        return matrix_memory_bytes <= self._limit_bytes and conn <= self._N * scale
+
+    def generate_params(
+        self,
+        dis_type: str = 'log',
+        target_samples: int = 500,
+        data_size: int = 4,
+        homo: bool = True
+    ) -> list:
+        """
+        Generates a list of valid (scale, conn_num) parameter states within VRAM limits.
+
+        Boundary conditions
+        -------------------
+        - matrix_memory_bytes = conn_num * scale * _N * data_size * 2 <= limit_bytes
+        - conn_num <= _N * scale
         Boundary conditions
         -------------------
         - matrix_memory_bytes = conn_num * scale * _N * data_size * 2 <= limit_bytes
         - conn_num <= _N * scale
 
+        Parameters
+        ----------
+        dis_type : str
+            Sampling strategy: 'uniform' (linear grid), 'log' (geometric grid),
+            or 'monte_carlo' (random sampling).
+        _N : int
+            Number of neurons per scale unit.
+        limit_gb : float
+            VRAM limit in gigabytes.
+        target_samples : int
+            Approximate number of valid states to generate (actual count ≈ ±50).
+        data_size : int
+            Bytes per element (4 for float32/int32, 1 for bool/int8).
+        scale_max : int
+            Upper bound of scale search range.
+        conn_max : int
+            Upper bound of conn_num search range.
         Parameters
         ----------
         dis_type : str
@@ -427,6 +602,11 @@ class TestingParamsGenerator_mv():
         list of (scale, conn_num) tuples, sorted by memory footprint.
         """
         import numpy as np
+        Returns
+        -------
+        list of (scale, conn_num) tuples, sorted by memory footprint.
+        """
+        import numpy as np
 
         min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
         min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
@@ -445,6 +625,9 @@ class TestingParamsGenerator_mv():
         # For grid-based methods: the valid region is a curved hyperbolic area;
         # ~3x oversampling of grid points relative to target gives ~±50 accuracy after filtering.
         grid_res = int(np.sqrt(target_samples * 3))
+        # For grid-based methods: the valid region is a curved hyperbolic area;
+        # ~3x oversampling of grid points relative to target gives ~±50 accuracy after filtering.
+        grid_res = int(np.sqrt(target_samples * 3))
 
         if dis_type == 'uniform':
             scales_raw = np.unique(np.linspace(min_scale, self.scale_max, num=grid_res, dtype=int))
@@ -455,6 +638,15 @@ class TestingParamsGenerator_mv():
         else:
             raise ValueError(f"Unknown dis_type: '{dis_type}'. Choose from 'uniform', 'log', 'monte_carlo'.")
 
+        valid_states = [
+            (int(s), None, int(c))
+            for s in scales_raw
+            for c in conn_nums_raw
+            if self.is_valid_mv(s, c, homo, data_size)
+        ]
+        valid_states.sort(key=lambda state: state[0] * state[2])
+        print(f"Generated {len(valid_states)} valid parameter states under {self._limit_GB}GB boundary.")
+        return valid_states
         valid_states = [
             (int(s), None, int(c))
             for s in scales_raw

@@ -142,6 +142,9 @@ def benchmark_conn( mode = 'post',
         csv_recorder.print_header(operator='fcnmm', data_type=data_type, backend=back,
                 mode=mode, duration=duration, homo=('homo' if homo else 'hetero'))
         csv_recorder.print_table_header(show_batch=True, show_conn=True)
+        csv_recorder.print_header(operator='fcnmm', data_type=data_type, backend=back,
+                mode=mode, duration=duration, homo=('homo' if homo else 'hetero'))
+        csv_recorder.print_table_header(show_batch=True, show_conn=True)
 
         for scale, prob, cn, batch in valid_pairs:
 
@@ -155,7 +158,20 @@ def benchmark_conn( mode = 'post',
                     conn_num=cn,
                     homo=homo,
                 )
+        for scale, prob, cn, batch in valid_pairs:
 
+            try:
+                run = make_simulation_batch_run(
+                    scale=scale,
+                    batch_size=batch,
+                    data_type=data_type,
+                    efferent_target=mode,
+                    duration=duration,
+                    conn_num=cn,
+                    homo=homo,
+                )
+
+                jax.block_until_ready(run())
                 jax.block_until_ready(run())
 
                 t0 = time.time()

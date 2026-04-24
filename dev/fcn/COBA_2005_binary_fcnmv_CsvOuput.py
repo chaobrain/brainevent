@@ -33,6 +33,7 @@ if _project_root not in sys.path:
 
 import time
 from typing import Any, Callable, cast
+from typing import Any, Callable, cast
 
 import brainunit as u
 import jax
@@ -86,10 +87,16 @@ def benchmark_conn(
     backends_to_use = [backend] if backend is not None else backends
 
     if params_type == 'conn':
+    if params_type == 'conn':
         conn_nums_to_use = [conn_num] if conn_num is not None else conn_nums
         valid_pairs = []
         for s in scales:
+        valid_pairs = []
+        for s in scales:
             for cn in conn_nums_to_use:
+                #if TPGenerator.is_valid_mm(s, b, cn, homo):
+                valid_pairs.append((s, None, cn))
+    elif params_type == 'prob':
                 #if TPGenerator.is_valid_mm(s, b, cn, homo):
                 valid_pairs.append((s, None, cn))
     elif params_type == 'prob':
@@ -99,6 +106,12 @@ def benchmark_conn(
         valid_pairs = TPGenerator.generate_params(dis_type='uniform', target_samples=10, data_size = 4, homo=homo)
 
 
+    csv_recorder = BT.CSV_record(f'binary_{mode}', 'fcnmv', 'coba', duration=csv_duration, conn=conn_num)
+
+
+    homo_str = 'homo' if homo else 'hetero'
+    last_path = None
+    header_conn_num = conn_num if params_type == 'conn' and conn_num is not None else None
     csv_recorder = BT.CSV_record(f'binary_{mode}', 'fcnmv', 'coba', duration=csv_duration, conn=conn_num)
 
 
@@ -168,6 +181,9 @@ def benchmark_conn(
             except Exception as e:
                 print(f'  [Error] scale={scale}, conn_num={cn}: {e}')
                 continue
+
+    if last_path:
+        print(f'\nDone. Results saved to: {last_path}')
 
     if last_path:
         print(f'\nDone. Results saved to: {last_path}')

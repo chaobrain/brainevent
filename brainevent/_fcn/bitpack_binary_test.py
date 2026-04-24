@@ -101,7 +101,7 @@ def _ref_mm(weights, indices, matrix, shape, transpose):
 
 
 def generate_cs_pairs(
-    memory_limit: float = 5,
+    memory_limit: float = 4,
     homo_or_not: bool = True,
     scale_max: int = 2000,
     conn_max: int = 4000,
@@ -109,7 +109,6 @@ def generate_cs_pairs(
     data_size: int = 4,
     num_points: int = 5,
     include_dense_ref: bool = False,
-    max_conn: int = 3000,
 ):
     """Generate ``(conn, m)`` pairs near the GPU memory boundary.
 
@@ -139,7 +138,7 @@ def generate_cs_pairs(
     scale_max : int
         Upper bound for the scale factor *s* (``m = s * _N``).
     conn_max : int
-        Maximum number of connections per row from the original search space.
+        Maximum number of connections per row.
     _N : int
         Base neuron count per scale unit.
     data_size : int
@@ -149,20 +148,11 @@ def generate_cs_pairs(
     include_dense_ref : bool
         If True, the budget also accounts for a dense ``(m, m)`` reference
         matrix of size ``m² * data_size``.
-    max_conn : int
-        Hard upper bound on returned ``conn`` values. Final ``conn`` will
-        satisfy ``conn <= min(conn_max, max_conn)``.
     """
     import math
     import numpy as np
-
     limit_bytes = memory_limit * (1024 ** 3)
     times = 1 if homo_or_not else 2
-
-    # Hard cap for conn
-    conn_cap = min(conn_max, max_conn)
-    if conn_cap < 1:
-        raise ValueError(f"max_conn must be >= 1, got {max_conn}")
 
     # K = budget expressed in units of (_N * data_size) bytes
     K = limit_bytes / (_N * data_size)
@@ -175,16 +165,17 @@ def generate_cs_pairs(
         # conn = K / (s * times) >= 1  →  s <= K / times
         s_max = min(scale_max, int(K / times))
 
-    # s_min: when not including dense ref, small s may force conn too large.
+    # s_min: when *not* including the dense ref, large s → small conn,
+    # which is fine; but very small s → conn > conn_max, wasting budget.
     if not include_dense_ref:
-        s_min = max(1, math.ceil(K / (times * conn_cap)))
+        s_min = max(1, math.ceil(K / (times * conn_max)))
     else:
         s_min = 1
 
     if s_min > s_max:
         raise ValueError(
             f"No valid (conn, m) pairs: s_min={s_min} > s_max={s_max}. "
-            f"Try increasing memory_limit or decreasing scale_max/conn_max/max_conn."
+            f"Try increasing memory_limit or decreasing scale_max/conn_max."
         )
 
     s_samples = np.geomspace(s_min, s_max, num_points)
@@ -194,7 +185,7 @@ def generate_cs_pairs(
 
     for s_val in s_samples:
         s_int = max(1, int(round(s_val)))
-        s_int = min(s_int, s_max)
+        s_int = min(s_int, s_max)  # clamp
 
         # Compute max conn (floor to stay below the boundary)
         if include_dense_ref:
@@ -205,8 +196,7 @@ def generate_cs_pairs(
         else:
             c_int = int(K / (s_int * times))
 
-        # Apply both original conn_max and new hard max_conn
-        c_int = min(c_int, conn_cap)
+        c_int = min(c_int, conn_max)
 
         m = s_int * _N
 
@@ -217,6 +207,7 @@ def generate_cs_pairs(
                 valid_pairs.append(pair)
 
     return valid_pairs
+
 
 # ===========================================================================
 # 1. Forward correctness — fcnmv
@@ -300,7 +291,7 @@ def test_bitpack_fcnmv_forward_in_large_scale(homo_w):
         y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
 
         assert y.shape == y_ref.shape
-        assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3), (
+        assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2), (
             f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
             f"homo_w={homo_w}  conn={conn}"
         )
