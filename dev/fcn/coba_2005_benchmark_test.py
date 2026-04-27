@@ -14,9 +14,14 @@
 # ==============================================================================
 
 import importlib.util
+import contextlib
 import sys
 import types
 from pathlib import Path
+
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import brainunit as u
 import jax.numpy as jnp
@@ -39,7 +44,7 @@ def _install_brainpy_stub(monkeypatch):
 
 def _load_coba_2005_benchmark_module(monkeypatch):
     _install_brainpy_stub(monkeypatch)
-    benchmark_path = Path(__file__).resolve().parents[2] / 'dev' / 'fcn' / 'COBA_2005_benchmark.py'
+    benchmark_path = Path(__file__).resolve().with_name('COBA_2005_benchmark.py')
     spec = importlib.util.spec_from_file_location('coba_2005_benchmark_test_module', benchmark_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -48,6 +53,8 @@ def _load_coba_2005_benchmark_module(monkeypatch):
 
 
 def _load_coba_2005_csv_module(monkeypatch, make_calls):
+    _install_brainpy_stub(monkeypatch)
+
     fake_benchmark = types.ModuleType('COBA_2005_benchmark')
 
     def _fake_make_simulation_run(**kwargs):
@@ -99,7 +106,7 @@ def _load_coba_2005_csv_module(monkeypatch, make_calls):
     fake_bt.CSV_record = _FakeCSVRecord
     monkeypatch.setitem(sys.modules, 'BenchmarkTools', fake_bt)
 
-    wrapper_path = Path(__file__).resolve().parents[2] / 'dev' / 'fcn' / 'COBA_2005_binary_fcnmv_CsvOuput.py'
+    wrapper_path = Path(__file__).resolve().with_name('COBA_2005_binary_fcnmv_CsvOuput.py')
     spec = importlib.util.spec_from_file_location('coba_2005_csv_test_module', wrapper_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -179,9 +186,9 @@ def test_coba_2005_compact_mv_route_semantics(
         assert conn.col_indices is not None
         assert conn.col_indptr is not None
     else:
-        assert kernel_calls[0]['col_weights'] is None
-        assert kernel_calls[0]['col_indices'] is None
-        assert kernel_calls[0]['col_indptr'] is None
+        assert kernel_calls[0].get('col_weights') is None
+        assert kernel_calls[0].get('col_indices') is None
+        assert kernel_calls[0].get('col_indptr') is None
 
 
 def test_coba_2005_csv_wrapper_forwards_mv_layout_and_uses_runtime_platform(monkeypatch):
@@ -218,3 +225,50 @@ def test_coba_2005_csv_wrapper_forwards_mv_layout_and_uses_runtime_platform(monk
     assert all(call['efferent_target'] == 'pre' for call in make_calls)
     assert all(call['data_type'] == 'compact' for call in make_calls)
     assert all(call['mv_layout'] == 'col_scatter' for call in make_calls)
+
+
+def test_coba_2005_make_simulation_run_constructs_network_during_run_execution(monkeypatch):
+    benchmark_mod = _load_coba_2005_benchmark_module(monkeypatch)
+
+    construct_calls = []
+
+    class _FakeNet:
+        def __init__(self, *args, **kwargs):
+            construct_calls.append((args, kwargs))
+            self.num = 3
+            self.rate = types.SimpleNamespace(value=jnp.zeros((3,), dtype=jnp.float32))
+
+        def init_all_states(self):
+            pass
+
+        def update(self, t, inp):
+            return jnp.zeros((self.num,), dtype=jnp.float32)
+
+    @contextlib.contextmanager
+    def _noop_context(**kwargs):
+        yield
+
+    monkeypatch.setattr(benchmark_mod, 'EINet', _FakeNet)
+    monkeypatch.setattr(benchmark_mod.brainstate.transform, 'jit', lambda fn: fn)
+    monkeypatch.setattr(benchmark_mod.brainstate.transform, 'for_loop', lambda fn, times: None)
+    monkeypatch.setattr(benchmark_mod.brainstate.environ, 'context', _noop_context)
+    monkeypatch.setattr(benchmark_mod.brainstate.environ, 'get_dt', lambda: 0.1 * u.ms)
+    monkeypatch.setattr(benchmark_mod.u.math, 'arange', lambda *args, **kwargs: jnp.asarray([], dtype=jnp.float32))
+
+    run = benchmark_mod.make_simulation_run(
+        scale=1,
+        data_type='binary',
+        efferent_target='post',
+        duration=1 * u.ms,
+        conn_num=20,
+        homo=True,
+        mv_layout='row_gather',
+    )
+
+    assert len(construct_calls) == 0
+
+    n, rate = run()
+
+    assert len(construct_calls) == 1
+    assert n == 3
+    assert float(rate) == 0.0

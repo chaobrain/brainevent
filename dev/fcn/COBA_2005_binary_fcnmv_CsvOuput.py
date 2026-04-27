@@ -82,28 +82,32 @@ def benchmark_conn(
     print(f'Benchmarking {mode}-synaptic connection updates...')
     runtime_platform = _announce_runtime_platform()
 
-    TPGenerator = BT.TestingParamsGenerator_mv(limit_GB=limit_GB, _N=_N, sample_points=10, conn_max=1000, scale_max=1000)
+    TPGenerator = BT.TestingParamsGenerator_mv(
+        limit_GB=limit_GB,
+        _N=_N,
+        sample_points=10,
+        conn_max=1000,
+        scale_max=1000,
+        mode=mode,
+        data_type=data_type,
+        mv_layout=mv_layout,
+    )
 
     backends_to_use = [backend] if backend is not None else backends
 
     if params_type == 'conn':
-    if params_type == 'conn':
         conn_nums_to_use = [conn_num] if conn_num is not None else conn_nums
         valid_pairs = []
         for s in scales:
-        valid_pairs = []
-        for s in scales:
             for cn in conn_nums_to_use:
-                #if TPGenerator.is_valid_mm(s, b, cn, homo):
-                valid_pairs.append((s, None, cn))
-    elif params_type == 'prob':
-                #if TPGenerator.is_valid_mm(s, b, cn, homo):
                 valid_pairs.append((s, None, cn))
     elif params_type == 'prob':
         probs_to_use = [conn_prob] if conn_prob is not None else probs
         valid_pairs = TPGenerator.make_simulation_params_probs(probs_to_use, scales, homo=homo)
     elif params_type == 'dist':
         valid_pairs = TPGenerator.generate_params(dis_type='uniform', target_samples=10, data_size = 4, homo=homo)
+    else:
+        raise ValueError(f'Unsupported params_type: {params_type}')
 
 
     csv_recorder = BT.CSV_record(f'binary_{mode}', 'fcnmv', 'coba', duration=csv_duration, conn=conn_num)

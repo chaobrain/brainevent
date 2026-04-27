@@ -492,6 +492,86 @@ void compact_binary_fcnmv_scatter_hetero##SUFFIX(                               
     BE_CHECK_KERNEL_LAUNCH();                                                                 \
 }
 
+// ---- FFI macro: scatter homo compact-only backend (launch by n_active) ----
+#define FFI_CS_HOMO_COMPACT_ONLY(SUFFIX, WEIGHT_C_T)                                         \
+void compact_binary_fcnmv_scatter_homo_compact_only##SUFFIX(                                 \
+    const BE::Tensor weights, const BE::Tensor indices,                                      \
+    const BE::Tensor packed,  const BE::Tensor active_ids,                                   \
+    const BE::Tensor n_active, BE::Tensor output,                                            \
+    int64_t stream                                                                           \
+) {                                                                                          \
+    (void)packed;                                                                            \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                 \
+    int n_orig = static_cast<int>(active_ids.size(0));                                       \
+    int n_conn = static_cast<int>(indices.size(1));                                          \
+    int n_post = static_cast<int>(output.size(0));                                           \
+    const WEIGHT_C_T* d_w    = static_cast<const WEIGHT_C_T*>(weights.data_ptr());           \
+    const int32_t*    d_idx  = static_cast<const int32_t*>(indices.data_ptr());              \
+    const int32_t*    d_aids = static_cast<const int32_t*>(active_ids.data_ptr());           \
+    const int32_t*    d_na   = static_cast<const int32_t*>(n_active.data_ptr());             \
+    WEIGHT_C_T*       d_out  = static_cast<WEIGHT_C_T*>(output.data_ptr());                  \
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                       \
+    cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;                     \
+    BE_CUDA_CHECK(cudaStreamIsCapturing(s, &capture_status));                                 \
+    int bsz = 256;                                                                           \
+    if (capture_status != cudaStreamCaptureStatusNone) {                                      \
+        int n_blocks = (n_orig + bsz - 1) / bsz;                                             \
+        _cs_tpr_homo_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                  \
+            d_idx, d_aids, d_na, d_out, d_w, n_conn);                                        \
+        BE_CHECK_KERNEL_LAUNCH();                                                             \
+        return;                                                                               \
+    }                                                                                         \
+    int32_t host_n_active = 0;                                                               \
+    BE_CUDA_CHECK(cudaMemcpyAsync(                                                            \
+        &host_n_active, d_na, sizeof(int32_t), cudaMemcpyDeviceToHost, s));                  \
+    BE_CUDA_CHECK(cudaStreamSynchronize(s));                                                  \
+    if (host_n_active <= 0) return;                                                          \
+    int n_blocks = (host_n_active + bsz - 1) / bsz;                                          \
+    _cs_tpr_homo_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                      \
+        d_idx, d_aids, d_na, d_out, d_w, n_conn);                                            \
+    BE_CHECK_KERNEL_LAUNCH();                                                                 \
+}
+
+// ---- FFI macro: scatter hetero compact-only backend (launch by n_active) ----
+#define FFI_CS_HETERO_COMPACT_ONLY(SUFFIX, WEIGHT_C_T)                                       \
+void compact_binary_fcnmv_scatter_hetero_compact_only##SUFFIX(                               \
+    const BE::Tensor weights, const BE::Tensor indices,                                      \
+    const BE::Tensor packed,  const BE::Tensor active_ids,                                   \
+    const BE::Tensor n_active, BE::Tensor output,                                            \
+    int64_t stream                                                                           \
+) {                                                                                          \
+    (void)packed;                                                                            \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                 \
+    int n_orig = static_cast<int>(active_ids.size(0));                                       \
+    int n_conn = static_cast<int>(indices.size(1));                                          \
+    int n_post = static_cast<int>(output.size(0));                                           \
+    const WEIGHT_C_T* d_w    = static_cast<const WEIGHT_C_T*>(weights.data_ptr());           \
+    const int32_t*    d_idx  = static_cast<const int32_t*>(indices.data_ptr());              \
+    const int32_t*    d_aids = static_cast<const int32_t*>(active_ids.data_ptr());           \
+    const int32_t*    d_na   = static_cast<const int32_t*>(n_active.data_ptr());             \
+    WEIGHT_C_T*       d_out  = static_cast<WEIGHT_C_T*>(output.data_ptr());                  \
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                       \
+    cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;                     \
+    BE_CUDA_CHECK(cudaStreamIsCapturing(s, &capture_status));                                 \
+    int bsz = 256;                                                                           \
+    if (capture_status != cudaStreamCaptureStatusNone) {                                      \
+        int n_blocks = (n_orig + bsz - 1) / bsz;                                             \
+        _cs_tpr_hetero_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                \
+            d_idx, d_aids, d_na, d_out, d_w, n_conn);                                        \
+        BE_CHECK_KERNEL_LAUNCH();                                                             \
+        return;                                                                               \
+    }                                                                                         \
+    int32_t host_n_active = 0;                                                               \
+    BE_CUDA_CHECK(cudaMemcpyAsync(                                                            \
+        &host_n_active, d_na, sizeof(int32_t), cudaMemcpyDeviceToHost, s));                  \
+    BE_CUDA_CHECK(cudaStreamSynchronize(s));                                                  \
+    if (host_n_active <= 0) return;                                                          \
+    int n_blocks = (host_n_active + bsz - 1) / bsz;                                          \
+    _cs_tpr_hetero_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                    \
+        d_idx, d_aids, d_na, d_out, d_w, n_conn);                                            \
+    BE_CHECK_KERNEL_LAUNCH();                                                                 \
+}
+
 // ============================================================================
 // FFI Instantiations
 // ============================================================================
@@ -505,6 +585,10 @@ FFI_CG_HETERO (_f32, float)
 FFI_CS_HOMO   (_f32, float)
 // @BE compact_binary_fcnmv_scatter_hetero_f32
 FFI_CS_HETERO (_f32, float)
+// @BE compact_binary_fcnmv_scatter_homo_compact_only_f32
+FFI_CS_HOMO_COMPACT_ONLY   (_f32, float)
+// @BE compact_binary_fcnmv_scatter_hetero_compact_only_f32
+FFI_CS_HETERO_COMPACT_ONLY (_f32, float)
 
 // ---- float64 ----
 // @BE compact_binary_fcnmv_gather_homo_f64
@@ -515,6 +599,10 @@ FFI_CG_HETERO (_f64, double)
 FFI_CS_HOMO   (_f64, double)
 // @BE compact_binary_fcnmv_scatter_hetero_f64
 FFI_CS_HETERO (_f64, double)
+// @BE compact_binary_fcnmv_scatter_homo_compact_only_f64
+FFI_CS_HOMO_COMPACT_ONLY   (_f64, double)
+// @BE compact_binary_fcnmv_scatter_hetero_compact_only_f64
+FFI_CS_HETERO_COMPACT_ONLY (_f64, double)
 
 // ---- float16 ----
 // @BE compact_binary_fcnmv_gather_homo_f16
@@ -525,6 +613,10 @@ FFI_CG_HETERO (_f16, __half)
 FFI_CS_HOMO   (_f16, __half)
 // @BE compact_binary_fcnmv_scatter_hetero_f16
 FFI_CS_HETERO (_f16, __half)
+// @BE compact_binary_fcnmv_scatter_homo_compact_only_f16
+FFI_CS_HOMO_COMPACT_ONLY   (_f16, __half)
+// @BE compact_binary_fcnmv_scatter_hetero_compact_only_f16
+FFI_CS_HETERO_COMPACT_ONLY (_f16, __half)
 
 // ---- bfloat16 ----
 // @BE compact_binary_fcnmv_gather_homo_bf16
@@ -535,3 +627,7 @@ FFI_CG_HETERO (_bf16, __nv_bfloat16)
 FFI_CS_HOMO   (_bf16, __nv_bfloat16)
 // @BE compact_binary_fcnmv_scatter_hetero_bf16
 FFI_CS_HETERO (_bf16, __nv_bfloat16)
+// @BE compact_binary_fcnmv_scatter_homo_compact_only_bf16
+FFI_CS_HOMO_COMPACT_ONLY   (_bf16, __nv_bfloat16)
+// @BE compact_binary_fcnmv_scatter_hetero_compact_only_bf16
+FFI_CS_HETERO_COMPACT_ONLY (_bf16, __nv_bfloat16)

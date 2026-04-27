@@ -283,6 +283,25 @@ def test_compact_binary_fcnmv_scatter_1d_requires_full_compaction_metadata():
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
+def test_compact_binary_fcnmv_scatter_1d_compact_only_vector(homo_w):
+    shape = (20, 40)
+    m, _ = shape
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+    spikes = jnp.asarray((jnp.arange(m) % 3) == 0, dtype=jnp.float32)
+    cb = CompactBinary.compacy_only_vector(spikes)
+
+    y = compact_binary_fcnmv(
+        weights, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+        shape=shape, transpose=True,
+    )
+    y_ref = _ref_mv(weights, indices, spikes, shape, transpose=True)
+
+    assert cb.packed.shape == (0,)
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('shape', SHAPES)
 def test_compact_binary_fcnmv_forward_column_scatter(homo_w, shape):
     """Passing column-major mirrors keeps MV output consistent with dense reference."""
@@ -305,6 +324,88 @@ def test_compact_binary_fcnmv_forward_column_scatter(homo_w, shape):
         f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
         f"homo_w={homo_w}  column_scatter=True"
     )
+
+
+@pytest.mark.parametrize(
+    ('homo_w', 'transpose', 'packed_shape', 'use_col_scatter', 'expected_kernel_name'),
+    [
+        (
+            True,
+            True,
+            (0,),
+            False,
+            'fcn_compact_binary_mv.compact_binary_fcnmv_scatter_homo_compact_only_f32',
+        ),
+        (
+            False,
+            True,
+            (0,),
+            False,
+            'fcn_compact_binary_mv.compact_binary_fcnmv_scatter_hetero_compact_only_f32',
+        ),
+        (
+            True,
+            True,
+            (2,),
+            False,
+            'fcn_compact_binary_mv.compact_binary_fcnmv_scatter_homo_f32',
+        ),
+        (
+            True,
+            False,
+            (0,),
+            False,
+            'fcn_compact_binary_mv.compact_binary_fcnmv_gather_homo_f32',
+        ),
+        (
+            True,
+            False,
+            (0,),
+            True,
+            'fcn_compact_binary_mv_t.compact_binary_fcnmv_scatter_homo_f32',
+        ),
+    ],
+)
+def test_compact_binary_fcnmv_cuda_kernel_selector(
+    monkeypatch,
+    homo_w,
+    transpose,
+    packed_shape,
+    use_col_scatter,
+    expected_kernel_name,
+):
+    called = []
+
+    monkeypatch.setattr(compact_binary_mod, 'load_cuda_file', lambda *args, **kwargs: None)
+
+    def _fake_ffi_call(kernel_name, out_info):
+        called.append(kernel_name)
+        return lambda *args: kernel_name
+
+    monkeypatch.setattr(jax.ffi, 'ffi_call', _fake_ffi_call)
+
+    if homo_w:
+        weight_shape = (1,)
+        col_weight_shape = (1,) if use_col_scatter else (0,)
+    else:
+        weight_shape = (4, 2)
+        col_weight_shape = (8,) if use_col_scatter else (0,)
+    col_indices_shape = (8,) if use_col_scatter else (0,)
+    col_indptr_shape = (5,) if use_col_scatter else (0,)
+
+    kernel = compact_binary_mod._compact_binary_fcnmv_cuda_kernel(
+        transpose=transpose,
+        outs=[jax.ShapeDtypeStruct((5,), jnp.float32)],
+        weight_info=jax.ShapeDtypeStruct(weight_shape, jnp.float32),
+        packed_info=jax.ShapeDtypeStruct(packed_shape, jnp.uint32),
+        col_weight_info=jax.ShapeDtypeStruct(col_weight_shape, jnp.float32),
+        col_indices_info=jax.ShapeDtypeStruct(col_indices_shape, jnp.int32),
+        col_indptr_info=jax.ShapeDtypeStruct(col_indptr_shape, jnp.int32),
+    )
+    result = kernel(None, None, None, None, None, None, None, None, None)
+
+    assert called == [expected_kernel_name]
+    assert result == expected_kernel_name
 
 
 @pytest.mark.parametrize('homo_w', [True, False])

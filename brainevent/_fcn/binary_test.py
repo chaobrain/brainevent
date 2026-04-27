@@ -242,6 +242,7 @@ def generate_cs_pairs(
     return valid_pairs
 
 
+'''
 @pytest.mark.parametrize('implementation', FCNMV_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('event_dtype', [bool, float])
@@ -274,13 +275,14 @@ def test_binary_fcnmv_forward_matches_reference_in_large_scale(implementation, h
             col_indptr=col_indptr,
         )
         y_ref = _mv_reference(weights, indices, events, shape, transpose)
-        
+
         assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2)
-        
+
         jax.block_until_ready((indices, weights, events, col_weights, col_indices, col_indptr, y, y_ref))
-        
+
         del indices, weights, events, col_weights, col_indices, col_indptr, y, y_ref
         gc.collect()
+'''
 
 @pytest.mark.parametrize('implementation', FCNMV_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])

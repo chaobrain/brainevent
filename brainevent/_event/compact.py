@@ -28,7 +28,40 @@ from brainevent._op import (
     load_cuda_file,
 )
 
+'''
+binary_2d_compact_only_p_call
 
+2D active row IDs only
+compact.py (line 172)
+binary_1d_array_index_p_call
+
+1D active index extraction
+compact.py (line 294)
+binary_2d_array_index_p_call
+
+2D fused: bitpack + row compaction
+compact.py (line 425)
+binary_2d_pair_stream_encode_p_call
+
+2D streamed (row, col) pair output
+compact.py (line 547)
+binary_2d_row_sparse_encode_p_call
+
+2D fixed-width row compression
+compact.py (line 692)
+binary_2d_csr_row_count_p_call
+
+CSR step 1: per-row nnz counting
+compact.py (line 813)
+binary_2d_csr_fill_p_call
+
+CSR step 2: fill indices
+compact.py (line 906)
+binary_2d_csr_encode_p_call
+
+CSR combined wrapper: row_count + fill
+compact.py (line 947)
+'''
 def _compact_1d_jax(x, jax_impl: bool = False):
     """JIT-compatible 1D stream compaction using prefix sum.
 
@@ -97,6 +130,7 @@ def _compact_2d_jax(x, jax_impl: bool = False):
 # ==============================================================================
 # 2D compaction-only primitive (no bitpack)
 # ==============================================================================
+# Only perform row-wise checks and write row indices into `act`.
 
 def _binary_2d_compact_only_cuda_kernel(
     spikes_info: jax.ShapeDtypeStruct,
@@ -217,6 +251,7 @@ binary_2d_compact_only_p.def_tags('event', 'binary')
 # ==============================================================================
 # 1D stream compaction primitive
 # ==============================================================================
+# 1D scan to extract nonzero indices from the vector
 
 def _binary_1d_array_index_cuda_kernel(
     spikes_info: jax.ShapeDtypeStruct,

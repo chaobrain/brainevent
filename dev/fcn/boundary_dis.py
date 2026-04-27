@@ -21,15 +21,30 @@ class PerformanceBoundaryApp:
         self.df: Optional[pd.DataFrame] = None
         self.comboboxes: dict = {}   # dynamic filter comboboxes
         self.extra_curves: list = []  # extra boundary curves list
+        self.mode = tk.StringVar(value='mv')
         self._setup_ui()
 
     # ─────────────────────────────────────────────────────────────────────────
     def _setup_ui(self):
+        # ── Menu Bar ──────────────────────────────────────────────────────────
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Load CSV", command=self.load_data)
+        file_menu.add_command(label="Export Image", command=self.export_image)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        mode_menu = tk.Menu(menubar, tearoff=0)
+        mode_menu.add_radiobutton(label="MV Mode (matrix-vector)", variable=self.mode, value='mv')
+        mode_menu.add_radiobutton(label="MM Mode (matrix-matrix)", variable=self.mode, value='mm')
+        menubar.add_cascade(label="Mode", menu=mode_menu)
+
         # ── Global Controls ──────────────────────────────────────────────────
         ctrl = ttk.LabelFrame(self.root, text="Global Settings", padding=8)
         ctrl.pack(side=tk.TOP, fill=tk.X, padx=5, pady=4)
-
-        ttk.Button(ctrl, text="Load CSV", command=self.load_data).pack(side=tk.LEFT, padx=4)
 
         ttk.Label(ctrl, text="_N (elem/scale):").pack(side=tk.LEFT, padx=(10, 2))
         self.entry_n = ttk.Entry(ctrl, width=9)
@@ -40,6 +55,27 @@ class PerformanceBoundaryApp:
         self.entry_limit = ttk.Entry(ctrl, width=7)
         self.entry_limit.insert(0, "16")
         self.entry_limit.pack(side=tk.LEFT)
+
+        self.var_auto_vram = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ctrl, text="Auto VRAM", variable=self.var_auto_vram,
+                        command=self._on_auto_vram_changed).pack(side=tk.LEFT, padx=(6, 0))
+
+        ttk.Label(ctrl, text="Data Type:").pack(side=tk.LEFT, padx=(10, 2))
+        self.combo_dtype = ttk.Combobox(ctrl, state="readonly", width=8,
+                                        values=['float32', 'int32', 'int8'])
+        self.combo_dtype.current(0)
+        self.combo_dtype.pack(side=tk.LEFT)
+
+        ttk.Label(ctrl, text="Topology:").pack(side=tk.LEFT, padx=(8, 2))
+        self.combo_topology = ttk.Combobox(ctrl, state="readonly", width=8,
+                                           values=['homo', 'hetero'])
+        self.combo_topology.current(0)
+        self.combo_topology.pack(side=tk.LEFT)
+
+        ttk.Label(ctrl, text="Batch Size:").pack(side=tk.LEFT, padx=(8, 2))
+        self.entry_batch_size = ttk.Entry(ctrl, width=7)
+        self.entry_batch_size.insert(0, "1000")
+        self.entry_batch_size.pack(side=tk.LEFT)
 
         ttk.Label(ctrl, text="Contour Lines:").pack(side=tk.LEFT, padx=(10, 2))
         self.entry_contours = ttk.Entry(ctrl, width=5)
@@ -105,19 +141,6 @@ class PerformanceBoundaryApp:
               text="  If Auto checked: compute extrema from data (yellow ≤ 0.5 / blue ≥ 1.5); otherwise use manual inputs on the left",
               foreground='gray').pack(side=tk.LEFT, padx=(12, 0))
 
-        ttk.Separator(sp_bar, orient='vertical').pack(side=tk.LEFT, fill='y', padx=8, pady=2)
-
-        ttk.Label(sp_bar, text="Data Type:").pack(side=tk.LEFT, padx=(0, 2))
-        self.combo_dtype = ttk.Combobox(sp_bar, state="readonly", width=8,
-                                        values=['float32', 'int32', 'int8'])
-        self.combo_dtype.current(0)
-        self.combo_dtype.pack(side=tk.LEFT)
-
-        ttk.Label(sp_bar, text="Topology:").pack(side=tk.LEFT, padx=(8, 2))
-        self.combo_topology = ttk.Combobox(sp_bar, state="readonly", width=8,
-                                           values=['homo', 'hetero'])
-        self.combo_topology.current(0)
-        self.combo_topology.pack(side=tk.LEFT)
         self._on_auto_speedup_changed()
 
         # ── Extra Boundary Curves (multi-curve list) ──────────────────────────
@@ -257,6 +280,30 @@ class PerformanceBoundaryApp:
         self.entry_yellow_depth.config(state=state)
         self.entry_blue_depth.config(state=state)
 
+    def _on_auto_vram_changed(self):
+        state = 'disabled' if self.var_auto_vram.get() else 'normal'
+        self.entry_limit.config(state=state)
+
+    def _compute_auto_vram(self, df_subset) -> float:
+        """Return the minimum VRAM (GB) for the VRAM boundary to encompass
+        all (scale, conn_num) data points in *df_subset* (with a 5 % margin)."""
+        if df_subset.empty:
+            return 1.0
+        try:
+            _N = int(self.entry_n.get())
+        except ValueError:
+            _N = 4000
+        data_size, times = self._get_boundary_params()
+        if self.mode.get() == 'mm' and 'batch_size' in df_subset.columns:
+            bs_vals = df_subset['batch_size'].values.astype(float)
+            size    = df_subset['scale'].values.astype(float) * _N
+            conn    = df_subset['conn_num'].values.astype(float)
+            required = (conn * size * times + 2 * bs_vals * size) * data_size
+        else:
+            required = self._vram_bytes(df_subset['conn_num'], df_subset['scale'],
+                                        data_size, times, _N)
+        return float(required.max()) / (1024 ** 3) * 1.05
+
     @staticmethod
     def _dtype_size(dtype_str: str) -> int:
         """Return bytes-per-element for the given dtype label."""
@@ -271,6 +318,30 @@ class PerformanceBoundaryApp:
         """Read data_size and times from the main boundary UI controls."""
         return (self._dtype_size(self.combo_dtype.get()),
                 self._topology_times(self.combo_topology.get()))
+
+    def _get_batch_size(self):
+        try:
+            return int(self.entry_batch_size.get())
+        except ValueError:
+            return 1000
+
+    def _vram_bytes(self, conn, scale, data_size, times, _N, bs=None):
+        """Compute VRAM usage in bytes based on current mode (mv / mm)."""
+        if self.mode.get() == 'mm':
+            if bs is None:
+                bs = self._get_batch_size()
+            size = scale * _N
+            return (conn * size * times + 2 * bs * size) * data_size
+        return conn * scale * data_size * times * _N
+
+    def _boundary_conn(self, scale, limit_bytes, data_size, times, _N, bs=None):
+        """Compute max conn_num for given scale values and VRAM limit."""
+        if self.mode.get() == 'mm':
+            if bs is None:
+                bs = self._get_batch_size()
+            size = scale * _N
+            return (limit_bytes / data_size - 2 * bs * size) / (size * times)
+        return limit_bytes / (data_size * times * scale * _N)
 
     # ── Extra boundary curve list helpers ─────────────────────────────────────
     @staticmethod
@@ -392,10 +463,9 @@ class PerformanceBoundaryApp:
         if self.df is None or self.df.empty:
             return
         try:
-            _N       = int(self.entry_n.get())
-            limit_gb = float(self.entry_limit.get())
+            _N = int(self.entry_n.get())
         except ValueError:
-            messagebox.showerror("Input Error", "N 或 VRAM 限制输入无效。")
+            messagebox.showerror("Input Error", "N 输入无效。")
             return
 
         # ── Remove old colorbars and clear axes (avoid overplotting) ──────────
@@ -438,6 +508,34 @@ class PerformanceBoundaryApp:
             for t in self.tabs.values():
                 t['canvas'].draw()
             return
+        # ── MM 模式：从过滤后的数据中提取实际 batch_size 用于显存边界计算 ──────────────────
+        eff_bs = None
+        if self.mode.get() == 'mm':
+            if 'batch_size' in df_t.columns and not df_t.empty:
+                try:
+                    eff_bs = int(df_t['batch_size'].iloc[0])
+                except (ValueError, TypeError):
+                    eff_bs = self._get_batch_size()
+            else:
+                eff_bs = self._get_batch_size()
+            self.entry_batch_size.delete(0, tk.END)
+            self.entry_batch_size.insert(0, str(eff_bs))
+        # ── Compute VRAM limit (auto or manual) ───────────────────────────────
+        if self.var_auto_vram.get():
+            df_union = pd.concat([df_t, df_b]).drop_duplicates() if not df_b.empty else df_t
+            auto_gb  = self._compute_auto_vram(df_union)
+            auto_gb  = max(auto_gb, 0.001)
+            self.entry_limit.config(state='normal')
+            self.entry_limit.delete(0, tk.END)
+            self.entry_limit.insert(0, f"{auto_gb:.3g}")
+            self.entry_limit.config(state='disabled')
+            limit_gb = auto_gb
+        else:
+            try:
+                limit_gb = float(self.entry_limit.get())
+            except ValueError:
+                messagebox.showerror("Input Error", "VRAM 限制输入无效。")
+                return
 
         x_max = max(df_t['scale'].max(),
                     df_b['scale'].max() if not df_b.empty else 1, 1)
@@ -448,7 +546,7 @@ class PerformanceBoundaryApp:
 
         xt, yt, zt = df_t['scale'].values, df_t['conn_num'].values, df_t['elapsed_s'].values
         sub_raw   = self._subtitle(False)
-        kw_common = dict(_N=_N, limit_gb=limit_gb, x_min=x_min, x_max=x_max, y_max=y_max)
+        kw_common = dict(_N=_N, limit_gb=limit_gb, x_min=x_min, x_max=x_max, y_max=y_max, bs=eff_bs)
 
         self._render_scatter(self.tabs["Raw Scatter"], xt, yt, zt,
                              z_label="Elapsed Time (s)", cmap_name='Blues',
@@ -477,7 +575,7 @@ class PerformanceBoundaryApp:
 
             limit_bytes = limit_gb * (1024 ** 3)
             data_size, times = self._get_boundary_params()
-            valid = (grid_y <= grid_x * _N) & (grid_y * grid_x * data_size * times * _N <= limit_bytes)
+            valid = (grid_y <= grid_x * _N) & (self._vram_bytes(grid_y, grid_x, data_size, times, _N, bs=eff_bs) <= limit_bytes)
 
             with np.errstate(divide='ignore', invalid='ignore'):
                 grid_sp = np.where(
@@ -494,7 +592,7 @@ class PerformanceBoundaryApp:
                 subtitle=sub_sp, **kw_common,
             )
 
-    def _draw_boundaries(self, ax, _N, limit_gb, x_min, x_max):
+    def _draw_boundaries(self, ax, _N, limit_gb, x_min, x_max, bs=None):
         xv = np.linspace(max(0.01, x_min * 0.9), x_max * 1.25, 600)
         ax.plot(xv, xv * _N,
                 color='gold', lw=2, label=f'conn = scale × N  (N={_N:,} elem/scale)')
@@ -502,23 +600,63 @@ class PerformanceBoundaryApp:
         limit_bytes = limit_gb * (1024 ** 3)
         dtype_label = self.combo_dtype.get()
         topo_label  = self.combo_topology.get()
-        yv_main = limit_bytes / (data_size * times * xv * _N)
-        ax.plot(xv, yv_main, color='red', lw=2,
-                label=f'VRAM = {limit_gb} GB  ({dtype_label}, {topo_label})')
+        yv_main = self._boundary_conn(xv, limit_bytes, data_size, times, _N, bs=bs)
         mid = len(xv) // 3
-        ax.text(xv[mid], yv_main[mid], f"{limit_gb} GB",
-                fontsize=7, ha='center', va='bottom', color='red',
-                fontweight='bold', zorder=6)
+
+        def _draw_with_inline_label(x_coords, y_coords, x_pos, label_text, color, lw,
+                                    linestyle, legend_label):
+            """Draw curve as two segments with a gap at x_pos; place text without any bbox."""
+            idx = int(np.argmin(np.abs(x_coords - x_pos)))
+            i0 = max(idx - 2, 0)
+            i1 = min(idx + 2, len(x_coords) - 1)
+            dx_s = x_coords[i1] - x_coords[i0]
+            dy_s = y_coords[i1] - y_coords[i0]
+            angle = np.degrees(np.arctan2(dy_s, dx_s))
+
+            x_range = x_coords[-1] - x_coords[0] if x_coords[-1] > x_coords[0] else 1.0
+            half_w = x_range * 0.04
+            x_lo = x_coords[idx] - half_w
+            x_hi = x_coords[idx] + half_w
+
+            # Left segment — carries the legend entry
+            mask_l = x_coords < x_lo
+            if mask_l.any():
+                y_at_lo = np.interp(x_lo, x_coords, y_coords)
+                xl = np.append(x_coords[mask_l], x_lo)
+                yl = np.append(y_coords[mask_l], y_at_lo)
+                ax.plot(xl, yl, color=color, lw=lw, linestyle=linestyle, label=legend_label)
+            else:
+                ax.plot([], [], color=color, lw=lw, linestyle=linestyle, label=legend_label)
+
+            # Right segment — no legend label (same visual line)
+            mask_r = x_coords > x_hi
+            if mask_r.any():
+                y_at_hi = np.interp(x_hi, x_coords, y_coords)
+                xr = np.insert(x_coords[mask_r], 0, x_hi)
+                yr = np.insert(y_coords[mask_r], 0, y_at_hi)
+                ax.plot(xr, yr, color=color, lw=lw, linestyle=linestyle)
+
+            # Inline text — no background box, like clabel
+            ax.text(x_coords[idx], y_coords[idx], label_text,
+                    fontsize=7, ha='center', va='center', color=color,
+                    fontweight='bold', rotation=angle, zorder=7)
+
+        mode_tag = self.mode.get().upper()
+        if self.mode.get() == 'mm':
+            _bs = bs if bs is not None else self._get_batch_size()
+            main_legend = f'VRAM = {limit_gb:.2f} GB  ({dtype_label}, {topo_label}, bs={_bs}) [{mode_tag}]'
+        else:
+            main_legend = f'VRAM = {limit_gb:.2f} GB  ({dtype_label}, {topo_label}) [{mode_tag}]'
+        _draw_with_inline_label(xv, yv_main, xv[mid],
+                                f'{limit_gb:.2f} GB', 'red', 2, 'solid', main_legend)
         for c in self.extra_curves:
             e_data_size   = self._dtype_size(c['dtype'])
             e_times       = self._topology_times(c['topology'])
             e_limit_bytes = c['limit_gb'] * (1024 ** 3)
-            yv_extra      = e_limit_bytes / (e_data_size * e_times * xv * _N)
-            ax.plot(xv, yv_extra, color=c['color'], lw=2, linestyle='dashed',
-                    label=c['label'])
-            ax.text(xv[mid], yv_extra[mid], f"{c['limit_gb']} GB",
-                    fontsize=7, ha='center', va='bottom', color=c['color'],
-                    fontweight='bold', zorder=6)
+            yv_extra      = self._boundary_conn(xv, e_limit_bytes, e_data_size, e_times, _N, bs=bs)
+            _draw_with_inline_label(xv, yv_extra, xv[mid],
+                                    f"{c['limit_gb']:.2f} GB", c['color'], 2, 'dashed',
+                                    c['label'])
         ax.legend(loc='upper right', fontsize=8)
 
     def _draw_contours_and_labels(self, ax, grid_x, grid_y, grid_z_masked, z_pts):
@@ -646,7 +784,7 @@ class PerformanceBoundaryApp:
         tab['hover_cid'] = canvas.mpl_connect("motion_notify_event", on_hover)
 
     def _render_scatter(self, tab, x, y, z, _N, limit_gb, x_min, x_max, y_max,
-                        z_label, cmap_name, subtitle):
+                        z_label, cmap_name, subtitle, bs=None):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
 
         sc = ax.scatter(x, y, c=z, cmap=cmap_name, s=100, edgecolors='black', zorder=3)
@@ -657,7 +795,7 @@ class PerformanceBoundaryApp:
             ax.text(x[i], y[i], f"{z[i]:.3g}", fontsize=7,
                     ha='center', va='bottom', zorder=4)
 
-        self._draw_boundaries(ax, _N, limit_gb, x_min, x_max)
+        self._draw_boundaries(ax, _N, limit_gb, x_min, x_max, bs=bs)
         ax.set_title(f"{title}\n{subtitle}", fontsize=10, loc='left', pad=8)
         ax.set_xlabel(f"Scale  (N = {_N:,} elements per scale unit)")
         ax.set_ylabel("Connection Number  (synapses / neuron)")
@@ -669,7 +807,7 @@ class PerformanceBoundaryApp:
         canvas.draw()
 
     def _render_interpolation(self, tab, x, y, z, _N, limit_gb, x_min, x_max, y_max,
-                              z_label, cmap_name, subtitle):
+                              z_label, cmap_name, subtitle, bs=None):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
 
         if len(x) < 4:
@@ -683,7 +821,7 @@ class PerformanceBoundaryApp:
 
         limit_bytes = limit_gb * (1024 ** 3)
         data_size, times = self._get_boundary_params()
-        valid = (grid_y <= grid_x * _N) & (grid_y * grid_x * data_size * times * _N <= limit_bytes)
+        valid = (grid_y <= grid_x * _N) & (self._vram_bytes(grid_y, grid_x, data_size, times, _N, bs=bs) <= limit_bytes)
         grid_z_masked = np.where(valid, grid_z, np.nan)
 
         im          = ax.pcolormesh(grid_x, grid_y, grid_z_masked, shading='auto', cmap=cmap_name)
@@ -691,7 +829,7 @@ class PerformanceBoundaryApp:
 
         self._draw_contours_and_labels(ax, grid_x, grid_y, grid_z_masked, z_pts=z)
         self._draw_custom_contours(ax, grid_x, grid_y, grid_z_masked)
-        self._draw_boundaries(ax, _N, limit_gb, x_min, x_max)
+        self._draw_boundaries(ax, _N, limit_gb, x_min, x_max, bs=bs)
         ax.set_title(f"{title}\n{subtitle}", fontsize=10, loc='left', pad=8)
         ax.set_xlabel(f"Scale  (N = {_N:,} elements per scale unit)")
         ax.set_ylabel("Connection Number  (synapses / neuron)")
@@ -703,7 +841,7 @@ class PerformanceBoundaryApp:
         canvas.draw()
 
     def _render_speedup_interp(self, tab, grid_x, grid_y, grid_z_masked,
-                               _N, limit_gb, x_min, x_max, y_max, subtitle):
+                               _N, limit_gb, x_min, x_max, y_max, subtitle, bs=None):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
         z_label = "Speedup  (Baseline / Target)"
 
@@ -748,7 +886,7 @@ class PerformanceBoundaryApp:
         self._draw_contours_and_labels(ax, grid_x, grid_y, grid_z_masked, z_pts=z_finite)
         self._draw_custom_contours(ax, grid_x, grid_y, grid_z_masked)
 
-        self._draw_boundaries(ax, _N, limit_gb, x_min, x_max)
+        self._draw_boundaries(ax, _N, limit_gb, x_min, x_max, bs=bs)
         ax.set_title(f"{title}\n{subtitle}", fontsize=10, loc='left', pad=8)
         ax.set_xlabel(f"Scale  (N = {_N:,} elements per scale unit)")
         ax.set_ylabel("Connection Number  (synapses / neuron)")

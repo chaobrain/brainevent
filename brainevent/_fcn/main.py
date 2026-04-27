@@ -266,20 +266,19 @@ class FixedNumConn(DataRepresentation):
         Returns
         -------
         children : tuple
-            A single-element tuple ``(self.data,)`` containing the traced
-            leaf arrays.
+            Dynamic pytree children that must remain runtime inputs inside
+            JIT-compiled call sites. This includes the sparse values, the
+            connectivity indices, and any optional layout buffers.
         aux_data : dict
-            A dictionary with static / non-traced metadata (``indices``
-            and ``shape``) needed for reconstruction.
+            Static / non-traced metadata needed for reconstruction.
         """
         aux = {
-            'indices': self.indices,
             'shape': self.shape,
             'backend': self.backend,
             'maintain_dual_layout': self.maintain_dual_layout,
             'primary_layout': self.primary_layout,
         }
-        return (self.data,), (aux, self.buffers)
+        return (self.data, self.indices, self.buffers), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -299,8 +298,7 @@ class FixedNumConn(DataRepresentation):
             A newly created instance with the restored data and metadata.
         """
         obj = object.__new__(cls)
-        obj.data, = children
-        aux_data, buffer = aux_data
+        obj.data, obj.indices, buffer = children
         obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
             setattr(obj, k, v)

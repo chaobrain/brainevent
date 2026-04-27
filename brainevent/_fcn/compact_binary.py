@@ -275,16 +275,24 @@ def _compact_binary_fcnmv_cuda_kernel(
     col_weight_size = 1
     for dim in col_weight_info.shape:
         col_weight_size *= dim
+    packed_info = kwargs['packed_info']
+    packed_size = 1
+    for dim in packed_info.shape:
+        packed_size *= dim
     use_col_scatter = (
         (not transpose)
         and col_indices_size > 0
         and col_indptr_size > 0
         and col_weight_size > 0
     )
+    use_compact_only_scatter = transpose and packed_size == 0
 
     if use_col_scatter:
         mode_sfx = '_homo' if col_homo else '_hetero'
         kernel_name = f'fcn_compact_binary_mv_t.compact_binary_fcnmv_scatter{mode_sfx}{col_sfx}'
+    elif use_compact_only_scatter:
+        mode_sfx = '_homo' if row_homo else '_hetero'
+        kernel_name = f'fcn_compact_binary_mv.compact_binary_fcnmv_scatter{mode_sfx}_compact_only{row_sfx}'
     elif transpose:
         mode_sfx = '_homo' if row_homo else '_hetero'
         kernel_name = f'fcn_compact_binary_mv.compact_binary_fcnmv_scatter{mode_sfx}{row_sfx}'

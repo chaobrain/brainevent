@@ -119,6 +119,19 @@ class Test_To_COO:
         jax.block_until_ready((post_indices, post_data, pre_indices, pre_data))
 
 
+def test_fixed_post_num_conn_tree_flatten_keeps_indices_dynamic():
+    indices = jnp.array([[0, 1], [1, 2]], dtype=jnp.int32)
+    data = jnp.array([1.5], dtype=jnp.float32)
+    conn = brainevent.FixedPostNumConn((data, indices), shape=(2, 3))
+
+    children, aux = conn.tree_flatten()
+
+    assert children[0] is conn.data
+    assert children[1] is conn.indices
+    assert children[2] == conn.buffers
+    assert aux['shape'] == (2, 3)
+
+
 class Test_Illegal_Slots:
     def test_invalid_indices_rejected_post(self):
         idx = jnp.array([[0, -1, 2, 2], [1, 4, 3, 1], [2, 0, -3, 1]], dtype=jnp.int32)

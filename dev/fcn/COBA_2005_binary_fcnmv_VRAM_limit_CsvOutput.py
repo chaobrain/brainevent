@@ -104,6 +104,12 @@ def _is_oom_error(exc: Exception) -> bool:
 
 def _safe_clear_runtime_cache(run: CompiledRun | None = None):
     """Best-effort cleanup between benchmark points."""
+    if run is not None and hasattr(run, 'release'):
+        try:
+            run.release()
+            return
+        except Exception:
+            pass
     if run is not None and hasattr(run, 'clear_cache'):
         try:
             run.clear_cache()
@@ -207,10 +213,10 @@ def benchmark_vram_limit(
     backend: str | None = None,
     efferent_target: str = 'post',
     _N: int = 4000,
-    vram_start: int = 4,
+    vram_start: int = 15,
     vram_end: int = 24,
     vram_step: int = 1,
-    sample_points: int = 3,
+    sample_points: int = 2,
     scale_max: int = 2000,
     conn_max: int = 4000,
     mv_layout: str = 'row_gather',
@@ -242,6 +248,9 @@ def benchmark_vram_limit(
         _N=_N,
         scale_max=scale_max,
         conn_max=conn_max,
+        mode=efferent_target,
+        data_type=data_type,
+        mv_layout=mv_layout,
     )
     vram_params = generator.generate_coba_vram_sequence(
         vram_steps=vram_steps,
@@ -413,10 +422,10 @@ def benchmark_vram_limit(
 
 if __name__ == '__main__':
     benchmark_vram_limit(
-        benchmark_name='coba_2005',#coba_2005 coba_ei
+        benchmark_name='coba_ei',#coba_2005 coba_ei
         data_type='compact',
         duration=10 * u.ms,
-        efferent_target='pre',
+        efferent_target='post',
         homo=True,
         backend='cuda_raw',
         mv_layout='row_gather',#row_gather col_scatter

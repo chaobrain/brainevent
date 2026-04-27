@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import sys
 from pathlib import Path
 from typing import Union
@@ -57,6 +58,10 @@ def _resolve_conn_num(
     if isinstance(conn_num, float):
         assert 0.0 <= conn_num <= 1.0, 'Connection probability must be in [0, 1].'
         conn_num = int(target_size * conn_num) if efferent_target == 'post' else int(source_size * conn_num)
+    elif efferent_target == 'pre':
+        # Split a shared total indegree across source pools proportionally so
+        # fixed-pre routing matches the post-mode 4:1 E/I mix at integer K.
+        conn_num = int(round(conn_num * source_size / target_size))
     assert isinstance(conn_num, int), 'Connection number must be an integer.'
     return conn_num
 
@@ -72,6 +77,7 @@ def _make_post_conn(
     conn_weight_base: u.Quantity,
     mv_layout: str,
 ) -> FixedPostNumConn:
+    total_conn_num = conn_num
     conn_num = _resolve_conn_num(conn_num, source_size, target_size, efferent_target=efferent_target)
 
     if efferent_target == 'post':
@@ -94,7 +100,7 @@ def _make_post_conn(
 
     with jax.ensure_compile_time_eval():
         indices_np = np.random.randint(0, n_cols, size=(n_rows, conn_num)).astype(np.int32, copy=False)
-        conn_weight = conn_weight_base * conn_num_base / conn_num
+        conn_weight = conn_weight_base * conn_num_base / total_conn_num
         if homo:
             weight = u.math.asarray(conn_weight, dtype=brainstate.environ.dftype())
         else:
@@ -110,13 +116,15 @@ def _make_post_conn(
     )
 
 
-def _prepare_operand(spikes, *, data_type: str):
+def _prepare_operand(spikes, *, data_type: str, efferent_target: str):
     spikes = u.math.asarray(spikes, dtype=jnp.bool_)
     if data_type == 'binary':
         return BinaryArray(spikes)
     if data_type == 'compact':
-        # 1D compact matmul through ``@`` needs active_ids/n_active on both
-        # left- and right-matmul paths, so the full constructor is required.
+        # Post-synaptic 1D compact scatter reads only active_ids/n_active.
+        # Pre-synaptic routes still need packed bits for gather / CSC scatter.
+        if efferent_target == 'post':
+            return CompactBinary.compacy_only_vector(spikes)
         return CompactBinary.from_array(spikes)
     if data_type in ('bitpack', 'bitpack_a0', 'bitpack_a1'):
         return BitPackedBinary(spikes)
@@ -126,10 +134,44 @@ def _prepare_operand(spikes, *, data_type: str):
 
 
 def _apply_conn(spikes, conn: FixedPostNumConn, *, data_type: str, efferent_target: str):
-    operand = _prepare_operand(spikes, data_type=data_type)
+    operand = _prepare_operand(spikes, data_type=data_type, efferent_target=efferent_target)
     if efferent_target == 'post':
         return operand @ conn
     return conn @ operand
+
+
+def _bind_runtime_run(compiled_fn, *runtime_args):
+    """Return a zero-arg wrapper while keeping large pytrees as JIT inputs."""
+    holder = {
+        'compiled_fn': compiled_fn,
+        'runtime_args': runtime_args,
+    }
+
+    def run():
+        active_fn = holder['compiled_fn']
+        active_args = holder['runtime_args']
+        if active_fn is None:
+            raise RuntimeError('This benchmark run has been released.')
+        return active_fn(*active_args)
+
+    def _clear_cache():
+        active_fn = holder['compiled_fn']
+        if active_fn is not None and hasattr(active_fn, 'clear_cache'):
+            active_fn.clear_cache()
+
+    def _release():
+        _clear_cache()
+        holder['compiled_fn'] = None
+        holder['runtime_args'] = ()
+        try:
+            jax.clear_caches()
+        except Exception:
+            pass
+        gc.collect()
+
+    run.clear_cache = _clear_cache
+    run.release = _release
+    return run
 
 
 class EINet(brainstate.nn.Module):
@@ -196,21 +238,23 @@ class EINet(brainstate.nn.Module):
     def init_state(self, *args, **kwargs):
         self.rate = brainstate.ShortTermState(u.math.zeros(self.num))
 
-    def update(self, t, inp):
+    def update(self, t, inp, *, exc_conn=None, inh_conn=None):
         with brainstate.environ.context(t=t):
             spk = self.N.get_spike() != 0.
             exc_spk = spk[:self.n_exc]
             inh_spk = spk[self.n_exc:]
+            exc_conn = self.exc_conn if exc_conn is None else exc_conn
+            inh_conn = self.inh_conn if inh_conn is None else inh_conn
 
             delta_g_exc = _apply_conn(
                 exc_spk,
-                self.exc_conn,
+                exc_conn,
                 data_type=self.data_type,
                 efferent_target=self.efferent_target,
             )
             delta_g_inh = _apply_conn(
                 inh_spk,
-                self.inh_conn,
+                inh_conn,
                 data_type=self.data_type,
                 efferent_target=self.efferent_target,
             )
@@ -245,13 +289,17 @@ def make_simulation_run(
         homo=homo,
         mv_layout=mv_layout,
     )
+    exc_conn = net.exc_conn
+    inh_conn = net.inh_conn
+    net.exc_conn = None
+    net.inh_conn = None
 
     @brainstate.transform.jit
-    def run():
+    def _run(exc_conn, inh_conn):
         net.init_all_states()
 
         def fn(t):
-            return net.update(t, 20 * u.mA)
+            return net.update(t, 24 * u.mA, exc_conn=exc_conn, inh_conn=inh_conn)
 
         with brainstate.environ.context(dt=0.1 * u.ms):
             times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
@@ -259,7 +307,7 @@ def make_simulation_run(
 
         return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second)
 
-    return run
+    return _bind_runtime_run(_run, exc_conn, inh_conn)
 
 
 def make_training_run(
