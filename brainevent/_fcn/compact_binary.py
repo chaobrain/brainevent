@@ -159,6 +159,16 @@ def _compact_binary_fcnmv_transpose_passthrough(x):
     return x
 
 
+def _compact_binary_fcnmv_spike_activity(
+    spikes: jax.Array,
+    dtype: jnp.dtype,
+) -> jax.Array:
+    spikes = u.math.asarray(spikes)
+    if spikes.dtype == jnp.bool_:
+        return spikes.astype(dtype)
+    return (spikes > 0).astype(dtype)
+
+
 def _compact_binary_fcnmv_col_weights_from_row_weights(
     weights: jax.Array,
     indices: jax.Array,
@@ -310,6 +320,81 @@ def _compact_binary_fcnmv_cuda_kernel(
         )(weights, indices, packed, active_ids, n_active)
 
     return kernel
+
+
+def _compact_binary_fcnmv_dummy_kernel_impl(
+    variant: str,
+    transpose: bool,
+    **kwargs
+):
+    if not transpose:
+        raise ValueError('Dummy compact backends only support scatter mode (`transpose=True`).')
+
+    weight_info = kwargs['weight_info']
+    if weight_info.size != 1:
+        raise ValueError('Dummy compact backends only support homogeneous weights.')
+
+    packed_info = kwargs['packed_info']
+    packed_size = int(np.prod(packed_info.shape))
+    if variant == 'packed':
+        if packed_size <= 0:
+            raise ValueError('`dummy_kernel` requires packed compact input (`packed.size > 0`).')
+    elif variant in ('vector_full', 'vector_active'):
+        if packed_size != 0:
+            raise ValueError(
+                f'`dummy_kernel_{variant}` requires vector-only compact input (`packed.size == 0`).'
+            )
+    else:
+        raise ValueError(f'Unsupported dummy compact variant: {variant!r}.')
+
+    load_cuda_file(
+        Path(__file__).parent.joinpath('dummy.cu'),
+        name='fcn_dummy_mv',
+    )
+
+    out_info = kwargs['outs']
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16'
+    }
+    row_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    if variant == 'packed':
+        kernel_name = f'fcn_dummy_mv.dummy_compact_binary_fcnmv_scatter_homo{row_sfx}'
+    elif variant == 'vector_full':
+        kernel_name = f'fcn_dummy_mv.dummy_compact_binary_fcnmv_scatter_homo_vector_full{row_sfx}'
+    else:
+        kernel_name = f'fcn_dummy_mv.dummy_compact_binary_fcnmv_scatter_homo_vector_active{row_sfx}'
+
+    def kernel(weights, indices, packed, active_ids, n_active, spikes, col_weights, col_indices, col_indptr):
+        del spikes, col_weights, col_indices, col_indptr
+        return jax.ffi.ffi_call(
+            kernel_name, out_info
+        )(weights, indices, packed, active_ids, n_active)
+
+    return kernel
+
+
+def _compact_binary_fcnmv_dummy_kernel(
+    transpose: bool,
+    **kwargs
+):
+    return _compact_binary_fcnmv_dummy_kernel_impl('packed', transpose, **kwargs)
+
+
+def _compact_binary_fcnmv_dummy_vector_full_kernel(
+    transpose: bool,
+    **kwargs
+):
+    return _compact_binary_fcnmv_dummy_kernel_impl('vector_full', transpose, **kwargs)
+
+
+def _compact_binary_fcnmv_dummy_vector_active_kernel(
+    transpose: bool,
+    **kwargs
+):
+    return _compact_binary_fcnmv_dummy_kernel_impl('vector_active', transpose, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -470,10 +555,11 @@ def _compact_binary_fcnmv_transpose_rule(
         )[0]
         ct_gmax = jnp.inner(ct, ct_gmax).reshape(*weight_info.shape)
     else:
+        spk_active = _compact_binary_fcnmv_spike_activity(spikes, weight_info.dtype)
         if transpose:
-            ct_gmax = jax.vmap(lambda v, ind: v * ct[ind])(spikes, indices)
+            ct_gmax = jax.vmap(lambda v, ind: v * ct[ind])(spk_active, indices)
         else:
-            ct_gmax = jax.vmap(lambda c, ind: c * spikes[ind])(ct, indices)
+            ct_gmax = jax.vmap(lambda c, ind: c * spk_active[ind])(ct, indices)
     return (
         ct_gmax,
         _compact_binary_fcnmv_transpose_passthrough(indices),
@@ -632,6 +718,9 @@ packed, active_ids, n_active, spikes, col_weights, col_indices, col_indptr)``.
 )
 compact_binary_fcnmv_p.def_numba_kernel(_compact_binary_fcnmv_numba_kernel)
 compact_binary_fcnmv_p.def_cuda_raw_kernel(_compact_binary_fcnmv_cuda_kernel, asdefault=True)
+compact_binary_fcnmv_p.def_kernel('dummy_kernel', 'gpu', _compact_binary_fcnmv_dummy_kernel)
+compact_binary_fcnmv_p.def_kernel('dummy_kernel_vector_full', 'gpu', _compact_binary_fcnmv_dummy_vector_full_kernel)
+compact_binary_fcnmv_p.def_kernel('dummy_kernel_vector_active', 'gpu', _compact_binary_fcnmv_dummy_vector_active_kernel)
 compact_binary_fcnmv_p.def_jvp_rule2(
     _compact_binary_fcnmv_jvp_weights,  # arg 0: weights
     None,  # arg 1: indices (not differentiable)

@@ -251,6 +251,16 @@ def _binary_fcnmv_transpose_passthrough(x):
     return x
 
 
+def _binary_fcnmv_spike_activity(
+    spikes: jax.Array,
+    dtype: jnp.dtype,
+) -> jax.Array:
+    spikes = u.math.asarray(spikes)
+    if spikes.dtype == jnp.bool_:
+        return spikes.astype(dtype)
+    return (spikes > 0).astype(dtype)
+
+
 def _binary_fcnmv_col_weights_from_row_weights(
     weights: jax.Array,
     indices: jax.Array,
@@ -487,6 +497,45 @@ def _binary_fcnmv_cuda_kernel(
     return kernel
 
 
+def _binary_fcnmv_dummy_kernel(
+    transpose: bool,
+    spike_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    if not transpose:
+        raise ValueError('`dummy_kernel` only supports scatter mode (`transpose=True`).')
+
+    weight_info = kwargs['weight_info']
+    if weight_info.size != 1:
+        raise ValueError('`dummy_kernel` only supports homogeneous weights.')
+
+    load_cuda_file(
+        Path(__file__).parent.joinpath('dummy.cu'),
+        name='fcn_dummy_mv',
+    )
+
+    out_info = kwargs['outs']
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    row_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    if spike_info.dtype == jnp.bool_:
+        kernel_name = f'fcn_dummy_mv.dummy_binary_fcnmv_scatter_homo_bool{row_sfx}'
+        spike_cast = lambda spikes: u.math.asarray(spikes, dtype=bool)
+    else:
+        kernel_name = f'fcn_dummy_mv.dummy_binary_fcnmv_scatter_homo_float{row_sfx}'
+        spike_cast = lambda spikes: u.math.asarray(spikes, dtype=weight_info.dtype)
+
+    def kernel(weights, indices, spikes, col_weights, col_indices, col_indptr):
+        del col_weights, col_indices, col_indptr
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spike_cast(spikes))
+
+    return kernel
+
+
 def _binary_fcnmv_jax_kernel(
     shape: Tuple[int, int],
     transpose: bool,
@@ -496,15 +545,7 @@ def _binary_fcnmv_jax_kernel(
     n_pre, n_post = shape
 
     def kernel(weights, indices, spikes, col_weights, col_indices, col_indptr):
-        # Convert spikes to float: bool→{0,1}, float→{0,1} based on >0
-        #bool_spk = u.math.asarray(spikes, dtype=bool)
-        
-        if spikes.dtype == jnp.bool_:
-            spk_f = spikes.astype(weights.dtype)
-        else:
-            spk_f = (spikes > 0).astype(weights.dtype)
-        
-        spk_f = u.math.asarray(spikes, dtype=bool)
+        spk_f = _binary_fcnmv_spike_activity(spikes, weights.dtype)
 
         if transpose:
             # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
@@ -625,14 +666,15 @@ def _binary_fcnmv_transpose_rule(
             )
             ct_gmax = jnp.inner(ct, ct_gmax[0]).reshape(*weight_info.shape)
         else:
+            spk_active = _binary_fcnmv_spike_activity(spikes, weight_info.dtype)
             if transpose:
-                ct_gmax = jax.vmap(lambda v, ind: v * ct[ind])(spikes, indices)
+                ct_gmax = jax.vmap(lambda v, ind: v * ct[ind])(spk_active, indices)
             else:
-                ct_gmax = jax.vmap(lambda c, ind: c * spikes[ind])(ct, indices)
-        return (
-            ct_gmax,
-            _binary_fcnmv_transpose_passthrough(indices),
-            _binary_fcnmv_transpose_passthrough(spikes),
+                ct_gmax = jax.vmap(lambda c, ind: c * spk_active[ind])(ct, indices)
+    return (
+        ct_gmax,
+        _binary_fcnmv_transpose_passthrough(indices),
+        _binary_fcnmv_transpose_passthrough(spikes),
             _binary_fcnmv_transpose_passthrough(col_weights),
             _binary_fcnmv_transpose_passthrough(col_indices),
             _binary_fcnmv_transpose_passthrough(col_indptr),
@@ -802,6 +844,7 @@ binary_fcnmv_p.def_cuda_raw_kernel(_binary_fcnmv_cuda_kernel, asdefault=True)
 binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'gpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'tpu', _binary_fcnmv_jax_kernel)
+binary_fcnmv_p.def_kernel('dummy_kernel', 'gpu', _binary_fcnmv_dummy_kernel)
 binary_fcnmv_p.def_jvp_rule2(
     _binary_fcnmv_jvp_weights,
     None,

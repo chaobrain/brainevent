@@ -29,8 +29,12 @@ from brainevent._test_util import generate_fixed_conn_num_indices
 
 
 platform = jax.default_backend()
-FCNMV_IMPLEMENTATIONS = tuple(binary_fcnmv_p.available_backends(platform))
+FCNMV_IMPLEMENTATIONS = tuple(
+    impl for impl in binary_fcnmv_p.available_backends(platform)
+    if impl != 'dummy_kernel'
+)
 FCNMM_IMPLEMENTATIONS = tuple(binary_fcnmm_p.available_backends(platform))
+FCNMV_COL_SCATTER_IMPLEMENTATIONS = FCNMV_IMPLEMENTATIONS
 
 if platform == 'cpu':
     SHAPES = (
@@ -60,6 +64,10 @@ def _implementation_params(implementations, op_name: str):
 
 FCNMV_PARAMS = _implementation_params(FCNMV_IMPLEMENTATIONS, 'binary_fcnmv')
 FCNMM_PARAMS = _implementation_params(FCNMM_IMPLEMENTATIONS, 'binary_fcnmm')
+FCNMV_COL_SCATTER_PARAMS = _implementation_params(
+    FCNMV_COL_SCATTER_IMPLEMENTATIONS,
+    'binary_fcnmv-col-scatter',
+)
 
 
 def _make_weights(indices, homo_w: bool):
@@ -241,48 +249,52 @@ def generate_cs_pairs(
 
     return valid_pairs
 
-
-'''
-@pytest.mark.parametrize('implementation', FCNMV_PARAMS)
+@pytest.mark.skipif(platform == 'cpu', reason='large-scale col_scatter coverage is GPU-oriented')
+@pytest.mark.parametrize('implementation', FCNMV_COL_SCATTER_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
-@pytest.mark.parametrize('event_dtype', [bool, float])
-def test_binary_fcnmv_forward_matches_reference_in_large_scale(implementation, homo_w, event_dtype):
+def test_binary_fcnmv_forward_column_scatter_matches_reference_in_large_scale(implementation, homo_w):
     import gc
-    for conn, m in generate_cs_pairs(homo_or_not=homo_w, include_dense_ref=True, max_conn=600):
 
+    # Keep the large-scale coverage focused on the column-scatter backend itself.
+    # Float-valued events are stricter here because the operator must still treat
+    # them as binary activity (active iff > 0).
+    for conn, m in generate_cs_pairs(
+        homo_or_not=homo_w,
+        include_dense_ref=True,
+        max_conn=600,
+        num_points=3,
+    ):
         indices = generate_fixed_conn_num_indices(m, m, conn)
         weights = _make_weights(indices, homo_w)
         col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=(m, m))
 
-        transpose = False
+        raw = jnp.asarray(brainstate.random.rand(m), dtype=jnp.float32)
+        events = jnp.where(raw > 0.4, raw, 0.0)
         shape = (m, m)
-        event_size = m
-        if event_dtype is bool:
-            events = brainstate.random.rand(event_size) < 0.5
-        else:
-            raw = jnp.asarray(brainstate.random.rand(event_size), dtype=jnp.float32)
-            events = jnp.where(raw > 0.4, raw, 0.0)
 
         y = binary_fcnmv(
             weights,
             indices,
             events,
-            shape=(m, m),
-            transpose=transpose,
+            shape=shape,
+            transpose=False,
             backend=implementation,
             col_weights=col_weights,
             col_indices=col_indices,
             col_indptr=col_indptr,
         )
-        y_ref = _mv_reference(weights, indices, events, shape, transpose)
+        y_ref = _mv_reference(weights, indices, events, shape, transpose=False)
 
-        assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2)
+        assert y.shape == y_ref.shape
+        assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2), (
+            f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
+            f"backend={implementation}  homo_w={homo_w}  conn={conn}"
+        )
 
         jax.block_until_ready((indices, weights, events, col_weights, col_indices, col_indptr, y, y_ref))
 
         del indices, weights, events, col_weights, col_indices, col_indptr, y, y_ref
         gc.collect()
-'''
 
 @pytest.mark.parametrize('implementation', FCNMV_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
@@ -314,7 +326,7 @@ def test_binary_fcnmv_forward_matches_reference(implementation, homo_w, transpos
     jax.block_until_ready((indices, weights, events, y, y_ref))
 
 
-@pytest.mark.parametrize('implementation', FCNMV_PARAMS)
+@pytest.mark.parametrize('implementation', FCNMV_COL_SCATTER_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('event_dtype', [bool, float])
 @pytest.mark.parametrize('shape', SHAPES)
@@ -368,7 +380,7 @@ def test_column_major_csc_mirror_has_expected_sizes(homo_w, shape):
         assert jnp.asarray(col_weights).size == nnz
 
 
-@pytest.mark.parametrize('implementation', FCNMV_PARAMS)
+@pytest.mark.parametrize('implementation', FCNMV_COL_SCATTER_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('event_dtype', [bool, float])
 @pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
@@ -416,7 +428,7 @@ def test_binary_fcnmv_column_scatter_jvp_weights_matches_reference(implementatio
     assert jnp.allclose(tangents_out, expected_tangent, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize('implementation', FCNMV_PARAMS)
+@pytest.mark.parametrize('implementation', FCNMV_COL_SCATTER_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('event_dtype', [bool, float])
 @pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
@@ -455,6 +467,38 @@ def test_binary_fcnmv_column_scatter_vjp_weights_matches_dense(implementation, h
     tol = 1e-3 if homo_w else 5e-2
     assert ct_w.shape == weights.shape
     assert jnp.allclose(ct_w, ct_w_dense, rtol=tol, atol=tol), (
+        f"max diff={jnp.max(jnp.abs(ct_w - ct_w_dense)):.4e}"
+    )
+
+
+@pytest.mark.parametrize('implementation', FCNMV_COL_SCATTER_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
+def test_binary_fcnmv_scatter_vjp_weights_float_activity_matches_dense(implementation, shape):
+    m, n = shape
+    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
+    weights = _make_weights(indices, homo_w=False)
+
+    raw = jnp.asarray(brainstate.random.rand(m), dtype=jnp.float32)
+    events = jnp.where(raw > 0.4, raw, 0.0)
+    ct = jnp.ones(n, dtype=jnp.float32)
+
+    f = lambda w: binary_fcnmv(
+        w,
+        indices,
+        events,
+        shape=shape,
+        transpose=True,
+        backend=implementation,
+    )
+    _, vjp_fn = jax.vjp(f, weights)
+    (ct_w,) = vjp_fn(ct)
+
+    f_dense = lambda w: _mv_reference(w, indices, events, shape, transpose=True)
+    _, vjp_dense = jax.vjp(f_dense, weights)
+    (ct_w_dense,) = vjp_dense(ct)
+
+    assert ct_w.shape == weights.shape
+    assert jnp.allclose(ct_w, ct_w_dense, rtol=5e-2, atol=5e-2), (
         f"max diff={jnp.max(jnp.abs(ct_w - ct_w_dense)):.4e}"
     )
 

@@ -14,15 +14,11 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
+import brainevent
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
-
-from brainevent._event.binary import BinaryArray
-from brainevent._event.bitpack_binary import BitPackedBinary
-from brainevent._event.compact_binary import CompactBinary
-from brainevent._fcn.main import FixedPostNumConn
 
 conn_num_base = 80
 
@@ -66,6 +62,12 @@ def _resolve_conn_num(
     return conn_num
 
 
+def _resolve_bitpack_mm_pack_axis(data_type: str) -> int:
+    if data_type == 'bitpack_a1':
+        return 1
+    return 0
+
+
 def _make_post_conn(
     source_size: int,
     target_size: int,
@@ -76,7 +78,7 @@ def _make_post_conn(
     homo: bool,
     conn_weight_base: u.Quantity,
     mv_layout: str,
-) -> FixedPostNumConn:
+) -> brainevent.FixedPostNumConn:
     total_conn_num = conn_num
     conn_num = _resolve_conn_num(conn_num, source_size, target_size, efferent_target=efferent_target)
 
@@ -97,6 +99,7 @@ def _make_post_conn(
         and data_type in ('binary', 'compact')
         and mv_layout == 'col_scatter'
     )
+    bitpack_mm_pack_axis = _resolve_bitpack_mm_pack_axis(data_type)
 
     with jax.ensure_compile_time_eval():
         indices_np = np.random.randint(0, n_cols, size=(n_rows, conn_num)).astype(np.int32, copy=False)
@@ -109,31 +112,39 @@ def _make_post_conn(
                 dtype=brainstate.environ.dftype(),
             )
 
-    return FixedPostNumConn(
+    return brainevent.FixedPostNumConn(
         (weight, u.math.asarray(indices_np, dtype=np.int32)),
         shape=shape,
         maintain_dual_layout=maintain_dual_layout,
+        bitpack_mm_pack_axis=bitpack_mm_pack_axis,
     )
 
 
 def _prepare_operand(spikes, *, data_type: str, efferent_target: str):
     spikes = u.math.asarray(spikes, dtype=jnp.bool_)
     if data_type == 'binary':
-        return BinaryArray(spikes)
+        return brainevent.BinaryArray(spikes)
     if data_type == 'compact':
         # Post-synaptic 1D compact scatter reads only active_ids/n_active.
         # Pre-synaptic routes still need packed bits for gather / CSC scatter.
         if efferent_target == 'post':
-            return CompactBinary.compacy_only_vector(spikes)
-        return CompactBinary.from_array(spikes)
+            compact_only_ctor = getattr(
+                brainevent.CompactBinary,
+                'compacy_only_vector',
+                getattr(brainevent.CompactBinary, 'compact_only_vector', None),
+            )
+            if compact_only_ctor is None:
+                raise AttributeError('CompactBinary is missing a compact-only 1D constructor.')
+            return compact_only_ctor(spikes)
+        return brainevent.CompactBinary.from_array(spikes)
     if data_type in ('bitpack', 'bitpack_a0', 'bitpack_a1'):
-        return BitPackedBinary(spikes)
+        return brainevent.BitPackedBinary(spikes)
     if data_type == 'float':
         return u.math.asarray(spikes, dtype=brainstate.environ.dftype())
     raise ValueError(f'Unsupported data_type: {data_type}')
 
 
-def _apply_conn(spikes, conn: FixedPostNumConn, *, data_type: str, efferent_target: str):
+def _apply_conn(spikes, conn: brainevent.FixedPostNumConn, *, data_type: str, efferent_target: str):
     operand = _prepare_operand(spikes, data_type=data_type, efferent_target=efferent_target)
     if efferent_target == 'post':
         return operand @ conn

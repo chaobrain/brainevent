@@ -20,6 +20,7 @@ os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 
 import functools
+import numpy as np
 
 import brainstate
 import braintools
@@ -82,6 +83,23 @@ def _remove_event_array(x):
     if isinstance(x, brainevent.BinaryArray):
         return x.value
     return x
+
+
+def _bitpack_reference_mm(weights, indices, packed, matrix, *, shape, transpose=False, pack_axis=1):
+    del packed, pack_axis
+    active = jnp.asarray(jnp.asarray(matrix) > 0, dtype=brainstate.environ.dftype())
+    return fcn_main_mod.fcnmm(weights, indices, active, shape=shape, transpose=transpose)
+
+
+def _bitpacked_transpose_host(self, *axes):
+    if not axes:
+        perm = tuple(reversed(range(self.ndim)))
+    elif len(axes) == 1 and isinstance(axes[0], (tuple, list)):
+        perm = tuple(axes[0])
+    else:
+        perm = tuple(axes)
+    value = jnp.asarray(np.transpose(np.asarray(self.value), perm), dtype=self.value.dtype)
+    return brainevent.BitPackedBinary(value)
 
 
 class Test_To_Dense:
@@ -447,6 +465,32 @@ class Test_Dual_Layout:
         assert jnp.array_equal(transposed.col_indptr, exp_p)
         assert allclose(spikes @ transposed, _binary_mask(spikes.value, dense.dtype) @ dense)
 
+    @pytest.mark.parametrize('cls, shape', [
+        (brainevent.FixedPostNumConn, (3, 4)),
+        (brainevent.FixedPreNumConn, (4, 3)),
+    ])
+    def test_bitpack_mm_pack_axis_is_preserved(self, cls, shape):
+        if cls is brainevent.FixedPostNumConn:
+            idx = jnp.array([[0, 1], [1, 3], [2, 0]], dtype=jnp.int32)
+        else:
+            idx = jnp.array([[0, 1], [2, 1], [3, 0]], dtype=jnp.int32)
+        data = jnp.ones(idx.shape, dtype=jnp.float32)
+        conn = cls(
+            (data, idx),
+            shape=shape,
+            bitpack_mm_pack_axis=1,
+        )
+
+        updated = conn.with_data(data + 1.0)
+        transposed = conn.T
+        children, aux = conn.tree_flatten()
+        rebuilt = cls.tree_unflatten(aux, children)
+
+        assert conn.bitpack_mm_pack_axis == 1
+        assert updated.bitpack_mm_pack_axis == 1
+        assert transposed.bitpack_mm_pack_axis == 1
+        assert rebuilt.bitpack_mm_pack_axis == 1
+
 
 class Test_Init_Outside_JIT:
     def test_fixed_post_init_rejects_first_construction_inside_jax_jit(self):
@@ -516,6 +560,69 @@ class Test_Operator_Behavior:
         assert allclose(conn @ right_matrix, dense @ _binary_mask(right_matrix.value, dense.dtype))
         jax.block_until_ready(
             (idx, data, dense, left_vector.value, right_vector.value, left_matrix.value, right_matrix.value))
+
+    @pytest.mark.parametrize('pack_axis', [0, 1])
+    def test_fixed_post_bitpacked_binary_matrix_operator_behavior(self, pack_axis, monkeypatch):
+        idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
+        data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
+        conn = brainevent.FixedPostNumConn(
+            (data, idx),
+            shape=(3, 4),
+            bitpack_mm_pack_axis=pack_axis,
+        )
+        monkeypatch.setattr(fcn_main_mod, 'bitpack_binary_fcnmm', _bitpack_reference_mm)
+        monkeypatch.setattr(brainevent.BitPackedBinary, 'transpose', _bitpacked_transpose_host)
+
+        left_matrix = brainevent.BitPackedBinary(
+            jnp.array([[0.0, 1.0, 0.3], [1.0, 0.0, 0.0]], dtype=jnp.float32)
+        )
+        right_matrix = brainevent.BitPackedBinary(
+            jnp.array([[0.0, 1.0], [0.2, 0.0], [1.0, 0.0], [0.0, 0.4]], dtype=jnp.float32)
+        )
+
+        left_expected = matrix_fcn(_binary_mask(left_matrix.value, data.dtype), conn.data, idx, (3, 4))
+        right_expected = fcn_matrix(_binary_mask(right_matrix.value, data.dtype), conn.data, idx, (3, 4))
+
+        assert allclose(left_matrix @ conn, left_expected)
+        assert allclose(conn @ right_matrix, right_expected)
+        jax.block_until_ready((left_matrix.value, right_matrix.value, left_expected, right_expected))
+
+    @pytest.mark.parametrize('pack_axis', [0, 1])
+    def test_fixed_pre_bitpacked_binary_matrix_operator_behavior(self, pack_axis, monkeypatch):
+        idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
+        data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
+        conn = brainevent.FixedPreNumConn(
+            (data, idx),
+            shape=(4, 3),
+            bitpack_mm_pack_axis=pack_axis,
+        )
+        conn_t = conn.T
+        monkeypatch.setattr(fcn_main_mod, 'bitpack_binary_fcnmm', _bitpack_reference_mm)
+        monkeypatch.setattr(brainevent.BitPackedBinary, 'transpose', _bitpacked_transpose_host)
+
+        left_matrix = brainevent.BitPackedBinary(
+            jnp.array([[1.0, 0.0, 0.5, 0.0], [0.0, 1.0, 0.0, 0.2]], dtype=jnp.float32)
+        )
+        right_matrix = brainevent.BitPackedBinary(
+            jnp.array([[0.2, 0.0], [1.0, 1.0], [0.0, 0.8]], dtype=jnp.float32)
+        )
+
+        left_expected = fcn_matrix(
+            _binary_mask(left_matrix.value, data.dtype).T,
+            conn_t.data,
+            conn_t.indices,
+            conn_t.shape,
+        ).T
+        right_expected = matrix_fcn(
+            _binary_mask(right_matrix.value, data.dtype).T,
+            conn_t.data,
+            conn_t.indices,
+            conn_t.shape,
+        ).T
+
+        assert allclose(left_matrix @ conn, left_expected)
+        assert allclose(conn @ right_matrix, right_expected)
+        jax.block_until_ready((left_matrix.value, right_matrix.value, left_expected, right_expected))
 
 
 

@@ -57,6 +57,33 @@ def _use_compact_full_compaction(*, x_ndim: int, transpose: bool, mv_layout: str
     return mv_layout == 'col_scatter'
 
 
+def _size_last_dim(size) -> int:
+    return int(size[-1]) if isinstance(size, tuple) else int(size)
+
+
+def _resolve_total_conn_num(conn_num: Union[int, float], target_size: int) -> int:
+    if isinstance(conn_num, float):
+        assert 0.0 <= conn_num <= 1.0, 'Connection probability must be in [0, 1].'
+        conn_num = int(target_size * conn_num)
+    assert isinstance(conn_num, int), 'Connection number must be an integer.'
+    return conn_num
+
+
+def _resolve_conn_num(
+    conn_num: Union[int, float],
+    source_size: int,
+    target_size: int,
+    *,
+    efferent_target: str,
+) -> int:
+    total_conn_num = _resolve_total_conn_num(conn_num, target_size)
+    if efferent_target == 'pre':
+        # Split a shared total indegree across source pools proportionally so
+        # fixed-pre routing matches the post-mode 4:1 E/I mix at integer K.
+        return int(round(total_conn_num * source_size / target_size))
+    return total_conn_num
+
+
 class FixedNumConn(brainstate.nn.Module):
     def __init__(
         self,
@@ -81,14 +108,15 @@ class FixedNumConn(brainstate.nn.Module):
             raise ValueError('data_type must be one of "binary", "float", "bitpack", "bitpack_a0", "bitpack_a1", "compact".')
         if efferent_target not in ('pre', 'post'):
             raise ValueError('The target of the connection must be either "pre" or "post".')
-        if isinstance(conn_num, float):
-            assert 0. <= conn_num <= 1., 'Connection probability must be in [0, 1].'
-            conn_num = (
-                int(self.out_size[-1] * conn_num)
-                if efferent_target == 'post' else
-                int(self.in_size[-1] * conn_num)
-            )
-        assert isinstance(conn_num, int), 'Connection number must be an integer.'
+        source_size = _size_last_dim(self.in_size)
+        target_size = _size_last_dim(self.out_size)
+        self.total_conn_num = _resolve_total_conn_num(conn_num, target_size)
+        conn_num = _resolve_conn_num(
+            self.total_conn_num,
+            source_size,
+            target_size,
+            efferent_target=efferent_target,
+        )
         self.conn_num = conn_num
         self.allow_multi_conn = allow_multi_conn
         self.mv_layout = mv_layout
@@ -97,16 +125,16 @@ class FixedNumConn(brainstate.nn.Module):
 
         # connections
         if self.efferent_target == 'post':
-            n_post = self.out_size[-1]
-            n_pre = self.in_size[-1]
+            n_post = target_size
+            n_pre = source_size
         else:
-            n_post = self.in_size[-1]
-            n_pre = self.out_size[-1]
+            n_post = source_size
+            n_pre = target_size
 
         with jax.ensure_compile_time_eval():
             assert allow_multi_conn
             indices_np = np.random.randint(0, n_post, size=(n_pre, self.conn_num)).astype(np.int32, copy=False)
-            conn_weight = conn_weight_base * conn_num_base / self.conn_num
+            conn_weight = conn_weight_base * conn_num_base / self.total_conn_num
             if not homo:
                 conn_weight = u.math.full((n_pre, self.conn_num), conn_weight)
             row_weight = u.math.asarray(conn_weight, dtype=brainstate.environ.dftype())

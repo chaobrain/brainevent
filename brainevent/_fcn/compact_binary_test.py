@@ -62,9 +62,13 @@ def _mk_hetero_w(indices, dtype=jnp.float32, seed=0):
     return jnp.asarray(rng.standard_normal(indices.shape).astype(np.float32), dtype=dtype)
 
 
-def _mk_spikes(size, p=0.5, seed=42):
+def _mk_spikes(size, p=0.5, seed=42, weighted=False):
     rng = np.random.default_rng(seed)
-    return jnp.asarray(rng.random(size) < p, dtype=jnp.float32)
+    active = rng.random(size) < p
+    if not weighted:
+        return jnp.asarray(active, dtype=jnp.float32)
+    values = rng.random(size).astype(np.float32) + 0.1
+    return jnp.asarray(np.where(active, values, 0.0), dtype=jnp.float32)
 
 
 def _mk_matrix(rows, cols, p=0.5, seed=42):
@@ -526,6 +530,44 @@ def test_compact_binary_fcnmv_forward_in_large_scale(homo_w):
         gc.collect()
 
 
+@pytest.mark.skipif(platform == 'cpu', reason='large-scale col_scatter coverage is GPU-oriented')
+@pytest.mark.parametrize('homo_w', [True, False])
+def test_compact_binary_fcnmv_forward_column_scatter_in_large_scale(homo_w):
+    """compact_binary_fcnmv column-scatter path matches dense reference at large scale."""
+    import gc
+
+    for conn, m in generate_cs_pairs(
+        homo_or_not=homo_w,
+        include_dense_ref=True,
+        max_conn=600,
+        num_points=3,
+    ):
+        indices = generate_fixed_conn_num_indices(m, m, conn)
+        weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+        col_weights, col_indices, col_indptr = _build_col_major_fcn(weights, indices, (m, m))
+
+        shape = (m, m)
+        spikes = _mk_spikes(m, weighted=True)
+        cb = CompactBinary.from_array(spikes)
+
+        y = compact_binary_fcnmv(
+            weights, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+            shape=shape, transpose=False,
+            col_weights=col_weights, col_indices=col_indices, col_indptr=col_indptr,
+        )
+        y_ref = _ref_mv(weights, indices, spikes, shape, transpose=False)
+
+        assert y.shape == y_ref.shape
+        assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2), (
+            f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
+            f"homo_w={homo_w}  conn={conn}"
+        )
+        jax.block_until_ready((indices, weights, col_weights, col_indices, col_indptr, y, y_ref))
+
+        del indices, weights, col_weights, col_indices, col_indptr, spikes, cb, y, y_ref
+        gc.collect()
+
+
 # ===========================================================================
 # 2. Forward correctness -- fcnmm
 # ===========================================================================
@@ -762,13 +804,14 @@ def test_compact_binary_fcnmv_vjp_weights(homo_w, transpose, shape):
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('weighted_spikes', [False, True])
 @pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
-def test_compact_binary_fcnmv_vjp_weights_column_scatter(homo_w, shape):
+def test_compact_binary_fcnmv_vjp_weights_column_scatter(homo_w, weighted_spikes, shape):
     m, n = shape
     indices = _mk_indices(shape)
     weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
     _, col_indices, col_indptr = _build_col_major_fcn(weights, indices, shape)
-    spikes = _mk_spikes(n)
+    spikes = _mk_spikes(n, weighted=weighted_spikes)
     cb = CompactBinary.from_array(spikes)
     ct = jnp.ones(m, dtype=jnp.float32)
 

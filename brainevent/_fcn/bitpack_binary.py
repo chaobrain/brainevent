@@ -134,6 +134,42 @@ def _bitpack_binary_fcnmv_cuda_kernel(
 
     return kernel
 
+
+def _bitpack_binary_fcnmv_dummy_kernel(
+    transpose: bool,
+    pack_axis: int,
+    **kwargs
+):
+    if not transpose:
+        raise ValueError('`dummy_kernel` only supports scatter mode (`transpose=True`).')
+
+    weight_info = kwargs['weight_info']
+    if weight_info.size != 1:
+        raise ValueError('`dummy_kernel` only supports homogeneous weights.')
+
+    load_cuda_file(
+        Path(__file__).parent.joinpath('dummy.cu'),
+        name='fcn_dummy_mv',
+    )
+
+    out_info = kwargs['outs']
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16'
+    }
+    sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'fcn_dummy_mv.dummy_bitpack_binary_fcnmv_scatter_homo{sfx}'
+
+    def kernel(weights, indices, packed, spikes):
+        del spikes
+        return jax.ffi.ffi_call(
+            kernel_name, out_info
+        )(weights, indices, packed, pack_axis=pack_axis)
+
+    return kernel
+
 # ---------------------------------------------------------------------------
 # JAX GPU kernel
 # ---------------------------------------------------------------------------
@@ -512,6 +548,7 @@ to the CUDA kernel.
 )
 bitpack_binary_fcnmv_p.def_numba_kernel(_bitpack_binary_fcnmv_numba_kernel)
 bitpack_binary_fcnmv_p.def_cuda_raw_kernel(_bitpack_binary_fcnmv_cuda_kernel, asdefault=True)
+bitpack_binary_fcnmv_p.def_kernel('dummy_kernel', 'gpu', _bitpack_binary_fcnmv_dummy_kernel)
 #bitpack_binary_fcnmv_p.def_kernel('jax_cuda_joint', 'gpu', bitpack_binary_fcnmv_jax_cuda_joint_kernel, asdefault=True)
 bitpack_binary_fcnmv_p.def_jvp_rule2(
     _bitpack_binary_fcnmv_jvp_weights,  # arg 0: weights

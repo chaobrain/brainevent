@@ -213,7 +213,7 @@ def benchmark_vram_limit(
     backend: str | None = None,
     efferent_target: str = 'post',
     _N: int = 4000,
-    vram_start: int = 15,
+    vram_start: int = 1,
     vram_end: int = 24,
     vram_step: int = 1,
     sample_points: int = 2,
@@ -423,10 +423,10 @@ def benchmark_vram_limit(
 if __name__ == '__main__':
     benchmark_vram_limit(
         benchmark_name='coba_ei',#coba_2005 coba_ei
-        data_type='compact',
+        data_type='binary',
         duration=10 * u.ms,
-        efferent_target='post',
+        efferent_target='pre',
         homo=True,
         backend='cuda_raw',
-        mv_layout='row_gather',#row_gather col_scatter
+        mv_layout='col_scatter',#row_gather col_scatter
     )
