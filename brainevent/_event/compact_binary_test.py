@@ -45,6 +45,24 @@ class TestConstruction1D:
         assert int(cb.n_active[0]) == 2
 
 
+class TestCompactOnlyVector:
+    def test_basic(self):
+        x_np = np.array([0.0, 1.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+        x = jnp.asarray(x_np)
+        cb = CompactBinary.compacy_only_vector(x)
+
+        assert cb.packed.shape == (0,)
+        assert cb.packed.dtype == jnp.uint32
+        assert int(cb.n_active[0]) == 3
+        ids = np.sort(np.array(cb.active_ids[:3]))
+        np.testing.assert_array_equal(ids, np.array([1, 3, 5], dtype=np.int32))
+        np.testing.assert_array_equal(cb.value, x)
+
+    def test_invalid_ndim(self):
+        with pytest.raises(ValueError, match="only supports 1D arrays"):
+            CompactBinary.compacy_only_vector(jnp.zeros((2, 3), dtype=jnp.bool_))
+
+
 class TestConstruction2D:
     def test_basic(self):
         rng = np.random.RandomState(1)

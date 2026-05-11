@@ -25,6 +25,7 @@ import numpy as np
 from jax.experimental.sparse import csr_todense_p, coo_todense_p
 
 from ._typing import MatrixShape, Data, Index
+from ._compatible_import import Tracer
 
 
 # -*- coding: utf-8 -*-
@@ -991,7 +992,7 @@ def coo_to_csc_index(
     n_post = shape[1]
     if isinstance(indices, np.ndarray) and isinstance(pre_ids, np.ndarray):
         # to maintain the original order of the elements with the same value
-        new_post_position = np.argsort(indices)
+        new_post_position = np.argsort(indices, kind='stable')
         pre_ids_new = np.asarray(pre_ids[new_post_position], dtype=brainstate.environ.ditype())
 
         unique_post_ids, count = np.unique(indices, return_counts=True)
@@ -1005,7 +1006,7 @@ def coo_to_csc_index(
         # to maintain the original order of the elements with the same value
 
         with jax.ensure_compile_time_eval():
-            new_post_position = jnp.argsort(indices)
+            new_post_position = jnp.argsort(indices, stable=True)
             pre_ids_new = jnp.asarray(pre_ids[new_post_position], dtype=brainstate.environ.ditype())
 
             unique_post_ids, count = jnp.unique(indices, return_counts=True)
@@ -1016,6 +1017,77 @@ def coo_to_csc_index(
             indptr_new = jnp.asarray(indptr_new, dtype=brainstate.environ.ditype())
 
     return indptr_new, pre_ids_new, new_post_position
+
+
+def fixed_conn_num_csr_indptr(
+    indices: Union[jax.Array, np.ndarray],
+) -> Union[jax.Array, np.ndarray]:
+    """Build the implicit CSR ``indptr`` for a fixed-connection matrix."""
+    assert indices.ndim == 2, f'Indices must be 2D, got {indices.ndim}D.'
+    n_pre, n_conn = indices.shape
+    if isinstance(indices, np.ndarray):
+        return np.arange(n_pre + 1, dtype=indices.dtype) * n_conn
+    return jnp.arange(n_pre + 1, dtype=indices.dtype) * n_conn
+
+
+def fixed_conn_num_csc_structure(
+    indices: Union[jax.Array, np.ndarray],
+    *,
+    shape: Tuple[int, int],
+) -> Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]:
+    """Convert row-major FCN connectivity into compact CSC structure."""
+    assert indices.ndim == 2, f'Indices must be 2D, got {indices.ndim}D.'
+    n_pre, n_post = shape
+    assert indices.shape[0] == n_pre, (
+        f'Pre size mismatch: indices.shape[0] ({indices.shape[0]}) != shape[0] ({n_pre})'
+    )
+
+    csr_indptr = fixed_conn_num_csr_indptr(indices)
+    flat_indices = indices.reshape(-1)
+    if not isinstance(indices, Tracer):
+        csc_indptr, csc_indices, perm = csr_to_csc_index(csr_indptr, flat_indices, shape=shape)
+        if isinstance(indices, np.ndarray):
+            return (
+                np.asarray(csc_indptr, dtype=indices.dtype),
+                np.asarray(csc_indices, dtype=indices.dtype),
+                np.asarray(perm, dtype=indices.dtype),
+            )
+        return (
+            jnp.asarray(csc_indptr, dtype=indices.dtype),
+            jnp.asarray(csc_indices, dtype=indices.dtype),
+            jnp.asarray(perm, dtype=indices.dtype),
+        )
+
+    row_ids = jnp.repeat(jnp.arange(n_pre, dtype=indices.dtype), indices.shape[1])
+    perm = jnp.argsort(flat_indices, stable=True)
+    counts = jnp.bincount(flat_indices, length=n_post).astype(indices.dtype)
+    indptr = jnp.concatenate(
+        [jnp.zeros(1, dtype=indices.dtype), jnp.cumsum(counts, dtype=indices.dtype)]
+    )
+    return indptr, row_ids[perm], perm
+
+
+def fixed_conn_num_to_csc(
+    weights: Union[jax.Array, np.ndarray],
+    indices: Union[jax.Array, np.ndarray],
+    *,
+    shape: Tuple[int, int],
+) -> Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]:
+    """Build compact CSC mirrors for FCN weights and indices."""
+    if weights.ndim == 0:
+        weights = weights.reshape((1,))
+    if weights.ndim == 1:
+        assert weights.size == 1, (
+            f'When weights is 1D, it should be a scalar (size 1), got {weights.size}.'
+        )
+    elif weights.ndim != 2:
+        raise ValueError(f'weight dim should be 2, 1, or 0, but got {weights.ndim}')
+
+    csc_indptr, csc_indices, perm = fixed_conn_num_csc_structure(indices, shape=shape)
+    if weights.ndim == 1:
+        return weights.reshape(1), csc_indices, csc_indptr
+
+    return weights.reshape(-1)[perm], csc_indices, csc_indptr
 
 
 def csr_to_csc_index(

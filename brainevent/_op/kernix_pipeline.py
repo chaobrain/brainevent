@@ -164,6 +164,7 @@ def load_cuda_inline(
             (extra_cuda_cflags or [])
             + [f"-O{optimization_level}"]
             + (["--use_fast_math"] if use_fast_math else [])
+            + [f"--be-allow-cuda-graph={int(allow_cuda_graph)}"]
         ),
         extra_ldflags=extra_ldflags,
     )

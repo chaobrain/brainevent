@@ -1,18 +1,223 @@
-
 import os
 import re
-import jax
 from pathlib import Path
 
-class CSV_record():
+import jax
 
+MIN_GENERATED_SCALE = 20
+MIN_GENERATED_CONN = 20
+FIXED_GENERATED_BATCHES = (16, 32, 64, 128, 256)
+
+_VALID_MV_MODES = frozenset({'pre', 'post'})
+_VALID_MV_LAYOUTS = frozenset({'row_gather', 'col_scatter', 'auto'})
+_DUAL_LAYOUT_MV_TYPES = frozenset({'binary', 'compact'})
+
+
+def _clamped_sampling_min(max_val: int, preferred_min: int) -> int:
+    if max_val < 1:
+        raise ValueError(f"max_val must be >= 1, got {max_val}")
+    return min(max_val, preferred_min)
+
+
+def _fixed_batch_candidates(batch_max: int) -> list[int]:
+    if batch_max < 1:
+        raise ValueError(f"batch_max must be >= 1, got {batch_max}")
+    batches = [b for b in FIXED_GENERATED_BATCHES if b <= batch_max]
+    return batches if batches else [batch_max]
+
+
+def _validate_mv_mode(mode: str) -> str:
+    if mode not in _VALID_MV_MODES:
+        raise ValueError(f"mode must be one of {_VALID_MV_MODES}, got {mode!r}.")
+    return mode
+
+
+def _validate_mv_layout(mv_layout: str) -> str:
+    if mv_layout not in _VALID_MV_LAYOUTS:
+        raise ValueError(f"mv_layout must be one of {_VALID_MV_LAYOUTS}, got {mv_layout!r}.")
+    return mv_layout
+
+
+def _resolve_mv_context(
+    *,
+    mode: str | None,
+    data_type: str | None,
+    mv_layout: str | None,
+    default_mode: str,
+    default_data_type: str,
+    default_mv_layout: str,
+) -> tuple[str, str, str]:
+    resolved_mode = _validate_mv_mode(default_mode if mode is None else mode)
+    resolved_layout = _validate_mv_layout(default_mv_layout if mv_layout is None else mv_layout)
+    resolved_type = default_data_type if data_type is None else data_type
+    return resolved_mode, resolved_type, resolved_layout
+
+
+def _mv_mode_storage_factor(mode: str) -> int:
+    # Post keeps one outgoing FCN view across E/I groups; pre keeps one
+    # incoming FCN view per target group, doubling the stored nnz.
+    return 1 if mode == 'post' else 2
+
+
+def _mv_dual_layout_factor(mode: str, data_type: str, mv_layout: str) -> int:
+    if mode == 'pre' and data_type in _DUAL_LAYOUT_MV_TYPES and mv_layout == 'col_scatter':
+        return 2
+    return 1
+
+
+def _estimate_mv_sparse_bytes(
+    *,
+    scale: int,
+    conn: int,
+    _N: int,
+    homo: bool,
+    data_size: int,
+    mode: str,
+    data_type: str,
+    mv_layout: str,
+) -> int:
+    times = 1 if homo else 2
+    mode_factor = _mv_mode_storage_factor(mode)
+    layout_factor = _mv_dual_layout_factor(mode, data_type, mv_layout)
+    return conn * scale * _N * data_size * times * mode_factor * layout_factor
+
+
+def _resolve_resume_csv_path(base_dir: Path, flush_dir: str | None, flush_file_name: str) -> Path:
+    candidate = Path(flush_file_name)
+    if candidate.suffix == '.csv' or candidate.parent != Path('.'):
+        if not candidate.suffix:
+            candidate = candidate.with_suffix('.csv')
+        if candidate.is_absolute():
+            return candidate
+        if candidate.exists():
+            return candidate.resolve()
+        return (base_dir / candidate).resolve()
+
+    target_dir = base_dir / flush_dir if flush_dir else base_dir
+    return target_dir / f'{flush_file_name}.csv'
+
+
+def _parse_resume_int_value(value, *, column: str, file_path: Path, row_index: int) -> int:
+    if value is None or str(value).strip() == '':
+        raise ValueError(
+            f"Resume CSV has empty value for column {column!r} at row {row_index}: {file_path}"
+        )
+    try:
+        return int(float(str(value).strip()))
+    except ValueError as exc:
+        raise ValueError(
+            f"Resume CSV has non-integer value {value!r} for column {column!r} "
+            f"at row {row_index}: {file_path}"
+        ) from exc
+
+
+def _load_resume_points(
+    *,
+    file_path: Path,
+    required_columns: tuple[str, ...],
+    point_from_row,
+    label: str,
+) -> tuple[set[tuple[int, ...]], int, int]:
+    import csv
+
+    if not file_path.exists():
+        return set(), 0, 0
+
+    with file_path.open('r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        missing_columns = [column for column in required_columns if column not in fieldnames]
+        if missing_columns:
+            raise ValueError(
+                f"{label} resume CSV missing required columns {missing_columns}: {file_path}"
+            )
+
+        tested_points: set[tuple[int, ...]] = set()
+        row_count = 0
+        for row_index, row in enumerate(reader, start=2):
+            row_count += 1
+            tested_points.add(point_from_row(row=row, file_path=file_path, row_index=row_index))
+
+    return tested_points, row_count, len(tested_points)
+
+
+def _filter_states_by_existing_points(
+    states,
+    *,
+    point_from_state,
+    tested_points: set[tuple[int, ...]],
+    non_repeat: bool,
+    label: str,
+):
+    states_list = list(states)
+    seen_points: set[tuple[int, ...]] = set()
+    filtered_states = []
+    skipped_existing = 0
+    skipped_duplicates = 0
+
+    for state in states_list:
+        point = point_from_state(state)
+        if non_repeat and point in tested_points:
+            skipped_existing += 1
+            continue
+        if point in seen_points:
+            skipped_duplicates += 1
+            continue
+        seen_points.add(point)
+        filtered_states.append(state)
+
+    removed_count = skipped_existing + skipped_duplicates
+    if non_repeat or removed_count:
+        print(
+            f"{label} sample filter: removed={removed_count} "
+            f"(existing={skipped_existing}, duplicate={skipped_duplicates}), "
+            f"remaining={len(filtered_states)}"
+        )
+    return filtered_states
+
+
+def _mv_point_from_row(*, row, file_path: Path, row_index: int) -> tuple[int, int]:
+    return (
+        _parse_resume_int_value(row.get('scale'), column='scale', file_path=file_path, row_index=row_index),
+        _parse_resume_int_value(row.get('conn_num'), column='conn_num', file_path=file_path, row_index=row_index),
+    )
+
+
+def _mv_point_from_state(state) -> tuple[int, int]:
+    if len(state) != 3:
+        raise ValueError(f"MV state must be (scale, prob, conn_num), got {state!r}")
+    scale, _, conn_num = state
+    return int(scale), int(conn_num)
+
+
+def _mm_point_from_row(*, row, file_path: Path, row_index: int) -> tuple[int, int, int]:
+    return (
+        _parse_resume_int_value(row.get('scale'), column='scale', file_path=file_path, row_index=row_index),
+        _parse_resume_int_value(row.get('batch_size'), column='batch_size', file_path=file_path, row_index=row_index),
+        _parse_resume_int_value(row.get('conn_num'), column='conn_num', file_path=file_path, row_index=row_index),
+    )
+
+
+def _mm_point_from_state(state) -> tuple[int, int, int]:
+    if len(state) == 3:
+        scale, batch_size, conn_num = state
+    elif len(state) == 4:
+        scale, _, conn_num, batch_size = state
+    else:
+        raise ValueError(
+            "MM state must be (scale, batch_size, conn_num) or "
+            f"(scale, prob, conn_num, batch_size), got {state!r}"
+        )
+    return int(scale), int(batch_size), int(conn_num)
+
+
+class CSV_record:
     @staticmethod
     def _extract_value(param):
- 
         if hasattr(param, '__class__') and param.__class__.__name__ == 'Quantity':
             return param.magnitude
         return param
-    
+
     def __init__(
         self,
         CSV_name: str,
@@ -28,35 +233,30 @@ class CSV_record():
         self.suffix = suffix
         self.conn = conn
         self.operator_name = operator
-        # Handle brainunit Quantity objects
         self.duration = self._extract_value(duration)
 
-        # default common fields
-        if 'mv' in self.operator_name:   
+        if 'mv' in self.operator_name:
             self.fieldnames: list[str] = [
                 'operator', 'data_type', 'backend', 'synaptic_type', 'scale', 'conn_num',
-                'elapsed_s', 'firing_rate', 'duration', 'homo'
+                'elapsed_s', 'firing_rate', 'duration', 'homo',
             ]
             self.operator_type = 'mv'
         elif 'mm' in self.operator_name:
-            self.fieldnames: list[str] = [
+            self.fieldnames = [
                 'operator', 'data_type', 'backend', 'synaptic_type', 'scale', 'conn_num',
-                'batch_size', 'elapsed_s', 'firing_rate', 'duration', 'homo'
+                'batch_size', 'elapsed_s', 'firing_rate', 'duration', 'homo',
             ]
             self.operator_type = 'mm'
         else:
-            self.fieldnames: list[str] = [
+            self.fieldnames = [
                 'operator', 'data_type', 'backend', 'synaptic_type', 'scale', 'conn_num',
-                'elapsed_s', 'firing_rate', 'duration', 'homo'
+                'elapsed_s', 'firing_rate', 'duration', 'homo',
             ]
             self.operator_type = 'unknown'
-        
+
         self.rows: list[dict] = []
+        self.testing_type = 'coba' if testing_type == 'COBA' else testing_type
 
-        self.testing_type = testing_type  
-        if testing_type == 'COBA': self.testing_type = 'coba' # coba or benchmark
-
-        # output dir default: same folder as this file /results
         try:
             self.base = Path(__file__).resolve().parent
         except NameError:
@@ -66,12 +266,17 @@ class CSV_record():
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.append = append
         self._tags: dict = {}
-
         self.width = 70
 
-    def _write_csv(self, file_name: str, rows: list[dict], fieldnames: list[str], mode: str = 'w', silent: bool = False) -> None:
+    def _write_csv(
+        self,
+        file_name: str,
+        rows: list[dict],
+        fieldnames: list[str],
+        mode: str = 'w',
+        silent: bool = False,
+    ) -> None:
         import csv
-        from pathlib import Path
 
         file_path = Path(self.output_dir) / f'{file_name}.csv'
         write_header = True
@@ -79,16 +284,14 @@ class CSV_record():
 
         if mode == 'a' and file_path.exists():
             write_header = False
-            # Read existing fieldnames to maintain schema consistency
             with file_path.open('r', newline='', encoding='utf-8') as f:
                 reader = csv.reader(f)
                 existing_fields = next(reader, [])
             if existing_fields:
-                # Union: existing fields first, then any new fields not yet present
                 merged = list(existing_fields)
-                for fn in fieldnames:
-                    if fn not in merged:
-                        merged.append(fn)
+                for field in fieldnames:
+                    if field not in merged:
+                        merged.append(field)
                 effective_fieldnames = merged
 
         with file_path.open(mode, newline='', encoding='utf-8') as f:
@@ -101,23 +304,11 @@ class CSV_record():
             print(f"result has been saved: {file_path}")
 
     def add_tag(self, tag_name: str, tag_value) -> None:
-        """Set a persistent tag that will be automatically included in all subsequent rows.
-
-        Call this before ``single_COBA_data_add`` (or ``add_row``) to attach
-        an extra labeled field to every row recorded afterward.
-        ``fieldnames`` is updated immediately so the column appears in the CSV.
-        """
         self._tags[tag_name] = tag_value
         if tag_name not in self.fieldnames:
             self.fieldnames.append(tag_name)
 
     def add_row(self, row: dict) -> None:
-        """Add a generic row (dict). New keys will be added to fieldnames.
-
-        Active tags (set via ``add_tag``) are merged into the row automatically;
-        explicit values in *row* take precedence over tag values.
-        """
-        # Merge active tags first, then let row values override
         merged_row = dict(self._tags)
         merged_row.update(row)
         for key in merged_row.keys():
@@ -125,36 +316,35 @@ class CSV_record():
                 self.fieldnames.append(key)
         self.rows.append(merged_row)
 
-    def single_COBA_data_add(self, operator: str,
-                             data_type: str,
-                             backend: str,
-                             synaptic_type: str,
-                             conn_num: int,
-                             scale: int,
-                             elapsed_s: float,
-                             firing_rate: float,
-                             duration: float,
-                             homo: str = 'default',
-                             batch_size: int = 1,
-                             **kwargs):
-        """Backwards-compatible helper used by existing benchmarks.
-        
-        Automatically extracts numeric values from brainunit Quantity objects.
-        """
-        if self.operator_type == 'mv':   
+    def single_COBA_data_add(
+        self,
+        operator: str,
+        data_type: str,
+        backend: str,
+        synaptic_type: str,
+        conn_num: int,
+        scale: int,
+        elapsed_s: float,
+        firing_rate: float,
+        duration: float,
+        homo: str = 'default',
+        batch_size: int = 1,
+        **kwargs,
+    ):
+        if self.operator_type == 'mv':
             row = {
-            'operator': self.operator_name,
-            'data_type': data_type,
-            'backend': backend,
-            'testing_type': self.testing_type,
-            'synaptic_type': synaptic_type,
-            'scale': scale,
-            'conn_num': conn_num,
-            'elapsed_s': self._extract_value(elapsed_s),
-            'firing_rate': self._extract_value(firing_rate),
-            'duration': self._extract_value(duration),
-            'homo': homo,
-        }
+                'operator': self.operator_name,
+                'data_type': data_type,
+                'backend': backend,
+                'testing_type': self.testing_type,
+                'synaptic_type': synaptic_type,
+                'scale': scale,
+                'conn_num': conn_num,
+                'elapsed_s': self._extract_value(elapsed_s),
+                'firing_rate': self._extract_value(firing_rate),
+                'duration': self._extract_value(duration),
+                'homo': homo,
+            }
         elif self.operator_type == 'mm':
             row = {
                 'operator': self.operator_name,
@@ -185,68 +375,37 @@ class CSV_record():
                 'homo': homo,
             }
 
-        # merge extras, also extract values from them
         for key, value in kwargs.items():
             row[key] = self._extract_value(value)
-
         self.add_row(row)
 
-
-    def record_finish(self, dir:str = '', suffix: str = '', file_name: str | None = None) -> None:
-        """Write accumulated rows to disk.
-
-        - `suffix` will be used in auto-generated filename if provided.
-        - `file_name` overrides auto filename.
-        - When suffix is 'default' (or empty), results are **always appended** to
-          ``{testing_type}_default.csv`` so that multiple operators / data-types
-          are aggregated into one file for unified comparison.
-        - For other files, automatically detects if the target file exists and
-          appends if it does.
-        """
+    def record_finish(self, dir: str = '', suffix: str = '', file_name: str | None = None) -> None:
         if not self.rows:
             return
-        if dir != '':
+        if dir:
             self.output_dir = self.base / dir
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            
-        suf = suffix if suffix else self.suffix
 
+        suf = suffix if suffix else self.suffix
         is_default = (suf == 'default' or not suf)
 
         if file_name:
             out_name = file_name
-            # Check if file exists and determine mode
             file_path = self.output_dir / f'{file_name}.csv'
             mode = 'a' if file_path.exists() else 'w'
         elif is_default:
-            # Aggregate everything into <testing_type>_default.csv (always append)
             out_name = f'{self.testing_type}_default'
             mode = 'a'
         else:
             out_name = f'{self.testing_type}_{self.operator_name}_{self.name}_{suf}'
-            # Check if file exists and determine mode
             file_path = self.output_dir / f'{out_name}.csv'
             mode = 'a' if file_path.exists() else 'w'
 
         self._write_csv(out_name, self.rows, self.fieldnames, mode=mode)
 
-    def flush_and_clear(self, file_name: str, dir: str = '') -> 'Path | None':
-        """Immediately write buffered rows to disk and clear the buffer.
-
-        Use this for incremental flushing after each completed test round
-        instead of waiting for ``record_finish`` at the end.
-        If there are no buffered rows this is a no-op.
-
-        Parameters
-        ----------
-        file_name : str
-            Output filename (without .csv extension).
-        dir : str, optional
-            Sub-directory under ``self.base`` to write into.
-            If empty, uses the current ``self.output_dir``.
-        """
+    def flush_and_clear(self, file_name: str, dir: str = '') -> Path | None:
         if not self.rows:
-            return
+            return None
         if dir:
             target_dir = self.base / dir
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -254,23 +413,26 @@ class CSV_record():
             target_dir = self.output_dir
         file_path = target_dir / f'{file_name}.csv'
         mode = 'a' if file_path.exists() else 'w'
-        _saved = self.output_dir
+        saved_output_dir = self.output_dir
         self.output_dir = target_dir
         self._write_csv(file_name, self.rows, self.fieldnames, mode=mode, silent=True)
-        self.output_dir = _saved
+        self.output_dir = saved_output_dir
         self.rows = []
         return file_path
 
-
-    def print_header(self, *, operator: str, data_type: str, backend: str,
-                     mode: str, conn_num: int | None = None, duration=None, duration_ms: float | None = None,
-                     batch_size: int | None = None, **extra) -> None:
-        """Print parameter condition header block.
-
-        Accepts either ``duration`` (a numeric value or brainunit Quantity) or
-        the legacy ``duration_ms`` float.  When both are supplied, ``duration``
-        takes precedence.
-        """
+    def print_header(
+        self,
+        *,
+        operator: str,
+        data_type: str,
+        backend: str,
+        mode: str,
+        conn_num: int | None = None,
+        duration=None,
+        duration_ms: float | None = None,
+        batch_size: int | None = None,
+        **extra,
+    ) -> None:
         if duration is not None:
             dur_ms_val = float(self._extract_value(duration))
         elif duration_ms is not None:
@@ -286,13 +448,12 @@ class CSV_record():
         if conn_num is not None:
             parts.append(f'conn_num={conn_num}')
         parts.append(f'duration={dur_ms_val:.1f} ms')
-        for k, v in extra.items():
-            parts.append(f'{k}={v}')
+        for key, value in extra.items():
+            parts.append(f'{key}={value}')
         print('  ' + ' | '.join(parts))
         print(f'{"=" * self.width}')
 
     def print_table_header(self, show_conn: bool = False, show_batch: bool = False) -> None:
-        """Print column header for the standard result table."""
         if show_batch and show_conn:
             print(f'  {"Scale":>5s} | {"BatchSz":>7s} | {"ConnNum":>8s} | {"Neurons":>7s} | {"Elapsed (s)":>11s} | {"Rate (Hz)":>9s}')
             print(f'  {"-----":>5s}-+-{"-------":>7s}-+-{"--------":>8s}-+-{"-------":>7s}-+-{"----------":>11s}-+-{"------":>9s}')
@@ -308,7 +469,6 @@ class CSV_record():
 
     @staticmethod
     def print_row(scale: int, neurons: int, elapsed: float, rate: float, conn_num=None, batch_size=None) -> None:
-        """Print one benchmark result row."""
         if batch_size is not None and conn_num is not None:
             print(f'  {scale:>5d} | {batch_size:>7d} | {conn_num:>8g} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
         elif batch_size is not None:
@@ -318,131 +478,254 @@ class CSV_record():
         else:
             print(f'  {scale:>5d} | {neurons:>7d} | {elapsed:>11.3f} | {float(rate):>9.2f}')
 
-def dump_jax_ir(func, args=(), kwargs=None, prefix="dump"):
 
+def dump_jax_ir(func, args=(), kwargs=None, prefix="dump"):
     if kwargs is None:
         kwargs = {}
-        
+
     ansi_escape_pattern = re.compile(r'\x1b\[[0-9;]*m')
-    
     jaxpr_path = os.path.abspath(f"{prefix}_jaxpr.txt")
     hlo_path = os.path.abspath(f"{prefix}_hlo.txt")
 
     print("Tracing JAXPR (Frontend Logic State)...")
     jaxpr_ir = jax.make_jaxpr(func)(*args, **kwargs)
     clean_jaxpr_str = ansi_escape_pattern.sub('', str(jaxpr_ir))
-    
-    with open(jaxpr_path, "w") as f:
+
+    with open(jaxpr_path, "w", encoding='utf-8') as f:
         f.write(clean_jaxpr_str)
     print(f"[*] Clean JAXPR saved to: {jaxpr_path}")
 
     print("Lowering to HLO (XLA Physical Fusion State)...")
     lowered_executable = func.lower(*args, **kwargs)
     hlo_text = lowered_executable.as_text()
-    
-    with open(hlo_path, "w") as f:
+
+    with open(hlo_path, "w", encoding='utf-8') as f:
         f.write(hlo_text)
     print(f"[*] HLO saved to: {hlo_path}")
-    
+
     return jaxpr_path, hlo_path
 
 
-class TestingParamsGenerator_mv():
-
-    def __init__(self,
-                 limit_GB: int,
-                 _N: int,
-                 scale_max: int = 2000,
-                 conn_max: int = 4000,
-                 sample_points:int = 50):
-        
+class TestingParamsGenerator_mv:
+    def __init__(
+        self,
+        limit_GB: int,
+        _N: int,
+        scale_max: int = 2000,
+        conn_max: int = 4000,
+        sample_points: int = 50,
+        *,
+        mode: str = 'post',
+        data_type: str = 'binary',
+        mv_layout: str = 'row_gather',
+        non_repeat: bool = False,
+        flush_file_name: str | None = None,
+        flush_dir: str | None = None,
+    ):
         self._limit_GB = limit_GB
         self._N = _N
-        self._limit_bytes = self._limit_GB * (1024)**3
+        self._limit_bytes = self._limit_GB * (1024) ** 3
         self.scale_max = scale_max
         self.conn_max = conn_max
         self.sample_points = sample_points
-    
-    def is_valid_mv(self, scale, conn, homo, data_size):
-        if homo:
-            times = 1
-        else:
-            times = 2
-        matrix_memory_bytes = conn * scale * self._N * data_size * times #1 if homo else 2
+        self.mode = _validate_mv_mode(mode)
+        self.data_type = data_type
+        self.mv_layout = _validate_mv_layout(mv_layout)
+        self.non_repeat = non_repeat
+        self.flush_file_name = flush_file_name
+        self.flush_dir = flush_dir
+        self._tested_points: set[tuple[int, int]] = set()
+        self._loaded_row_count = 0
+        self._loaded_unique_count = 0
+        self._resume_file_path: Path | None = None
+
+        if self.non_repeat:
+            if not self.flush_file_name:
+                raise ValueError("flush_file_name must be provided when non_repeat=True for mv benchmarks")
+            base_dir = Path(__file__).resolve().parent
+            self._resume_file_path = _resolve_resume_csv_path(base_dir, self.flush_dir, self.flush_file_name)
+            (
+                self._tested_points,
+                self._loaded_row_count,
+                self._loaded_unique_count,
+            ) = _load_resume_points(
+                file_path=self._resume_file_path,
+                required_columns=('scale', 'conn_num'),
+                point_from_row=_mv_point_from_row,
+                label='MV',
+            )
+            exists_label = 'exists' if self._resume_file_path.exists() else 'missing'
+            print(
+                f"MV resume CSV: {self._resume_file_path} ({exists_label}), "
+                f"rows={self._loaded_row_count}, unique_points={self._loaded_unique_count}"
+            )
+
+    def _context(
+        self,
+        *,
+        mode: str | None = None,
+        data_type: str | None = None,
+        mv_layout: str | None = None,
+    ) -> tuple[str, str, str]:
+        return _resolve_mv_context(
+            mode=mode,
+            data_type=data_type,
+            mv_layout=mv_layout,
+            default_mode=self.mode,
+            default_data_type=self.data_type,
+            default_mv_layout=self.mv_layout,
+        )
+
+    def estimate_memory_bytes(
+        self,
+        scale: int,
+        conn: int,
+        homo: bool,
+        data_size: int = 4,
+        *,
+        mode: str | None = None,
+        data_type: str | None = None,
+        mv_layout: str | None = None,
+    ) -> int:
+        resolved_mode, resolved_type, resolved_layout = self._context(
+            mode=mode,
+            data_type=data_type,
+            mv_layout=mv_layout,
+        )
+        return _estimate_mv_sparse_bytes(
+            scale=scale,
+            conn=conn,
+            _N=self._N,
+            homo=homo,
+            data_size=data_size,
+            mode=resolved_mode,
+            data_type=resolved_type,
+            mv_layout=resolved_layout,
+        )
+
+    def is_valid_mv(
+        self,
+        scale: int,
+        conn: int,
+        homo: bool,
+        data_size: int,
+        *,
+        mode: str | None = None,
+        data_type: str | None = None,
+        mv_layout: str | None = None,
+    ) -> bool:
+        matrix_memory_bytes = self.estimate_memory_bytes(
+            scale,
+            conn,
+            homo,
+            data_size,
+            mode=mode,
+            data_type=data_type,
+            mv_layout=mv_layout,
+        )
         return matrix_memory_bytes <= self._limit_bytes and conn <= self._N * scale
+
+    def _prob_to_conn_number(self, prob: float, scale: int, *, mode: str) -> int:
+        base_conn = prob * scale * self._N
+        if mode == 'post':
+            return int(base_conn)
+        # The benchmark uses one shared integer conn_num for both E and I
+        # incoming matrices in pre mode, so use the average source-group size
+        # to keep total synapse count close to the post-mode interpretation.
+        return int(base_conn / 2.0)
+
+    def filter_existing_states(self, states) -> list[tuple[int, None, int]]:
+        return _filter_states_by_existing_points(
+            states,
+            point_from_state=_mv_point_from_state,
+            tested_points=self._tested_points,
+            non_repeat=self.non_repeat,
+            label='MV',
+        )
 
     def generate_params(
         self,
         dis_type: str = 'log',
         target_samples: int = 500,
         data_size: int = 4,
-        homo: bool = True
-    ) -> list:
-        """
-        Generates a list of valid (scale, conn_num) parameter states within VRAM limits.
-
-        Boundary conditions
-        -------------------
-        - matrix_memory_bytes = conn_num * scale * _N * data_size * 2 <= limit_bytes
-        - conn_num <= _N * scale
-
-        Parameters
-        ----------
-        dis_type : str
-            Sampling strategy: 'uniform' (linear grid), 'log' (geometric grid),
-            or 'monte_carlo' (random sampling).
-        _N : int
-            Number of neurons per scale unit.
-        limit_gb : float
-            VRAM limit in gigabytes.
-        target_samples : int
-            Approximate number of valid states to generate (actual count ≈ ±50).
-        data_size : int
-            Bytes per element (4 for float32/int32, 1 for bool/int8).
-        scale_max : int
-            Upper bound of scale search range.
-        conn_max : int
-            Upper bound of conn_num search range.
-
-        Returns
-        -------
-        list of (scale, conn_num) tuples, sorted by memory footprint.
-        """
+        homo: bool = True,
+        *,
+        mode: str | None = None,
+        data_type: str | None = None,
+        mv_layout: str | None = None,
+    ) -> list[tuple[int, None, int]]:
         import numpy as np
+
+        min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
+        min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
 
         if dis_type == 'monte_carlo':
             valid_states = set()
             while len(valid_states) < target_samples:
-                s = int(np.random.uniform(1, self.scale_max + 1))
-                c = int(np.random.uniform(1, self.conn_max + 1))
-                if self.is_valid_mv(s, c, homo, data_size):
+                s = int(np.random.uniform(min_scale, self.scale_max + 1))
+                c = int(np.random.uniform(min_conn, self.conn_max + 1))
+                if self.is_valid_mv(
+                    s,
+                    c,
+                    homo,
+                    data_size,
+                    mode=mode,
+                    data_type=data_type,
+                    mv_layout=mv_layout,
+                ):
                     valid_states.add((s, None, c))
-            sorted_states = sorted(list(valid_states), key=lambda state: state[0] * state[2])
+            sorted_states = sorted(
+                valid_states,
+                key=lambda state: self.estimate_memory_bytes(
+                    state[0],
+                    state[2],
+                    homo,
+                    data_size,
+                    mode=mode,
+                    data_type=data_type,
+                    mv_layout=mv_layout,
+                ),
+            )
             print(f"Generated {len(sorted_states)} valid parameter states under {self._limit_GB}GB boundary.")
-            return sorted_states
+            return self.filter_existing_states(sorted_states)
 
-        # For grid-based methods: the valid region is a curved hyperbolic area;
-        # ~3x oversampling of grid points relative to target gives ~±50 accuracy after filtering.
         grid_res = int(np.sqrt(target_samples * 3))
-
         if dis_type == 'uniform':
-            scales_raw = np.unique(np.linspace(1, self.scale_max, num=grid_res, dtype=int))
-            conn_nums_raw = np.unique(np.linspace(1, self.conn_max, num=grid_res, dtype=int))
+            scales_raw = np.unique(np.linspace(min_scale, self.scale_max, num=grid_res, dtype=int))
+            conn_nums_raw = np.unique(np.linspace(min_conn, self.conn_max, num=grid_res, dtype=int))
         elif dis_type == 'log':
-            scales_raw = np.unique(np.geomspace(1, self.scale_max, num=grid_res, dtype=int))
-            conn_nums_raw = np.unique(np.geomspace(1, self.conn_max, num=grid_res, dtype=int))
+            scales_raw = np.unique(np.geomspace(min_scale, self.scale_max, num=grid_res, dtype=int))
+            conn_nums_raw = np.unique(np.geomspace(min_conn, self.conn_max, num=grid_res, dtype=int))
         else:
-            raise ValueError(f"Unknown dis_type: '{dis_type}'. Choose from 'uniform', 'log', 'monte_carlo'.")
+            raise ValueError(f"Unknown dis_type: {dis_type!r}.")
 
         valid_states = [
             (int(s), None, int(c))
             for s in scales_raw
             for c in conn_nums_raw
-            if self.is_valid_mv(s, c, homo, data_size)
+            if self.is_valid_mv(
+                int(s),
+                int(c),
+                homo,
+                data_size,
+                mode=mode,
+                data_type=data_type,
+                mv_layout=mv_layout,
+            )
         ]
-        valid_states.sort(key=lambda state: state[0] * state[2])
+        valid_states.sort(
+            key=lambda state: self.estimate_memory_bytes(
+                state[0],
+                state[2],
+                homo,
+                data_size,
+                mode=mode,
+                data_type=data_type,
+                mv_layout=mv_layout,
+            )
+        )
         print(f"Generated {len(valid_states)} valid parameter states under {self._limit_GB}GB boundary.")
-        return valid_states
+        return self.filter_existing_states(valid_states)
 
     def generate_boundary_params(
         self,
@@ -451,69 +734,38 @@ class TestingParamsGenerator_mv():
         data_size: int = 4,
         sample_points: int = 10,
         include_dense_ref: bool = False,
-    ):
-        """Generate ``(conn, m)`` pairs near the GPU memory boundary.
-
-        Returns a list of ``(conn, m)`` tuples where ``m = scale * _N``, such
-        that the estimated memory usage stays just below *memory_limit* GiB.
-        Integer truncation (``int()``) is used so that values always lean
-        toward the **smaller** side to avoid overflow.
-
-        Memory model
-        -------------
-        * **Sparse arrays only** (``include_dense_ref=False``):
-        ``m * conn * data_size * times``
-        where *times* = 1 (homo, indices only) or 2 (hetero, indices + weights).
-
-        * **With dense reference** (``include_dense_ref=True``):
-        ``m * conn * data_size * times  +  m² * data_size``
-        Use this when the test constructs a full ``(m, m)`` dense matrix for
-        correctness comparison.
-
-        Parameters
-        ----------
-        memory_limit : float
-            GPU memory budget in GiB.
-        homo_or_not : bool
-            True  → only indices are stored (1× sparse budget).
-            False → indices + weights are stored (2× sparse budget).
-        scale_max : int
-            Upper bound for the scale factor *s* (``m = s * _N``).
-        conn_max : int
-            Maximum number of connections per row.
-        _N : int
-            Base neuron count per scale unit.
-        data_size : int
-            Bytes per element (4 for float32 / int32).
-        sample_points : int
-            Number of sample points to generate.
-        include_dense_ref : bool
-            If True, the budget also accounts for a dense ``(m, m)`` reference
-            matrix of size ``m² * data_size``.
-        """
-        
+        *,
+        mode: str | None = None,
+        data_type: str | None = None,
+        mv_layout: str | None = None,
+    ) -> list[tuple[int, int]]:
         import math
         import numpy as np
 
+        resolved_mode, resolved_type, resolved_layout = self._context(
+            mode=mode,
+            data_type=data_type,
+            mv_layout=mv_layout,
+        )
         times = 1 if homo_or_not else 2
+        mode_factor = _mv_mode_storage_factor(resolved_mode)
+        layout_factor = _mv_dual_layout_factor(resolved_mode, resolved_type, resolved_layout)
+        sparse_factor = times * mode_factor * layout_factor
 
-        # K = budget expressed in units of (_N * data_size) bytes
+        min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
+        min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
+
         K = self._limit_bytes / (_N * data_size)
 
-        # --- valid scale range ---------------------------------------------------
         if include_dense_ref:
-            # For conn > 0 we need  K - s² * _N > 0  →  s < sqrt(K / _N)
             s_max = min(self.scale_max, int(math.sqrt(K / _N)))
         else:
-            # conn = K / (s * times) >= 1  →  s <= K / times
-            s_max = min(self.scale_max, int(K / times))
+            s_max = min(self.scale_max, int(K / sparse_factor))
 
-        # s_min: when *not* including the dense ref, large s → small conn,
-        # which is fine; but very small s → conn > conn_max, wasting budget.
         if not include_dense_ref:
-            s_min = max(1, math.ceil(K / (times * self.conn_max)))
+            s_min = max(min_scale, math.ceil(K / (sparse_factor * self.conn_max)))
         else:
-            s_min = 1
+            s_min = min_scale
 
         if s_min > s_max:
             raise ValueError(
@@ -522,28 +774,25 @@ class TestingParamsGenerator_mv():
             )
 
         s_samples = np.geomspace(s_min, s_max, sample_points)
-
-        valid_pairs = []
-        seen = set()
+        valid_pairs: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
 
         for s_val in s_samples:
-            s_int = max(1, int(round(s_val)))
-            s_int = min(s_int, s_max)  # clamp
+            s_int = max(min_scale, int(round(s_val)))
+            s_int = min(s_int, s_max)
 
-            # Compute max conn (floor to stay below the boundary)
             if include_dense_ref:
                 budget_for_sparse = K - s_int ** 2 * _N
                 if budget_for_sparse <= 0:
                     continue
-                c_int = int(budget_for_sparse / (s_int * times))
+                c_int = int(budget_for_sparse / (s_int * sparse_factor))
             else:
-                c_int = int(K / (s_int * times))
+                c_int = int(K / (s_int * sparse_factor))
 
             c_int = min(c_int, self.conn_max)
-
             m = s_int * _N
 
-            if c_int > 0 and c_int <= m and s_int <= self.scale_max:
+            if c_int >= min_conn and c_int <= m and s_int <= self.scale_max:
                 pair = (s_int, c_int)
                 if pair not in seen:
                     seen.add(pair)
@@ -551,81 +800,84 @@ class TestingParamsGenerator_mv():
 
         return valid_pairs
 
-    def make_simulation_params_probs(self, 
-                                     conn_prob : list, 
-                                     scale: list, 
-                                     limit_memory:int = 24,
-                                     data_size:int = 4,
-                                     homo:bool = True):
-        """Generate valid (scale, conn_num) pairs from probability & scale lists.
+    def make_simulation_params_probs(
+        self,
+        conn_prob: list,
+        scale: list,
+        limit_memory: int | None = None,
+        data_size: int = 4,
+        homo: bool = True,
+        *,
+        mode: str | None = None,
+        data_type: str | None = None,
+        mv_layout: str | None = None,
+    ) -> list[tuple[int, None, int]]:
+        resolved_mode, _, _ = self._context(mode=mode, data_type=data_type, mv_layout=mv_layout)
+        if limit_memory is not None and limit_memory != self._limit_GB:
+            generator = TestingParamsGenerator_mv(
+                limit_GB=limit_memory,
+                _N=self._N,
+                scale_max=self.scale_max,
+                conn_max=self.conn_max,
+                sample_points=self.sample_points,
+                mode=resolved_mode,
+                data_type=self.data_type if data_type is None else data_type,
+                mv_layout=self.mv_layout if mv_layout is None else mv_layout,
+                non_repeat=False,
+            )
+        else:
+            generator = self
 
-        Parameters
-        ----------
-        conn_prob : list of float
-            Connection probabilities.
-        scale : list of int
-            Scale values to test.
-        limit_memory : int, optional
-            Override VRAM limit in GB (uses constructor default if None).
-        data_size : int
-            Bytes per element.
-        homo : bool
-            Homogeneous (1×) or heterogeneous (2×) memory multiplier.
-
-        Returns
-        -------
-        list of (scale, conn_num) tuples, filtered by VRAM limit.
-        """
-        valid_pairs = []
+        valid_pairs: list[tuple[int, None, int]] = []
         for s in scale:
             for prob in conn_prob:
-                conn_number = int(prob * s * self._N)
+                conn_number = generator._prob_to_conn_number(prob, s, mode=resolved_mode)
                 if conn_number < 1:
                     conn_number = 1
-                if self.is_valid_mv(s, conn_number, homo, data_size):
-                    single_point = (int(s), None, int(conn_number))
-                    valid_pairs.append(single_point)
-                else:
-                    continue
-        return valid_pairs
+                if generator.is_valid_mv(
+                    s,
+                    conn_number,
+                    homo,
+                    data_size,
+                    mode=resolved_mode,
+                    data_type=data_type,
+                    mv_layout=mv_layout,
+                ):
+                    valid_pairs.append((int(s), None, int(conn_number)))
+        return self.filter_existing_states(valid_pairs)
 
-    def generate_coba_vram_sequence(self,
-                                    vram_steps: list | None = None,
-                                    sample_points: int = 5,
-                                    homo: bool = True,
-                                    data_size: int = 4):
-        """Generate test parameters for progressive VRAM limit testing.
-
-        For each VRAM level, uses :meth:`generate_cs_pairs` to produce
-        ``(scale, conn)`` pairs near that VRAM boundary.
-
-        Parameters
-        ----------
-        vram_steps : list of int, optional
-            VRAM levels in GB to test (default: 1..24).
-        sample_points : int
-            Number of sample points per VRAM level.
-        homo : bool
-            Homogeneous or heterogeneous memory model.
-        data_size : int
-            Bytes per element.
-
-        Returns
-        -------
-        OrderedDict mapping vram_gb -> list of (scale, conn) tuples.
-        """
+    def generate_coba_vram_sequence(
+        self,
+        vram_steps: list | None = None,
+        sample_points: int = 5,
+        homo: bool = True,
+        data_size: int = 4,
+        *,
+        mode: str | None = None,
+        data_type: str | None = None,
+        mv_layout: str | None = None,
+    ):
         from collections import OrderedDict
 
+        resolved_mode, resolved_type, resolved_layout = self._context(
+            mode=mode,
+            data_type=data_type,
+            mv_layout=mv_layout,
+        )
         if vram_steps is None:
             vram_steps = list(range(1, 25))
 
         result = OrderedDict()
         for vram_gb in vram_steps:
-            gen = TestingParamsGenerator(
+            gen = TestingParamsGenerator_mv(
                 limit_GB=vram_gb,
                 _N=self._N,
                 scale_max=self.scale_max,
                 conn_max=self.conn_max,
+                sample_points=self.sample_points,
+                mode=resolved_mode,
+                data_type=resolved_type,
+                mv_layout=resolved_layout,
             )
             try:
                 pairs = gen.generate_boundary_params(
@@ -639,26 +891,37 @@ class TestingParamsGenerator_mv():
             except ValueError:
                 continue
 
-        print(f"Generated VRAM sequence: {len(result)} levels, "
-              f"total {sum(len(v) for v in result.values())} parameter pairs.")
+        print(f"Generated VRAM sequence: {len(result)} levels, total {sum(len(v) for v in result.values())} parameter pairs.")
         return result
 
 
-# Backward-compatible alias: external code uses ``BT.TestingParamsGenerator``
 TestingParamsGenerator = TestingParamsGenerator_mv
 
 
+def memory_limit(
+    conn: int,
+    *,
+    scale: int,
+    limit_GB: int = 16,
+    _N: int = 4000,
+    homo: bool = True,
+    data_size: int = 4,
+    mode: str = 'post',
+    data_type: str = 'binary',
+    mv_layout: str = 'row_gather',
+) -> bool:
+    generator = TestingParamsGenerator_mv(
+        limit_GB=limit_GB,
+        _N=_N,
+        mode=mode,
+        data_type=data_type,
+        mv_layout=mv_layout,
+    )
+    return not generator.is_valid_mv(scale, conn, homo, data_size)
+
+
 class TestingParamsGenerator_mm:
-    """Generate valid (scale, batch_size, conn_num) triples for mm benchmarks.
-
-    Memory model
-    -------------
-    Total VRAM ≈ conn_num * m * data_size * times  +  batch_size * m * data_size
-    where ``m = scale * _N`` and ``times = 1`` (homo) or ``2`` (hetero).
-
-    The first term is the sparse connection index (and weight) storage;
-    the second is the batched event / result matrices.
-    """
+    """Generate valid (scale, batch_size, conn_num) triples for mm benchmarks."""
 
     def __init__(
         self,
@@ -667,6 +930,10 @@ class TestingParamsGenerator_mm:
         scale_max: int = 200,
         conn_max: int = 4000,
         batch_max: int = 128,
+        *,
+        non_repeat: bool = False,
+        flush_file_name: str | None = None,
+        flush_dir: str | None = None,
     ):
         self._limit_GB = limit_GB
         self._N = _N
@@ -674,6 +941,34 @@ class TestingParamsGenerator_mm:
         self.scale_max = scale_max
         self.conn_max = conn_max
         self.batch_max = batch_max
+        self.non_repeat = non_repeat
+        self.flush_file_name = flush_file_name
+        self.flush_dir = flush_dir
+        self._tested_points: set[tuple[int, int, int]] = set()
+        self._loaded_row_count = 0
+        self._loaded_unique_count = 0
+        self._resume_file_path: Path | None = None
+
+        if self.non_repeat:
+            if not self.flush_file_name:
+                raise ValueError("flush_file_name must be provided when non_repeat=True for mm benchmarks")
+            base_dir = Path(__file__).resolve().parent
+            self._resume_file_path = _resolve_resume_csv_path(base_dir, self.flush_dir, self.flush_file_name)
+            (
+                self._tested_points,
+                self._loaded_row_count,
+                self._loaded_unique_count,
+            ) = _load_resume_points(
+                file_path=self._resume_file_path,
+                required_columns=('scale', 'batch_size', 'conn_num'),
+                point_from_row=_mm_point_from_row,
+                label='MM',
+            )
+            exists_label = 'exists' if self._resume_file_path.exists() else 'missing'
+            print(
+                f"MM resume CSV: {self._resume_file_path} ({exists_label}), "
+                f"rows={self._loaded_row_count}, unique_points={self._loaded_unique_count}"
+            )
 
     def is_valid_mm(self, scale: int, batch_size: int, conn: int,
                  homo: bool, data_size: int = 4) -> bool:
@@ -683,6 +978,15 @@ class TestingParamsGenerator_mm:
         mem = mem * data_size
         return mem <= self._limit_bytes and conn <= size
 
+    def filter_existing_states(self, states):
+        return _filter_states_by_existing_points(
+            states,
+            point_from_state=_mm_point_from_state,
+            tested_points=self._tested_points,
+            non_repeat=self.non_repeat,
+            label='MM',
+        )
+
     def generate_params(
         self,
         dis_type: str = 'uniform',
@@ -690,52 +994,37 @@ class TestingParamsGenerator_mm:
         data_size: int = 4,
         homo: bool = True,
     ) -> list:
-        """Generate valid ``(scale, batch_size, conn_num)`` triples within VRAM limits.
-
-        Parameters
-        ----------
-        dis_type : str
-            ``'uniform'`` (linear grid), ``'log'`` (geometric grid),
-            or ``'monte_carlo'`` (random sampling).
-        target_samples : int
-            Approximate number of valid triples to generate.
-        data_size : int
-            Bytes per element (4 for float32/int32).
-        homo : bool
-            Homogeneous (1×) or heterogeneous (2×) memory multiplier.
-
-        Returns
-        -------
-        list of ``(scale, batch_size, conn_num)`` tuples, sorted by estimated
-        memory footprint.
-        """
         import numpy as np
+
+        min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
+        min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
+        batch_choices = np.asarray(_fixed_batch_candidates(self.batch_max), dtype=int)
 
         if dis_type == 'monte_carlo':
             valid = set()
             while len(valid) < target_samples:
-                s = int(np.random.uniform(1, self.scale_max + 1))
-                b = int(np.random.uniform(1, self.batch_max + 1))
-                c = int(np.random.uniform(1, self.conn_max + 1))
+                s = int(np.random.uniform(min_scale, self.scale_max + 1))
+                b = int(np.random.choice(batch_choices))
+                c = int(np.random.uniform(min_conn, self.conn_max + 1))
                 if self.is_valid_mm(s, b, c, homo, data_size):
                     valid.add((s, b, c))
             result = sorted(valid, key=lambda t: t[0] * t[1] * t[2])
             print(f"Generated {len(result)} valid mm parameter states under {self._limit_GB}GB boundary.")
-            return result
+            return self.filter_existing_states(result)
 
-        # For grid-based methods: cube-root oversampling
-        grid_res = max(3, int(round(target_samples ** (1.0 / 3) * 1.5)))
+        target_plane_samples = max(1, int(round(target_samples / len(batch_choices))))
+        grid_res = max(3, int(round((target_plane_samples * 3) ** 0.5)))
 
         if dis_type == 'uniform':
-            scales_raw = np.unique(np.linspace(1, self.scale_max, num=grid_res, dtype=int))
-            batches_raw = np.unique(np.linspace(1, self.batch_max, num=grid_res, dtype=int))
-            conns_raw = np.unique(np.linspace(1, self.conn_max, num=grid_res, dtype=int))
+            scales_raw = np.unique(np.linspace(min_scale, self.scale_max, num=grid_res, dtype=int))
+            batches_raw = batch_choices
+            conns_raw = np.unique(np.linspace(min_conn, self.conn_max, num=grid_res, dtype=int))
         elif dis_type == 'log':
-            scales_raw = np.unique(np.geomspace(1, self.scale_max, num=grid_res, dtype=int))
-            batches_raw = np.unique(np.geomspace(1, self.batch_max, num=grid_res, dtype=int))
-            conns_raw = np.unique(np.geomspace(1, self.conn_max, num=grid_res, dtype=int))
+            scales_raw = np.unique(np.geomspace(min_scale, self.scale_max, num=grid_res, dtype=int))
+            batches_raw = batch_choices
+            conns_raw = np.unique(np.geomspace(min_conn, self.conn_max, num=grid_res, dtype=int))
         else:
-            raise ValueError(f"Unknown dis_type: '{dis_type}'. Choose from 'uniform', 'log', 'monte_carlo'.")
+            raise ValueError(f"Unknown dis_type: {dis_type!r}.")
 
         valid = [
             (int(s), int(b), int(c))
@@ -746,17 +1035,15 @@ class TestingParamsGenerator_mm:
         ]
         valid.sort(key=lambda t: t[0] * t[1] * t[2])
         print(f"Generated {len(valid)} valid mm parameter states under {self._limit_GB}GB boundary.")
-        return valid
+        return self.filter_existing_states(valid)
 
-    def make_simulation_params_probs(self, 
-                                     conn_prob : list, 
-                                     scale: list, 
+    def make_simulation_params_probs(self,
+                                     conn_prob: list,
+                                     scale: list,
                                      batch_size: list,
-                                     limit_memory:int = 24,
-                                     data_size:int = 4,
-                                     
-                                     homo:bool = True):
-
+                                     limit_memory: int = 24,
+                                     data_size: int = 4,
+                                     homo: bool = True):
         valid_pairs = []
         for s in scale:
             for batch in batch_size:
@@ -767,10 +1054,8 @@ class TestingParamsGenerator_mm:
                     if self.is_valid_mm(s, batch, conn_number, homo, data_size):
                         single_point = (int(s), prob, int(conn_number), batch)
                         valid_pairs.append(single_point)
-                    else:
-                        continue
-        return valid_pairs
-    
+        return self.filter_existing_states(valid_pairs)
+
     def generate_params_steps(
         self,
         target_points: int = 100,
@@ -778,12 +1063,10 @@ class TestingParamsGenerator_mm:
         data_size: int = 4,
         homo: bool = True,
     ) -> list[tuple[int, int, int]]:
-        import math
         import numpy as np
 
         if target_points < 1:
             raise ValueError("target_points must be >= 1")
-
         if len(step_ratio) != 3:
             raise ValueError("step_ratio must be a tuple of length 3: (scale_ratio, conn_ratio, batch_ratio)")
 
@@ -791,51 +1074,48 @@ class TestingParamsGenerator_mm:
         if rs <= 0 or rc <= 0 or rb <= 0:
             raise ValueError("All step_ratio values must be > 0")
 
-        def make_axis_points(max_val: int, n_points: int) -> np.ndarray:
-            """在 [1, max_val] 上均匀取 n_points 个整数点，并保证包含端点。"""
+        min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
+        min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
+        batches_raw = np.asarray(_fixed_batch_candidates(self.batch_max), dtype=int)
+        n_fixed_batches = len(batches_raw)
+
+        def make_axis_points(min_val: int, max_val: int, n_points: int) -> np.ndarray:
             if max_val < 1:
                 raise ValueError(f"max_val must be >= 1, got {max_val}")
+            if min_val > max_val:
+                raise ValueError(f"min_val must be <= max_val, got min_val={min_val}, max_val={max_val}")
             if n_points <= 1:
-                return np.array([1, max_val], dtype=int) if max_val > 1 else np.array([1], dtype=int)
+                return np.array([min_val, max_val], dtype=int) if max_val > min_val else np.array([min_val], dtype=int)
 
-            pts = np.linspace(1, max_val, num=n_points)
+            pts = np.linspace(min_val, max_val, num=n_points)
             pts = np.rint(pts).astype(int)
-            pts[0] = 1
+            pts[0] = min_val
             pts[-1] = max_val
             return np.unique(pts)
 
-        # 按比例分配三个维度的“采样密度”
-        # 希望 ns * nc * nb ≈ target_points
-        # 同时步长比例 ~ step_ratio
-        #
-        # 令三个维度采样点数与 1/ratio 成正比：
-        # ratio 越大，步长越粗，点数越少
-        inv_rs, inv_rc, inv_rb = 1.0 / rs, 1.0 / rc, 1.0 / rb
-        base = (target_points / (inv_rs * inv_rc * inv_rb)) ** (1.0 / 3.0)
+        inv_rs, inv_rc = 1.0 / rs, 1.0 / rc
+        target_plane_points = max(1, int(round(target_points / n_fixed_batches)))
+        base = (target_plane_points / (inv_rs * inv_rc)) ** 0.5
 
         n_scale = max(2, int(round(base * inv_rs)))
         n_conn = max(2, int(round(base * inv_rc)))
-        n_batch = max(2, int(round(base * inv_rb)))
 
-        # 微调，尽量让乘积接近 target_points
-        def prod(a, b, c):
-            return a * b * c
+        def prod(a, b):
+            return a * b * n_fixed_batches
 
-        counts = [n_scale, n_conn, n_batch]
-        invs = [inv_rs, inv_rc, inv_rb]
+        counts = [n_scale, n_conn]
+        invs = [inv_rs, inv_rc]
 
-        # 若点数太少，不断给“最该加密”的维度加 1
         while prod(*counts) < target_points:
-            scores = [invs[i] / counts[i] for i in range(3)]
+            scores = [invs[i] / counts[i] for i in range(2)]
             idx = int(np.argmax(scores))
             counts[idx] += 1
 
-        # 若点数明显过多，尝试减小
         while min(counts) > 2:
             current = prod(*counts)
             best_idx = None
             best_over = current - target_points
-            for i in range(3):
+            for i in range(2):
                 if counts[i] <= 2:
                     continue
                 trial = counts.copy()
@@ -848,11 +1128,9 @@ class TestingParamsGenerator_mm:
                 break
             counts[best_idx] -= 1
 
-        n_scale, n_conn, n_batch = counts
-
-        scales_raw = make_axis_points(self.scale_max, n_scale)
-        conns_raw = make_axis_points(self.conn_max, n_conn)
-        batches_raw = make_axis_points(self.batch_max, n_batch)
+        n_scale, n_conn = counts
+        scales_raw = make_axis_points(min_scale, self.scale_max, n_scale)
+        conns_raw = make_axis_points(min_conn, self.conn_max, n_conn)
 
         valid = [
             (int(s), int(b), int(c))
@@ -861,7 +1139,6 @@ class TestingParamsGenerator_mm:
             for b in batches_raw
             if self.is_valid_mm(s, b, c, homo, data_size)
         ]
-
         valid.sort(key=lambda t: (t[0], t[2], t[1]))
 
         print(
@@ -870,4 +1147,4 @@ class TestingParamsGenerator_mm:
             f"(grid: {len(scales_raw)} x {len(conns_raw)} x {len(batches_raw)} = "
             f"{len(scales_raw) * len(conns_raw) * len(batches_raw)})"
         )
-        return valid
+        return self.filter_existing_states(valid)

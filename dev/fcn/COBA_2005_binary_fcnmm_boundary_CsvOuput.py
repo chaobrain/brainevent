@@ -123,5 +123,5 @@ if __name__ == '__main__':
     
     #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, homo=True, backend='cuda_raw')
     #benchmark_conn(data_type='compack',  mode = 'post',duration=1e2 * u.ms, homo=True, backend='cuda_raw')
-    benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, homo=True, backend='jax_raw')
+    benchmark_conn(data_type='binary', mode = 'pre', duration=0.5 * u.ms, homo=True, backend='jax_raw')
     #benchmark_pre_conn(data_type='binary', duration=1e2 * u.ms, homo=True)

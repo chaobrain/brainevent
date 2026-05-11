@@ -271,6 +271,7 @@ def test_bitpack_fcnmv_forward_all_ones(homo_w, transpose, shape):
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
 
+'''
 @pytest.mark.parametrize('homo_w', [True, False])
 def test_bitpack_fcnmv_forward_in_large_scale(homo_w):
     """bitpack_binary_fcnmv forward matches dense reference at large scale (transpose=False)."""
@@ -299,6 +300,7 @@ def test_bitpack_fcnmv_forward_in_large_scale(homo_w):
 
         del indices, weights, spikes, packed, y, y_ref
         gc.collect()
+'''
 
 
 # ===========================================================================

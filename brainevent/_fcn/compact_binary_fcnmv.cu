@@ -256,6 +256,30 @@ __global__ void _cg_mr_hetero_kern##SUFFIX(                                     
 // SCATTER kernels — compact: use active_ids + n_active indirection
 // ============================================================================
 
+// --- Scatter WPR homo (compact) ---
+#define DEFINE_CS_WPR_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)             \
+__global__ void _cs_wpr_homo_kern##SUFFIX(                                             \
+    const int32_t*  __restrict__ indices,                                               \
+    const int32_t*  __restrict__ active_ids,                                            \
+    const int32_t*  __restrict__ n_active_ptr,                                          \
+    WEIGHT_T*       __restrict__ output,                                                \
+    const WEIGHT_T* __restrict__ weights,                                               \
+    int n_conn                                                                          \
+) {                                                                                     \
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;                                    \
+    int active_row = tid / 32;                                                          \
+    int lane = tid & 31;                                                                \
+    int na = __ldg(n_active_ptr);                                                       \
+    if (active_row >= na) return;                                                       \
+    int row = __ldg(&active_ids[active_row]);                                           \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                              \
+    ACC_T w0 = READ_W(weights[0]);                                                      \
+    for (int k = lane; k < n_conn; k += 32) {                                           \
+        int idx = __ldg(&i_row[k]);                                                     \
+        ATOMIC_ADD_W(&output[idx], w0);                                                 \
+    }                                                                                   \
+}
+
 // --- Scatter TPR homo (compact) ---
 #define DEFINE_CS_TPR_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)             \
 __global__ void _cs_tpr_homo_kern##SUFFIX(                                             \
@@ -275,6 +299,31 @@ __global__ void _cs_tpr_homo_kern##SUFFIX(                                      
     for (int k = 0; k < n_conn; k++) {                                                  \
         int idx = __ldg(&i_row[k]);                                                     \
         ATOMIC_ADD_W(&output[idx], w0);                                                 \
+    }                                                                                   \
+}
+
+// --- Scatter WPR hetero (compact) ---
+#define DEFINE_CS_WPR_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)           \
+__global__ void _cs_wpr_hetero_kern##SUFFIX(                                           \
+    const int32_t*  __restrict__ indices,                                               \
+    const int32_t*  __restrict__ active_ids,                                            \
+    const int32_t*  __restrict__ n_active_ptr,                                          \
+    WEIGHT_T*       __restrict__ output,                                                \
+    const WEIGHT_T* __restrict__ weights,                                               \
+    int n_conn                                                                          \
+) {                                                                                     \
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;                                    \
+    int active_row = tid / 32;                                                          \
+    int lane = tid & 31;                                                                \
+    int na = __ldg(n_active_ptr);                                                       \
+    if (active_row >= na) return;                                                       \
+    int row = __ldg(&active_ids[active_row]);                                           \
+    const int32_t*  i_row = indices + (size_t)row * n_conn;                             \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                             \
+    for (int k = lane; k < n_conn; k += 32) {                                           \
+        int idx = __ldg(&i_row[k]);                                                     \
+        ACC_T wk = READ_W(__ldg(&w_row[k]));                                            \
+        ATOMIC_ADD_W(&output[idx], wk);                                                 \
     }                                                                                   \
 }
 
@@ -314,7 +363,9 @@ DEFINE_CG_MR_HOMO_SMEM       (_f32, float, float, READ_F32, WRITE_F32, warp_redu
 DEFINE_CG_MR_HOMO             (_f32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_CG_MR_HETERO_SMEM     (_f32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_CG_MR_HETERO           (_f32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CS_WPR_HOMO            (_f32, float, float, READ_F32, atomicAdd)
 DEFINE_CS_TPR_HOMO            (_f32, float, float, READ_F32, atomicAdd)
+DEFINE_CS_WPR_HETERO          (_f32, float, float, READ_F32, atomicAdd)
 DEFINE_CS_TPR_HETERO          (_f32, float, float, READ_F32, atomicAdd)
 
 // ---- float64 ----
@@ -326,7 +377,9 @@ DEFINE_CG_MR_HOMO_SMEM       (_f64, double, double, READ_F64, WRITE_F64, warp_re
 DEFINE_CG_MR_HOMO             (_f64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_CG_MR_HETERO_SMEM     (_f64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_CG_MR_HETERO           (_f64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CS_WPR_HOMO            (_f64, double, double, READ_F64, atomic_add_f64)
 DEFINE_CS_TPR_HOMO            (_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_CS_WPR_HETERO          (_f64, double, double, READ_F64, atomic_add_f64)
 DEFINE_CS_TPR_HETERO          (_f64, double, double, READ_F64, atomic_add_f64)
 
 // ---- float16 ----
@@ -338,7 +391,9 @@ DEFINE_CG_MR_HOMO_SMEM       (_f16, __half, float, READ_F16, WRITE_F16, warp_red
 DEFINE_CG_MR_HOMO             (_f16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_CG_MR_HETERO_SMEM     (_f16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_CG_MR_HETERO           (_f16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CS_WPR_HOMO            (_f16, __half, float, READ_F16, atomic_add_f16)
 DEFINE_CS_TPR_HOMO            (_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_CS_WPR_HETERO          (_f16, __half, float, READ_F16, atomic_add_f16)
 DEFINE_CS_TPR_HETERO          (_f16, __half, float, READ_F16, atomic_add_f16)
 
 // ---- bfloat16 ----
@@ -350,7 +405,9 @@ DEFINE_CG_MR_HOMO_SMEM       (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16
 DEFINE_CG_MR_HOMO             (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_CG_MR_HETERO_SMEM     (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_CG_MR_HETERO           (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CS_WPR_HOMO            (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 DEFINE_CS_TPR_HOMO            (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_CS_WPR_HETERO          (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 DEFINE_CS_TPR_HETERO          (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 
 
@@ -492,6 +549,100 @@ void compact_binary_fcnmv_scatter_hetero##SUFFIX(                               
     BE_CHECK_KERNEL_LAUNCH();                                                                 \
 }
 
+// ---- FFI macro: scatter homo compact-only backend (auto-select WPR/TPR by n_active) ----
+#define FFI_CS_HOMO_COMPACT_ONLY(SUFFIX, WEIGHT_C_T)                                         \
+void compact_binary_fcnmv_scatter_homo_compact_only##SUFFIX(                                 \
+    const BE::Tensor weights, const BE::Tensor indices,                                      \
+    const BE::Tensor packed,  const BE::Tensor active_ids,                                   \
+    const BE::Tensor n_active, BE::Tensor output,                                            \
+    int64_t stream                                                                           \
+) {                                                                                          \
+    (void)packed;                                                                            \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                 \
+    int n_orig = static_cast<int>(active_ids.size(0));                                       \
+    int n_conn = static_cast<int>(indices.size(1));                                          \
+    int n_post = static_cast<int>(output.size(0));                                           \
+    const WEIGHT_C_T* d_w    = static_cast<const WEIGHT_C_T*>(weights.data_ptr());           \
+    const int32_t*    d_idx  = static_cast<const int32_t*>(indices.data_ptr());              \
+    const int32_t*    d_aids = static_cast<const int32_t*>(active_ids.data_ptr());           \
+    const int32_t*    d_na   = static_cast<const int32_t*>(n_active.data_ptr());             \
+    WEIGHT_C_T*       d_out  = static_cast<WEIGHT_C_T*>(output.data_ptr());                  \
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                       \
+    cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;                     \
+    BE_CUDA_CHECK(cudaStreamIsCapturing(s, &capture_status));                                 \
+    int bsz = 256;                                                                           \
+    if (capture_status != cudaStreamCaptureStatusNone) {                                      \
+        int n_blocks = (n_orig + bsz - 1) / bsz;                                             \
+        _cs_tpr_homo_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                  \
+            d_idx, d_aids, d_na, d_out, d_w, n_conn);                                        \
+        BE_CHECK_KERNEL_LAUNCH();                                                             \
+        return;                                                                               \
+    }                                                                                         \
+    int32_t host_n_active = 0;                                                               \
+    BE_CUDA_CHECK(cudaMemcpyAsync(                                                            \
+        &host_n_active, d_na, sizeof(int32_t), cudaMemcpyDeviceToHost, s));                  \
+    BE_CUDA_CHECK(cudaStreamSynchronize(s));                                                  \
+    if (host_n_active <= 0) return;                                                          \
+    if ((int64_t)n_conn * 2084000 > (int64_t)host_n_active * 1539) {                         \
+        int warps_per_block = bsz / 32;                                                      \
+        int n_blocks = (host_n_active + warps_per_block - 1) / warps_per_block;             \
+        _cs_wpr_homo_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                  \
+            d_idx, d_aids, d_na, d_out, d_w, n_conn);                                        \
+    } else {                                                                                 \
+        int n_blocks = (host_n_active + bsz - 1) / bsz;                                      \
+        _cs_tpr_homo_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                  \
+            d_idx, d_aids, d_na, d_out, d_w, n_conn);                                        \
+    }                                                                                        \
+    BE_CHECK_KERNEL_LAUNCH();                                                                 \
+}
+
+// ---- FFI macro: scatter hetero compact-only backend (auto-select WPR/TPR by n_active) ----
+#define FFI_CS_HETERO_COMPACT_ONLY(SUFFIX, WEIGHT_C_T)                                       \
+void compact_binary_fcnmv_scatter_hetero_compact_only##SUFFIX(                               \
+    const BE::Tensor weights, const BE::Tensor indices,                                      \
+    const BE::Tensor packed,  const BE::Tensor active_ids,                                   \
+    const BE::Tensor n_active, BE::Tensor output,                                            \
+    int64_t stream                                                                           \
+) {                                                                                          \
+    (void)packed;                                                                            \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                 \
+    int n_orig = static_cast<int>(active_ids.size(0));                                       \
+    int n_conn = static_cast<int>(indices.size(1));                                          \
+    int n_post = static_cast<int>(output.size(0));                                           \
+    const WEIGHT_C_T* d_w    = static_cast<const WEIGHT_C_T*>(weights.data_ptr());           \
+    const int32_t*    d_idx  = static_cast<const int32_t*>(indices.data_ptr());              \
+    const int32_t*    d_aids = static_cast<const int32_t*>(active_ids.data_ptr());           \
+    const int32_t*    d_na   = static_cast<const int32_t*>(n_active.data_ptr());             \
+    WEIGHT_C_T*       d_out  = static_cast<WEIGHT_C_T*>(output.data_ptr());                  \
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                       \
+    cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;                     \
+    BE_CUDA_CHECK(cudaStreamIsCapturing(s, &capture_status));                                 \
+    int bsz = 256;                                                                           \
+    if (capture_status != cudaStreamCaptureStatusNone) {                                      \
+        int n_blocks = (n_orig + bsz - 1) / bsz;                                             \
+        _cs_tpr_hetero_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                \
+            d_idx, d_aids, d_na, d_out, d_w, n_conn);                                        \
+        BE_CHECK_KERNEL_LAUNCH();                                                             \
+        return;                                                                               \
+    }                                                                                         \
+    int32_t host_n_active = 0;                                                               \
+    BE_CUDA_CHECK(cudaMemcpyAsync(                                                            \
+        &host_n_active, d_na, sizeof(int32_t), cudaMemcpyDeviceToHost, s));                  \
+    BE_CUDA_CHECK(cudaStreamSynchronize(s));                                                  \
+    if (host_n_active <= 0) return;                                                          \
+    if ((int64_t)n_conn * 2084000 > (int64_t)host_n_active * 1539) {                         \
+        int warps_per_block = bsz / 32;                                                      \
+        int n_blocks = (host_n_active + warps_per_block - 1) / warps_per_block;             \
+        _cs_wpr_hetero_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                \
+            d_idx, d_aids, d_na, d_out, d_w, n_conn);                                        \
+    } else {                                                                                 \
+        int n_blocks = (host_n_active + bsz - 1) / bsz;                                      \
+        _cs_tpr_hetero_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                \
+            d_idx, d_aids, d_na, d_out, d_w, n_conn);                                        \
+    }                                                                                        \
+    BE_CHECK_KERNEL_LAUNCH();                                                                 \
+}
+
 // ============================================================================
 // FFI Instantiations
 // ============================================================================
@@ -505,6 +656,10 @@ FFI_CG_HETERO (_f32, float)
 FFI_CS_HOMO   (_f32, float)
 // @BE compact_binary_fcnmv_scatter_hetero_f32
 FFI_CS_HETERO (_f32, float)
+// @BE compact_binary_fcnmv_scatter_homo_compact_only_f32
+FFI_CS_HOMO_COMPACT_ONLY   (_f32, float)
+// @BE compact_binary_fcnmv_scatter_hetero_compact_only_f32
+FFI_CS_HETERO_COMPACT_ONLY (_f32, float)
 
 // ---- float64 ----
 // @BE compact_binary_fcnmv_gather_homo_f64
@@ -515,6 +670,10 @@ FFI_CG_HETERO (_f64, double)
 FFI_CS_HOMO   (_f64, double)
 // @BE compact_binary_fcnmv_scatter_hetero_f64
 FFI_CS_HETERO (_f64, double)
+// @BE compact_binary_fcnmv_scatter_homo_compact_only_f64
+FFI_CS_HOMO_COMPACT_ONLY   (_f64, double)
+// @BE compact_binary_fcnmv_scatter_hetero_compact_only_f64
+FFI_CS_HETERO_COMPACT_ONLY (_f64, double)
 
 // ---- float16 ----
 // @BE compact_binary_fcnmv_gather_homo_f16
@@ -525,6 +684,10 @@ FFI_CG_HETERO (_f16, __half)
 FFI_CS_HOMO   (_f16, __half)
 // @BE compact_binary_fcnmv_scatter_hetero_f16
 FFI_CS_HETERO (_f16, __half)
+// @BE compact_binary_fcnmv_scatter_homo_compact_only_f16
+FFI_CS_HOMO_COMPACT_ONLY   (_f16, __half)
+// @BE compact_binary_fcnmv_scatter_hetero_compact_only_f16
+FFI_CS_HETERO_COMPACT_ONLY (_f16, __half)
 
 // ---- bfloat16 ----
 // @BE compact_binary_fcnmv_gather_homo_bf16
@@ -535,3 +698,7 @@ FFI_CG_HETERO (_bf16, __nv_bfloat16)
 FFI_CS_HOMO   (_bf16, __nv_bfloat16)
 // @BE compact_binary_fcnmv_scatter_hetero_bf16
 FFI_CS_HETERO (_bf16, __nv_bfloat16)
+// @BE compact_binary_fcnmv_scatter_homo_compact_only_bf16
+FFI_CS_HOMO_COMPACT_ONLY   (_bf16, __nv_bfloat16)
+// @BE compact_binary_fcnmv_scatter_hetero_compact_only_bf16
+FFI_CS_HETERO_COMPACT_ONLY (_bf16, __nv_bfloat16)

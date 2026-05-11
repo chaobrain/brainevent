@@ -198,6 +198,43 @@ class CompactBinary:
         """
         return cls(packed, active_ids, n_active, value,
                    n_orig=n_orig, batch_size=batch_size, bit_width=bit_width)
+    
+    @classmethod
+    def compacy_only_vector(cls, x):
+        """Create a 1D compact-only ``CompactBinary`` without bit-packing.
+
+        This constructor is intended for the ``compact_only_vector`` FCN-MV
+        scatter backend, which consumes only ``active_ids`` / ``n_active`` and
+        does not read ``packed``. The returned object uses a zero-length uint32
+        sentinel for ``packed`` so that packed-dependent paths can reject it
+        explicitly.
+
+        Parameters
+        ----------
+        x : jax.Array
+            1D binary spike vector. Non-zero values are treated as active.
+
+        Returns
+        -------
+        CompactBinary
+            Compact-only event representation for a 1D spike vector.
+        """
+        x = jnp.asarray(x)
+        if x.ndim != 1:
+            raise ValueError(
+                f"CompactBinary.compacy_only_vector only supports 1D arrays, got {x.ndim}D."
+            )
+        active_ids, n_active = _compact_1d_jax(x)
+        packed = jnp.zeros((0,), dtype=jnp.uint32)
+        return cls(
+            packed,
+            active_ids,
+            n_active,
+            x,
+            n_orig=x.shape[0],
+            batch_size=None,
+            bit_width=32,
+        )
 
     # ------------------------------------------------------------------
     # Properties
