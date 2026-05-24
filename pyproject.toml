@@ -91,7 +91,7 @@ dependencies = [
 homepage = 'https://github.com/chaobrain/brainevent'
 repository = 'https://github.com/chaobrain/brainevent'
 "Bug Tracker" = 'https://github.com/chaobrain/brainevent/issues'
-"Documentation" = 'https://brainevent.readthedocs.io/'
+"Documentation" = 'https://brainx.chaobrain.com/brainevent/'
 "Source Code" = 'https://github.com/chaobrain/brainevent'
 
 
