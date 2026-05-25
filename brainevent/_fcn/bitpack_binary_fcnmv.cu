@@ -445,52 +445,6 @@ void bitpack_binary_fcnmv_gather_hetero##SUFFIX(                                
 }
 //n_conn < 256 && n_pre < 625 * 40000
 
-// ---- FFI macro: scatter homo packed (always TPR) ----
-#define FFI_BS_HOMO_PACKED(SUFFIX, WEIGHT_C_T)                                                    \
-void bitpack_binary_fcnmv_scatter_homo##SUFFIX(                                                   \
-    const BE::Tensor weights, const BE::Tensor indices,                                           \
-    const BE::Tensor packed,  BE::Tensor output,                                                  \
-    int64_t pack_axis, int64_t stream                                                             \
-) {                                                                                               \
-    (void)pack_axis;                                                                              \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
-    int n_pre  = static_cast<int>(indices.size(0));                                               \
-    int n_conn = static_cast<int>(indices.size(1));                                               \
-    int n_post = static_cast<int>(output.size(0));                                                \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                 \
-    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                    \
-    const uint32_t*   d_pk  = static_cast<const uint32_t*>(packed.data_ptr());                    \
-    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                        \
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                            \
-    int bsz = 256;                                                                                \
-    int n_blocks = (n_pre + bsz - 1) / bsz;                                                      \
-    _bs_tpr_homo_packed_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                    \
-        d_idx, d_pk, d_out, d_w, n_pre, n_conn);                                                 \
-}
-
-// ---- FFI macro: scatter hetero packed (always TPR) ----
-#define FFI_BS_HETERO_PACKED(SUFFIX, WEIGHT_C_T)                                                  \
-void bitpack_binary_fcnmv_scatter_hetero##SUFFIX(                                                 \
-    const BE::Tensor weights, const BE::Tensor indices,                                           \
-    const BE::Tensor packed,  BE::Tensor output,                                                  \
-    int64_t pack_axis, int64_t stream                                                             \
-) {                                                                                               \
-    (void)pack_axis;                                                                              \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
-    int n_pre  = static_cast<int>(indices.size(0));                                               \
-    int n_conn = static_cast<int>(indices.size(1));                                               \
-    int n_post = static_cast<int>(output.size(0));                                                \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                 \
-    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                    \
-    const uint32_t*   d_pk  = static_cast<const uint32_t*>(packed.data_ptr());                    \
-    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                        \
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(WEIGHT_C_T), s);                            \
-    int bsz = 256;                                                                                \
-    int n_blocks = (n_pre + bsz - 1) / bsz;                                                      \
-    _bs_tpr_hetero_packed_kern##SUFFIX<<<n_blocks, bsz, 0, s>>>(                                  \
-        d_idx, d_pk, d_out, d_w, n_pre, n_conn);                                                 \
-}
-
 // ============================================================================
 // FFI Instantiations
 // ============================================================================
@@ -500,37 +454,21 @@ void bitpack_binary_fcnmv_scatter_hetero##SUFFIX(                               
 FFI_BG_HOMO_PACKED   (_f32, float)
 // @BE bitpack_binary_fcnmv_gather_hetero_f32
 FFI_BG_HETERO_PACKED (_f32, float)
-// @BE bitpack_binary_fcnmv_scatter_homo_f32
-FFI_BS_HOMO_PACKED   (_f32, float)
-// @BE bitpack_binary_fcnmv_scatter_hetero_f32
-FFI_BS_HETERO_PACKED (_f32, float)
 
 // ---- float64 ----
 // @BE bitpack_binary_fcnmv_gather_homo_f64
 FFI_BG_HOMO_PACKED   (_f64, double)
 // @BE bitpack_binary_fcnmv_gather_hetero_f64
 FFI_BG_HETERO_PACKED (_f64, double)
-// @BE bitpack_binary_fcnmv_scatter_homo_f64
-FFI_BS_HOMO_PACKED   (_f64, double)
-// @BE bitpack_binary_fcnmv_scatter_hetero_f64
-FFI_BS_HETERO_PACKED (_f64, double)
 
 // ---- float16 ----
 // @BE bitpack_binary_fcnmv_gather_homo_f16
 FFI_BG_HOMO_PACKED   (_f16, __half)
 // @BE bitpack_binary_fcnmv_gather_hetero_f16
 FFI_BG_HETERO_PACKED (_f16, __half)
-// @BE bitpack_binary_fcnmv_scatter_homo_f16
-FFI_BS_HOMO_PACKED   (_f16, __half)
-// @BE bitpack_binary_fcnmv_scatter_hetero_f16
-FFI_BS_HETERO_PACKED (_f16, __half)
 
 // ---- bfloat16 ----
 // @BE bitpack_binary_fcnmv_gather_homo_bf16
 FFI_BG_HOMO_PACKED   (_bf16, __nv_bfloat16)
 // @BE bitpack_binary_fcnmv_gather_hetero_bf16
 FFI_BG_HETERO_PACKED (_bf16, __nv_bfloat16)
-// @BE bitpack_binary_fcnmv_scatter_homo_bf16
-FFI_BS_HOMO_PACKED   (_bf16, __nv_bfloat16)
-// @BE bitpack_binary_fcnmv_scatter_hetero_bf16
-FFI_BS_HETERO_PACKED (_bf16, __nv_bfloat16)

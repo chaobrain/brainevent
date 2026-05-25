@@ -1,10 +1,11 @@
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import jax
 
-MIN_GENERATED_SCALE = 20
+MIN_GENERATED_SCALE = 10
 MIN_GENERATED_CONN = 20
 FIXED_GENERATED_BATCHES = (16, 32, 64, 128, 256)
 
@@ -24,6 +25,181 @@ def _fixed_batch_candidates(batch_max: int) -> list[int]:
         raise ValueError(f"batch_max must be >= 1, got {batch_max}")
     batches = [b for b in FIXED_GENERATED_BATCHES if b <= batch_max]
     return batches if batches else [batch_max]
+
+
+def _normalize_mm_batch_sizes(batch_sizes: list[int] | tuple[int, ...] | None, batch_max: int) -> list[int]:
+    if batch_sizes is None:
+        return _fixed_batch_candidates(batch_max)
+
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for raw_value in batch_sizes:
+        batch_size = int(raw_value)
+        if batch_size < 1:
+            raise ValueError(f"batch_sizes must contain only positive integers, got {batch_size}")
+        if batch_size not in seen:
+            seen.add(batch_size)
+            normalized.append(batch_size)
+    if not normalized:
+        raise ValueError("batch_sizes must contain at least one positive integer")
+    return normalized
+
+
+def _resolve_sample_count(requested: int | None, default: int, *, label: str) -> int:
+    sample_count = default if requested is None else requested
+    if sample_count < 1:
+        raise ValueError(f"{label} must be >= 1, got {sample_count}")
+    return sample_count
+
+
+def _take_evenly_spaced_states(states: list, target_count: int) -> list:
+    if len(states) <= target_count:
+        return states
+    if target_count == 1:
+        return [states[0]]
+
+    last_index = len(states) - 1
+    step = last_index / (target_count - 1)
+    selected = []
+    for i in range(target_count):
+        index = last_index if i == target_count - 1 else int(i * step)
+        selected.append(states[index])
+    return selected
+
+
+def _sample_count_lower_bound(target_count: int) -> int:
+    return max(1, (target_count * 9 + 9) // 10)
+
+
+def _split_sample_count(total_count: int, num_parts: int) -> list[int]:
+    if total_count < 1:
+        raise ValueError(f"total_count must be >= 1, got {total_count}")
+    if num_parts < 1:
+        raise ValueError(f"num_parts must be >= 1, got {num_parts}")
+    base, extra = divmod(total_count, num_parts)
+    return [base + (1 if i < extra else 0) for i in range(num_parts)]
+
+
+def _uniform_axis_points(min_val: int, max_val: int, n_points: int) -> tuple[int, ...]:
+    import numpy as np
+
+    if n_points <= 1 or min_val == max_val:
+        return (int(min_val),)
+    points = np.unique(np.linspace(min_val, max_val, num=n_points, dtype=int))
+    return tuple(int(point) for point in points if min_val <= int(point) <= max_val)
+
+
+def _sample_aligned_uniform_states(
+    *,
+    label: str,
+    target_count: int,
+    min_scale: int,
+    scale_max: int,
+    min_conn: int,
+    conn_upper_for_scale: Callable[[int], int],
+    existing_conns_by_scale: dict[int, set[int]],
+    make_state: Callable[[int, int], object],
+    sort_key: Callable[[object], int | float],
+) -> list:
+    lower_bound = _sample_count_lower_bound(target_count)
+    upper_bound = max(lower_bound, (target_count * 11) // 10)
+    scale_range = scale_max - min_scale + 1
+    conn_range = max(1, max(int(conn_upper_for_scale(scale)) for scale in range(min_scale, scale_max + 1)) - min_conn + 1)
+    old_grid_res = max(3, int(round((target_count * 3) ** 0.5)))
+    max_scale_points = min(scale_range, max(old_grid_res * 3, old_grid_res + 4))
+    max_conn_points = min(conn_range, max(old_grid_res * 3, old_grid_res + 4))
+    require_2d_grid = target_count >= 4 and scale_range > 1 and conn_range > 1
+
+    def build_states(scales: tuple[int, ...], conns: tuple[int, ...]) -> list:
+        states = []
+        for scale in scales:
+            upper_conn = int(conn_upper_for_scale(scale))
+            blocked = existing_conns_by_scale.get(scale, set())
+            for conn in conns:
+                if conn <= upper_conn and conn not in blocked:
+                    states.append(make_state(scale, conn))
+        states.sort(key=sort_key)
+        return states
+
+    def count_states(scales: tuple[int, ...], conns: tuple[int, ...]) -> int:
+        count = 0
+        for scale in scales:
+            upper_conn = int(conn_upper_for_scale(scale))
+            if upper_conn < min_conn:
+                continue
+            blocked = existing_conns_by_scale.get(scale, set())
+            count += sum(1 for conn in conns if conn <= upper_conn and conn not in blocked)
+        return count
+
+    axis_cache: dict[tuple[str, int], tuple[int, ...]] = {}
+
+    def scales_for(n_points: int) -> tuple[int, ...]:
+        key = ('scale', n_points)
+        if key not in axis_cache:
+            axis_cache[key] = _uniform_axis_points(min_scale, scale_max, n_points)
+        return axis_cache[key]
+
+    def conns_for(n_points: int) -> tuple[int, ...]:
+        key = ('conn', n_points)
+        if key not in axis_cache:
+            axis_cache[key] = _uniform_axis_points(min_conn, min_conn + conn_range - 1, n_points)
+        return axis_cache[key]
+
+    best_any = None
+    best_in_tolerance = None
+    for n_scale in range(1, max_scale_points + 1):
+        scales = scales_for(n_scale)
+        for n_conn in range(1, max_conn_points + 1):
+            conns = conns_for(n_conn)
+            count = count_states(scales, conns)
+            if count <= 0:
+                continue
+            is_2d_grid = len(scales) > 1 and len(conns) > 1
+            dimensional_penalty = 0 if (is_2d_grid or not require_2d_grid) else 1
+            balance = abs(len(scales) - len(conns))
+            count_diff = abs(count - target_count)
+            tolerance_distance = 0
+            if count < lower_bound:
+                tolerance_distance = lower_bound - count
+            elif count > upper_bound:
+                tolerance_distance = count - upper_bound
+            score = (
+                dimensional_penalty,
+                tolerance_distance,
+                balance,
+                count_diff,
+                len(scales) + len(conns),
+            )
+            candidate = (score, count, scales, conns)
+            if best_any is None or score < best_any[0]:
+                best_any = candidate
+            if lower_bound <= count <= upper_bound and (
+                best_in_tolerance is None or score < best_in_tolerance[0]
+            ):
+                best_in_tolerance = candidate
+
+    best = best_in_tolerance or best_any
+    if best is None:
+        print(
+            f"Warning: {label} aligned uniform grid found no available states "
+            f"for requested target={target_count}."
+        )
+        return []
+
+    _, count, scales, conns = best
+    if not (lower_bound <= count <= upper_bound):
+        print(
+            f"Warning: {label} aligned uniform grid selected {count} states, "
+            f"outside 10% of requested target={target_count}. "
+            "No states were dropped because aligned grids must keep every valid intersection."
+        )
+
+    selected_states = build_states(scales, conns)
+    print(
+        f"Generated {len(selected_states)} {label} aligned uniform-grid states "
+        f"under boundary from {len(scales)} scale rows x {len(conns)} conn columns."
+    )
+    return selected_states
 
 
 def _validate_mv_mode(mode: str) -> str:
@@ -54,13 +230,15 @@ def _resolve_mv_context(
 
 
 def _mv_mode_storage_factor(mode: str) -> int:
-    # Post keeps one outgoing FCN view across E/I groups; pre keeps one
-    # incoming FCN view per target group, doubling the stored nnz.
-    return 1 if mode == 'post' else 2
+    # COBA-style pre/post routes keep the same total nnz budget.  The previous
+    # pre-specific 2x factor double-counted the E/I construction.
+    _validate_mv_mode(mode)
+    return 1
 
 
 def _mv_dual_layout_factor(mode: str, data_type: str, mv_layout: str) -> int:
-    if mode == 'pre' and data_type in _DUAL_LAYOUT_MV_TYPES and mv_layout == 'col_scatter':
+    _validate_mv_mode(mode)
+    if data_type in _DUAL_LAYOUT_MV_TYPES and mv_layout == 'col_scatter':
         return 2
     return 1
 
@@ -80,6 +258,20 @@ def _estimate_mv_sparse_bytes(
     mode_factor = _mv_mode_storage_factor(mode)
     layout_factor = _mv_dual_layout_factor(mode, data_type, mv_layout)
     return conn * scale * _N * data_size * times * mode_factor * layout_factor
+
+
+def _estimate_mm_sparse_bytes(
+    *,
+    scale: int,
+    batch_size: int,
+    conn: int,
+    _N: int,
+    homo: bool,
+    data_size: int,
+) -> int:
+    times = 1 if homo else 2
+    size = scale * _N
+    return (conn * size * times + batch_size * size + size * batch_size) * data_size
 
 
 def _resolve_resume_csv_path(base_dir: Path, flush_dir: str | None, flush_file_name: str) -> Path:
@@ -627,12 +819,8 @@ class TestingParamsGenerator_mv:
 
     def _prob_to_conn_number(self, prob: float, scale: int, *, mode: str) -> int:
         base_conn = prob * scale * self._N
-        if mode == 'post':
-            return int(base_conn)
-        # The benchmark uses one shared integer conn_num for both E and I
-        # incoming matrices in pre mode, so use the average source-group size
-        # to keep total synapse count close to the post-mode interpretation.
-        return int(base_conn / 2.0)
+        _validate_mv_mode(mode)
+        return int(base_conn)
 
     def filter_existing_states(self, states) -> list[tuple[int, None, int]]:
         return _filter_states_by_existing_points(
@@ -646,7 +834,7 @@ class TestingParamsGenerator_mv:
     def generate_params(
         self,
         dis_type: str = 'log',
-        target_samples: int = 500,
+        target_samples: int | None = None,
         data_size: int = 4,
         homo: bool = True,
         *,
@@ -656,8 +844,57 @@ class TestingParamsGenerator_mv:
     ) -> list[tuple[int, None, int]]:
         import numpy as np
 
+        target_samples = _resolve_sample_count(
+            target_samples,
+            self.sample_points,
+            label='target_samples',
+        )
         min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
         min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
+
+        if dis_type in ('uniform', 'grid_uniform'):
+            resolved_mode, resolved_type, resolved_layout = self._context(
+                mode=mode,
+                data_type=data_type,
+                mv_layout=mv_layout,
+            )
+            times = 1 if homo else 2
+            sparse_factor = (
+                times
+                * _mv_mode_storage_factor(resolved_mode)
+                * _mv_dual_layout_factor(resolved_mode, resolved_type, resolved_layout)
+            )
+            budget_elems = self._limit_bytes // data_size
+            existing_conns_by_scale: dict[int, set[int]] = {}
+            if self.non_repeat:
+                for scale, conn in self._tested_points:
+                    existing_conns_by_scale.setdefault(scale, set()).add(conn)
+
+            def conn_upper_for_scale(scale: int) -> int:
+                if sparse_factor <= 0:
+                    return min_conn - 1
+                mem_upper = budget_elems // (scale * self._N * sparse_factor)
+                return int(min(self.conn_max, scale * self._N, mem_upper))
+
+            return _sample_aligned_uniform_states(
+                label='MV',
+                target_count=target_samples,
+                min_scale=min_scale,
+                scale_max=self.scale_max,
+                min_conn=min_conn,
+                conn_upper_for_scale=conn_upper_for_scale,
+                existing_conns_by_scale=existing_conns_by_scale,
+                make_state=lambda scale, conn: (int(scale), None, int(conn)),
+                sort_key=lambda state: self.estimate_memory_bytes(
+                    state[0],
+                    state[2],
+                    homo,
+                    data_size,
+                    mode=resolved_mode,
+                    data_type=resolved_type,
+                    mv_layout=resolved_layout,
+                ),
+            )
 
         if dis_type == 'monte_carlo':
             valid_states = set()
@@ -686,14 +923,16 @@ class TestingParamsGenerator_mv:
                     mv_layout=mv_layout,
                 ),
             )
-            print(f"Generated {len(sorted_states)} valid parameter states under {self._limit_GB}GB boundary.")
-            return self.filter_existing_states(sorted_states)
+            filtered_states = self.filter_existing_states(sorted_states)
+            selected_states = _take_evenly_spaced_states(filtered_states, target_samples)
+            print(
+                f"Generated {len(sorted_states)} valid parameter states under {self._limit_GB}GB "
+                f"boundary; selected {len(selected_states)}."
+            )
+            return selected_states
 
         grid_res = int(np.sqrt(target_samples * 3))
-        if dis_type == 'uniform':
-            scales_raw = np.unique(np.linspace(min_scale, self.scale_max, num=grid_res, dtype=int))
-            conn_nums_raw = np.unique(np.linspace(min_conn, self.conn_max, num=grid_res, dtype=int))
-        elif dis_type == 'log':
+        if dis_type == 'log':
             scales_raw = np.unique(np.geomspace(min_scale, self.scale_max, num=grid_res, dtype=int))
             conn_nums_raw = np.unique(np.geomspace(min_conn, self.conn_max, num=grid_res, dtype=int))
         else:
@@ -724,8 +963,13 @@ class TestingParamsGenerator_mv:
                 mv_layout=mv_layout,
             )
         )
-        print(f"Generated {len(valid_states)} valid parameter states under {self._limit_GB}GB boundary.")
-        return self.filter_existing_states(valid_states)
+        filtered_states = self.filter_existing_states(valid_states)
+        selected_states = _take_evenly_spaced_states(filtered_states, target_samples)
+        print(
+            f"Generated {len(valid_states)} valid parameter states under {self._limit_GB}GB "
+            f"boundary; selected {len(selected_states)}."
+        )
+        return selected_states
 
     def generate_boundary_params(
         self,
@@ -972,11 +1216,15 @@ class TestingParamsGenerator_mm:
 
     def is_valid_mm(self, scale: int, batch_size: int, conn: int,
                  homo: bool, data_size: int = 4) -> bool:
-        times = 1 if homo else 2
-        size = scale * self._N
-        mem = conn * size * times + batch_size * size + size * batch_size
-        mem = mem * data_size
-        return mem <= self._limit_bytes and conn <= size
+        mem = _estimate_mm_sparse_bytes(
+            scale=scale,
+            batch_size=batch_size,
+            conn=conn,
+            _N=self._N,
+            homo=homo,
+            data_size=data_size,
+        )
+        return mem <= self._limit_bytes and conn <= self._N * scale
 
     def filter_existing_states(self, states):
         return _filter_states_by_existing_points(
@@ -993,12 +1241,97 @@ class TestingParamsGenerator_mm:
         target_samples: int = 500,
         data_size: int = 4,
         homo: bool = True,
+        *,
+        batch_sizes: list[int] | tuple[int, ...] | None = None,
+        target_samples_per_batch: int | None = None,
     ) -> list:
         import numpy as np
 
         min_scale = _clamped_sampling_min(self.scale_max, MIN_GENERATED_SCALE)
         min_conn = _clamped_sampling_min(self.conn_max, MIN_GENERATED_CONN)
-        batch_choices = np.asarray(_fixed_batch_candidates(self.batch_max), dtype=int)
+        batch_choices = np.asarray(_normalize_mm_batch_sizes(batch_sizes, self.batch_max), dtype=int)
+
+        def sample_uniform_for_batch(batch_size: int, target_count: int) -> list[tuple[int, int, int]]:
+            times = 1 if homo else 2
+            budget_elems = self._limit_bytes // data_size
+            existing_conns_by_scale: dict[int, set[int]] = {}
+            if self.non_repeat:
+                for scale, tested_batch, conn in self._tested_points:
+                    if tested_batch == batch_size:
+                        existing_conns_by_scale.setdefault(scale, set()).add(conn)
+
+            def conn_upper_for_scale(scale: int) -> int:
+                dense_elems = 2 * batch_size * scale * self._N
+                sparse_budget = budget_elems - dense_elems
+                if sparse_budget < 0:
+                    return min_conn - 1
+                mem_upper = sparse_budget // (times * scale * self._N)
+                return int(min(self.conn_max, scale * self._N, mem_upper))
+
+            return _sample_aligned_uniform_states(
+                label=f'MM batch={batch_size}',
+                target_count=target_count,
+                min_scale=min_scale,
+                scale_max=self.scale_max,
+                min_conn=min_conn,
+                conn_upper_for_scale=conn_upper_for_scale,
+                existing_conns_by_scale=existing_conns_by_scale,
+                make_state=lambda scale, conn: (int(scale), int(batch_size), int(conn)),
+                sort_key=lambda state: _estimate_mm_sparse_bytes(
+                    scale=state[0],
+                    batch_size=state[1],
+                    conn=state[2],
+                    _N=self._N,
+                    homo=homo,
+                    data_size=data_size,
+                ),
+            )
+
+        if target_samples_per_batch is not None:
+            per_batch_samples = _resolve_sample_count(
+                target_samples_per_batch,
+                target_samples,
+                label='target_samples_per_batch',
+            )
+
+            valid_by_batch: list[tuple[int, int, int]] = []
+            for batch_size in batch_choices:
+                if dis_type == 'monte_carlo':
+                    valid = set()
+                    while len(valid) < per_batch_samples:
+                        s = int(np.random.uniform(min_scale, self.scale_max + 1))
+                        c = int(np.random.uniform(min_conn, self.conn_max + 1))
+                        if self.is_valid_mm(s, int(batch_size), c, homo, data_size):
+                            valid.add((s, int(batch_size), c))
+                    batch_states = sorted(valid, key=lambda t: t[0] * t[2])
+                    filtered_states = self.filter_existing_states(batch_states)
+                    selected_states = _take_evenly_spaced_states(filtered_states, per_batch_samples)
+                elif dis_type in ('uniform', 'grid_uniform'):
+                    selected_states = sample_uniform_for_batch(int(batch_size), per_batch_samples)
+                elif dis_type == 'log':
+                    grid_res = max(3, int(round((per_batch_samples * 3) ** 0.5)))
+                    scales_raw = np.unique(np.geomspace(min_scale, self.scale_max, num=grid_res, dtype=int))
+                    conns_raw = np.unique(np.geomspace(min_conn, self.conn_max, num=grid_res, dtype=int))
+                    batch_states = [
+                        (int(s), int(batch_size), int(c))
+                        for s in scales_raw
+                        for c in conns_raw
+                        if self.is_valid_mm(int(s), int(batch_size), int(c), homo, data_size)
+                    ]
+                    batch_states.sort(key=lambda t: t[0] * t[2])
+                    filtered_states = self.filter_existing_states(batch_states)
+                    selected_states = _take_evenly_spaced_states(filtered_states, per_batch_samples)
+                else:
+                    raise ValueError(f"Unknown dis_type: {dis_type!r}.")
+
+                valid_by_batch.extend(selected_states)
+
+            print(
+                f"Generated {len(valid_by_batch)} valid mm parameter states under {self._limit_GB}GB "
+                f"boundary using {len(batch_choices)} fixed batch sizes and "
+                f"{per_batch_samples} samples per batch."
+            )
+            return valid_by_batch
 
         if dis_type == 'monte_carlo':
             valid = set()
@@ -1012,14 +1345,21 @@ class TestingParamsGenerator_mm:
             print(f"Generated {len(result)} valid mm parameter states under {self._limit_GB}GB boundary.")
             return self.filter_existing_states(result)
 
+        if dis_type in ('uniform', 'grid_uniform'):
+            valid_by_batch = []
+            sample_counts = _split_sample_count(target_samples, len(batch_choices))
+            for batch_size, batch_target in zip(batch_choices, sample_counts):
+                valid_by_batch.extend(sample_uniform_for_batch(int(batch_size), batch_target))
+            print(
+                f"Generated {len(valid_by_batch)} valid mm parameter states under {self._limit_GB}GB "
+                f"boundary using {len(batch_choices)} fixed batch sizes."
+            )
+            return valid_by_batch
+
         target_plane_samples = max(1, int(round(target_samples / len(batch_choices))))
         grid_res = max(3, int(round((target_plane_samples * 3) ** 0.5)))
 
-        if dis_type == 'uniform':
-            scales_raw = np.unique(np.linspace(min_scale, self.scale_max, num=grid_res, dtype=int))
-            batches_raw = batch_choices
-            conns_raw = np.unique(np.linspace(min_conn, self.conn_max, num=grid_res, dtype=int))
-        elif dis_type == 'log':
+        if dis_type == 'log':
             scales_raw = np.unique(np.geomspace(min_scale, self.scale_max, num=grid_res, dtype=int))
             batches_raw = batch_choices
             conns_raw = np.unique(np.geomspace(min_conn, self.conn_max, num=grid_res, dtype=int))

@@ -36,7 +36,6 @@ if __package__ in (None, ''):
 
 from brainevent._event.bitpack_binary import bitpack
 from brainevent._event.compact_binary import CompactBinary
-from brainevent._test_util import generate_fixed_conn_num_indices
 from brainevent._fcn.bitpack_binary import bitpack_binary_fcnmv
 from brainevent._fcn.compact_binary import compact_binary_fcnmv
 
@@ -70,9 +69,25 @@ DEFAULT_BITPACK_TRANSPOSE = False
 DEFAULT_DUMP_DIR = Path.cwd() / 'binary_fcnmm_row_sparse_dump'
 
 
+def _generate_fixed_conn_num_indices(n_pre: int, n_post: int, n_conn: int, replace: Any = 'rand'):
+    rng = np.random.default_rng()
+    if isinstance(replace, str):
+        if replace != 'rand':
+            raise ValueError(f"replace must be a bool or 'rand', got {replace!r}")
+        replace = bool(rng.integers(0, 2))
+
+    if replace:
+        indices = rng.integers(0, n_post, size=(n_pre, n_conn), dtype=np.int32)
+    else:
+        indices = np.stack(
+            [rng.choice(n_post, size=n_conn, replace=False) for _ in range(n_pre)]
+        ).astype(np.int32)
+    return jnp.asarray(indices)
+
+
 def _mk_indices(shape, n_conn=N_CONN):
     m, n = shape
-    return generate_fixed_conn_num_indices(m, n, min(n_conn, n))
+    return _generate_fixed_conn_num_indices(m, n, min(n_conn, n))
 
 
 def _mk_homo_w(dtype=jnp.float32):
@@ -632,7 +647,7 @@ def run_boundary_tests_generic(
             t0 = time.perf_counter()
 
             try:
-                indices = generate_fixed_conn_num_indices(m, m, conn)
+                indices = _generate_fixed_conn_num_indices(m, m, conn)
                 weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
                 spikes = _mk_spikes(m)
                 y = run_case(weights, indices, spikes, shape, transpose)

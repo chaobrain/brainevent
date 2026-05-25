@@ -35,7 +35,10 @@ import brainunit as u
 import jax
 
 import brainevent
+import brainevent._event.compact_binary as compact_binary_mod
+import brainevent._fcn.binary as binary_fcn_mod
 
+CompiledRun = Callable[[], tuple[int, Any]]
 _BENCHMARK_PATH = Path(__file__).with_name('COBA EI benchmark.py')
 _SPEC = importlib.util.spec_from_file_location('coba_ei_benchmark', _BENCHMARK_PATH)
 if _SPEC is None or _SPEC.loader is None:
@@ -44,14 +47,63 @@ _BENCHMARK_MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_BENCHMARK_MODULE)
 make_simulation_batch_run = _BENCHMARK_MODULE.make_simulation_batch_run
 
-scales = [1, 2, 4, 6, 8, 10, 20, 40, 60]
+
+PREPROCESS_BACKEND = 'cuda_raw'
+DIST_MIN_SCALE = 20
+
+scales = [1,2,4,8,16,32,64]
 backends = ['jax_raw', 'cuda_raw']
-conn_nums = [20, 40, 80, 160, 320, 640]
-probs = [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64]
-default_batch_sizes = [16, 32, 64, 128, 256]
+conn_nums = [100,200,300,400,500]
 
-CompiledRun = Callable[[], tuple[int, Any]]
+default_batch_sizes = [8, 32 ,128]
+default_batch_sizes = [32 ,128]
 
+'''
+
+scales = [8,10]
+backends = ['jax_raw', 'cuda_raw']
+conn_nums = [100,200,300,400,500,600]
+default_batch_sizes = [8,5]
+
+scales = [100,200,300,400]
+backends = ['jax_raw', 'cuda_raw']
+conn_nums = [20,40,80,50]
+default_batch_sizes = [32,128]
+
+
+'''
+'''
+scales = [25,50,75,100,125,150,175,200]
+backends = ['jax_raw', 'cuda_raw']
+conn_nums = [100,200,300,400,500]
+default_batch_sizes = [32,64,128]
+
+
+# --- a pack ---
+PREPROCESS_BACKEND = 'jax_raw'
+scales = [1,2,4,8,16,32,64]
+backends = ['jax_raw', 'cuda_raw']
+conn_nums = [100,200,300,400,500]
+default_batch_sizes = [8, 16,32 ,128]
+
+
+PREPROCESS_BACKEND = 'cuda_raw'
+scales = [100,200,300,400]
+backends = ['jax_raw', 'cuda_raw']
+conn_nums = [100,200,300,400,500]
+'''
+#default_batch_sizes = [ 32,128,8 ]
+'''
+# --------------
+PREPROCESS_BACKEND = 'cuda_raw'
+scales = [100,200,400]
+backends = ['jax_raw', 'cuda_raw']
+conn_nums = [20,40,80,160]
+default_batch_sizes = [64,128]
+'''
+scales = [150]
+conn_nums = [250]
+default_batch_sizes = [32,64]
 
 def _run_and_block(run: CompiledRun) -> tuple[int, Any]:
     result = run()
@@ -97,13 +149,13 @@ def benchmark_conn(
     params_type: str = 'conn',
     probs_or_conn: str | None = None,
     _N: int = 4000,
-    limit_GB: int = 16,
+    limit_GB: int = 5,
     target_samples: int = 30,
     dis_type: str = 'uniform',
     data_size: int = 4,
-    scale_max: int = 2000,
-    conn_max: int = 4000,
-    batch_max: int = 256,
+    scale_max: int = 250,
+    conn_max: int = 10000,
+    batch_max: int = 128,
     mv_layout: str = 'row_gather',
     non_repeat: bool = True,
 ):
@@ -111,9 +163,18 @@ def benchmark_conn(
 
     duration = cast(u.Quantity, duration)
     csv_duration = cast(Any, duration)
+    BT.MIN_GENERATED_SCALE = DIST_MIN_SCALE
+
+    compact_binary_mod.COMPACT_BINARY_PREPROCESS_BACKEND = PREPROCESS_BACKEND
+    binary_fcn_mod.BINARY_FCNMM_COMPRESS_BACKEND = PREPROCESS_BACKEND
 
     print(f'Benchmarking {mode}-synaptic batch connection updates...')
     runtime_platform = _announce_runtime_platform()
+    print(
+        'Preprocess backends: '
+        f'compact={compact_binary_mod.COMPACT_BINARY_PREPROCESS_BACKEND}, '
+        f'binary_fcnmm={binary_fcn_mod.BINARY_FCNMM_COMPRESS_BACKEND}'
+    )
 
     if probs_or_conn is not None:
         params_type = probs_or_conn
@@ -130,8 +191,12 @@ def benchmark_conn(
     header_conn_num = conn_num if params_type == 'conn' and conn_num is not None else None
 
     for back in backends_to_use:
+        route_labels = {
+            'cuda_raw': 'auto',
+        }
+        effective_route_label = route_labels.get(back, str(back))
         flush_file_name = (
-            f'COBA-EI-fcnmm-4.27_{data_type}_{homo_str}_{back}_{mode}-{mv_layout}-float-input-{limit_GB}GB'
+            f'列主序输出及负载均衡 仿照mv COBA-EI-fcnmm-5.19_{data_type}_{homo_str}_{back}_{mode}-{mv_layout}-float-input-{limit_GB}GB'
         )
         resume_csv_path = None
         if non_repeat:
@@ -171,6 +236,8 @@ def benchmark_conn(
                 target_samples=target_samples,
                 data_size=data_size,
                 homo=homo,
+                batch_sizes=batch_list,
+                target_samples_per_batch=target_samples,
             )
             valid_pairs = [(scale, None, cn, batch) for scale, batch, cn in valid_states]
         else:
@@ -213,12 +280,12 @@ def benchmark_conn(
                     homo=homo,
                     mv_layout=mv_layout,
                 ))
-
+                ''' '''
                 first_run_t0 = time.time()
                 _run_and_block(run)
                 first_run_t1 = time.time()
                 first_run_elapsed = first_run_t1 - first_run_t0
-
+               
                 steady_t0 = time.time()
                 n, rate = _run_and_block(run)
                 steady_t1 = time.time()
@@ -226,7 +293,7 @@ def benchmark_conn(
 
                 csv_recorder.add_tag('limit_GB', f'{limit_GB}')
                 csv_recorder.add_tag('mv_layout', f'{mv_layout}')
-
+                csv_recorder.add_tag('route', effective_route_label)
                 if prob is not None:
                     csv_recorder.add_tag('conn_prob', prob)
 
@@ -250,7 +317,7 @@ def benchmark_conn(
                 )
 
                 flush_t0 = time.time()
-                last_path = csv_recorder.flush_and_clear(flush_file_name, dir='benchmarker-test')
+                last_path = csv_recorder.flush_and_clear(flush_file_name, dir='5.19 fcnmm 列主序输出及负载均衡')
                 flush_t1 = time.time()
 
                 flush_elapsed = flush_t1 - flush_t0
@@ -273,33 +340,142 @@ def benchmark_conn(
 
 
 if __name__ == '__main__':
-    # benchmark_conn(
-    #     data_type='binary',
-    #     mode='post',
-    #     duration=1e2 * u.ms,
-    #     params_type='dist',
-    #     homo=True,
-    #     backend='cuda_raw',
-    #     limit_GB=16,
-    #     mv_layout='row_gather',
-    # )
-    # benchmark_conn(
-    #     data_type='bitpack',
-    #     mode='post',
-    #     duration=1e2 * u.ms,
-    #     params_type='dist',
-    #     homo=True,
-    #     backend='cuda_raw',
-    #     limit_GB=16,
-    #     mv_layout='row_gather',
-    # )
+
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=50 * u.ms,
+        params_type='dist',
+        homo=True,
+        backend= 'test_colmajor_fullwarp_nocap',       
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+    '''
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=50 * u.ms,
+        params_type='dist',
+        homo=True,
+        backend= 'binary_fcnmm_atx_fcn-x_scatter',       
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=50 * u.ms,
+        params_type='dist',
+        homo=True,
+        backend= 'binary_fcnmm_atx_csr_compact-x_scatter',       
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=50 * u.ms,
+        params_type='dist',
+        homo=True,
+        backend= 'binary_fcnmm_atx_csr-x_scatter',       
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+    '''
+
+    '''
+    '''
+    '''
+    benchmark_conn(
+        data_type='compact',
+        mode='post',
+        duration=1e2 * u.ms,
+        params_type='conn',
+        homo=True,
+        backend= 'cuda_raw',      
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+    
+
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=0.5 * u.ms,
+        params_type='conn',
+        homo=True,
+        backend= 'cuda_raw',      
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+    '''
+
+    '''
+    benchmark_conn(
+        data_type='compact',
+        mode='post',
+        duration=1e2 * u.ms,
+        params_type='conn',
+        homo=True,
+        backend= 'cuda_raw',      
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+
+    
+    benchmark_conn(
+        data_type='bitpack_a1',
+        mode='post',
+        duration=1e2 * u.ms,
+        params_type='conn',
+        homo=True,
+        backend= 'cuda_raw',
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+      
+    benchmark_conn(
+        data_type='bitpack_a0',
+        mode='post',
+        duration=1e2 * u.ms,
+        params_type='conn',
+        homo=True,
+        backend='cuda_raw',
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+
     benchmark_conn(
         data_type='binary',
         mode='post',
         duration=1e2 * u.ms,
-        params_type='dist',
+        params_type='conn',
         homo=True,
-        backend='cuda_raw',
-        limit_GB=16,
+        backend='binary_fcnmm_atx_csr-x_scatter',
+        limit_GB=5,
         mv_layout='row_gather',
     )
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=1e2 * u.ms,
+        params_type='conn',
+        homo=True,
+        backend='jax_raw',
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+    benchmark_conn(
+        data_type='binary',
+        mode='post',
+        duration=1e2 * u.ms,
+        params_type='conn',
+        homo=True,
+        backend='cuda_raw',
+        limit_GB=5,
+        mv_layout='row_gather',
+    )
+    
+
+    '''

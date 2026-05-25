@@ -75,7 +75,7 @@
 #define BGM_MAX_GRID_X 4096
 
 // -----------------------------------------------------------------------
-// BGM_WARP: Gather warp kernel (n_conn <= 32)
+// BGM_WARP: Gather warp/WPR kernel (temporarily supports any n_conn)
 //   - Grid-stride loop: caps block count for reduced scheduling overhead
 //   - In-kernel matrix tiling: processes source index ranges to fit L2
 //   - Multi-row per block: 4 warps, each handling one row
@@ -102,16 +102,19 @@ __global__ void _bgm_warp_homo_kern##SUFFIX(                                    
         int row = base + warp_id;                                                              \
         if (row >= n_pre) continue;                                                            \
         const int32_t* i_row = indices + (size_t)row * n_conn;                                 \
-        int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                               \
         ACC_T accum = (ACC_T)0;                                                                \
         for (int ts = 0; ts < n_post; ts += tile_size) {                                       \
             int tsz = ((ts + tile_size) < n_post) ? tile_size : (n_post - ts);                 \
-            for (int k = 0; k < n_conn; k++) {                                                 \
-                int src = __shfl_sync(0xffffffff, my_idx, k);                                  \
-                if ((unsigned)(src - ts) < (unsigned)tsz) {                                    \
-                    bool active = col_valid &&                                                 \
-                        IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]));              \
-                    accum += (ACC_T)active;                                                    \
+            for (int k0 = 0; k0 < n_conn; k0 += 32) {                                          \
+                int k_lane = k0 + lane;                                                        \
+                int my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;                    \
+                for (int off = 0; off < 32 && k0 + off < n_conn; off++) {                      \
+                    int src = __shfl_sync(0xffffffff, my_idx, off);                            \
+                    if ((unsigned)(src - ts) < (unsigned)tsz) {                                \
+                        bool active = col_valid &&                                             \
+                            IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]));          \
+                        accum += (ACC_T)active;                                                \
+                    }                                                                          \
                 }                                                                              \
             }                                                                                  \
         }                                                                                      \
@@ -139,18 +142,21 @@ __global__ void _bgm_warp_hetero_kern##SUFFIX(                                  
         if (row >= n_pre) continue;                                                            \
         const int32_t*  i_row = indices + (size_t)row * n_conn;                                \
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                \
-        int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                             \
-        ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;              \
         ACC_T accum  = (ACC_T)0;                                                               \
         for (int ts = 0; ts < n_post; ts += tile_size) {                                       \
             int tsz = ((ts + tile_size) < n_post) ? tile_size : (n_post - ts);                 \
-            for (int k = 0; k < n_conn; k++) {                                                 \
-                int   src = __shfl_sync(0xffffffff, my_idx, k);                                \
-                ACC_T wk  = __shfl_sync(0xffffffff, my_w, k);                                  \
-                if ((unsigned)(src - ts) < (unsigned)tsz) {                                    \
-                    bool active = col_valid &&                                                 \
-                        IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]));              \
-                    accum += wk * (ACC_T)active;                                               \
+            for (int k0 = 0; k0 < n_conn; k0 += 32) {                                          \
+                int k_lane = k0 + lane;                                                        \
+                int   my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;                 \
+                ACC_T my_w   = (k_lane < n_conn) ? READ_W(__ldg(&w_row[k_lane])) : (ACC_T)0;  \
+                for (int off = 0; off < 32 && k0 + off < n_conn; off++) {                      \
+                    int   src = __shfl_sync(0xffffffff, my_idx, off);                          \
+                    ACC_T wk  = __shfl_sync(0xffffffff, my_w, off);                            \
+                    if ((unsigned)(src - ts) < (unsigned)tsz) {                                \
+                        bool active = col_valid &&                                             \
+                            IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]));          \
+                        accum += wk * (ACC_T)active;                                           \
+                    }                                                                          \
                 }                                                                              \
             }                                                                                  \
         }                                                                                      \
@@ -311,7 +317,7 @@ DEFINE_PACK_SPIKES(_f16,  __half,  IS_ACTIVE_F16)
 DEFINE_PACK_SPIKES(_bf16, __nv_bfloat16, IS_ACTIVE_BF16)
 
 // -----------------------------------------------------------------------
-// BGM_PACKED_WARP: Packed gather warp kernel (n_conn <= 32)
+// BGM_PACKED_WARP: Packed gather warp/WPR kernel (temporarily supports any n_conn)
 //   - Reads from bit-packed uint32 matrix instead of raw spike matrix
 //   - Grid-stride loop over output rows
 //   - All threads in a warp read the SAME uint32 word per source
@@ -337,12 +343,15 @@ __global__ void _bgm_packed_warp_homo_kern##SUFFIX(                             
         int row = base + warp_id;                                                   \
         if (row >= n_pre) continue;                                                 \
         const int32_t* i_row = indices + (size_t)row * n_conn;                      \
-        int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                    \
         ACC_T accum = (ACC_T)0;                                                     \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int src = __shfl_sync(0xffffffff, my_idx, k);                           \
-            uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);        \
-            accum += (ACC_T)(col_valid & ((word >> lane) & 1u));                    \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;             \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int src = __shfl_sync(0xffffffff, my_idx, off);                     \
+                uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);    \
+                accum += (ACC_T)(col_valid & ((word >> lane) & 1u));                \
+            }                                                                        \
         }                                                                           \
         if (col_valid)                                                              \
             output[(size_t)row * n_batch + j] = WRITE_W(w0 * accum);               \
@@ -368,14 +377,17 @@ __global__ void _bgm_packed_warp_hetero_kern##SUFFIX(                           
         if (row >= n_pre) continue;                                                 \
         const int32_t*  i_row = indices + (size_t)row * n_conn;                     \
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                     \
-        int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                  \
-        ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;   \
         ACC_T accum  = (ACC_T)0;                                                    \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int   src = __shfl_sync(0xffffffff, my_idx, k);                         \
-            ACC_T wk  = __shfl_sync(0xffffffff, my_w, k);                           \
-            uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);        \
-            accum += wk * (ACC_T)(col_valid & ((word >> lane) & 1u));               \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int   my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;           \
+            ACC_T my_w   = (k_lane < n_conn) ? READ_W(__ldg(&w_row[k_lane])) : (ACC_T)0; \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int   src = __shfl_sync(0xffffffff, my_idx, off);                   \
+                ACC_T wk  = __shfl_sync(0xffffffff, my_w, off);                     \
+                uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);    \
+                accum += wk * (ACC_T)(col_valid & ((word >> lane) & 1u));           \
+            }                                                                        \
         }                                                                           \
         if (col_valid) output[(size_t)row * n_batch + j] = WRITE_W(accum);          \
     }                                                                               \
@@ -481,7 +493,7 @@ __global__ void _bgm_packed_basic_hetero_kern##SUFFIX(                          
 }
 
 // -----------------------------------------------------------------------
-// BSM_WARP: Scatter warp kernel (n_conn <= 32)
+// BSM_WARP: Scatter warp/WPR kernel (temporarily supports any n_conn)
 //   - Multi-row per block (4 warps)
 //   - Shuffle-based index/weight loading
 //   - All threads stay alive for shuffle; only active threads do atomicAdd
@@ -509,12 +521,14 @@ __global__ void _bsm_warp_homo_kern##SUFFIX(                                    
         uint32_t active_mask = __ballot_sync(0xffffffff, active);                                \
         if (active_mask == 0) continue;                                                          \
         const int32_t* i_row = indices + (size_t)row * n_conn;                                   \
-        /* Preload indices into registers via shuffle */                                         \
-        int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                                 \
-        for (int k = 0; k < n_conn; k++) {                                                      \
-            int target = __shfl_sync(0xffffffff, my_idx, k);                                     \
-            if (active && (unsigned)(target - tile_start) < (unsigned)tile_size)                  \
-                ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], w0);                         \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                                \
+            int k_lane = k0 + lane;                                                              \
+            int my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;                          \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {                            \
+                int target = __shfl_sync(0xffffffff, my_idx, off);                               \
+                if (active && (unsigned)(target - tile_start) < (unsigned)tile_size)              \
+                    ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], w0);                     \
+            }                                                                                    \
         }                                                                                        \
     }                                                                                            \
 }
@@ -542,14 +556,16 @@ __global__ void _bsm_warp_hetero_kern##SUFFIX(                                  
         if (active_mask == 0) continue;                                                            \
         const int32_t*  i_row = indices + (size_t)row * n_conn;                                    \
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                    \
-        /* Preload indices and weights into registers via shuffle */                               \
-        int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                                 \
-        ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;                  \
-        for (int k = 0; k < n_conn; k++) {                                                        \
-            int   target = __shfl_sync(0xffffffff, my_idx, k);                                     \
-            ACC_T wk     = __shfl_sync(0xffffffff, my_w, k);                                       \
-            if (active && (unsigned)(target - tile_start) < (unsigned)tile_size)                    \
-                ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], wk);                           \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                                  \
+            int k_lane = k0 + lane;                                                                \
+            int   my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;                          \
+            ACC_T my_w   = (k_lane < n_conn) ? READ_W(__ldg(&w_row[k_lane])) : (ACC_T)0;           \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {                              \
+                int   target = __shfl_sync(0xffffffff, my_idx, off);                               \
+                ACC_T wk     = __shfl_sync(0xffffffff, my_w, off);                                 \
+                if (active && (unsigned)(target - tile_start) < (unsigned)tile_size)                \
+                    ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], wk);                       \
+            }                                                                                      \
         }                                                                                          \
     }                                                                                              \
 }

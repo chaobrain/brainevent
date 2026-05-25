@@ -21,10 +21,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from brainevent import BitPackedBinary, FixedPostNumConn
+from brainevent.config import clear_backends, set_backend
 from brainevent._event.bitpack_binary import bitpack
 from brainevent._fcn.bitpack_binary import (
     bitpack_binary_fcnmv,
     bitpack_binary_fcnmm,
+    bitpack_binary_fcnmv_p,
+    bitpack_binary_fcnmm_p,
 )
 from brainevent._fcn.float import fcnmv, fcnmm
 from brainevent._test_util import generate_fixed_conn_num_indices
@@ -39,6 +43,32 @@ else:
 
 N_CONN = 4
 BATCH = 8
+
+
+def _bitpack_mv_cuda_scatter_unsupported(implementation=None):
+    if implementation == 'cuda_raw':
+        return True
+    if implementation is None and platform == 'gpu' and bitpack_binary_fcnmv_p.get_default(platform) == 'cuda_raw':
+        return True
+    return False
+
+
+def _implementation_params(implementations, op_name: str):
+    if implementations:
+        return [pytest.param(impl, id=impl) for impl in implementations]
+    return [
+        pytest.param(
+            None,
+            marks=pytest.mark.skip(reason=f'No {op_name} implementations on platform={platform}'),
+            id=f'no-{op_name}',
+        )
+    ]
+
+
+BITPACK_FCNMV_IMPLEMENTATIONS = tuple(bitpack_binary_fcnmv_p.available_backends(platform))
+BITPACK_FCNMM_IMPLEMENTATIONS = tuple(bitpack_binary_fcnmm_p.available_backends(platform))
+BITPACK_FCNMV_PARAMS = _implementation_params(BITPACK_FCNMV_IMPLEMENTATIONS, 'bitpack_binary_fcnmv')
+BITPACK_FCNMM_PARAMS = _implementation_params(BITPACK_FCNMM_IMPLEMENTATIONS, 'bitpack_binary_fcnmm')
 
 
 # ---------------------------------------------------------------------------
@@ -213,10 +243,11 @@ def generate_cs_pairs(
 # 1. Forward correctness — fcnmv
 # ===========================================================================
 
+@pytest.mark.parametrize('implementation', BITPACK_FCNMV_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_bitpack_fcnmv_forward(homo_w, transpose, shape):
+def test_bitpack_fcnmv_forward(implementation, homo_w, transpose, shape):
     """bitpack_binary_fcnmv forward output matches dense reference."""
     m, n = shape
     indices = _mk_indices(shape)
@@ -226,8 +257,17 @@ def test_bitpack_fcnmv_forward(homo_w, transpose, shape):
     spikes = _mk_spikes(spike_size)
     packed = bitpack(spikes, axis=0)
 
+    if implementation == 'cuda_raw' and transpose:
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            bitpack_binary_fcnmv(
+                weights, indices, packed, spikes, shape=shape, transpose=transpose,
+                backend=implementation,
+            )
+        return
+
     y = bitpack_binary_fcnmv(
         weights, indices, packed, spikes, shape=shape, transpose=transpose,
+        backend=implementation,
     )
     y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
 
@@ -250,6 +290,11 @@ def test_bitpack_fcnmv_forward_all_zeros(homo_w, transpose, shape):
     spikes = jnp.zeros(spike_size, dtype=jnp.float32)
     packed = bitpack(spikes, axis=0)
 
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            bitpack_binary_fcnmv(weights, indices, packed, spikes, shape=shape, transpose=transpose)
+        return
+
     y = bitpack_binary_fcnmv(weights, indices, packed, spikes, shape=shape, transpose=transpose)
     assert jnp.allclose(y, jnp.zeros_like(y))
 
@@ -266,52 +311,63 @@ def test_bitpack_fcnmv_forward_all_ones(homo_w, transpose, shape):
     spikes = jnp.ones(spike_size, dtype=jnp.float32)
     packed = bitpack(spikes, axis=0)
 
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            bitpack_binary_fcnmv(weights, indices, packed, spikes, shape=shape, transpose=transpose)
+        return
+
     y = bitpack_binary_fcnmv(weights, indices, packed, spikes, shape=shape, transpose=transpose)
     y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
 
-'''
-@pytest.mark.parametrize('homo_w', [True, False])
-def test_bitpack_fcnmv_forward_in_large_scale(homo_w):
-    """bitpack_binary_fcnmv forward matches dense reference at large scale (transpose=False)."""
-    import gc
-
-    for conn, m in generate_cs_pairs(homo_or_not=homo_w, include_dense_ref=True):
-        indices = generate_fixed_conn_num_indices(m, m, conn)
-        weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
-
-        transpose = False
-        shape = (m, m)
-        spikes = _mk_spikes(m)
-        packed = bitpack(spikes, axis=0)
-
-        y = bitpack_binary_fcnmv(
-            weights, indices, packed, spikes, shape=shape, transpose=transpose,
-        )
-        y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
-
-        assert y.shape == y_ref.shape
-        assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2), (
-            f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
-            f"homo_w={homo_w}  conn={conn}"
-        )
-        jax.block_until_ready((indices, weights, y, y_ref))
-
-        del indices, weights, spikes, packed, y, y_ref
-        gc.collect()
-'''
+# NOTE:
+# Keep this large-scale stress test in-tree for ad-hoc local runs, but leave
+# it commented out because the dense reference construction is too slow and
+# memory-heavy for normal CI.
+#
+# @pytest.mark.parametrize('implementation', BITPACK_FCNMV_PARAMS)
+# @pytest.mark.parametrize('homo_w', [True, False])
+# def test_bitpack_fcnmv_forward_in_large_scale(implementation, homo_w):
+#     """bitpack_binary_fcnmv forward matches dense reference at large scale (transpose=False)."""
+#     import gc
+#
+#     for conn, m in generate_cs_pairs(homo_or_not=homo_w, include_dense_ref=True):
+#         indices = generate_fixed_conn_num_indices(m, m, conn)
+#         weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+#
+#         transpose = False
+#         shape = (m, m)
+#         spikes = _mk_spikes(m)
+#         packed = bitpack(spikes, axis=0)
+#
+#         y = bitpack_binary_fcnmv(
+#             weights, indices, packed, spikes, shape=shape, transpose=transpose,
+#             backend=implementation,
+#         )
+#         y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
+#
+#         assert y.shape == y_ref.shape
+#         assert jnp.allclose(y, y_ref, rtol=5e-2, atol=5e-2), (
+#             f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
+#             f"backend={implementation}  homo_w={homo_w}  conn={conn}"
+#         )
+#         jax.block_until_ready((indices, weights, y, y_ref))
+#
+#         del indices, weights, spikes, packed, y, y_ref
+#         gc.collect()
 
 
 # ===========================================================================
 # 2. Forward correctness — fcnmm
 # ===========================================================================
 
+@pytest.mark.parametrize('implementation', BITPACK_FCNMM_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('pack_axis', [0, 1])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_bitpack_fcnmm_forward(homo_w, transpose, pack_axis, shape):
+def test_bitpack_fcnmm_forward(implementation, homo_w, transpose, pack_axis, shape):
     """bitpack_binary_fcnmm forward output matches dense reference."""
     m, n = shape
     indices = _mk_indices(shape)
@@ -322,7 +378,9 @@ def test_bitpack_fcnmm_forward(homo_w, transpose, pack_axis, shape):
     packed = bitpack(matrix, axis=pack_axis)
 
     y = bitpack_binary_fcnmm(
-        weights, indices, packed, matrix, shape=shape, transpose=transpose, pack_axis=pack_axis,
+        weights, indices, packed, matrix,
+        shape=shape, transpose=transpose, pack_axis=pack_axis,
+        backend=implementation,
     )
     y_ref = _ref_mm(weights, indices, matrix, shape, transpose)
 
@@ -367,6 +425,13 @@ def test_bitpack_fcnmv_jvp_weights(homo_w, transpose, shape):
 
     w_dot = jnp.ones_like(weights) * 0.1
 
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        f = lambda w: bitpack_binary_fcnmv(w, indices, packed, spikes,
+                                           shape=shape, transpose=transpose)
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            jax.jvp(f, (weights,), (w_dot,))
+        return
+
     f = lambda w: bitpack_binary_fcnmv(w, indices, packed, spikes,
                                        shape=shape, transpose=transpose)
     primals_out, tangents_out = jax.jvp(f, (weights,), (w_dot,))
@@ -394,6 +459,13 @@ def test_bitpack_fcnmv_jvp_spikes(homo_w, transpose, shape):
     packed = bitpack(spikes, axis=0)
 
     spk_dot = jnp.ones_like(spikes) * 0.5
+
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        f = lambda s: bitpack_binary_fcnmv(weights, indices, packed, s,
+                                           shape=shape, transpose=transpose)
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            jax.jvp(f, (spikes,), (spk_dot,))
+        return
 
     f = lambda s: bitpack_binary_fcnmv(weights, indices, packed, s,
                                        shape=shape, transpose=transpose)
@@ -476,6 +548,13 @@ def test_bitpack_fcnmv_vjp_weights(homo_w, transpose, shape):
     out_size = n if transpose else m
     ct = jnp.ones(out_size, dtype=jnp.float32)
 
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        f = lambda w: bitpack_binary_fcnmv(w, indices, packed, spikes,
+                                           shape=shape, transpose=transpose)
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            jax.vjp(f, weights)
+        return
+
     f = lambda w: bitpack_binary_fcnmv(w, indices, packed, spikes,
                                        shape=shape, transpose=transpose)
     _, vjp_fn = jax.vjp(f, weights)
@@ -507,6 +586,13 @@ def test_bitpack_fcnmv_vjp_spikes(homo_w, transpose, shape):
     out_size = n if transpose else m
     ct = jnp.ones(out_size, dtype=jnp.float32)
 
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        f = lambda s: bitpack_binary_fcnmv(weights, indices, packed, s,
+                                           shape=shape, transpose=transpose)
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            jax.vjp(f, spikes)
+        return
+
     f = lambda s: bitpack_binary_fcnmv(weights, indices, packed, s,
                                        shape=shape, transpose=transpose)
     _, vjp_fn = jax.vjp(f, spikes)
@@ -532,6 +618,14 @@ def test_bitpack_fcnmv_grad_weights(homo_w, transpose, shape):
     spikes = _mk_spikes(spike_size)
     packed = bitpack(spikes, axis=0)
 
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        f = lambda w: jnp.sum(
+            bitpack_binary_fcnmv(w, indices, packed, spikes, shape=shape, transpose=transpose)
+        )
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            jax.grad(f)(weights)
+        return
+
     f = lambda w: jnp.sum(
         bitpack_binary_fcnmv(w, indices, packed, spikes, shape=shape, transpose=transpose)
     )
@@ -551,6 +645,14 @@ def test_bitpack_fcnmv_grad_spikes(homo_w, transpose, shape):
     spike_size = m if transpose else n
     spikes = _mk_spikes(spike_size)
     packed = bitpack(spikes, axis=0)
+
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        f = lambda s: jnp.sum(
+            bitpack_binary_fcnmv(weights, indices, packed, s, shape=shape, transpose=transpose)
+        )
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            jax.grad(f)(spikes)
+        return
 
     f = lambda s: jnp.sum(
         bitpack_binary_fcnmv(weights, indices, packed, s, shape=shape, transpose=transpose)
@@ -689,14 +791,43 @@ def test_bitpack_fcnmv_vmap_over_spikes(homo_w, transpose, shape):
 
     # Compare against loop
     y_loop = jnp.stack([
-        bitpack_binary_fcnmv(
-            weights, indices, batch_packed[i], batch_spikes[i],
-            shape=shape, transpose=transpose
-        )
+        _ref_mv(weights, indices, batch_spikes[i], shape, transpose)
         for i in range(B)
     ])
     assert y_vmap.shape == y_loop.shape
     assert jnp.allclose(y_vmap, y_loop, rtol=1e-3, atol=1e-3)
+
+
+def test_fixed_post_bitpack_a1_vmap_uses_a1_fcnmm_layout():
+    if 'cuda_raw' not in BITPACK_FCNMM_IMPLEMENTATIONS:
+        pytest.skip(f'cuda_raw bitpack fcnmm backend is not available on platform={platform}')
+
+    clear_backends()
+    set_backend(platform, 'cuda_raw')
+    try:
+        conn = FixedPostNumConn(
+            (
+                jnp.array([1.0], dtype=jnp.float32),
+                jnp.array([[0, 1, 2], [1, 2, 3]], dtype=jnp.int32),
+            ),
+            shape=(2, 4),
+            bitpack_mm_pack_axis=1,
+        )
+        batch_spikes = jnp.array(
+            [[True, False], [False, True], [True, True]],
+            dtype=jnp.bool_,
+        )
+
+        def batched_apply(spikes):
+            return jax.vmap(lambda spk: BitPackedBinary(spk) @ conn)(spikes)
+
+        jaxpr = str(jax.make_jaxpr(batched_apply)(batch_spikes))
+        assert 'backend=cuda_raw' in jaxpr
+        assert 'pack_axis=1' in jaxpr
+        assert 'ShapeDtypeStruct(shape=(2, 1), dtype=uint32)' in jaxpr
+        assert 'pack_axis=0' not in jaxpr
+    finally:
+        clear_backends()
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
@@ -751,16 +882,13 @@ def test_bitpack_fcnmm_vmap_over_matrix(homo_w, transpose, shape):
     )
     y_vmap = jax.vmap(f)(batch_packed, batch_matrix)
 
-    # Compare against loop
-    y_loop = jnp.stack([
-        bitpack_binary_fcnmm(
-            weights, indices, batch_packed[i], batch_matrix[i],
-            shape=shape, transpose=transpose
-        )
+    # Compare against dense reference, not another call to the same kernel.
+    y_ref = jnp.stack([
+        _ref_mm(weights, indices, batch_matrix[i], shape, transpose)
         for i in range(B)
     ])
-    assert y_vmap.shape == y_loop.shape
-    assert jnp.allclose(y_vmap, y_loop, rtol=1e-3, atol=1e-3)
+    assert y_vmap.shape == y_ref.shape
+    assert jnp.allclose(y_vmap, y_ref, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
@@ -808,6 +936,12 @@ def test_bitpack_fcnmv_jit(homo_w, transpose):
         lambda w, p, s: bitpack_binary_fcnmv(w, indices, p, s, shape=shape, transpose=transpose),
         static_argnums=(),
     )
+
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            f_jit(weights, packed, spikes)
+        return
+
     y_jit = f_jit(weights, packed, spikes)
     y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
     assert jnp.allclose(y_jit, y_ref, rtol=1e-3, atol=1e-3)
@@ -850,6 +984,16 @@ def test_bitpack_fcnmv_quantity_homo(transpose):
     packed = bitpack(spikes, axis=0)
 
     w_q = jnp.array([1.5]) * u.mS  # homogeneous weights with unit
+
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            bitpack_binary_fcnmv(w_q, indices, packed, spikes, shape=shape, transpose=transpose)
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            bitpack_binary_fcnmv(
+                jnp.array([1.5]), indices, packed, spikes, shape=shape, transpose=transpose
+            )
+        return
+
     y = bitpack_binary_fcnmv(w_q, indices, packed, spikes, shape=shape, transpose=transpose)
 
     # Should return a Quantity
@@ -904,8 +1048,57 @@ def test_bitpack_fcnmv_output_shape_scatter(shape):
     weights = _mk_homo_w()
     spikes = _mk_spikes(m)
     packed = bitpack(spikes, axis=0)
+
+    if _bitpack_mv_cuda_scatter_unsupported():
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            bitpack_binary_fcnmv(weights, indices, packed, spikes, shape=shape, transpose=True)
+        return
+
     y = bitpack_binary_fcnmv(weights, indices, packed, spikes, shape=shape, transpose=True)
     assert y.shape == (n,)
+
+
+def test_bitpack_fcnmv_cuda_raw_scatter_raises_value_error():
+    if platform != 'gpu':
+        pytest.skip(f'cuda_raw bitpack fcnmv scatter check only runs on platform={platform}')
+
+    indices = _mk_indices((20, 40))
+    weights = _mk_homo_w()
+    spikes = _mk_spikes(20)
+    packed = bitpack(spikes, axis=0)
+
+    with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+        bitpack_binary_fcnmv(
+            weights,
+            indices,
+            packed,
+            spikes,
+            shape=(20, 40),
+            transpose=True,
+            backend='cuda_raw',
+        )
+
+
+def test_fixed_post_bitpacked_binary_left_vector_cuda_raw_scatter_raises():
+    if platform != 'gpu':
+        pytest.skip(f'cuda_raw bitpack fcnmv scatter check only runs on platform={platform}')
+
+    clear_backends()
+    set_backend(platform, 'cuda_raw')
+    try:
+        conn = FixedPostNumConn(
+            (
+                jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32),
+                jnp.array([[0, 1], [1, 3], [2, 0]], dtype=jnp.int32),
+            ),
+            shape=(3, 4),
+        )
+        left_vector = BitPackedBinary(jnp.array([1.0, 0.0, 0.5], dtype=jnp.float32))
+
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            left_vector @ conn
+    finally:
+        clear_backends()
 
 
 @pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
@@ -949,6 +1142,14 @@ def test_mv_mm_consistency(homo_w, transpose, shape):
 
     # MV
     packed_mv = bitpack(spikes, axis=0)
+
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            bitpack_binary_fcnmv(
+                weights, indices, packed_mv, spikes, shape=shape, transpose=transpose
+            )
+        return
+
     y_mv = bitpack_binary_fcnmv(
         weights, indices, packed_mv, spikes, shape=shape, transpose=transpose
     )
@@ -983,6 +1184,13 @@ def test_bitpack_fcnmv_grad_weights_finite_diff(homo_w, transpose):
 
     out_size = n if transpose else m
     ct = jnp.ones(out_size)
+
+    if transpose and _bitpack_mv_cuda_scatter_unsupported():
+        f = lambda w: bitpack_binary_fcnmv(w, indices, packed, spikes,
+                                           shape=shape, transpose=transpose)
+        with pytest.raises(ValueError, match='Bitpack_binary_fcnmv no longer supports this path.*BinaryArray'):
+            jax.vjp(f, weights)
+        return
 
     f = lambda w: bitpack_binary_fcnmv(w, indices, packed, spikes,
                                        shape=shape, transpose=transpose)

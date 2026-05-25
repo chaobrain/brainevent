@@ -16,8 +16,13 @@
 # -*- coding: utf-8 -*-
 
 
+import inspect
+from pathlib import Path
+
 import brainstate
 import braintools
+import brainevent
+import brainevent._fcn.binary as binary_mod
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -31,10 +36,21 @@ from brainevent._test_util import generate_fixed_conn_num_indices
 platform = jax.default_backend()
 FCNMV_IMPLEMENTATIONS = tuple(
     impl for impl in binary_fcnmv_p.available_backends(platform)
-    if impl != 'dummy_kernel'
 )
-FCNMM_IMPLEMENTATIONS = tuple(binary_fcnmm_p.available_backends(platform))
-FCNMV_COL_SCATTER_IMPLEMENTATIONS = FCNMV_IMPLEMENTATIONS
+FCNMM_IMPLEMENTATIONS = tuple(
+    impl for impl in binary_fcnmm_p.available_backends(platform)
+    if impl not in (
+        'test_colmajor_fullwarp_nocap',
+    )
+)
+FCNMV_COL_SCATTER_IMPLEMENTATIONS = tuple(
+    impl for impl in FCNMV_IMPLEMENTATIONS
+    if impl == 'cuda_raw'
+)
+FCNMV_NON_CUDA_IMPLEMENTATIONS = tuple(
+    impl for impl in FCNMV_IMPLEMENTATIONS
+    if impl != 'cuda_raw'
+)
 
 if platform == 'cpu':
     SHAPES = (
@@ -68,6 +84,70 @@ FCNMV_COL_SCATTER_PARAMS = _implementation_params(
     FCNMV_COL_SCATTER_IMPLEMENTATIONS,
     'binary_fcnmv-col-scatter',
 )
+FCNMV_NON_CUDA_PARAMS = _implementation_params(
+    FCNMV_NON_CUDA_IMPLEMENTATIONS,
+    'binary_fcnmv-non-cuda',
+)
+
+FCNMM_TEST_COLMAJOR_NOCAP_IMPLEMENTATIONS = tuple(
+    impl
+    for impl in binary_fcnmm_p.available_backends(platform)
+    if impl in ('test_colmajor_fullwarp_nocap',)
+)
+FCNMM_TEST_COLMAJOR_NOCAP_PARAMS = _implementation_params(
+    FCNMM_TEST_COLMAJOR_NOCAP_IMPLEMENTATIONS,
+    'binary_fcnmm-test-colmajor-nocap',
+)
+FCNMM_MAIN_IMPLEMENTATIONS = tuple(
+    impl
+    for impl in FCNMM_IMPLEMENTATIONS
+)
+FCNMM_MAIN_PARAMS = _implementation_params(FCNMM_MAIN_IMPLEMENTATIONS, 'binary_fcnmm-main')
+
+
+def test_binary_fcnmv_col_scatter_cuda_names_match_dispatch_contract():
+    cuda_kernel_source = inspect.getsource(binary_mod._binary_fcnmv_cuda_kernel)
+    assert "binary_fcnmv_col_scatter.cu" in cuda_kernel_source
+    assert "fcn_binary_mv_col_scatter" in cuda_kernel_source
+    assert "binary_fcnmv_col_scatter" in cuda_kernel_source
+    assert "binary_fcnmv_T.cu" not in cuda_kernel_source
+    assert "fcn_binary_mv_t" not in cuda_kernel_source
+
+    source_path = Path(binary_mod.__file__).with_name("binary_fcnmv_col_scatter.cu")
+    source = source_path.read_text()
+    assert "DEFINE_BFCNMV_COL_TPR_HOMO" in source
+    assert "_bfcnmv_col_tpr_homo_kern" in source
+    assert "FFI_BFCNMV_COL_HOMO" in source
+    assert "n_blocks_tpr" in source
+    assert "DEFINE_BS_" not in source
+    assert "_bs_" not in source
+    assert "FFI_BS" not in source
+    assert "DEFINE_BS_CSC" not in source
+    assert "_bs_csc" not in source
+    assert "n_blocks_csc" not in source
+    assert "binary_fcnmv_col_scatter_homo_bool_f32" in source
+    assert "binary_fcnmv_scatter_homo_bool_f32" not in source
+
+
+def test_binary_fcnmm_col_scatter_cuda_operator_names_are_not_primitive_dispatch():
+    cuda_kernel_source = inspect.getsource(binary_mod._binary_fcnmm_cuda_kernel)
+    assert "binary_fcnmm_col_scatter.cu" not in cuda_kernel_source
+    assert "fcn_binary_mm_col_scatter" not in cuda_kernel_source
+    assert "binary_fcnmm_col_scatter" not in cuda_kernel_source
+
+    source_path = Path(binary_mod.__file__).with_name("binary_fcnmm_col_scatter.cu")
+    assert source_path.exists()
+    source = source_path.read_text()
+    assert "binary_fcnmm_col_scatter.cu" in source
+    assert "DEFINE_BFCNMM_COL_WARP_HOMO" in source
+    assert "_bfcnmm_col_warp_homo_kern" in source
+    assert "FFI_BFCNMM_COL_HOMO" in source
+    assert "binary_fcnmm_col_scatter_homo_bool_f32" in source
+    assert "binary_fcnmm_T.cu" not in source
+    assert "binary_fcnmm_scatter_colmajor_homo_bool_f32" not in source
+    assert "BSMM_COLMAJOR" not in source
+    assert "_bsmm_colmajor" not in source
+    assert "CSC" not in source
 
 
 def _make_weights(indices, homo_w: bool):
@@ -131,6 +211,27 @@ def _mm_reference(weights, indices, matrix, shape, transpose):
     if transpose:
         return jnp.matmul(dense.T, matrix, precision=jax.lax.Precision.HIGHEST)
     return jnp.matmul(dense, matrix, precision=jax.lax.Precision.HIGHEST)
+
+
+def _make_matrix(n_rows, k, event_dtype):
+    if event_dtype is bool:
+        return brainstate.random.rand(n_rows, k) < 0.5
+    raw = jnp.asarray(brainstate.random.rand(n_rows, k), dtype=jnp.float32)
+    return jnp.where(raw > 0.4, raw, 0.0)
+
+
+def _make_deterministic_matrix(n_rows, k, event_dtype):
+    values = jnp.arange(n_rows * k, dtype=jnp.float32).reshape(n_rows, k)
+    active = ((values * 17 + 11).astype(jnp.int32) % 7) < 2
+    if event_dtype is bool:
+        return active
+    return jnp.where(active, values / (n_rows * k + 1) + 0.125, 0.0)
+
+
+def _make_deterministic_indices(n_pre, n_post, n_conn):
+    rows = np.arange(n_pre, dtype=np.int32)[:, None]
+    cols = np.arange(n_conn, dtype=np.int32)[None, :]
+    return jnp.asarray((rows * 17 + cols * 31 + 7) % n_post, dtype=jnp.int32)
 
 
 def generate_cs_pairs(
@@ -249,7 +350,6 @@ def generate_cs_pairs(
 
     return valid_pairs
 
-@pytest.mark.skipif(platform == 'cpu', reason='large-scale col_scatter coverage is GPU-oriented')
 @pytest.mark.parametrize('implementation', FCNMV_COL_SCATTER_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 def test_binary_fcnmv_forward_column_scatter_matches_reference_in_large_scale(implementation, homo_w):
@@ -313,6 +413,18 @@ def test_binary_fcnmv_forward_matches_reference(implementation, homo_w, transpos
         raw = jnp.asarray(brainstate.random.rand(event_size), dtype=jnp.float32)
         events = jnp.where(raw > 0.4, raw, 0.0)
 
+    if implementation == 'cuda_raw' and not transpose:
+        with pytest.raises(ValueError, match='row-gather.*BitPackedBinary'):
+            binary_fcnmv(
+                weights,
+                indices,
+                events,
+                shape=shape,
+                transpose=transpose,
+                backend=implementation,
+            )
+        return
+
     y = binary_fcnmv(
         weights,
         indices,
@@ -324,6 +436,56 @@ def test_binary_fcnmv_forward_matches_reference(implementation, homo_w, transpos
     y_ref = _mv_reference(weights, indices, events, shape, transpose)
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
     jax.block_until_ready((indices, weights, events, y, y_ref))
+
+
+@pytest.mark.parametrize('implementation', FCNMV_COL_SCATTER_PARAMS)
+def test_binary_fcnmv_post_scatter_ignores_col_scatter_with_warning(implementation):
+    m, n = 20, 40
+    indices = generate_fixed_conn_num_indices(m, n, 4)
+    weights = _make_weights(indices, homo_w=False)
+    col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=(m, n))
+    events = brainstate.random.rand(m) < 0.5
+
+    with pytest.warns(UserWarning, match='col-scatter options.*post/scatter path.*fall back'):
+        y = binary_fcnmv(
+            weights,
+            indices,
+            events,
+            shape=(m, n),
+            transpose=True,
+            backend=implementation,
+            col_weights=col_weights,
+            col_indices=col_indices,
+            col_indptr=col_indptr,
+        )
+    y_ref = _mv_reference(weights, indices, events, (m, n), transpose=True)
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize('implementation', FCNMV_NON_CUDA_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_fcnmv_non_cuda_ignores_col_scatter_with_warning(implementation, transpose):
+    m, n = 20, 40
+    indices = generate_fixed_conn_num_indices(m, n, 4)
+    weights = _make_weights(indices, homo_w=False)
+    col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=(m, n))
+    event_size = m if transpose else n
+    events = brainstate.random.rand(event_size) < 0.5
+
+    with pytest.warns(UserWarning, match='Binary_fcnmv does not support col-scatter options on this backend.*fall back to the default gather/scatter path.*performance may degrade'):
+        y = binary_fcnmv(
+            weights,
+            indices,
+            events,
+            shape=(m, n),
+            transpose=transpose,
+            backend=implementation,
+            col_weights=col_weights,
+            col_indices=col_indices,
+            col_indptr=col_indptr,
+        )
+    y_ref = _mv_reference(weights, indices, events, (m, n), transpose=transpose)
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.parametrize('implementation', FCNMV_COL_SCATTER_PARAMS)
@@ -362,7 +524,7 @@ def test_binary_fcnmv_forward_column_scatter_matches_reference(implementation, h
 
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_column_major_csc_mirror_has_expected_sizes(homo_w, shape):
+def test_column_major_mirror_has_expected_sizes(homo_w, shape):
     indices = generate_fixed_conn_num_indices(shape[0], shape[1], max(1, int(shape[1] * 0.1)))
     weights = _make_weights(indices, homo_w=homo_w)
     col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=shape)
@@ -503,7 +665,7 @@ def test_binary_fcnmv_scatter_vjp_weights_float_activity_matches_dense(implement
     )
 
 
-@pytest.mark.parametrize('implementation', FCNMM_PARAMS)
+@pytest.mark.parametrize('implementation', FCNMM_MAIN_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('event_dtype', [bool, float])
@@ -532,6 +694,158 @@ def test_binary_fcnmm_forward_matches_reference(implementation, homo_w, transpos
     y_ref = _mm_reference(weights, indices, matrix, shape, transpose)
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
     jax.block_until_ready((indices, weights, matrix, y, y_ref))
+
+
+def test_binary_fcnmm_test_colmajor_backends_use_named_kernel_generators():
+    kernels = binary_fcnmm_p._kernels['gpu']
+    expected = {
+        'test_colmajor_fullwarp_nocap': binary_mod._binary_fcnmm_test_colmajor_fullwarp_nocap_kernel,
+    }
+    for backend, kernel_generator in expected.items():
+        assert kernels[backend].kernel_generator is kernel_generator
+
+
+@pytest.mark.parametrize(
+    ('implementation', 'weight_shape', 'weight_dtype', 'matrix_dtype', 'expected_kernel_name'),
+    [
+        (
+            'test_colmajor_fullwarp_nocap',
+            (1,),
+            jnp.float32,
+            jnp.bool_,
+            'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap_homo_bool_f32',
+        ),
+        (
+            'test_colmajor_fullwarp_nocap',
+            (1,),
+            jnp.float64,
+            jnp.float64,
+            'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap_homo_float_f64',
+        ),
+        (
+            'test_colmajor_fullwarp_nocap',
+            (1,),
+            jnp.float16,
+            jnp.float16,
+            'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap_homo_float_f16',
+        ),
+        (
+            'test_colmajor_fullwarp_nocap',
+            (1,),
+            jnp.bfloat16,
+            jnp.bfloat16,
+            'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap_homo_float_bf16',
+        ),
+        (
+            'test_colmajor_fullwarp_nocap',
+            (2, 2),
+            jnp.float32,
+            jnp.bool_,
+            'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_bool_f32',
+        ),
+        (
+            'test_colmajor_fullwarp_nocap',
+            (2, 2),
+            jnp.float64,
+            jnp.float64,
+            'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_float_f64',
+        ),
+        (
+            'test_colmajor_fullwarp_nocap',
+            (2, 2),
+            jnp.float16,
+            jnp.float16,
+            'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_float_f16',
+        ),
+        (
+            'test_colmajor_fullwarp_nocap',
+            (2, 2),
+            jnp.bfloat16,
+            jnp.bfloat16,
+            'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_float_bf16',
+        ),
+    ],
+)
+def test_binary_fcnmm_test_colmajor_backend_wiring(
+    monkeypatch,
+    implementation,
+    weight_shape,
+    weight_dtype,
+    matrix_dtype,
+    expected_kernel_name,
+):
+    called = []
+    load_calls = []
+    transpose_inputs = []
+    array_copy_calls = []
+    original_array = jnp.array
+
+    monkeypatch.setattr(binary_mod, 'load_cuda_file', lambda *args, **kwargs: load_calls.append((args, kwargs)))
+
+    def _fake_ffi_call(kernel_name, out_info, **ffi_kwargs):
+        called.append((kernel_name, out_info[0].shape))
+        assert ffi_kwargs == {'vmap_method': 'sequential'}
+
+        def _kernel(weights, indices, matrix):
+            batch = matrix.shape[0]
+            post = out_info[0].shape[1]
+            data = jnp.arange(batch * post, dtype=jnp.float32).reshape((batch, post))
+            return data
+
+        return _kernel
+
+    class _MatrixWrapper:
+        def __init__(self, value):
+            self._value = value
+
+        @property
+        def shape(self):
+            return self._value.shape
+
+        @property
+        def T(self):
+            transpose_inputs.append(self._value.shape)
+            return self._value.T
+
+        def __array__(self, dtype=None):
+            return np.asarray(self._value, dtype=dtype)
+
+    def _fake_array(arr, *args, **kwargs):
+        array_copy_calls.append((np.shape(arr), kwargs.get('copy', None)))
+        return original_array(arr, *args, **kwargs)
+
+    monkeypatch.setattr(jax.ffi, 'ffi_call', _fake_ffi_call)
+    monkeypatch.setattr(binary_mod.jnp, 'array', _fake_array)
+
+    indices = jnp.asarray([[3, 1], [2, 0]], dtype=jnp.int32)
+    weights = jnp.ones(weight_shape, dtype=jnp.float32)
+    if matrix_dtype == jnp.bool_:
+        matrix = jnp.asarray([[True, False, True], [False, True, False]], dtype=jnp.bool_)
+    else:
+        matrix = jnp.asarray([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=jnp.float32)
+    outs = [jax.ShapeDtypeStruct((3, 4), weight_dtype)]
+    kernel = binary_mod._binary_fcnmm_test_colmajor_kernel(
+        transpose=True,
+        weight_info=jax.ShapeDtypeStruct(weight_shape, weight_dtype),
+        matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix_dtype),
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        outs=outs,
+    )
+
+    result = kernel(weights, indices, _MatrixWrapper(matrix))
+
+    assert load_calls
+    assert called == [(expected_kernel_name, outs[0].shape)]
+    assert transpose_inputs == [matrix.shape]
+    assert array_copy_calls == [((matrix.shape[1], matrix.shape[0]), True)]
+
+    expected = jnp.arange(outs[0].shape[0] * outs[0].shape[1], dtype=jnp.float32).reshape(outs[0].shape)
+    assert jnp.array_equal(result, expected)
+
+
+def test_binary_fcnmm_test_colmajor_nocap_backends_register_on_gpu():
+    backends = set(binary_fcnmm_p.available_backends('gpu'))
+    assert 'test_colmajor_fullwarp_nocap' in backends
 
 @pytest.mark.parametrize('implementation', FCNMM_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
@@ -568,3 +882,214 @@ def test_binary_fcnmm_thresholds_float_events(implementation, homo_w, shape, k, 
     )
     assert jnp.allclose(y_float, y_binary, rtol=1e-3, atol=1e-3)
     jax.block_until_ready((indices, weights, float_events, binary_events, y_float, y_binary))
+
+
+@pytest.mark.parametrize('implementation', FCNMM_TEST_COLMAJOR_NOCAP_PARAMS)
+@pytest.mark.parametrize('event_dtype', [bool, float])
+@pytest.mark.parametrize('shape', [(17, 11), (64, 37)])
+@pytest.mark.parametrize('n_conn', [1, 9, 33])
+def test_binary_fcnmm_test_colmajor_nocap_matches_reference(implementation, event_dtype, shape, n_conn):
+    if platform != 'gpu':
+        pytest.skip('GPU-only experimental backend.')
+
+    m, n = shape
+    indices = _make_deterministic_indices(m, n, n_conn)
+    weights = jnp.asarray([1.25], dtype=jnp.float32)
+    matrix = _make_deterministic_matrix(m, 13, event_dtype)
+
+    y = binary_fcnmm(
+        weights,
+        indices,
+        matrix,
+        shape=shape,
+        transpose=True,
+        backend=implementation,
+    )
+    y_ref = _mm_reference(weights, indices, matrix, shape, transpose=True)
+
+    assert y.shape == y_ref.shape
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3), (
+        f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  shape={shape}  "
+        f"event_dtype={event_dtype}  n_conn={n_conn}"
+    )
+    jax.block_until_ready((indices, weights, matrix, y, y_ref))
+
+
+@pytest.mark.parametrize('implementation', FCNMM_TEST_COLMAJOR_NOCAP_PARAMS)
+@pytest.mark.parametrize('event_dtype', [bool, float])
+def test_binary_fcnmm_test_colmajor_nocap_transpose_false_matches_cuda_raw_layout(implementation, event_dtype):
+    if platform != 'gpu':
+        pytest.skip('GPU-only experimental backend.')
+    if 'cuda_raw' not in binary_fcnmm_p.available_backends(platform):
+        pytest.skip('cuda_raw reference backend unavailable.')
+
+    m, n, n_conn, k = 17, 11, 5, 7
+    indices = _make_deterministic_indices(m, n, n_conn)
+    weights = jnp.asarray([1.25], dtype=jnp.float32)
+    matrix = _make_deterministic_matrix(n, k, event_dtype)
+
+    y = binary_fcnmm(
+        weights,
+        indices,
+        matrix,
+        shape=(m, n),
+        transpose=False,
+        backend=implementation,
+    )
+    y_ref = binary_fcnmm(
+        weights,
+        indices,
+        matrix,
+        shape=(m, n),
+        transpose=False,
+        backend='cuda_raw',
+    )
+
+    assert y.shape == (m, k)
+    assert y.shape == y_ref.shape
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3), (
+        f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  event_dtype={event_dtype}"
+    )
+    jax.block_until_ready((indices, weights, matrix, y, y_ref))
+
+
+@pytest.mark.parametrize('implementation', FCNMM_TEST_COLMAJOR_NOCAP_PARAMS)
+def test_binary_fcnmm_test_colmajor_nocap_matches_reference_in_large_scale(implementation):
+    if platform != 'gpu':
+        pytest.skip('GPU-only experimental backend.')
+
+    m, n, n_conn, k = 1536, 1024, 257, 32
+    indices = _make_deterministic_indices(m, n, n_conn)
+    weights = jnp.asarray([0.75], dtype=jnp.float32)
+    matrix = _make_deterministic_matrix(m, k, bool)
+
+    y = binary_fcnmm(
+        weights,
+        indices,
+        matrix,
+        shape=(m, n),
+        transpose=True,
+        backend=implementation,
+    )
+    y_ref = binary_fcnmm(
+        weights,
+        indices,
+        matrix,
+        shape=(m, n),
+        transpose=True,
+        backend='jax_raw',
+    )
+
+    assert y.shape == (n, k)
+    assert y.shape == y_ref.shape
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3), (
+        f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}  "
+        f"shape={(m, n)}  n_conn={n_conn}  k={k}"
+    )
+    jax.block_until_ready((indices, weights, matrix, y, y_ref))
+
+
+@pytest.mark.parametrize('implementation', FCNMM_TEST_COLMAJOR_NOCAP_PARAMS)
+def test_binary_fcnmm_test_colmajor_nocap_fixed_post_batch_route_matches_reference(implementation):
+    if platform != 'gpu':
+        pytest.skip('GPU-only experimental backend.')
+
+    m, n, n_conn, batch = 96, 128, 41, 12
+    indices = _make_deterministic_indices(m, n, n_conn)
+    weights = jnp.asarray([1.5], dtype=jnp.float32)
+    spikes = _make_deterministic_matrix(batch, m, bool)
+
+    previous_backend = brainevent.config.get_backend(platform)
+    try:
+        brainevent.config.set_backend(platform, implementation)
+        conn = brainevent.FixedPostNumConn((weights, indices), shape=(m, n))
+        y = brainevent.BinaryArray(spikes) @ conn
+    finally:
+        brainevent.config.set_backend(platform, previous_backend)
+
+    y_ref = _mm_reference(weights, indices, spikes.T, (m, n), transpose=True).T
+
+    assert y.shape == (batch, n)
+    assert y.shape == y_ref.shape
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3), (
+        f"max diff={jnp.max(jnp.abs(y - y_ref)):.4e}"
+    )
+    jax.block_until_ready((indices, weights, spikes, y, y_ref))
+
+
+@pytest.mark.parametrize('implementation', FCNMM_TEST_COLMAJOR_NOCAP_PARAMS)
+def test_binary_fcnmm_global_test_colmajor_backend_matches_explicit_reference(implementation):
+    if platform != 'gpu':
+        pytest.skip('GPU-only experimental backend.')
+
+    m, n = 8, 16
+    indices = generate_fixed_conn_num_indices(m, n, 4)
+    weights = _make_weights(indices, homo_w=True)
+    matrix = _make_matrix(m, 3, bool)
+
+    previous_backend = brainevent.config.get_backend(platform)
+    try:
+        brainevent.config.set_backend(platform, implementation)
+        y = binary_fcnmm(
+            weights,
+            indices,
+            matrix,
+            shape=(m, n),
+            transpose=True,
+            backend=None,
+        )
+    finally:
+        brainevent.config.set_backend(platform, previous_backend)
+
+    y_ref = binary_fcnmm(
+        weights,
+        indices,
+        matrix,
+        shape=(m, n),
+        transpose=True,
+        backend='jax_raw',
+    )
+    assert y.shape == y_ref.shape
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, matrix, y, y_ref))
+
+
+@pytest.mark.parametrize('implementation', FCNMM_TEST_COLMAJOR_NOCAP_PARAMS)
+def test_binary_fcnmv_batched_global_test_colmajor_backend_matches_reference(implementation):
+    if platform != 'gpu':
+        pytest.skip('GPU-only experimental backend.')
+
+    m, n = 8, 16
+    indices = generate_fixed_conn_num_indices(m, n, 4)
+    weights = _make_weights(indices, homo_w=True)
+    spikes = _make_matrix(m, 3, bool).T
+
+    previous_backend = brainevent.config.get_backend(platform)
+    try:
+        brainevent.config.set_backend(platform, implementation)
+        y = jax.vmap(
+            lambda spk: binary_fcnmv(
+                weights,
+                indices,
+                spk,
+                shape=(m, n),
+                transpose=True,
+                backend=None,
+            )
+        )(spikes)
+    finally:
+        brainevent.config.set_backend(platform, previous_backend)
+
+    y_ref = jax.vmap(
+        lambda spk: binary_fcnmv(
+            weights,
+            indices,
+            spk,
+            shape=(m, n),
+            transpose=True,
+            backend='jax_raw',
+        )
+    )(spikes)
+    assert y.shape == y_ref.shape
+    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, spikes, y, y_ref))
