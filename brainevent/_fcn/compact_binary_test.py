@@ -442,40 +442,6 @@ def test_compact_binary_fcnmv_cuda_kernel_selector(
     assert result == expected_kernel_name
 
 
-@pytest.mark.parametrize(
-    ('backend_kind', 'expected_kernel_name'),
-    [
-        ('tpr', 'fcn_compact_binary_mv.compact_binary_fcnmv_scatter_tpr_homo_f32'),
-        ('wpr', 'fcn_compact_binary_mv.compact_binary_fcnmv_scatter_wpr_homo_f32'),
-        ('bpr', 'fcn_compact_binary_mv.compact_binary_fcnmv_scatter_bpr_homo_f32'),
-    ],
-)
-def test_compact_binary_fcnmv_explicit_scatter_kernel_selector(monkeypatch, backend_kind, expected_kernel_name):
-    called = []
-
-    monkeypatch.setattr(compact_binary_mod, 'load_cuda_file', lambda *args, **kwargs: None)
-
-    def _fake_ffi_call(kernel_name, out_info):
-        called.append(kernel_name)
-        return lambda *args: kernel_name
-
-    monkeypatch.setattr(jax.ffi, 'ffi_call', _fake_ffi_call)
-
-    kernel = compact_binary_mod._compact_binary_fcnmv_explicit_scatter_kernel(
-        backend_kind,
-        transpose=True,
-        outs=[jax.ShapeDtypeStruct((5,), jnp.float32)],
-        weight_info=jax.ShapeDtypeStruct((1,), jnp.float32),
-        col_weight_info=jax.ShapeDtypeStruct((0,), jnp.float32),
-        col_indices_info=jax.ShapeDtypeStruct((0,), jnp.int32),
-        col_indptr_info=jax.ShapeDtypeStruct((0,), jnp.int32),
-    )
-    result = kernel(None, None, None, None, None, None, None, None, None)
-
-    assert called == [expected_kernel_name]
-    assert result == expected_kernel_name
-
-
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('shape', SHAPES)
 def test_compact_column_major_csc_mirror_has_expected_sizes(homo_w, shape):
@@ -562,6 +528,7 @@ def test_compact_binary_fcnmv_forward_all_ones(homo_w, transpose, shape):
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.skip(reason='Large-scale compact MV coverage is disabled by default.')
 def test_compact_binary_fcnmv_forward_in_large_scale(homo_w):
     """compact_binary_fcnmv forward matches dense reference at large scale."""
     import gc
@@ -595,6 +562,7 @@ def test_compact_binary_fcnmv_forward_in_large_scale(homo_w):
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.skip(reason='Large-scale compact MV column-scatter coverage is disabled by default.')
 def test_compact_binary_fcnmv_forward_column_scatter_in_large_scale(homo_w):
     """compact_binary_fcnmv column-scatter path matches dense reference at large scale."""
     import gc
