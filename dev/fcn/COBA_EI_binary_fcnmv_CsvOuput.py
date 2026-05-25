@@ -273,7 +273,7 @@ if __name__ == '__main__':
     '''
     benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
 
-    
+    #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
     #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 16)
     #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 8)
 

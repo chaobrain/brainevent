@@ -150,6 +150,18 @@ def test_binary_fcnmm_col_scatter_cuda_operator_names_are_not_primitive_dispatch
     assert "CSC" not in source
 
 
+def test_binary_fcnmm_col_scatter_uses_wpr_batch_grid_contract():
+    source_path = Path(binary_mod.__file__).with_name("binary_fcnmm_col_scatter.cu")
+    source = source_path.read_text()
+
+    assert "int batch = static_cast<int>(blockIdx.y)" in source
+    assert "matrix_t[static_cast<size_t>(batch) * n_pre + col]" in source
+    assert "output[static_cast<size_t>(batch) * n_post + row]" in source
+    assert "for (int pos = start + lane; pos < end; pos += BFCNMM_COL_WARP_THREADS)" in source
+    assert "dim3 grid(grid_x, n_batch)" in source
+    assert "lane >= n_batch" not in source
+
+
 def _make_weights(indices, homo_w: bool):
     if homo_w:
         return jnp.asarray([1.5], dtype=jnp.float32)

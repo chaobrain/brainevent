@@ -17,7 +17,7 @@
  * binary_fcnmm_col_scatter.cu -- Column-scatter path for binary_fcnmm
  * ==============================================================================
  *
- * This file provides a warp-only column-scatter prototype implementation for
+ * This file provides a warp-per-W-column column-scatter implementation for
  * transpose=True binary_fcnmm that consumes:
  *
  *   - `weights` : scalar homo weight or hetero column-major weights aligned with `indices`
@@ -48,15 +48,16 @@
         int tid = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x) + static_cast<int>(threadIdx.x); \
         int col = tid >> 5;                                                                                 \
         int lane = tid & 31;                                                                                \
-        if (col >= n_pre || lane >= n_batch) return;                                                        \
-        if (!IS_ACTIVE(__ldg(&matrix_t[static_cast<size_t>(lane) * n_pre + col]))) return;                 \
+        int batch = static_cast<int>(blockIdx.y);                                                           \
+        if (col >= n_pre || batch >= n_batch) return;                                                       \
+        if (!IS_ACTIVE(__ldg(&matrix_t[static_cast<size_t>(batch) * n_pre + col]))) return;                \
         int start = __ldg(&indptr[col]);                                                                    \
         int end = __ldg(&indptr[col + 1]);                                                                  \
         ACC_T w0 = READ_W(__ldg(&weights[0]));                                                              \
-        for (int pos = start; pos < end; ++pos) {                                                           \
+        for (int pos = start + lane; pos < end; pos += BFCNMM_COL_WARP_THREADS) {                          \
             int row = __ldg(&indices[pos]);                                                                 \
             if (row < 0 || row >= n_post) continue;                                                         \
-            ATOMIC_ADD_W(&output[static_cast<size_t>(lane) * n_post + row], w0);                           \
+            ATOMIC_ADD_W(&output[static_cast<size_t>(batch) * n_post + row], w0);                          \
         }                                                                                                   \
     }
 
@@ -72,15 +73,16 @@
         int tid = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x) + static_cast<int>(threadIdx.x); \
         int col = tid >> 5;                                                                                   \
         int lane = tid & 31;                                                                                  \
-        if (col >= n_pre || lane >= n_batch) return;                                                          \
-        if (!IS_ACTIVE(__ldg(&matrix_t[static_cast<size_t>(lane) * n_pre + col]))) return;                   \
+        int batch = static_cast<int>(blockIdx.y);                                                             \
+        if (col >= n_pre || batch >= n_batch) return;                                                         \
+        if (!IS_ACTIVE(__ldg(&matrix_t[static_cast<size_t>(batch) * n_pre + col]))) return;                  \
         int start = __ldg(&indptr[col]);                                                                      \
         int end = __ldg(&indptr[col + 1]);                                                                    \
-        for (int pos = start; pos < end; ++pos) {                                                             \
+        for (int pos = start + lane; pos < end; pos += BFCNMM_COL_WARP_THREADS) {                            \
             int row = __ldg(&indices[pos]);                                                                   \
             if (row < 0 || row >= n_post) continue;                                                           \
             ACC_T wk = READ_W(__ldg(&weights[pos]));                                                          \
-            ATOMIC_ADD_W(&output[static_cast<size_t>(lane) * n_post + row], wk);                             \
+            ATOMIC_ADD_W(&output[static_cast<size_t>(batch) * n_post + row], wk);                            \
         }                                                                                                     \
     }
 
@@ -128,7 +130,8 @@ DEFINE_BFCNMM_COL_WARP_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_b
         int warps_per_block = BFCNMM_COL_WARPS_PER_BLOCK;                                        \
         dim3 block(warps_per_block * BFCNMM_COL_WARP_THREADS);                                   \
         int grid_x = (n_pre + warps_per_block - 1) / warps_per_block;                            \
-        _bfcnmm_col_warp_homo_kern##SUFFIX<<<grid_x, block, 0, s>>>(                             \
+        dim3 grid(grid_x, n_batch);                                                             \
+        _bfcnmm_col_warp_homo_kern##SUFFIX<<<grid, block, 0, s>>>(                               \
             d_idx, d_ptr, d_mat, d_out, d_w, n_pre, n_post, n_batch);                            \
         BE_CHECK_KERNEL_LAUNCH();                                                                 \
     }
@@ -153,7 +156,8 @@ DEFINE_BFCNMM_COL_WARP_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_b
         int warps_per_block = BFCNMM_COL_WARPS_PER_BLOCK;                                        \
         dim3 block(warps_per_block * BFCNMM_COL_WARP_THREADS);                                   \
         int grid_x = (n_pre + warps_per_block - 1) / warps_per_block;                            \
-        _bfcnmm_col_warp_hetero_kern##SUFFIX<<<grid_x, block, 0, s>>>(                           \
+        dim3 grid(grid_x, n_batch);                                                             \
+        _bfcnmm_col_warp_hetero_kern##SUFFIX<<<grid, block, 0, s>>>(                             \
             d_idx, d_ptr, d_mat, d_out, d_w, n_pre, n_post, n_batch);                            \
         BE_CHECK_KERNEL_LAUNCH();                                                                 \
     }

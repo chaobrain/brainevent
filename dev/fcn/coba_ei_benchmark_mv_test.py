@@ -11,10 +11,14 @@ import pytest
 import warnings
 
 import brainunit as u
+import brainevent._fcn.binary as binary_mod
+import brainevent._fcn.bitpack_binary as bitpack_mod
+import brainevent._fcn.compact_binary as compact_mod
 
 from dev.fcn.coba_ei_benchmark_test_helpers import (
     _HAS_BINARY_JAX_RAW,
     COMPACT_ROUTE_CASES,
+    COMPACT_RESTORED_WARNING,
     ROUTE_CASES,
     apply_conn_like_coba_ei,
     assert_final_run_matches_binary_jax,
@@ -24,6 +28,7 @@ from dev.fcn.coba_ei_benchmark_test_helpers import (
     binary_array_cls,
     binary_jax_route_reference,
     bitpacked_binary_cls,
+    compact_binary_cls,
     build_shared_mv_large_scale_point,
     build_conn_like_coba_ei,
     coba_ei_module,
@@ -39,6 +44,96 @@ from dev.fcn.coba_ei_benchmark_test_helpers import (
 from brainevent._fcn.binary import binary_fcnmv
 from brainevent._misc import fixed_conn_num_to_csc
 from brainevent._test_util import generate_fixed_conn_num_indices
+
+
+MV_KERNEL_PRIMITIVES = {
+    'binary': binary_mod.binary_fcnmv_p,
+    'bitpack': bitpack_mod.bitpack_binary_fcnmv_p,
+    'compact': compact_mod.compact_binary_fcnmv_p,
+}
+
+
+def _mv_primitive_kind(data_type: str) -> str:
+    if data_type == 'binary':
+        return 'binary'
+    if data_type in ('bitpack', 'bitpack_a0', 'bitpack_a1'):
+        return 'bitpack'
+    if data_type in ('compact', 'compact_only_vector'):
+        return 'compact'
+    raise ValueError(f'Unsupported MV kernel spy data_type: {data_type!r}')
+
+
+def _spy_fcnmv_kernel_generators(monkeypatch):
+    calls = []
+    for primitive_kind, primitive in MV_KERNEL_PRIMITIVES.items():
+        for platform, entries in primitive._kernels.items():
+            for backend, entry in entries.items():
+                original = entry.kernel_generator
+                generator_name = getattr(original, '__name__', repr(original))
+
+                def _wrapped_generator(*args, _original=original, _primitive_kind=primitive_kind,
+                                       _platform=platform, _backend=backend,
+                                       _generator_name=generator_name, **kwargs):
+                    spike_info = kwargs.get('spike_info')
+                    calls.append(
+                        {
+                            'primitive': _primitive_kind,
+                            'platform': _platform,
+                            'backend': _backend,
+                            'generator': _generator_name,
+                            'shape': kwargs.get('shape'),
+                            'transpose': kwargs.get('transpose'),
+                            'spike_shape': getattr(spike_info, 'shape', None),
+                            'spike_dtype': getattr(spike_info, 'dtype', None),
+                        }
+                    )
+                    return _original(*args, **kwargs)
+
+                monkeypatch.setattr(entry, 'kernel_generator', _wrapped_generator)
+    jax.clear_caches()
+    return calls
+
+
+def _assert_fcnmv_kernel_generators_called(calls, *, data_type: str, actual_backend: str):
+    platform = jax.default_backend()
+    actual_primitive = _mv_primitive_kind(data_type)
+    actual_generators = {
+        call['generator']
+        for call in calls
+        if (
+            call['primitive'] == actual_primitive
+            and call['platform'] == platform
+            and call['backend'] == actual_backend
+        )
+    }
+    reference_generators = {
+        call['generator']
+        for call in calls
+        if (
+            call['primitive'] == 'binary'
+            and call['platform'] == platform
+            and call['backend'] == 'jax_raw'
+        )
+    }
+
+    expected_actual = {
+        ('binary', 'cuda_raw'): '_binary_fcnmv_cuda_kernel',
+        ('binary', 'jax_raw'): '_binary_fcnmv_jax_kernel',
+        ('bitpack', 'cuda_raw'): '_bitpack_binary_fcnmv_cuda_kernel',
+        ('compact', 'cuda_raw'): '_compact_binary_fcnmv_cuda_kernel',
+    }.get((actual_primitive, actual_backend))
+    if expected_actual is None:
+        raise AssertionError(
+            f'No expected MV generator registered for '
+            f'data_type={data_type!r}, backend={actual_backend!r}; calls={calls}'
+        )
+
+    missing = []
+    if expected_actual not in actual_generators:
+        missing.append(f'{data_type}/{actual_backend} did not call {expected_actual}')
+    if '_binary_fcnmv_jax_kernel' not in reference_generators:
+        missing.append('binary jax_raw reference did not call _binary_fcnmv_jax_kernel')
+    assert not missing, f'Missing fcnmv kernel-generator calls: {missing}; calls={calls}'
 
 
 REMOVED_ROUTE_ERROR_CASES = (
@@ -79,28 +174,39 @@ SUCCESS_ROUTE_CASES = tuple(case for case in ROUTE_CASES if case not in tuple(ca
         ('bitpack', 'post', 'bitpack'),
         ('bitpack_a0', 'pre', 'bitpack'),
         ('bitpack_a1', 'post', 'bitpack'),
+        ('compact', 'post', 'compact'),
+        ('compact_only_vector', 'pre', 'compact'),
     ],
 )
 def test_prepare_operand_selects_expected_representation(data_type, efferent_target, expected_kind):
     spikes = jnp.asarray([1, 0, 1, 0, 1], dtype=jnp.bool_)
     from dev.fcn.coba_ei_benchmark_test_helpers import prepare_operand_like_coba_ei
 
-    operand = prepare_operand_like_coba_ei(spikes, data_type=data_type)
+    if data_type in ('compact', 'compact_only_vector'):
+        with pytest.warns(UserWarning, match='may be removed again'):
+            operand = prepare_operand_like_coba_ei(spikes, data_type=data_type)
+    else:
+        operand = prepare_operand_like_coba_ei(spikes, data_type=data_type)
 
     if expected_kind == 'binary':
         assert isinstance(operand, binary_array_cls())
-    else:
+    elif expected_kind == 'bitpack':
         assert isinstance(operand, bitpacked_binary_cls())
+    else:
+        assert isinstance(operand, compact_binary_cls())
 
 
 @pytest.mark.parametrize(('data_type', 'efferent_target', 'mv_layout'), COMPACT_ROUTE_CASES)
-def test_compact_routes_raise_clear_not_implemented_error(data_type, efferent_target, mv_layout):
+def test_compact_mv_routes_warn_and_match_binary_jax_reference(data_type, efferent_target, mv_layout):
     mod = coba_ei_module()
+    source_size = 7
+    target_size = 11
+    conn_num = 3
     with numpy_seed(0):
         conn = mod._make_post_conn(
-            7,
-            11,
-            3,
+            source_size,
+            target_size,
+            conn_num,
             data_type=data_type,
             efferent_target=efferent_target,
             homo=True,
@@ -109,9 +215,32 @@ def test_compact_routes_raise_clear_not_implemented_error(data_type, efferent_ta
             backend='cuda_raw',
         )
 
-    spikes = jnp.asarray([1, 0, 1, 0, 1, 0, 1], dtype=jnp.bool_)
-    with pytest.raises(NotImplementedError, match='Compact binary_fcnmv / compact_binary_fcnmm operators are no longer supported'):
-        mod._apply_conn(spikes, conn, data_type=data_type, efferent_target=efferent_target)
+    spikes = spikes_from_seed(source_size, 5, p_active=0.35)
+    with pytest.warns(UserWarning, match='may be removed again'):
+        actual = mod._apply_conn(spikes, conn, data_type=data_type, efferent_target=efferent_target)
+    expected = binary_jax_route_reference(
+        source_size,
+        target_size,
+        conn_num,
+        spikes,
+        seed=0,
+        efferent_target=efferent_target,
+        homo=True,
+        mv_layout=mv_layout,
+        conn_weight_base=0.6 * u.mS,
+    )
+    jax.block_until_ready(u.get_mantissa(actual))
+    jax.block_until_ready(u.get_mantissa(expected))
+    assert_quantity_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+
+
+def test_compact_only_vector_rejects_matrix_inputs():
+    from dev.fcn.coba_ei_benchmark_test_helpers import prepare_operand_like_coba_ei
+
+    matrix = jnp.asarray([[1, 0], [0, 1]], dtype=jnp.bool_)
+    with pytest.warns(UserWarning, match='may be removed again'):
+        with pytest.raises(ValueError, match='MV/vector inputs'):
+            prepare_operand_like_coba_ei(matrix, data_type='compact_only_vector')
 
 
 @pytest.mark.parametrize(('data_type', 'efferent_target', 'mv_layout', 'error_match'), REMOVED_ROUTE_ERROR_CASES)
@@ -170,6 +299,9 @@ def test_apply_conn_uses_expected_matmul_side(monkeypatch):
         ('binary', 'pre', 'col_scatter', True),
         ('binary', 'pre', 'row_gather', False),
         ('binary', 'post', 'row_gather', False),
+        ('compact', 'pre', 'col_scatter', True),
+        ('compact_only_vector', 'pre', 'row_gather', True),
+        ('compact_only_vector', 'pre', 'col_scatter', True),
         ('bitpack', 'pre', 'row_gather', False),
         ('bitpack_a0', 'pre', 'row_gather', False),
         ('bitpack_a1', 'post', 'row_gather', False),
@@ -272,6 +404,48 @@ def test_each_route_mv_matches_binary_jax_reference_on_small_shapes(
     jax.block_until_ready(u.get_mantissa(actual))
     jax.block_until_ready(u.get_mantissa(expected))
     assert_quantity_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+
+
+def test_direct_binary_mv_route_calls_expected_backend_generators(monkeypatch):
+    actual_backend = preferred_real_backend('binary')
+    if actual_backend is None:
+        pytest.skip('No supported real binary fcnmv backend.')
+
+    calls = _spy_fcnmv_kernel_generators(monkeypatch)
+    source_size = 17
+    target_size = 23
+    seed = 3
+    with numpy_seed(seed):
+        conn = build_conn_like_coba_ei(
+            source_size,
+            target_size,
+            5,
+            data_type='binary',
+            efferent_target='post',
+            homo=True,
+            conn_weight_base=0.6 * u.mS,
+            mv_layout='row_gather',
+            backend=actual_backend,
+        )
+
+    spikes = spikes_from_seed(source_size, 5, p_active=0.35)
+    actual = apply_conn_like_coba_ei(spikes, conn, data_type='binary', efferent_target='post')
+    expected = binary_jax_route_reference(
+        source_size,
+        target_size,
+        5,
+        spikes,
+        seed=seed,
+        efferent_target='post',
+        homo=True,
+        mv_layout='row_gather',
+        conn_weight_base=0.6 * u.mS,
+    )
+
+    jax.block_until_ready(u.get_mantissa(actual))
+    jax.block_until_ready(u.get_mantissa(expected))
+    assert_quantity_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+    _assert_fcnmv_kernel_generators_called(calls, data_type='binary', actual_backend=actual_backend)
 
 
 @pytest.mark.parametrize(('data_type', 'efferent_target', 'mv_layout'), SUCCESS_ROUTE_CASES)
@@ -378,6 +552,45 @@ def test_small_scale_mv_e2e_spikes_match_binary_jax_reference(
         steps=10,
     )
     assert_spike_history_matches(actual, expected, atol=1e-3)
+
+
+@pytest.mark.skipif(
+    not _HAS_BINARY_JAX_RAW,
+    reason='binary jax_raw backend is unavailable',
+)
+@pytest.mark.parametrize(
+    ('data_type', 'efferent_target', 'mv_layout'),
+    [
+        ('binary', 'post', 'row_gather'),
+        ('bitpack_a0', 'pre', 'row_gather'),
+    ],
+)
+def test_small_scale_mv_e2e_calls_expected_backend_generators(
+    data_type,
+    efferent_target,
+    mv_layout,
+    monkeypatch,
+):
+    actual_backend = preferred_real_backend(data_type)
+    if actual_backend is None:
+        pytest.skip(f'No supported real backend for e2e data_type={data_type!r}')
+
+    calls = _spy_fcnmv_kernel_generators(monkeypatch)
+    mod = coba_ei_module()
+    install_fake_brainpy_state(mod, monkeypatch)
+    actual, expected = run_e2e_spike_history_once(
+        mod,
+        scale=1,
+        data_type=data_type,
+        efferent_target=efferent_target,
+        conn_num=80,
+        homo=True,
+        mv_layout=mv_layout,
+        actual_backend=actual_backend,
+        steps=2,
+    )
+    assert_spike_history_matches(actual, expected, atol=1e-3)
+    _assert_fcnmv_kernel_generators_called(calls, data_type=data_type, actual_backend=actual_backend)
 
 
 @pytest.mark.skipif(

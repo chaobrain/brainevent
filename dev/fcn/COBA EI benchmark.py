@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import sys
+import warnings
 from pathlib import Path
 from typing import Union
 
@@ -25,6 +26,11 @@ conn_num_base = 80
 _FCN_DATA_TYPES = ('binary', 'float', 'bitpack', 'bitpack_a0', 'bitpack_a1', 'compact', 'compact_only_vector')
 _FCN_LAYOUTS = ('col_scatter', 'row_gather', 'auto')
 _FCN_TARGETS = ('pre', 'post')
+_COMPACT_RESTORED_WARNING = (
+    'Compact binary FCN operators are restored for this benchmark but remain '
+    'experimental and may be removed again; prefer data_type="binary" or a '
+    'bitpack data_type for stable benchmark runs.'
+)
 
 
 def _validate_args(
@@ -93,13 +99,15 @@ def _make_post_conn(
         n_rows = target_size
         n_cols = source_size
 
-    # Dual row/col layout is only needed for the pre-synaptic column-scatter
-    # path. Post-synaptic updates use transpose=True scatter and do not consume
-    # the maintained CSC mirror.
+    # Dual row/col layout is needed for the pre-synaptic column-scatter path.
+    # compact_only_vector also needs it for all pre-synaptic MV routes because
+    # that representation intentionally has no bit-packed gather data.
     maintain_dual_layout = (
         efferent_target == 'pre'
-        and data_type in ('binary', 'compact')
-        and mv_layout == 'col_scatter'
+        and (
+            (data_type in ('binary', 'compact') and mv_layout == 'col_scatter')
+            or data_type == 'compact_only_vector'
+        )
     )
     bitpack_mm_pack_axis = _resolve_bitpack_mm_pack_axis(data_type)
 
@@ -127,13 +135,14 @@ def _prepare_operand(spikes, *, data_type: str, efferent_target: str):
     spikes = u.math.asarray(spikes, dtype=jnp.bool_)
     if data_type == 'binary':
         return brainevent.BinaryArray(spikes)
-    if data_type in ('compact', 'compact_only_vector'):
-        raise NotImplementedError(
-            'Compact binary_fcnmv / compact_binary_fcnmm operators are no longer '
-            'supported in this benchmark because the related operators have been '
-            'removed. Recommended alternatives: data_type="binary" or a bitpack '
-            'data_type.'
-        )
+    if data_type == 'compact':
+        warnings.warn(_COMPACT_RESTORED_WARNING, UserWarning, stacklevel=2)
+        return brainevent.CompactBinary.from_array(spikes)
+    if data_type == 'compact_only_vector':
+        warnings.warn(_COMPACT_RESTORED_WARNING, UserWarning, stacklevel=2)
+        if spikes.ndim != 1:
+            raise ValueError('compact_only_vector is only supported for MV/vector inputs.')
+        return brainevent.CompactBinary.compacy_only_vector(spikes)
     if data_type in ('bitpack', 'bitpack_a0', 'bitpack_a1'):
         return brainevent.BitPackedBinary(spikes)
     if data_type == 'float':

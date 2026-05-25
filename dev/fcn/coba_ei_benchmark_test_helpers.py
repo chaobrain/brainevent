@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 import types
+import warnings
 from contextlib import contextmanager
 from importlib.util import find_spec
 from pathlib import Path
@@ -53,7 +54,12 @@ COMPACT_ROUTE_CASES = (
     ('compact_only_vector', 'pre', 'col_scatter'),
 )
 
-ROUTE_CASES = SUPPORTED_ROUTE_CASES
+ROUTE_CASES = (*SUPPORTED_ROUTE_CASES, *COMPACT_ROUTE_CASES)
+COMPACT_RESTORED_WARNING = (
+    'Compact binary FCN operators are restored for this benchmark but remain '
+    'experimental and may be removed again; prefer data_type="binary" or a '
+    'bitpack data_type for stable benchmark runs.'
+)
 
 BITPACK_SPECIALIZED_MM_BACKENDS = ()
 
@@ -229,9 +235,12 @@ def preferred_real_backend(data_type: str) -> str | None:
     if data_type in ('bitpack', 'bitpack_a0', 'bitpack_a1'):
         backends = brainevent.bitpack_binary_fcnmv_p.available_backends(_PLATFORM)
         return 'cuda_raw' if 'cuda_raw' in backends else None
-    if data_type == 'compact':
-        return None
-    if data_type == 'compact_only_vector':
+    if data_type in ('compact', 'compact_only_vector'):
+        backends = brainevent.compact_binary_fcnmv_p.available_backends(_PLATFORM)
+        if 'cuda_raw' in backends:
+            return 'cuda_raw'
+        if 'numba' in backends:
+            return 'numba'
         return None
     return None
 
@@ -248,6 +257,11 @@ def preferred_real_mm_backend(data_type: str) -> str | None:
         backends = brainevent.bitpack_binary_fcnmm_p.available_backends(_PLATFORM)
         return 'cuda_raw' if 'cuda_raw' in backends else None
     if data_type == 'compact':
+        backends = brainevent.compact_binary_fcnmm_p.available_backends(_PLATFORM)
+        if 'cuda_raw' in backends:
+            return 'cuda_raw'
+        if 'numba' in backends:
+            return 'numba'
         return None
     if data_type == 'compact_only_vector':
         return None
@@ -280,13 +294,14 @@ def prepare_operand_like_coba_ei(spikes, *, data_type: str):
         spikes = u.math.asarray(spikes, dtype=jnp.bool_)
         if data_type == 'binary':
             return binary_array_cls()(spikes)
-        if data_type in ('compact', 'compact_only_vector'):
-            raise NotImplementedError(
-                'Compact binary_fcnmv / compact_binary_fcnmm operators are no longer '
-                'supported in this benchmark because the related operators have been '
-                'removed. Recommended alternatives: data_type="binary" or a bitpack '
-                'data_type.'
-            )
+        if data_type == 'compact':
+            warnings.warn(COMPACT_RESTORED_WARNING, UserWarning, stacklevel=2)
+            return compact_binary_cls().from_array(spikes)
+        if data_type == 'compact_only_vector':
+            warnings.warn(COMPACT_RESTORED_WARNING, UserWarning, stacklevel=2)
+            if spikes.ndim != 1:
+                raise ValueError('compact_only_vector is only supported for MV/vector inputs.')
+            return compact_binary_cls().compacy_only_vector(spikes)
         if data_type in ('bitpack', 'bitpack_a0', 'bitpack_a1'):
             return bitpacked_binary_cls()(spikes)
     raise ValueError(f'Unsupported binary-family data_type: {data_type}')
@@ -328,8 +343,10 @@ def build_conn_like_coba_ei(
 
     maintain_dual_layout = (
         efferent_target == 'pre'
-        and data_type in ('binary', 'compact')
-        and mv_layout == 'col_scatter'
+        and (
+            (data_type in ('binary', 'compact') and mv_layout == 'col_scatter')
+            or data_type == 'compact_only_vector'
+        )
     )
     bitpack_mm_pack_axis = resolve_bitpack_mm_pack_axis_like_coba_ei(mod, data_type)
 
@@ -608,8 +625,10 @@ def _instantiate_shared_conn(
 ):
     maintain_dual_layout = (
         efferent_target == 'pre'
-        and data_type in ('binary', 'compact')
-        and mv_layout == 'col_scatter'
+        and (
+            (data_type in ('binary', 'compact') and mv_layout == 'col_scatter')
+            or data_type == 'compact_only_vector'
+        )
     )
     bitpack_mm_pack_axis = resolve_bitpack_mm_pack_axis_like_coba_ei(coba_ei_module(), data_type)
     conn_cls = fixed_post_num_conn_cls()
