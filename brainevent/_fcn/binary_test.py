@@ -472,7 +472,7 @@ def test_binary_fcnmv_non_cuda_ignores_col_scatter_with_warning(implementation, 
     event_size = m if transpose else n
     events = brainstate.random.rand(event_size) < 0.5
 
-    with pytest.warns(UserWarning, match='Binary_fcnmv does not support col-scatter options on this backend.*fall back to the default gather/scatter path.*performance may degrade'):
+    with pytest.warns(UserWarning, match='col.?scatter options.*(CUDA raw|this backend).*(normal|default) gather/scatter path'):
         y = binary_fcnmv(
             weights,
             indices,

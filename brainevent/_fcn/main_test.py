@@ -35,6 +35,7 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
 
 import brainevent
 import brainevent._fcn.main as fcn_main_mod
+from brainevent._fcn.binary import binary_fcnmv_p
 from brainevent._misc import fixed_conn_num_to_csc
 from brainevent._test_util import (
     allclose,
@@ -77,6 +78,13 @@ else:
 
 def _binary_mask(x, dtype):
     return jnp.asarray(jnp.asarray(x) > 0, dtype=dtype)
+
+
+def _default_backend_is_cuda_raw():
+    global_backend = brainevent.config.get_backend(platform)
+    if global_backend is not None:
+        return global_backend == 'cuda_raw'
+    return binary_fcnmv_p.get_default(platform) == 'cuda_raw'
 
 
 def _remove_event_array(x):
@@ -475,8 +483,11 @@ class Test_Operator_Behavior:
         )
 
         assert allclose(left_vector @ conn, _binary_mask(left_vector.value, dense.dtype) @ dense)
-        with pytest.raises(ValueError, match="transpose=False binary pre row-gather operators have been removed"):
-            conn @ right_vector
+        if _default_backend_is_cuda_raw():
+            with pytest.raises(ValueError, match="transpose=False binary pre row-gather operators have been removed"):
+                conn @ right_vector
+        else:
+            assert allclose(conn @ right_vector, dense @ _binary_mask(right_vector.value, dense.dtype))
         assert allclose(left_matrix @ conn, _binary_mask(left_matrix.value, dense.dtype) @ dense)
         assert allclose(conn @ right_matrix, dense @ _binary_mask(right_matrix.value, dense.dtype))
         jax.block_until_ready(
@@ -495,8 +506,11 @@ class Test_Operator_Behavior:
         )
         right_matrix = brainevent.BinaryArray(jnp.array([[0.2, 0.0], [1.0, 1.0], [0.0, 0.8]], dtype=jnp.float32))
 
-        with pytest.raises(ValueError, match="transpose=False binary pre row-gather operators have been removed"):
-            left_vector @ conn
+        if _default_backend_is_cuda_raw():
+            with pytest.raises(ValueError, match="transpose=False binary pre row-gather operators have been removed"):
+                left_vector @ conn
+        else:
+            assert allclose(left_vector @ conn, _binary_mask(left_vector.value, dense.dtype) @ dense)
         assert allclose(conn @ right_vector, dense @ _binary_mask(right_vector.value, dense.dtype))
         assert allclose(left_matrix @ conn, _binary_mask(left_matrix.value, dense.dtype) @ dense)
         assert allclose(conn @ right_matrix, dense @ _binary_mask(right_matrix.value, dense.dtype))
