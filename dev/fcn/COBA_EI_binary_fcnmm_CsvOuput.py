@@ -49,7 +49,7 @@ make_simulation_batch_run = _BENCHMARK_MODULE.make_simulation_batch_run
 
 
 PREPROCESS_BACKEND = 'cuda_raw'
-DIST_MIN_SCALE = 20
+DIST_MIN_SCALE = 2
 
 scales = [1,2,4,8,16,32,64]
 backends = ['jax_raw', 'cuda_raw']
@@ -103,7 +103,7 @@ default_batch_sizes = [64,128]
 '''
 scales = [150]
 conn_nums = [250]
-default_batch_sizes = [32,64]
+default_batch_sizes = [8,32,64,128]
 
 def _run_and_block(run: CompiledRun) -> tuple[int, Any]:
     result = run()

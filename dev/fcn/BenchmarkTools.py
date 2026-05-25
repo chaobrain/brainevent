@@ -5,9 +5,9 @@ from pathlib import Path
 
 import jax
 
-MIN_GENERATED_SCALE = 10
-MIN_GENERATED_CONN = 20
-FIXED_GENERATED_BATCHES = (16, 32, 64, 128, 256)
+MIN_GENERATED_SCALE = 2
+MIN_GENERATED_CONN = 40
+FIXED_GENERATED_BATCHES = (8, 16, 32, 64, 128)
 
 _VALID_MV_MODES = frozenset({'pre', 'post'})
 _VALID_MV_LAYOUTS = frozenset({'row_gather', 'col_scatter', 'auto'})

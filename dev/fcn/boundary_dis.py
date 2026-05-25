@@ -81,6 +81,12 @@ class PerformanceBoundaryApp:
         self.entry_batch_size.insert(0, "1000")
         self.entry_batch_size.pack(side=tk.LEFT)
 
+        ttk.Label(ctrl, text="MV Layout:").pack(side=tk.LEFT, padx=(8, 2))
+        self.combo_mv_layout = ttk.Combobox(ctrl, state="readonly", width=5,
+                                            values=['row', 'col'])
+        self.combo_mv_layout.current(0)
+        self.combo_mv_layout.pack(side=tk.LEFT)
+
         ttk.Label(ctrl, text="Contour Lines:").pack(side=tk.LEFT, padx=(10, 2))
         self.entry_contours = ttk.Entry(ctrl, width=5)
         self.entry_contours.insert(0, "5")
@@ -542,10 +548,10 @@ class PerformanceBoundaryApp:
             conn    = df_subset['conn_num'].values.astype(float)
             required = (conn * size * times + 2 * bs_vals * size) * data_size
         else:
-            mv_layout_factors = self._mv_layout_factors_for_rows(df_subset)
+            _, mv_layout_factor = self._get_mv_layout_context()
             required = self._vram_bytes(df_subset['conn_num'], df_subset['scale'],
                                         data_size, times, _N,
-                                        mv_layout_factor=mv_layout_factors)
+                                        mv_layout_factor=mv_layout_factor)
         return float(required.max()) / (1024 ** 3) * 1.05
 
     @staticmethod
@@ -559,42 +565,18 @@ class PerformanceBoundaryApp:
         return 2 if topo_str == 'hetero' else 1
 
     @staticmethod
-    def _single_value_or_default(df_subset, column: str, default: str) -> str:
-        if df_subset is None or df_subset.empty or column not in df_subset.columns:
-            return default
-        values = df_subset[column].dropna().astype(str).unique()
-        return str(values[0]) if len(values) == 1 else default
-
-    @staticmethod
-    def _mv_layout_factor(mv_layout: str = 'row_gather', data_type: str = 'binary') -> int:
-        """Return MV storage factor: row_gather is 1x, col_scatter dual-view is 2x."""
-        if mv_layout == 'col_scatter' and data_type in ('binary', 'compact'):
+    def _mv_layout_factor(mv_layout: str = 'row') -> int:
+        """Return user-selected MV storage factor: row is 1x, col dual-view is 2x."""
+        if mv_layout == 'col':
             return 2
         return 1
 
-    def _mv_layout_factors_for_rows(self, df_subset):
-        if df_subset is None or df_subset.empty:
-            return np.asarray([], dtype=float)
-        if 'mv_layout' in df_subset.columns:
-            layouts = df_subset['mv_layout'].fillna('row_gather').astype(str).to_numpy()
-        else:
-            layouts = np.full(len(df_subset), 'row_gather', dtype=object)
-        if 'data_type' in df_subset.columns:
-            data_types = df_subset['data_type'].fillna('binary').astype(str).to_numpy()
-        else:
-            data_types = np.full(len(df_subset), 'binary', dtype=object)
-        return np.asarray([
-            self._mv_layout_factor(layout, data_type)
-            for layout, data_type in zip(layouts, data_types)
-        ], dtype=float)
-
-    def _mv_boundary_context(self, df_subset) -> tuple[str, int]:
-        mv_layout = self._single_value_or_default(df_subset, 'mv_layout', 'mixed')
-        factors = self._mv_layout_factors_for_rows(df_subset)
-        factor = int(factors.max()) if len(factors) else 1
-        if mv_layout == 'mixed' and factor == 1:
-            mv_layout = 'row_gather'
-        return mv_layout, factor
+    def _get_mv_layout_context(self) -> tuple[str, int]:
+        """Read the manual MV layout selection used for boundary calculations."""
+        mv_layout = self.combo_mv_layout.get() if hasattr(self, 'combo_mv_layout') else 'row'
+        if mv_layout not in ('row', 'col'):
+            mv_layout = 'row'
+        return mv_layout, self._mv_layout_factor(mv_layout)
 
     def _get_boundary_params(self):
         """Read data_size and times from the main boundary UI controls."""
@@ -807,7 +789,7 @@ class PerformanceBoundaryApp:
                 t['canvas'].draw()
             return
 
-        mv_layout, mv_layout_factor = self._mv_boundary_context(df_t)
+        mv_layout, mv_layout_factor = self._get_mv_layout_context()
         # ── MM 模式：从过滤后的数据中提取实际 batch_size 用于显存边界计算 ──────────────────
         eff_bs = None
         if self.mode.get() == 'mm':
@@ -953,7 +935,7 @@ class PerformanceBoundaryApp:
         x_max,
         y_max,
         bs=None,
-        mv_layout='row_gather',
+        mv_layout='row',
         mv_layout_factor=1,
         sparsity_lines=None,
     ):
@@ -1243,7 +1225,7 @@ class PerformanceBoundaryApp:
         cmap_name,
         subtitle,
         bs=None,
-        mv_layout='row_gather',
+        mv_layout='row',
         mv_layout_factor=1,
     ):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
@@ -1287,7 +1269,7 @@ class PerformanceBoundaryApp:
         cmap_name,
         subtitle,
         bs=None,
-        mv_layout='row_gather',
+        mv_layout='row',
         mv_layout_factor=1,
     ):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
@@ -1348,7 +1330,7 @@ class PerformanceBoundaryApp:
         sparsity_lines,
         subtitle,
         bs=None,
-        mv_layout='row_gather',
+        mv_layout='row',
         mv_layout_factor=1,
     ):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
