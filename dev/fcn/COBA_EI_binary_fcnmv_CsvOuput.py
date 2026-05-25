@@ -50,14 +50,16 @@ _SPEC.loader.exec_module(_BENCHMARK_MODULE)
 make_simulation_run = _BENCHMARK_MODULE.make_simulation_run
 
 scales = [1, 2, 4, 6, 8, 10, 20, 40, 60]
-backends = ['jax_raw', 'cuda_raw']
+binary_backends = ['jax_raw', 'cuda_raw']
+compact_backends = ['cuda_raw']
+backends = binary_backends
 conn_nums = [20, 40, 80, 160, 320, 640]
 probs = [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64]
 default_batch_sizes = [1, 4, 16]
 
 CompiledRun = Callable[[], tuple[int, Any]]
 
-
+sample_points = 70
 def _run_and_block(run: CompiledRun) -> tuple[int, Any]:
     result = run()
     blocked_result = jax.block_until_ready(result)
@@ -90,6 +92,14 @@ def _release_run(run: CompiledRun | None) -> None:
     gc.collect()
 
 
+def _backends_for_data_type(data_type: str) -> list[str]:
+    if data_type in ('compact', 'compact_only_vector'):
+        return compact_backends
+    if data_type == 'binary':
+        return binary_backends
+    return backends
+
+
 def benchmark_conn(
     mode='post',
     conn_num=None,
@@ -112,7 +122,7 @@ def benchmark_conn(
     print(f'Benchmarking {mode}-synaptic connection updates...')
     runtime_platform = _announce_runtime_platform()
 
-    backends_to_use = [backend] if backend is not None else backends
+    backends_to_use = [backend] if backend is not None else _backends_for_data_type(data_type)
     homo_str = 'homo' if homo else 'hetero'
 
     csv_recorder = BT.CSV_record(f'binary_{mode}', 'fcnmv', 'coba_ei', duration=csv_duration, conn=conn_num)
@@ -122,7 +132,7 @@ def benchmark_conn(
 
     for back in backends_to_use:
         flush_file_name = (
-            f'COBA-EI-4.27_{data_type}_{homo_str}_{back}_{mode}-{mv_layout}-float-input-{limit_GB}GB'
+            f'5.14mv总结 COBA-EI_{data_type}_{homo_str}_{back}_{mode}-{mv_layout}-float-input-{limit_GB}GB'
         )
         resume_csv_path = None
         if non_repeat:
@@ -132,9 +142,9 @@ def benchmark_conn(
         TPGenerator = BT.TestingParamsGenerator_mv(
             limit_GB=limit_GB,
             _N=_N,
-            sample_points=50,
-            conn_max=2000,
-            scale_max=1250,
+            sample_points=sample_points,
+            conn_max=10000,
+            scale_max=400,
             mode=mode,
             data_type=data_type,
             mv_layout=mv_layout,
@@ -154,7 +164,7 @@ def benchmark_conn(
         elif params_type == 'dist':
             valid_pairs = TPGenerator.generate_params(
                 dis_type='uniform',
-                target_samples=50,
+                target_samples=sample_points,
                 data_size=4,
                 homo=homo,
             )
@@ -185,6 +195,7 @@ def benchmark_conn(
                     conn_num=cn,
                     homo=homo,
                     mv_layout=mv_layout,
+                    backend=back,
                 ))
 
                 first_run_t0 = time.time()
@@ -219,7 +230,7 @@ def benchmark_conn(
                 )
 
                 flush_t0 = time.time()
-                last_path = csv_recorder.flush_and_clear(flush_file_name, dir='benchmarker-mv-colsys')
+                last_path = csv_recorder.flush_and_clear(flush_file_name, dir='benchmarker-mv-5.14 mv总结')
                 flush_t1 = time.time()
 
                 flush_elapsed = flush_t1 - flush_t0
@@ -242,32 +253,42 @@ def benchmark_conn(
 
 
 if __name__ == '__main__':
-    #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 8, mv_layout = 'row_gather')
-    
-    #benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 9)
-    #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 8, mv_layout = 'row_gather')
-    #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 7)
 
-    #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 16)
+    '''
+    benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 2)
     
-    # benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
-    #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 6)
+    benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 4, mv_layout='col_scatter')  
     
-    #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 7)
+    benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 2, mv_layout='col_scatter')  
 
-    
+    benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 1)
+        
+    #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 16)
 
-    benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 6, mv_layout = 'col_scatter')
-    benchmark_conn(data_type='compact', mode='pre', duration=1e2 * u.ms, params_type='dist', homo=True, backend='cuda_raw', limit_GB=6, mv_layout='col_scatter')
-    
-    benchmark_conn(data_type='binary', mode='pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 6, mv_layout = 'row_gather')
-    #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 8)
-    #benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
-    #benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 6, mv_layout = 'row_gather')
-    #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_cuda_joint', limit_GB = 7)
-    #benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax-cuda-joint', limit_GB = 9)
+    benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
+
+    benchmark_conn(data_type='binary', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 16)
+
+    benchmark_conn(data_type='bitpack', mode = 'pre', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 16)
+    '''
+    benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
 
     #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
-    #benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
-    #benchmark_conn(data_type='bitpack', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
     #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='jax_raw', limit_GB = 16)
+    #benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='jax_raw', limit_GB = 8)
+
+    '''
+    benchmark_conn(data_type='bitpack', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
+    
+    benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
+
+    benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= True , backend='cuda_raw', limit_GB = 16)
+    
+    benchmark_conn(data_type='bitpack', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 8)
+    
+    benchmark_conn(data_type='compact', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 8)
+
+    benchmark_conn(data_type='binary', mode = 'post', duration=1e2 * u.ms, params_type='dist', homo= False , backend='cuda_raw', limit_GB = 8)
+    
+    '''
+    ''''''

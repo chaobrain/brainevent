@@ -22,12 +22,32 @@ from jax.tree_util import register_pytree_node_class
 from .bitpack_binary import bitpack
 from .compact import (
     _compact_1d_jax,
+    binary_1d_array_index_p,
+    binary_1d_array_index_p_call,
+    binary_2d_array_index_p,
     binary_2d_array_index_p_call,
 )
 
 __all__ = [
     'CompactBinary',
 ]
+
+COMPACT_BINARY_PREPROCESS_BACKEND = 'cuda_raw'
+
+
+def _preferred_compact_backend(primitive):
+    """Prefer a configurable helper backend for compact preprocessing."""
+    available = primitive.available_backends(jax.default_backend())
+    backend = COMPACT_BINARY_PREPROCESS_BACKEND
+    if backend in available:
+        return backend
+    if 'jax_raw' in available:
+        return 'jax_raw'
+    if 'cuda_raw' in available:
+        return 'cuda_raw'
+    if 'numba' in available:
+        return 'numba'
+    return None
 
 @register_pytree_node_class
 class CompactBinary:
@@ -113,14 +133,18 @@ class CompactBinary:
         x = jnp.asarray(x)
         if x.ndim == 1:
             packed = bitpack(x, axis=0)
-            # Use JAX prefix-sum for 1D (cheaper under vmap than CUDA
-            # primitive, which would launch sequential kernels per batch).
-            active_ids, n_active = _compact_1d_jax(x)
+            active_ids, n_active = binary_1d_array_index_p_call(
+                x,
+                backend=_preferred_compact_backend(binary_1d_array_index_p),
+            )
             return cls(packed, active_ids, n_active, x,
                        n_orig=x.shape[0], batch_size=None, bit_width=32)
         elif x.ndim == 2:
             # Fused CUDA kernel: bitpack + compaction in one launch
-            packed, active_ids, n_active = binary_2d_array_index_p_call(x)
+            packed, active_ids, n_active = binary_2d_array_index_p_call(
+                x,
+                backend=_preferred_compact_backend(binary_2d_array_index_p),
+            )
             return cls(packed, active_ids, n_active, x,
                        n_orig=x.shape[0], batch_size=x.shape[1], bit_width=32)
         else:
@@ -162,7 +186,10 @@ class CompactBinary:
             return cls(packed, active_ids, n_active, x,
                        n_orig=n, batch_size=None, bit_width=32)
         elif x.ndim == 2:
-            packed, active_ids, n_active = binary_2d_array_index_p_call(x)
+            packed, active_ids, n_active = binary_2d_array_index_p_call(
+                x,
+                backend=_preferred_compact_backend(binary_2d_array_index_p),
+            )
             return cls(packed, active_ids, n_active, x,
                        n_orig=x.shape[0], batch_size=x.shape[1], bit_width=32)
         else:
@@ -224,7 +251,9 @@ class CompactBinary:
             raise ValueError(
                 f"CompactBinary.compacy_only_vector only supports 1D arrays, got {x.ndim}D."
             )
-        active_ids, n_active = _compact_1d_jax(x)
+        # Keep 1D compact-only vectors vmap-friendly by avoiding the
+        # primitive batching rule, which merges activity across the batch.
+        active_ids, n_active = _compact_1d_jax(x, jax_impl=True)
         packed = jnp.zeros((0,), dtype=jnp.uint32)
         return cls(
             packed,

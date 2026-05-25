@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+import warnings
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
@@ -27,13 +28,8 @@ from jax.interpreters import ad
 
 from brainevent._misc import check_fixed_conn_num_shape, fixed_conn_num_to_csc, namescope
 from brainevent._compatible_import import Tracer
-from brainevent._event.compact import (
-    binary_2d_csr_encode_p_call,
-    binary_2d_pair_stream_encode_p_call,
-    binary_2d_row_sparse_encode_p_call,
-)
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, load_cuda_file
-from brainevent.config import get_numba_parallel
+from brainevent.config import get_backend, get_numba_parallel
 from .fcn_tools import binary_dump_recorder
 from .float import fcnmv, fcnmm
 
@@ -44,6 +40,9 @@ __all__ = [
     'binary_fcnmm_p',
 ]
 
+_BINARY_FCNMM_TEST_COLMAJOR_BACKENDS = frozenset({
+    'test_colmajor_fullwarp_nocap',
+})
 
 def _binary_fcnmm_dump_row_sparse_encode(
     spike_indices,
@@ -145,15 +144,15 @@ def binary_fcnmv(
         Execution backend override (``'numba'``,
         ``'pallas'``, ``'cuda_raw'``, or ``None`` for automatic selection).
     col_weights : jax.Array or u.Quantity, optional
-        Optional compact CSC weights for the same logical sparse matrix,
+        Optional column-major weights for the same logical sparse matrix,
         used by the CUDA ``transpose=False`` scatter path.
         Homogeneous weights must have size ``1``; heterogeneous weights must
         have size ``NNZ``.
     col_indices : jax.Array or None, optional
-        Optional compact CSC row-index array aligned with ``col_weights``.
+        Optional column-major row-index array aligned with ``col_weights``.
         Shape is ``(NNZ,)``.
     col_indptr : jax.Array or None, optional
-        Optional CSC column-pointer array with shape ``(num_post + 1,)``.
+        Optional column pointer array with shape ``(num_post + 1,)``.
 
     Returns
     -------
@@ -243,6 +242,18 @@ def _binary_fcnmv_has_col_structure(
     if ad.is_undefined_primal(col_indices) or ad.is_undefined_primal(col_indptr):
         return False
     return col_indices.size > 0 and col_indptr.size > 0
+
+
+def _binary_fcnmv_has_concrete_col_mirror(
+    col_weights,
+    col_indices,
+    col_indptr,
+) -> bool:
+    return (
+        int(np.prod(col_weights.shape)) > 0
+        and int(np.prod(col_indices.shape)) > 0
+        and int(np.prod(col_indptr.shape)) > 0
+    )
 
 
 def _binary_fcnmv_transpose_passthrough(x):
@@ -339,10 +350,22 @@ def _normalize_binary_fcnmv_col_format(
 def _binary_fcnmv_numba_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
+    col_weight_info: jax.ShapeDtypeStruct,
+    col_indices_info: jax.ShapeDtypeStruct,
+    col_indptr_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
 ):
     import numba
+
+    if _binary_fcnmv_has_concrete_col_mirror(col_weight_info, col_indices_info, col_indptr_info):
+        warnings.warn(
+            'binary_fcnmv col scatter options are only implemented for CUDA raw; '
+            'this backend ignored col_weights/col_indices/col_indptr and used the '
+            'normal gather/scatter path.',
+            UserWarning,
+            stacklevel=2,
+        )
 
     if transpose:
         if weight_info.size == 1:
@@ -450,8 +473,8 @@ def _binary_fcnmv_cuda_kernel(
         name='fcn_binary_mv',
     )
     load_cuda_file(
-        Path(__file__).parent.joinpath('binary_fcnmv_T.cu'),
-        name='fcn_binary_mv_t',
+        Path(__file__).parent.joinpath('binary_fcnmv_col_scatter.cu'),
+        name='fcn_binary_mv_col_scatter',
     )
 
     out_info = kwargs['outs']
@@ -467,82 +490,66 @@ def _binary_fcnmv_cuda_kernel(
     col_sfx = _dtype_sfx.get(jnp.dtype(col_weight_info.dtype), row_sfx)
     row_homo = weight_info.size == 1
     col_homo = col_weight_info.size == 1
-    use_col_scatter = (
-        (not transpose)
-        and int(np.prod(col_indices_info.shape)) > 0
-        and int(np.prod(col_indptr_info.shape)) > 0
-        and int(np.prod(col_weight_info.shape)) > 0
+    has_col_mirror = _binary_fcnmv_has_concrete_col_mirror(
+        col_weight_info,
+        col_indices_info,
+        col_indptr_info,
     )
 
-    if use_col_scatter:
-        mode_sfx = '_homo' if col_homo else '_hetero'
-        kernel_name = f'fcn_binary_mv_t.binary_fcnmv_scatter{mode_sfx}_bool{col_sfx}'
-    elif transpose:
-        # Scatter mode: if is_active(spikes[i]) → output[indices[i,k]] += weights[i,k]
-        # Always TPR (thread-per-row) — atomicAdd contention is the bottleneck at all n_conn.
+    if transpose:
+        if has_col_mirror:
+            warnings.warn(
+                'Binary_fcnmv does not support col-scatter options on the '
+                'post/scatter path. It will fall back to the default scatter path; '
+                'performance may degrade. Recommended usage: use the default '
+                'post/scatter path without passing '
+                'col_weights/col_indices/col_indptr.',
+                UserWarning,
+                stacklevel=2,
+            )
+        # Scatter mode: if is_active(spikes[i]) -> output[indices[i,k]] += weights[i,k]
         mode_sfx = '_homo' if row_homo else '_hetero'
         kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_bool{row_sfx}'
     else:
-        # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
-        # Auto-dispatch inside CUDA: TPR for n_conn<=512, MR for n_conn>512.
-        mode_sfx = '_homo' if row_homo else '_hetero'
-        kernel_name = f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}_bool{row_sfx}'
+        if has_col_mirror:
+            mode_sfx = '_homo' if col_homo else '_hetero'
+            kernel_name = f'fcn_binary_mv_col_scatter.binary_fcnmv_col_scatter{mode_sfx}_bool{col_sfx}'
+        else:
+            raise ValueError(
+                'Binary_fcnmv no longer supports this path: the transpose=False '
+                'binary pre row-gather operators have been removed. Recommended '
+                'alternatives: pass a column-major mirror '
+                '(col_weights/col_indices/col_indptr) to use the column-scatter '
+                'path, or use the BitPackedBinary data class.'
+            )
 
     def kernel(weights, indices, spikes, col_weights, col_indices, col_indptr):
         spikes = u.math.asarray(spikes, dtype=bool)
-        if use_col_scatter:
+        if not transpose:
             return jax.ffi.ffi_call(kernel_name, out_info)(col_weights, col_indices, col_indptr, spikes)
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
 
     return kernel
 
-
-def _binary_fcnmv_dummy_kernel(
-    transpose: bool,
-    spike_info: jax.ShapeDtypeStruct,
-    **kwargs,
-):
-    if not transpose:
-        raise ValueError('`dummy_kernel` only supports scatter mode (`transpose=True`).')
-
-    weight_info = kwargs['weight_info']
-    if weight_info.size != 1:
-        raise ValueError('`dummy_kernel` only supports homogeneous weights.')
-
-    load_cuda_file(
-        Path(__file__).parent.joinpath('dummy.cu'),
-        name='fcn_dummy_mv',
-    )
-
-    out_info = kwargs['outs']
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    row_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    if spike_info.dtype == jnp.bool_:
-        kernel_name = f'fcn_dummy_mv.dummy_binary_fcnmv_scatter_homo_bool{row_sfx}'
-        spike_cast = lambda spikes: u.math.asarray(spikes, dtype=bool)
-    else:
-        kernel_name = f'fcn_dummy_mv.dummy_binary_fcnmv_scatter_homo_float{row_sfx}'
-        spike_cast = lambda spikes: u.math.asarray(spikes, dtype=weight_info.dtype)
-
-    def kernel(weights, indices, spikes, col_weights, col_indices, col_indptr):
-        del col_weights, col_indices, col_indptr
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spike_cast(spikes))
-
-    return kernel
-
-
 def _binary_fcnmv_jax_kernel(
     shape: Tuple[int, int],
     transpose: bool,
+    col_weight_info: jax.ShapeDtypeStruct,
+    col_indices_info: jax.ShapeDtypeStruct,
+    col_indptr_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
     """Pure JAX reference implementation for benchmarking comparison."""
     n_pre, n_post = shape
+    if _binary_fcnmv_has_concrete_col_mirror(col_weight_info, col_indices_info, col_indptr_info):
+        warnings.warn(
+            'Binary_fcnmv does not support col-scatter options on this backend. '
+            'It will fall back to the default gather/scatter path; performance '
+            'may degrade. Recommended usage: use the CUDA raw backend, or avoid '
+            'passing col_weights/col_indices/col_indptr.',
+            UserWarning,
+            stacklevel=2,
+        )
 
     def kernel(weights, indices, spikes, col_weights, col_indices, col_indptr):
         spk_f = _binary_fcnmv_spike_activity(spikes, weights.dtype)
@@ -692,6 +699,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
         )
+        r = (_binary_fcnmm_restore_public_layout(r[0], kwargs['backend'], kwargs['transpose']),)
         return r, [1]
     elif tuple(axes) == (None, None, 1, None, None, None):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
@@ -703,6 +711,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
         )
+        r = (_binary_fcnmm_restore_public_layout(r[0], kwargs['backend'], kwargs['transpose']),)
         return r, [1]
     else:
         return general_batching_rule(binary_fcnmv_p, args, axes, **kwargs)
@@ -826,7 +835,7 @@ correctly with ``jit``, ``vmap``, and autodiff.
 
 The primitive takes six positional arguments:
 ``(weights, indices, spikes, col_weights, col_indices, col_indptr)``.
-The final three arguments hold the optional compact CSC mirror used only by the
+The final three arguments hold the optional column-major mirror used only by the
 CUDA ``transpose=False`` column-scatter path.
 
 Available backends can be queried with ``binary_fcnmv_p.available_backends(platform)``,
@@ -844,7 +853,7 @@ binary_fcnmv_p.def_cuda_raw_kernel(_binary_fcnmv_cuda_kernel, asdefault=True)
 binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'gpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'tpu', _binary_fcnmv_jax_kernel)
-binary_fcnmv_p.def_kernel('dummy_kernel', 'gpu', _binary_fcnmv_dummy_kernel)
+
 binary_fcnmv_p.def_jvp_rule2(
     _binary_fcnmv_jvp_weights,
     None,
@@ -858,6 +867,30 @@ binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
 binary_fcnmv_p.def_call(binary_fcnmv_p_call)
 binary_fcnmv_p.def_tags('fcn', 'binary')
 binary_fcnmv_p.def_benchmark_data(_binary_fcnmv_benchmark_data)
+
+
+def _binary_fcnmm_effective_backend(backend: Optional[str]) -> Optional[str]:
+    if backend is not None:
+        return backend
+    platform = jax.default_backend()
+    global_backend = get_backend(platform)
+    if global_backend in binary_fcnmm_p.available_backends(platform):
+        return global_backend
+    return None
+
+
+def _binary_fcnmm_uses_test_colmajor_layout(backend: Optional[str], transpose: bool) -> bool:
+    return bool(transpose) and _binary_fcnmm_effective_backend(backend) in _BINARY_FCNMM_TEST_COLMAJOR_BACKENDS
+
+
+def _binary_fcnmm_restore_public_layout(
+    result: jax.Array,
+    backend: Optional[str],
+    transpose: bool,
+) -> jax.Array:
+    if _binary_fcnmm_uses_test_colmajor_layout(backend, transpose):
+        return jnp.transpose(result, (1, 0))
+    return result
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -964,6 +997,7 @@ def binary_fcnmm(
         shape=shape,
         backend=backend,
     )[0]
+    r = _binary_fcnmm_restore_public_layout(r, backend, transpose)
     return u.maybe_decimal(r * m_unit * w_unit)
 
 
@@ -1135,6 +1169,56 @@ def _binary_fcnmm_cuda_kernel(
     return kernel
 
 
+def _binary_fcnmm_test_colmajor_kernel(
+    *,
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    if not transpose:
+        return _binary_fcnmm_cuda_kernel(
+            transpose=transpose,
+            weight_info=weight_info,
+            matrix_info=matrix_info,
+            indices_info=indices_info,
+            **kwargs,
+        )
+
+    load_cuda_file(
+        Path(__file__).parent.joinpath('fcnmm_testing_op.cu'),
+        name='fcn_fcnmm_testing',
+    )
+
+    out_info = kwargs['outs']
+    matrix_t_info = jax.ShapeDtypeStruct((matrix_info.shape[1], matrix_info.shape[0]), matrix_info.dtype)
+    _dtype_sfx = {
+        np.dtype('float16'): '_f16',
+        np.dtype('float32'): '_f32',
+        np.dtype('float64'): '_f64',
+        np.dtype('bfloat16'): '_bf16'
+    }
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    spike_sfx = '_bool' if matrix_info.dtype == jnp.bool_ else '_float'
+    mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
+    kernel_name = f'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap{mode_sfx}{spike_sfx}{sfx}'
+
+    def kernel(weights, indices, matrix):
+        matrix_t = jnp.array(matrix.T, copy=True)
+        return jax.ffi.ffi_call(kernel_name, out_info, vmap_method='sequential')(
+            weights,
+            indices,
+            matrix_t,
+        )
+
+    return kernel
+
+
+def _binary_fcnmm_test_colmajor_fullwarp_nocap_kernel(**kwargs):
+    return _binary_fcnmm_test_colmajor_kernel(**kwargs)
+
+
 def _binary_fcnmm_jax_kernel(
     shape: Tuple[int, int],
     transpose: bool,
@@ -1242,7 +1326,8 @@ def _batching_base_fn(args, axis=1, **kwargs):
         transpose=kwargs['transpose'],
         backend=kwargs['backend'],
     )
-    r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
+    raw = _binary_fcnmm_restore_public_layout(r[0], kwargs['backend'], kwargs['transpose'])
+    r = jnp.reshape(raw, [raw.shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 
 
@@ -1338,6 +1423,8 @@ def binary_fcnmm_p_call(
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    if _binary_fcnmm_uses_test_colmajor_layout(backend, transpose):
+        out = jax.ShapeDtypeStruct((matrix.shape[1], out.shape[0]), out.dtype)
     return binary_fcnmm_p(
         weights,
         indices,
@@ -1383,6 +1470,15 @@ binary_fcnmm_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel, asdefault=True)
 binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
+
+binary_fcnmm_p.def_kernel(
+    'test_colmajor_fullwarp_nocap',
+    'gpu',
+    _binary_fcnmm_test_colmajor_fullwarp_nocap_kernel,
+)
+
+
+
 binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
 binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
 binary_fcnmm_p.def_batching_rule(_binary_fcnmm_batching)

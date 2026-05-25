@@ -1,4 +1,5 @@
 import pandas as pd
+import pandas as pd
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
@@ -21,7 +22,10 @@ class PerformanceBoundaryApp:
         self.df: Optional[pd.DataFrame] = None
         self.comboboxes: dict = {}   # dynamic filter comboboxes
         self.extra_curves: list = []  # extra boundary curves list
+        self.sparsity_curves: list = []  # manual sparsity curve list
         self.mode = tk.StringVar(value='mv')
+        self.var_auto_sparsity = tk.BooleanVar(value=False)
+        self.var_manual_sparsity = tk.BooleanVar(value=False)
         self._setup_ui()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -76,6 +80,12 @@ class PerformanceBoundaryApp:
         self.entry_batch_size = ttk.Entry(ctrl, width=7)
         self.entry_batch_size.insert(0, "1000")
         self.entry_batch_size.pack(side=tk.LEFT)
+
+        ttk.Label(ctrl, text="MV Layout:").pack(side=tk.LEFT, padx=(8, 2))
+        self.combo_mv_layout = ttk.Combobox(ctrl, state="readonly", width=5,
+                                            values=['row', 'col'])
+        self.combo_mv_layout.current(0)
+        self.combo_mv_layout.pack(side=tk.LEFT)
 
         ttk.Label(ctrl, text="Contour Lines:").pack(side=tk.LEFT, padx=(10, 2))
         self.entry_contours = ttk.Entry(ctrl, width=5)
@@ -147,8 +157,16 @@ class PerformanceBoundaryApp:
         ext_bar = ttk.LabelFrame(self.root, text="Extra Boundary Curves", padding=8)
         ext_bar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=4)
 
+        curve_area = ttk.LabelFrame(ext_bar, text="VRAM Boundary Curves", padding=6)
+        curve_area.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
+        ttk.Separator(ext_bar, orient='vertical').pack(side=tk.LEFT, fill='y', padx=4, pady=2)
+
+        sparsity_area = ttk.LabelFrame(ext_bar, text="Sparsity Lines", padding=6)
+        sparsity_area.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
         # — Listbox (left) —
-        list_frame = ttk.Frame(ext_bar)
+        list_frame = ttk.Frame(curve_area)
         list_frame.pack(side=tk.LEFT, padx=(0, 8))
         self.extra_curves_listbox = tk.Listbox(list_frame, height=4, width=40,
                                                selectmode=tk.SINGLE, exportselection=False)
@@ -162,7 +180,7 @@ class PerformanceBoundaryApp:
                   foreground='gray').pack(anchor='w', pady=(2, 0))
 
         # — Editor (center) —
-        editor = ttk.Frame(ext_bar)
+        editor = ttk.Frame(curve_area)
         editor.pack(side=tk.LEFT, padx=4)
 
         ttk.Label(editor, text="VRAM (GB):").grid(row=0, column=0, sticky='e', padx=(0, 2), pady=2)
@@ -193,9 +211,81 @@ class PerformanceBoundaryApp:
         self.entry_extra_label = ttk.Entry(editor, width=24)
         self.entry_extra_label.insert(0, "")
         self.entry_extra_label.grid(row=1, column=4, columnspan=2, padx=2, pady=2, sticky='ew')
+        editor.columnconfigure(5, weight=1)
+
+        sparsity_list_frame = ttk.Frame(sparsity_area)
+        sparsity_list_frame.pack(side=tk.LEFT, padx=(0, 8))
+        self.sparsity_listbox = tk.Listbox(sparsity_list_frame, height=3, width=28,
+                                           selectmode=tk.SINGLE, exportselection=False)
+        self.sparsity_listbox.pack(side=tk.LEFT, fill=tk.Y)
+        _sp_sb = ttk.Scrollbar(sparsity_list_frame, orient=tk.VERTICAL,
+                               command=self.sparsity_listbox.yview)
+        _sp_sb.pack(side=tk.LEFT, fill=tk.Y)
+        self.sparsity_listbox.config(yscrollcommand=_sp_sb.set)
+        self.sparsity_listbox.bind("<<ListboxSelect>>", self._on_sparsity_curve_selected)
+        ttk.Label(sparsity_list_frame, text="Click item to edit",
+                  foreground='gray').pack(anchor='w', pady=(2, 0))
+
+        sparsity_editor = ttk.Frame(sparsity_area)
+        sparsity_editor.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+
+        ttk.Checkbutton(sparsity_editor, text="Auto Sparsity",
+                        variable=self.var_auto_sparsity,
+                        command=self._on_sparsity_option_changed).grid(
+                            row=0, column=0, columnspan=5, sticky='w', padx=(0, 2), pady=(0, 2))
+        ttk.Label(sparsity_editor, text="Count:").grid(
+            row=1, column=0, sticky='e', padx=(0, 2), pady=2)
+        self.entry_auto_sparsity_count = ttk.Entry(sparsity_editor, width=8)
+        self.entry_auto_sparsity_count.insert(0, "3")
+        self.entry_auto_sparsity_count.grid(row=1, column=1, padx=2, pady=2, sticky='w')
+        ttk.Label(sparsity_editor, text="Angles evenly spaced from -90 to 0 degrees",
+                  foreground='gray').grid(row=2, column=0, columnspan=5,
+                                          sticky='w', padx=(0, 2), pady=(0, 8))
+
+        ttk.Checkbutton(sparsity_editor, text="Manual Sparsity",
+                        variable=self.var_manual_sparsity,
+                        command=self._on_sparsity_option_changed).grid(
+                            row=3, column=0, columnspan=5, sticky='w', padx=(0, 2), pady=2)
+        ttk.Label(sparsity_editor, text="Value:").grid(
+            row=4, column=0, sticky='e', padx=(0, 2), pady=2)
+        self.entry_manual_sparsity = ttk.Entry(sparsity_editor, width=16)
+        self.entry_manual_sparsity.insert(0, "")
+        self.entry_manual_sparsity.grid(row=4, column=1, padx=2, pady=2, sticky='ew')
+        ttk.Label(sparsity_editor, text="Color:").grid(
+            row=4, column=2, sticky='e', padx=(8, 2), pady=2)
+        self.entry_sparsity_color = ttk.Entry(sparsity_editor, width=10)
+        self.entry_sparsity_color.insert(0, "#000000")
+        self.entry_sparsity_color.grid(row=4, column=3, padx=2, pady=2, sticky='w')
+        self.btn_pick_sparsity_color = ttk.Button(
+            sparsity_editor, text="Pick", command=self._pick_sparsity_color, width=5)
+        self.btn_pick_sparsity_color.grid(row=4, column=4, padx=2, pady=2)
+
+        ttk.Label(sparsity_editor, text="Label:").grid(
+            row=5, column=0, sticky='e', padx=(0, 2), pady=2)
+        self.entry_sparsity_label = ttk.Entry(sparsity_editor, width=24)
+        self.entry_sparsity_label.insert(0, "")
+        self.entry_sparsity_label.grid(row=5, column=1, columnspan=4,
+                                       padx=2, pady=2, sticky='ew')
+        ttk.Label(sparsity_editor,
+                  text="s = conn / (_N × scale), e.g. 0.01, 0.05 or 1%, 5%",
+                  foreground='gray').grid(row=6, column=0, columnspan=5,
+                                          sticky='w', padx=(0, 2), pady=(2, 0))
+        sparsity_editor.columnconfigure(1, weight=1)
+
+        sparsity_btn_f = ttk.Frame(sparsity_area)
+        sparsity_btn_f.pack(side=tk.LEFT, padx=8)
+        self.sparsity_buttons = []
+        for text, command in [
+            ("Add / Save", self._sparsity_curve_add_save),
+            ("Delete", self._sparsity_curve_delete),
+            ("Clear All", self._sparsity_curve_clear_all),
+        ]:
+            btn = ttk.Button(sparsity_btn_f, text=text, command=command, width=12)
+            btn.pack(fill=tk.X, pady=2)
+            self.sparsity_buttons.append(btn)
 
         # — Buttons (right) —
-        btn_f = ttk.Frame(ext_bar)
+        btn_f = ttk.Frame(curve_area)
         btn_f.pack(side=tk.LEFT, padx=8)
         ttk.Button(btn_f, text="Add / Save", command=self._extra_curve_add_save,
                    width=12).pack(fill=tk.X, pady=2)
@@ -203,6 +293,7 @@ class PerformanceBoundaryApp:
                    width=12).pack(fill=tk.X, pady=2)
         ttk.Button(btn_f, text="Clear All", command=self._extra_curve_clear_all,
                    width=12).pack(fill=tk.X, pady=2)
+        self._on_sparsity_option_changed()
 
         # ── Dynamic Data Slicing Filters ────────────────────────────────────────
         self.flt_outer = ttk.LabelFrame(self.root, text="Data Slicing Filters", padding=8)
@@ -225,7 +316,7 @@ class PerformanceBoundaryApp:
         for name, title in tab_configs:
             frame = ttk.Frame(self.notebook)
             self.notebook.add(frame, text=name)
-            fig = Figure(figsize=(10, 7), dpi=100)
+            fig = Figure(figsize=(13, 5.2), dpi=100)
             ax = fig.add_subplot(111)
             canvas = FigureCanvasTkAgg(fig, master=frame)
             canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -284,6 +375,163 @@ class PerformanceBoundaryApp:
         state = 'disabled' if self.var_auto_vram.get() else 'normal'
         self.entry_limit.config(state=state)
 
+    def _on_sparsity_option_changed(self):
+        auto_state = 'normal' if self.var_auto_sparsity.get() else 'disabled'
+        manual_state = 'normal' if self.var_manual_sparsity.get() else 'disabled'
+        self.entry_auto_sparsity_count.config(state=auto_state)
+        self.entry_manual_sparsity.config(state=manual_state)
+        self.entry_sparsity_color.config(state=manual_state)
+        self.entry_sparsity_label.config(state=manual_state)
+        self.btn_pick_sparsity_color.config(state=manual_state)
+        for btn in getattr(self, 'sparsity_buttons', []):
+            btn.config(state=manual_state)
+
+    @staticmethod
+    def _parse_sparsity_value(raw_value: str) -> float:
+        token = raw_value.strip()
+        if not token:
+            raise ValueError("Sparsity value cannot be empty.")
+        as_percent = token.endswith('%')
+        if as_percent:
+            token = token[:-1].strip()
+        value = float(token)
+        if as_percent or value > 1:
+            value /= 100.0
+        if not (0 < value <= 1):
+            raise ValueError("Sparsity must be in (0, 1], or use percentages like 5%.")
+        return value
+
+    @staticmethod
+    def _format_sparsity_label(value: float) -> str:
+        return f"{value * 100:.2f}%"
+
+    @staticmethod
+    def _sparsity_curve_display(c: dict) -> str:
+        return f"{PerformanceBoundaryApp._format_sparsity_label(c['value'])} | {c['color']}  -> {c['label']}"
+
+    def _refresh_sparsity_listbox(self):
+        self.sparsity_listbox.delete(0, tk.END)
+        for c in self.sparsity_curves:
+            self.sparsity_listbox.insert(tk.END, self._sparsity_curve_display(c))
+
+    def _on_sparsity_curve_selected(self, event=None):
+        sel = self.sparsity_listbox.curselection()
+        if not sel:
+            return
+        c = self.sparsity_curves[sel[0]]
+        self.entry_manual_sparsity.delete(0, tk.END)
+        self.entry_manual_sparsity.insert(0, self._format_sparsity_label(c['value']))
+        self.entry_sparsity_color.delete(0, tk.END)
+        self.entry_sparsity_color.insert(0, c['color'])
+        self.entry_sparsity_label.delete(0, tk.END)
+        self.entry_sparsity_label.insert(0, c['label'])
+
+    def _pick_sparsity_color(self):
+        current = self.entry_sparsity_color.get().strip() or '#000000'
+        result = colorchooser.askcolor(color=current, title="Pick Sparsity Line Color",
+                                       parent=self.root)
+        if result and result[1]:
+            self.entry_sparsity_color.delete(0, tk.END)
+            self.entry_sparsity_color.insert(0, result[1])
+
+    def _sparsity_curve_add_save(self):
+        try:
+            value = self._parse_sparsity_value(self.entry_manual_sparsity.get())
+        except ValueError as exc:
+            messagebox.showerror("Input Error", str(exc))
+            return
+        color = self.entry_sparsity_color.get().strip() or '#000000'
+        label = self.entry_sparsity_label.get().strip() or self._format_sparsity_label(value)
+        c = dict(value=value, color=color, label=label)
+        sel = self.sparsity_listbox.curselection()
+        if sel:
+            self.sparsity_curves[sel[0]] = c
+        else:
+            self.sparsity_curves.append(c)
+        self._refresh_sparsity_listbox()
+
+    def _sparsity_curve_delete(self):
+        sel = self.sparsity_listbox.curselection()
+        if not sel:
+            messagebox.showinfo("Delete", "Select a sparsity line from the list first.")
+            return
+        self.sparsity_curves.pop(sel[0])
+        self._refresh_sparsity_listbox()
+
+    def _sparsity_curve_clear_all(self):
+        if not self.sparsity_curves:
+            return
+        if messagebox.askyesno("Clear All", "Remove all manual sparsity lines?"):
+            self.sparsity_curves.clear()
+            self._refresh_sparsity_listbox()
+
+    def _collect_sparsity_lines(self, _N, x_min, x_max, y_max):
+        if not self.var_auto_sparsity.get() and not self.var_manual_sparsity.get():
+            return []
+
+        lines = []
+        seen = set()
+
+        if self.var_auto_sparsity.get():
+            try:
+                auto_count = int(self.entry_auto_sparsity_count.get())
+            except ValueError as exc:
+                raise ValueError("Auto sparsity count must be a positive integer.") from exc
+            if auto_count <= 0:
+                raise ValueError("Auto sparsity count must be a positive integer.")
+
+            angles = np.linspace(-90.0, 0.0, auto_count + 2, dtype=float)[1:-1]
+            label_fracs = np.linspace(0.22, 0.82, len(angles), dtype=float)
+            auto_legend_added = False
+            for angle, label_frac in zip(angles, label_fracs):
+                lines.append({
+                    'target_angle': float(angle),
+                    'inline_text': None,
+                    'color': 'black',
+                    'linestyle': '--',
+                    'lw': 1.4,
+                    'label_frac': float(label_frac),
+                    'legend_label': "Auto sparsity lines" if not auto_legend_added else None,
+                    'fontweight': 'normal',
+                })
+                auto_legend_added = True
+
+        if self.var_manual_sparsity.get():
+            manual_specs = list(self.sparsity_curves)
+            draft = self.entry_manual_sparsity.get().strip()
+            if draft:
+                for part in draft.split(','):
+                    token = part.strip()
+                    if token:
+                        value = self._parse_sparsity_value(token)
+                        manual_specs.append({
+                            'value': value,
+                            'color': self.entry_sparsity_color.get().strip() or '#000000',
+                            'label': self.entry_sparsity_label.get().strip() or self._format_sparsity_label(value),
+                        })
+
+            if not manual_specs:
+                raise ValueError("Manual sparsity is checked, but no sparsity line was added.")
+
+            for c in manual_specs:
+                value = float(c['value'])
+                key = round(value, 12)
+                if key in seen:
+                    continue
+                seen.add(key)
+                label = c.get('label') or self._format_sparsity_label(value)
+                lines.append({
+                    'value': value,
+                    'inline_text': label,
+                    'color': c.get('color', '#000000'),
+                    'linestyle': '--',
+                    'lw': 1.8,
+                    'legend_label': label,
+                    'fontweight': 'normal',
+                })
+
+        return lines
+
     def _compute_auto_vram(self, df_subset) -> float:
         """Return the minimum VRAM (GB) for the VRAM boundary to encompass
         all (scale, conn_num) data points in *df_subset* (with a 5 % margin)."""
@@ -300,8 +548,10 @@ class PerformanceBoundaryApp:
             conn    = df_subset['conn_num'].values.astype(float)
             required = (conn * size * times + 2 * bs_vals * size) * data_size
         else:
+            _, mv_layout_factor = self._get_mv_layout_context()
             required = self._vram_bytes(df_subset['conn_num'], df_subset['scale'],
-                                        data_size, times, _N)
+                                        data_size, times, _N,
+                                        mv_layout_factor=mv_layout_factor)
         return float(required.max()) / (1024 ** 3) * 1.05
 
     @staticmethod
@@ -314,6 +564,20 @@ class PerformanceBoundaryApp:
         """Return memory-multiplier for homo (1) or hetero (2) topology."""
         return 2 if topo_str == 'hetero' else 1
 
+    @staticmethod
+    def _mv_layout_factor(mv_layout: str = 'row') -> int:
+        """Return user-selected MV storage factor: row is 1x, col dual-view is 2x."""
+        if mv_layout == 'col':
+            return 2
+        return 1
+
+    def _get_mv_layout_context(self) -> tuple[str, int]:
+        """Read the manual MV layout selection used for boundary calculations."""
+        mv_layout = self.combo_mv_layout.get() if hasattr(self, 'combo_mv_layout') else 'row'
+        if mv_layout not in ('row', 'col'):
+            mv_layout = 'row'
+        return mv_layout, self._mv_layout_factor(mv_layout)
+
     def _get_boundary_params(self):
         """Read data_size and times from the main boundary UI controls."""
         return (self._dtype_size(self.combo_dtype.get()),
@@ -325,23 +589,23 @@ class PerformanceBoundaryApp:
         except ValueError:
             return 1000
 
-    def _vram_bytes(self, conn, scale, data_size, times, _N, bs=None):
+    def _vram_bytes(self, conn, scale, data_size, times, _N, bs=None, mv_layout_factor=1):
         """Compute VRAM usage in bytes based on current mode (mv / mm)."""
         if self.mode.get() == 'mm':
             if bs is None:
                 bs = self._get_batch_size()
             size = scale * _N
             return (conn * size * times + 2 * bs * size) * data_size
-        return conn * scale * data_size * times * _N
+        return conn * scale * data_size * times * _N * mv_layout_factor
 
-    def _boundary_conn(self, scale, limit_bytes, data_size, times, _N, bs=None):
+    def _boundary_conn(self, scale, limit_bytes, data_size, times, _N, bs=None, mv_layout_factor=1):
         """Compute max conn_num for given scale values and VRAM limit."""
         if self.mode.get() == 'mm':
             if bs is None:
                 bs = self._get_batch_size()
             size = scale * _N
             return (limit_bytes / data_size - 2 * bs * size) / (size * times)
-        return limit_bytes / (data_size * times * scale * _N)
+        return limit_bytes / (data_size * times * scale * _N * mv_layout_factor)
 
     # ── Extra boundary curve list helpers ─────────────────────────────────────
     @staticmethod
@@ -426,8 +690,21 @@ class PerformanceBoundaryApp:
             filetypes=[("PNG", "*.png"), ("PDF", "*.pdf"), ("SVG", "*.svg"), ("All", "*.*")],
         )
         if path:
-            tab['fig'].savefig(path, dpi=dpi, bbox_inches='tight')
-            messagebox.showinfo("Exported", f"Saved: {path}  ({dpi} DPI)")
+            try:
+                # Export the current figure frame only; do not expand the
+                # output to include artists extending beyond the figure bounds.
+                tab['canvas'].draw()
+                tab['fig'].savefig(
+                    path,
+                    dpi=dpi,
+                    bbox_inches=None,
+                    pad_inches=0,
+                    facecolor=tab['fig'].get_facecolor(),
+                    edgecolor='none',
+                )
+                messagebox.showinfo("Exported", f"Saved: {path}  ({dpi} DPI)")
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Failed to save image:\n{e}")
 
     def load_data(self):
         path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")])
@@ -466,6 +743,9 @@ class PerformanceBoundaryApp:
             _N = int(self.entry_n.get())
         except ValueError:
             messagebox.showerror("Input Error", "N 输入无效。")
+            return
+        if _N <= 0:
+            messagebox.showerror("Input Error", "N 必须为正整数。")
             return
 
         # ── Remove old colorbars and clear axes (avoid overplotting) ──────────
@@ -508,6 +788,8 @@ class PerformanceBoundaryApp:
             for t in self.tabs.values():
                 t['canvas'].draw()
             return
+
+        mv_layout, mv_layout_factor = self._get_mv_layout_context()
         # ── MM 模式：从过滤后的数据中提取实际 batch_size 用于显存边界计算 ──────────────────
         eff_bs = None
         if self.mode.get() == 'mm':
@@ -543,10 +825,25 @@ class PerformanceBoundaryApp:
                         df_b['scale'].min() if not df_b.empty else 1), 0.1)
         y_max = max(df_t['conn_num'].max(),
                     df_b['conn_num'].max() if not df_b.empty else 1, 1)
+        try:
+            sparsity_lines = self._collect_sparsity_lines(_N, x_min, x_max, y_max)
+        except ValueError as exc:
+            messagebox.showerror("Input Error", str(exc))
+            return
 
         xt, yt, zt = df_t['scale'].values, df_t['conn_num'].values, df_t['elapsed_s'].values
         sub_raw   = self._subtitle(False)
-        kw_common = dict(_N=_N, limit_gb=limit_gb, x_min=x_min, x_max=x_max, y_max=y_max, bs=eff_bs)
+        kw_common = dict(
+            _N=_N,
+            limit_gb=limit_gb,
+            x_min=x_min,
+            x_max=x_max,
+            y_max=y_max,
+            bs=eff_bs,
+            mv_layout=mv_layout,
+            mv_layout_factor=mv_layout_factor,
+            sparsity_lines=sparsity_lines,
+        )
 
         self._render_scatter(self.tabs["Raw Scatter"], xt, yt, zt,
                              z_label="Elapsed Time (s)", cmap_name='Blues',
@@ -575,7 +872,15 @@ class PerformanceBoundaryApp:
 
             limit_bytes = limit_gb * (1024 ** 3)
             data_size, times = self._get_boundary_params()
-            valid = (grid_y <= grid_x * _N) & (self._vram_bytes(grid_y, grid_x, data_size, times, _N, bs=eff_bs) <= limit_bytes)
+            valid = (
+                (grid_y <= grid_x * _N)
+                & (
+                    self._vram_bytes(
+                        grid_y, grid_x, data_size, times, _N,
+                        bs=eff_bs, mv_layout_factor=mv_layout_factor,
+                    ) <= limit_bytes
+                )
+            )
 
             with np.errstate(divide='ignore', invalid='ignore'):
                 grid_sp = np.where(
@@ -592,31 +897,126 @@ class PerformanceBoundaryApp:
                 subtitle=sub_sp, **kw_common,
             )
 
-    def _draw_boundaries(self, ax, _N, limit_gb, x_min, x_max, bs=None):
-        xv = np.linspace(max(0.01, x_min * 0.9), x_max * 1.25, 600)
+    @staticmethod
+    def _plot_limits(x_max, y_max):
+        return 0, x_max * 1.1, max(y_max * 1.2, 100), 0
+
+    @staticmethod
+    def _axes_data_ratio(ax, x0, x1, y0, y1):
+        bbox = ax.get_window_extent()
+        width = max(float(bbox.width), 1.0)
+        height = max(float(bbox.height), 1.0)
+        x_span = max(abs(x1 - x0), 1e-12)
+        y_span = max(abs(y0 - y1), 1e-12)
+        return (height / y_span) / (width / x_span)
+
+    def _sparsity_from_display_angle(self, angle_deg, _N, ax, x0, x1, y0, y1):
+        ratio = self._axes_data_ratio(ax, x0, x1, y0, y1)
+        visible_angle = float(np.clip(angle_deg, -89.0, -1.0))
+        data_slope = abs(np.tan(np.radians(visible_angle))) / max(ratio, 1e-12)
+        return float(np.clip(data_slope / _N, 1e-12, 1.0))
+
+    def _sparsity_label_x(self, value, _N, x0, x1, y0, label_frac):
+        slope = max(value * _N, 1e-12)
+        x_at_y = y0 / slope
+        x_visible_max = min(x1 * 0.96, x_at_y * 0.92)
+        x_visible_min = max(x0 + (x1 - x0) * 0.06, 1e-12)
+        if x_visible_max <= x_visible_min:
+            lower = max(x0 + (x1 - x0) * 0.002, 1e-12)
+            return float(np.clip(x_at_y * 0.7, lower, x1 * 0.96))
+        return float(x_visible_min + (x_visible_max - x_visible_min) * label_frac)
+
+    def _draw_boundaries(
+        self,
+        ax,
+        _N,
+        limit_gb,
+        x_min,
+        x_max,
+        y_max,
+        bs=None,
+        mv_layout='row',
+        mv_layout_factor=1,
+        sparsity_lines=None,
+    ):
+        x0, x1, y0, y1 = self._plot_limits(x_max, y_max)
+        ax.set_xlim(x0, x1)
+        ax.set_ylim(y0, y1)
+        ax.figure.canvas.draw()
+        xv = np.linspace(max(0.01, x0 + (x1 - x0) * 0.001), x_max * 1.25, 600)
         ax.plot(xv, xv * _N,
                 color='gold', lw=2, label=f'conn = scale × N  (N={_N:,} elem/scale)')
         data_size, times = self._get_boundary_params()
         limit_bytes = limit_gb * (1024 ** 3)
         dtype_label = self.combo_dtype.get()
         topo_label  = self.combo_topology.get()
-        yv_main = self._boundary_conn(xv, limit_bytes, data_size, times, _N, bs=bs)
+        yv_main = self._boundary_conn(
+            xv, limit_bytes, data_size, times, _N,
+            bs=bs, mv_layout_factor=mv_layout_factor,
+        )
         mid = len(xv) // 3
 
         def _draw_with_inline_label(x_coords, y_coords, x_pos, label_text, color, lw,
-                                    linestyle, legend_label):
-            """Draw curve as two segments with a gap at x_pos; place text without any bbox."""
+                                    linestyle, legend_label, text_color=None,
+                                    fontsize=7, fontweight='bold',
+                                    label_padding_px=2.0):
+            """Draw curve as two segments, using rendered text width as the gap."""
             idx = int(np.argmin(np.abs(x_coords - x_pos)))
             i0 = max(idx - 2, 0)
             i1 = min(idx + 2, len(x_coords) - 1)
-            dx_s = x_coords[i1] - x_coords[i0]
-            dy_s = y_coords[i1] - y_coords[i0]
-            angle = np.degrees(np.arctan2(dy_s, dx_s))
+            p0 = ax.transData.transform((x_coords[i0], y_coords[i0]))
+            p1 = ax.transData.transform((x_coords[i1], y_coords[i1]))
+            angle = np.degrees(np.arctan2(p1[1] - p0[1], p1[0] - p0[0]))
 
-            x_range = x_coords[-1] - x_coords[0] if x_coords[-1] > x_coords[0] else 1.0
-            half_w = x_range * 0.04
-            x_lo = x_coords[idx] - half_w
-            x_hi = x_coords[idx] + half_w
+            text_artist = ax.text(
+                x_coords[idx],
+                y_coords[idx],
+                label_text,
+                fontsize=fontsize,
+                ha='center',
+                va='center',
+                color=text_color or color,
+                fontweight=fontweight,
+                rotation=angle,
+                zorder=7,
+            )
+            try:
+                renderer = ax.figure.canvas.get_renderer()
+            except Exception:
+                renderer = None
+            if renderer is None:
+                ax.figure.canvas.draw()
+                renderer = ax.figure.canvas.get_renderer()
+
+            original_rotation = text_artist.get_rotation()
+            text_artist.set_rotation(0)
+            bbox = text_artist.get_window_extent(renderer=renderer)
+            text_artist.set_rotation(original_rotation)
+
+            center = ax.transData.transform((x_coords[idx], y_coords[idx]))
+            direction = p1 - p0
+            direction_len = float(np.hypot(direction[0], direction[1]))
+            if direction_len <= 1e-9:
+                direction = np.array([1.0, 0.0])
+            else:
+                direction = direction / direction_len
+
+            half_gap_px = max(float(bbox.width) / 2.0 + float(label_padding_px), 1.0)
+            inv = ax.transData.inverted()
+            left_data = inv.transform(center - direction * half_gap_px)
+            right_data = inv.transform(center + direction * half_gap_px)
+            x_lo, x_hi = sorted((float(left_data[0]), float(right_data[0])))
+
+            x_min = float(np.nanmin(x_coords))
+            x_max = float(np.nanmax(x_coords))
+            x_lo = float(np.clip(x_lo, x_min, x_max))
+            x_hi = float(np.clip(x_hi, x_min, x_max))
+            if not np.isfinite(x_lo) or not np.isfinite(x_hi) or x_hi <= x_lo:
+                x_range = x_coords[-1] - x_coords[0] if x_coords[-1] > x_coords[0] else 1.0
+                half_w = x_range * 0.005
+                x_lo = x_coords[idx] - half_w
+                x_hi = x_coords[idx] + half_w
+            legend_token = legend_label if legend_label else '_nolegend_'
 
             # Left segment — carries the legend entry
             mask_l = x_coords < x_lo
@@ -624,9 +1024,9 @@ class PerformanceBoundaryApp:
                 y_at_lo = np.interp(x_lo, x_coords, y_coords)
                 xl = np.append(x_coords[mask_l], x_lo)
                 yl = np.append(y_coords[mask_l], y_at_lo)
-                ax.plot(xl, yl, color=color, lw=lw, linestyle=linestyle, label=legend_label)
+                ax.plot(xl, yl, color=color, lw=lw, linestyle=linestyle, label=legend_token)
             else:
-                ax.plot([], [], color=color, lw=lw, linestyle=linestyle, label=legend_label)
+                ax.plot([], [], color=color, lw=lw, linestyle=linestyle, label=legend_token)
 
             # Right segment — no legend label (same visual line)
             mask_r = x_coords > x_hi
@@ -636,27 +1036,53 @@ class PerformanceBoundaryApp:
                 yr = np.insert(y_coords[mask_r], 0, y_at_hi)
                 ax.plot(xr, yr, color=color, lw=lw, linestyle=linestyle)
 
-            # Inline text — no background box, like clabel
-            ax.text(x_coords[idx], y_coords[idx], label_text,
-                    fontsize=7, ha='center', va='center', color=color,
-                    fontweight='bold', rotation=angle, zorder=7)
-
         mode_tag = self.mode.get().upper()
         if self.mode.get() == 'mm':
             _bs = bs if bs is not None else self._get_batch_size()
             main_legend = f'VRAM = {limit_gb:.2f} GB  ({dtype_label}, {topo_label}, bs={_bs}) [{mode_tag}]'
         else:
-            main_legend = f'VRAM = {limit_gb:.2f} GB  ({dtype_label}, {topo_label}) [{mode_tag}]'
+            main_legend = (
+                f'VRAM = {limit_gb:.2f} GB  ({dtype_label}, {topo_label}, '
+                f'{mv_layout}, layout×{mv_layout_factor}) [{mode_tag}]'
+            )
         _draw_with_inline_label(xv, yv_main, xv[mid],
                                 f'{limit_gb:.2f} GB', 'red', 2, 'solid', main_legend)
         for c in self.extra_curves:
             e_data_size   = self._dtype_size(c['dtype'])
             e_times       = self._topology_times(c['topology'])
             e_limit_bytes = c['limit_gb'] * (1024 ** 3)
-            yv_extra      = self._boundary_conn(xv, e_limit_bytes, e_data_size, e_times, _N, bs=bs)
+            yv_extra      = self._boundary_conn(
+                xv, e_limit_bytes, e_data_size, e_times, _N,
+                bs=bs, mv_layout_factor=mv_layout_factor,
+            )
             _draw_with_inline_label(xv, yv_extra, xv[mid],
                                     f"{c['limit_gb']:.2f} GB", c['color'], 2, 'dashed',
                                     c['label'])
+        for line in sparsity_lines or []:
+            value = line.get('value')
+            if value is None:
+                value = self._sparsity_from_display_angle(
+                    line.get('target_angle', -45.0), _N, ax, x0, x1, y0, y1)
+            yv_sparse = value * xv * _N
+            label_x = line.get('label_x')
+            if label_x is None:
+                label_x = self._sparsity_label_x(
+                    value, _N, x0, x1, y0, line.get('label_frac', 0.5))
+            inline_text = line.get('inline_text') or self._format_sparsity_label(value)
+            _draw_with_inline_label(
+                xv,
+                yv_sparse,
+                label_x,
+                inline_text,
+                line.get('color', '#546E7A'),
+                line.get('lw', 1.5),
+                line.get('linestyle', ':'),
+                line.get('legend_label'),
+                text_color='black',
+                fontsize=7,
+                fontweight=line.get('fontweight', 'normal'),
+                label_padding_px=line.get('label_padding_px', 1.0),
+            )
         ax.legend(loc='upper right', fontsize=8)
 
     def _draw_contours_and_labels(self, ax, grid_x, grid_y, grid_z_masked, z_pts):
@@ -783,8 +1209,25 @@ class PerformanceBoundaryApp:
 
         tab['hover_cid'] = canvas.mpl_connect("motion_notify_event", on_hover)
 
-    def _render_scatter(self, tab, x, y, z, _N, limit_gb, x_min, x_max, y_max,
-                        z_label, cmap_name, subtitle, bs=None):
+    def _render_scatter(
+        self,
+        tab,
+        x,
+        y,
+        z,
+        _N,
+        limit_gb,
+        x_min,
+        x_max,
+        y_max,
+        sparsity_lines,
+        z_label,
+        cmap_name,
+        subtitle,
+        bs=None,
+        mv_layout='row',
+        mv_layout_factor=1,
+    ):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
 
         sc = ax.scatter(x, y, c=z, cmap=cmap_name, s=100, edgecolors='black', zorder=3)
@@ -795,19 +1238,40 @@ class PerformanceBoundaryApp:
             ax.text(x[i], y[i], f"{z[i]:.3g}", fontsize=7,
                     ha='center', va='bottom', zorder=4)
 
-        self._draw_boundaries(ax, _N, limit_gb, x_min, x_max, bs=bs)
+        self._draw_boundaries(
+            ax, _N, limit_gb, x_min, x_max, y_max,
+            bs=bs,
+            mv_layout=mv_layout,
+            mv_layout_factor=mv_layout_factor,
+            sparsity_lines=sparsity_lines,
+        )
         ax.set_title(f"{title}\n{subtitle}", fontsize=10, loc='left', pad=8)
         ax.set_xlabel(f"Scale  (N = {_N:,} elements per scale unit)")
         ax.set_ylabel("Connection Number  (synapses / neuron)")
-        ax.set_ylim(max(y_max * 1.2, 100), 0)
-        ax.set_xlim(0, x_max * 1.1)
         ax.grid(True, linestyle='--', alpha=0.5)
 
         self._setup_scatter_hover(tab, x, y, z, z_label)
         canvas.draw()
 
-    def _render_interpolation(self, tab, x, y, z, _N, limit_gb, x_min, x_max, y_max,
-                              z_label, cmap_name, subtitle, bs=None):
+    def _render_interpolation(
+        self,
+        tab,
+        x,
+        y,
+        z,
+        _N,
+        limit_gb,
+        x_min,
+        x_max,
+        y_max,
+        sparsity_lines,
+        z_label,
+        cmap_name,
+        subtitle,
+        bs=None,
+        mv_layout='row',
+        mv_layout_factor=1,
+    ):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
 
         if len(x) < 4:
@@ -821,7 +1285,15 @@ class PerformanceBoundaryApp:
 
         limit_bytes = limit_gb * (1024 ** 3)
         data_size, times = self._get_boundary_params()
-        valid = (grid_y <= grid_x * _N) & (self._vram_bytes(grid_y, grid_x, data_size, times, _N, bs=bs) <= limit_bytes)
+        valid = (
+            (grid_y <= grid_x * _N)
+            & (
+                self._vram_bytes(
+                    grid_y, grid_x, data_size, times, _N,
+                    bs=bs, mv_layout_factor=mv_layout_factor,
+                ) <= limit_bytes
+            )
+        )
         grid_z_masked = np.where(valid, grid_z, np.nan)
 
         im          = ax.pcolormesh(grid_x, grid_y, grid_z_masked, shading='auto', cmap=cmap_name)
@@ -829,19 +1301,38 @@ class PerformanceBoundaryApp:
 
         self._draw_contours_and_labels(ax, grid_x, grid_y, grid_z_masked, z_pts=z)
         self._draw_custom_contours(ax, grid_x, grid_y, grid_z_masked)
-        self._draw_boundaries(ax, _N, limit_gb, x_min, x_max, bs=bs)
+        self._draw_boundaries(
+            ax, _N, limit_gb, x_min, x_max, y_max,
+            bs=bs,
+            mv_layout=mv_layout,
+            mv_layout_factor=mv_layout_factor,
+            sparsity_lines=sparsity_lines,
+        )
         ax.set_title(f"{title}\n{subtitle}", fontsize=10, loc='left', pad=8)
         ax.set_xlabel(f"Scale  (N = {_N:,} elements per scale unit)")
         ax.set_ylabel("Connection Number  (synapses / neuron)")
-        ax.set_ylim(max(y_max * 1.2, 100), 0)
-        ax.set_xlim(0, x_max * 1.1)
         ax.grid(True, linestyle='--', alpha=0.3)
 
         self._setup_interp_hover(tab, grid_x, grid_y, grid_z_masked, z_label)
         canvas.draw()
 
-    def _render_speedup_interp(self, tab, grid_x, grid_y, grid_z_masked,
-                               _N, limit_gb, x_min, x_max, y_max, subtitle, bs=None):
+    def _render_speedup_interp(
+        self,
+        tab,
+        grid_x,
+        grid_y,
+        grid_z_masked,
+        _N,
+        limit_gb,
+        x_min,
+        x_max,
+        y_max,
+        sparsity_lines,
+        subtitle,
+        bs=None,
+        mv_layout='row',
+        mv_layout_factor=1,
+    ):
         ax, canvas, title = tab['ax'], tab['canvas'], tab['title']
         z_label = "Speedup  (Baseline / Target)"
 
@@ -886,12 +1377,16 @@ class PerformanceBoundaryApp:
         self._draw_contours_and_labels(ax, grid_x, grid_y, grid_z_masked, z_pts=z_finite)
         self._draw_custom_contours(ax, grid_x, grid_y, grid_z_masked)
 
-        self._draw_boundaries(ax, _N, limit_gb, x_min, x_max, bs=bs)
+        self._draw_boundaries(
+            ax, _N, limit_gb, x_min, x_max, y_max,
+            bs=bs,
+            mv_layout=mv_layout,
+            mv_layout_factor=mv_layout_factor,
+            sparsity_lines=sparsity_lines,
+        )
         ax.set_title(f"{title}\n{subtitle}", fontsize=10, loc='left', pad=8)
         ax.set_xlabel(f"Scale  (N = {_N:,} elements per scale unit)")
         ax.set_ylabel("Connection Number  (synapses / neuron)")
-        ax.set_ylim(max(y_max * 1.2, 100), 0)
-        ax.set_xlim(0, x_max * 1.1)
         ax.grid(True, linestyle='--', alpha=0.3)
 
         self._setup_interp_hover(tab, grid_x, grid_y, grid_z_masked, z_label)

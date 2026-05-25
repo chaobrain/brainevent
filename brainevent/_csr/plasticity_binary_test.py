@@ -47,7 +47,7 @@ class Test_csr_on_pre:
     def test_csr_on_pre_v1(self, backend, shape):
         n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.5
+        mask = (mat < 0.5) & (mat != 0.)
         mat = jnp.where(mask, mat, 0.)
 
         pre_spike = brainstate.random.random((n_pre,)) < 0.5
@@ -72,7 +72,7 @@ class Test_csr_on_pre:
         def run():
             n_pre, n_post = shape
             mat = brainstate.random.random((n_pre, n_post))
-            mask = mat < 0.5
+            mask = (mat < 0.5) & (mat != 0.)
             mat = jnp.where(mask, mat, 0.) * mat_unit
             pre_spike = brainstate.random.random((n_pre,)) < 0.1
             post_trace = brainstate.random.random((n_post,)) * trace_unit
@@ -103,7 +103,7 @@ class Test_csr_on_pre:
     def test_csr_on_pre_v2(self, backend, shape, w_in, w_max):
         n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.5
+        mask = (mat < 0.5) & (mat != 0.)
         mat = jnp.where(mask, mat, 0.)
         pre_spike = brainstate.random.random((n_pre,)) < 0.1
         post_trace = brainstate.random.random((n_post,))
@@ -173,7 +173,7 @@ class Test_on_post:
     def test_csr_on_post_v1(self, backend, shape):
         n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.5
+        mask = (mat < 0.5) & (mat != 0.)
         mat = jnp.where(mask, mat, 0.)
 
         post_spike = brainstate.random.random((n_post,)) < 0.5
@@ -204,7 +204,7 @@ class Test_on_post:
         def run():
             n_pre, n_post = shape
             mat = brainstate.random.random((n_pre, n_post))
-            mask = mat < 0.5
+            mask = (mat < 0.5) & (mat != 0.)
             mat = jnp.where(mask, mat, 0.) * mat_unit
             post_spike = brainstate.random.random((n_post,)) < 0.1
             pre_trace = brainstate.random.random((n_pre,)) * trace_unit
@@ -241,7 +241,7 @@ class Test_on_post:
     def test_csr_on_post_v2(self, backend, shape, w_in, w_max):
         n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.5
+        mask = (mat < 0.5) & (mat != 0.)
         mat = jnp.where(mask, mat, 0.)
         post_spike = brainstate.random.random((n_post,)) < 0.1
         pre_trace = brainstate.random.random((n_pre,))

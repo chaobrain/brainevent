@@ -26,6 +26,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._compatible_import import Tracer
+from brainevent._event.compact_binary import COMPACT_BINARY_PREPROCESS_BACKEND
 from brainevent._misc import fixed_conn_num_to_csc, namescope
 from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_file, numba_kernel
 from brainevent.config import get_numba_parallel
@@ -37,6 +38,23 @@ __all__ = [
     'compact_binary_fcnmm',
     'compact_binary_fcnmm_p',
 ]
+
+
+_COMPACT_CUDA_DIR = Path(__file__).parent / 'compact'
+
+
+def _preferred_event_backend(primitive):
+    """Prefer the shared compact preprocessing backend for event encoders."""
+    available = primitive.available_backends(jax.default_backend())
+    if COMPACT_BINARY_PREPROCESS_BACKEND in available:
+        return COMPACT_BINARY_PREPROCESS_BACKEND
+    if 'jax_raw' in available:
+        return 'jax_raw'
+    if 'cuda_raw' in available:
+        return 'cuda_raw'
+    if 'numba' in available:
+        return 'numba'
+    return None
 
 
 # ===========================================================================
@@ -54,6 +72,7 @@ def compact_binary_fcnmv(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
+    backend: Optional[str] = None,
     col_weights: Optional[Union[jax.Array, u.Quantity]] = None,
     col_indices: Optional[jax.Array] = None,
     col_indptr: Optional[jax.Array] = None,
@@ -123,6 +142,7 @@ def compact_binary_fcnmv(
         spikes,
         shape=shape,
         transpose=transpose,
+        backend=backend,
         col_weights=col_weights,
         col_indices=col_indices,
         col_indptr=col_indptr,
@@ -256,11 +276,11 @@ def _compact_binary_fcnmv_cuda_kernel(
     **kwargs
 ):
     load_cuda_file(
-        Path(__file__).parent.joinpath('compact_binary_fcnmv.cu'),
+        _COMPACT_CUDA_DIR / 'compact_binary_fcnmv.cu',
         name='fcn_compact_binary_mv',
     )
     load_cuda_file(
-        Path(__file__).parent.joinpath('compact_binary_fcnmv_T.cu'),
+        _COMPACT_CUDA_DIR / 'compact_binary_fcnmv_T.cu',
         name='fcn_compact_binary_mv_t',
     )
 
@@ -321,54 +341,84 @@ def _compact_binary_fcnmv_cuda_kernel(
 
     return kernel
 
-
-def _compact_binary_fcnmv_dummy_kernel_impl(
-    variant: str,
+'''
+def _compact_binary_fcnmv_explicit_scatter_kernel(
+    scatter_kind: str,
     transpose: bool,
-    **kwargs
+    col_weight_info: jax.ShapeDtypeStruct,
+    col_indices_info: jax.ShapeDtypeStruct,
+    col_indptr_info: jax.ShapeDtypeStruct,
+    **kwargs,
 ):
-    if not transpose:
-        raise ValueError('Dummy compact backends only support scatter mode (`transpose=True`).')
-
-    weight_info = kwargs['weight_info']
-    if weight_info.size != 1:
-        raise ValueError('Dummy compact backends only support homogeneous weights.')
-
-    packed_info = kwargs['packed_info']
-    packed_size = int(np.prod(packed_info.shape))
-    if variant == 'packed':
-        if packed_size <= 0:
-            raise ValueError('`dummy_kernel` requires packed compact input (`packed.size > 0`).')
-    elif variant in ('vector_full', 'vector_active'):
-        if packed_size != 0:
-            raise ValueError(
-                f'`dummy_kernel_{variant}` requires vector-only compact input (`packed.size == 0`).'
-            )
-    else:
-        raise ValueError(f'Unsupported dummy compact variant: {variant!r}.')
-
     load_cuda_file(
-        Path(__file__).parent.joinpath('dummy.cu'),
-        name='fcn_dummy_mv',
+        _COMPACT_CUDA_DIR / 'compact_binary_fcnmv.cu',
+        name='fcn_compact_binary_mv',
     )
-
+    if scatter_kind == '2d_and_atomic':
+        load_cuda_file(
+            _COMPACT_CUDA_DIR / 'compact_binary_fcnmv_2d_and_atomic.cu',
+            name='fcn_compact_binary_mv',
+        )
+    load_cuda_file(
+        _COMPACT_CUDA_DIR / 'compact_binary_fcnmv_T.cu',
+        name='fcn_compact_binary_mv_t',
+    )
     out_info = kwargs['outs']
+    weight_info = kwargs['weight_info']
     _dtype_sfx = {
         jnp.dtype('float16'): '_f16',
         jnp.dtype('float32'): '_f32',
         jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16'
+        jnp.dtype('bfloat16'): '_bf16',
     }
     row_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    if variant == 'packed':
-        kernel_name = f'fcn_dummy_mv.dummy_compact_binary_fcnmv_scatter_homo{row_sfx}'
-    elif variant == 'vector_full':
-        kernel_name = f'fcn_dummy_mv.dummy_compact_binary_fcnmv_scatter_homo_vector_full{row_sfx}'
+    col_sfx = _dtype_sfx.get(jnp.dtype(col_weight_info.dtype), row_sfx)
+    row_homo = weight_info.size == 1
+    col_homo = col_weight_info.size == 1
+    col_indices_size = 1
+    for dim in col_indices_info.shape:
+        col_indices_size *= dim
+    col_indptr_size = 1
+    for dim in col_indptr_info.shape:
+        col_indptr_size *= dim
+    col_weight_size = 1
+    for dim in col_weight_info.shape:
+        col_weight_size *= dim
+    use_col_scatter = (
+        (not transpose)
+        and col_indices_size > 0
+        and col_indptr_size > 0
+        and col_weight_size > 0
+    )
+    use_2d_and_atomic = (
+        scatter_kind == '2d_and_atomic'
+        and transpose
+        and not use_col_scatter
+        and row_homo
+        and row_sfx == '_f32'
+    )
+
+    if use_2d_and_atomic:
+        kernel_name = 'fcn_compact_binary_mv.compact_binary_fcnmv_scatter_2d_and_atomic_homo_f32'
+    elif use_col_scatter:
+        mode_sfx = '_homo' if col_homo else '_hetero'
+        kernel_name = f'fcn_compact_binary_mv_t.compact_binary_fcnmv_scatter{mode_sfx}{col_sfx}'
+    elif transpose:
+        mode_sfx = '_homo' if row_homo else '_hetero'
+        if scatter_kind == '2d_and_atomic':
+            kernel_name = f'fcn_compact_binary_mv.compact_binary_fcnmv_scatter{mode_sfx}{row_sfx}'
+        else:
+            kernel_name = f'fcn_compact_binary_mv.compact_binary_fcnmv_scatter_{scatter_kind}{mode_sfx}{row_sfx}'
     else:
-        kernel_name = f'fcn_dummy_mv.dummy_compact_binary_fcnmv_scatter_homo_vector_active{row_sfx}'
+        mode_sfx = '_homo' if row_homo else '_hetero'
+        kernel_name = f'fcn_compact_binary_mv.compact_binary_fcnmv_gather{mode_sfx}{row_sfx}'
 
     def kernel(weights, indices, packed, active_ids, n_active, spikes, col_weights, col_indices, col_indptr):
-        del spikes, col_weights, col_indices, col_indptr
+        del spikes
+        if use_col_scatter:
+            return jax.ffi.ffi_call(
+                kernel_name, out_info
+            )(col_weights, col_indices, col_indptr, packed, active_ids, n_active)
         return jax.ffi.ffi_call(
             kernel_name, out_info
         )(weights, indices, packed, active_ids, n_active)
@@ -376,26 +426,21 @@ def _compact_binary_fcnmv_dummy_kernel_impl(
     return kernel
 
 
-def _compact_binary_fcnmv_dummy_kernel(
-    transpose: bool,
-    **kwargs
-):
-    return _compact_binary_fcnmv_dummy_kernel_impl('packed', transpose, **kwargs)
+def compact_tpr_kernel(*args, **kwargs):
+    return _compact_binary_fcnmv_explicit_scatter_kernel('tpr', *args, **kwargs)
 
 
-def _compact_binary_fcnmv_dummy_vector_full_kernel(
-    transpose: bool,
-    **kwargs
-):
-    return _compact_binary_fcnmv_dummy_kernel_impl('vector_full', transpose, **kwargs)
+def compact_wpr_kernel(*args, **kwargs):
+    return _compact_binary_fcnmv_explicit_scatter_kernel('wpr', *args, **kwargs)
 
 
-def _compact_binary_fcnmv_dummy_vector_active_kernel(
-    transpose: bool,
-    **kwargs
-):
-    return _compact_binary_fcnmv_dummy_kernel_impl('vector_active', transpose, **kwargs)
+def compact_bpr_kernel(*args, **kwargs):
+    return _compact_binary_fcnmv_explicit_scatter_kernel('bpr', *args, **kwargs)
 
+
+def compact_2d_and_atomic_kernel(*args, **kwargs):
+    return _compact_binary_fcnmv_explicit_scatter_kernel('2d_and_atomic', *args, **kwargs)
+'''
 
 # ---------------------------------------------------------------------------
 # Numba CPU kernel
@@ -580,7 +625,9 @@ def _compact_binary_fcnmv_transpose_rule(
 def _compact_binary_fcnmv_batching(args, axes, **kwargs):
     # args = (weights, indices, packed, active_ids, n_active, spikes, col_weights, col_indices, col_indptr)
     # Promote MV → MM when packed (arg2) and spikes (arg5) are batched.
-    # Reuse per-batch packed (transposed). Compute compaction only for scatter.
+    # Reuse per-batch packed (transposed) whenever it is already available.
+    # For compact-only vectors, scatter MM still needs a true 2D packed view
+    # because the compact MM kernels use packed bit checks per active row.
     ax_w, ax_i, ax_p, ax_a, ax_n, ax_s, ax_cw, ax_ci, ax_cp = axes
     if (
         ax_w is None and ax_i is None and ax_p is not None and ax_s is not None
@@ -589,18 +636,30 @@ def _compact_binary_fcnmv_batching(args, axes, **kwargs):
         packed = args[2] if ax_p == 0 else jnp.moveaxis(args[2], ax_p, 0)
         spikes = args[5] if ax_s == 0 else jnp.moveaxis(args[5], ax_s, 0)
 
-        # packed: (batch, n_words) → (n_words, batch) — reuse, pack_axis=0
-        reused_packed = packed.swapaxes(0, 1)
         # spikes: (batch, n_source) → (n_source, batch) for MM layout
         M = spikes.swapaxes(0, 1)
         n_source = M.shape[0]
 
         if kwargs['transpose']:
-            # Scatter mode: needs active_ids for row-skipping.
-            # Use lightweight CUDA compaction-only kernel.
-            from brainevent._event.compact import binary_2d_compact_only_p_call
-            new_active_ids, new_n_active = binary_2d_compact_only_p_call(M)
+            # Scatter mode: always needs row-level compaction metadata. Reuse
+            # the already-packed batch when present; fall back to rebuilding
+            # packed only for compact-only vector inputs.
+            from brainevent._event.compact import (
+                binary_2d_compact_only_p,
+                binary_2d_compact_only_p_call,
+            )
+            if packed.size > 0:
+                reused_packed = packed.swapaxes(0, 1)
+            else:
+                from brainevent._event.bitpack_binary import bitpack as _bitpack
+                reused_packed = _bitpack(M, axis=0)
+            new_active_ids, new_n_active = binary_2d_compact_only_p_call(
+                M,
+                backend=_preferred_event_backend(binary_2d_compact_only_p),
+            )
         else:
+            # packed: (batch, n_words) → (n_words, batch) — reuse, pack_axis=0
+            reused_packed = packed.swapaxes(0, 1)
             # Gather mode: active_ids/n_active unused by kernel — skip compaction.
             new_active_ids = jnp.zeros(n_source, dtype=jnp.int32)
             new_n_active = jnp.zeros(1, dtype=jnp.int32)
@@ -628,6 +687,7 @@ def compact_binary_fcnmv_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
+    backend: Optional[str] = None,
     col_weights: Optional[jax.Array] = None,
     col_indices: Optional[jax.Array] = None,
     col_indptr: Optional[jax.Array] = None,
@@ -689,6 +749,7 @@ def compact_binary_fcnmv_p_call(
         col_weight_info=jax.ShapeDtypeStruct(col_weights.shape, col_weights.dtype),
         col_indices_info=jax.ShapeDtypeStruct(col_indices.shape, col_indices.dtype),
         col_indptr_info=jax.ShapeDtypeStruct(col_indptr.shape, col_indptr.dtype),
+        backend=backend,
     )
 
 
@@ -718,9 +779,6 @@ packed, active_ids, n_active, spikes, col_weights, col_indices, col_indptr)``.
 )
 compact_binary_fcnmv_p.def_numba_kernel(_compact_binary_fcnmv_numba_kernel)
 compact_binary_fcnmv_p.def_cuda_raw_kernel(_compact_binary_fcnmv_cuda_kernel, asdefault=True)
-compact_binary_fcnmv_p.def_kernel('dummy_kernel', 'gpu', _compact_binary_fcnmv_dummy_kernel)
-compact_binary_fcnmv_p.def_kernel('dummy_kernel_vector_full', 'gpu', _compact_binary_fcnmv_dummy_vector_full_kernel)
-compact_binary_fcnmv_p.def_kernel('dummy_kernel_vector_active', 'gpu', _compact_binary_fcnmv_dummy_vector_active_kernel)
 compact_binary_fcnmv_p.def_jvp_rule2(
     _compact_binary_fcnmv_jvp_weights,  # arg 0: weights
     None,  # arg 1: indices (not differentiable)
@@ -732,6 +790,7 @@ compact_binary_fcnmv_p.def_jvp_rule2(
     None,  # arg 7: col_indices
     None,  # arg 8: col_indptr
 )
+
 compact_binary_fcnmv_p.def_transpose_rule(_compact_binary_fcnmv_transpose_rule)
 compact_binary_fcnmv_p.def_batching_rule(_compact_binary_fcnmv_batching)
 compact_binary_fcnmv_p.def_call(compact_binary_fcnmv_p_call)
@@ -754,6 +813,7 @@ def compact_binary_fcnmm(
     shape: Tuple[int, int],
     transpose: bool = False,
     pack_axis: int = 1,
+    backend: Optional[str] = None,
 ) -> Union[jax.Array, u.Quantity]:
     """
     Event-driven sparse matrix--matrix product with compact binary spikes.
@@ -803,6 +863,7 @@ def compact_binary_fcnmm(
         shape=shape,
         transpose=transpose,
         pack_axis=pack_axis,
+        backend=backend,
     )[0]
     return u.maybe_decimal(r * w_unit)
 
@@ -817,7 +878,7 @@ def _compact_binary_fcnmm_cuda_kernel(
     **kwargs
 ):
     load_cuda_file(
-        Path(__file__).parent.joinpath('compact_binary_fcnmm.cu'),
+        _COMPACT_CUDA_DIR / 'compact_binary_fcnmm.cu',
         name='fcn_compact_binary_mm',
     )
 
@@ -1086,7 +1147,10 @@ def _compact_binary_fcnmm_transpose_rule(
 # ---------------------------------------------------------------------------
 
 def _compact_binary_fcnmm_batching_base_fn(args, pack_axis, axis=1, **kwargs):
-    from brainevent._event.compact import binary_2d_array_index_p_call
+    from brainevent._event.compact import (
+        binary_2d_array_index_p,
+        binary_2d_array_index_p_call,
+    )
 
     # args = (weights, indices, packed, active_ids, n_active, matrix)
     assert args[5].ndim == 3, 'Batching requires 3D matrix input.'
@@ -1094,7 +1158,10 @@ def _compact_binary_fcnmm_batching_base_fn(args, pack_axis, axis=1, **kwargs):
     m, maybe_batch1, maybe_batch2 = matrix.shape
     M = matrix.reshape(m, maybe_batch1 * maybe_batch2)
     # Fused CUDA kernel: bitpack + compaction in one launch
-    new_packed, new_active_ids, new_n_active = binary_2d_array_index_p_call(M)
+    new_packed, new_active_ids, new_n_active = binary_2d_array_index_p_call(
+        M,
+        backend=_preferred_event_backend(binary_2d_array_index_p),
+    )
     r = compact_binary_fcnmm_p_call(
         args[0],
         args[1],
@@ -1150,6 +1217,7 @@ def compact_binary_fcnmm_p_call(
     shape: Tuple[int, int],
     transpose: bool = False,
     pack_axis: int = 1,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """
     Low-level primitive call for compact binary fcnmm.
@@ -1203,6 +1271,7 @@ def compact_binary_fcnmm_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         packed_info=jax.ShapeDtypeStruct(packed.shape, packed.dtype),
+        backend=backend,
     )
 
 
@@ -1229,6 +1298,9 @@ packed, active_ids, n_active, matrix)``.
 )
 compact_binary_fcnmm_p.def_numba_kernel(_compact_binary_fcnmm_numba_kernel)
 compact_binary_fcnmm_p.def_cuda_raw_kernel(_compact_binary_fcnmm_cuda_kernel, asdefault=True)
+
+#compact_binary_fcnmm_p.def_kernel()
+
 compact_binary_fcnmm_p.def_jvp_rule2(
     _compact_binary_fcnmm_jvp_weights,  # arg 0: weights
     None,  # arg 1: indices

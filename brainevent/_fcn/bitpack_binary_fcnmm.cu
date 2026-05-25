@@ -39,8 +39,8 @@
  * Supports homo (scalar weight) and hetero (per-connection weight array) modes.
  *
  * Kernel strategy:
- *   Gather:  Warp (n_conn <= 32) or Basic (n_conn > 32)
- *   Scatter: Warp (n_conn <= 32) or Basic (n_conn > 32)
+ *   Gather/Scatter: can be routed through Warp/WPR for all n_conn from Python.
+ *   Basic kernels are retained below for the default WPR/basic comparison.
  */
 
 #include "cuda_common.h"
@@ -80,13 +80,15 @@ __global__ void _bgm_a1_warp_homo_kern##SUFFIX(                                 
         int row = base + warp_id;                                                   \
         if (row >= n_pre) continue;                                                 \
         const int32_t* i_row = indices + (size_t)row * n_conn;                      \
-        int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                    \
         ACC_T accum = (ACC_T)0;                                                     \
-        _Pragma("unroll 4")                                                         \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int src = __shfl_sync(0xffffffff, my_idx, k);                           \
-            uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);        \
-            accum += (ACC_T)(col_valid & ((word >> lane) & 1u));                    \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;             \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int src = __shfl_sync(0xffffffff, my_idx, off);                     \
+                uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);    \
+                accum += (ACC_T)(col_valid & ((word >> lane) & 1u));                \
+            }                                                                        \
         }                                                                           \
         if (col_valid)                                                              \
             output[(size_t)row * n_batch + j] = WRITE_W(w0 * accum);               \
@@ -113,15 +115,17 @@ __global__ void _bgm_a1_warp_hetero_kern##SUFFIX(                               
         if (row >= n_pre) continue;                                                 \
         const int32_t*  i_row = indices + (size_t)row * n_conn;                     \
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                     \
-        int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                  \
-        ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;   \
         ACC_T accum  = (ACC_T)0;                                                    \
-        _Pragma("unroll 4")                                                         \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int   src = __shfl_sync(0xffffffff, my_idx, k);                         \
-            ACC_T wk  = __shfl_sync(0xffffffff, my_w, k);                           \
-            uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);        \
-            accum += wk * (ACC_T)(col_valid & ((word >> lane) & 1u));               \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int   my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;           \
+            ACC_T my_w   = (k_lane < n_conn) ? READ_W(__ldg(&w_row[k_lane])) : (ACC_T)0; \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int   src = __shfl_sync(0xffffffff, my_idx, off);                   \
+                ACC_T wk  = __shfl_sync(0xffffffff, my_w, off);                     \
+                uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);    \
+                accum += wk * (ACC_T)(col_valid & ((word >> lane) & 1u));           \
+            }                                                                        \
         }                                                                           \
         if (col_valid) output[(size_t)row * n_batch + j] = WRITE_W(accum);          \
     }                                                                               \
@@ -258,16 +262,18 @@ __global__ void _bgm_a0_warp_homo_kern##SUFFIX(                                 
         int row = base + warp_id;                                                   \
         if (row >= n_pre) continue;                                                 \
         const int32_t* i_row = indices + (size_t)row * n_conn;                      \
-        int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                    \
         ACC_T accum = (ACC_T)0;                                                     \
-        _Pragma("unroll 4")                                                         \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int src = __shfl_sync(0xffffffff, my_idx, k);                           \
-            int word_row = src >> 5;                                                \
-            int bit_pos  = src & 31;                                                \
-            uint32_t word = col_valid ?                                             \
-                __ldg(&packed[(size_t)word_row * n_batch + j]) : 0u;                \
-            accum += (ACC_T)((word >> bit_pos) & 1u);                               \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;             \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int src = __shfl_sync(0xffffffff, my_idx, off);                     \
+                int word_row = src >> 5;                                            \
+                int bit_pos  = src & 31;                                            \
+                uint32_t word = col_valid ?                                         \
+                    __ldg(&packed[(size_t)word_row * n_batch + j]) : 0u;            \
+                accum += (ACC_T)((word >> bit_pos) & 1u);                           \
+            }                                                                        \
         }                                                                           \
         if (col_valid)                                                              \
             output[(size_t)row * n_batch + j] = WRITE_W(w0 * accum);               \
@@ -294,18 +300,20 @@ __global__ void _bgm_a0_warp_hetero_kern##SUFFIX(                               
         if (row >= n_pre) continue;                                                 \
         const int32_t*  i_row = indices + (size_t)row * n_conn;                     \
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                     \
-        int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                  \
-        ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;   \
         ACC_T accum  = (ACC_T)0;                                                    \
-        _Pragma("unroll 4")                                                         \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int   src = __shfl_sync(0xffffffff, my_idx, k);                         \
-            ACC_T wk  = __shfl_sync(0xffffffff, my_w, k);                           \
-            int word_row = src >> 5;                                                \
-            int bit_pos  = src & 31;                                                \
-            uint32_t word = col_valid ?                                             \
-                __ldg(&packed[(size_t)word_row * n_batch + j]) : 0u;                \
-            accum += wk * (ACC_T)((word >> bit_pos) & 1u);                          \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int   my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;           \
+            ACC_T my_w   = (k_lane < n_conn) ? READ_W(__ldg(&w_row[k_lane])) : (ACC_T)0; \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int   src = __shfl_sync(0xffffffff, my_idx, off);                   \
+                ACC_T wk  = __shfl_sync(0xffffffff, my_w, off);                     \
+                int word_row = src >> 5;                                            \
+                int bit_pos  = src & 31;                                            \
+                uint32_t word = col_valid ?                                         \
+                    __ldg(&packed[(size_t)word_row * n_batch + j]) : 0u;            \
+                accum += wk * (ACC_T)((word >> bit_pos) & 1u);                      \
+            }                                                                        \
         }                                                                           \
         if (col_valid) output[(size_t)row * n_batch + j] = WRITE_W(accum);          \
     }                                                                               \
@@ -444,12 +452,14 @@ __global__ void _bsm_a1_warp_homo_kern##SUFFIX(                                 
         uint32_t active_mask = __ballot_sync(0xffffffff, active);                   \
         if (active_mask == 0) continue;                                             \
         const int32_t* i_row = indices + (size_t)row * n_conn;                      \
-        int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                    \
-        _Pragma("unroll 4")                                                         \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int target = __shfl_sync(0xffffffff, my_idx, k);                        \
-            if (active)                                                             \
-                ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], w0);            \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;             \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int target = __shfl_sync(0xffffffff, my_idx, off);                  \
+                if (active)                                                         \
+                    ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], w0);        \
+            }                                                                        \
         }                                                                           \
     }                                                                               \
 }
@@ -478,14 +488,16 @@ __global__ void _bsm_a1_warp_hetero_kern##SUFFIX(                               
         if (active_mask == 0) continue;                                             \
         const int32_t*  i_row = indices + (size_t)row * n_conn;                     \
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                     \
-        int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                  \
-        ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;   \
-        _Pragma("unroll 4")                                                         \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int   target = __shfl_sync(0xffffffff, my_idx, k);                      \
-            ACC_T wk     = __shfl_sync(0xffffffff, my_w, k);                        \
-            if (active)                                                             \
-                ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], wk);            \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int   my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;           \
+            ACC_T my_w   = (k_lane < n_conn) ? READ_W(__ldg(&w_row[k_lane])) : (ACC_T)0; \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int   target = __shfl_sync(0xffffffff, my_idx, off);                \
+                ACC_T wk     = __shfl_sync(0xffffffff, my_w, off);                  \
+                if (active)                                                         \
+                    ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], wk);        \
+            }                                                                        \
         }                                                                           \
     }                                                                               \
 }
@@ -623,12 +635,14 @@ __global__ void _bsm_a0_warp_homo_kern##SUFFIX(                                 
         uint32_t active_mask = __ballot_sync(0xffffffff, active);                   \
         if (active_mask == 0) continue;                                             \
         const int32_t* i_row = indices + (size_t)row * n_conn;                      \
-        int my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                    \
-        _Pragma("unroll 4")                                                         \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int target = __shfl_sync(0xffffffff, my_idx, k);                        \
-            if (active)                                                             \
-                ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], w0);            \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;             \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int target = __shfl_sync(0xffffffff, my_idx, off);                  \
+                if (active)                                                         \
+                    ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], w0);        \
+            }                                                                        \
         }                                                                           \
     }                                                                               \
 }
@@ -660,14 +674,16 @@ __global__ void _bsm_a0_warp_hetero_kern##SUFFIX(                               
         if (active_mask == 0) continue;                                             \
         const int32_t*  i_row = indices + (size_t)row * n_conn;                     \
         const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                     \
-        int   my_idx = (lane < n_conn) ? __ldg(&i_row[lane]) : 0;                  \
-        ACC_T my_w   = (lane < n_conn) ? READ_W(__ldg(&w_row[lane])) : (ACC_T)0;   \
-        _Pragma("unroll 4")                                                         \
-        for (int k = 0; k < n_conn; k++) {                                          \
-            int   target = __shfl_sync(0xffffffff, my_idx, k);                      \
-            ACC_T wk     = __shfl_sync(0xffffffff, my_w, k);                        \
-            if (active)                                                             \
-                ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], wk);            \
+        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                   \
+            int k_lane = k0 + lane;                                                 \
+            int   my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;           \
+            ACC_T my_w   = (k_lane < n_conn) ? READ_W(__ldg(&w_row[k_lane])) : (ACC_T)0; \
+            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {               \
+                int   target = __shfl_sync(0xffffffff, my_idx, off);                \
+                ACC_T wk     = __shfl_sync(0xffffffff, my_w, off);                  \
+                if (active)                                                         \
+                    ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], wk);        \
+            }                                                                        \
         }                                                                           \
     }                                                                               \
 }

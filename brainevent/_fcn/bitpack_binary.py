@@ -17,7 +17,7 @@
 
 
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import brainunit as u
 import jax
@@ -26,7 +26,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, load_cuda_file
-from brainevent.config import get_numba_parallel
+from brainevent.config import get_backend, get_numba_parallel
 from .float import fcnmv, fcnmm
 
 __all__ = [
@@ -36,8 +36,7 @@ __all__ = [
     'bitpack_binary_fcnmm_p',
 ]
 
-
-@namescope(static_argnames=['shape', 'transpose'])
+@namescope(static_argnames=['shape', 'transpose', 'mm_pack_axis'])
 def bitpack_binary_fcnmv(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -46,6 +45,8 @@ def bitpack_binary_fcnmv(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
+    mm_pack_axis: int = 0,
+    backend: Optional[str] = None,
 ) -> Union[jax.Array, u.Quantity]:
     """
     Event-driven sparse matrix--vector product with bit-packed binary spikes.
@@ -77,6 +78,13 @@ def bitpack_binary_fcnmv(
     transpose : bool, optional
         If ``False`` (default), compute ``W @ s`` (gather mode).
         If ``True``, compute ``W^T @ s`` (scatter mode).
+    mm_pack_axis : int, optional
+        Packing axis to use if this vector primitive is promoted to FCN-MM
+        by batching/vmap. The unbatched vector kernel always consumes a
+        vector packed along axis 0.
+    backend : str or None, optional
+        FCN-MM backend to use if batching promotes this vector primitive to
+        ``bitpack_binary_fcnmm``. The unbatched vector kernel is unchanged.
 
     Returns
     -------
@@ -92,6 +100,8 @@ def bitpack_binary_fcnmv(
         spikes,
         shape=shape,
         transpose=transpose,
+        mm_pack_axis=mm_pack_axis,
+        mm_backend=backend,
     )[0]
     return u.maybe_decimal(r * w_unit)
 
@@ -105,162 +115,13 @@ def _bitpack_binary_fcnmv_cuda_kernel(
     pack_axis: int,
     **kwargs
 ):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('bitpack_binary_fcnmv.cu'),
-        name='fcn_bitpack_binary_mv',
-    )
-
-    out_info = kwargs['outs']
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16'
-    }
-    weight_info = kwargs['weight_info']
-    sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    homo = weight_info.size == 1
-    mode_sfx = '_homo' if homo else '_hetero'
-
     if transpose:
-        kernel_name = f'fcn_bitpack_binary_mv.bitpack_binary_fcnmv_scatter{mode_sfx}{sfx}'
-    else:
-        kernel_name = f'fcn_bitpack_binary_mv.bitpack_binary_fcnmv_gather{mode_sfx}{sfx}'
+        raise ValueError(
+            'Bitpack_binary_fcnmv no longer supports this path: the transpose=True '
+            'scatter operators have been removed. Recommended alternative: use '
+            'BinaryArray for scatter-style execution.'
+        )
 
-    def kernel(weights, indices, packed, spikes):
-        return jax.ffi.ffi_call(
-            kernel_name, out_info
-        )(weights, indices, packed, pack_axis=pack_axis)
-
-    return kernel
-
-
-def _bitpack_binary_fcnmv_dummy_kernel(
-    transpose: bool,
-    pack_axis: int,
-    **kwargs
-):
-    if not transpose:
-        raise ValueError('`dummy_kernel` only supports scatter mode (`transpose=True`).')
-
-    weight_info = kwargs['weight_info']
-    if weight_info.size != 1:
-        raise ValueError('`dummy_kernel` only supports homogeneous weights.')
-
-    load_cuda_file(
-        Path(__file__).parent.joinpath('dummy.cu'),
-        name='fcn_dummy_mv',
-    )
-
-    out_info = kwargs['outs']
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16'
-    }
-    sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'fcn_dummy_mv.dummy_bitpack_binary_fcnmv_scatter_homo{sfx}'
-
-    def kernel(weights, indices, packed, spikes):
-        del spikes
-        return jax.ffi.ffi_call(
-            kernel_name, out_info
-        )(weights, indices, packed, pack_axis=pack_axis)
-
-    return kernel
-
-# ---------------------------------------------------------------------------
-# JAX GPU kernel
-# ---------------------------------------------------------------------------
-'''
-def _binary_fcnmv_jax_kernel(
-    shape: Tuple[int, int],
-    transpose: bool,
-    **kwargs,
-):
-    """Pure JAX reference implementation for benchmarking comparison."""
-    n_pre, n_post = shape
-
-    def kernel(weights, indices, spikes):
-        # Convert spikes to float: bool→{0,1}, float→{0,1} based on >0
-        #bool_spk = u.math.asarray(spikes, dtype=bool)
-        
-        if spikes.dtype == jnp.bool_:
-            spk_f = spikes.astype(weights.dtype)
-        else:
-            spk_f = (spikes > 0).astype(weights.dtype)
-        
-        #spk_f = u.math.asarray(spikes, dtype=bool)
-
-        if transpose:
-            # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
-            masked = jnp.broadcast_to(spk_f[:, None] * weights, indices.shape)
-            return jax.ops.segment_sum(masked.ravel(), indices.ravel(), num_segments=n_post),
-        else:
-            # Gather: y[i] = sum_k weights[i,k] * spk_f[indices[i,k]]
-            if weights.size == 1:
-                w = weights[0]
-                return jax.vmap(lambda ind: w * jnp.sum(spk_f[ind]))(indices),
-            else:
-                return jax.vmap(lambda w, ind: jnp.sum(w * spk_f[ind]))(weights, indices),
-
-    return kernel
-'''
-# ---------------------------------------------------------------------------
-# JAX/Cuda GPU kernel
-# ---------------------------------------------------------------------------
-
-def bitpack_binary_fcnmv_jax_cuda_joint_kernel(
-    transpose: bool,
-    pack_axis: int,
-    shape: Tuple[int, int],
-    **kwargs,
-):
-    """Select a JAX or CUDA implementation for bit-packed fcnmv on GPU."""
-    n_pre, n_post = shape
-
-    def jax_kernel_part(weights, indices, packed, spikes):
-        # Convert spikes to float: bool→{0,1}, float→{0,1} based on >0
-        #bool_spk = u.math.asarray(spikes, dtype=bool)
-        
-        if spikes.dtype == jnp.bool_:
-            spk_f = spikes.astype(weights.dtype)
-        else:
-            spk_f = (spikes > 0).astype(weights.dtype)
-        
-        #spk_f = u.math.asarray(spikes, dtype=bool)
-
-        if weights.size == 1:
-            w = weights[0]
-            return jax.vmap(lambda ind: w * jnp.sum(spk_f[ind]))(indices),
-        else:
-            return jax.vmap(lambda w, ind: jnp.sum(w * spk_f[ind]))(weights, indices),
-
-    weight_info = kwargs['weight_info']
-    homo = weight_info.size == 1
-    indices_info = kwargs.get('indices_info', None)
-    n_conn = indices_info.shape[1] if indices_info is not None else 251
-    if not homo:
-        if (n_pre < 100 * 4000) or (n_pre < 500 * 4000 and n_pre > 250 * 4000 and n_conn < 500):
-            print("using jax")
-            return jax_kernel_part
-    else:
-        if (n_pre < 500 * 4000 and n_conn < 500):
-            print("using jax")
-            return jax_kernel_part
-    '''
-    if homo:
-        use_jax = (n_pre < 500 * 4000 and n_post < 500)
-        if use_jax:
-            print("using jax")
-            return jax_kernel_part
-    else:
-        use_jax = (n_pre < 500 * 4000 and n_post < 500) or (n_post > 1750)
-        if use_jax:
-            print("using jax")
-            return jax_kernel_part
-    '''
     load_cuda_file(
         Path(__file__).parent.joinpath('bitpack_binary_fcnmv.cu'),
         name='fcn_bitpack_binary_mv',
@@ -273,18 +134,19 @@ def bitpack_binary_fcnmv_jax_cuda_joint_kernel(
         jnp.dtype('float64'): '_f64',
         jnp.dtype('bfloat16'): '_bf16'
     }
+    weight_info = kwargs['weight_info']
     sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    homo = weight_info.size == 1
     mode_sfx = '_homo' if homo else '_hetero'
-    dir_sfx = '_gather'
-    kernel_name = f'fcn_bitpack_binary_mv.bitpack_binary_fcnmv{dir_sfx}{mode_sfx}{sfx}'
+    kernel_name = f'fcn_bitpack_binary_mv.bitpack_binary_fcnmv_gather{mode_sfx}{sfx}'
 
-    def cuda_kernel_part(weights, indices, packed, spikes):
-        print("using cuda")
+    def kernel(weights, indices, packed, spikes):
         return jax.ffi.ffi_call(
             kernel_name, out_info
         )(weights, indices, packed, pack_axis=pack_axis)
 
-    return cuda_kernel_part
+    return kernel
+
 
 # ---------------------------------------------------------------------------
 # Numba CPU kernel
@@ -385,7 +247,11 @@ def _bitpack_binary_fcnmv_jvp_weights(
     w_dot, weights, indices, packed, spikes, *, shape, transpose, **kwargs
 ):
     return bitpack_binary_fcnmv_p_call(
-        w_dot, indices, packed, spikes, shape=shape, transpose=transpose,
+        w_dot, indices, packed, spikes,
+        shape=shape,
+        transpose=transpose,
+        mm_pack_axis=kwargs.get('mm_pack_axis', 0),
+        mm_backend=kwargs.get('mm_backend'),
     )
 
 
@@ -426,7 +292,10 @@ def _bitpack_binary_fcnmv_transpose_rule(
         ct_gmax = bitpack_binary_fcnmv_p_call(
             jnp.asarray(1., dtype=weight_info.dtype),
             indices, packed, spikes,
-            shape=shape, transpose=transpose,
+            shape=shape,
+            transpose=transpose,
+            mm_pack_axis=kwargs.get('mm_pack_axis', 0),
+            mm_backend=kwargs.get('mm_backend'),
         )[0]
         ct_gmax = jnp.inner(ct, ct_gmax).reshape(*weight_info.shape)
     else:
@@ -442,26 +311,61 @@ def _bitpack_binary_fcnmv_transpose_rule(
 # ---------------------------------------------------------------------------
 
 def _bitpack_binary_fcnmv_batching(args, axes, **kwargs):
+    def _resolved_fcnmm_backend():
+        requested = kwargs.get('mm_backend')
+        if requested is None:
+            requested = kwargs.get('backend')
+        if requested is not None:
+            return requested
+        platform = jax.default_backend()
+        global_backend = get_backend(platform)
+        if global_backend in bitpack_binary_fcnmm_p.available_backends(platform):
+            return global_backend
+        return None
+
+    backend = _resolved_fcnmm_backend()
+    mm_pack_axis = int(kwargs.get('mm_pack_axis', 0))
+    if mm_pack_axis not in (0, 1):
+        raise ValueError(f'mm_pack_axis must be 0 or 1, got {mm_pack_axis!r}.')
+    use_a1_mm_layout = mm_pack_axis == 1
+
     # When spikes and packed are batched (axis 0), promote MV → MM
     if tuple(axes) == (None, None, 0, 0):
-        # packed: (batch, n_words), spikes: (batch, n_source) → transpose for MM layout
+        matrix = args[3].T  # matrix: (n_source, batch)
+        if use_a1_mm_layout:
+            from brainevent._event.bitpack_binary import bitpack as _bitpack
+            packed = _bitpack(matrix, axis=1)
+            pack_axis = 1
+        else:
+            packed = args[2].T  # packed: (n_words, batch) → pack_axis=0 MM layout
+            pack_axis = 0
         r = bitpack_binary_fcnmm_p_call(
             args[0], args[1],
-            args[2].T,  # packed: (n_words, batch) → pack_axis=0 MM layout
-            args[3].T,  # matrix: (n_source, batch) → MM layout
+            packed,
+            matrix,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            pack_axis=0,
+            pack_axis=pack_axis,
+            backend=backend,
         )
         return r, [1]
     elif tuple(axes) == (None, None, 1, 1):
+        matrix = args[3]  # matrix: (n_source, batch)
+        if use_a1_mm_layout:
+            from brainevent._event.bitpack_binary import bitpack as _bitpack
+            packed = _bitpack(matrix, axis=1)
+            pack_axis = 1
+        else:
+            packed = args[2]  # packed: (n_words, batch) — already pack_axis=0 layout
+            pack_axis = 0
         r = bitpack_binary_fcnmm_p_call(
             args[0], args[1],
-            args[2],  # packed: (n_words, batch) — already pack_axis=0 layout
-            args[3],  # matrix: (n_source, batch)
+            packed,
+            matrix,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            pack_axis=0,
+            pack_axis=pack_axis,
+            backend=backend,
         )
         return r, [1]
     else:
@@ -480,6 +384,8 @@ def bitpack_binary_fcnmv_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
+    mm_pack_axis: int = 0,
+    mm_backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """
     Low-level primitive call for bit-packed binary fcnmv.
@@ -498,6 +404,10 @@ def bitpack_binary_fcnmv_p_call(
         Logical ``(num_pre, num_post)`` shape.
     transpose : bool, optional
         Gather (False) or scatter (True) mode.
+    mm_pack_axis : int, optional
+        Packing axis to use if batching promotes this MV primitive to MM.
+    mm_backend : str or None, optional
+        Backend to use if batching promotes this MV primitive to MM.
 
     Returns
     -------
@@ -507,6 +417,9 @@ def bitpack_binary_fcnmv_p_call(
     n_pre, n_post = shape
     if weights.ndim == 0:
         weights = jnp.expand_dims(weights, 0)
+    mm_pack_axis = int(mm_pack_axis)
+    if mm_pack_axis not in (0, 1):
+        raise ValueError(f'mm_pack_axis must be 0 or 1, got {mm_pack_axis!r}.')
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
     if transpose:
         out = jax.ShapeDtypeStruct((n_post,), weights.dtype)
@@ -521,6 +434,8 @@ def bitpack_binary_fcnmv_p_call(
         shape=shape,
         transpose=transpose,
         pack_axis=0,
+        mm_pack_axis=mm_pack_axis,
+        mm_backend=mm_backend,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         packed_info=jax.ShapeDtypeStruct(packed.shape, packed.dtype),
@@ -548,8 +463,6 @@ to the CUDA kernel.
 )
 bitpack_binary_fcnmv_p.def_numba_kernel(_bitpack_binary_fcnmv_numba_kernel)
 bitpack_binary_fcnmv_p.def_cuda_raw_kernel(_bitpack_binary_fcnmv_cuda_kernel, asdefault=True)
-bitpack_binary_fcnmv_p.def_kernel('dummy_kernel', 'gpu', _bitpack_binary_fcnmv_dummy_kernel)
-#bitpack_binary_fcnmv_p.def_kernel('jax_cuda_joint', 'gpu', bitpack_binary_fcnmv_jax_cuda_joint_kernel, asdefault=True)
 bitpack_binary_fcnmv_p.def_jvp_rule2(
     _bitpack_binary_fcnmv_jvp_weights,  # arg 0: weights
     None,  # arg 1: indices (not differentiable)
@@ -576,6 +489,7 @@ def bitpack_binary_fcnmm(
     shape: Tuple[int, int],
     transpose: bool = False,
     pack_axis: int = 1,
+    backend: Optional[str] = None,
 ) -> Union[jax.Array, u.Quantity]:
     """
     Event-driven sparse matrix--matrix product with bit-packed binary spikes.
@@ -607,6 +521,8 @@ def bitpack_binary_fcnmm(
         If ``True``, compute ``W^T @ M`` (scatter mode).
     pack_axis : int, optional
         Axis along which ``matrix`` was packed.  Default is ``1``.
+    backend : str or None, optional
+        Execution backend override.
 
     Returns
     -------
@@ -623,6 +539,7 @@ def bitpack_binary_fcnmm(
         shape=shape,
         transpose=transpose,
         pack_axis=pack_axis,
+        backend=backend,
     )[0]
     return u.maybe_decimal(r * w_unit)
 
@@ -657,7 +574,9 @@ def _bitpack_binary_fcnmm_cuda_kernel(
     kernel_name = f'fcn_bitpack_binary_mm.bitpack_binary_fcnmm{dir_sfx}{mode_sfx}{axis_sfx}{sfx}'
 
     def kernel(weights, indices, packed, matrix):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, packed)
+        return jax.ffi.ffi_call(
+            kernel_name, out_info
+        )(weights, indices, packed)
 
     return kernel
 
@@ -863,7 +782,11 @@ def _bitpack_binary_fcnmm_jvp_weights(
     w_dot, weights, indices, packed, matrix, *, shape, transpose, pack_axis, **kwargs
 ):
     return bitpack_binary_fcnmm_p_call(
-        w_dot, indices, packed, matrix, shape=shape, transpose=transpose, pack_axis=pack_axis,
+        w_dot, indices, packed, matrix,
+        shape=shape,
+        transpose=transpose,
+        pack_axis=pack_axis,
+        backend=kwargs.get('backend'),
     )
 
 
@@ -902,7 +825,10 @@ def _bitpack_binary_fcnmm_transpose_rule(
     elif homo:
         ct_weight = bitpack_binary_fcnmm_p_call(
             jnp.ones([1], dtype=weight_info.dtype), indices, packed, matrix,
-            shape=shape, transpose=transpose, pack_axis=pack_axis,
+            shape=shape,
+            transpose=transpose,
+            pack_axis=pack_axis,
+            backend=kwargs.get('backend'),
         )[0]
         ct_weight = jnp.sum(ct * ct_weight).reshape(*weight_info.shape)
     else:
@@ -932,6 +858,7 @@ def _bitpack_binary_fcnmm_batching_base_fn(args, pack_axis, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         pack_axis=pack_axis,
+        backend=kwargs.get('backend'),
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
@@ -945,19 +872,42 @@ def _bitpack_binary_fcnmm_batching(args, axes, **kwargs):
         args = list(args)
         args[3] = jnp.transpose(args[3], (1, 0, 2))
         return _bitpack_binary_fcnmm_batching_base_fn(
-            args, pack_axis, shape=kwargs['shape'], transpose=kwargs['transpose'])
+            args,
+            pack_axis,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs.get('backend'),
+        )
 
     elif tuple(axes) == (None, None, 1, 1):
         return _bitpack_binary_fcnmm_batching_base_fn(
-            args, pack_axis, shape=kwargs['shape'], transpose=kwargs['transpose'])
+            args,
+            pack_axis,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs.get('backend'),
+        )
 
     elif tuple(axes) == (None, None, 2, 2):
         return _bitpack_binary_fcnmm_batching_base_fn(
-            args, pack_axis, axis=2, shape=kwargs['shape'], transpose=kwargs['transpose'])
+            args,
+            pack_axis,
+            axis=2,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs.get('backend'),
+        )
 
     else:
         return general_batching_rule(
-            bitpack_binary_fcnmm_p, args, axes, shape=kwargs['shape'], transpose=kwargs['transpose'])
+            bitpack_binary_fcnmm_p,
+            args,
+            axes,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            pack_axis=pack_axis,
+            backend=kwargs.get('backend'),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -973,6 +923,7 @@ def bitpack_binary_fcnmm_p_call(
     shape: Tuple[int, int],
     transpose: bool = False,
     pack_axis: int = 1,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """
     Low-level primitive call for bit-packed binary fcnmm.
@@ -993,6 +944,8 @@ def bitpack_binary_fcnmm_p_call(
         Gather (False) or scatter (True) mode.
     pack_axis : int, optional
         Axis along which matrix was packed.
+    backend : str or None, optional
+        Backend override.
 
     Returns
     -------
@@ -1020,6 +973,7 @@ def bitpack_binary_fcnmm_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         packed_info=jax.ShapeDtypeStruct(packed.shape, packed.dtype),
+        backend=backend,
     )
 
 
@@ -1050,6 +1004,7 @@ bitpack_binary_fcnmm_p.def_jvp_rule2(
     None,  # arg 2: packed
     _bitpack_binary_fcnmm_jvp_matrix,  # arg 3: matrix
 )
+
 bitpack_binary_fcnmm_p.def_transpose_rule(_bitpack_binary_fcnmm_transpose_rule)
 bitpack_binary_fcnmm_p.def_batching_rule(_bitpack_binary_fcnmm_batching)
 bitpack_binary_fcnmm_p.def_call(bitpack_binary_fcnmm_p_call)

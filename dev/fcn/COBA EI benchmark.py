@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import sys
+import warnings
 from pathlib import Path
 from typing import Union
 
@@ -22,9 +23,14 @@ if _PROJECT_ROOT not in sys.path:
 
 conn_num_base = 80
 
-_FCN_DATA_TYPES = ('binary', 'float', 'bitpack', 'bitpack_a0', 'bitpack_a1', 'compact')
+_FCN_DATA_TYPES = ('binary', 'float', 'bitpack', 'bitpack_a0', 'bitpack_a1', 'compact', 'compact_only_vector')
 _FCN_LAYOUTS = ('col_scatter', 'row_gather', 'auto')
 _FCN_TARGETS = ('pre', 'post')
+_COMPACT_RESTORED_WARNING = (
+    'Compact binary FCN operators are restored for this benchmark but remain '
+    'experimental and may be removed again; prefer data_type="binary" or a '
+    'bitpack data_type for stable benchmark runs.'
+)
 
 
 def _validate_args(
@@ -36,7 +42,8 @@ def _validate_args(
     if data_type not in _FCN_DATA_TYPES:
         raise ValueError(
             'data_type must be one of '
-            '"binary", "float", "bitpack", "bitpack_a0", "bitpack_a1", "compact".'
+            '"binary", "float", "bitpack", "bitpack_a0", "bitpack_a1", '
+            '"compact", "compact_only_vector".'
         )
     if efferent_target not in _FCN_TARGETS:
         raise ValueError('The target of the connection must be either "pre" or "post".')
@@ -78,6 +85,7 @@ def _make_post_conn(
     homo: bool,
     conn_weight_base: u.Quantity,
     mv_layout: str,
+    backend: str | None = None,
 ) -> brainevent.FixedPostNumConn:
     total_conn_num = conn_num
     conn_num = _resolve_conn_num(conn_num, source_size, target_size, efferent_target=efferent_target)
@@ -91,13 +99,15 @@ def _make_post_conn(
         n_rows = target_size
         n_cols = source_size
 
-    # Dual row/col layout is only needed for the pre-synaptic column-scatter
-    # path. Post-synaptic updates use transpose=True scatter and do not consume
-    # the maintained CSC mirror.
+    # Dual row/col layout is needed for the pre-synaptic column-scatter path.
+    # compact_only_vector also needs it for all pre-synaptic MV routes because
+    # that representation intentionally has no bit-packed gather data.
     maintain_dual_layout = (
         efferent_target == 'pre'
-        and data_type in ('binary', 'compact')
-        and mv_layout == 'col_scatter'
+        and (
+            (data_type in ('binary', 'compact') and mv_layout == 'col_scatter')
+            or data_type == 'compact_only_vector'
+        )
     )
     bitpack_mm_pack_axis = _resolve_bitpack_mm_pack_axis(data_type)
 
@@ -115,6 +125,7 @@ def _make_post_conn(
     return brainevent.FixedPostNumConn(
         (weight, u.math.asarray(indices_np, dtype=np.int32)),
         shape=shape,
+        backend=backend,
         maintain_dual_layout=maintain_dual_layout,
         bitpack_mm_pack_axis=bitpack_mm_pack_axis,
     )
@@ -125,18 +136,13 @@ def _prepare_operand(spikes, *, data_type: str, efferent_target: str):
     if data_type == 'binary':
         return brainevent.BinaryArray(spikes)
     if data_type == 'compact':
-        # Post-synaptic 1D compact scatter reads only active_ids/n_active.
-        # Pre-synaptic routes still need packed bits for gather / CSC scatter.
-        if efferent_target == 'post':
-            compact_only_ctor = getattr(
-                brainevent.CompactBinary,
-                'compacy_only_vector',
-                getattr(brainevent.CompactBinary, 'compact_only_vector', None),
-            )
-            if compact_only_ctor is None:
-                raise AttributeError('CompactBinary is missing a compact-only 1D constructor.')
-            return compact_only_ctor(spikes)
+        warnings.warn(_COMPACT_RESTORED_WARNING, UserWarning, stacklevel=2)
         return brainevent.CompactBinary.from_array(spikes)
+    if data_type == 'compact_only_vector':
+        warnings.warn(_COMPACT_RESTORED_WARNING, UserWarning, stacklevel=2)
+        if spikes.ndim != 1:
+            raise ValueError('compact_only_vector is only supported for MV/vector inputs.')
+        return brainevent.CompactBinary.compacy_only_vector(spikes)
     if data_type in ('bitpack', 'bitpack_a0', 'bitpack_a1'):
         return brainevent.BitPackedBinary(spikes)
     if data_type == 'float':
@@ -194,6 +200,7 @@ class EINet(brainstate.nn.Module):
         conn_num: Union[int, float] = 80,
         homo: bool = True,
         mv_layout: str = 'row_gather',
+        backend: str | None = None,
     ):
         super().__init__()
         _validate_args(data_type=data_type, efferent_target=efferent_target, mv_layout=mv_layout)
@@ -225,6 +232,7 @@ class EINet(brainstate.nn.Module):
             homo=homo,
             conn_weight_base=0.6 * u.mS,
             mv_layout=mv_layout,
+            backend=backend,
         )
         self.inh_conn = _make_post_conn(
             self.n_inh,
@@ -235,6 +243,7 @@ class EINet(brainstate.nn.Module):
             homo=homo,
             conn_weight_base=6.7 * u.mS,
             mv_layout=mv_layout,
+            backend=backend,
         )
 
         self.exc_syn = brainpy.state.Expon(self.num, tau=5. * u.ms)
@@ -249,7 +258,7 @@ class EINet(brainstate.nn.Module):
     def init_state(self, *args, **kwargs):
         self.rate = brainstate.ShortTermState(u.math.zeros(self.num))
 
-    def update(self, t, inp, *, exc_conn=None, inh_conn=None):
+    def _update_impl(self, t, inp, *, exc_conn=None, inh_conn=None, return_intermediates=False):
         with brainstate.environ.context(t=t):
             spk = self.N.get_spike() != 0.
             exc_spk = spk[:self.n_exc]
@@ -278,7 +287,38 @@ class EINet(brainstate.nn.Module):
 
             self.N(inp)
             self.rate.value += self.N.get_spike()
-            return self.N.get_spike()
+            spike = self.N.get_spike()
+            if return_intermediates:
+                dtype = brainstate.environ.dftype()
+                return (
+                    spike,
+                    u.math.asarray(u.get_mantissa(delta_g_exc), dtype=dtype),
+                    u.math.asarray(u.get_mantissa(delta_g_inh), dtype=dtype),
+                    u.math.asarray(u.get_mantissa(g_exc), dtype=dtype),
+                    u.math.asarray(u.get_mantissa(g_inh), dtype=dtype),
+                    u.math.asarray(u.get_mantissa(inp), dtype=dtype),
+                )
+            return spike
+
+    def update(self, t, inp, *, exc_conn=None, inh_conn=None):
+        return self._update_impl(t, inp, exc_conn=exc_conn, inh_conn=inh_conn)
+
+    def update_with_intermediates(self, t, inp, *, exc_conn=None, inh_conn=None):
+        return self._update_impl(
+            t,
+            inp,
+            exc_conn=exc_conn,
+            inh_conn=inh_conn,
+            return_intermediates=True,
+        )
+
+    def update_with_intermediates_mapped(self, t, inp, exc_conn, inh_conn):
+        return self.update_with_intermediates(
+            t,
+            inp,
+            exc_conn=exc_conn,
+            inh_conn=inh_conn,
+        )
 
 
 def make_simulation_run(
@@ -289,6 +329,7 @@ def make_simulation_run(
     conn_num: Union[int, float] = 80,
     homo: bool = True,
     mv_layout: str = 'row_gather',
+    backend: str | None = None,
 ):
     # Construct the network outside JIT so FixedPostNumConn can validate
     # indices and materialize any dual-layout buffers from concrete arrays.
@@ -299,6 +340,7 @@ def make_simulation_run(
         conn_num=conn_num,
         homo=homo,
         mv_layout=mv_layout,
+        backend=backend,
     )
     exc_conn = net.exc_conn
     inh_conn = net.inh_conn
@@ -329,6 +371,7 @@ def make_training_run(
     conn_num: Union[int, float] = 80,
     homo: bool = True,
     mv_layout: str = 'row_gather',
+    backend: str | None = None,
 ):
     def run():
         raise NotImplementedError(
@@ -347,6 +390,7 @@ def make_simulation_batch_run(
     conn_num: Union[int, float] = 80,
     homo: bool = True,
     mv_layout: str = 'row_gather',
+    backend: str | None = None,
 ):
     net = EINet(
         scale,
@@ -355,6 +399,7 @@ def make_simulation_batch_run(
         conn_num=conn_num,
         homo=homo,
         mv_layout=mv_layout,
+        backend=backend,
     )
     mapper = brainstate.nn.Map(net, init_map_size=batch_size)
 
@@ -364,7 +409,7 @@ def make_simulation_batch_run(
 
         def fn(t):
             ts = jax.numpy.ones(batch_size) * t
-            return mapper.map('update', in_axes=(0, None))(ts, 20. * u.mA)
+            return mapper.map('update', in_axes=(0, None))(ts, 24. * u.mA)
 
         with brainstate.environ.context(dt=0.1 * u.ms):
             times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
@@ -384,6 +429,7 @@ def make_training_batch_run(
     conn_num: Union[int, float] = 80,
     homo: bool = True,
     mv_layout: str = 'row_gather',
+    backend: str | None = None,
 ):
     def run():
         raise NotImplementedError(

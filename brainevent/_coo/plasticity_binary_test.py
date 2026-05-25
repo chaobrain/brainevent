@@ -38,7 +38,7 @@ class Test_coo_on_pre:
         n_pre = 100
         n_post = 100
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.5
+        mask = (mat < 0.5) & (mat != 0.)
         mat = jnp.where(mask, mat, 0.)
         pre_spike = brainstate.random.random((n_pre,)) < 0.1
         post_trace = brainstate.random.random((n_post,))
@@ -59,7 +59,7 @@ class Test_coo_on_pre:
             n_pre = 100
             n_post = 100
             mat = brainstate.random.random((n_pre, n_post))
-            mask = mat < 0.5
+            mask = (mat < 0.5) & (mat != 0.)
             mat = jnp.where(mask, mat, 0.) * mat_unit
             pre_spike = brainstate.random.random((n_pre,)) < 0.1
             post_trace = brainstate.random.random((n_post,)) * trace_unit
@@ -85,7 +85,7 @@ class Test_coo_on_pre:
         n_pre = 100
         n_post = 100
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.5
+        mask = (mat < 0.5) & (mat != 0.)
         mat = jnp.where(mask, mat, 0.)
         pre_spike = brainstate.random.random((n_pre,)) < 0.1
         post_trace = brainstate.random.random((n_post,))
@@ -107,7 +107,7 @@ class Test_coo_on_post:
         n_pre = 100
         n_post = 100
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.5
+        mask = (mat < 0.5) & (mat != 0.)
         mat = jnp.where(mask, mat, 0.)
         pre_trace = brainstate.random.random((n_pre,))
         post_spike = brainstate.random.random((n_post,)) < 0.1
@@ -128,7 +128,7 @@ class Test_coo_on_post:
             n_pre = 100
             n_post = 100
             mat = brainstate.random.random((n_pre, n_post))
-            mask = mat < 0.5
+            mask = (mat < 0.5) & (mat != 0.)
             mat = jnp.where(mask, mat, 0.) * mat_unit
             pre_trace = brainstate.random.random((n_pre,)) * trace_unit
             post_spike = brainstate.random.random((n_post,)) < 0.1
@@ -154,7 +154,7 @@ class Test_coo_on_post:
         n_pre = 100
         n_post = 100
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.5
+        mask = (mat < 0.5) & (mat != 0.)
         mat = jnp.where(mask, mat, 0.)
         pre_trace = brainstate.random.random((n_pre,))
         post_spike = brainstate.random.random((n_post,)) < 0.1

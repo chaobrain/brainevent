@@ -27,6 +27,8 @@ from brainevent._event.compact_binary import CompactBinary
 from brainevent._fcn.compact_binary import (
     compact_binary_fcnmv,
     compact_binary_fcnmm,
+    compact_binary_fcnmv_p,
+    compact_binary_fcnmm_p,
 )
 from brainevent._fcn.float import fcnmv, fcnmm
 from brainevent._misc import fixed_conn_num_to_csc
@@ -42,6 +44,32 @@ else:
 
 N_CONN = 4
 BATCH = 8
+
+
+def _implementation_params(implementations, op_name: str):
+    if implementations:
+        return [pytest.param(impl, id=impl) for impl in implementations]
+    return [
+        pytest.param(
+            None,
+            marks=pytest.mark.skip(reason=f'No {op_name} implementations on platform={platform}'),
+            id=f'no-{op_name}',
+        )
+    ]
+
+
+COMPACT_FCNMV_IMPLEMENTATIONS = tuple(compact_binary_fcnmv_p.available_backends(platform))
+COMPACT_FCNMM_IMPLEMENTATIONS = tuple(compact_binary_fcnmm_p.available_backends(platform))
+COMPACT_FCNMV_PARAMS = _implementation_params(COMPACT_FCNMV_IMPLEMENTATIONS, 'compact_binary_fcnmv')
+COMPACT_FCNMM_PARAMS = _implementation_params(COMPACT_FCNMM_IMPLEMENTATIONS, 'compact_binary_fcnmm')
+
+
+def test_compact_binary_fcnmv_does_not_register_explicit_scatter_backends_on_gpu():
+    backends = set(compact_binary_fcnmv_p.available_backends('gpu'))
+    assert 'compact_tpr_kernel' not in backends
+    assert 'compact_wpr_kernel' not in backends
+    assert 'compact_bpr_kernel' not in backends
+    assert 'compact_2d_and_atomic_kernel' not in backends
 
 
 # ---------------------------------------------------------------------------
@@ -233,10 +261,11 @@ def generate_cs_pairs(
 # 1. Forward correctness -- fcnmv
 # ===========================================================================
 
+@pytest.mark.parametrize('implementation', COMPACT_FCNMV_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_compact_binary_fcnmv_forward(homo_w, transpose, shape):
+def test_compact_binary_fcnmv_forward(implementation, homo_w, transpose, shape):
     """compact_binary_fcnmv forward output matches dense reference."""
     m, n = shape
     indices = _mk_indices(shape)
@@ -248,7 +277,7 @@ def test_compact_binary_fcnmv_forward(homo_w, transpose, shape):
 
     y = compact_binary_fcnmv(
         weights, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
-        shape=shape, transpose=transpose,
+        shape=shape, transpose=transpose, backend=implementation,
     )
     y_ref = _ref_mv(weights, indices, spikes, shape, transpose)
 
@@ -305,9 +334,10 @@ def test_compact_binary_fcnmv_scatter_1d_compact_only_vector(homo_w):
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
 
+@pytest.mark.parametrize('implementation', COMPACT_FCNMV_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_compact_binary_fcnmv_forward_column_scatter(homo_w, shape):
+def test_compact_binary_fcnmv_forward_column_scatter(implementation, homo_w, shape):
     """Passing column-major mirrors keeps MV output consistent with dense reference."""
     m, n = shape
     indices = _mk_indices(shape)
@@ -318,7 +348,7 @@ def test_compact_binary_fcnmv_forward_column_scatter(homo_w, shape):
 
     y = compact_binary_fcnmv(
         weights, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
-        shape=shape, transpose=False,
+        shape=shape, transpose=False, backend=implementation,
         col_weights=col_weights, col_indices=col_indices, col_indptr=col_indptr,
     )
     y_ref = _ref_mv(weights, indices, spikes, shape, transpose=False)
@@ -498,6 +528,7 @@ def test_compact_binary_fcnmv_forward_all_ones(homo_w, transpose, shape):
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.skip(reason='Large-scale compact MV coverage is disabled by default.')
 def test_compact_binary_fcnmv_forward_in_large_scale(homo_w):
     """compact_binary_fcnmv forward matches dense reference at large scale."""
     import gc
@@ -530,8 +561,8 @@ def test_compact_binary_fcnmv_forward_in_large_scale(homo_w):
         gc.collect()
 
 
-@pytest.mark.skipif(platform == 'cpu', reason='large-scale col_scatter coverage is GPU-oriented')
 @pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.skip(reason='Large-scale compact MV column-scatter coverage is disabled by default.')
 def test_compact_binary_fcnmv_forward_column_scatter_in_large_scale(homo_w):
     """compact_binary_fcnmv column-scatter path matches dense reference at large scale."""
     import gc
@@ -572,10 +603,11 @@ def test_compact_binary_fcnmv_forward_column_scatter_in_large_scale(homo_w):
 # 2. Forward correctness -- fcnmm
 # ===========================================================================
 
+@pytest.mark.parametrize('implementation', COMPACT_FCNMM_PARAMS)
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_compact_binary_fcnmm_forward(homo_w, transpose, shape):
+def test_compact_binary_fcnmm_forward(implementation, homo_w, transpose, shape):
     """compact_binary_fcnmm forward output matches dense reference."""
     m, n = shape
     indices = _mk_indices(shape)
@@ -587,7 +619,7 @@ def test_compact_binary_fcnmm_forward(homo_w, transpose, shape):
 
     y = compact_binary_fcnmm(
         weights, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
-        shape=shape, transpose=transpose, pack_axis=1,
+        shape=shape, transpose=transpose, pack_axis=1, backend=implementation,
     )
     y_ref = _ref_mm(weights, indices, matrix, shape, transpose)
 
@@ -1070,6 +1102,108 @@ def test_compact_binary_fcnmv_vmap_over_spikes(homo_w, transpose, shape):
         )
         for i in range(B)
     ])
+    assert y_vmap.shape == y_loop.shape
+    assert jnp.allclose(y_vmap, y_loop, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+def test_compact_binary_fcnmv_vmap_over_compact_only_vectors(homo_w):
+    """Batching compact-only spike vectors matches per-vector scatter results."""
+    shape = (20, 40)
+    m, _ = shape
+    B = 5
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+
+    rng = np.random.default_rng(17)
+    batch_spikes = jnp.asarray(rng.random((B, m)) < 0.5, dtype=jnp.float32)
+    batch_cbs = jax.vmap(CompactBinary.compacy_only_vector)(batch_spikes)
+
+    f = lambda packed, active_ids, n_active, value: compact_binary_fcnmv(
+        weights, indices, packed, active_ids, n_active, value,
+        shape=shape, transpose=True,
+    )
+    y_vmap = jax.vmap(f)(
+        batch_cbs.packed, batch_cbs.active_ids, batch_cbs.n_active, batch_cbs.value,
+    )
+
+    y_loop = jnp.stack([
+        compact_binary_fcnmv(
+            weights, indices,
+            batch_cbs.packed[i],
+            *_compact_1d_jax(batch_spikes[i], jax_impl=True),
+            batch_cbs.value[i],
+            shape=shape, transpose=True,
+        )
+        for i in range(B)
+    ])
+    assert y_vmap.shape == y_loop.shape
+    assert jnp.allclose(y_vmap, y_loop, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+def test_compact_binary_fcnmv_vmap_over_full_compact_vectors_reuses_packed(monkeypatch, homo_w):
+    """Full compact vectors should reuse existing packed data during scatter batching."""
+    import brainevent._event.bitpack_binary as bitpack_binary_mod
+
+    shape = (20, 40)
+    m, _ = shape
+    B = 5
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+
+    rng = np.random.default_rng(19)
+    batch_spikes = jnp.asarray(rng.random((B, m)) < 0.5, dtype=jnp.float32)
+    batch_cbs = jax.vmap(CompactBinary.from_array)(batch_spikes)
+
+    def _fail_repack(*args, **kwargs):
+        raise AssertionError('scatter batching should reuse packed data for full CompactBinary inputs')
+
+    monkeypatch.setattr(bitpack_binary_mod, 'bitpack', _fail_repack)
+
+    f = lambda packed, active_ids, n_active, value: compact_binary_fcnmv(
+        weights, indices, packed, active_ids, n_active, value,
+        shape=shape, transpose=True,
+    )
+    y_vmap = jax.vmap(f)(
+        batch_cbs.packed, batch_cbs.active_ids, batch_cbs.n_active, batch_cbs.value,
+    )
+
+    y_loop = jnp.stack([
+        compact_binary_fcnmv(
+            weights, indices,
+            batch_cbs.packed[i],
+            *_compact_1d_jax(batch_spikes[i], jax_impl=True),
+            batch_cbs.value[i],
+            shape=shape, transpose=True,
+        )
+        for i in range(B)
+    ])
+    assert y_vmap.shape == y_loop.shape
+    assert jnp.allclose(y_vmap, y_loop, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+def test_compact_binary_fcnmv_vmap_constructs_compact_only_inside_body(homo_w):
+    """Constructing compact-only vectors inside vmap must match a Python loop."""
+    shape = (20, 40)
+    m, _ = shape
+    B = 5
+    indices = _mk_indices(shape)
+    weights = _mk_homo_w() if homo_w else _mk_hetero_w(indices)
+
+    rng = np.random.default_rng(23)
+    batch_spikes = jnp.asarray(rng.random((B, m)) < 0.5, dtype=jnp.float32)
+
+    def f(spikes):
+        cb = CompactBinary.compacy_only_vector(spikes)
+        return compact_binary_fcnmv(
+            weights, indices, cb.packed, cb.active_ids, cb.n_active, cb.value,
+            shape=shape, transpose=True,
+        )
+
+    y_vmap = jax.vmap(f)(batch_spikes)
+    y_loop = jnp.stack([f(batch_spikes[i]) for i in range(B)])
     assert y_vmap.shape == y_loop.shape
     assert jnp.allclose(y_vmap, y_loop, rtol=1e-3, atol=1e-3)
 

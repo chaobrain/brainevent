@@ -198,6 +198,29 @@ def _binary_2d_compact_only_numba_kernel(
     return kernel
 
 
+def _binary_2d_compact_only_jax_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    del kwargs
+    is_bool = (spikes_info.dtype == jnp.bool_)
+
+    def kernel(spikes):
+        mask = spikes if is_bool else (spikes != 0.)
+        mask = jnp.asarray(mask, dtype=jnp.bool_)
+        is_active = jnp.any(mask, axis=1).astype(jnp.int32)
+        n_active = jnp.sum(is_active, dtype=jnp.int32).reshape(1)
+        positions = jnp.cumsum(is_active, dtype=jnp.int32) - 1
+        n_pre = spikes_info.shape[0]
+        arange = jnp.arange(n_pre, dtype=jnp.int32)
+        safe_positions = jnp.where(mask.any(axis=1), positions, n_pre)
+        active_ids = jnp.zeros((n_pre,), dtype=jnp.int32)
+        active_ids = active_ids.at[safe_positions].set(arange)
+        return [active_ids, n_active]
+
+    return kernel
+
+
 def _binary_2d_compact_only_batching(args, axes, **kwargs):
     return general_batching_rule(binary_2d_compact_only_p, args, axes, **kwargs)
 
@@ -243,6 +266,9 @@ is already available.
 )
 binary_2d_compact_only_p.def_numba_kernel(_binary_2d_compact_only_numba_kernel)
 binary_2d_compact_only_p.def_cuda_raw_kernel(_binary_2d_compact_only_cuda_kernel)
+binary_2d_compact_only_p.def_kernel('jax_raw', 'cpu', _binary_2d_compact_only_jax_kernel)
+binary_2d_compact_only_p.def_kernel('jax_raw', 'gpu', _binary_2d_compact_only_jax_kernel)
+binary_2d_compact_only_p.def_kernel('jax_raw', 'tpu', _binary_2d_compact_only_jax_kernel)
 binary_2d_compact_only_p.def_batching_rule(_binary_2d_compact_only_batching)
 binary_2d_compact_only_p.def_call(binary_2d_compact_only_p_call)
 binary_2d_compact_only_p.def_tags('event', 'binary')
@@ -309,6 +335,29 @@ def _binary_1d_array_index_numba_kernel(
     return kernel
 
 
+def _binary_1d_array_index_jax_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    del kwargs
+    is_bool = (spikes_info.dtype == jnp.bool_)
+    n = spikes_info.shape[0]
+
+    def kernel(spikes):
+        mask = spikes if is_bool else (spikes != 0.)
+        mask = jnp.asarray(mask, dtype=jnp.bool_)
+        is_active = mask.astype(jnp.int32)
+        n_active = jnp.sum(is_active, dtype=jnp.int32).reshape(1)
+        positions = jnp.cumsum(is_active, dtype=jnp.int32) - 1
+        arange = jnp.arange(n, dtype=jnp.int32)
+        safe_positions = jnp.where(mask, positions, n)
+        active_ids = jnp.zeros((n,), dtype=jnp.int32)
+        active_ids = active_ids.at[safe_positions].set(arange)
+        return [active_ids, n_active]
+
+    return kernel
+
+
 def _binary_1d_array_index_batching(args, axes, **kwargs):
     ax_s, = axes
     if ax_s is not None:
@@ -364,6 +413,9 @@ Uses __ballot_sync + atomicAdd CUDA kernel for GPU, Numba for CPU.
 )
 binary_1d_array_index_p.def_numba_kernel(_binary_1d_array_index_numba_kernel)
 binary_1d_array_index_p.def_cuda_raw_kernel(_binary_1d_array_index_cuda_kernel)
+binary_1d_array_index_p.def_kernel('jax_raw', 'cpu', _binary_1d_array_index_jax_kernel)
+binary_1d_array_index_p.def_kernel('jax_raw', 'gpu', _binary_1d_array_index_jax_kernel)
+binary_1d_array_index_p.def_kernel('jax_raw', 'tpu', _binary_1d_array_index_jax_kernel)
 binary_1d_array_index_p.def_batching_rule(_binary_1d_array_index_batching)
 binary_1d_array_index_p.def_call(binary_1d_array_index_p_call)
 binary_1d_array_index_p.def_tags('event', 'binary')
@@ -451,6 +503,48 @@ def _binary_2d_array_index_numba_kernel(
     return kernel
 
 
+def _binary_2d_array_index_jax_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    del kwargs
+    import math
+
+    n_pre, n_batch = spikes_info.shape
+    n_batch_packed = math.ceil(n_batch / 32)
+    is_bool = (spikes_info.dtype == jnp.bool_)
+
+    def kernel(spikes):
+        mask = spikes if is_bool else (spikes != 0.)
+        mask = jnp.asarray(mask, dtype=jnp.bool_)
+
+        word_ids = jnp.arange(n_batch, dtype=jnp.int32) // 32
+        bit_ids = jnp.arange(n_batch, dtype=jnp.uint32) % jnp.uint32(32)
+        bit_values = (mask.astype(jnp.uint32) << bit_ids[None, :]).astype(jnp.uint32)
+        packed = jnp.stack(
+            [
+                jnp.sum(
+                    jnp.where(word_ids[None, :] == word, bit_values, jnp.uint32(0)),
+                    axis=1,
+                    dtype=jnp.uint32,
+                )
+                for word in range(n_batch_packed)
+            ],
+            axis=1,
+        )
+
+        row_active = jnp.any(mask, axis=1).astype(jnp.int32)
+        n_active = jnp.sum(row_active, dtype=jnp.int32).reshape(1)
+        positions = jnp.cumsum(row_active, dtype=jnp.int32) - 1
+        arange = jnp.arange(n_pre, dtype=jnp.int32)
+        safe_positions = jnp.where(mask.any(axis=1), positions, n_pre)
+        active_ids = jnp.zeros((n_pre,), dtype=jnp.int32)
+        active_ids = active_ids.at[safe_positions].set(arange)
+        return [packed, active_ids, n_active]
+
+    return kernel
+
+
 def _binary_2d_array_index_batching(args, axes, **kwargs):
     return general_batching_rule(binary_2d_array_index_p, args, axes, **kwargs)
 
@@ -502,6 +596,9 @@ and identifies rows with at least one non-zero element.
 )
 binary_2d_array_index_p.def_numba_kernel(_binary_2d_array_index_numba_kernel)
 binary_2d_array_index_p.def_cuda_raw_kernel(_binary_2d_array_index_cuda_kernel)
+binary_2d_array_index_p.def_kernel('jax_raw', 'cpu', _binary_2d_array_index_jax_kernel)
+binary_2d_array_index_p.def_kernel('jax_raw', 'gpu', _binary_2d_array_index_jax_kernel)
+binary_2d_array_index_p.def_kernel('jax_raw', 'tpu', _binary_2d_array_index_jax_kernel)
 binary_2d_array_index_p.def_batching_rule(_binary_2d_array_index_batching)
 binary_2d_array_index_p.def_call(binary_2d_array_index_p_call)
 binary_2d_array_index_p.def_tags('event', 'binary')
@@ -573,6 +670,35 @@ def _binary_2d_pair_stream_encode_numba_kernel(
     return kernel
 
 
+def _binary_2d_pair_stream_encode_jax_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    del kwargs
+    n_src, n_batch = spikes_info.shape
+    capacity = n_src * n_batch
+    is_bool = (spikes_info.dtype == jnp.bool_)
+
+    def kernel(spikes):
+        mask = spikes if is_bool else (spikes != 0.)
+        mask = jnp.asarray(mask, dtype=jnp.bool_)
+        flat_active = mask.reshape(-1)
+        flat_active_i32 = flat_active.astype(jnp.int32)
+        positions = jnp.cumsum(flat_active_i32, dtype=jnp.int32) - 1
+
+        flat_rows = jnp.repeat(jnp.arange(n_src, dtype=jnp.int32), n_batch)
+        flat_cols = jnp.tile(jnp.arange(n_batch, dtype=jnp.int32), n_src)
+        safe_positions = jnp.where(flat_active, positions, capacity)
+
+        pair_stream = jnp.zeros((capacity + 1, 2), dtype=jnp.int32)
+        pair_stream = pair_stream.at[safe_positions, 0].set(flat_rows)
+        pair_stream = pair_stream.at[safe_positions, 1].set(flat_cols)
+        n_pairs = jnp.sum(flat_active_i32, dtype=jnp.int32).reshape(1)
+        return [pair_stream[:capacity], n_pairs]
+
+    return kernel
+
+
 def _binary_2d_pair_stream_encode_batching(args, axes, **kwargs):
     return general_batching_rule(binary_2d_pair_stream_encode_p, args, axes, **kwargs)
 
@@ -627,6 +753,9 @@ plus a scalar valid-length output. Only the leading ``n_pairs`` rows are used.
 )
 binary_2d_pair_stream_encode_p.def_numba_kernel(_binary_2d_pair_stream_encode_numba_kernel)
 binary_2d_pair_stream_encode_p.def_cuda_raw_kernel(_binary_2d_pair_stream_encode_cuda_kernel)
+binary_2d_pair_stream_encode_p.def_kernel('jax_raw', 'cpu', _binary_2d_pair_stream_encode_jax_kernel)
+binary_2d_pair_stream_encode_p.def_kernel('jax_raw', 'gpu', _binary_2d_pair_stream_encode_jax_kernel)
+binary_2d_pair_stream_encode_p.def_kernel('jax_raw', 'tpu', _binary_2d_pair_stream_encode_jax_kernel)
 binary_2d_pair_stream_encode_p.def_batching_rule(_binary_2d_pair_stream_encode_batching)
 binary_2d_pair_stream_encode_p.def_call(binary_2d_pair_stream_encode_p_call)
 binary_2d_pair_stream_encode_p.def_tags('event', 'binary', 'streaming', 'pair')
@@ -692,6 +821,27 @@ def _binary_2d_row_sparse_encode_numba_kernel(
 
     def kernel(spikes):
         return numba_kernel(mv, outs=kwargs['outs'])(spikes)
+
+    return kernel
+
+
+def _binary_2d_row_sparse_encode_jax_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    row_size: int,
+    **kwargs
+):
+    del kwargs
+    is_bool = (spikes_info.dtype == jnp.bool_)
+
+    def kernel(spikes):
+        mask = spikes if is_bool else (spikes != 0.)
+        mask = jnp.asarray(mask, dtype=jnp.bool_)
+
+        def encode_row(row_mask):
+            cols = jnp.nonzero(row_mask, size=row_size, fill_value=-1)[0]
+            return jnp.where(cols >= 0, cols + 1, 0).astype(jnp.int32)
+
+        return [jax.vmap(encode_row)(mask)]
 
     return kernel
 
@@ -774,6 +924,9 @@ one row per source neuron, with zeros used as padding.
 )
 binary_2d_row_sparse_encode_p.def_numba_kernel(_binary_2d_row_sparse_encode_numba_kernel)
 binary_2d_row_sparse_encode_p.def_cuda_raw_kernel(_binary_2d_row_sparse_encode_cuda_kernel)
+binary_2d_row_sparse_encode_p.def_kernel('jax_raw', 'cpu', _binary_2d_row_sparse_encode_jax_kernel)
+binary_2d_row_sparse_encode_p.def_kernel('jax_raw', 'gpu', _binary_2d_row_sparse_encode_jax_kernel)
+binary_2d_row_sparse_encode_p.def_kernel('jax_raw', 'tpu', _binary_2d_row_sparse_encode_jax_kernel)
 binary_2d_row_sparse_encode_p.def_batching_rule(_binary_2d_row_sparse_encode_batching)
 binary_2d_row_sparse_encode_p.def_call(binary_2d_row_sparse_encode_p_call)
 binary_2d_row_sparse_encode_p.def_tags('event', 'binary')
@@ -839,6 +992,21 @@ def _binary_2d_csr_row_count_numba_kernel(
     return kernel
 
 
+def _binary_2d_csr_row_count_jax_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    del kwargs
+    is_bool = (spikes_info.dtype == jnp.bool_)
+
+    def kernel(spikes):
+        mask = spikes if is_bool else (spikes != 0.)
+        mask = jnp.asarray(mask, dtype=jnp.bool_)
+        return [jnp.sum(mask, axis=1, dtype=jnp.int32)]
+
+    return kernel
+
+
 def _binary_2d_csr_row_count_batching(args, axes, **kwargs):
     return general_batching_rule(binary_2d_csr_row_count_p, args, axes, **kwargs)
 
@@ -867,6 +1035,9 @@ binary_2d_csr_row_count_p = XLACustomKernel(
 )
 binary_2d_csr_row_count_p.def_numba_kernel(_binary_2d_csr_row_count_numba_kernel)
 binary_2d_csr_row_count_p.def_cuda_raw_kernel(_binary_2d_csr_row_count_cuda_kernel)
+binary_2d_csr_row_count_p.def_kernel('jax_raw', 'cpu', _binary_2d_csr_row_count_jax_kernel)
+binary_2d_csr_row_count_p.def_kernel('jax_raw', 'gpu', _binary_2d_csr_row_count_jax_kernel)
+binary_2d_csr_row_count_p.def_kernel('jax_raw', 'tpu', _binary_2d_csr_row_count_jax_kernel)
 binary_2d_csr_row_count_p.def_batching_rule(_binary_2d_csr_row_count_batching)
 binary_2d_csr_row_count_p.def_call(binary_2d_csr_row_count_p_call)
 binary_2d_csr_row_count_p.def_tags('event', 'binary', 'csr')
@@ -932,6 +1103,32 @@ def _binary_2d_csr_fill_numba_kernel(
     return kernel
 
 
+def _binary_2d_csr_fill_jax_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    del indptr_info, kwargs
+    n_src, n_batch = spikes_info.shape
+    capacity = n_src * n_batch
+    is_bool = (spikes_info.dtype == jnp.bool_)
+
+    def kernel(spikes, indptr):
+        mask = spikes if is_bool else (spikes != 0.)
+        mask = jnp.asarray(mask, dtype=jnp.bool_)
+        row_ranks = jnp.cumsum(mask.astype(jnp.int32), axis=1, dtype=jnp.int32) - 1
+        row_offsets = indptr[:-1].astype(jnp.int32)[:, None]
+        positions = row_offsets + row_ranks
+        valid_mask = mask
+        safe_positions = jnp.where(valid_mask, positions, capacity)
+        col_values = jnp.broadcast_to(jnp.arange(n_batch, dtype=jnp.int32)[None, :], (n_src, n_batch))
+        indices = jnp.zeros((capacity + 1,), dtype=jnp.int32)
+        indices = indices.at[safe_positions.reshape(-1)].set(col_values.reshape(-1))
+        return [indices[:capacity]]
+
+    return kernel
+
+
 def _binary_2d_csr_fill_batching(args, axes, **kwargs):
     return general_batching_rule(binary_2d_csr_fill_p, args, axes, **kwargs)
 
@@ -972,6 +1169,9 @@ binary_2d_csr_fill_p = XLACustomKernel(
 )
 binary_2d_csr_fill_p.def_numba_kernel(_binary_2d_csr_fill_numba_kernel)
 binary_2d_csr_fill_p.def_cuda_raw_kernel(_binary_2d_csr_fill_cuda_kernel)
+binary_2d_csr_fill_p.def_kernel('jax_raw', 'cpu', _binary_2d_csr_fill_jax_kernel)
+binary_2d_csr_fill_p.def_kernel('jax_raw', 'gpu', _binary_2d_csr_fill_jax_kernel)
+binary_2d_csr_fill_p.def_kernel('jax_raw', 'tpu', _binary_2d_csr_fill_jax_kernel)
 binary_2d_csr_fill_p.def_batching_rule(_binary_2d_csr_fill_batching)
 binary_2d_csr_fill_p.def_call(binary_2d_csr_fill_p_call)
 binary_2d_csr_fill_p.def_tags('event', 'binary', 'csr')
@@ -1011,3 +1211,126 @@ def binary_2d_csr_encode_p_call(
         backend=backend,
     )
     return indices, indptr
+
+
+# ==============================================================================
+# 2D Dense-to-CSC Encoding (binary, values omitted)
+# ==============================================================================
+
+def _binary_2d_csc_encode_jax_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """Pure-JAX dense-to-CSC encoder for 2D binary spike matrices."""
+    n_src, n_batch = spikes_info.shape
+    capacity = n_src * n_batch
+    is_bool = (spikes_info.dtype == jnp.bool_)
+
+    def kernel(spikes):
+        mask = spikes if is_bool else (spikes != 0.)
+        mask = jnp.asarray(mask, dtype=jnp.bool_)
+
+        col_counts = jnp.sum(mask, axis=0, dtype=jnp.int32)
+        indptr = jnp.concatenate(
+            [jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(col_counts, dtype=jnp.int32)],
+            axis=0,
+        )
+
+        # Flatten in column-major order so valid entries are already grouped
+        # by column, which matches the CSC layout.
+        flat_active = mask.T.reshape(-1)
+        flat_active_i32 = flat_active.astype(jnp.int32)
+        flat_row_ids = jnp.tile(jnp.arange(n_src, dtype=jnp.int32), n_batch)
+
+        positions = jnp.cumsum(flat_active_i32, dtype=jnp.int32) - 1
+        safe_positions = jnp.where(flat_active, positions, capacity)
+
+        indices = jnp.zeros((capacity,), dtype=jnp.int32)
+        indices = indices.at[safe_positions].set(flat_row_ids)
+        return [indices, indptr]
+
+    return kernel
+
+
+def _binary_2d_csc_encode_batching(args, axes, **kwargs):
+    return general_batching_rule(binary_2d_csc_encode_p, args, axes, **kwargs)
+
+
+def binary_2d_csc_encode_p_call(
+    spikes,
+    *,
+    backend: Optional[str] = None,
+):
+    """Encode a dense 2D binary matrix into a CSC-like event structure.
+
+    Returns a static-capacity CSC buffer suitable for ``jax.jit``:
+
+    - ``indices`` has shape ``(n_src * n_batch,)`` and stores valid row ids
+      in ``indices[:indptr[-1]]``.
+    - ``indptr`` has shape ``(n_batch + 1,)`` and is a standard CSC
+      column-pointer array with ``indptr[0] == 0``.
+
+    ``indices`` tail elements beyond ``indptr[-1]`` are zero-filled.
+    """
+    if spikes.ndim != 2:
+        raise ValueError(f'`spikes` must be 2D, got {spikes.ndim}D.')
+
+    n_src, n_batch = spikes.shape
+    indices_info = jax.ShapeDtypeStruct([n_src * n_batch], jnp.int32)
+    indptr_info = jax.ShapeDtypeStruct([n_batch + 1], jnp.int32)
+    return binary_2d_csc_encode_p(
+        spikes,
+        outs=[indices_info, indptr_info],
+        spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        indices_info=indices_info,
+        indptr_info=indptr_info,
+        backend=backend,
+    )
+
+
+binary_2d_csc_encode_p = XLACustomKernel(
+    'binary_2d_csc_encode',
+    doc="""Encode a dense 2D binary matrix into a CSC-style event structure.
+
+Produces a static-capacity int32 row-index buffer plus a CSC column-pointer
+array. Only ``indices[:indptr[-1]]`` are valid.
+""",
+)
+binary_2d_csc_encode_p.def_kernel('jax_raw', 'cpu', _binary_2d_csc_encode_jax_kernel)
+binary_2d_csc_encode_p.def_kernel('jax_raw', 'gpu', _binary_2d_csc_encode_jax_kernel)
+binary_2d_csc_encode_p.def_kernel('jax_raw', 'tpu', _binary_2d_csc_encode_jax_kernel)
+binary_2d_csc_encode_p.def_batching_rule(_binary_2d_csc_encode_batching)
+binary_2d_csc_encode_p.def_call(binary_2d_csc_encode_p_call)
+binary_2d_csc_encode_p.def_tags('event', 'binary', 'csc')
+
+
+def binary_2d_csc_from_array(
+    spikes,
+    *,
+    backend: Optional[str] = None,
+):
+    """Function-style wrapper for dense spike -> CSC encoding.
+
+    This is the direct function counterpart to ``from_array``-style
+    constructors: pass a dense 2D spike matrix and get back its JIT-friendly
+    CSC-style ``(indices, indptr)`` encoding.
+
+    Parameters
+    ----------
+    spikes : array_like
+        Dense 2D boolean or numeric spike array of shape ``(n_src, n_batch)``.
+        Non-zero values are treated as active spikes.
+    backend : str or None, optional
+        Compute backend. Defaults to the registered JAX backend for the
+        current platform.
+
+    Returns
+    -------
+    indices : jax.Array
+        Int32 array of shape ``(n_src * n_batch,)``. Valid row ids are stored
+        in ``indices[:indptr[-1]]``.
+    indptr : jax.Array
+        Int32 array of shape ``(n_batch + 1,)`` storing CSC column pointers.
+    """
+    spikes = jnp.asarray(spikes)
+    return binary_2d_csc_encode_p_call(spikes, backend=backend)

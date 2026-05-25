@@ -1016,7 +1016,7 @@ class Test_diag_add:
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
     def test_csr(self, shape):
         dense = brainstate.random.rand(*shape)
-        mask = dense < 0.1
+        mask = (dense < 0.1) & (dense != 0.)
         dense = jnp.where(mask, dense, 0.)
         csr = brainevent.CSR.fromdense(dense)
         diag = brainstate.random.rand(min(shape))
@@ -1036,7 +1036,7 @@ class Test_diag_add:
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
     def test_csc(self, shape):
         dense = brainstate.random.rand(*shape)
-        mask = dense < 0.1
+        mask = (dense < 0.1) & (dense != 0.)
         dense = jnp.where(mask, dense, 0.)
         csc = brainevent.CSC.fromdense(dense)
         diag = brainstate.random.rand(min(shape))
@@ -1056,7 +1056,7 @@ class Test_diag_add:
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
     def test_csr_and_csc(self, shape):
         dense = brainstate.random.rand(*shape)
-        mask = dense < 0.1
+        mask = (dense < 0.1) & (dense != 0.)
         dense = jnp.where(mask, dense, 0.)
         csr = brainevent.CSR.fromdense(dense)
         csc = csr.T
