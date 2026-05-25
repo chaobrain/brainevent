@@ -150,7 +150,7 @@ See also the ecosystem
 ^^^^^^^^^^^^^^^^^^^^^^
 
 
-``brainevent`` is one part of our `brain modeling ecosystem <https://brainmodeling.readthedocs.io/>`_.
+``brainevent`` is one part of our `brain modeling ecosystem <https://brainx.chaobrain.com/>`_.
 
 
 ----

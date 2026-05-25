@@ -238,3 +238,10 @@ cython_debug/
 /ai-coding/
 /analysis/
 /dev/fcn/results/
+/dev/REVIEW_AND_PLAN.md
+/a.py
+
+# brainx-sphinx-header build artifacts
+docs/_brand/
+docs/_static/css/brainx-header.css
+docs/_static/js/brainx-header.js

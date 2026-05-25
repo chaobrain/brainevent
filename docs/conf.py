@@ -67,7 +67,11 @@ extensions = [
     'sphinx_thebe',
     'sphinx_design',
     'sphinx_math_dollar',
+    'brainx_sphinx_header',
 ]
+
+html_baseurl = 'https://brainx.chaobrain.com/brainevent/'
+
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
@@ -106,11 +110,11 @@ myst_enable_extensions = [
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 html_theme = "sphinx_book_theme"
-html_logo = "_static/brainevent.png"
+html_logo = "https://brainx.chaobrain.com/images/brainevent.webp"
 html_title = "brainevent"
 html_copy_source = True
 html_sourcelink_suffix = ""
-html_favicon = "_static/brainevent.png"
+html_favicon = "https://brainx.chaobrain.com/images/brainevent.webp"
 html_last_updated_fmt = ""
 
 # Add any paths that contain custom static files (such as style sheets) here,
