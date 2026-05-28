@@ -56,10 +56,10 @@ def _allow_unsupported_compiler() -> bool:
 def _raise_compile_error(output: str, command: str, stage: str) -> None:
     if _is_host_incompat(output):
         msg = (
-            "host C++ 编译器与当前 CUDA/nvcc 不兼容。\n"
-            "如何修复:\n"
-            "  1) 安装受支持版本的 gcc 并设 CXX=/path/to/g++\n"
-            "  2) 或设 BRAINEVENT_ALLOW_UNSUPPORTED_COMPILER=1 后重试"
+            "host C++ compiler is incompatible with the current CUDA/nvcc.\n"
+            "How to fix:\n"
+            "  1) Install a supported gcc version and set CXX=/path/to/g++\n"
+            "  2) Or set BRAINEVENT_ALLOW_UNSUPPORTED_COMPILER=1 and retry"
         )
         raise HostCompilerIncompatibleError(msg, compiler_output=output, command=command, stage=stage)
     raise CompilationError("compilation failed", compiler_output=output, command=command, stage=stage)
@@ -133,11 +133,6 @@ class CompilerBackend(ABC):
 # ---------------------------------------------------------------------------
 # Ninja build helper
 # ---------------------------------------------------------------------------
-
-def _find_ninja() -> str | None:
-    """Find the ninja binary."""
-    return shutil.which("ninja")
-
 
 class NinjaBuild:
     """Generates and executes a ninja build for CUDA sources.
@@ -269,7 +264,7 @@ default {so_file}
 
         Raises CompilationError on failure.
         """
-        ninja = _find_ninja()
+        ninja = shutil.which("ninja")
         if ninja is None:
             raise KernelToolchainError("ninja not found. Install with: pip install ninja")
 

@@ -18,28 +18,28 @@ def _touch_exec(p):
 
 def test_render_sections_present():
     msg = render_toolchain_error(
-        stage="nvcc 发现", code="E-NVCC", summary="未找到 nvcc。",
+        stage="nvcc discovery", code="E-NVCC", summary="nvcc not found.",
         probes=[
             CandidateProbe("BRAINEVENT_NVCC_PATH", "", "unset"),
             CandidateProbe("PATH:nvcc", "", "not-found"),
         ],
-        remediation=["安装 jax[cuda13]"],
+        remediation=["Install jax[cuda13]"],
     )
     assert "E-NVCC" in msg
-    assert "原因" in msg
-    assert "已尝试" in msg
+    assert "Reason" in msg
+    assert "Tried" in msg
     assert "BRAINEVENT_NVCC_PATH" in msg
-    assert "如何修复" in msg
-    assert "安装 jax[cuda13]" in msg
+    assert "How to fix" in msg
+    assert "Install jax[cuda13]" in msg
 
 
 def test_render_includes_command_for_compile():
     msg = render_toolchain_error(
-        stage="编译", code="E-COMPILE", summary="失败",
+        stage="compile", code="E-COMPILE", summary="failed",
         command="nvcc x.cu", compiler_output="error: boom", remediation=["fix it"],
     )
-    assert "命令" in msg and "nvcc x.cu" in msg
-    assert "编译器输出" in msg and "boom" in msg
+    assert "Command" in msg and "nvcc x.cu" in msg
+    assert "Compiler output" in msg and "boom" in msg
 
 
 # --- discovery preference -------------------------------------------------
@@ -284,4 +284,4 @@ def test_render_appends_snapshot_when_debug(monkeypatch):
     monkeypatch.setenv("BRAINEVENT_TOOLCHAIN_DEBUG", "1")
     monkeypatch.setattr(kt, "collect_toolchain_diagnostics", lambda: {"nvcc": "/n"})
     msg = kt.render_toolchain_error(stage="x", code="E-X", summary="s")
-    assert "工具链快照" in msg and "/n" in msg
+    assert "Toolchain snapshot" in msg and "/n" in msg

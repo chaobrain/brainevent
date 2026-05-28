@@ -53,6 +53,40 @@ _cache = CompilationCache()
 _registered_so_paths: set[str] = set()
 
 
+def _join_sources(sources: str | list[str]) -> str:
+    """Concatenate a list of sources, or return a single source unchanged."""
+    return "\n\n".join(sources) if isinstance(sources, list) else sources
+
+
+def _build_specs(
+    functions: dict[str, list[str]], user_source: str
+) -> list[FunctionSpec]:
+    """Parse each function's arg_spec: normalize aliases → resolve bare attrs → parse."""
+    specs: list[FunctionSpec] = []
+    for func_name, tokens in functions.items():
+        tokens = normalize_tokens(tokens)
+        tokens = resolve_bare_attr_types(tokens, func_name, user_source)
+        specs.append(parse_arg_spec(func_name, tokens))
+    return specs
+
+
+def _register_targets(
+    specs: list[FunctionSpec],
+    module: CompiledModule,
+    so_path: str,
+    name: str,
+    target_prefix: str | None,
+    platform: str,
+) -> None:
+    """Register each spec as a JAX FFI target, once per unique so_path."""
+    if so_path in _registered_so_paths:
+        return
+    prefix = target_prefix or name
+    for spec in specs:
+        register_ffi_target(f"{prefix}.{spec.name}", module, spec.name, platform=platform)
+    _registered_so_paths.add(so_path)
+
+
 def set_cache_dir(path: str | Path) -> None:
     """Set the compilation cache directory.
 
@@ -144,11 +178,7 @@ def load_cuda_inline(
     -------
     CompiledModule
     """
-    # Normalise sources
-    if isinstance(cuda_sources, list):
-        user_source = "\n\n".join(cuda_sources)
-    else:
-        user_source = cuda_sources
+    user_source = _join_sources(cuda_sources)
 
     # Discover functions from annotations if not provided
     if functions is None:
@@ -175,12 +205,7 @@ def load_cuda_inline(
     # Check cache
     cached_so = None if force_rebuild else _cache.lookup(name, cache_key)
 
-    # Parse arg_specs: normalize aliases → resolve bare attrs → parse
-    specs: list[FunctionSpec] = []
-    for func_name, tokens in functions.items():
-        tokens = normalize_tokens(tokens)
-        tokens = resolve_bare_attr_types(tokens, func_name, user_source)
-        specs.append(parse_arg_spec(func_name, tokens))
+    specs = _build_specs(functions, user_source)
 
     if cached_so is not None:
         so_path = str(cached_so)
@@ -211,16 +236,10 @@ def load_cuda_inline(
         _cache.store(name, cache_key, so_path)
 
     # Load module
-    func_names = list(functions.keys())
-    module = CompiledModule(so_path, func_names)
+    module = CompiledModule(so_path, list(functions.keys()))
 
-    # Auto-register with JAX FFI — only on the first instantiation of this so.
-    if auto_register and so_path not in _registered_so_paths:
-        prefix = target_prefix or name
-        for spec in specs:
-            target_name = f"{prefix}.{spec.name}"
-            register_ffi_target(target_name, module, spec.name, platform="CUDA")
-        _registered_so_paths.add(so_path)
+    if auto_register:
+        _register_targets(specs, module, so_path, name, target_prefix, platform="CUDA")
 
     return module
 
@@ -341,36 +360,21 @@ def load_cpp_inline(
         Automatically register FFI targets as ``"<prefix>.<func>"``.
     target_prefix : str, optional
         Prefix for auto-registered FFI targets.  Defaults to *name*.
-    platform : str
-        Target platform passed to ``jax.ffi.register_ffi_target``.
-        Default: ``"cpu"``.
 
     Returns
     -------
     CompiledModule
     """
 
-    # Normalise sources
-    if isinstance(cpp_sources, list):
-        user_source = "\n\n".join(cpp_sources)
-    else:
-        user_source = cpp_sources
+    user_source = _join_sources(cpp_sources)
 
     # Resolve functions → dict[str, list[str]]
     if functions is None:
         functions = parse_annotations(user_source)
     elif isinstance(functions, list):
-        func_dict: dict[str, list[str]] = {}
-        for fn in functions:
-            func_dict[fn] = infer_arg_spec_from_source(user_source, fn)
-        functions = func_dict
+        functions = {fn: infer_arg_spec_from_source(user_source, fn) for fn in functions}
 
-    # Parse arg_specs: normalize aliases → resolve bare attrs → parse
-    specs: list[FunctionSpec] = []
-    for func_name, tokens in functions.items():
-        tokens = normalize_tokens(tokens)
-        tokens = resolve_bare_attr_types(tokens, func_name, user_source)
-        specs.append(parse_arg_spec(func_name, tokens))
+    specs = _build_specs(functions, user_source)
 
     # Detect toolchain (CPU — no CUDA needed)
     toolchain = detect_cpp_toolchain()
@@ -407,15 +411,10 @@ def load_cpp_inline(
 
         _cache.store(name, cache_key, so_path)
 
-    func_names = list(functions.keys())
-    module = CompiledModule(so_path, func_names)
+    module = CompiledModule(so_path, list(functions.keys()))
 
-    if auto_register and so_path not in _registered_so_paths:
-        prefix = target_prefix or name
-        for spec in specs:
-            target_name = f"{prefix}.{spec.name}"
-            register_ffi_target(target_name, module, spec.name, platform='cpu')
-        _registered_so_paths.add(so_path)
+    if auto_register:
+        _register_targets(specs, module, so_path, name, target_prefix, platform="cpu")
 
     return module
 
