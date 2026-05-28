@@ -144,7 +144,9 @@ class CscLayout:
             flat = jnp.broadcast_to(weights.reshape(()), (row_ids.size,))
         else:
             flat = weights.reshape(-1)
-        spinfo = COOInfo((a_rows, a_cols), rows_sorted=False, cols_sorted=True)
+        # Unsorted metadata forces the accumulate path so duplicate (row, col)
+        # edges sum, matching the column-scatter kernel and EllLayout.todense.
+        spinfo = COOInfo((a_rows, a_cols), rows_sorted=False, cols_sorted=False)
         dense = _coo_todense(flat, row_ids, col_ids, spinfo=spinfo)
         return u.maybe_decimal(dense * unit)
 

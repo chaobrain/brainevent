@@ -13,12 +13,23 @@
 # limitations under the License.
 # ==============================================================================
 
-from .binary import binary_fcnmv, binary_fcnmv_p, binary_fcnmm, binary_fcnmm_p
+from .binary import (
+    binary_fcnmv,
+    ell_binary_matvec_p,
+    csc_binary_matvec,
+    csc_binary_matvec_p,
+    binary_fcnmm,
+    ell_binary_matmat_p,
+)
+from .layouts import EllLayout, CscLayout
 from .float import fcnmv, fcnmm
 from .main import FixedNumConn, FixedPreNumConn, FixedPostNumConn
 
 __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
-    'binary_fcnmv', 'binary_fcnmv_p', 'binary_fcnmm', 'binary_fcnmm_p',
+    'EllLayout', 'CscLayout',
+    'binary_fcnmv', 'ell_binary_matvec_p',
+    'csc_binary_matvec', 'csc_binary_matvec_p',
+    'binary_fcnmm', 'ell_binary_matmat_p',
     'fcnmv', 'fcnmm',
 ]
