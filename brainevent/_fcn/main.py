@@ -27,14 +27,9 @@ from brainevent._compatible_import import Tracer
 from brainevent._coo import COO
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
-from brainevent._event.bitpack_binary import BitPackedBinary
-from brainevent._event.compact_binary import CompactBinary
 from brainevent._misc import _coo_todense, COOInfo, fixed_conn_num_to_csc
 from brainevent._typing import Data, MatrixShape, Index
-from brainevent.config import get_backend
 from .binary import binary_fcnmv, binary_fcnmm
-from .bitpack_binary import bitpack_binary_fcnmv, bitpack_binary_fcnmm, bitpack_binary_fcnmm_p
-from .compact_binary import compact_binary_fcnmv, compact_binary_fcnmm
 from .float import fcnmv, fcnmm
 
 __all__ = [
@@ -120,30 +115,6 @@ def _validate_primary_layout(primary_layout: Literal['row', 'col']):
             'Only row-major public primary storage is currently supported; '
             'col-major is available only as a maintained CSC mirror.'
         )
-
-
-def _validate_bitpack_mm_pack_axis(bitpack_mm_pack_axis: int) -> int:
-    if isinstance(bitpack_mm_pack_axis, (bool, np.bool_)) or not isinstance(
-        bitpack_mm_pack_axis, (int, np.integer)
-    ):
-        raise ValueError(
-            f'bitpack_mm_pack_axis must be an integer 0 or 1, got {bitpack_mm_pack_axis!r}.'
-        )
-    if bitpack_mm_pack_axis not in (0, 1):
-        raise ValueError(
-            f'bitpack_mm_pack_axis must be 0 or 1, got {bitpack_mm_pack_axis!r}.'
-        )
-    return int(bitpack_mm_pack_axis)
-
-
-def _resolve_bitpack_fcnmm_backend(backend: Optional[str]) -> Optional[str]:
-    if backend is not None:
-        return backend
-    platform = jax.default_backend()
-    global_backend = get_backend(platform)
-    if global_backend in bitpack_binary_fcnmm_p.available_backends(platform):
-        return global_backend
-    return None
 
 
 def _split_layout_buffers(buffers: Optional[Dict]) -> Dict:
@@ -247,7 +218,6 @@ class FixedNumConn(DataRepresentation):
     backend: Optional[str]
     maintain_dual_layout: bool
     primary_layout: Literal['row', 'col']
-    bitpack_mm_pack_axis: int
 
     def __init__(
         self,
@@ -256,13 +226,11 @@ class FixedNumConn(DataRepresentation):
         buffers: Optional[Dict] = None,
         maintain_dual_layout: bool = False,
         primary_layout: Literal['row', 'col'] = 'row',
-        bitpack_mm_pack_axis: int = 0,
         mirror_shape: Optional[MatrixShape] = None,
     ):
         _validate_primary_layout(primary_layout)
         self.maintain_dual_layout = maintain_dual_layout
         self.primary_layout = primary_layout
-        self.bitpack_mm_pack_axis = _validate_bitpack_mm_pack_axis(bitpack_mm_pack_axis)
 
         merged_buffers = {name: None for name in _FCN_LAYOUT_BUFFER_NAMES}
         merged_buffers.update(_split_layout_buffers(buffers))
@@ -305,7 +273,6 @@ class FixedNumConn(DataRepresentation):
             'backend': self.backend,
             'maintain_dual_layout': self.maintain_dual_layout,
             'primary_layout': self.primary_layout,
-            'bitpack_mm_pack_axis': self.bitpack_mm_pack_axis,
         }
         return (self.data, self.indices, self.buffers), aux
 
@@ -327,7 +294,6 @@ class FixedNumConn(DataRepresentation):
             A newly created instance with the restored data and metadata.
         """
         aux_data = dict(aux_data)
-        aux_data.setdefault('bitpack_mm_pack_axis', 0)
         obj = object.__new__(cls)
         obj.data, obj.indices, buffer = children
         obj._buffer_registry = set(buffer.keys())
@@ -579,7 +545,6 @@ class FixedPostNumConn(FixedNumConn):
         buffers: Optional[Dict] = None,
         maintain_dual_layout: bool = False,
         primary_layout: Literal['row', 'col'] = 'row',
-        bitpack_mm_pack_axis: int = 0,
     ):
         """
         Initialize a FixedPostNumConn sparse matrix.
@@ -632,9 +597,7 @@ class FixedPostNumConn(FixedNumConn):
             shape=shape,
             buffers=buffers,
             maintain_dual_layout=maintain_dual_layout,
-            primary_layout=primary_layout,
-            bitpack_mm_pack_axis=bitpack_mm_pack_axis,
-            mirror_shape=shape,
+            primary_layout=primary_layout,            mirror_shape=shape,
         )
 
         _contains_invalid_indices(self.indices, upper_bound=self.shape[1])
@@ -668,7 +631,6 @@ class FixedPostNumConn(FixedNumConn):
             buffers=self.buffers,
             maintain_dual_layout=self.maintain_dual_layout,
             primary_layout=self.primary_layout,
-            bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
         )
 
     def todense(self):
@@ -811,7 +773,6 @@ class FixedPostNumConn(FixedNumConn):
             buffers=self.buffers,
             maintain_dual_layout=self.maintain_dual_layout,
             primary_layout=self.primary_layout,
-            bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
         )
 
     def _unitary_op(self, op):
@@ -822,7 +783,6 @@ class FixedPostNumConn(FixedNumConn):
             buffers=self.buffers,
             maintain_dual_layout=self.maintain_dual_layout,
             primary_layout=self.primary_layout,
-            bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
         )
 
     def _binary_op(self, other, op):
@@ -838,7 +798,6 @@ class FixedPostNumConn(FixedNumConn):
                 buffers=self.buffers,
                 maintain_dual_layout=self.maintain_dual_layout,
                 primary_layout=self.primary_layout,
-                bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -851,7 +810,6 @@ class FixedPostNumConn(FixedNumConn):
                 buffers=self.buffers,
                 maintain_dual_layout=self.maintain_dual_layout,
                 primary_layout=self.primary_layout,
-                bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
             )
 
         else:
@@ -870,7 +828,6 @@ class FixedPostNumConn(FixedNumConn):
                 buffers=self.buffers,
                 maintain_dual_layout=self.maintain_dual_layout,
                 primary_layout=self.primary_layout,
-                bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_post_num_to_coo(self)
@@ -882,7 +839,6 @@ class FixedPostNumConn(FixedNumConn):
                 buffers=self.buffers,
                 maintain_dual_layout=self.maintain_dual_layout,
                 primary_layout=self.primary_layout,
-                bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -917,48 +873,6 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
-        bitpack_backend = _resolve_bitpack_fcnmm_backend(self.backend)
-
-        if isinstance(other, CompactBinary):
-            if other.ndim == 1:
-                return compact_binary_fcnmv(
-                    data, self.indices,
-                    other.packed, other.active_ids, other.n_active, other.value,
-                    shape=self.shape, transpose=False,
-                    **self._col_mirror_kwargs(),
-                )
-            elif other.ndim == 2:
-                return compact_binary_fcnmm(
-                    data, self.indices,
-                    other.packed, other.active_ids, other.n_active, other.value,
-                    shape=self.shape, transpose=False,
-                )
-            raise NotImplementedError(f"compact matmul with {other.ndim}D array")
-
-        if isinstance(other, BitPackedBinary):
-            if other.ndim == 1:
-                return bitpack_binary_fcnmv(
-                    data,
-                    self.indices,
-                    other.packed[0],
-                    other.value,
-                    shape=self.shape,
-                    transpose=False,
-                    mm_pack_axis=self.bitpack_mm_pack_axis,
-                    backend=bitpack_backend,
-                )
-            elif other.ndim == 2:
-                return bitpack_binary_fcnmm(
-                    data,
-                    self.indices,
-                    other.packed[self.bitpack_mm_pack_axis],
-                    other.value,
-                    shape=self.shape,
-                    transpose=False,
-                    pack_axis=self.bitpack_mm_pack_axis,
-                    backend=bitpack_backend,
-                )
-            raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
             other = other.value
@@ -1015,51 +929,6 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
-        bitpack_backend = _resolve_bitpack_fcnmm_backend(self.backend)
-
-        if isinstance(other, CompactBinary):
-            if other.ndim == 1:
-                return compact_binary_fcnmv(
-                    data, self.indices,
-                    other.packed, other.active_ids, other.n_active, other.value,
-                    shape=self.shape, transpose=True,
-                )
-            elif other.ndim == 2:
-                other_t = CompactBinary.from_array(other.value.T)
-                r = compact_binary_fcnmm(
-                    data, self.indices,
-                    other_t.packed, other_t.active_ids, other_t.n_active, other_t.value,
-                    shape=self.shape, transpose=True,
-                )
-                return r.T
-            raise NotImplementedError(f"compact matmul with {other.ndim}D array")
-
-        if isinstance(other, BitPackedBinary):
-            if other.ndim == 1:
-                return bitpack_binary_fcnmv(
-                    data,
-                    self.indices,
-                    other.packed[0],
-                    other.value,
-                    shape=self.shape,
-                    transpose=True,
-                    mm_pack_axis=self.bitpack_mm_pack_axis,
-                    backend=bitpack_backend,
-                )
-            elif other.ndim == 2:
-                other_t = other.T
-                r = bitpack_binary_fcnmm(
-                    data,
-                    self.indices,
-                    other_t.packed[self.bitpack_mm_pack_axis],
-                    other_t.value,
-                    shape=self.shape,
-                    transpose=True,
-                    pack_axis=self.bitpack_mm_pack_axis,
-                    backend=bitpack_backend,
-                )
-                return r.T
-            raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
             other = other.value
@@ -1225,7 +1094,6 @@ class FixedPreNumConn(FixedNumConn):
         buffers: Optional[Dict] = None,
         maintain_dual_layout: bool = False,
         primary_layout: Literal['row', 'col'] = 'row',
-        bitpack_mm_pack_axis: int = 0,
     ):
         """
         Initialize a FixedPreNumConn sparse matrix.
@@ -1282,9 +1150,7 @@ class FixedPreNumConn(FixedNumConn):
             shape=shape,
             buffers=buffers,
             maintain_dual_layout=maintain_dual_layout,
-            primary_layout=primary_layout,
-            bitpack_mm_pack_axis=bitpack_mm_pack_axis,
-            mirror_shape=shape[::-1],
+            primary_layout=primary_layout,            mirror_shape=shape[::-1],
         )
 
         _contains_invalid_indices(self.indices, upper_bound=self.shape[0])
@@ -1318,7 +1184,6 @@ class FixedPreNumConn(FixedNumConn):
             buffers=self.buffers,
             maintain_dual_layout=self.maintain_dual_layout,
             primary_layout=self.primary_layout,
-            bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
         )
 
     def todense(self):
@@ -1474,7 +1339,6 @@ class FixedPreNumConn(FixedNumConn):
             buffers=self.buffers,
             maintain_dual_layout=self.maintain_dual_layout,
             primary_layout=self.primary_layout,
-            bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
         )
 
     def _unitary_op(self, op):
@@ -1485,7 +1349,6 @@ class FixedPreNumConn(FixedNumConn):
             buffers=self.buffers,
             maintain_dual_layout=self.maintain_dual_layout,
             primary_layout=self.primary_layout,
-            bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
         )
 
     def _binary_op(self, other, op):
@@ -1501,7 +1364,6 @@ class FixedPreNumConn(FixedNumConn):
                 buffers=self.buffers,
                 maintain_dual_layout=self.maintain_dual_layout,
                 primary_layout=self.primary_layout,
-                bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1514,7 +1376,6 @@ class FixedPreNumConn(FixedNumConn):
                 buffers=self.buffers,
                 maintain_dual_layout=self.maintain_dual_layout,
                 primary_layout=self.primary_layout,
-                bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
             )
 
         else:
@@ -1533,7 +1394,6 @@ class FixedPreNumConn(FixedNumConn):
                 buffers=self.buffers,
                 maintain_dual_layout=self.maintain_dual_layout,
                 primary_layout=self.primary_layout,
-                bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1546,7 +1406,6 @@ class FixedPreNumConn(FixedNumConn):
                 buffers=self.buffers,
                 maintain_dual_layout=self.maintain_dual_layout,
                 primary_layout=self.primary_layout,
-                bitpack_mm_pack_axis=self.bitpack_mm_pack_axis,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -1581,47 +1440,6 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
-        bitpack_backend = _resolve_bitpack_fcnmm_backend(self.backend)
-
-        if isinstance(other, CompactBinary):
-            if other.ndim == 1:
-                return compact_binary_fcnmv(
-                    data, self.indices,
-                    other.packed, other.active_ids, other.n_active, other.value,
-                    shape=self.shape[::-1], transpose=True,
-                )
-            elif other.ndim == 2:
-                return compact_binary_fcnmm(
-                    data, self.indices,
-                    other.packed, other.active_ids, other.n_active, other.value,
-                    shape=self.shape[::-1], transpose=True,
-                )
-            raise NotImplementedError(f"compact matmul with {other.ndim}D array")
-
-        if isinstance(other, BitPackedBinary):
-            if other.ndim == 1:
-                return bitpack_binary_fcnmv(
-                    data,
-                    self.indices,
-                    other.packed[0],
-                    other.value,
-                    shape=self.shape[::-1],
-                    transpose=True,
-                    mm_pack_axis=self.bitpack_mm_pack_axis,
-                    backend=bitpack_backend,
-                )
-            elif other.ndim == 2:
-                return bitpack_binary_fcnmm(
-                    data,
-                    self.indices,
-                    other.packed[self.bitpack_mm_pack_axis],
-                    other.value,
-                    shape=self.shape[::-1],
-                    transpose=True,
-                    pack_axis=self.bitpack_mm_pack_axis,
-                    backend=bitpack_backend,
-                )
-            raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
             other = other.value
@@ -1672,49 +1490,6 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
-        bitpack_backend = _resolve_bitpack_fcnmm_backend(self.backend)
-
-        if isinstance(other, CompactBinary):
-            if other.ndim == 1:
-                return compact_binary_fcnmv(
-                    data, self.indices,
-                    other.packed, other.active_ids, other.n_active, other.value,
-                    shape=self.shape[::-1], transpose=False,
-                    **self._col_mirror_kwargs(),
-                )
-            elif other.ndim == 2:
-                other_t = CompactBinary.from_array(other.value.T)
-                r = compact_binary_fcnmm(
-                    data, self.indices,
-                    other_t.packed, other_t.active_ids, other_t.n_active, other_t.value,
-                    shape=self.shape[::-1], transpose=False,
-                )
-                return r.T
-            raise NotImplementedError(f"compact matmul with {other.ndim}D array")
-
-        if isinstance(other, BitPackedBinary):
-            if other.ndim == 1:
-                return bitpack_binary_fcnmv(
-                    data, self.indices, other.packed[0], other.value,
-                    shape=self.shape[::-1],
-                    transpose=False,
-                    mm_pack_axis=self.bitpack_mm_pack_axis,
-                    backend=bitpack_backend,
-                )
-            elif other.ndim == 2:
-                other_t = other.T
-                r = bitpack_binary_fcnmm(
-                    data,
-                    self.indices,
-                    other_t.packed[self.bitpack_mm_pack_axis],
-                    other_t.value,
-                    shape=self.shape[::-1],
-                    transpose=False,
-                    pack_axis=self.bitpack_mm_pack_axis,
-                    backend=bitpack_backend,
-                )
-                return r.T
-            raise NotImplementedError(f"bitpack matmul with {other.ndim}D array")
 
         if isinstance(other, BinaryArray):
             other = other.value

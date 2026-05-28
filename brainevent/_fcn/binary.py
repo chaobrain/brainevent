@@ -30,7 +30,6 @@ from brainevent._misc import check_fixed_conn_num_shape, fixed_conn_num_to_csc, 
 from brainevent._compatible_import import Tracer
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, load_cuda_file
 from brainevent.config import get_backend, get_numba_parallel
-from .fcn_tools import binary_dump_recorder
 from .float import fcnmv, fcnmm
 
 __all__ = [
@@ -39,64 +38,6 @@ __all__ = [
     'binary_fcnmm',
     'binary_fcnmm_p',
 ]
-
-_BINARY_FCNMM_TEST_COLMAJOR_BACKENDS = frozenset({
-    'test_colmajor_fullwarp_nocap',
-})
-
-def _binary_fcnmm_dump_row_sparse_encode(
-    spike_indices,
-    *,
-    operator_name: str,
-    n_cols: int,
-):
-    return binary_dump_recorder.dump_row_sparse_encode(
-        spike_indices,
-        operator_name=operator_name,
-        n_cols=n_cols,
-    )
-
-def _binary_fcnmm_dump_pair_stream_encode(
-    pair_stream,
-    n_pairs,
-    *,
-    operator_name: str,
-    n_rows: int,
-    n_cols: int,
-):
-    return binary_dump_recorder.dump_pair_stream_encode(
-        pair_stream,
-        n_pairs,
-        operator_name=operator_name,
-        n_rows=n_rows,
-        n_cols=n_cols,
-    )
-
-def _binary_fcnmm_dump_csr_encode(
-    csr_indices,
-    csr_indptr,
-    *,
-    operator_name: str,
-    n_rows: int,
-    n_cols: int,
-):
-    return binary_dump_recorder.dump_csr_encode(
-        csr_indices,
-        csr_indptr,
-        operator_name=operator_name,
-        n_rows=n_rows,
-        n_cols=n_cols,
-    )
-
-def _binary_fcnmm_dump_dense_spike_matrix(
-    matrix,
-    *,
-    operator_name: str,
-):
-    return binary_dump_recorder.dump_dense_spike_matrix(
-        matrix,
-        operator_name=operator_name,
-    )
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -699,7 +640,6 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
         )
-        r = (_binary_fcnmm_restore_public_layout(r[0], kwargs['backend'], kwargs['transpose']),)
         return r, [1]
     elif tuple(axes) == (None, None, 1, None, None, None):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
@@ -711,7 +651,6 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
         )
-        r = (_binary_fcnmm_restore_public_layout(r[0], kwargs['backend'], kwargs['transpose']),)
         return r, [1]
     else:
         return general_batching_rule(binary_fcnmv_p, args, axes, **kwargs)
@@ -869,30 +808,6 @@ binary_fcnmv_p.def_tags('fcn', 'binary')
 binary_fcnmv_p.def_benchmark_data(_binary_fcnmv_benchmark_data)
 
 
-def _binary_fcnmm_effective_backend(backend: Optional[str]) -> Optional[str]:
-    if backend is not None:
-        return backend
-    platform = jax.default_backend()
-    global_backend = get_backend(platform)
-    if global_backend in binary_fcnmm_p.available_backends(platform):
-        return global_backend
-    return None
-
-
-def _binary_fcnmm_uses_test_colmajor_layout(backend: Optional[str], transpose: bool) -> bool:
-    return bool(transpose) and _binary_fcnmm_effective_backend(backend) in _BINARY_FCNMM_TEST_COLMAJOR_BACKENDS
-
-
-def _binary_fcnmm_restore_public_layout(
-    result: jax.Array,
-    backend: Optional[str],
-    transpose: bool,
-) -> jax.Array:
-    if _binary_fcnmm_uses_test_colmajor_layout(backend, transpose):
-        return jnp.transpose(result, (1, 0))
-    return result
-
-
 @namescope(static_argnames=['shape', 'transpose'])
 def binary_fcnmm(
     weights: Union[jax.Array, u.Quantity],
@@ -997,7 +912,6 @@ def binary_fcnmm(
         shape=shape,
         backend=backend,
     )[0]
-    r = _binary_fcnmm_restore_public_layout(r, backend, transpose)
     return u.maybe_decimal(r * m_unit * w_unit)
 
 
@@ -1169,56 +1083,6 @@ def _binary_fcnmm_cuda_kernel(
     return kernel
 
 
-def _binary_fcnmm_test_colmajor_kernel(
-    *,
-    transpose: bool,
-    weight_info: jax.ShapeDtypeStruct,
-    matrix_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs,
-):
-    if not transpose:
-        return _binary_fcnmm_cuda_kernel(
-            transpose=transpose,
-            weight_info=weight_info,
-            matrix_info=matrix_info,
-            indices_info=indices_info,
-            **kwargs,
-        )
-
-    load_cuda_file(
-        Path(__file__).parent.joinpath('fcnmm_testing_op.cu'),
-        name='fcn_fcnmm_testing',
-    )
-
-    out_info = kwargs['outs']
-    matrix_t_info = jax.ShapeDtypeStruct((matrix_info.shape[1], matrix_info.shape[0]), matrix_info.dtype)
-    _dtype_sfx = {
-        np.dtype('float16'): '_f16',
-        np.dtype('float32'): '_f32',
-        np.dtype('float64'): '_f64',
-        np.dtype('bfloat16'): '_bf16'
-    }
-    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
-    spike_sfx = '_bool' if matrix_info.dtype == jnp.bool_ else '_float'
-    mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
-    kernel_name = f'fcn_fcnmm_testing.binary_fcnmm_test_colmajor_fullwarp_nocap{mode_sfx}{spike_sfx}{sfx}'
-
-    def kernel(weights, indices, matrix):
-        matrix_t = jnp.array(matrix.T, copy=True)
-        return jax.ffi.ffi_call(kernel_name, out_info, vmap_method='sequential')(
-            weights,
-            indices,
-            matrix_t,
-        )
-
-    return kernel
-
-
-def _binary_fcnmm_test_colmajor_fullwarp_nocap_kernel(**kwargs):
-    return _binary_fcnmm_test_colmajor_kernel(**kwargs)
-
-
 def _binary_fcnmm_jax_kernel(
     shape: Tuple[int, int],
     transpose: bool,
@@ -1326,7 +1190,7 @@ def _batching_base_fn(args, axis=1, **kwargs):
         transpose=kwargs['transpose'],
         backend=kwargs['backend'],
     )
-    raw = _binary_fcnmm_restore_public_layout(r[0], kwargs['backend'], kwargs['transpose'])
+    raw = r[0]
     r = jnp.reshape(raw, [raw.shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 
@@ -1423,8 +1287,6 @@ def binary_fcnmm_p_call(
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    if _binary_fcnmm_uses_test_colmajor_layout(backend, transpose):
-        out = jax.ShapeDtypeStruct((matrix.shape[1], out.shape[0]), out.dtype)
     return binary_fcnmm_p(
         weights,
         indices,
@@ -1470,14 +1332,6 @@ binary_fcnmm_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel, asdefault=True)
 binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
-
-binary_fcnmm_p.def_kernel(
-    'test_colmajor_fullwarp_nocap',
-    'gpu',
-    _binary_fcnmm_test_colmajor_fullwarp_nocap_kernel,
-)
-
-
 
 binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
 binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
