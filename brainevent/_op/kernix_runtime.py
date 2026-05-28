@@ -13,13 +13,11 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Runtime layer: CompiledModule, JAX FFI registration, dtype and attr utilities."""
+"""Runtime layer: CompiledModule and JAX FFI registration."""
 
 import ctypes
 
 import jax
-import ml_dtypes
-import numpy as np
 
 from brainevent._error import KernelError, KernelLoadError, KernelRegistrationError
 
@@ -28,124 +26,21 @@ def _format_load_error(so_path: str, err: Exception) -> str:
     msg = str(err)
     low = msg.lower()
     lines = [
-        "[brainevent GPU 工具链] 加载 .so 失败  (code=E-LOAD)",
+        "[brainevent GPU toolchain] Failed to load .so  (code=E-LOAD)",
         "",
-        f"原因: 无法 dlopen 编译产物：{so_path}",
+        f"Reason: cannot dlopen the compiled artefact: {so_path}",
         f"dlopen: {msg}",
         "",
-        "如何修复:",
+        "How to fix:",
     ]
     if "cudart" in low or "cannot open shared object" in low:
         lines += [
-            "  1) 缺少 CUDA 运行库（典型 cu12）。确保 jax[cuda*] 已正确安装。",
-            "  2) 把 CUDA 运行库目录加入 LD_LIBRARY_PATH（如 site-packages/nvidia/cuda_runtime/lib）。",
+            "  1) Missing CUDA runtime libraries (typically cu12). Ensure jax[cuda*] is installed correctly.",
+            "  2) Add the CUDA runtime library directory to LD_LIBRARY_PATH (e.g. site-packages/nvidia/cuda_runtime/lib).",
         ]
     else:
-        lines += ["  1) 确认编译成功且依赖库可用；设 BRAINEVENT_TOOLCHAIN_DEBUG=1 查看工具链快照。"]
+        lines += ["  1) Verify the build succeeded and dependent libraries are available; set BRAINEVENT_TOOLCHAIN_DEBUG=1 to see a toolchain snapshot."]
     return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Dtype mapping
-# ---------------------------------------------------------------------------
-
-# Must match BE::DType enum in tensor.h
-_JAX_TO_JKB: dict[np.dtype, int] = {
-    np.dtype("float16"): 0,  # Float16
-    np.dtype("float32"): 1,  # Float32
-    np.dtype("float64"): 2,  # Float64
-    np.dtype(ml_dtypes.bfloat16): 3,  # bfloat16 lives in ml_dtypes (JAX's dependency)
-    np.dtype("int8"): 4,  # Int8
-    np.dtype("int16"): 5,  # Int16
-    np.dtype("int32"): 6,  # Int32
-    np.dtype("int64"): 7,  # Int64
-    np.dtype("uint8"): 8,  # UInt8
-    np.dtype("uint16"): 9,  # UInt16
-    np.dtype("uint32"): 10,  # UInt32
-    np.dtype("uint64"): 11,  # UInt64
-    np.dtype("bool"): 12,  # Bool
-    np.dtype("complex64"): 13,  # Complex64
-    np.dtype("complex128"): 14,  # Complex128
-}
-
-_BE_TO_JAX: dict[int, np.dtype] = {v: k for k, v in _JAX_TO_JKB.items()}
-
-# Element byte widths (redundant with C++ side, but useful in Python)
-DTYPE_SIZES: dict[int, int] = {
-    0: 2, 1: 4, 2: 8, 3: 2,  # float types
-    4: 1, 5: 2, 6: 4, 7: 8,  # signed int
-    8: 1, 9: 2, 10: 4, 11: 8,  # unsigned int
-    12: 1, 13: 8, 14: 16,  # bool, complex
-}
-
-
-def jax_dtype_to_jkb(dtype) -> int:
-    """Convert a JAX/NumPy dtype to a BE DType enum value."""
-    dtype = np.dtype(dtype)
-    if dtype not in _JAX_TO_JKB:
-        raise TypeError(f"Unsupported dtype: {dtype}")
-    return _JAX_TO_JKB[dtype]
-
-
-def be_to_jax_dtype(jkb_dtype: int) -> np.dtype:
-    """Convert a BE DType enum value to a NumPy dtype."""
-    if jkb_dtype not in _BE_TO_JAX:
-        raise ValueError(f"Unknown BE dtype enum value: {jkb_dtype}")
-    return _BE_TO_JAX[jkb_dtype]
-
-
-# ---------------------------------------------------------------------------
-# Attribute type mapping
-# ---------------------------------------------------------------------------
-
-# Maps BE attr type name → numpy dtype used when passing from Python.
-# For float16/bfloat16 use numpy.uint16 containing the raw 16-bit pattern.
-ATTR_NUMPY_DTYPE: dict[str, type] = {
-    "bool": bool,
-    "int8": np.int8,
-    "uint8": np.uint8,
-    "int16": np.int16,
-    "uint16": np.uint16,
-    "int32": np.int32,
-    "uint32": np.uint32,
-    "int64": np.int64,
-    "uint64": np.uint64,
-    "float16": np.uint16,  # pass raw bits: np.float16(x).view(np.uint16)
-    "bfloat16": np.uint16,  # pass raw bits: bfloat16_val.view(np.uint16)
-    "float32": np.float32,
-    "float64": np.float64,
-    # complex64 / complex128 omitted: JAX mlir.ir_attribute cannot encode them.
-}
-
-# Legacy alias kept for backward compatibility.
-ATTR_TYPES = {
-    k: {"cpp": v, "python": ATTR_NUMPY_DTYPE[k]}
-    for k, v in {
-        "bool": "bool",
-        "int8": "int8_t",
-        "uint8": "uint8_t",
-        "int16": "int16_t",
-        "uint16": "uint16_t",
-        "int32": "int32_t",
-        "uint32": "uint32_t",
-        "int64": "int64_t",
-        "uint64": "uint64_t",
-        "float16": "uint16_t",
-        "bfloat16": "uint16_t",
-        "float32": "float",
-        "float64": "double",
-    }.items()
-}
-
-
-def validate_attr_value(name: str, value, expected_type: str) -> None:
-    """Validate that a Python attribute value is compatible with *expected_type*."""
-    info = ATTR_TYPES.get(expected_type)
-    if info is None:
-        raise TypeError(
-            f"Unknown attribute type '{expected_type}' for '{name}'. "
-            f"Supported: {list(ATTR_TYPES)}"
-        )
 
 
 # ---------------------------------------------------------------------------

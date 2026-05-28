@@ -323,21 +323,21 @@ def clear_backends():
 # ──────────────────────────────────────────────────────────────────────
 
 def prefer_system_nvcc(enable: bool = True) -> None:
-    """切换 nvcc 发现优先级。
+    """Switch the nvcc discovery preference.
 
     Parameters
     ----------
     enable : bool
-        ``True`` → 优先使用系统 ``PATH`` 上的 nvcc；
-        ``False`` → 优先使用 ``jax[cuda*]`` 自带的 pip nvcc（默认）。
+        ``True`` → prefer the nvcc on the system ``PATH``;
+        ``False`` → prefer the pip nvcc bundled with ``jax[cuda*]`` (default).
 
     Examples
     --------
     .. code-block:: python
 
         >>> import brainevent
-        >>> brainevent.config.prefer_system_nvcc()       # 改为系统优先
-        >>> brainevent.config.prefer_system_nvcc(False)  # 改回 pip 优先
+        >>> brainevent.config.prefer_system_nvcc()       # switch to system-first
+        >>> brainevent.config.prefer_system_nvcc(False)  # switch back to pip-first
     """
     from brainevent._op.kernix_toolchain import set_nvcc_discovery
     set_nvcc_discovery("system" if enable else "pip")

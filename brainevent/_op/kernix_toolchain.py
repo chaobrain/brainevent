@@ -66,17 +66,17 @@ class CandidateProbe:
 
 
 _PROBE_LABEL = {
-    "unset": "未设置",
-    "not-found": "未找到",
-    "not-a-file": "不是文件",
-    "ok": "命中",
+    "unset": "unset",
+    "not-found": "not found",
+    "not-a-file": "not a file",
+    "ok": "hit",
 }
 
 
 def _probe_line(p: CandidateProbe) -> str:
     mark = "✓" if p.status == "ok" else "✗"
     if p.status.startswith("rejected:"):
-        label = "拒绝(" + p.status.split(":", 1)[1] + ")"
+        label = "rejected(" + p.status.split(":", 1)[1] + ")"
     else:
         label = _PROBE_LABEL.get(p.status, p.status)
     loc = f"  [{p.path}]" if p.path else ""
@@ -101,19 +101,19 @@ def render_toolchain_error(
         except Exception:
             snapshot = None
 
-    lines = [f"[brainevent GPU 工具链] {stage} 失败  (code={code})", "", f"原因: {summary}"]
+    lines = [f"[brainevent GPU toolchain] {stage} failed  (code={code})", "", f"Reason: {summary}"]
     if probes:
-        lines += ["", "已尝试 (按优先级):"]
+        lines += ["", "Tried (in priority order):"]
         lines += [_probe_line(p) for p in probes]
     if command:
-        lines += ["", "命令:", f"  {command}"]
+        lines += ["", "Command:", f"  {command}"]
     if compiler_output:
-        lines += ["", "编译器输出:", compiler_output]
+        lines += ["", "Compiler output:", compiler_output]
     if remediation:
-        lines += ["", "如何修复:"]
+        lines += ["", "How to fix:"]
         lines += [f"  {i}) {r}" for i, r in enumerate(remediation, 1)]
     if snapshot:
-        lines += ["", "工具链快照:"]
+        lines += ["", "Toolchain snapshot:"]
         lines += [f"  {k} = {v}" for k, v in snapshot.items()]
     return "\n".join(lines)
 
@@ -352,6 +352,33 @@ def collect_toolchain_diagnostics() -> dict:
     return snap
 
 
+def _resolve_xla_ffi_include(summary: str, remediation: "list[str]") -> str:
+    """Return the jaxlib XLA FFI include dir, or raise if ``ffi.h`` is missing."""
+    xla_ffi_include = jax.ffi.include_dir()
+    ffi_header = os.path.join(xla_ffi_include, "xla", "ffi", "api", "ffi.h")
+    if not os.path.isfile(ffi_header):
+        raise HeaderNotFoundError(render_toolchain_error(
+            stage="header resolution", code="E-HDR",
+            summary=summary,
+            probes=[CandidateProbe("jaxlib:xla/ffi/api/ffi.h", ffi_header, "not-found")],
+            remediation=remediation,
+        ))
+    return xla_ffi_include
+
+
+def _resolve_brainevent_include() -> str:
+    """Return the brainevent include dir, or raise if it is missing."""
+    be_include = str(Path(__file__).resolve().parent.parent / "include")
+    if not os.path.isdir(be_include):
+        raise HeaderNotFoundError(render_toolchain_error(
+            stage="header resolution", code="E-HDR",
+            summary="brainevent include directory is missing (the package install may be corrupted).",
+            probes=[CandidateProbe("brainevent/include", be_include, "not-found")],
+            remediation=["Reinstall brainevent: pip install -U --force-reinstall brainevent"],
+        ))
+    return be_include
+
+
 def detect_cuda_toolchain() -> CudaToolchain:
     """Auto-detect nvcc, host C++ compiler, and include paths.
 
@@ -361,13 +388,13 @@ def detect_cuda_toolchain() -> CudaToolchain:
     nvcc, cuda_include_dirs, nvcc_probes = _select_nvcc()
     if nvcc is None:
         raise NvccNotFoundError(render_toolchain_error(
-            stage="nvcc 发现", code="E-NVCC",
-            summary="未找到 CUDA 编译器 nvcc。",
+            stage="nvcc discovery", code="E-NVCC",
+            summary="CUDA compiler nvcc not found.",
             probes=nvcc_probes,
             remediation=[
-                '安装 jax[cuda13]（自带 nvcc，无需系统 CUDA Toolkit）：pip install -U "jax[cuda13]"',
-                "或设 BRAINEVENT_NVCC_PATH 指向 nvcc，或设 CUDA_HOME 指向 CUDA 安装目录",
-                "若想优先用系统 PATH 上的 nvcc：brainevent.config.prefer_system_nvcc()",
+                'Install jax[cuda13] (bundles nvcc, no system CUDA Toolkit required): pip install -U "jax[cuda13]"',
+                "Or set BRAINEVENT_NVCC_PATH to the nvcc path, or set CUDA_HOME to the CUDA install directory",
+                "To prefer the nvcc on the system PATH: brainevent.config.prefer_system_nvcc()",
             ],
         ))
 
@@ -382,49 +409,34 @@ def detect_cuda_toolchain() -> CudaToolchain:
             break
     if not nvcc_version:
         raise NvccNotFoundError(render_toolchain_error(
-            stage="nvcc 发现", code="E-NVCC",
-            summary=f"nvcc 存在但无法获取版本：{nvcc}",
+            stage="nvcc discovery", code="E-NVCC",
+            summary=f"nvcc exists but its version could not be determined: {nvcc}",
             probes=nvcc_probes,
             compiler_output=(proc.stdout + proc.stderr),
-            remediation=["确认该 nvcc 可执行且未损坏，或改用其它 nvcc。"],
+            remediation=["Verify this nvcc is executable and not corrupted, or use a different nvcc."],
         ))
 
     # host compiler
     cxx, cxx_probes = _find_host_cxx()
     if cxx is None:
         raise HostCompilerNotFoundError(render_toolchain_error(
-            stage="host 编译器发现", code="E-CXX",
-            summary="未找到 host C++ 编译器（nvcc 需要它编译 host 侧代码并链接）。pip 不提供 host 编译器。",
+            stage="host compiler discovery", code="E-CXX",
+            summary="host C++ compiler not found (nvcc needs it to compile and link host-side code). pip does not provide a host compiler.",
             probes=cxx_probes,
             remediation=[
-                "conda 环境：conda install -c conda-forge gxx",
-                "Debian/Ubuntu：sudo apt-get install g++",
-                "RHEL/Fedora：sudo dnf install gcc-c++",
-                "或设 CXX=/path/to/g++",
+                "conda environment: conda install -c conda-forge gxx",
+                "Debian/Ubuntu: sudo apt-get install g++",
+                "RHEL/Fedora: sudo dnf install gcc-c++",
+                "Or set CXX=/path/to/g++",
             ],
         ))
     cxx_version = _cxx_version(cxx)
 
-    # XLA FFI include (from jaxlib)
-    xla_ffi_include = jax.ffi.include_dir()
-    ffi_header = os.path.join(xla_ffi_include, "xla", "ffi", "api", "ffi.h")
-    if not os.path.isfile(ffi_header):
-        raise HeaderNotFoundError(render_toolchain_error(
-            stage="头文件解析", code="E-HDR",
-            summary="未找到 XLA FFI 头 ffi.h（jaxlib 与 CUDA wheel 可能不配套或损坏）。",
-            probes=[CandidateProbe("jaxlib:xla/ffi/api/ffi.h", ffi_header, "not-found")],
-            remediation=['重装与 CUDA 匹配的 jaxlib：pip install -U "jax[cuda13]"'],
-        ))
-
-    # brainevent include
-    be_include = str(Path(__file__).resolve().parent.parent / "include")
-    if not os.path.isdir(be_include):
-        raise HeaderNotFoundError(render_toolchain_error(
-            stage="头文件解析", code="E-HDR",
-            summary="brainevent include 目录缺失（包安装可能损坏）。",
-            probes=[CandidateProbe("brainevent/include", be_include, "not-found")],
-            remediation=["重装 brainevent：pip install -U --force-reinstall brainevent"],
-        ))
+    xla_ffi_include = _resolve_xla_ffi_include(
+        summary="XLA FFI header ffi.h not found (jaxlib and the CUDA wheel may be mismatched or corrupted).",
+        remediation=['Reinstall a jaxlib matching your CUDA: pip install -U "jax[cuda13]"'],
+    )
+    be_include = _resolve_brainevent_include()
 
     return CudaToolchain(
         nvcc=nvcc,
@@ -446,36 +458,23 @@ def detect_cpp_toolchain() -> CppToolchain:
     cxx, cxx_probes = _find_host_cxx()
     if cxx is None:
         raise HostCompilerNotFoundError(render_toolchain_error(
-            stage="host 编译器发现", code="E-CXX",
-            summary="未找到 C++ 编译器（CPU 后端需要 g++/clang++）。",
+            stage="host compiler discovery", code="E-CXX",
+            summary="C++ compiler not found (the CPU backend requires g++/clang++).",
             probes=cxx_probes,
             remediation=[
-                "conda 环境：conda install -c conda-forge gxx",
-                "Debian/Ubuntu：sudo apt-get install g++",
-                "RHEL/Fedora：sudo dnf install gcc-c++",
-                "或设 CXX=/path/to/g++",
+                "conda environment: conda install -c conda-forge gxx",
+                "Debian/Ubuntu: sudo apt-get install g++",
+                "RHEL/Fedora: sudo dnf install gcc-c++",
+                "Or set CXX=/path/to/g++",
             ],
         ))
     cxx_version = _cxx_version(cxx)
 
-    xla_ffi_include = jax.ffi.include_dir()
-    ffi_header = os.path.join(xla_ffi_include, "xla", "ffi", "api", "ffi.h")
-    if not os.path.isfile(ffi_header):
-        raise HeaderNotFoundError(render_toolchain_error(
-            stage="头文件解析", code="E-HDR",
-            summary="未找到 XLA FFI 头 ffi.h。",
-            probes=[CandidateProbe("jaxlib:xla/ffi/api/ffi.h", ffi_header, "not-found")],
-            remediation=["重装 jaxlib：pip install -U jax jaxlib"],
-        ))
-
-    be_include = str(Path(__file__).resolve().parent.parent / "include")
-    if not os.path.isdir(be_include):
-        raise HeaderNotFoundError(render_toolchain_error(
-            stage="头文件解析", code="E-HDR",
-            summary="brainevent include 目录缺失。",
-            probes=[CandidateProbe("brainevent/include", be_include, "not-found")],
-            remediation=["重装 brainevent：pip install -U --force-reinstall brainevent"],
-        ))
+    xla_ffi_include = _resolve_xla_ffi_include(
+        summary="XLA FFI header ffi.h not found.",
+        remediation=["Reinstall jaxlib: pip install -U jax jaxlib"],
+    )
+    be_include = _resolve_brainevent_include()
 
     return CppToolchain(
         cxx=cxx,
@@ -581,11 +580,11 @@ def detect_cuda_arch() -> list[str]:
             return sorted(caps)
 
     raise GpuArchDetectionError(render_toolchain_error(
-        stage="算力探测", code="E-ARCH",
-        summary="无法通过 nvidia-smi 探测 GPU 算力（驱动缺失或 nvidia-smi 不可用）。",
+        stage="compute capability detection", code="E-ARCH",
+        summary="Could not detect GPU compute capability via nvidia-smi (driver missing or nvidia-smi unavailable).",
         probes=[CandidateProbe("nvidia-smi", shutil.which("nvidia-smi") or "", "not-found")],
         remediation=[
-            "安装/修复 NVIDIA 驱动，使 nvidia-smi 可用",
-            "或设 BRAINEVENT_COMPUTE_CAPABILITIES（如 '8.6,8.0'）跳过自动探测",
+            "Install/repair the NVIDIA driver so that nvidia-smi works",
+            "Or set BRAINEVENT_COMPUTE_CAPABILITIES (e.g. '8.6,8.0') to skip auto-detection",
         ],
     ))

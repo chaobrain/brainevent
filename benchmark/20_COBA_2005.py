@@ -156,7 +156,7 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
 # scale=100, size=400000, time = 215.4547393321991 s, firing rate = 50.6129150390625 Hz
 
 
-# 2026/02/13, AMD Ryzen 7 7840HS, brainevent 0.0.6, Numba 0.63.1, jax 0.9.0, 小新Win11野兽模式
+# 2026/02/13, AMD Ryzen 7 7840HS, brainevent 0.0.6, Numba 0.63.1, jax 0.9.0, Lenovo Xiaoxin Win11 beast mode
 #
 # scale=1, size=4000, time = 7.121581077575684 s, firing rate = 59.563377380371094 Hz
 # scale=2, size=8000, time = 11.442655324935913 s, firing rate = 59.57026672363281 Hz
@@ -173,7 +173,7 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
 
 
 # --------------------
-# 2026/02/13, i9-12900H, brainevent 0.0.6, Numba 0.63.1, jax 0.9.0.1, 雷神Win11狂暴模式
+# 2026/02/13, i9-12900H, brainevent 0.0.6, Numba 0.63.1, jax 0.9.0.1, Thunderobot Win11 turbo mode
 #
 # scale=1, size=4000, time = 8.120884656906128 s, firing rate = 59.57337951660156 Hz
 # scale=2, size=8000, time = 13.005541324615479 s, firing rate = 59.57312774658203 Hz

@@ -59,6 +59,28 @@ _CPP_TYPE_TO_ATTR: dict[str, str] = {
 }
 
 
+def _parse_scalar_param(param: str) -> tuple[str, str, bool] | None:
+    """Split a single C++ parameter into ``(name, cpp_type, is_ptr_or_ref)``.
+
+    Returns ``None`` for an empty parameter.  The variable name is the last
+    whitespace-separated token; ``cpp_type`` is everything before it with any
+    ``*``/``&`` and a leading ``const`` stripped.  ``is_ptr_or_ref`` flags
+    pointer/reference parameters (``float* p`` or ``float *p``), which cannot be
+    passed as XLA FFI scalar attributes.
+    """
+    parts = param.split()
+    if not parts:
+        return None
+    last_part = parts[-1]
+    param_name = last_part.lstrip('*&')
+    cpp_type = ' '.join(parts[:-1]).strip()
+    is_ptr_or_ref = '*' in cpp_type or '&' in cpp_type or last_part != param_name
+    cpp_type = cpp_type.rstrip('*&')
+    if cpp_type.startswith("const "):
+        cpp_type = cpp_type[6:].strip()
+    return param_name, cpp_type, is_ptr_or_ref
+
+
 def _infer_attr_type_from_source(
     source: str, func_name: str, attr_name: str
 ) -> str:
@@ -76,25 +98,12 @@ def _infer_attr_type_from_source(
             f"Use the explicit form 'attr.{attr_name}:<type>' instead."
         )
     for raw_param in m.group(1).split(','):
-        param = raw_param.strip()
-        if not param:
+        parsed = _parse_scalar_param(raw_param.strip())
+        if parsed is None:
             continue
-        parts = param.split()
-        if not parts:
-            continue
-        # Variable name is the last word; '*'/'&' may be attached to it
-        # (C style: "float *ptr") or to the type (C++ style: "float* ptr").
-        last_part = parts[-1]
-        param_name = last_part.lstrip('*&')
+        param_name, cpp_type, is_ptr_or_ref = parsed
         if param_name != attr_name:
             continue
-        # Type is everything before the variable name.
-        cpp_type = ' '.join(parts[:-1]).strip()
-        # Reject pointer / reference types — they cannot be passed as XLA FFI
-        # scalar attrs.  A '*' or '&' may appear in the type token ("float*")
-        # or at the start of the variable token ("*ptr").
-        is_ptr_or_ref = ('*' in cpp_type or '&' in cpp_type
-                         or last_part != param_name)
         if is_ptr_or_ref:
             raise KernelError(
                 f"Cannot map C++ type '{cpp_type}' of '{attr_name}' in "
@@ -103,10 +112,6 @@ def _infer_attr_type_from_source(
                 f"scalar attributes. "
                 f"Use the explicit form 'attr.{attr_name}:<type>' instead."
             )
-        cpp_type = cpp_type.rstrip('*&')
-        # Strip leading 'const' qualifier — scalars are passed by value.
-        if cpp_type.startswith("const "):
-            cpp_type = cpp_type[6:].strip()
         be_type = _CPP_TYPE_TO_ATTR.get(cpp_type)
         if be_type is None:
             raise KernelError(
@@ -167,22 +172,16 @@ def _params_str_to_tokens(params_str: str, func_name: str) -> list[str]:
         elif re.match(r'int64_t\s+stream\b', param):
             tokens.append('stream')
         else:
-            # Try to detect a scalar attribute from known C++ types.
-            parts = param.split()
-            if len(parts) >= 2:
-                last_part = parts[-1]
-                param_name = last_part.lstrip('*&')
-                cpp_type = ' '.join(parts[:-1]).strip()
-                is_ptr_or_ref = ('*' in cpp_type or '&' in cpp_type
-                                 or last_part != param_name)
-                if is_ptr_or_ref:
-                    continue  # silently skip; not a scalar attr
-                cpp_type = cpp_type.rstrip('*&')
-                if cpp_type.startswith("const "):
-                    cpp_type = cpp_type[6:].strip()
-                be_type = _CPP_TYPE_TO_ATTR.get(cpp_type)
-                if be_type is not None:
-                    tokens.append(f'attr.{param_name}:{be_type}')
+            # Detect a scalar attribute from known C++ types.
+            parsed = _parse_scalar_param(param)
+            if parsed is None:
+                continue
+            param_name, cpp_type, is_ptr_or_ref = parsed
+            if is_ptr_or_ref:
+                continue  # silently skip; not a scalar attr
+            be_type = _CPP_TYPE_TO_ATTR.get(cpp_type)
+            if be_type is not None:
+                tokens.append(f'attr.{param_name}:{be_type}')
 
     if not tokens:
         raise KernelError(f"No Tensor parameters found in '{func_name}'. Cannot auto-detect arg_spec.")
@@ -545,13 +544,13 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
 
 
 # -- Attribute C++ type mapping ------------------------------------------------
-# _ATTR_CPP_TYPE : BE attr type → C++ type used in the generated impl function
-# _ATTR_FFI_TYPE : BE attr type → C++ type used in the XLA FFI .Attr<T>() binding
+# BE attr type → C++ type, used both for the generated impl-function parameter
+# and for the XLA FFI ``.Attr<T>()`` binding (the two are identical).
 #
 # For float16 / bfloat16 there is no registered XLA_FFI_REGISTER_SCALAR_ATTR_DECODING
-# for __half or __nv_bfloat16.  Both are stored as uint16_t raw bits.
-# The user's C++ function must accept uint16_t and reinterpret internally, or
-# the user must use float32/float64 if they want seamless scalar attr passing.
+# for __half or __nv_bfloat16, so both are passed as uint16_t raw bits.  The
+# user's C++ function must accept uint16_t and reinterpret internally, or use
+# float32/float64 for seamless scalar attr passing.
 
 _ATTR_CPP_TYPE = {
     "bool": "bool",
@@ -565,22 +564,6 @@ _ATTR_CPP_TYPE = {
     "uint64": "uint64_t",
     "float16": "uint16_t",  # raw f16 bits
     "bfloat16": "uint16_t",  # raw bf16 bits
-    "float32": "float",
-    "float64": "double",
-}
-
-_ATTR_FFI_TYPE = {
-    "bool": "bool",
-    "int8": "int8_t",
-    "uint8": "uint8_t",
-    "int16": "int16_t",
-    "uint16": "uint16_t",
-    "int32": "int32_t",
-    "uint32": "uint32_t",
-    "int64": "int64_t",
-    "uint64": "uint64_t",
-    "float16": "uint16_t",  # XLA FFI passes as U16 raw bits
-    "bfloat16": "uint16_t",  # XLA FFI passes as U16 raw bits
     "float32": "float",
     "float64": "double",
 }
@@ -681,7 +664,7 @@ def generate_ffi_wrapper(spec: FunctionSpec, allow_cuda_graph: bool = True) -> s
     for _ in range(spec.num_rets):
         binding_parts.append("    .Ret<xla::ffi::AnyBuffer>()")
     for attr_name, attr_type in spec.attrs:
-        ffi_type = _ATTR_FFI_TYPE[attr_type]
+        ffi_type = _ATTR_CPP_TYPE[attr_type]
         binding_parts.append(f'    .Attr<{ffi_type}>("{attr_name}")')
 
     binding = "\n".join(binding_parts)
