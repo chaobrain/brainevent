@@ -94,6 +94,24 @@ Alternatively, you can install `BrainX`, which bundles `brainevent` with other c
 pip install BrainX -U
 ```
 
+### GPU compile dependencies
+
+The first time a kernel runs on a GPU, `brainevent` compiles its CUDA source on the fly. This needs three things:
+
+1. **NVIDIA driver** (provides `libcuda` and `nvidia-smi`) — a system-level requirement for any approach.
+2. **`jax[cuda12]` or `jax[cuda13]`** — installing it pulls in the `nvidia-*` pip packages, which already
+   bundle `nvcc`/`ptxas`/CUDA runtime/headers. **A separate system CUDA Toolkit is therefore not required.**
+3. **A host C++ compiler (`g++`/`clang++`)** — pip does not provide one. Install it via
+   `conda install -c conda-forge gxx`, `sudo apt-get install g++`, or `sudo dnf install gcc-c++`.
+
+Optional configuration:
+
+- `brainevent.config.prefer_system_nvcc()` — prefer the system `PATH` nvcc instead of the pip-bundled one (pip is the default).
+- Environment variables: `BRAINEVENT_NVCC_PREFER=pip|system`, `BRAINEVENT_NVCC_PATH`, `CUDA_HOME`, `CXX`.
+- `BRAINEVENT_ALLOW_UNSUPPORTED_COMPILER=1` — force compilation when the host gcc is newer than nvcc supports.
+- `BRAINEVENT_COMPUTE_CAPABILITIES=8.6,8.0` — skip `nvidia-smi` auto-detection.
+- `BRAINEVENT_TOOLCHAIN_DEBUG=1` — append a "toolchain snapshot" to every toolchain error for easier debugging.
+
 
 ## Documentation
 

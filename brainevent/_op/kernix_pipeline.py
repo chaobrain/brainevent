@@ -37,7 +37,10 @@ from .kernix_codegen import (
 )
 from .kernix_compiler import CPPBackend, CUDABackend
 from .kernix_runtime import CompiledModule, _REGISTERED_TARGETS, register_ffi_target
-from .kernix_toolchain import detect_cpp_toolchain, detect_cuda_arch, detect_cuda_toolchain, so_ext
+from .kernix_toolchain import (
+    collect_toolchain_diagnostics, detect_cpp_toolchain, detect_cuda_arch,
+    detect_cuda_toolchain, so_ext,
+)
 
 # Shared cache instance
 _cache = CompilationCache()
@@ -159,7 +162,7 @@ def load_cuda_inline(
     cache_key = _cache.cache_key(
         source=user_source,
         arch=gpu_arch,
-        cxx_version=toolchain.nvcc_version,
+        cxx_version=f"{toolchain.nvcc_version}|{toolchain.cxx_version}",
         extra_cflags=(
             (extra_cuda_cflags or [])
             + [f"-O{optimization_level}"]
@@ -464,17 +467,14 @@ def print_diagnostics() -> None:
     print(f"jaxlib: {jaxlib.__version__}")
     print(f"XLA FFI include: {jax.ffi.include_dir()}")
 
-    # Toolchain
+    # Toolchain (single-source snapshot)
+    for k, v in collect_toolchain_diagnostics().items():
+        print(f"{k}: {v}")
     try:
-        tc = detect_cuda_toolchain()
-        print(f"nvcc: {tc.nvcc}")
-        print(f"  version: {tc.nvcc_version}")
-        print(f"C++ compiler: {tc.cxx}")
-        print(f"CUDA home: {tc.cuda_home}")
         archs = detect_cuda_arch()
         print(f"GPU architectures: {', '.join(archs)}")
     except Exception as e:
-        print(f"Toolchain: ERROR ({e})")
+        print(f"GPU architectures: ERROR ({e.__class__.__name__})")
 
     # Cache
     entries, total_bytes = _cache.size()

@@ -29,6 +29,12 @@ __all__ = [
     'KernelRegistrationError',
     'BenchmarkDataFnNotProvidedError',
     'CUDANotInstalledError',
+    'NvccNotFoundError',
+    'HostCompilerNotFoundError',
+    'HeaderNotFoundError',
+    'GpuArchDetectionError',
+    'HostCompilerIncompatibleError',
+    'KernelLoadError',
 ]
 
 
@@ -280,19 +286,50 @@ class KernelToolchainError(KernelError):
     pass
 
 
+class NvccNotFoundError(KernelToolchainError):
+    """The CUDA compiler (nvcc) could not be located (E-NVCC)."""
+    __module__ = 'brainevent'
+
+
+class HostCompilerNotFoundError(KernelToolchainError):
+    """No host C++ compiler (g++/clang++) could be located (E-CXX)."""
+    __module__ = 'brainevent'
+
+
+class HeaderNotFoundError(KernelToolchainError):
+    """A required header (cuda_runtime.h / XLA FFI / brainevent) is missing (E-HDR)."""
+    __module__ = 'brainevent'
+
+
+class GpuArchDetectionError(KernelToolchainError):
+    """GPU compute capability could not be detected (E-ARCH)."""
+    __module__ = 'brainevent'
+
+
 class CompilationError(KernelCompilationError):
     """CUDA or C++ compilation failed."""
 
     def __init__(self, message: str, compiler_output: str = "",
-                 command: str = ""):
+                 command: str = "", stage: str = "compile"):
         self.compiler_output = compiler_output
         self.command = command
+        self.stage = stage
         full_msg = message
         if command:
             full_msg += f"\n\nCommand:\n  {command}"
         if compiler_output:
             full_msg += f"\n\nCompiler output:\n{compiler_output}"
         super().__init__(full_msg)
+
+
+class HostCompilerIncompatibleError(CompilationError):
+    """Host C++ compiler version is not supported by this CUDA/nvcc (E-CXXVER)."""
+    __module__ = 'brainevent'
+
+
+class KernelLoadError(KernelError):
+    """A compiled .so failed to load via dlopen (E-LOAD)."""
+    __module__ = 'brainevent'
 
 
 class KernelRegistrationError(KernelError):

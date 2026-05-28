@@ -30,8 +30,39 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from brainevent._error import CompilationError, KernelToolchainError
+from brainevent._error import CompilationError, HostCompilerIncompatibleError, KernelToolchainError
 from .kernix_toolchain import CppToolchain, CudaToolchain, cxx_shared_flags, cxx_std_flag, nvcc_host_pic_flags, so_ext
+
+
+_HOST_INCOMPAT_SIGNALS = (
+    "unsupported gnu version",
+    "unsupported clang version",
+    "is not supported",
+    "no longer supported",
+)
+
+
+def _is_host_incompat(output: str) -> bool:
+    low = output.lower()
+    return any(sig in low for sig in _HOST_INCOMPAT_SIGNALS)
+
+
+def _allow_unsupported_compiler() -> bool:
+    return os.environ.get("BRAINEVENT_ALLOW_UNSUPPORTED_COMPILER", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _raise_compile_error(output: str, command: str, stage: str) -> None:
+    if _is_host_incompat(output):
+        msg = (
+            "host C++ 编译器与当前 CUDA/nvcc 不兼容。\n"
+            "如何修复:\n"
+            "  1) 安装受支持版本的 gcc 并设 CXX=/path/to/g++\n"
+            "  2) 或设 BRAINEVENT_ALLOW_UNSUPPORTED_COMPILER=1 后重试"
+        )
+        raise HostCompilerIncompatibleError(msg, compiler_output=output, command=command, stage=stage)
+    raise CompilationError("compilation failed", compiler_output=output, command=command, stage=stage)
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +204,14 @@ class NinjaBuild:
         flags += [
             "--std=c++17",
             f"-O{self.optimization_level}",
+            "-ccbin", self.toolchain.cxx,
             f"-I{self.toolchain.brainevent_include_dir}",
             f"-I{self.toolchain.xla_ffi_include_dir}",
-            f"-I{self.toolchain.cuda_include_dir}",
         ]
+        for inc in self.toolchain.cuda_include_dirs:
+            flags.append(f"-I{inc}")
+        if _allow_unsupported_compiler():
+            flags.append("-allow-unsupported-compiler")
         if self.use_fast_math:
             flags.append("--use_fast_math")
         for p in self.extra_include_paths:
@@ -249,11 +284,7 @@ default {so_file}
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode != 0:
-            raise CompilationError(
-                "ninja build failed",
-                compiler_output=result.stderr + result.stdout,
-                command=" ".join(cmd),
-            )
+            _raise_compile_error(result.stderr + result.stdout, " ".join(cmd), stage="build")
 
         if verbose and result.stdout:
             print(f"ninja output:\n{result.stdout}")
@@ -336,11 +367,15 @@ class CUDABackend(CompilerBackend):
             *nvcc_host_pic_flags(),  # -fPIC on Linux/macOS, nothing on Windows
             "--std=c++17",
             f"-O{optimization_level}",
-            # Include paths (order matters for override semantics)
-            "-I", self.toolchain.brainevent_include_dir,
-            "-I", self.toolchain.xla_ffi_include_dir,
-            "-I", self.toolchain.cuda_include_dir,
+            "-ccbin", self.toolchain.cxx,
         ]
+        if _allow_unsupported_compiler():
+            cmd.append("-allow-unsupported-compiler")
+        # Include paths (order matters for override semantics)
+        cmd += ["-I", self.toolchain.brainevent_include_dir,
+                "-I", self.toolchain.xla_ffi_include_dir]
+        for inc in self.toolchain.cuda_include_dirs:
+            cmd += ["-I", inc]
 
         if use_fast_math:
             cmd.append("--use_fast_math")
@@ -365,11 +400,7 @@ class CUDABackend(CompilerBackend):
         )
 
         if result.returncode != 0:
-            raise CompilationError(
-                "nvcc compilation failed",
-                compiler_output=result.stderr + result.stdout,
-                command=cmd_str,
-            )
+            _raise_compile_error(result.stderr + result.stdout, cmd_str, stage="compile")
 
         if verbose and result.stderr:
             print(f"nvcc warnings:\n{result.stderr}")
