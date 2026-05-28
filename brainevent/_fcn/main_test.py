@@ -35,7 +35,8 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
 
 import brainevent
 import brainevent._fcn.main as fcn_main_mod
-from brainevent._fcn.binary import binary_fcnmv_p
+from brainevent._fcn.binary import ell_binary_matvec_p
+from brainevent._fcn.layouts import CscLayout
 from brainevent._misc import fixed_conn_num_to_csc
 from brainevent._test_util import (
     allclose,
@@ -84,7 +85,7 @@ def _default_backend_is_cuda_raw():
     global_backend = brainevent.config.get_backend(platform)
     if global_backend is not None:
         return global_backend == 'cuda_raw'
-    return binary_fcnmv_p.get_default(platform) == 'cuda_raw'
+    return ell_binary_matvec_p.get_default(platform) == 'cuda_raw'
 
 
 def _remove_event_array(x):
@@ -137,7 +138,7 @@ def test_fixed_post_num_conn_tree_flatten_keeps_indices_dynamic():
 
     assert children[0] is conn.data
     assert children[1] is conn.indices
-    assert children[2] == conn.buffers
+    assert len(children) == 2
     assert aux['shape'] == (2, 3)
 
 
@@ -208,176 +209,101 @@ class Test_Illegal_Slots:
         jax.block_until_ready((idx, dense, x, v))
 
 
-class Test_Dual_Layout:
-    def test_default_layout_buffers_are_empty(self):
+class Test_Lazy_Csc_Layout:
+    def test_default_layout_has_no_csc_mirror(self):
         shape = (3, 4)
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
         conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
 
-        assert conn.maintain_dual_layout is False
-        assert conn.primary_layout == 'row'
-        assert conn.col_weights is None
-        assert conn.col_indices is None
-        assert conn.col_indptr is None
+        assert conn._csc is None
 
     @pytest.mark.parametrize(
-        ('cls', 'shape', 'expected_shape'),
+        ('cls', 'shape', 'a_shape'),
         [
             (brainevent.FixedPostNumConn, (3, 4), (3, 4)),
             (brainevent.FixedPreNumConn, (4, 3), (3, 4)),
         ],
     )
-    def test_dual_layout_builds_expected_csc_mirror(self, cls, shape, expected_shape):
+    def test_ensure_csc_builds_expected_mirror(self, cls, shape, a_shape):
         if cls is brainevent.FixedPostNumConn:
             idx = generate_fixed_conn_num_indices(shape[0], shape[1], 2)
         else:
             idx = generate_fixed_conn_num_indices(shape[1], shape[0], 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
 
-        conn = cls(
-            (data, idx),
-            shape=shape,
-            maintain_dual_layout=True,
-        )
+        conn = cls((data, idx), shape=shape)
+        csc = conn._ensure_csc()
 
-        exp_w, exp_i, exp_p = fixed_conn_num_to_csc(conn.data, conn.indices, shape=expected_shape)
-        assert allclose(conn.col_weights, exp_w)
-        assert jnp.array_equal(conn.col_indices, exp_i)
-        assert jnp.array_equal(conn.col_indptr, exp_p)
+        exp_w, exp_i, exp_p = fixed_conn_num_to_csc(conn.data, conn.indices, shape=a_shape)
+        assert isinstance(csc, CscLayout)
+        assert allclose(csc.weights, exp_w)
+        assert jnp.array_equal(csc.indices, exp_i)
+        assert jnp.array_equal(csc.indptr, exp_p)
+        # The mirror's dense form matches the matrix's own dense form.
+        assert allclose(csc.todense(shape=a_shape), conn.todense() if cls is brainevent.FixedPostNumConn
+                        else conn.todense().T)
 
-    @pytest.mark.parametrize('cls, shape', [
-        (brainevent.FixedPostNumConn, (3, 4)),
-        (brainevent.FixedPreNumConn, (4, 3)),
-    ])
-    def test_primary_layout_col_is_rejected(self, cls, shape):
-        if cls is brainevent.FixedPostNumConn:
-            idx = generate_fixed_conn_num_indices(shape[0], shape[1], 2)
-        else:
-            idx = generate_fixed_conn_num_indices(shape[1], shape[0], 2)
+    def test_ensure_csc_caches_and_reuses(self):
+        shape = (3, 4)
+        idx = generate_fixed_conn_num_indices(*shape, 2)
+        data = braintools.init.Normal(0., 1.)(idx.shape)
+        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
 
-        with pytest.raises(NotImplementedError, match='primary_layout="col"'):
-            cls(
-                (jnp.ones(idx.shape, dtype=jnp.float32), idx),
-                shape=shape,
-                primary_layout='col',
-            )
+        first = conn._ensure_csc()
+        second = conn._ensure_csc()
+        assert first is second
 
-
-    def test_fixed_post_dual_layout_binary_vector_matches_dense(self):
+    def test_fixed_post_binary_vector_matches_dense(self):
         shape = (3, 4)
         idx = jnp.array([[0, 1], [1, 3], [2, 0]], dtype=jnp.int32)
         data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
-        conn = brainevent.FixedPostNumConn(
-            (data, idx),
-            shape=shape,
-            maintain_dual_layout=True,
-        )
+        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
         spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.7, 1.0], dtype=jnp.float32))
         dense = conn.todense()
 
         assert allclose(conn @ spikes, dense @ _binary_mask(spikes.value, dense.dtype))
 
-    def test_fixed_pre_dual_layout_binary_vector_matches_dense(self):
+    def test_fixed_pre_binary_vector_matches_dense(self):
         shape = (4, 3)
         idx = jnp.array([[0, 1], [2, 1], [3, 0]], dtype=jnp.int32)
         data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
-        conn = brainevent.FixedPreNumConn(
-            (data, idx),
-            shape=shape,
-            maintain_dual_layout=True,
-        )
+        conn = brainevent.FixedPreNumConn((data, idx), shape=shape)
         spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.7, 1.0], dtype=jnp.float32))
         dense = conn.todense()
 
         assert allclose(spikes @ conn, _binary_mask(spikes.value, dense.dtype) @ dense)
 
-    def test_fixed_post_dual_layout_binary_forward_injects_csc_mirror(self, monkeypatch):
+    def test_with_data_resets_mirror_and_matches_new_values(self):
         shape = (3, 4)
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
-        conn = brainevent.FixedPostNumConn(
-            (data, idx),
-            shape=shape,
-            maintain_dual_layout=True,
-        )
-        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.5, 1.0], dtype=jnp.float32))
-        calls = []
-        original = fcn_main_mod.binary_fcnmv
+        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
+        conn._ensure_csc()  # populate the cache
 
-        def _spy(weights, indices, events, **kwargs):
-            calls.append(kwargs)
-            return original(weights, indices, events, **kwargs)
-
-        monkeypatch.setattr(fcn_main_mod, 'binary_fcnmv', _spy)
-        conn @ spikes
-
-        assert len(calls) == 1
-        assert calls[0]['col_weights'] is conn.col_weights
-        assert calls[0]['col_indices'] is conn.col_indices
-        assert calls[0]['col_indptr'] is conn.col_indptr
-
-    def test_dual_layout_forward_reuses_prebuilt_mirror(self, monkeypatch):
-        shape = (3, 4)
-        idx = generate_fixed_conn_num_indices(*shape, 2)
-        data = braintools.init.Normal(0., 1.)(idx.shape)
-        conn = brainevent.FixedPostNumConn(
-            (data, idx),
-            shape=shape,
-            maintain_dual_layout=True,
-        )
-        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.5, 1.0], dtype=jnp.float32))
-
-        def _fail(*args, **kwargs):
-            raise AssertionError('row->col conversion helper should not run during forward dual-layout MV')
-
-        monkeypatch.setattr(fcn_main_mod, '_build_col_major_fcn', _fail)
-        conn @ spikes
-
-    def test_with_data_rebuilds_dual_layout_mirror(self):
-        shape = (3, 4)
-        idx = generate_fixed_conn_num_indices(*shape, 2)
-        data = braintools.init.Normal(0., 1.)(idx.shape)
-        conn = brainevent.FixedPostNumConn(
-            (data, idx),
-            shape=shape,
-            maintain_dual_layout=True,
-        )
         new_data = data + 1.0
         updated = conn.with_data(new_data)
         exp_w, exp_i, exp_p = fixed_conn_num_to_csc(new_data, idx, shape=shape)
 
-        assert updated.maintain_dual_layout is True
-        assert updated.primary_layout == 'row'
-        assert allclose(updated.col_weights, exp_w)
-        assert jnp.array_equal(updated.col_indices, exp_i)
-        assert jnp.array_equal(updated.col_indptr, exp_p)
-        assert not allclose(updated.col_weights, conn.col_weights)
+        assert updated._csc is None
+        csc = updated._ensure_csc()
+        assert allclose(csc.weights, exp_w)
+        assert jnp.array_equal(csc.indices, exp_i)
+        assert jnp.array_equal(csc.indptr, exp_p)
+        assert not allclose(csc.weights, conn._ensure_csc().weights)
 
-    def test_transpose_preserves_config_and_rebuilds_dual_layout_mirror(self):
+    def test_transpose_binary_vector_matches_dense(self):
         shape = (3, 4)
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
-        conn = brainevent.FixedPostNumConn(
-            (data, idx),
-            shape=shape,
-            maintain_dual_layout=True,
-        )
+        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
         transposed = conn.T
-        exp_w, exp_i, exp_p = fixed_conn_num_to_csc(
-            transposed.data,
-            transposed.indices,
-            shape=transposed.shape[::-1],
-        )
-        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.5, 1.0], dtype=jnp.float32))
-        dense = transposed.todense()
+        assert isinstance(transposed, brainevent.FixedPreNumConn)
+        assert transposed.shape == (4, 3)
 
-        assert transposed.maintain_dual_layout is True
-        assert transposed.primary_layout == 'row'
-        assert allclose(transposed.col_weights, exp_w)
-        assert jnp.array_equal(transposed.col_indices, exp_i)
-        assert jnp.array_equal(transposed.col_indptr, exp_p)
-        assert allclose(spikes @ transposed, _binary_mask(spikes.value, dense.dtype) @ dense)
+        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.5], dtype=jnp.float32))
+        dense = transposed.todense()
+        assert allclose(transposed @ spikes, dense @ _binary_mask(spikes.value, dense.dtype))
 
 
 
@@ -401,7 +327,6 @@ class Test_Init_Outside_JIT:
             conn = brainevent.FixedPreNumConn(
                 (data, idx),
                 shape=(4, 3),
-                maintain_dual_layout=True,
             )
             return conn.nse
 
@@ -424,11 +349,9 @@ class Test_Operator_Behavior:
         )
 
         assert allclose(left_vector @ conn, _binary_mask(left_vector.value, dense.dtype) @ dense)
-        if _default_backend_is_cuda_raw():
-            with pytest.raises(ValueError, match="transpose=False binary pre row-gather operators have been removed"):
-                conn @ right_vector
-        else:
-            assert allclose(conn @ right_vector, dense @ _binary_mask(right_vector.value, dense.dtype))
+        # The event-driven W @ s gather now resolves to the CSC column-scatter
+        # path on CUDA (and to the ELL gather elsewhere); both match dense.
+        assert allclose(conn @ right_vector, dense @ _binary_mask(right_vector.value, dense.dtype))
         assert allclose(left_matrix @ conn, _binary_mask(left_matrix.value, dense.dtype) @ dense)
         assert allclose(conn @ right_matrix, dense @ _binary_mask(right_matrix.value, dense.dtype))
         jax.block_until_ready(
@@ -447,11 +370,9 @@ class Test_Operator_Behavior:
         )
         right_matrix = brainevent.BinaryArray(jnp.array([[0.2, 0.0], [1.0, 1.0], [0.0, 0.8]], dtype=jnp.float32))
 
-        if _default_backend_is_cuda_raw():
-            with pytest.raises(ValueError, match="transpose=False binary pre row-gather operators have been removed"):
-                left_vector @ conn
-        else:
-            assert allclose(left_vector @ conn, _binary_mask(left_vector.value, dense.dtype) @ dense)
+        # The event-driven W @ s gather (x @ conn for fixed-pre) now resolves to
+        # the CSC column-scatter path on CUDA (ELL gather elsewhere); both match.
+        assert allclose(left_vector @ conn, _binary_mask(left_vector.value, dense.dtype) @ dense)
         assert allclose(conn @ right_vector, dense @ _binary_mask(right_vector.value, dense.dtype))
         assert allclose(left_matrix @ conn, _binary_mask(left_matrix.value, dense.dtype) @ dense)
         assert allclose(conn @ right_matrix, dense @ _binary_mask(right_matrix.value, dense.dtype))

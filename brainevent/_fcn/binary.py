@@ -16,7 +16,6 @@
 # -*- coding: utf-8 -*-
 
 
-import warnings
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
@@ -26,17 +25,18 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import check_fixed_conn_num_shape, fixed_conn_num_to_csc, namescope
-from brainevent._compatible_import import Tracer
+from brainevent._misc import check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, load_cuda_file
 from brainevent.config import get_backend, get_numba_parallel
 from .float import fcnmv, fcnmm
 
 __all__ = [
     'binary_fcnmv',
-    'binary_fcnmv_p',
+    'ell_binary_matvec_p',
+    'csc_binary_matvec',
+    'csc_binary_matvec_p',
     'binary_fcnmm',
-    'binary_fcnmm_p',
+    'ell_binary_matmat_p',
 ]
 
 
@@ -49,9 +49,6 @@ def binary_fcnmv(
     shape: Tuple[int, int],
     transpose: bool = False,
     backend: Optional[str] = None,
-    col_weights: Optional[Union[jax.Array, u.Quantity]] = None,
-    col_indices: Optional[jax.Array] = None,
-    col_indptr: Optional[jax.Array] = None,
 ) -> Union[jax.Array, u.Quantity]:
     """
     Event-driven sparse matrix--vector product with fixed connection number.
@@ -84,16 +81,6 @@ def binary_fcnmv(
     backend : str or None, optional
         Execution backend override (``'numba'``,
         ``'pallas'``, ``'cuda_raw'``, or ``None`` for automatic selection).
-    col_weights : jax.Array or u.Quantity, optional
-        Optional column-major weights for the same logical sparse matrix,
-        used by the CUDA ``transpose=False`` scatter path.
-        Homogeneous weights must have size ``1``; heterogeneous weights must
-        have size ``NNZ``.
-    col_indices : jax.Array or None, optional
-        Optional column-major row-index array aligned with ``col_weights``.
-        Shape is ``(NNZ,)``.
-    col_indptr : jax.Array or None, optional
-        Optional column pointer array with shape ``(num_post + 1,)``.
 
     Returns
     -------
@@ -145,62 +132,16 @@ def binary_fcnmv(
     """
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
-    if col_weights is not None:
-        col_weights, _ = u.split_mantissa_unit(col_weights)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    r = binary_fcnmv_p_call(
+    r = ell_binary_matvec_p_call(
         weights,
         indices,
         spikes,
         shape=shape,
         transpose=transpose,
         backend=backend,
-        col_weights=col_weights,
-        col_indices=col_indices,
-        col_indptr=col_indptr,
     )[0]
     return u.maybe_decimal(r * v_unit * w_unit)
-
-
-def _binary_fcnmv_has_col_mirror(
-    col_weights: jax.Array,
-    col_indices: jax.Array,
-    col_indptr: jax.Array,
-) -> bool:
-    if (
-        ad.is_undefined_primal(col_weights)
-        or ad.is_undefined_primal(col_indices)
-        or ad.is_undefined_primal(col_indptr)
-    ):
-        return False
-    return col_weights.size > 0 and col_indices.size > 0 and col_indptr.size > 0
-
-
-def _binary_fcnmv_has_col_structure(
-    col_indices,
-    col_indptr,
-) -> bool:
-    if ad.is_undefined_primal(col_indices) or ad.is_undefined_primal(col_indptr):
-        return False
-    return col_indices.size > 0 and col_indptr.size > 0
-
-
-def _binary_fcnmv_has_concrete_col_mirror(
-    col_weights,
-    col_indices,
-    col_indptr,
-) -> bool:
-    return (
-        int(np.prod(col_weights.shape)) > 0
-        and int(np.prod(col_indices.shape)) > 0
-        and int(np.prod(col_indptr.shape)) > 0
-    )
-
-
-def _binary_fcnmv_transpose_passthrough(x):
-    if ad.is_undefined_primal(x):
-        return None
-    return x
 
 
 def _binary_fcnmv_spike_activity(
@@ -213,100 +154,13 @@ def _binary_fcnmv_spike_activity(
     return (spikes > 0).astype(dtype)
 
 
-def _binary_fcnmv_col_weights_from_row_weights(
-    weights: jax.Array,
-    indices: jax.Array,
-    shape: Tuple[int, int],
-) -> jax.Array:
-    return fixed_conn_num_to_csc(weights, indices, shape=shape)[0]
-
-
-def _normalize_binary_fcnmv_col_format(
-    weights: jax.Array,
-    indices: jax.Array,
-    shape: Tuple[int, int],
-    col_weights: Optional[jax.Array],
-    col_indices: Optional[jax.Array],
-    col_indptr: Optional[jax.Array],
-) -> Tuple[jax.Array, jax.Array, jax.Array]:
-    empty_w = jnp.zeros((0,), dtype=weights.dtype)
-    empty_i = jnp.zeros((0,), dtype=indices.dtype)
-    empty_p = jnp.zeros((0,), dtype=indices.dtype)
-    if col_weights is None and col_indices is None and col_indptr is None:
-        return empty_w, empty_i, empty_p
-    if col_weights is None or col_indices is None or col_indptr is None:
-        raise ValueError('`col_weights`, `col_indices`, and `col_indptr` must be provided together.')
-
-    col_weights = u.math.asarray(col_weights)
-    col_indices = u.math.asarray(col_indices)
-    col_indptr = u.math.asarray(col_indptr)
-    if col_weights.size == 0 and col_indices.size == 0 and col_indptr.size == 0:
-        return empty_w, empty_i, empty_p
-    if col_weights.ndim == 0:
-        col_weights = col_weights.reshape((1,))
-    if col_weights.ndim != 1:
-        raise ValueError(f'`col_weights` must be 1D after normalization, got {col_weights.ndim}D.')
-    if col_indices.ndim != 1:
-        raise ValueError(f'`col_indices` must be 1D, got {col_indices.ndim}D.')
-    if col_indptr.ndim != 1:
-        raise ValueError(f'`col_indptr` must be 1D, got {col_indptr.ndim}D.')
-    if col_indptr.shape[0] != shape[1] + 1:
-        raise ValueError(
-            f'`col_indptr.shape[0]` must equal shape[1] + 1 = {shape[1] + 1}, '
-            f'got {col_indptr.shape[0]}.'
-        )
-    if not jnp.issubdtype(col_weights.dtype, jnp.floating):
-        raise ValueError(f'`col_weights` must be floating typed, got {col_weights.dtype}.')
-    if not jnp.issubdtype(col_indices.dtype, jnp.integer):
-        raise ValueError(f'`col_indices` must be integer typed, got {col_indices.dtype}.')
-    if not jnp.issubdtype(col_indptr.dtype, jnp.integer):
-        raise ValueError(f'`col_indptr` must be integer typed, got {col_indptr.dtype}.')
-
-    if weights.size == 1:
-        if col_weights.size != 1:
-            raise ValueError(f'Homogeneous `col_weights` must have size 1, got {col_weights.size}.')
-    elif col_weights.shape != col_indices.shape:
-        raise ValueError(
-            f'Heterogeneous `col_weights` shape {col_weights.shape} must match '
-            f'`col_indices` shape {col_indices.shape}.'
-        )
-
-    if not isinstance(col_indptr, Tracer) and not isinstance(col_indices, Tracer):
-        col_indptr_np = np.asarray(col_indptr)
-        if col_indptr_np[0] != 0:
-            raise ValueError(f'`col_indptr[0]` must be 0, got {col_indptr_np[0]}.')
-        if np.any(np.diff(col_indptr_np) < 0):
-            raise ValueError('`col_indptr` must be monotonically non-decreasing.')
-        nnz = int(col_indptr_np[-1])
-        if nnz != col_indices.size:
-            raise ValueError(f'`col_indices` must have size NNZ={nnz}, got {col_indices.size}.')
-        if nnz != indices.size:
-            raise ValueError(f'Column mirror NNZ={nnz} must match row-major NNZ={indices.size}.')
-        if weights.size > 1 and col_weights.size != nnz:
-            raise ValueError(f'Heterogeneous `col_weights` must have size NNZ={nnz}, got {col_weights.size}.')
-
-    return col_weights, col_indices, col_indptr
-
-
-def _binary_fcnmv_numba_kernel(
+def _ell_binary_matvec_numba_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
-    col_weight_info: jax.ShapeDtypeStruct,
-    col_indices_info: jax.ShapeDtypeStruct,
-    col_indptr_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
 ):
     import numba
-
-    if _binary_fcnmv_has_concrete_col_mirror(col_weight_info, col_indices_info, col_indptr_info):
-        warnings.warn(
-            'binary_fcnmv col scatter options are only implemented for CUDA raw; '
-            'this backend ignored col_weights/col_indices/col_indptr and used the '
-            'normal gather/scatter path.',
-            UserWarning,
-            stacklevel=2,
-        )
 
     if transpose:
         if weight_info.size == 1:
@@ -394,32 +248,24 @@ def _binary_fcnmv_numba_kernel(
                                 r += weights[i, j]
                         posts[i] = r
 
-    def kernel(weights, indices, spikes, col_weights, col_indices, col_indptr):
+    def kernel(weights, indices, spikes):
         return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, spikes)
 
     return kernel
 
 
-def _binary_fcnmv_cuda_kernel(
+def _ell_binary_matvec_cuda_kernel(
     transpose: bool,
     spike_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
-    col_weight_info: jax.ShapeDtypeStruct,
-    col_indices_info: jax.ShapeDtypeStruct,
-    col_indptr_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     load_cuda_file(
         Path(__file__).parent.joinpath('binary_fcnmv.cu'),
         name='fcn_binary_mv',
     )
-    load_cuda_file(
-        Path(__file__).parent.joinpath('binary_fcnmv_col_scatter.cu'),
-        name='fcn_binary_mv_col_scatter',
-    )
 
     out_info = kwargs['outs']
-    is_bool_spike = (spike_info.dtype == jnp.bool_)
     _dtype_sfx = {
         jnp.dtype('float16'): '_f16',
         jnp.dtype('float32'): '_f32',
@@ -428,71 +274,35 @@ def _binary_fcnmv_cuda_kernel(
     }
     weight_info = kwargs['weight_info']
     row_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    col_sfx = _dtype_sfx.get(jnp.dtype(col_weight_info.dtype), row_sfx)
     row_homo = weight_info.size == 1
-    col_homo = col_weight_info.size == 1
-    has_col_mirror = _binary_fcnmv_has_concrete_col_mirror(
-        col_weight_info,
-        col_indices_info,
-        col_indptr_info,
-    )
 
-    if transpose:
-        if has_col_mirror:
-            warnings.warn(
-                'Binary_fcnmv does not support col-scatter options on the '
-                'post/scatter path. It will fall back to the default scatter path; '
-                'performance may degrade. Recommended usage: use the default '
-                'post/scatter path without passing '
-                'col_weights/col_indices/col_indptr.',
-                UserWarning,
-                stacklevel=2,
-            )
-        # Scatter mode: if is_active(spikes[i]) -> output[indices[i,k]] += weights[i,k]
-        mode_sfx = '_homo' if row_homo else '_hetero'
-        kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_bool{row_sfx}'
-    else:
-        if has_col_mirror:
-            mode_sfx = '_homo' if col_homo else '_hetero'
-            kernel_name = f'fcn_binary_mv_col_scatter.binary_fcnmv_col_scatter{mode_sfx}_bool{col_sfx}'
-        else:
-            raise ValueError(
-                'Binary_fcnmv no longer supports this path: the transpose=False '
-                'binary pre row-gather operators have been removed. Recommended '
-                'alternatives: pass a column-major mirror '
-                '(col_weights/col_indices/col_indptr) to use the column-scatter '
-                'path, or use the BitPackedBinary data class.'
-            )
+    if not transpose:
+        raise NotImplementedError(
+            'The CUDA transpose=False binary row-gather matvec was removed. '
+            'Use the CSC column-scatter primitive (csc_binary_matvec) for '
+            'W @ s on CUDA; the dispatcher selects it automatically.'
+        )
 
-    def kernel(weights, indices, spikes, col_weights, col_indices, col_indptr):
+    # Scatter mode: if is_active(spikes[i]) -> output[indices[i,k]] += weights[i,k]
+    mode_sfx = '_homo' if row_homo else '_hetero'
+    kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_bool{row_sfx}'
+
+    def kernel(weights, indices, spikes):
         spikes = u.math.asarray(spikes, dtype=bool)
-        if not transpose:
-            return jax.ffi.ffi_call(kernel_name, out_info)(col_weights, col_indices, col_indptr, spikes)
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
 
     return kernel
 
-def _binary_fcnmv_jax_kernel(
+
+def _ell_binary_matvec_jax_kernel(
     shape: Tuple[int, int],
     transpose: bool,
-    col_weight_info: jax.ShapeDtypeStruct,
-    col_indices_info: jax.ShapeDtypeStruct,
-    col_indptr_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
     """Pure JAX reference implementation for benchmarking comparison."""
     n_pre, n_post = shape
-    if _binary_fcnmv_has_concrete_col_mirror(col_weight_info, col_indices_info, col_indptr_info):
-        warnings.warn(
-            'Binary_fcnmv does not support col-scatter options on this backend. '
-            'It will fall back to the default gather/scatter path; performance '
-            'may degrade. Recommended usage: use the CUDA raw backend, or avoid '
-            'passing col_weights/col_indices/col_indptr.',
-            UserWarning,
-            stacklevel=2,
-        )
 
-    def kernel(weights, indices, spikes, col_weights, col_indices, col_indptr):
+    def kernel(weights, indices, spikes):
         spk_f = _binary_fcnmv_spike_activity(spikes, weights.dtype)
 
         if transpose:
@@ -515,9 +325,6 @@ def _binary_fcnmv_jvp_spikes(
     weights,
     indices,
     spikes,
-    col_weights,
-    col_indices,
-    col_indptr,
     *,
     shape,
     transpose,
@@ -531,27 +338,18 @@ def _binary_fcnmv_jvp_weights(
     weights,
     indices,
     spikes,
-    col_weights,
-    col_indices,
-    col_indptr,
     *,
     shape,
     transpose,
     **kwargs
 ):
-    col_w_dot = col_weights
-    if (not transpose) and _binary_fcnmv_has_col_mirror(col_weights, col_indices, col_indptr):
-        col_w_dot = _binary_fcnmv_col_weights_from_row_weights(w_dot, indices, shape)
-    return binary_fcnmv_p_call(
+    return ell_binary_matvec_p_call(
         w_dot,
         indices,
         spikes,
         shape=shape,
         transpose=transpose,
         backend=kwargs['backend'],
-        col_weights=col_w_dot,
-        col_indices=col_indices,
-        col_indptr=col_indptr,
     )
 
 
@@ -560,9 +358,6 @@ def _binary_fcnmv_transpose_rule(
     weights,
     indices,
     spikes,
-    col_weights,
-    col_indices,
-    col_indptr,
     *,
     shape,
     transpose,
@@ -581,14 +376,7 @@ def _binary_fcnmv_transpose_rule(
             ct_spk = ad.Zero(spikes)
         else:
             ct_spk = fcnmv(weights, indices, ct, shape=shape, transpose=not transpose)
-        return (
-            _binary_fcnmv_transpose_passthrough(weights),
-            _binary_fcnmv_transpose_passthrough(indices),
-            ct_spk,
-            _binary_fcnmv_transpose_passthrough(col_weights),
-            _binary_fcnmv_transpose_passthrough(col_indices),
-            _binary_fcnmv_transpose_passthrough(col_indptr),
-        )
+        return weights, indices, ct_spk
 
     else:
         # dL/dw = dL/dy * dy/dw
@@ -596,21 +384,13 @@ def _binary_fcnmv_transpose_rule(
             ct_gmax = ad.Zero(weights)
         elif homo:
             # scalar
-            col_weight_ones = None if ad.is_undefined_primal(col_weights) else col_weights
-            if (not transpose) and _binary_fcnmv_has_col_structure(col_indices, col_indptr):
-                col_weight_ones = _binary_fcnmv_col_weights_from_row_weights(
-                    jnp.ones(weight_info.shape, dtype=weight_info.dtype), indices, shape
-                )
-            ct_gmax = binary_fcnmv_p_call(
+            ct_gmax = ell_binary_matvec_p_call(
                 jnp.asarray(1., dtype=weight_info.dtype),
                 indices,
                 spikes,
                 shape=shape,
                 transpose=transpose,
                 backend=kwargs['backend'],
-                col_weights=col_weight_ones,
-                col_indices=col_indices,
-                col_indptr=col_indptr,
             )
             ct_gmax = jnp.inner(ct, ct_gmax[0]).reshape(*weight_info.shape)
         else:
@@ -619,20 +399,13 @@ def _binary_fcnmv_transpose_rule(
                 ct_gmax = jax.vmap(lambda v, ind: v * ct[ind])(spk_active, indices)
             else:
                 ct_gmax = jax.vmap(lambda c, ind: c * spk_active[ind])(ct, indices)
-    return (
-        ct_gmax,
-        _binary_fcnmv_transpose_passthrough(indices),
-        _binary_fcnmv_transpose_passthrough(spikes),
-            _binary_fcnmv_transpose_passthrough(col_weights),
-            _binary_fcnmv_transpose_passthrough(col_indices),
-            _binary_fcnmv_transpose_passthrough(col_indptr),
-        )
+    return ct_gmax, indices, spikes
 
 
 def _binary_fcnmv_batching(args, axes, **kwargs):
-    if tuple(axes) == (None, None, 0, None, None, None):
+    if tuple(axes) == (None, None, 0):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = binary_fcnmm_p_call(
+        r = ell_binary_matmat_p_call(
             args[0],
             args[1],
             args[2].T,
@@ -641,9 +414,9 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             backend=kwargs['backend'],
         )
         return r, [1]
-    elif tuple(axes) == (None, None, 1, None, None, None):
+    elif tuple(axes) == (None, None, 1):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = binary_fcnmm_p_call(
+        r = ell_binary_matmat_p_call(
             args[0],
             args[1],
             args[2],
@@ -653,7 +426,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
         )
         return r, [1]
     else:
-        return general_batching_rule(binary_fcnmv_p, args, axes, **kwargs)
+        return general_batching_rule(ell_binary_matvec_p, args, axes, **kwargs)
 
 
 def _binary_fcnmv_benchmark_data(*, platform):
@@ -680,7 +453,7 @@ def _binary_fcnmv_benchmark_data(*, platform):
                 )
 
 
-def binary_fcnmv_p_call(
+def ell_binary_matvec_p_call(
     weights: jax.Array,
     indices: jax.Array,
     spikes: jax.Array,
@@ -688,16 +461,13 @@ def binary_fcnmv_p_call(
     shape: Tuple[int, int],
     transpose: bool = False,
     backend: Optional[str] = None,
-    col_weights: Optional[jax.Array] = None,
-    col_indices: Optional[jax.Array] = None,
-    col_indptr: Optional[jax.Array] = None,
 ) -> Tuple[jax.Array]:
     """
-    Low-level primitive call for event-driven sparse matrix--vector product
-    with fixed connection number.
+    Low-level primitive call for the ELL event-driven sparse matrix--vector
+    product with fixed connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba, Pallas, or CUDA) without performing any
+    custom kernel (Numba, jax, or CUDA) without performing any
     physical-unit bookkeeping.  It is typically called from
     :func:`binary_fcnmv` or from autodiff rules.
 
@@ -730,38 +500,29 @@ def binary_fcnmv_p_call(
     binary_fcnmv : High-level wrapper with unit support.
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
-    col_weights, col_indices, col_indptr = _normalize_binary_fcnmv_col_format(
-        weights, indices, shape, col_weights, col_indices, col_indptr
-    )
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    return binary_fcnmv_p(
+    return ell_binary_matvec_p(
         weights,
         indices,
         spikes,
-        col_weights,
-        col_indices,
-        col_indptr,
         outs=[out],
         shape=shape,
         transpose=transpose,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
-        col_weight_info=jax.ShapeDtypeStruct(col_weights.shape, col_weights.dtype),
-        col_indices_info=jax.ShapeDtypeStruct(col_indices.shape, col_indices.dtype),
-        col_indptr_info=jax.ShapeDtypeStruct(col_indptr.shape, col_indptr.dtype),
         backend=backend,
     )
 
 
-binary_fcnmv_p = XLACustomKernel(
-    'binary_fcnmv',
+ell_binary_matvec_p = XLACustomKernel(
+    'ell_binary_matvec',
     doc="""
-Low-level XLA custom-kernel primitive for ``binary_fcnmv``.
+Low-level XLA custom-kernel primitive for the ELL ``binary_fcnmv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven)
 fixed-connection matrix-vector multiplication operation to registered backends
-(``numba``, ``pallas``, ``cuda_raw``), using runtime shape/dtype metadata provided
+(``numba``, ``jax``, ``cuda_raw``), using runtime shape/dtype metadata provided
 by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
@@ -772,13 +533,12 @@ Beyond backend dispatch, the primitive stores JAX transformation bindings
 (JVP, transpose, batching, and call registration) so the operation integrates
 correctly with ``jit``, ``vmap``, and autodiff.
 
-The primitive takes six positional arguments:
-``(weights, indices, spikes, col_weights, col_indices, col_indptr)``.
-The final three arguments hold the optional column-major mirror used only by the
-CUDA ``transpose=False`` column-scatter path.
+The primitive takes three positional arguments ``(weights, indices, spikes)``.
+The CUDA ``transpose=False`` row-gather path was removed; use
+``csc_binary_matvec`` for ``W @ s`` on CUDA.
 
-Available backends can be queried with ``binary_fcnmv_p.available_backends(platform)``,
-and the default backend can be configured with ``binary_fcnmv_p.set_default(platform, backend)``.
+Available backends can be queried with ``ell_binary_matvec_p.available_backends(platform)``,
+and the default backend can be configured with ``ell_binary_matvec_p.set_default(platform, backend)``.
 
 See Also
 --------
@@ -787,25 +547,371 @@ binary_fcnmv : High-level user-facing function wrapper.
 )
 
 
-binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
-binary_fcnmv_p.def_cuda_raw_kernel(_binary_fcnmv_cuda_kernel, asdefault=True)
-binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)
-binary_fcnmv_p.def_kernel('jax_raw', 'gpu', _binary_fcnmv_jax_kernel)
-binary_fcnmv_p.def_kernel('jax_raw', 'tpu', _binary_fcnmv_jax_kernel)
+ell_binary_matvec_p.def_numba_kernel(_ell_binary_matvec_numba_kernel)
+ell_binary_matvec_p.def_cuda_raw_kernel(_ell_binary_matvec_cuda_kernel, asdefault=True)
+ell_binary_matvec_p.def_kernel('jax_raw', 'cpu', _ell_binary_matvec_jax_kernel)
+ell_binary_matvec_p.def_kernel('jax_raw', 'gpu', _ell_binary_matvec_jax_kernel)
+ell_binary_matvec_p.def_kernel('jax_raw', 'tpu', _ell_binary_matvec_jax_kernel)
 
-binary_fcnmv_p.def_jvp_rule2(
+ell_binary_matvec_p.def_jvp_rule2(
     _binary_fcnmv_jvp_weights,
     None,
     _binary_fcnmv_jvp_spikes,
-    None,
-    None,
-    None,
 )
-binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
-binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
-binary_fcnmv_p.def_call(binary_fcnmv_p_call)
-binary_fcnmv_p.def_tags('fcn', 'binary')
-binary_fcnmv_p.def_benchmark_data(_binary_fcnmv_benchmark_data)
+ell_binary_matvec_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
+ell_binary_matvec_p.def_batching_rule(_binary_fcnmv_batching)
+ell_binary_matvec_p.def_call(ell_binary_matvec_p_call)
+ell_binary_matvec_p.def_tags('fcn', 'binary')
+ell_binary_matvec_p.def_benchmark_data(_binary_fcnmv_benchmark_data)
+
+
+# ---------------------------------------------------------------------------
+# CSC column-scatter primitive: y = W @ s (event-driven), W stored column-major
+# ---------------------------------------------------------------------------
+
+
+def _csc_binary_matvec_numba_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import numba
+
+    if weight_info.size == 1:
+        if spike_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def csc_mv(weights, indices, indptr, spikes, posts):
+                posts[:] = 0.
+                w = weights[0]
+                for col in range(spikes.shape[0]):
+                    if spikes[col]:
+                        for pos in range(indptr[col], indptr[col + 1]):
+                            posts[indices[pos]] += w
+        else:
+            @numba.njit(fastmath=True)
+            def csc_mv(weights, indices, indptr, spikes, posts):
+                posts[:] = 0.
+                w = weights[0]
+                for col in range(spikes.shape[0]):
+                    if spikes[col] > 0.:
+                        for pos in range(indptr[col], indptr[col + 1]):
+                            posts[indices[pos]] += w
+    else:
+        if spike_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def csc_mv(weights, indices, indptr, spikes, posts):
+                posts[:] = 0.
+                for col in range(spikes.shape[0]):
+                    if spikes[col]:
+                        for pos in range(indptr[col], indptr[col + 1]):
+                            posts[indices[pos]] += weights[pos]
+        else:
+            @numba.njit(fastmath=True)
+            def csc_mv(weights, indices, indptr, spikes, posts):
+                posts[:] = 0.
+                for col in range(spikes.shape[0]):
+                    if spikes[col] > 0.:
+                        for pos in range(indptr[col], indptr[col + 1]):
+                            posts[indices[pos]] += weights[pos]
+
+    def kernel(weights, indices, indptr, spikes):
+        return numba_kernel(csc_mv, outs=kwargs['outs'])(weights, indices, indptr, spikes)
+
+    return kernel
+
+
+def _csc_binary_matvec_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_fcnmv_col_scatter.cu'),
+        name='fcn_binary_mv_col_scatter',
+    )
+
+    out_info = kwargs['outs']
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16'
+    }
+    sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
+    kernel_name = f'fcn_binary_mv_col_scatter.binary_fcnmv_col_scatter{mode_sfx}_bool{sfx}'
+
+    def kernel(weights, indices, indptr, spikes):
+        spikes = u.math.asarray(spikes, dtype=bool)
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, spikes)
+
+    return kernel
+
+
+def _csc_binary_matvec_jax_kernel(
+    shape: Tuple[int, int],
+    **kwargs,
+):
+    """Pure JAX reference: y = W @ s via column scatter (segment_sum)."""
+    n_pre, n_post = shape
+
+    def kernel(weights, indices, indptr, spikes):
+        spk_f = _binary_fcnmv_spike_activity(spikes, weights.dtype)
+        col_ids = jnp.repeat(
+            jnp.arange(indptr.shape[0] - 1),
+            jnp.diff(indptr),
+            total_repeat_length=indices.shape[0],
+        )
+        if weights.size == 1:
+            contrib = spk_f[col_ids] * weights[0]
+        else:
+            contrib = spk_f[col_ids] * weights
+        return jax.ops.segment_sum(contrib, indices, num_segments=n_pre),
+
+    return kernel
+
+
+def _csc_binary_matvec_jvp_spikes(
+    spk_dot,
+    weights,
+    indices,
+    indptr,
+    spikes,
+    *,
+    shape,
+    **kwargs
+):
+    # y = W @ s linear in s: dy = W @ s_dot (float segment-scatter).
+    n_pre = shape[0]
+    col_ids = jnp.repeat(
+        jnp.arange(indptr.shape[0] - 1),
+        jnp.diff(indptr),
+        total_repeat_length=indices.shape[0],
+    )
+    if weights.size == 1:
+        contrib = spk_dot[col_ids] * weights[0]
+    else:
+        contrib = spk_dot[col_ids] * weights
+    return jax.ops.segment_sum(contrib, indices, num_segments=n_pre),
+
+
+def _csc_binary_matvec_jvp_weights(
+    w_dot,
+    weights,
+    indices,
+    indptr,
+    spikes,
+    *,
+    shape,
+    **kwargs
+):
+    return csc_binary_matvec_p_call(
+        w_dot,
+        indices,
+        indptr,
+        spikes,
+        shape=shape,
+        backend=kwargs['backend'],
+    )
+
+
+def _csc_binary_matvec_transpose_rule(
+    ct,
+    weights,
+    indices,
+    indptr,
+    spikes,
+    *,
+    shape,
+    weight_info,
+    **kwargs
+):
+    if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr):
+        raise ValueError("Cannot transpose with respect to sparse structure.")
+
+    ct = ct[0]
+    n_pre, n_post = shape
+    homo = weight_info.size == 1
+    col_ids = jnp.repeat(
+        jnp.arange(indptr.shape[0] - 1),
+        jnp.diff(indptr),
+        total_repeat_length=indices.shape[0],
+    )
+
+    if ad.is_undefined_primal(spikes):
+        # dL/ds = W^T @ ct: ds[col] = sum_{pos in col} weights[pos] * ct[indices[pos]]
+        if type(ct) is ad.Zero:
+            ct_spk = ad.Zero(spikes)
+        else:
+            w = weights[0] if homo else weights
+            contrib = w * ct[indices]
+            ct_spk = jax.ops.segment_sum(contrib, col_ids, num_segments=n_post)
+        return weights, indices, indptr, ct_spk
+
+    else:
+        # dL/dw = dL/dy * dy/dw
+        if type(ct) is ad.Zero:
+            ct_w = ad.Zero(weights)
+        else:
+            spk_active = _binary_fcnmv_spike_activity(spikes, weight_info.dtype)
+            per_pos = ct[indices] * spk_active[col_ids]
+            if homo:
+                ct_w = jnp.sum(per_pos).reshape(*weight_info.shape)
+            else:
+                ct_w = per_pos
+        return ct_w, indices, indptr, spikes
+
+
+def _csc_binary_matvec_batching(args, axes, **kwargs):
+    return general_batching_rule(csc_binary_matvec_p, args, axes, **kwargs)
+
+
+def csc_binary_matvec_p_call(
+    weights: jax.Array,
+    indices: jax.Array,
+    indptr: jax.Array,
+    spikes: jax.Array,
+    *,
+    shape: Tuple[int, int],
+    backend: Optional[str] = None,
+) -> Tuple[jax.Array]:
+    """
+    Low-level primitive call for the CSC column-scatter event-driven matrix
+    --vector product ``y = W @ s``.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        Column-major non-zero weights.  Shape ``(1,)`` for homogeneous or
+        ``(NNZ,)`` for heterogeneous weights.  Must be floating-point.
+    indices : jax.Array
+        Row-index array of shape ``(NNZ,)``.
+    indptr : jax.Array
+        Column pointer array of shape ``(num_post + 1,)``.
+    spikes : jax.Array
+        Binary spike vector of shape ``(num_post,)`` (boolean or float).
+    shape : tuple[int, int]
+        Logical ``(num_pre, num_post)`` dense-matrix shape.
+    backend : str or None, optional
+        Backend override (``'numba'``, ``'cuda_raw'``, or ``None``).
+
+    Returns
+    -------
+    tuple[jax.Array]
+        Single-element tuple containing the result vector ``(num_pre,)``.
+    """
+    n_pre, n_post = shape
+    weights = u.math.asarray(weights)
+    indices = u.math.asarray(indices)
+    indptr = u.math.asarray(indptr)
+    spikes = u.math.asarray(spikes)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    out = jax.ShapeDtypeStruct((n_pre,), weights.dtype)
+    return csc_binary_matvec_p(
+        weights,
+        indices,
+        indptr,
+        spikes,
+        outs=[out],
+        shape=shape,
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        backend=backend,
+    )
+
+
+csc_binary_matvec_p = XLACustomKernel(
+    'csc_binary_matvec',
+    doc="""
+Low-level XLA custom-kernel primitive for the CSC column-scatter
+event-driven matrix-vector product ``y = W @ s``.
+
+The matrix ``W`` is stored column-major (CSC) as
+``(weights, indices, indptr)``.  For each active input column the kernel
+scatter-adds its weights to the output rows.  CUDA provides the real
+column-scatter kernel; numba and jax provide a ``segment_sum`` reference so
+the path is testable on every platform.
+
+The primitive takes four positional arguments
+``(weights, indices, indptr, spikes)``.
+
+See Also
+--------
+csc_binary_matvec : High-level user-facing function wrapper.
+ell_binary_matvec_p : Row-major (ELL) peer primitive.
+"""
+)
+
+
+csc_binary_matvec_p.def_numba_kernel(_csc_binary_matvec_numba_kernel)
+csc_binary_matvec_p.def_cuda_raw_kernel(_csc_binary_matvec_cuda_kernel, asdefault=True)
+csc_binary_matvec_p.def_kernel('jax_raw', 'cpu', _csc_binary_matvec_jax_kernel)
+csc_binary_matvec_p.def_kernel('jax_raw', 'gpu', _csc_binary_matvec_jax_kernel)
+csc_binary_matvec_p.def_kernel('jax_raw', 'tpu', _csc_binary_matvec_jax_kernel)
+
+csc_binary_matvec_p.def_jvp_rule2(
+    _csc_binary_matvec_jvp_weights,
+    None,
+    None,
+    _csc_binary_matvec_jvp_spikes,
+)
+csc_binary_matvec_p.def_transpose_rule(_csc_binary_matvec_transpose_rule)
+csc_binary_matvec_p.def_batching_rule(_csc_binary_matvec_batching)
+csc_binary_matvec_p.def_call(csc_binary_matvec_p_call)
+csc_binary_matvec_p.def_tags('fcn', 'binary')
+
+
+@namescope(static_argnames=['shape'])
+def csc_binary_matvec(
+    weights: Union[jax.Array, u.Quantity],
+    indices: jax.Array,
+    indptr: jax.Array,
+    spikes: Union[jax.Array, u.Quantity],
+    *,
+    shape: Tuple[int, int],
+    backend: Optional[str] = None,
+) -> Union[jax.Array, u.Quantity]:
+    """
+    Event-driven CSC column-scatter sparse matrix--vector product ``y = W @ s``.
+
+    Parameters
+    ----------
+    weights : jax.Array or u.Quantity
+        Column-major non-zero weights, shape ``(1,)`` (homogeneous) or
+        ``(NNZ,)`` (heterogeneous).  Must have a floating-point dtype.
+    indices : jax.Array
+        Row-index array of shape ``(NNZ,)``.
+    indptr : jax.Array
+        Column pointer array of shape ``(num_post + 1,)``.
+    spikes : jax.Array or u.Quantity
+        Binary spike vector of shape ``(num_post,)``.
+    shape : tuple[int, int]
+        Logical ``(num_pre, num_post)`` shape of the dense weight matrix.
+    backend : str or None, optional
+        Execution backend override.
+
+    Returns
+    -------
+    jax.Array or u.Quantity
+        Result vector of shape ``(num_pre,)``.
+
+    See Also
+    --------
+    binary_fcnmv : ELL event-driven matrix--vector product.
+    """
+    weights, w_unit = u.split_mantissa_unit(weights)
+    spikes, v_unit = u.split_mantissa_unit(spikes)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    r = csc_binary_matvec_p_call(
+        weights,
+        indices,
+        indptr,
+        spikes,
+        shape=shape,
+        backend=backend,
+    )[0]
+    return u.maybe_decimal(r * v_unit * w_unit)
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -904,7 +1010,7 @@ def binary_fcnmm(
     weights, w_unit = u.split_mantissa_unit(weights)
     matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    r = binary_fcnmm_p_call(
+    r = ell_binary_matmat_p_call(
         weights,
         indices,
         matrix,
@@ -1059,7 +1165,7 @@ def _binary_fcnmm_cuda_kernel(
         if use_packed:
             # Step 1: pack spikes into uint32 bitmasks
             pack_sfx = '_bool' if is_bool_matrix else sfx
-            pack_name = f'fcn_binary_mm.binary_fcnmm_pack{pack_sfx}'
+            pack_name = f'fcn_binary_mm.ell_binary_matmat_pack{pack_sfx}'
             n_batch_words = (n_batch + 31) // 32
             packed_info = jax.ShapeDtypeStruct((n_rows, n_batch_words), jnp.uint32)
             # Step 2: run packed gather kernel
@@ -1129,7 +1235,7 @@ def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, tra
 
 
 def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return binary_fcnmm_p_call(
+    return ell_binary_matmat_p_call(
         weights_dot, indices, matrix, shape=shape, transpose=transpose, backend=kwargs['backend']
     )
 
@@ -1156,7 +1262,7 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
             ct_weight = ad.Zero(weights)
 
         elif homo:
-            ct_weight = binary_fcnmm_p_call(
+            ct_weight = ell_binary_matmat_p_call(
                 jnp.ones([1], dtype=weight_info.dtype),
                 indices,
                 matrix,
@@ -1182,7 +1288,7 @@ def _batching_base_fn(args, axis=1, **kwargs):
     assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
     m, maybe_batch1, maybe_batch2 = args[2].shape
     B = args[2].reshape(m, maybe_batch1 * maybe_batch2)
-    r = binary_fcnmm_p_call(
+    r = ell_binary_matmat_p_call(
         args[0],
         args[1],
         B,
@@ -1209,7 +1315,7 @@ def _binary_fcnmm_batching(args, axes, **kwargs):
         return _batching_base_fn(args, axis=2, **kwargs)
 
     else:
-        return general_batching_rule(binary_fcnmm_p, args, axes, **kwargs)
+        return general_batching_rule(ell_binary_matmat_p, args, axes, **kwargs)
 
 
 def _binary_fcnmm_benchmark_data(*, platform):
@@ -1240,7 +1346,7 @@ def _binary_fcnmm_benchmark_data(*, platform):
     return configs
 
 
-def binary_fcnmm_p_call(
+def ell_binary_matmat_p_call(
     weights: jax.Array,
     indices: jax.Array,
     matrix: jax.Array,
@@ -1287,7 +1393,7 @@ def binary_fcnmm_p_call(
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    return binary_fcnmm_p(
+    return ell_binary_matmat_p(
         weights,
         indices,
         matrix,
@@ -1301,7 +1407,7 @@ def binary_fcnmm_p_call(
     )
 
 
-binary_fcnmm_p = XLACustomKernel(
+ell_binary_matmat_p = XLACustomKernel(
     'binary_fcnmm',
     doc="""
 Low-level XLA custom-kernel primitive for ``binary_fcnmm``.
@@ -1319,23 +1425,23 @@ Beyond backend dispatch, the primitive stores JAX transformation bindings
 (JVP, transpose, batching, and call registration) so the operation integrates
 correctly with ``jit``, ``vmap``, and autodiff.
 
-Available backends can be queried with ``binary_fcnmm_p.available_backends(platform)``,
-and the default backend can be configured with ``binary_fcnmm_p.set_default(platform, backend)``.
+Available backends can be queried with ``ell_binary_matmat_p.available_backends(platform)``,
+and the default backend can be configured with ``ell_binary_matmat_p.set_default(platform, backend)``.
 
 See Also
 --------
 binary_fcnmm : High-level user-facing function wrapper.
 """
 )
-binary_fcnmm_p.def_numba_kernel(_binary_fcnmm_numba_kernel)
-binary_fcnmm_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel, asdefault=True)
-binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
-binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
-binary_fcnmm_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
+ell_binary_matmat_p.def_numba_kernel(_binary_fcnmm_numba_kernel)
+ell_binary_matmat_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel, asdefault=True)
+ell_binary_matmat_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
+ell_binary_matmat_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
+ell_binary_matmat_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
 
-binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
-binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
-binary_fcnmm_p.def_batching_rule(_binary_fcnmm_batching)
-binary_fcnmm_p.def_call(binary_fcnmm_p_call)
-binary_fcnmm_p.def_tags('fcn', 'binary')
-binary_fcnmm_p.def_benchmark_data(_binary_fcnmm_benchmark_data)
+ell_binary_matmat_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
+ell_binary_matmat_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
+ell_binary_matmat_p.def_batching_rule(_binary_fcnmm_batching)
+ell_binary_matmat_p.def_call(ell_binary_matmat_p_call)
+ell_binary_matmat_p.def_tags('fcn', 'binary')
+ell_binary_matmat_p.def_benchmark_data(_binary_fcnmm_benchmark_data)

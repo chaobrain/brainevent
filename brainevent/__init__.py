@@ -74,8 +74,10 @@ from ._event import (
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
-    binary_fcnmv, binary_fcnmv_p,
-    binary_fcnmm, binary_fcnmm_p,
+    EllLayout, CscLayout,
+    binary_fcnmv, ell_binary_matvec_p,
+    csc_binary_matvec, csc_binary_matvec_p,
+    binary_fcnmm, ell_binary_matmat_p,
     fcnmv, fcnmm,
 )
 from ._jit_normal import (
@@ -199,8 +201,10 @@ __all__ = [
 
     # --- Fixed number connectivity --- #
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
-    'binary_fcnmv', 'binary_fcnmv_p',
-    'binary_fcnmm', 'binary_fcnmm_p',
+    'EllLayout', 'CscLayout',
+    'binary_fcnmv', 'ell_binary_matvec_p',
+    'csc_binary_matvec', 'csc_binary_matvec_p',
+    'binary_fcnmm', 'ell_binary_matmat_p',
     'fcnmv',
     'fcnmm',
 
