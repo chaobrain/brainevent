@@ -32,6 +32,7 @@ __all__ = [
     'set_backend',
     'get_backend',
     'clear_backends',
+    'prefer_system_nvcc',
 ]
 
 
@@ -315,3 +316,28 @@ def clear_backends():
         True
     """
     _global_backends.clear()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  CUDA nvcc discovery preference
+# ──────────────────────────────────────────────────────────────────────
+
+def prefer_system_nvcc(enable: bool = True) -> None:
+    """切换 nvcc 发现优先级。
+
+    Parameters
+    ----------
+    enable : bool
+        ``True`` → 优先使用系统 ``PATH`` 上的 nvcc；
+        ``False`` → 优先使用 ``jax[cuda*]`` 自带的 pip nvcc（默认）。
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import brainevent
+        >>> brainevent.config.prefer_system_nvcc()       # 改为系统优先
+        >>> brainevent.config.prefer_system_nvcc(False)  # 改回 pip 优先
+    """
+    from brainevent._op.kernix_toolchain import set_nvcc_discovery
+    set_nvcc_discovery("system" if enable else "pip")

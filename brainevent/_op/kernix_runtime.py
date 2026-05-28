@@ -21,7 +21,28 @@ import jax
 import ml_dtypes
 import numpy as np
 
-from brainevent._error import KernelError, KernelRegistrationError
+from brainevent._error import KernelError, KernelLoadError, KernelRegistrationError
+
+
+def _format_load_error(so_path: str, err: Exception) -> str:
+    msg = str(err)
+    low = msg.lower()
+    lines = [
+        "[brainevent GPU 工具链] 加载 .so 失败  (code=E-LOAD)",
+        "",
+        f"原因: 无法 dlopen 编译产物：{so_path}",
+        f"dlopen: {msg}",
+        "",
+        "如何修复:",
+    ]
+    if "cudart" in low or "cannot open shared object" in low:
+        lines += [
+            "  1) 缺少 CUDA 运行库（典型 cu12）。确保 jax[cuda*] 已正确安装。",
+            "  2) 把 CUDA 运行库目录加入 LD_LIBRARY_PATH（如 site-packages/nvidia/cuda_runtime/lib）。",
+        ]
+    else:
+        lines += ["  1) 确认编译成功且依赖库可用；设 BRAINEVENT_TOOLCHAIN_DEBUG=1 查看工具链快照。"]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +169,10 @@ class CompiledModule:
 
     def __init__(self, so_path: str, function_names: list[str]):
         self._so_path = str(so_path)
-        self._lib = ctypes.CDLL(self._so_path)
+        try:
+            self._lib = ctypes.CDLL(self._so_path)
+        except OSError as e:
+            raise KernelLoadError(_format_load_error(self._so_path, e)) from e
         self._functions: dict[str, ctypes._CFuncPtr] = {}
 
         for fname in function_names:

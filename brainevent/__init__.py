@@ -58,6 +58,12 @@ from ._error import (
     KernelRegistrationError,
     BenchmarkDataFnNotProvidedError,
     CUDANotInstalledError,
+    NvccNotFoundError,
+    HostCompilerNotFoundError,
+    HeaderNotFoundError,
+    GpuArchDetectionError,
+    HostCompilerIncompatibleError,
+    KernelLoadError,
 )
 from ._event import (
     EventRepresentation,
@@ -230,6 +236,12 @@ __all__ = [
     'KernelRegistrationError',
     'BenchmarkDataFnNotProvidedError',
     'CUDANotInstalledError',
+    'NvccNotFoundError',
+    'HostCompilerNotFoundError',
+    'HeaderNotFoundError',
+    'GpuArchDetectionError',
+    'HostCompilerIncompatibleError',
+    'KernelLoadError',
 
     # --- utilities --- #
     'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index',
