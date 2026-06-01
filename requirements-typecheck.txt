@@ -1,0 +1,8 @@
+# Pinned tooling for the mypy ratchet (see .github/workflows/CI.yml `type_check`).
+#
+# Only mypy + mypy-baseline are installed here -- deliberately NOT the project's
+# runtime/dev dependencies. The ratchet relies on `ignore_missing_imports` so every
+# third-party import collapses to `Any`, which keeps the committed mypy-baseline.txt
+# reproducible regardless of which typed packages happen to be installed.
+mypy==2.1.0
+mypy-baseline==0.7.4

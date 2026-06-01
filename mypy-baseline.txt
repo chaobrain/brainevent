@@ -1,0 +1,91 @@
+brainevent/_data.py:0: error: Need type annotation for "_buffer_registry" (hint: "_buffer_registry: set[<type>] = ...")  [var-annotated]
+brainevent/_op/kernix_runtime.py:0: error: Name "ctypes._CFuncPtr" is not defined  [name-defined]
+brainevent/_misc.py:0: error: Need type annotation for "_cache" (hint: "_cache: dict[<type>, <type>] = ...")  [var-annotated]
+brainevent/_misc.py:0: error: Incompatible default for parameter "fn" (default has type "None", parameter has type "Callable[..., Any]")  [assignment]
+brainevent/_misc.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_misc.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_misc.py:0: error: Incompatible default for parameter "name" (default has type "None", parameter has type "str")  [assignment]
+brainevent/_misc.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_misc.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_op/kernix_toolchain.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+brainevent/_op/kernix_toolchain.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+brainevent/_fcn/layouts.py:0: error: Incompatible return value type (got "tuple[int, ...]", expected "tuple[int, int]")  [return-value]
+brainevent/_fcn/layouts.py:0: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_fcn/layouts.py:0: error: Incompatible return value type (got "tuple[int, ...]", expected "tuple[int, int]")  [return-value]
+brainevent/_op/main.py:0: error: Incompatible default for parameter "doc" (default has type "None", parameter has type "str")  [assignment]
+brainevent/_op/main.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_op/main.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_op/main.py:0: error: Argument 1 to "tuple" has incompatible type "ShapeDtype | Sequence[ShapeDtype]"; expected "Iterable[Any]"  [arg-type]
+brainevent/_op/main.py:0: error: Argument 1 to "tuple" has incompatible type "ShapeDtype | Sequence[ShapeDtype]"; expected "Iterable[ShapeDtype]"  [arg-type]
+brainevent/_op/main.py:0: error: Argument 1 to "len" has incompatible type "ShapeDtype | Sequence[ShapeDtype]"; expected "Sized"  [arg-type]
+brainevent/_op/numba_cuda_ffi.py:0: error: Incompatible types in assignment (expression has type "tuple[int, int]", variable has type "tuple[int]")  [assignment]
+brainevent/_op/numba_cuda_ffi.py:0: error: Incompatible types in assignment (expression has type "tuple[int, Any]", variable has type "tuple[int]")  [assignment]
+brainevent/_op/numba_cuda_ffi.py:0: error: Tuple index out of range  [misc]
+brainevent/_op/numba_cuda_ffi.py:0: error: Incompatible types in assignment (expression has type "tuple[int, int, int]", variable has type "tuple[int]")  [assignment]
+brainevent/_op/numba_cuda_ffi.py:0: error: Incompatible types in assignment (expression has type "tuple[int, Any, Any]", variable has type "tuple[int]")  [assignment]
+brainevent/_op/numba_cuda_ffi.py:0: error: Tuple index out of range  [misc]
+brainevent/_op/numba_cuda_ffi.py:0: error: Tuple index out of range  [misc]
+brainevent/pararnn/_parallel_reduce.py:0: error: Incompatible default for parameter "backend" (default has type "None", parameter has type "str")  [assignment]
+brainevent/pararnn/_parallel_reduce.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/pararnn/_parallel_reduce.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/pararnn/_parallel_reduce.py:0: error: Incompatible default for parameter "backend" (default has type "None", parameter has type "str")  [assignment]
+brainevent/pararnn/_parallel_reduce.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/pararnn/_parallel_reduce.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/pararnn/_parallel_reduce.py:0: error: Incompatible default for parameter "backend" (default has type "None", parameter has type "str")  [assignment]
+brainevent/pararnn/_parallel_reduce.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/pararnn/_parallel_reduce.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/pararnn/_parallel_reduce.py:0: error: Incompatible default for parameter "backend" (default has type "None", parameter has type "str")  [assignment]
+brainevent/pararnn/_parallel_reduce.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/pararnn/_parallel_reduce.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/pararnn/_parallel_reduce.py:0: error: Incompatible default for parameter "backend" (default has type "None", parameter has type "str")  [assignment]
+brainevent/pararnn/_parallel_reduce.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/pararnn/_parallel_reduce.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "ndim"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/yw2y.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/pararnn/_fused.py:0: error: Incompatible default for parameter "backend" (default has type "None", parameter has type "str")  [assignment]
+brainevent/pararnn/_fused.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/pararnn/_fused.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/pararnn/_fused.py:0: error: Incompatible default for parameter "backend" (default has type "None", parameter has type "str")  [assignment]
+brainevent/pararnn/_fused.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/pararnn/_fused.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/pararnn/_fused.py:0: error: Incompatible default for parameter "backend" (default has type "None", parameter has type "str")  [assignment]
+brainevent/pararnn/_fused.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/pararnn/_fused.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/pararnn/_fused.py:0: error: Incompatible default for parameter "backend" (default has type "None", parameter has type "str")  [assignment]
+brainevent/pararnn/_fused.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/pararnn/_fused.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_normal/main.py:0: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_normal/main.py:0: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_fcn/main.py:0: error: Missing return statement  [return]
+brainevent/_fcn/main.py:0: error: Incompatible types in assignment (expression has type "CscLayout", variable has type "None")  [assignment]
+brainevent/_fcn/main.py:0: error: Incompatible return value type (got "None", expected "CscLayout")  [return-value]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_csr/main.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/main.py:0: error: Item "Number" of "Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/main.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_csr/main.py:0: error: Item "Number" of "Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_csr/main.py:0: error: Incompatible default for parameter "nse" (default has type "None", parameter has type "int")  [assignment]
+brainevent/_csr/main.py:0: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_csr/main.py:0: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_csr/main.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/main.py:0: error: Item "Number" of "Any | Number" has no attribute "shape"  [union-attr]
+brainevent/_csr/main.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_csr/main.py:0: error: Item "Number" of "Any | Number" has no attribute "dtype"  [union-attr]
+brainevent/_cli.py:0: error: Argument "key" to "max" has incompatible type overloaded function; expected "Callable[[str], SupportsDunderLT[Any] | SupportsDunderGT[Any]]"  [arg-type]
