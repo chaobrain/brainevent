@@ -1134,3 +1134,108 @@ def test_csr_eager_precompute():
     dense = _jnp.asarray((_np.random.default_rng(1).random((3, 4)) > 0.5) * 1.0, _jnp.float32)
     csr = _be.CSR.fromdense(dense, precompute_weight_indices=True)
     assert csr.buffers.get('csc') is not None
+
+
+# ---- event-driven dispatch via weight-indices (Phase 5) ----
+
+def _rand_dense(rng, m, n, p=0.4):
+    return _jnp.asarray((rng.random((m, n)) < p) * rng.random((m, n)), _jnp.float32)
+
+
+def test_csr_at_event_matches_dense_and_caches():
+    # CSR @ event is the unfavorable direction -> indexed column-major scatter.
+    rng = _np.random.default_rng(3)
+    m, k = 5, 7
+    csr = _be.CSR.fromdense(_rand_dense(rng, m, k))
+    ev = _jnp.asarray(rng.random(k) > 0.5)
+    got = csr @ _be.BinaryArray(ev)
+    ref = csr.todense() @ ev.astype(_jnp.float32)
+    assert got.shape == (m,)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+    # the indexed path must have built & cached the CSC-like weight indices
+    assert csr.buffers.get('csc') is not None
+
+
+def test_event_at_csr_favorable_matches_dense():
+    # event @ CSR is favorable -> direct event-driven scatter, unchanged.
+    rng = _np.random.default_rng(4)
+    m, k = 5, 7
+    csr = _be.CSR.fromdense(_rand_dense(rng, m, k))
+    ev = _jnp.asarray(rng.random(m) > 0.5)
+    got = _be.BinaryArray(ev) @ csr
+    ref = ev.astype(_jnp.float32) @ csr.todense()
+    assert got.shape == (k,)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+
+
+def test_event_at_csc_matches_dense_and_caches():
+    # event @ CSC is the unfavorable direction -> indexed row-major scatter.
+    rng = _np.random.default_rng(5)
+    m, n = 6, 4
+    csc = _be.CSC.fromdense(_rand_dense(rng, m, n))
+    ev = _jnp.asarray(rng.random(m) > 0.5)
+    got = _be.BinaryArray(ev) @ csc
+    ref = ev.astype(_jnp.float32) @ csc.todense()
+    assert got.shape == (n,)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+    assert csc.buffers.get('csr') is not None
+
+
+def test_csc_at_event_favorable_matches_dense():
+    # CSC @ event is favorable -> direct event-driven scatter, unchanged.
+    rng = _np.random.default_rng(6)
+    m, n = 6, 4
+    csc = _be.CSC.fromdense(_rand_dense(rng, m, n))
+    ev = _jnp.asarray(rng.random(n) > 0.5)
+    got = csc @ _be.BinaryArray(ev)
+    ref = csc.todense() @ ev.astype(_jnp.float32)
+    assert got.shape == (m,)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+
+
+def test_csr_at_event_jit_matches_dense():
+    rng = _np.random.default_rng(7)
+    m, k = 5, 7
+    csr = _be.CSR.fromdense(_rand_dense(rng, m, k))
+    ev = _jnp.asarray(rng.random(k) > 0.5)
+    f = jax.jit(lambda w, e: csr.with_data(w) @ _be.BinaryArray(e))
+    got = f(csr.data, ev)
+    ref = csr.todense() @ ev.astype(_jnp.float32)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+
+
+# ---- transpose cache hand-off (Phase 6) ----
+
+def test_csr_transpose_hands_off_weight_indices():
+    # The CSC-like view of W equals the CSR-like view of W.T, so the cached
+    # perm must transfer across transpose with identical values.
+    rng = _np.random.default_rng(8)
+    m, k = 4, 6
+    csr = _be.CSR.fromdense(_rand_dense(rng, m, k)).build_weight_indices()
+    perm_csr = csr._weight_indices()[2]
+    csc = csr.transpose()
+    assert csc.buffers.get('csr') is not None          # re-keyed on transpose
+    perm_csc = csc._weight_indices()[2]
+    assert _jnp.array_equal(perm_csr, perm_csc)
+    # and the transposed matrix multiplies correctly
+    ev = _jnp.asarray(rng.random(k) > 0.5)
+    got = _be.BinaryArray(ev) @ csc                     # event @ (W.T) , len m
+    ref = ev.astype(_jnp.float32) @ csc.todense()
+    assert _jnp.allclose(got, ref, atol=1e-5)
+
+
+def test_csc_transpose_hands_off_weight_indices():
+    rng = _np.random.default_rng(10)
+    m, n = 5, 3
+    csc = _be.CSC.fromdense(_rand_dense(rng, m, n)).build_weight_indices()
+    perm_csc = csc._weight_indices()[2]
+    csr = csc.transpose()
+    assert csr.buffers.get('csc') is not None
+    perm_csr = csr._weight_indices()[2]
+    assert _jnp.array_equal(perm_csc, perm_csr)
+
+
+def test_csc_eager_precompute():
+    rng = _np.random.default_rng(12)
+    csc = _be.CSC.fromdense(_rand_dense(rng, 4, 5), precompute_weight_indices=True)
+    assert csc.buffers.get('csr') is not None

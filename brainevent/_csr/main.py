@@ -27,6 +27,7 @@ from brainevent._event import BinaryArray
 from brainevent._misc import _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to_csr_index
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
+from .binary_indexed import binary_csrmv_indexed
 from .diag_add import csr_diag_position, csr_diag_add
 from .float import csrmv, csrmm
 from .slice import csr_slice_rows
@@ -959,10 +960,17 @@ class CSR(CompressedSparseData):
             csc = csr.T
         """
         assert axes is None, "transpose does not support axes argument."
+        # The CSC-like view of ``W`` is, array-for-array, the CSR-like view of
+        # ``W.T``: the cached weight indices transfer for free across transpose.
+        # Re-key the ``'csc'`` buffer to ``'csr'`` so the resulting CSC finds it.
+        buffers = dict(self.buffers)
+        alt = buffers.pop('csc', None)
+        if alt is not None:
+            buffers['csr'] = alt
         return CSC(
             self.data, self.indices, self.indptr,
             shape=self.shape[::-1],
-            buffers=self.buffers,
+            buffers=buffers,
             backend=self.backend
         )
 
@@ -1229,8 +1237,15 @@ class CSR(CompressedSparseData):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csrmv(self.data, self.indices, self.indptr, other,
-                                    shape=self.shape, backend=self.backend)
+                # ``CSR @ event`` is the *unfavorable* direction: a row-major
+                # gather cannot skip inactive columns.  Traverse the CSC-like
+                # view instead (column-major scatter), reading canonical weights
+                # through ``perm`` so only active columns are touched.
+                csc_indptr, csc_indices, perm = self._weight_indices()
+                return binary_csrmv_indexed(
+                    self.data, csc_indices, csc_indptr, perm, other,
+                    shape=self.shape[::-1], transpose=True, backend=self.backend,
+                )
             elif other.ndim == 2:
                 return binary_csrmm(self.data, self.indices, self.indptr, other,
                                     shape=self.shape, backend=self.backend)
@@ -1522,6 +1537,7 @@ class CSC(CompressedSparseData):
         nse: int = None,
         index_dtype=jnp.int32,
         backend: Optional[str] = None,
+        precompute_weight_indices: bool = False,
     ) -> 'CSC':
         """
         Create a CSC (Compressed Sparse Column) matrix from a dense matrix.
@@ -1538,11 +1554,23 @@ class CSC(CompressedSparseData):
             calculated from the input matrix.
         index_dtype : dtype, optional
             The data type to be used for index arrays (default is jnp.int32).
+        backend : str or None, optional
+            Compute backend to attach to the matrix. Default ``None``.
+        precompute_weight_indices : bool, optional
+            If ``True``, eagerly build and cache the row-major (CSR-like) weight
+            indices used by the *unfavorable* ``event @ CSC`` direction (see
+            :meth:`build_weight_indices`). If ``False`` (default), the indices
+            are built lazily on first use. Default ``False``.
 
         Returns
         -------
         CSC
             A new CSC matrix instance created from the input dense matrix.
+
+        See Also
+        --------
+        build_weight_indices : Eagerly build the cached weight indices.
+        CSC._weight_indices : Lazily build/return the cached weight indices.
 
         Examples
         --------
@@ -1557,7 +1585,10 @@ class CSC(CompressedSparseData):
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
         csc = u.sparse.csr_fromdense(mat.T, nse=nse, index_dtype=index_dtype).T
-        return CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape, backend=backend)
+        out = CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape, backend=backend)
+        if precompute_weight_indices:
+            out = out.build_weight_indices()
+        return out
 
     def with_data(self, data: Data) -> 'CSC':
         """
@@ -1650,9 +1681,16 @@ class CSC(CompressedSparseData):
             csr = csc.T
         """
         assert axes is None
+        # The CSR-like view of this CSC is, array-for-array, the CSC-like view
+        # of its transpose: re-key the ``'csr'`` buffer to ``'csc'`` so the
+        # resulting CSR reuses the cached weight indices for free.
+        buffers = dict(self.buffers)
+        alt = buffers.pop('csr', None)
+        if alt is not None:
+            buffers['csc'] = alt
         return CSR((self.data, self.indices, self.indptr),
                    shape=self.shape[::-1],
-                   buffers=self.buffers,
+                   buffers=buffers,
                    backend=self.backend)
 
     def apply(self, fn) -> 'CSC':
@@ -1683,6 +1721,74 @@ class CSC(CompressedSparseData):
         """
         return CSC((fn(self.data), self.indices, self.indptr),
                    shape=self.shape, buffers=self.buffers, backend=self.backend)
+
+    def _weight_indices(self):
+        """Return the cached row-major (CSR-like) weight indices, building lazily.
+
+        The *unfavorable* direction ``event @ CSC`` is evaluated by traversing
+        the matrix row-by-row (a CSR-like view) and scattering events. That
+        traversal needs the matrix structure re-expressed in row-major order
+        together with a permutation ``perm`` mapping each row-major slot back to
+        the canonical CSC ``data`` order, so that structural slot ``j`` reads
+        ``data[perm[j]]``.
+
+        The triple depends only on the sparse *structure* (``indices``,
+        ``indptr``, ``shape``) and not on the stored values, so it survives
+        :meth:`apply` / :meth:`with_data` and is cached in the ``'csr'`` buffer.
+        It is computed on first access and reused thereafter.
+
+        Returns
+        -------
+        csr_indptr : jax.Array
+            Row pointer array of the CSR-like view. Length ``shape[0] + 1``.
+        csr_indices : jax.Array
+            Column index array of the CSR-like view. Shape ``(nse,)``.
+        perm : jax.Array
+            Permutation mapping row-major slot ``j`` to the canonical CSC
+            ``data`` index ``perm[j]``. Shape ``(nse,)``.
+
+        See Also
+        --------
+        build_weight_indices : Eagerly build and cache the same triple.
+        brainevent.csc_to_csr_index : Underlying index conversion.
+        """
+        cached = self.buffers.get('csr')
+        if cached is not None:
+            return cached
+        with jax.ensure_compile_time_eval():
+            csr = csc_to_csr_index(self.indptr, self.indices, shape=self.shape)
+        self.register_buffer('csr', csr)
+        return csr
+
+    def build_weight_indices(self) -> 'CSC':
+        """Return a copy of this CSC with the weight indices eagerly cached.
+
+        Builds the row-major (CSR-like) structure and permutation used by the
+        ``event @ CSC`` direction (see :meth:`_weight_indices`) and stores it in
+        the ``'csr'`` buffer of the returned matrix. The underlying ``data``,
+        ``indices``, and ``indptr`` arrays are shared (not copied).
+
+        Returns
+        -------
+        CSC
+            A new CSC matrix sharing this matrix's arrays, with the ``'csr'``
+            weight-index buffer populated.
+
+        See Also
+        --------
+        CSC._weight_indices : Lazy builder/accessor for the same triple.
+        CSC.fromdense : Accepts ``precompute_weight_indices=True`` to call this.
+        """
+        with jax.ensure_compile_time_eval():
+            csr = csc_to_csr_index(self.indptr, self.indices, shape=self.shape)
+        buffers = dict(self.buffers)
+        buffers['csr'] = csr
+        return CSC(
+            (self.data, self.indices, self.indptr),
+            shape=self.shape,
+            buffers=buffers,
+            backend=self.backend,
+        )
 
     def __getitem__(self, index):
         """Extract columns from the CSC matrix as a dense array.
@@ -1927,8 +2033,15 @@ class CSC(CompressedSparseData):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csrmv(data, self.indices, self.indptr, other,
-                                    shape=self.shape[::-1], transpose=False, backend=self.backend)
+                # ``event @ CSC`` is the *unfavorable* direction: a column-major
+                # gather cannot skip inactive rows.  Traverse the CSR-like view
+                # instead (row-major scatter), reading canonical weights through
+                # ``perm`` so only active rows are touched.
+                csr_indptr, csr_indices, perm = self._weight_indices()
+                return binary_csrmv_indexed(
+                    self.data, csr_indices, csr_indptr, perm, other,
+                    shape=self.shape, transpose=True, backend=self.backend,
+                )
             elif other.ndim == 2:
                 return binary_csrmm(data, self.indices, self.indptr, other.T,
                                     shape=self.shape[::-1], transpose=False, backend=self.backend).T
