@@ -24,7 +24,9 @@ build-backend = "setuptools.build_meta"
 # The wildcard key "*" applies to every discovered package/subpackage.
 "*" = ["*.cu", "*.h"]
 # Explicitly include nested C++ headers (brainevent/ subdir is 2 levels deep in include/).
-"brainevent" = ["include/brainevent/*.h"]
+# "py.typed" is the PEP 561 marker that tells downstream type checkers brainevent ships
+# inline type information; it must be bundled in the wheel to have any effect.
+"brainevent" = ["include/brainevent/*.h", "py.typed"]
 
 
 [tool.setuptools.packages.find]
@@ -105,3 +107,17 @@ cuda12 = ['jax[cuda12]>=0.7.2', "ninja"]
 cuda13 = ['jax[cuda13]>=0.7.2', "ninja"]
 tpu = ['jax[tpu]>=0.7.2']
 testing = ['pytest']
+
+
+[tool.mypy]
+# Configuration for the mypy CI ratchet (see .github/workflows/CI.yml `type_check`).
+#
+# The ratchet runs with ONLY mypy + mypy-baseline installed (no runtime deps), so every
+# third-party import must resolve to `Any` via ignore_missing_imports. python_version and
+# platform are pinned so the committed mypy-baseline.txt reproduces exactly on CI.
+files = ["brainevent"]
+exclude = ['_test\.py$']
+python_version = "3.13"
+platform = "linux"
+ignore_missing_imports = true
+show_error_codes = true

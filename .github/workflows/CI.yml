@@ -113,6 +113,36 @@ jobs:
           pytest brainevent/ -p no:faulthandler
 
 
+  type_check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [ "3.13" ]
+
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.13.1
+        with:
+          access_token: ${{ github.token }}
+      - uses: actions/checkout@v6
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install type-check tooling
+        run: |
+          python -m pip install --upgrade pip --no-cache-dir
+          python -m pip install -r requirements-typecheck.txt --no-cache-dir
+      - name: mypy ratchet (PEP 561)
+        # mypy still exits non-zero while the baseline errors exist, so the ratchet
+        # verdict comes solely from `mypy-baseline filter`, which fails ONLY when a new
+        # error appears. `--allow-unsynced` lets contributors fix errors without having
+        # to re-sync the baseline in the same PR.
+        run: |
+          mypy brainevent/ > mypy-report.txt || true
+          mypy-baseline filter --allow-unsynced --baseline-path mypy-baseline.txt < mypy-report.txt
+
 
 
 
