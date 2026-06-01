@@ -50,7 +50,9 @@ jobs:
           pip install .  --no-cache-dir
       - name: Test with pytest
         run: |
-          pytest brainevent/
+          # Run the FULL suite, including `slow` (compilation-heavy numba) variants that the
+          # default `pytest` invocation skips via addopts in pyproject.toml.
+          pytest brainevent/ -m ""
 
 
   test_macos:
@@ -80,7 +82,9 @@ jobs:
           pip install .  --no-cache-dir
       - name: Test with pytest
         run: |
-          pytest brainevent/
+          # Run the FULL suite, including `slow` (compilation-heavy numba) variants that the
+          # default `pytest` invocation skips via addopts in pyproject.toml.
+          pytest brainevent/ -m ""
 
 
   test_windows:
@@ -110,7 +114,8 @@ jobs:
           pip install .  --no-cache-dir
       - name: Test with pytest
         run: |
-          pytest brainevent/ -p no:faulthandler
+          # Run the FULL suite, including `slow` (compilation-heavy numba) variants.
+          pytest brainevent/ -m "" -p no:faulthandler
 
 
   type_check:

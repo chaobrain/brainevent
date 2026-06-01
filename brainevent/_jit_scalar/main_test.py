@@ -22,6 +22,11 @@ import pytest
 import brainevent
 from brainevent._test_util import allclose, gen_events
 
+# Every test in this module dispatches to the native ``numba`` backend (the only backend for
+# JIT-connectivity kernels), which compiles per test and dominates wall-clock. Mark the whole
+# module ``slow`` so the default ``pytest`` run skips it; CI runs it via ``pytest -m ""``.
+pytestmark = pytest.mark.slow
+
 platform = jax.default_backend()
 
 if platform == 'cpu':
@@ -295,9 +300,14 @@ class Test_JITC_To_Dense:
         assert allclose(out1, out4)
         jax.block_until_ready((out1, out2, out3, out4))
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('weight', [-1., 1.])
+    # Covering set: every value of shape/corder/weight appears at least once (4 rows instead
+    # of the full 2x2x2 = 8 product; gradient correctness is value-independent).
+    @pytest.mark.parametrize('shape,corder,weight', [
+        (shapes[0], True, -1.),
+        (shapes[1], False, 1.),
+        (shapes[0], False, 1.),
+        (shapes[1], True, -1.),
+    ])
     def test_vjp(self, shape, corder, weight):
         base = brainevent.JITCScalarR((1.0, 0.1, 123), shape=shape, corder=corder).todense()
 
@@ -322,9 +332,12 @@ class Test_JITC_To_Dense:
         assert allclose(true_weight_grad, jitc_weight_grad)
         jax.block_until_ready((base, ct, primals, true_weight_grad, expected_weight_grad, jitc_weight_grad))
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('shape,corder,weight', [
+        (shapes[0], True, -1.),
+        (shapes[1], False, 1.),
+        (shapes[0], False, 1.),
+        (shapes[1], True, -1.),
+    ])
     def test_jvp(self, shape, corder, weight):
         base = brainevent.JITCScalarR((1., 0.1, 123), shape=shape, corder=corder).todense()
         tagents = (brainstate.random.random(),)

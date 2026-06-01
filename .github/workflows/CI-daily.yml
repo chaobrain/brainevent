@@ -69,5 +69,7 @@ jobs:
           python -m pip install . || exit 1
       - name: Test with pytest
         run: |
-          pytest brainevent/
+          # Run the FULL suite, including `slow` (compilation-heavy numba) variants that the
+          # default `pytest` invocation skips via addopts in pyproject.toml.
+          pytest brainevent/ -m ""
 

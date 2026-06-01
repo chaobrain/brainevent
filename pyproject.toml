@@ -109,6 +109,21 @@ tpu = ['jax[tpu]>=0.7.2']
 testing = ['pytest']
 
 
+[tool.pytest.ini_options]
+# Local runs skip the `slow` marker by default. `slow` covers compilation-heavy backend
+# variants (numba / native kernels) that recompile per test and dominate wall-clock. The
+# marker is applied automatically by the root conftest.py based on the backend parameter.
+#
+# Run the FULL suite (including slow variants) with:   pytest -m ""
+# Run ONLY the slow variants with:                     pytest -m slow
+# CI runs the full suite (see .github/workflows/CI.yml).
+testpaths = ["brainevent"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: compilation-heavy backend variants (numba/native); deselected by default, run in CI via `pytest -m ''`",
+]
+
+
 [tool.mypy]
 # Configuration for the mypy CI ratchet (see .github/workflows/CI.yml `type_check`).
 #

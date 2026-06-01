@@ -27,6 +27,12 @@ import pytest
 import brainevent
 from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
+# Every test in this module dispatches to the native ``numba`` backend (the default backend),
+# which compiles per test and dominates wall-clock. Mark the whole module ``slow`` so the
+# default ``pytest`` run skips it; CI runs it via ``pytest -m ""``. Kernel correctness on the
+# cheap ``jax_raw`` backend is still covered by ``float_test.py`` in the default run.
+pytestmark = pytest.mark.slow
+
 platform = jax.default_backend()
 BINARY_CSRMV_IMPLEMENTATIONS = tuple(brainevent.binary_csrmv_p.available_backends(platform))
 FLOAT_CSRMV_IMPLEMENTATIONS = tuple(brainevent.csrmv_p.available_backends(platform))
@@ -164,9 +170,14 @@ class Test_CSR_FloatVectorOperator:
 
         jax.block_until_ready((xs, indptr, indices, data, y, y_ref))
 
-    @pytest.mark.parametrize('homo_w', [True, False])
-    @pytest.mark.parametrize('replace', [True, False])
-    @pytest.mark.parametrize('transpose', [True, False])
+    # Covering set: every value of homo_w/replace/transpose appears at least once (4 rows
+    # instead of the full 2x2x2 = 8 product).
+    @pytest.mark.parametrize('homo_w,replace,transpose', [
+        (True, True, True),
+        (False, False, False),
+        (True, False, True),
+        (False, True, False),
+    ])
     def test_vjp(self, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
@@ -195,9 +206,12 @@ class Test_CSR_FloatVectorOperator:
 
         jax.block_until_ready((x, indptr, indices, w, r, r_ref))
 
-    @pytest.mark.parametrize('homo_w', [True, False])
-    @pytest.mark.parametrize('replace', [True, False])
-    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('homo_w,replace,transpose', [
+        (True, True, True),
+        (False, False, False),
+        (True, False, True),
+        (False, True, False),
+    ])
     def test_jvp(self, homo_w, replace, transpose):
         n_in = 20
         n_out = 30

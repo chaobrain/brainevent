@@ -48,6 +48,11 @@ from brainevent._test_util import (
     ones_like,
 )
 
+# Every test in this module dispatches to the native ``numba`` backend, which compiles per
+# test and dominates wall-clock. Mark the whole module ``slow`` so the default ``pytest`` run
+# skips it; CI runs it via ``pytest -m ""``.
+pytestmark = pytest.mark.slow
+
 platform = jax.default_backend()
 
 if platform == 'cpu':
