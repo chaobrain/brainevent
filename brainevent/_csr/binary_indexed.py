@@ -25,6 +25,7 @@ structure while keeping ``weights`` in its canonical order -- the gather is
 ``weights[perm]`` materialization on the forward path).
 """
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -33,7 +34,7 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, load_cuda_file
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from .binary import binary_csrmv
@@ -253,6 +254,61 @@ def _binary_csrmv_indexed_jax_kernel(
     return kernel
 
 
+# --------------------------------------------------------------------------- #
+# CUDA warp kernel (source in binary_csrmv.cu)
+# --------------------------------------------------------------------------- #
+def _binary_csrmv_indexed_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    """Build the CUDA FFI callable for the fused indexed event-driven mat-vec.
+
+    Mirrors :func:`brainevent._csr.binary._binary_csrmv_cuda_kernel`, but for the
+    heterogeneous case selects the ``..._perm_hetero`` kernels that read
+    ``weights[perm[j]]`` and pass ``perm`` as an extra tensor.  Homogeneous
+    weights ignore ``perm`` entirely, so they reuse the plain homogeneous kernels
+    (called without ``perm``).
+    """
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_csrmv.cu'),
+        name='csr_binary_csrmv',
+    )
+
+    out_info = kwargs['outs']
+    is_homo = (weight_info.size == 1)
+
+    # Spike type suffix
+    spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
+
+    # Weight dtype suffix
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if is_homo:
+        # Homogeneous weights ignore ``perm``; reuse the plain homo kernels and
+        # call them without the ``perm`` operand.
+        base = 'binary_csrmv_t_warp_homo' if transpose else 'binary_csrmv_nt_auto_homo'
+        kernel_name = f'csr_binary_csrmv.{base}{wt_sfx}{spk_suffix}'
+
+        def kernel(weights, indices, indptr, perm, vector):
+            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
+    else:
+        base = 'binary_csrmv_t_warp_perm_hetero' if transpose else 'binary_csrmv_nt_auto_perm_hetero'
+        kernel_name = f'csr_binary_csrmv.{base}{wt_sfx}{spk_suffix}'
+
+        def kernel(weights, indices, indptr, perm, vector):
+            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, perm, vector)
+
+    return kernel
+
+
 def binary_csrmv_indexed_p_call(
     weights,
     indices,
@@ -381,14 +437,15 @@ Low-level XLA custom-kernel primitive for ``binary_csrmv_indexed``.
 Event-driven CSR sparse matrix-vector multiplication where heterogeneous
 weights are read through a permutation ``perm`` (structural slot ``j`` uses
 ``weights[perm[j]]``).  Homogeneous weights ignore ``perm``.  Registered
-backends: ``numba`` (CPU), ``jax_raw`` (CPU/GPU/TPU).  A CUDA warp kernel is
-registered separately.
+backends: ``numba`` (CPU), ``jax_raw`` (CPU/GPU/TPU), and ``cuda_raw`` (CUDA
+warp kernels in ``binary_csrmv.cu``).
 """,
 )
 binary_csrmv_indexed_p.def_numba_kernel(_csrmv_indexed_numba_kernel)
 binary_csrmv_indexed_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_indexed_jax_kernel)
 binary_csrmv_indexed_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_indexed_jax_kernel)
 binary_csrmv_indexed_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_indexed_jax_kernel)
+binary_csrmv_indexed_p.def_cuda_raw_kernel(_binary_csrmv_indexed_cuda_kernel, asdefault=True)
 binary_csrmv_indexed_p.def_jvp_rule2(_idx_jvp_weights, None, None, None, _idx_jvp_v)
 binary_csrmv_indexed_p.def_transpose_rule(_idx_transpose_rule)
 binary_csrmv_indexed_p.def_batching_rule(_idx_batching)
