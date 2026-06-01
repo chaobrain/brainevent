@@ -27,6 +27,11 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
 import brainevent
 from brainevent._test_util import allclose, gen_events
 
+# Every test in this module dispatches to the native ``numba`` backend (the only backend for
+# JIT-connectivity kernels), which compiles per test and dominates wall-clock. Mark the whole
+# module ``slow`` so the default ``pytest`` run skips it; CI runs it via ``pytest -m ""``.
+pytestmark = pytest.mark.slow
+
 platform = jax.default_backend()
 
 if platform == 'cpu':
@@ -300,10 +305,14 @@ class Test_JITC_To_Dense:
         assert allclose(out1, out4)
         jax.block_until_ready((out1, out2, out3, out4))
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('wloc', [-1., 0.])
-    @pytest.mark.parametrize('wscale', [1., 2.])
+    # Covering set: every value of shape/corder/wloc/wscale appears at least once (4 rows
+    # instead of the full 2x2x2x2 = 16 product; gradient correctness is value-independent).
+    @pytest.mark.parametrize('shape,corder,wloc,wscale', [
+        (shapes[0], True, -1., 1.),
+        (shapes[1], False, 0., 2.),
+        (shapes[0], False, -1., 2.),
+        (shapes[1], True, 0., 1.),
+    ])
     def test_vjp(self, shape, corder, wloc, wscale):
         base = brainevent.JITCNormalR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
 
@@ -338,10 +347,12 @@ class Test_JITC_To_Dense:
              expected_wloc_grad, expected_wscale_grad, jitc_wloc_grad, jitc_wscale_grad)
         )
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('wloc', [-1., 0.])
-    @pytest.mark.parametrize('wscale', [1., 2.])
+    @pytest.mark.parametrize('shape,corder,wloc,wscale', [
+        (shapes[0], True, -1., 1.),
+        (shapes[1], False, 0., 2.),
+        (shapes[0], False, -1., 2.),
+        (shapes[1], True, 0., 1.),
+    ])
     def test_jvp(self, shape, corder, wloc, wscale):
         base = brainevent.JITCNormalR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
         tagents = (brainstate.random.random(), brainstate.random.random())
@@ -359,11 +370,13 @@ class Test_JITC_To_Dense:
         assert allclose(true_grad, jitc_grad, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((base, tagents[0], tagents[1], primals, true_grad, jitc_grad))
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('wloc', [-1., 0.])
-    @pytest.mark.parametrize('wscale', [1., 2.])
-    @pytest.mark.parametrize('dwloc', [1., 2.])
+    # Covering set over the 2x2x2x2x2 = 32 product (every value appears at least once).
+    @pytest.mark.parametrize('shape,corder,wloc,wscale,dwloc', [
+        (shapes[0], True, -1., 1., 1.),
+        (shapes[1], False, 0., 2., 2.),
+        (shapes[0], False, -1., 2., 2.),
+        (shapes[1], True, 0., 1., 1.),
+    ])
     def test_jvp_wloc(self, shape, corder, wloc, wscale, dwloc):
         base = brainevent.JITCNormalR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
 
@@ -383,11 +396,12 @@ class Test_JITC_To_Dense:
         assert allclose(true_grad, jitc_grad)
         jax.block_until_ready((base, primals, true_grad, expected_grad, jitc_grad))
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('wloc', [-1., 0.])
-    @pytest.mark.parametrize('wscale', [1., 2.])
-    @pytest.mark.parametrize('dw_high', [1., 2.])
+    @pytest.mark.parametrize('shape,corder,wloc,wscale,dw_high', [
+        (shapes[0], True, -1., 1., 1.),
+        (shapes[1], False, 0., 2., 2.),
+        (shapes[0], False, -1., 2., 2.),
+        (shapes[1], True, 0., 1., 1.),
+    ])
     def test_jvp_wscale(self, shape, corder, wloc, wscale, dw_high):
         base = brainevent.JITCNormalR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
 

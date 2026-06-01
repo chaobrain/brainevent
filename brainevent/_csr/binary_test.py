@@ -24,6 +24,11 @@ import pytest
 from brainevent._csr.binary import binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p
 from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
+# Every test loops over all native backends (incl. ``numba``), which compile per test and
+# dominate wall-clock. Mark the whole module ``slow`` so the default ``pytest`` run skips it;
+# CI runs it via ``pytest -m ""``.
+pytestmark = pytest.mark.slow
+
 platform = jax.default_backend()
 CSRMV_IMPLEMENTATIONS = tuple(binary_csrmv_p.available_backends(platform))
 CSRMM_IMPLEMENTATIONS = tuple(binary_csrmm_p.available_backends(platform))

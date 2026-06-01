@@ -28,6 +28,11 @@ import brainevent
 from brainevent._test_util import allclose, gen_events
 from brainevent._typing import MatrixShape
 
+# Every test in this module dispatches to the native ``numba`` backend (the only backend for
+# JIT-connectivity kernels), which compiles per test and dominates wall-clock. Mark the whole
+# module ``slow`` so the default ``pytest`` run skips it; CI runs it via ``pytest -m ""``.
+pytestmark = pytest.mark.slow
+
 platform = jax.default_backend()
 
 if platform == 'cpu':
@@ -303,10 +308,14 @@ class Test_JITC_To_Dense:
         assert allclose(out1, out4)
         jax.block_until_ready((out1, out2, out3, out4))
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('wlow', [-1., 0.])
-    @pytest.mark.parametrize('whigh', [1., 2.])
+    # Covering set: every value of shape/corder/wlow/whigh appears at least once (4 rows
+    # instead of the full 2x2x2x2 = 16 product; gradient correctness is value-independent).
+    @pytest.mark.parametrize('shape,corder,wlow,whigh', [
+        (shapes[0], True, -1., 1.),
+        (shapes[1], False, 0., 2.),
+        (shapes[0], False, -1., 2.),
+        (shapes[1], True, 0., 1.),
+    ])
     def test_vjp(self, shape, corder, wlow, whigh):
         base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
 
@@ -342,10 +351,12 @@ class Test_JITC_To_Dense:
              jitc_wlow_grad, jitc_whigh_grad)
         )
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('wlow', [-1., 0.])
-    @pytest.mark.parametrize('whigh', [1., 2.])
+    @pytest.mark.parametrize('shape,corder,wlow,whigh', [
+        (shapes[0], True, -1., 1.),
+        (shapes[1], False, 0., 2.),
+        (shapes[0], False, -1., 2.),
+        (shapes[1], True, 0., 1.),
+    ])
     def test_jvp(self, shape, corder, wlow, whigh):
         base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
         tagents = (brainstate.random.random(), brainstate.random.random())
@@ -363,11 +374,13 @@ class Test_JITC_To_Dense:
         assert allclose(true_grad, jitc_grad)
         jax.block_until_ready((base, tagents[0], tagents[1], primals1, true_grad, primals2, jitc_grad))
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('wlow', [-1., 0.])
-    @pytest.mark.parametrize('whigh', [1., 2.])
-    @pytest.mark.parametrize('dwlow', [1., 2.])
+    # Covering set over the 2x2x2x2x2 = 32 product (every value appears at least once).
+    @pytest.mark.parametrize('shape,corder,wlow,whigh,dwlow', [
+        (shapes[0], True, -1., 1., 1.),
+        (shapes[1], False, 0., 2., 2.),
+        (shapes[0], False, -1., 2., 2.),
+        (shapes[1], True, 0., 1., 1.),
+    ])
     def test_jvp_wlow(self, shape, corder, wlow, whigh, dwlow):
         base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
 
@@ -387,11 +400,12 @@ class Test_JITC_To_Dense:
         assert allclose(true_grad, jitc_grad)
         jax.block_until_ready((base, primals1, true_grad, expected_grad, primals2, jitc_grad))
 
-    @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('wlow', [-1., 0.])
-    @pytest.mark.parametrize('whigh', [1., 2.])
-    @pytest.mark.parametrize('dw_high', [1., 2.])
+    @pytest.mark.parametrize('shape,corder,wlow,whigh,dw_high', [
+        (shapes[0], True, -1., 1., 1.),
+        (shapes[1], False, 0., 2., 2.),
+        (shapes[0], False, -1., 2., 2.),
+        (shapes[1], True, 0., 1., 1.),
+    ])
     def test_jvp_whigh(self, shape, corder, wlow, whigh, dw_high):
         base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
 
