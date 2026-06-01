@@ -6,40 +6,6 @@ Matrix Operations
    :no-index:
 
 
-COO Operations
---------------
-
-Binary matrix-vector / matrix-matrix multiplication.
-
-.. autosummary::
-   :toctree: generated/
-
-   binary_coomv
-   binary_coomv_p
-   binary_coomm
-   binary_coomm_p
-
-Float matrix-vector / matrix-matrix multiplication.
-
-.. autosummary::
-   :toctree: generated/
-
-   coomv
-   coomv_p
-   coomm
-   coomm_p
-
-Plasticity operations.
-
-.. autosummary::
-   :toctree: generated/
-
-   update_coo_on_binary_pre
-   update_coo_on_binary_post
-   update_coo_on_binary_pre_p
-   update_coo_on_binary_post_p
-
-
 CSR Operations
 --------------
 

@@ -17,17 +17,6 @@ Data Representation
    DataRepresentation
 
 
-COO (Coordinate Format)
-------------------------
-
-.. autosummary::
-   :toctree: generated/
-   :nosignatures:
-   :template: classtemplate.rst
-
-   COO
-
-
 CSR / CSC (Compressed Sparse Row / Column)
 -------------------------------------------
 

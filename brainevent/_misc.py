@@ -1019,6 +1019,102 @@ def coo_to_csc_index(
     return indptr_new, pre_ids_new, new_post_position
 
 
+def coo2csr(
+    row_ids: Union[jax.Array, np.ndarray],
+    col_ids: Union[jax.Array, np.ndarray],
+    *,
+    shape: Tuple[int, int],
+):
+    """Convert COO format index arrays to CSR format.
+
+    Transforms a sparse matrix representation from Coordinate (COO) format
+    (explicit row and column index arrays) to Compressed Sparse Row (CSR)
+    format. The implementation automatically selects NumPy or JAX operations
+    based on the type of the input arrays.
+
+    Parameters
+    ----------
+    row_ids : jax.Array or numpy.ndarray
+        Row index array in COO format. Contains the row index for each
+        non-zero element.
+    col_ids : jax.Array or numpy.ndarray
+        Column index array in COO format. Contains the column index for
+        each non-zero element.
+    shape : tuple of int
+        A ``(n_rows, n_cols)`` tuple specifying the dimensions of the
+        sparse matrix. Keyword-only argument.
+
+    Returns
+    -------
+    csr_indptr : jax.Array or numpy.ndarray
+        Row pointer array in CSR format. For a matrix with ``m`` rows, this
+        has length ``m + 1``. Element ``csr_indptr[i]`` gives the position
+        in ``csr_indices`` where row ``i`` starts.
+    csr_indices : jax.Array or numpy.ndarray
+        Column index array in CSR format. Contains the column index for each
+        non-zero element, ordered by row.
+    order : jax.Array or numpy.ndarray
+        Permutation array that reorders data values from COO order to CSR
+        order. If ``data`` is the COO data array, then ``data[order]`` gives
+        the values in CSR order.
+
+    See Also
+    --------
+    csr_to_coo_index : Convert CSR indices to COO format.
+    coo_to_csc_index : Convert COO indices to CSC format.
+    csr_to_csc_index : Convert CSR indices directly to CSC format.
+
+    Notes
+    -----
+    When JAX arrays are provided, the computation is wrapped in
+    ``jax.ensure_compile_time_eval()`` so that it executes at trace time
+    rather than at runtime. Entries are grouped by row using a stable sort,
+    so the relative order of elements within each row is preserved (the
+    column indices within a row are not themselves sorted).
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import numpy as np
+        >>> from brainevent._misc import coo2csr
+        >>> row_ids = np.array([0, 2, 1, 0, 2])
+        >>> col_ids = np.array([0, 3, 1, 2, 0])
+        >>> indptr, indices, order = coo2csr(row_ids, col_ids, shape=(3, 4))
+        >>> print(indptr)
+        [0 2 3 5]
+        >>> print(indices)
+        [0 2 1 3 0]
+    """
+    n_pre = shape[0]
+    if isinstance(row_ids, np.ndarray) and isinstance(col_ids, np.ndarray):
+        # stable sort keeps the original order of entries within each row
+        order = np.argsort(row_ids, kind='stable')
+        csr_indices = np.asarray(col_ids[order], dtype=brainstate.environ.ditype())
+
+        unique_row_ids, count = np.unique(row_ids, return_counts=True)
+        row_count = np.zeros(n_pre, dtype=brainstate.environ.ditype())
+        row_count[unique_row_ids] = count
+
+        csr_indptr = np.insert(row_count.cumsum(), 0, 0)
+        csr_indptr = np.asarray(csr_indptr, dtype=brainstate.environ.ditype())
+
+    else:
+        with jax.ensure_compile_time_eval():
+            # stable sort keeps the original order of entries within each row
+            order = jnp.argsort(row_ids, stable=True)
+            csr_indices = jnp.asarray(col_ids[order], dtype=brainstate.environ.ditype())
+
+            unique_row_ids, count = jnp.unique(row_ids, return_counts=True)
+            row_count = jnp.zeros(n_pre, dtype=brainstate.environ.ditype())
+            row_count = row_count.at[unique_row_ids].set(count)
+
+            csr_indptr = jnp.insert(row_count.cumsum(), 0, 0)
+            csr_indptr = jnp.asarray(csr_indptr, dtype=brainstate.environ.ditype())
+
+    return csr_indptr, csr_indices, order
+
+
 def fixed_conn_num_csr_indptr(
     indices: Union[jax.Array, np.ndarray],
 ) -> Union[jax.Array, np.ndarray]:

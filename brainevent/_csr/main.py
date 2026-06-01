@@ -679,21 +679,6 @@ class CompressedSparseData(DataRepresentation):
         """
         raise NotImplementedError
 
-    def tocoo(self):
-        """
-        Convert the sparse matrix to COO (Coordinate) format.
-
-        Returns
-        -------
-        COO
-            A :class:`~brainevent.COO` matrix containing the same data.
-
-        See Also
-        --------
-        brainevent.COO : The Coordinate sparse matrix class.
-        """
-        raise NotImplementedError
-
     def diag_add(self, other):
         """
         Add values to the matrix diagonal and return a new sparse matrix.
@@ -816,7 +801,6 @@ class CSR(CompressedSparseData):
     See Also
     --------
     CSC : Compressed Sparse Column format.
-    brainevent.COO : Coordinate sparse format.
     """
     __module__ = 'brainevent'
 
@@ -924,33 +908,6 @@ class CSR(CompressedSparseData):
             dense = csr.todense()
         """
         return _csr_todense(self.data, self.indices, self.indptr, shape=self.shape)
-
-    def tocoo(self):
-        """
-        Convert the CSR matrix to COO (Coordinate) format.
-
-        This method transforms the Compressed Sparse Row (CSR) matrix into a COO matrix,
-        which stores sparse data as a collection of (row, column, value) triplets.
-
-        Returns
-        -------
-        COO
-            A COO matrix containing the same data as the original CSR matrix.
-
-        See Also
-        --------
-        brainevent.COO : The Coordinate sparse matrix class.
-
-        Examples
-        --------
-        .. code-block:: python
-
-            csr_matrix = CSR((data, indices, indptr), shape=(3, 4))
-            coo_matrix = csr_matrix.tocoo()
-        """
-        from brainevent import COO
-        pre_ids, post_ids = _csr_to_coo(self.indices, self.indptr)
-        return COO((self.data, pre_ids, post_ids), shape=self.shape, backend=self.backend)
 
     def transpose(self, axes=None) -> 'CSC':
         """
@@ -1470,7 +1427,6 @@ class CSC(CompressedSparseData):
     See Also
     --------
     CSR : Compressed Sparse Row format.
-    brainevent.COO : Coordinate sparse format.
     """
     __module__ = 'brainevent'
 
@@ -1577,33 +1533,6 @@ class CSC(CompressedSparseData):
             dense = csc.todense()
         """
         return self.T.todense().T
-
-    def tocoo(self):
-        """
-        Convert the CSC matrix to COO (Coordinate) format.
-
-        This method transforms the Compressed Sparse Column (CSC) matrix into a COO matrix,
-        which stores sparse data as a collection of (row, column, value) triplets.
-
-        Returns
-        -------
-        COO
-            A COO matrix containing the same data as the original CSC matrix.
-
-        See Also
-        --------
-        brainevent.COO : The Coordinate sparse matrix class.
-
-        Examples
-        --------
-        .. code-block:: python
-
-            csc_matrix = CSC((data, indices, indptr), shape=(3, 4))
-            coo_matrix = csc_matrix.tocoo()
-        """
-        from brainevent import COO
-        post_ids, pre_ids = _csr_to_coo(self.indices, self.indptr)
-        return COO((self.data, pre_ids, post_ids), shape=self.shape, backend=self.backend)
 
     def transpose(self, axes=None) -> 'CSR':
         """

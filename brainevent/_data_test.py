@@ -457,40 +457,7 @@ class TestCSCBuffers:
 
 
 # ===========================================================================
-# 8. COO buffer integration
-# ===========================================================================
-
-class TestCOOBuffers:
-    @pytest.fixture
-    def coo_mat(self):
-        data = jnp.array([1.0, 2.0, 3.0])
-        row = jnp.array([0, 1, 2])
-        col = jnp.array([1, 0, 2])
-        return brainevent.COO((data, row, col), shape=(3, 3))
-
-    def test_coo_empty_buffers_by_default(self, coo_mat):
-        assert coo_mat.buffers == {}
-
-    def test_coo_register_and_roundtrip(self, coo_mat):
-        coo_mat.register_buffer('my_cache', jnp.array([10, 20, 30]))
-        children, aux = coo_mat.tree_flatten()
-        restored = brainevent.COO.tree_unflatten(aux, children)
-        assert 'my_cache' in restored._buffer_registry
-        np.testing.assert_array_equal(restored.my_cache, jnp.array([10, 20, 30]))
-
-    def test_coo_jit_preserves_buffers(self, coo_mat):
-        coo_mat.register_buffer('tag', jnp.array(42))
-
-        @jax.jit
-        def f(m):
-            return m
-
-        result = f(coo_mat)
-        assert int(result.tag) == 42
-
-
-# ===========================================================================
-# 9. diag_add integration (buffers carry through real operations)
+# 8. diag_add integration (buffers carry through real operations)
 # ===========================================================================
 
 class TestDiagAddBufferIntegration:

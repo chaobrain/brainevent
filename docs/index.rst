@@ -61,8 +61,10 @@ Core Components
 **2. Sparse Data Structures**
   Multiple sparse matrix formats optimized for event-driven computation:
 
-  - ``COO`` (Coordinate format): Flexible format for constructing sparse matrices
   - ``CSR`` / ``CSC`` (Compressed Sparse Row/Column): Fast row/column-oriented operations
+
+  Coordinate (row/column) triplets can be converted into ``CSR`` with the
+  :func:`~brainevent.coo2csr` helper.
 
 **3. Just-In-Time Connectivity**
   Generate connectivity matrices on-the-fly without storing full weight matrices (memory-efficient for large networks):
@@ -88,8 +90,7 @@ Core Components
 **6. Synaptic Plasticity**
   Built-in support for learning and plasticity rules:
 
-  - ``update_csr_on_binary_pre`` / ``update_csr2csc_on_binary_post``: CSR-based plasticity updates
-  - ``update_coo_on_binary_pre`` / ``update_coo_on_binary_post``: COO-based plasticity updates
+  - ``update_csr_on_binary_pre`` / ``update_csr_on_binary_post``: CSR-based plasticity updates
   - ``update_dense_on_binary_pre`` / ``update_dense_on_binary_post``: Dense matrix plasticity
 
 **7. Unit-Aware Computation**
@@ -130,7 +131,7 @@ processing only the active (non-zero) events.
 
    # Sparse matrices
    csr_matrix = brainevent.CSR(...)
-   coo_matrix = brainevent.COO(...)
+   csc_matrix = brainevent.CSC(...)
 
    # Just-in-time connectivity (memory efficient)
    jitc_conn = brainevent.JITCScalarR(num_pre=1000, num_post=1000,

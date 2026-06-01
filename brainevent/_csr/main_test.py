@@ -402,17 +402,6 @@ class Test_CSC_CSR_Conversion:
 
 class Test_CSR:
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_to_coo(self, shape):
-        matrix = gen_sparse_matrix(shape)
-        csr = brainevent.CSR.fromdense(matrix)
-        coo = csr.tocoo()
-        dense = coo.todense()
-
-        assert jnp.allclose(matrix, dense)
-
-        jax.block_until_ready((matrix, dense))
-
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_todense(self, shape):
         matrix = gen_sparse_matrix(shape)
         csr = brainevent.CSR.fromdense(matrix)
@@ -992,16 +981,6 @@ class Test_CSR_Event:
 
 
 class Test_CSC:
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_to_coo(self, shape):
-        matrix = gen_sparse_matrix(shape)
-        csc = brainevent.CSR.fromdense(matrix).T
-        coo = csc.tocoo()
-        dense = coo.todense()
-        assert jnp.allclose(matrix.T, dense)
-
-        jax.block_until_ready((dense,))
-
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_todense(self, shape):
         matrix = gen_sparse_matrix(shape)
