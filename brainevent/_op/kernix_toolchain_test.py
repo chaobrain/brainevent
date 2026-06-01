@@ -2,10 +2,17 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 """Tests for kernix_toolchain discovery and diagnostics."""
 
+import sys
+
 import pytest
 
 from brainevent._op import kernix_toolchain as kt
 from brainevent._op.kernix_toolchain import CandidateProbe, render_toolchain_error
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="kernix toolchain tests are not supported on Windows",
+)
 
 
 def _touch_exec(p):
