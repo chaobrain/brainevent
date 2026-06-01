@@ -30,6 +30,7 @@ from .binary import binary_csrmv, binary_csrmm
 from .binary_indexed import binary_csrmv_indexed
 from .diag_add import csr_diag_position, csr_diag_add
 from .float import csrmv, csrmm
+from .plasticity_binary import update_csr_on_binary_pre, update_csr_on_binary_post
 from .slice import csr_slice_rows
 from .spsolve import csr_solve
 from .yw2y import csrmv_yw2y
@@ -1075,6 +1076,75 @@ class CSR(CompressedSparseData):
             backend=self.backend,
         )
 
+    def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None) -> 'CSR':
+        """Apply a presynaptic-spike-triggered STDP update, returning a new CSR.
+
+        Convenience wrapper around :func:`brainevent.update_csr_on_binary_pre`
+        that keeps the sparsity structure (and therefore the cached weight
+        indices) intact.  For each firing presynaptic neuron ``i`` every stored
+        synapse is updated ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.
+
+        Parameters
+        ----------
+        pre_spike : jax.Array
+            Binary/boolean presynaptic spikes, shape ``(shape[0],)``.
+        post_trace : jax.Array or Quantity
+            Postsynaptic eligibility trace, shape ``(shape[1],)``.
+        w_min, w_max : optional
+            Clipping bounds; ``None`` disables the corresponding bound.
+
+        Returns
+        -------
+        CSR
+            A new CSR matrix with updated data and identical structure.
+
+        See Also
+        --------
+        update_on_post : Postsynaptic-spike-triggered counterpart.
+        brainevent.update_csr_on_binary_pre : Underlying module function.
+        """
+        new_w = update_csr_on_binary_pre(
+            self.data, self.indices, self.indptr, pre_spike, post_trace,
+            w_min, w_max, shape=self.shape, backend=self.backend,
+        )
+        return self.with_data(new_w)
+
+    def update_on_post(self, pre_trace, post_spike, w_min=None, w_max=None) -> 'CSR':
+        """Apply a postsynaptic-spike-triggered STDP update, returning a new CSR.
+
+        Convenience wrapper around :func:`brainevent.update_csr_on_binary_post`.
+        Iterating by postsynaptic spike is the *unfavorable* direction for CSR,
+        so this reuses the cached column-major weight indices
+        (:meth:`_weight_indices`) to scatter the updates back into canonical
+        order.  For each firing postsynaptic neuron ``j`` every stored synapse is
+        updated ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.
+
+        Parameters
+        ----------
+        pre_trace : jax.Array or Quantity
+            Presynaptic eligibility trace, shape ``(shape[0],)``.
+        post_spike : jax.Array
+            Binary/boolean postsynaptic spikes, shape ``(shape[1],)``.
+        w_min, w_max : optional
+            Clipping bounds; ``None`` disables the corresponding bound.
+
+        Returns
+        -------
+        CSR
+            A new CSR matrix with updated data and identical structure.
+
+        See Also
+        --------
+        update_on_pre : Presynaptic-spike-triggered counterpart.
+        brainevent.update_csr_on_binary_post : Underlying module function.
+        """
+        csc_indptr, csc_indices, perm = self._weight_indices()
+        new_w = update_csr_on_binary_post(
+            self.data, csc_indices, csc_indptr, perm, pre_trace, post_spike,
+            w_min, w_max, shape=self.shape, backend=self.backend,
+        )
+        return self.with_data(new_w)
+
     def __getitem__(self, index):
         """Extract rows from the CSR matrix as a dense array.
 
@@ -1789,6 +1859,77 @@ class CSC(CompressedSparseData):
             buffers=buffers,
             backend=self.backend,
         )
+
+    def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None) -> 'CSC':
+        """Apply a presynaptic-spike-triggered STDP update, returning a new CSC.
+
+        Iterating by presynaptic spike is the *unfavorable* direction for CSC,
+        so this reuses the cached row-major weight indices
+        (:meth:`_weight_indices`) and routes through
+        :func:`brainevent.update_csr_on_binary_post`, scattering updates back
+        into canonical CSC order.  For each firing presynaptic neuron ``i`` every
+        stored synapse is updated
+        ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.
+
+        Parameters
+        ----------
+        pre_spike : jax.Array
+            Binary/boolean presynaptic spikes, shape ``(shape[0],)``.
+        post_trace : jax.Array or Quantity
+            Postsynaptic eligibility trace, shape ``(shape[1],)``.
+        w_min, w_max : optional
+            Clipping bounds; ``None`` disables the corresponding bound.
+
+        Returns
+        -------
+        CSC
+            A new CSC matrix with updated data and identical structure.
+
+        See Also
+        --------
+        update_on_post : Postsynaptic-spike-triggered counterpart.
+        brainevent.update_csc_on_binary_pre : Equivalent module function.
+        """
+        csr_indptr, csr_indices, perm = self._weight_indices()
+        new_w = update_csr_on_binary_post(
+            self.data, csr_indices, csr_indptr, perm, post_trace, pre_spike,
+            w_min, w_max, shape=self.shape[::-1], backend=self.backend,
+        )
+        return self.with_data(new_w)
+
+    def update_on_post(self, pre_trace, post_spike, w_min=None, w_max=None) -> 'CSC':
+        """Apply a postsynaptic-spike-triggered STDP update, returning a new CSC.
+
+        Iterating by postsynaptic spike is the *favorable* direction for CSC, so
+        this streams directly over the stored arrays (no permutation) via
+        :func:`brainevent.update_csr_on_binary_pre` on the transposed shape.  For
+        each firing postsynaptic neuron ``j`` every stored synapse is updated
+        ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.
+
+        Parameters
+        ----------
+        pre_trace : jax.Array or Quantity
+            Presynaptic eligibility trace, shape ``(shape[0],)``.
+        post_spike : jax.Array
+            Binary/boolean postsynaptic spikes, shape ``(shape[1],)``.
+        w_min, w_max : optional
+            Clipping bounds; ``None`` disables the corresponding bound.
+
+        Returns
+        -------
+        CSC
+            A new CSC matrix with updated data and identical structure.
+
+        See Also
+        --------
+        update_on_pre : Presynaptic-spike-triggered counterpart.
+        brainevent.update_csc_on_binary_post : Equivalent module function.
+        """
+        new_w = update_csr_on_binary_pre(
+            self.data, self.indices, self.indptr, post_spike, pre_trace,
+            w_min, w_max, shape=self.shape[::-1], backend=self.backend,
+        )
+        return self.with_data(new_w)
 
     def __getitem__(self, index):
         """Extract columns from the CSC matrix as a dense array.

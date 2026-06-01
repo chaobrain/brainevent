@@ -1239,3 +1239,50 @@ def test_csc_eager_precompute():
     rng = _np.random.default_rng(12)
     csc = _be.CSC.fromdense(_rand_dense(rng, 4, 5), precompute_weight_indices=True)
     assert csc.buffers.get('csr') is not None
+
+
+# ---- OO plasticity method parity (Phase 8) ----
+
+def test_csr_update_on_pre_method_parity():
+    rng = _np.random.default_rng(20)
+    csr = _be.CSR.fromdense(_rand_dense(rng, 4, 5))
+    pre_spike = _jnp.asarray(rng.random(4) > 0.5)
+    post_trace = _jnp.asarray(rng.random(5), _jnp.float32)
+    got = csr.update_on_pre(pre_spike, post_trace, 0.0, 1.5).data
+    ref = _be.update_csr_on_binary_pre(
+        csr.data, csr.indices, csr.indptr, pre_spike, post_trace, 0.0, 1.5, shape=csr.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
+
+
+def test_csr_update_on_post_method_parity():
+    rng = _np.random.default_rng(21)
+    csr = _be.CSR.fromdense(_rand_dense(rng, 4, 5))
+    pre_trace = _jnp.asarray(rng.random(4), _jnp.float32)
+    post_spike = _jnp.asarray(rng.random(5) > 0.5)
+    got = csr.update_on_post(pre_trace, post_spike, 0.0, 1.5).data
+    cscp, csci, perm = _be.csr_to_csc_index(csr.indptr, csr.indices, shape=csr.shape)
+    ref = _be.update_csr_on_binary_post(
+        csr.data, csci, cscp, perm, pre_trace, post_spike, 0.0, 1.5, shape=csr.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
+
+
+def test_csc_update_on_pre_method_parity():
+    rng = _np.random.default_rng(22)
+    csc = _be.CSC.fromdense(_rand_dense(rng, 5, 3))
+    pre_spike = _jnp.asarray(rng.random(5) > 0.5)
+    post_trace = _jnp.asarray(rng.random(3), _jnp.float32)
+    got = csc.update_on_pre(pre_spike, post_trace, 0.0, 1.5).data
+    ref = _be.update_csc_on_binary_pre(
+        csc.data, csc.indices, csc.indptr, pre_spike, post_trace, 0.0, 1.5, shape=csc.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
+
+
+def test_csc_update_on_post_method_parity():
+    rng = _np.random.default_rng(23)
+    csc = _be.CSC.fromdense(_rand_dense(rng, 5, 3))
+    pre_trace = _jnp.asarray(rng.random(5), _jnp.float32)
+    post_spike = _jnp.asarray(rng.random(3) > 0.5)
+    got = csc.update_on_post(pre_trace, post_spike, 0.0, 1.5).data
+    ref = _be.update_csc_on_binary_post(
+        csc.data, csc.indices, csc.indptr, pre_trace, post_spike, 0.0, 1.5, shape=csc.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
