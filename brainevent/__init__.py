@@ -96,7 +96,7 @@ from ._jit_uniform import (
     jitumm, jitumm_p,
 )
 from ._misc import (
-    csr_to_coo_index, coo_to_csc_index, csr_to_csc_index, coo2csr,
+    csr_to_coo_index, coo_to_csc_index, csr_to_csc_index, csc_to_csr_index, coo2csr,
 )
 from ._op import (
     XLACustomKernel, KernelEntry,
@@ -230,7 +230,7 @@ __all__ = [
     'KernelLoadError',
 
     # --- utilities --- #
-    'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index', 'coo2csr',
+    'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index', 'csc_to_csr_index', 'coo2csr',
 
     # --- config & registry --- #
     'config', 'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
