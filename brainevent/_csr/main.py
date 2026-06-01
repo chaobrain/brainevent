@@ -24,7 +24,7 @@ import numpy as np
 
 from brainevent._data import DataRepresentation
 from brainevent._event import BinaryArray
-from brainevent._misc import _csr_to_coo, _csr_todense
+from brainevent._misc import _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to_csr_index
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
 from .diag_add import csr_diag_position, csr_diag_add
@@ -812,6 +812,7 @@ class CSR(CompressedSparseData):
         nse: Optional[int] = None,
         index_dtype=jnp.int32,
         backend: Optional[str] = None,
+        precompute_weight_indices: bool = False,
     ) -> 'CSR':
         """
         Create a CSR matrix from a dense matrix.
@@ -827,11 +828,23 @@ class CSR(CompressedSparseData):
             calculated from the input matrix.
         index_dtype : dtype, optional
             The data type to be used for index arrays (default is jnp.int32).
+        backend : str or None, optional
+            Compute backend to attach to the matrix. Default ``None``.
+        precompute_weight_indices : bool, optional
+            If ``True``, eagerly build and cache the column-major (CSC-like)
+            weight indices used by the *unfavorable* ``CSR @ event`` direction
+            (see :meth:`build_weight_indices`). If ``False`` (default), the
+            indices are built lazily on first use. Default ``False``.
 
         Returns
         -------
         CSR
             A new CSR matrix object created from the input dense matrix.
+
+        See Also
+        --------
+        build_weight_indices : Eagerly build the cached weight indices.
+        CSR._weight_indices : Lazily build/return the cached weight indices.
 
         Examples
         --------
@@ -846,7 +859,10 @@ class CSR(CompressedSparseData):
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
         csr = u.sparse.csr_fromdense(mat, nse=nse, index_dtype=index_dtype)
-        return CSR(csr.data, csr.indices, csr.indptr, shape=csr.shape, backend=backend)
+        out = CSR(csr.data, csr.indices, csr.indptr, shape=csr.shape, backend=backend)
+        if precompute_weight_indices:
+            out = out.build_weight_indices()
+        return out
 
     def with_data(self, data: Data) -> 'CSR':
         """
@@ -980,6 +996,74 @@ class CSR(CompressedSparseData):
             fn(self.data), self.indices, self.indptr,
             shape=self.shape,
             buffers=self.buffers,
+            backend=self.backend,
+        )
+
+    def _weight_indices(self):
+        """Return the cached column-major (CSC-like) weight indices, building lazily.
+
+        The *unfavorable* direction ``CSR @ event`` is evaluated by traversing
+        the matrix column-by-column (a CSC-like view) and scattering events.
+        That traversal needs the matrix structure re-expressed in column-major
+        order together with a permutation ``perm`` mapping each column-major
+        slot back to the canonical CSR ``data`` order, so that structural slot
+        ``j`` reads ``data[perm[j]]``.
+
+        The triple depends only on the sparse *structure* (``indices``,
+        ``indptr``, ``shape``) and not on the stored values, so it survives
+        :meth:`apply` / :meth:`with_data` and is cached in the ``'csc'`` buffer.
+        It is computed on first access and reused thereafter.
+
+        Returns
+        -------
+        csc_indptr : jax.Array
+            Column pointer array of the CSC-like view. Length ``shape[1] + 1``.
+        csc_indices : jax.Array
+            Row index array of the CSC-like view. Shape ``(nse,)``.
+        perm : jax.Array
+            Permutation mapping column-major slot ``j`` to the canonical CSR
+            ``data`` index ``perm[j]``. Shape ``(nse,)``.
+
+        See Also
+        --------
+        build_weight_indices : Eagerly build and cache the same triple.
+        brainevent.csr_to_csc_index : Underlying index conversion.
+        """
+        cached = self.buffers.get('csc')
+        if cached is not None:
+            return cached
+        with jax.ensure_compile_time_eval():
+            csc = csr_to_csc_index(self.indptr, self.indices, shape=self.shape)
+        self.register_buffer('csc', csc)
+        return csc
+
+    def build_weight_indices(self) -> 'CSR':
+        """Return a copy of this CSR with the weight indices eagerly cached.
+
+        Builds the column-major (CSC-like) structure and permutation used by the
+        ``CSR @ event`` direction (see :meth:`_weight_indices`) and stores it in
+        the ``'csc'`` buffer of the returned matrix. The underlying ``data``,
+        ``indices``, and ``indptr`` arrays are shared (not copied).
+
+        Returns
+        -------
+        CSR
+            A new CSR matrix sharing this matrix's arrays, with the ``'csc'``
+            weight-index buffer populated.
+
+        See Also
+        --------
+        CSR._weight_indices : Lazy builder/accessor for the same triple.
+        CSR.fromdense : Accepts ``precompute_weight_indices=True`` to call this.
+        """
+        with jax.ensure_compile_time_eval():
+            csc = csr_to_csc_index(self.indptr, self.indices, shape=self.shape)
+        buffers = dict(self.buffers)
+        buffers['csc'] = csc
+        return CSR(
+            self.data, self.indices, self.indptr,
+            shape=self.shape,
+            buffers=buffers,
             backend=self.backend,
         )
 

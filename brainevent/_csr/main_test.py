@@ -1100,3 +1100,37 @@ class Test_solve:
         assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
 
         jax.block_until_ready((dense, b, x, x2))
+
+
+# ---- weight-indices lifecycle (Phase 4) ----
+import numpy as _np
+import jax.numpy as _jnp
+import brainevent as _be
+
+
+def test_csr_build_weight_indices_and_cache():
+    rng = _np.random.default_rng(0)
+    dense = (rng.random((4, 5)) > 0.5) * rng.random((4, 5))
+    csr = _be.CSR.fromdense(_jnp.asarray(dense, _jnp.float32))
+    csr2 = csr.build_weight_indices()
+    assert 'csc' in csr2.buffers and csr2.buffers['csc'] is not None
+    cscp, csci, perm = csr2._weight_indices()
+    assert perm.shape == csr.data.shape
+    # apply preserves structure -> cache must survive (same perm values)
+    applied = csr2.apply(lambda x: x * 2)
+    assert _jnp.array_equal(applied._weight_indices()[2], perm)
+
+
+def test_csr_lazy_weight_indices():
+    rng = _np.random.default_rng(9)
+    dense = (rng.random((3, 6)) > 0.5) * rng.random((3, 6))
+    csr = _be.CSR.fromdense(_jnp.asarray(dense, _jnp.float32))
+    assert csr.buffers.get('csc') is None         # not built yet
+    cscp, csci, perm = csr._weight_indices()       # lazily builds
+    assert perm.shape == csr.data.shape
+
+
+def test_csr_eager_precompute():
+    dense = _jnp.asarray((_np.random.default_rng(1).random((3, 4)) > 0.5) * 1.0, _jnp.float32)
+    csr = _be.CSR.fromdense(dense, precompute_weight_indices=True)
+    assert csr.buffers.get('csc') is not None
