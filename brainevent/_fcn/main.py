@@ -22,7 +22,6 @@ import brainunit as u
 import jax
 
 from brainevent._compatible_import import Tracer
-from brainevent._coo import COO
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
 from brainevent._misc import _coo_todense, COOInfo
@@ -322,7 +321,7 @@ class FixedPostNumConn(FixedNumConn):
         >>>
         >>> data = jnp.array([[1., 2.], [3., 4.]])
         >>> indices = jnp.array([[0, 1], [1, 2]])
-        >>> mat = FixedPostNumConn((data, indices), shape=(2, 3))
+        >>> mat = FixedPostNumConn(data, indices, shape=(2, 3))
         >>> mat.shape
         (2, 3)
     """
@@ -372,17 +371,6 @@ class FixedPostNumConn(FixedNumConn):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""
         pre_ids, post_ids, spinfo = fixed_post_num_to_coo(self)
         return _coo_todense(self.data.flatten(), pre_ids, post_ids, spinfo=spinfo)
-
-    def tocoo(self) -> COO:
-        """Convert to Coordinate (COO) format."""
-        pre_ids, post_ids, spinfo = fixed_post_num_to_coo(self)
-        return COO(
-            (self.data.flatten(), pre_ids, post_ids),
-            shape=self.shape,
-            rows_sorted=spinfo.rows_sorted,
-            cols_sorted=spinfo.cols_sorted,
-            backend=self.backend,
-        )
 
     def transpose(self, axes=None) -> 'FixedPreNumConn':
         """Transpose to a :class:`FixedPreNumConn` (O(1); reinterprets indices)."""
@@ -444,7 +432,7 @@ class FixedPreNumConn(FixedNumConn):
         >>>
         >>> data = jnp.array([[1., 2.], [3., 4.], [5., 6.]])
         >>> indices = jnp.array([[0, 1], [1, 0], [0, 2]])
-        >>> mat = FixedPreNumConn((data, indices), shape=(3, 3))
+        >>> mat = FixedPreNumConn(data, indices, shape=(3, 3))
         >>> mat.shape
         (3, 3)
     """
@@ -494,17 +482,6 @@ class FixedPreNumConn(FixedNumConn):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""
         pre_ids, post_ids, spinfo = fixed_pre_num_to_coo(self)
         return _coo_todense(self.data.flatten(), pre_ids, post_ids, spinfo=spinfo)
-
-    def tocoo(self) -> COO:
-        """Convert to Coordinate (COO) format."""
-        pre_ids, post_ids, spinfo = fixed_pre_num_to_coo(self)
-        return COO(
-            (self.data.flatten(), pre_ids, post_ids),
-            shape=self.shape,
-            rows_sorted=spinfo.rows_sorted,
-            cols_sorted=spinfo.cols_sorted,
-            backend=self.backend,
-        )
 
     def transpose(self, axes=None) -> FixedPostNumConn:
         """Transpose to a :class:`FixedPostNumConn` (O(1); reinterprets indices)."""

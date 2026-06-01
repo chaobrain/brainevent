@@ -15,15 +15,6 @@
 
 
 from . import config
-from ._coo import (
-    COO,
-    binary_coomv, binary_coomv_p,
-    binary_coomm, binary_coomm_p,
-    coomv, coomv_p,
-    coomm, coomm_p,
-    update_coo_on_binary_pre, update_coo_on_binary_post,
-    update_coo_on_binary_pre_p, update_coo_on_binary_post_p,
-)
 from ._csr import (
     CSR, CSC,
     binary_csrmv, binary_csrmv_p,
@@ -105,7 +96,7 @@ from ._jit_uniform import (
     jitumm, jitumm_p,
 )
 from ._misc import (
-    csr_to_coo_index, coo_to_csc_index, csr_to_csc_index,
+    csr_to_coo_index, coo_to_csc_index, csr_to_csc_index, coo2csr,
 )
 from ._op import (
     XLACustomKernel, KernelEntry,
@@ -151,15 +142,6 @@ __all__ = [
 
     # --- representing sparse data --- #
     'DataRepresentation',
-
-    # --- COO --- #
-    'COO',
-    'binary_coomv', 'binary_coomv_p',
-    'binary_coomm', 'binary_coomm_p',
-    'coomv', 'coomv_p',
-    'coomm', 'coomm_p',
-    'update_coo_on_binary_pre', 'update_coo_on_binary_post',
-    'update_coo_on_binary_pre_p', 'update_coo_on_binary_post_p',
 
     # --- CSR --- #
     'CSR', 'CSC',
@@ -248,7 +230,7 @@ __all__ = [
     'KernelLoadError',
 
     # --- utilities --- #
-    'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index',
+    'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index', 'coo2csr',
 
     # --- config & registry --- #
     'config', 'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',

@@ -15,6 +15,7 @@ Index Conversion
    csr_to_coo_index
    coo_to_csc_index
    csr_to_csc_index
+   coo2csr
    binary_array_index
 
 

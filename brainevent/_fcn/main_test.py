@@ -115,20 +115,6 @@ class Test_To_Dense:
         jax.block_until_ready((x, indices, out1, out2, out3, out4))
 
 
-class Test_To_COO:
-    def test_tocoo_round_trip(self):
-        post_indices = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
-        post_data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
-        post = brainevent.FixedPostNumConn((post_data, post_indices), shape=(3, 4))
-        assert allclose(post.tocoo().todense(), post.todense())
-
-        pre_indices = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
-        pre_data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
-        pre = brainevent.FixedPreNumConn((pre_data, pre_indices), shape=(4, 3))
-        assert allclose(pre.tocoo().todense(), pre.todense())
-        jax.block_until_ready((post_indices, post_data, pre_indices, pre_data))
-
-
 def test_fixed_post_num_conn_tree_flatten_keeps_indices_dynamic():
     indices = jnp.array([[0, 1], [1, 2]], dtype=jnp.int32)
     data = jnp.array([1.5], dtype=jnp.float32)

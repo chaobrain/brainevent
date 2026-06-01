@@ -92,11 +92,6 @@ class TestRegistry:
             assert hasattr(prim, '_tags'), f"Primitive {name} missing _tags"
             assert isinstance(prim._tags, set), f"Primitive {name} _tags should be a set"
 
-    def test_coo_primitives_tagged(self):
-        """COO primitives should have 'coo' tag."""
-        prims = get_primitives_by_tags({'coo'})
-        assert len(prims) > 0
-
     def test_dense_primitives_tagged(self):
         """Dense primitives should have 'dense' tag."""
         prims = get_primitives_by_tags({'dense'})

@@ -18,7 +18,47 @@
 
 import unittest
 
-from brainevent._misc import generate_block_dim
+import numpy as np
+
+from brainevent._misc import generate_block_dim, coo2csr
+
+
+class TestCoo2Csr(unittest.TestCase):
+    def test_basic_conversion(self):
+        row_ids = np.array([0, 2, 1, 0, 2])
+        col_ids = np.array([0, 3, 1, 2, 0])
+        indptr, indices, order = coo2csr(row_ids, col_ids, shape=(3, 4))
+        np.testing.assert_array_equal(indptr, [0, 2, 3, 5])
+        np.testing.assert_array_equal(indices, [0, 2, 1, 3, 0])
+        np.testing.assert_array_equal(order, [0, 3, 2, 1, 4])
+
+    def test_empty_rows(self):
+        # row 1 has no stored entries
+        row_ids = np.array([0, 0, 2])
+        col_ids = np.array([1, 3, 0])
+        indptr, indices, order = coo2csr(row_ids, col_ids, shape=(3, 4))
+        np.testing.assert_array_equal(indptr, [0, 2, 2, 3])
+        np.testing.assert_array_equal(indices, [1, 3, 0])
+
+    def test_data_reorder_matches_dense(self):
+        # The `order` permutation must turn COO data into CSR data such that
+        # both reconstruct the same dense matrix (duplicates accumulate).
+        row_ids = np.array([0, 2, 1, 0, 2])
+        col_ids = np.array([0, 3, 1, 2, 0])
+        data = np.array([10., 20., 30., 40., 50.])
+        indptr, indices, order = coo2csr(row_ids, col_ids, shape=(3, 4))
+        csr_data = data[order]
+
+        dense_csr = np.zeros((3, 4))
+        for r in range(3):
+            for k in range(int(indptr[r]), int(indptr[r + 1])):
+                dense_csr[r, int(indices[k])] += csr_data[k]
+
+        dense_coo = np.zeros((3, 4))
+        for r, c, v in zip(row_ids, col_ids, data):
+            dense_coo[int(r), int(c)] += v
+
+        np.testing.assert_allclose(dense_csr, dense_coo)
 
 
 class TestGenerateBlockDim(unittest.TestCase):
