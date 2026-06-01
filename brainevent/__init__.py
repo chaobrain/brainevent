@@ -25,6 +25,7 @@ from ._csr import (
     csrmv_yw2y, csrmv_yw2y_p,
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
+    update_csc_on_binary_pre, update_csc_on_binary_post,
     csr_slice_rows, csr_slice_rows_p,
 )
 from ._data import (
@@ -154,6 +155,7 @@ __all__ = [
     'csrmv_yw2y', 'csrmv_yw2y_p',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
+    'update_csc_on_binary_pre', 'update_csc_on_binary_post',
     'csr_slice_rows', 'csr_slice_rows_p',
 
     # --- dense matrix --- #
