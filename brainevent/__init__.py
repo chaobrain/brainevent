@@ -18,6 +18,7 @@ from . import config
 from ._csr import (
     CSR, CSC,
     binary_csrmv, binary_csrmv_p,
+    binary_csrmv_indexed, binary_csrmv_indexed_p,
     binary_csrmm, binary_csrmm_p,
     csrmv, csrmv_p,
     csrmm, csrmm_p,
@@ -146,6 +147,7 @@ __all__ = [
     # --- CSR --- #
     'CSR', 'CSC',
     'binary_csrmv', 'binary_csrmv_p',
+    'binary_csrmv_indexed', 'binary_csrmv_indexed_p',
     'binary_csrmm', 'binary_csrmm_p',
     'csrmv', 'csrmv_p',
     'csrmm', 'csrmm_p',
