@@ -35,9 +35,7 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
 
 import brainevent
 import brainevent._fcn.main as fcn_main_mod
-from brainevent._fcn.binary import ell_binary_matvec_p
-from brainevent._fcn.layouts import CscLayout
-from brainevent._misc import fixed_conn_num_to_csc
+from brainevent._misc import fixed_conn_num_csc_structure
 from brainevent._test_util import (
     allclose,
     generate_fixed_conn_num_indices,
@@ -84,13 +82,6 @@ else:
 
 def _binary_mask(x, dtype):
     return jnp.asarray(jnp.asarray(x) > 0, dtype=dtype)
-
-
-def _default_backend_is_cuda_raw():
-    global_backend = brainevent.config.get_backend(platform)
-    if global_backend is not None:
-        return global_backend == 'cuda_raw'
-    return ell_binary_matvec_p.get_default(platform) == 'cuda_raw'
 
 
 def _remove_event_array(x):
@@ -216,7 +207,7 @@ class Test_Lazy_Csc_Layout:
             (brainevent.FixedPreNumConn, (4, 3), (3, 4)),
         ],
     )
-    def test_ensure_csc_builds_expected_mirror(self, cls, shape, a_shape):
+    def test_weight_indices_builds_expected_structure(self, cls, shape, a_shape):
         if cls is brainevent.FixedPostNumConn:
             idx = generate_fixed_conn_num_indices(shape[0], shape[1], 2)
         else:
@@ -224,25 +215,23 @@ class Test_Lazy_Csc_Layout:
         data = braintools.init.Normal(0., 1.)(idx.shape)
 
         conn = cls((data, idx), shape=shape)
-        csc = conn._ensure_csc()
+        csc_indptr, csc_indices, perm = conn._weight_indices()
 
-        exp_w, exp_i, exp_p = fixed_conn_num_to_csc(conn.data, conn.indices, shape=a_shape)
-        assert isinstance(csc, CscLayout)
-        assert allclose(csc.weights, exp_w)
-        assert jnp.array_equal(csc.indices, exp_i)
-        assert jnp.array_equal(csc.indptr, exp_p)
-        # The mirror's dense form matches the matrix's own dense form.
-        assert allclose(csc.todense(shape=a_shape), conn.todense() if cls is brainevent.FixedPostNumConn
-                        else conn.todense().T)
+        exp_p, exp_i, exp_perm = fixed_conn_num_csc_structure(conn.indices, shape=a_shape)
+        assert jnp.array_equal(csc_indptr, exp_p)
+        assert jnp.array_equal(csc_indices, exp_i)
+        assert jnp.array_equal(perm, exp_perm)
+        # ``perm`` gathers the flattened ELL weights into canonical CSC order.
+        assert allclose(conn.data.reshape(-1)[perm], conn.data.reshape(-1)[exp_perm])
 
-    def test_ensure_csc_caches_and_reuses(self):
+    def test_weight_indices_caches_and_reuses(self):
         shape = (3, 4)
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
         conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
 
-        first = conn._ensure_csc()
-        second = conn._ensure_csc()
+        first = conn._weight_indices()
+        second = conn._weight_indices()
         assert first is second
 
     def test_fixed_post_binary_vector_matches_dense(self):
@@ -270,18 +259,22 @@ class Test_Lazy_Csc_Layout:
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
         conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
-        conn._ensure_csc()  # populate the cache
+        conn._weight_indices()  # populate the structure cache
 
         new_data = data + 1.0
         updated = conn.with_data(new_data)
-        exp_w, exp_i, exp_p = fixed_conn_num_to_csc(new_data, idx, shape=shape)
+        exp_p, exp_i, exp_perm = fixed_conn_num_csc_structure(idx, shape=shape)
 
+        # ``with_data`` keeps connectivity, so the structure cache resets but
+        # rebuilds to the same (data-independent) CSC structure.
         assert updated._csc is None
-        csc = updated._ensure_csc()
-        assert allclose(csc.weights, exp_w)
-        assert jnp.array_equal(csc.indices, exp_i)
-        assert jnp.array_equal(csc.indptr, exp_p)
-        assert not allclose(csc.weights, conn._ensure_csc().weights)
+        csc_indptr, csc_indices, perm = updated._weight_indices()
+        assert jnp.array_equal(csc_indptr, exp_p)
+        assert jnp.array_equal(csc_indices, exp_i)
+        assert jnp.array_equal(perm, exp_perm)
+        # The unfavorable matvec reflects the *new* weights, not the old ones.
+        spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.7, 1.0], dtype=jnp.float32))
+        assert not allclose(updated @ spikes, conn @ spikes)
 
     def test_transpose_binary_vector_matches_dense(self):
         shape = (3, 4)

@@ -21,13 +21,11 @@ from .binary import (
     binary_fcnmm,
     ell_binary_matmat_p,
 )
-from .layouts import EllLayout, CscLayout
 from .float import fcnmv, fcnmm
 from .main import FixedNumConn, FixedPreNumConn, FixedPostNumConn
 
 __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
-    'EllLayout', 'CscLayout',
     'binary_fcnmv', 'ell_binary_matvec_p',
     'csc_binary_matvec', 'csc_binary_matvec_p',
     'binary_fcnmm', 'ell_binary_matmat_p',

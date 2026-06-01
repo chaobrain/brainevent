@@ -67,7 +67,6 @@ from ._event import (
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
-    EllLayout, CscLayout,
     binary_fcnmv, ell_binary_matvec_p,
     csc_binary_matvec, csc_binary_matvec_p,
     binary_fcnmm, ell_binary_matmat_p,
@@ -187,7 +186,6 @@ __all__ = [
 
     # --- Fixed number connectivity --- #
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
-    'EllLayout', 'CscLayout',
     'binary_fcnmv', 'ell_binary_matvec_p',
     'csc_binary_matvec', 'csc_binary_matvec_p',
     'binary_fcnmm', 'ell_binary_matmat_p',
@@ -262,4 +260,12 @@ def __getattr__(name):
     if name == 'JITCHomoC':
         warnings.warn(f'JITCHomoC is deprecated, use {JITCScalarC.__name__} instead')
         return JITCScalarC
+    if name in ('EllLayout', 'CscLayout'):
+        raise AttributeError(
+            f'{name} has been removed. The fixed-number-connection layout '
+            'abstraction was replaced by inline favorable/unfavorable dispatch on '
+            'FixedPreNumConn / FixedPostNumConn (mirroring CSR / CSC). Use those '
+            'classes directly; the column-major view is now an internal, lazily '
+            'cached structure built via brainevent._misc.fixed_conn_num_csc_structure.'
+        )
     raise AttributeError(name)
