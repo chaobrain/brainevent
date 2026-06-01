@@ -98,3 +98,18 @@ class TestGenerateBlockDim(unittest.TestCase):
 
     def test_maximum_zero_returns_zero(self):
         self.assertEqual(generate_block_dim(100, maximum=0), 0)
+
+
+def test_csc_to_csr_index_roundtrip():
+    import numpy as np
+    from brainevent._misc import csr_to_csc_index, csc_to_csr_index
+    indptr = np.array([0, 2, 3, 5])
+    indices = np.array([0, 2, 1, 0, 3])
+    shape = (3, 4)
+    csc_indptr, csc_indices, perm = csr_to_csc_index(indptr, indices, shape=shape)
+    # CSC of W (shape 3x4); its CSR-structure must reproduce the original CSR arrays.
+    back_indptr, back_indices, perm2 = csc_to_csr_index(csc_indptr, csc_indices, shape=shape)
+    np.testing.assert_array_equal(np.asarray(back_indptr), indptr)
+    np.testing.assert_array_equal(np.asarray(back_indices), indices)
+    # perm composition returns to identity over the canonical CSR order.
+    np.testing.assert_array_equal(np.asarray(perm)[np.asarray(perm2)], np.arange(len(perm)))

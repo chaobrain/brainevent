@@ -24,12 +24,10 @@ import jax
 from brainevent._compatible_import import Tracer
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
-from brainevent._misc import _coo_todense, COOInfo
+from brainevent._misc import _coo_todense, COOInfo, fixed_conn_num_csc_structure
 from brainevent._typing import Data, MatrixShape, Index
-from brainevent.config import get_backend
-from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec, ell_binary_matvec_p
+from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec
 from .float import fcnmv, fcnmm
-from .layouts import EllLayout, CscLayout, resolve_matvec
 
 __all__ = [
     'FixedNumConn',
@@ -91,13 +89,18 @@ class FixedNumConn(DataRepresentation):
     * :class:`FixedPreNumConn` (``axis == 1``): each post-synaptic neuron has a
       fixed number of incoming connections; ``indices`` are pre-synaptic ids.
 
-    Matrix products are routed through a small capability-aware dispatcher
-    (:func:`brainevent._fcn.layouts.resolve_matvec`).  When an event-driven
-    ``W @ s`` matvec lands on a CUDA backend -- where the row-gather kernel does
-    not exist -- the dispatcher transparently builds and caches a column-major
-    CSC mirror and runs the column-scatter kernel instead.  The mirror is built
-    lazily on first need from concrete indices, so it must be triggered outside
-    ``jax.jit``.
+    Event-driven matrix-vector products follow the same favorable/unfavorable
+    dispatch as :class:`brainevent.CSR` / :class:`brainevent.CSC`.  When the
+    event vector indexes the ELL *stored* axis the product is a direct
+    column-scatter (:func:`brainevent._fcn.binary.binary_fcnmv` with
+    ``transpose=True``).  Otherwise the product would require a gather over every
+    stored synapse; instead the structure is converted once to a column-major
+    (CSC) view -- ``(indptr, indices, perm)`` built by
+    :func:`brainevent._misc.fixed_conn_num_csc_structure` -- and the weights are
+    permuted into CSC order so the same scatter kernel
+    (:func:`brainevent._fcn.binary.csc_binary_matvec`) applies on every backend.
+    The CSC view is built lazily on first need from concrete indices and cached
+    in ``self._csc``, so it must be triggered outside ``jax.jit``.
 
     Parameters
     ----------
@@ -129,43 +132,44 @@ class FixedNumConn(DataRepresentation):
     # Layout / dispatch helpers
     # ------------------------------------------------------------------ #
 
-    def _backend_is_cuda(self) -> bool:
-        if self.backend is not None:
-            return self.backend == 'cuda_raw'
-        platform = jax.default_backend()
-        global_backend = get_backend(platform)
-        if global_backend is not None:
-            return global_backend == 'cuda_raw'
-        return ell_binary_matvec_p.get_default(platform) == 'cuda_raw'
-
     def _ell_plan(self, transpose_W: bool):
         a_shape = tuple(self.shape) if self.axis == 0 else tuple(self.shape)[::-1]
         ell_transpose = bool(transpose_W) ^ (self.axis == 1)
         return a_shape, ell_transpose
 
-    def _ensure_csc(self) -> CscLayout:
+    def _weight_indices(self):
+        """Lazily build and cache the column-major (CSC) view of the structure.
+
+        Returns the triple ``(csc_indptr, csc_indices, perm)`` for the ELL
+        operand matrix (shape ``a_shape``), where ``perm`` maps each CSC slot to
+        the position of its weight in the flattened ELL ``data``.  Built from
+        concrete indices via :func:`fixed_conn_num_csc_structure`, so it must be
+        triggered outside ``jax.jit``; the result is cached in ``self._csc``.
+        """
         if self._csc is None:
             _ensure_fixed_conn_initialized_outside_jit(self.indices, kind=type(self).__name__)
-            self._csc = EllLayout(self.data, self.indices, axis=self.axis).to_csc(shape=self.shape)
+            a_shape = tuple(self.shape) if self.axis == 0 else tuple(self.shape)[::-1]
+            with jax.ensure_compile_time_eval():
+                self._csc = fixed_conn_num_csc_structure(self.indices, shape=a_shape)
         return self._csc
 
     def _binary_matvec(self, s, transpose_W: bool):
-        plan = resolve_matvec(
-            axis=self.axis,
-            transpose_W=transpose_W,
-            is_event=True,
-            backend_is_cuda=self._backend_is_cuda(),
-            shape=self.shape,
-        )
-        if plan.format == 'csc':
-            csc = self._ensure_csc()
-            return csc_binary_matvec(
-                csc.weights, csc.indices, csc.indptr, s,
-                shape=plan.a_shape, backend=self.backend,
+        a_shape, ell_transpose = self._ell_plan(transpose_W)
+        if ell_transpose:
+            # Favorable: the event vector indexes the ELL stored axis -> direct
+            # column-scatter over active events.
+            return binary_fcnmv(
+                self.data, self.indices, s,
+                shape=a_shape, transpose=True, backend=self.backend,
             )
-        return binary_fcnmv(
-            self.data, self.indices, s,
-            shape=plan.a_shape, transpose=plan.transpose, backend=self.backend,
+        # Unfavorable: convert to a column-major (CSC) view and permute weights
+        # into CSC order so the scatter kernel applies on every backend.
+        csc_indptr, csc_indices, perm = self._weight_indices()
+        data = self.data
+        weights = data.reshape(1) if data.size == 1 else data.reshape(-1)[perm]
+        return csc_binary_matvec(
+            weights, csc_indices, csc_indptr, s,
+            shape=a_shape, backend=self.backend,
         )
 
     def _binary_matmat(self, matrix, transpose_W: bool):

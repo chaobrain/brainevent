@@ -1100,3 +1100,189 @@ class Test_solve:
         assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
 
         jax.block_until_ready((dense, b, x, x2))
+
+
+# ---- weight-indices lifecycle (Phase 4) ----
+import numpy as _np
+import jax.numpy as _jnp
+import brainevent as _be
+
+
+def test_csr_build_weight_indices_and_cache():
+    rng = _np.random.default_rng(0)
+    dense = (rng.random((4, 5)) > 0.5) * rng.random((4, 5))
+    csr = _be.CSR.fromdense(_jnp.asarray(dense, _jnp.float32))
+    csr2 = csr.build_weight_indices()
+    assert 'csc' in csr2.buffers and csr2.buffers['csc'] is not None
+    cscp, csci, perm = csr2._weight_indices()
+    assert perm.shape == csr.data.shape
+    # apply preserves structure -> cache must survive (same perm values)
+    applied = csr2.apply(lambda x: x * 2)
+    assert _jnp.array_equal(applied._weight_indices()[2], perm)
+
+
+def test_csr_lazy_weight_indices():
+    rng = _np.random.default_rng(9)
+    dense = (rng.random((3, 6)) > 0.5) * rng.random((3, 6))
+    csr = _be.CSR.fromdense(_jnp.asarray(dense, _jnp.float32))
+    assert csr.buffers.get('csc') is None         # not built yet
+    cscp, csci, perm = csr._weight_indices()       # lazily builds
+    assert perm.shape == csr.data.shape
+
+
+def test_csr_eager_precompute():
+    dense = _jnp.asarray((_np.random.default_rng(1).random((3, 4)) > 0.5) * 1.0, _jnp.float32)
+    csr = _be.CSR.fromdense(dense, precompute_weight_indices=True)
+    assert csr.buffers.get('csc') is not None
+
+
+# ---- event-driven dispatch via weight-indices (Phase 5) ----
+
+def _rand_dense(rng, m, n, p=0.4):
+    return _jnp.asarray((rng.random((m, n)) < p) * rng.random((m, n)), _jnp.float32)
+
+
+def test_csr_at_event_matches_dense_and_caches():
+    # CSR @ event is the unfavorable direction -> indexed column-major scatter.
+    rng = _np.random.default_rng(3)
+    m, k = 5, 7
+    csr = _be.CSR.fromdense(_rand_dense(rng, m, k))
+    ev = _jnp.asarray(rng.random(k) > 0.5)
+    got = csr @ _be.BinaryArray(ev)
+    ref = csr.todense() @ ev.astype(_jnp.float32)
+    assert got.shape == (m,)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+    # the indexed path must have built & cached the CSC-like weight indices
+    assert csr.buffers.get('csc') is not None
+
+
+def test_event_at_csr_favorable_matches_dense():
+    # event @ CSR is favorable -> direct event-driven scatter, unchanged.
+    rng = _np.random.default_rng(4)
+    m, k = 5, 7
+    csr = _be.CSR.fromdense(_rand_dense(rng, m, k))
+    ev = _jnp.asarray(rng.random(m) > 0.5)
+    got = _be.BinaryArray(ev) @ csr
+    ref = ev.astype(_jnp.float32) @ csr.todense()
+    assert got.shape == (k,)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+
+
+def test_event_at_csc_matches_dense_and_caches():
+    # event @ CSC is the unfavorable direction -> indexed row-major scatter.
+    rng = _np.random.default_rng(5)
+    m, n = 6, 4
+    csc = _be.CSC.fromdense(_rand_dense(rng, m, n))
+    ev = _jnp.asarray(rng.random(m) > 0.5)
+    got = _be.BinaryArray(ev) @ csc
+    ref = ev.astype(_jnp.float32) @ csc.todense()
+    assert got.shape == (n,)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+    assert csc.buffers.get('csr') is not None
+
+
+def test_csc_at_event_favorable_matches_dense():
+    # CSC @ event is favorable -> direct event-driven scatter, unchanged.
+    rng = _np.random.default_rng(6)
+    m, n = 6, 4
+    csc = _be.CSC.fromdense(_rand_dense(rng, m, n))
+    ev = _jnp.asarray(rng.random(n) > 0.5)
+    got = csc @ _be.BinaryArray(ev)
+    ref = csc.todense() @ ev.astype(_jnp.float32)
+    assert got.shape == (m,)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+
+
+def test_csr_at_event_jit_matches_dense():
+    rng = _np.random.default_rng(7)
+    m, k = 5, 7
+    csr = _be.CSR.fromdense(_rand_dense(rng, m, k))
+    ev = _jnp.asarray(rng.random(k) > 0.5)
+    f = jax.jit(lambda w, e: csr.with_data(w) @ _be.BinaryArray(e))
+    got = f(csr.data, ev)
+    ref = csr.todense() @ ev.astype(_jnp.float32)
+    assert _jnp.allclose(got, ref, atol=1e-5)
+
+
+# ---- transpose cache hand-off (Phase 6) ----
+
+def test_csr_transpose_hands_off_weight_indices():
+    # The CSC-like view of W equals the CSR-like view of W.T, so the cached
+    # perm must transfer across transpose with identical values.
+    rng = _np.random.default_rng(8)
+    m, k = 4, 6
+    csr = _be.CSR.fromdense(_rand_dense(rng, m, k)).build_weight_indices()
+    perm_csr = csr._weight_indices()[2]
+    csc = csr.transpose()
+    assert csc.buffers.get('csr') is not None          # re-keyed on transpose
+    perm_csc = csc._weight_indices()[2]
+    assert _jnp.array_equal(perm_csr, perm_csc)
+    # and the transposed matrix multiplies correctly
+    ev = _jnp.asarray(rng.random(k) > 0.5)
+    got = _be.BinaryArray(ev) @ csc                     # event @ (W.T) , len m
+    ref = ev.astype(_jnp.float32) @ csc.todense()
+    assert _jnp.allclose(got, ref, atol=1e-5)
+
+
+def test_csc_transpose_hands_off_weight_indices():
+    rng = _np.random.default_rng(10)
+    m, n = 5, 3
+    csc = _be.CSC.fromdense(_rand_dense(rng, m, n)).build_weight_indices()
+    perm_csc = csc._weight_indices()[2]
+    csr = csc.transpose()
+    assert csr.buffers.get('csc') is not None
+    perm_csr = csr._weight_indices()[2]
+    assert _jnp.array_equal(perm_csc, perm_csr)
+
+
+def test_csc_eager_precompute():
+    rng = _np.random.default_rng(12)
+    csc = _be.CSC.fromdense(_rand_dense(rng, 4, 5), precompute_weight_indices=True)
+    assert csc.buffers.get('csr') is not None
+
+
+# ---- OO plasticity method parity (Phase 8) ----
+
+def test_csr_update_on_pre_method_parity():
+    rng = _np.random.default_rng(20)
+    csr = _be.CSR.fromdense(_rand_dense(rng, 4, 5))
+    pre_spike = _jnp.asarray(rng.random(4) > 0.5)
+    post_trace = _jnp.asarray(rng.random(5), _jnp.float32)
+    got = csr.update_on_pre(pre_spike, post_trace, 0.0, 1.5).data
+    ref = _be.update_csr_on_binary_pre(
+        csr.data, csr.indices, csr.indptr, pre_spike, post_trace, 0.0, 1.5, shape=csr.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
+
+
+def test_csr_update_on_post_method_parity():
+    rng = _np.random.default_rng(21)
+    csr = _be.CSR.fromdense(_rand_dense(rng, 4, 5))
+    pre_trace = _jnp.asarray(rng.random(4), _jnp.float32)
+    post_spike = _jnp.asarray(rng.random(5) > 0.5)
+    got = csr.update_on_post(pre_trace, post_spike, 0.0, 1.5).data
+    cscp, csci, perm = _be.csr_to_csc_index(csr.indptr, csr.indices, shape=csr.shape)
+    ref = _be.update_csr_on_binary_post(
+        csr.data, csci, cscp, perm, pre_trace, post_spike, 0.0, 1.5, shape=csr.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
+
+
+def test_csc_update_on_pre_method_parity():
+    rng = _np.random.default_rng(22)
+    csc = _be.CSC.fromdense(_rand_dense(rng, 5, 3))
+    pre_spike = _jnp.asarray(rng.random(5) > 0.5)
+    post_trace = _jnp.asarray(rng.random(3), _jnp.float32)
+    got = csc.update_on_pre(pre_spike, post_trace, 0.0, 1.5).data
+    ref = _be.update_csc_on_binary_pre(
+        csc.data, csc.indices, csc.indptr, pre_spike, post_trace, 0.0, 1.5, shape=csc.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
+
+
+def test_csc_update_on_post_method_parity():
+    rng = _np.random.default_rng(23)
+    csc = _be.CSC.fromdense(_rand_dense(rng, 5, 3))
+    pre_trace = _jnp.asarray(rng.random(5), _jnp.float32)
+    post_spike = _jnp.asarray(rng.random(3) > 0.5)
+    got = csc.update_on_post(pre_trace, post_spike, 0.0, 1.5).data
+    ref = _be.update_csc_on_binary_post(
+        csc.data, csc.indices, csc.indptr, pre_trace, post_spike, 0.0, 1.5, shape=csc.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)

@@ -1261,6 +1261,79 @@ def csr_to_csc_index(
     return csc_indptr, csc_indices, post_positions
 
 
+def csc_to_csr_index(
+    csc_indptr: Union[jax.Array, np.ndarray],
+    csc_indices: Union[jax.Array, np.ndarray],
+    *,
+    shape: Tuple[int, int],
+):
+    """Convert CSC format index arrays to CSR format.
+
+    Inverse companion of :func:`csr_to_csc_index`.  A Compressed Sparse Column
+    layout of a matrix ``W`` with shape ``(n_rows, n_cols)`` is, array for array,
+    the Compressed Sparse Row layout of ``W.T`` with shape ``(n_cols, n_rows)``.
+    Building the CSR structure of ``W`` therefore reduces to calling
+    :func:`csr_to_csc_index` on the transposed interpretation.
+
+    Parameters
+    ----------
+    csc_indptr : jax.Array or numpy.ndarray
+        Column pointer array in CSC format.  For a matrix with ``n_cols``
+        columns, this has length ``n_cols + 1``.
+    csc_indices : jax.Array or numpy.ndarray
+        Row index array in CSC format.  Contains the row index for each
+        non-zero element, ordered by column.
+    shape : tuple of int
+        A ``(n_rows, n_cols)`` tuple giving the dimensions of the matrix the
+        CSC arrays describe.  Keyword-only argument.
+
+    Returns
+    -------
+    csr_indptr : jax.Array or numpy.ndarray
+        Row pointer array in CSR format.  Length ``n_rows + 1``.
+    csr_indices : jax.Array or numpy.ndarray
+        Column index array in CSR format.
+    perm : jax.Array or numpy.ndarray
+        Permutation array reordering data values from CSC order to CSR order.
+        If ``data`` is the CSC data array, then ``data[perm]`` gives the values
+        in CSR order.
+
+    Raises
+    ------
+    AssertionError
+        If ``shape`` is not a length-2 tuple/list of positive integers.
+
+    See Also
+    --------
+    csr_to_csc_index : The forward CSR-to-CSC companion (mutual inverse).
+    coo_to_csc_index : Convert COO indices to CSC indices.
+
+    Notes
+    -----
+    Because the two helpers are mutual inverses on the same structure, the
+    permutations they return compose to the identity:
+    ``csr_perm[csc_perm] == arange(nse)``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import numpy as np
+        >>> from brainevent._misc import csr_to_csc_index, csc_to_csr_index
+        >>> indptr = np.array([0, 2, 3, 5])
+        >>> indices = np.array([0, 2, 1, 0, 3])
+        >>> csc_indptr, csc_indices, _ = csr_to_csc_index(indptr, indices, shape=(3, 4))
+        >>> csr_indptr, csr_indices, _ = csc_to_csr_index(
+        ...     csc_indptr, csc_indices, shape=(3, 4)
+        ... )
+    """
+    assert isinstance(shape, (tuple, list)), "Shape must be a tuple or list"
+    assert len(shape) == 2, "Shape must have exactly two dimensions (rows, columns)"
+    assert shape[0] > 0 and shape[1] > 0, "Shape dimensions must be positive integers"
+    csr_indptr, csr_indices, perm = csr_to_csc_index(csc_indptr, csc_indices, shape=(shape[1], shape[0]))
+    return csr_indptr, csr_indices, perm
+
+
 class NameScope:
     """A callable that caches a separate JIT-compiled function per unique ``backend`` value.
 

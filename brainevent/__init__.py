@@ -18,12 +18,14 @@ from . import config
 from ._csr import (
     CSR, CSC,
     binary_csrmv, binary_csrmv_p,
+    binary_csrmv_indexed, binary_csrmv_indexed_p,
     binary_csrmm, binary_csrmm_p,
     csrmv, csrmv_p,
     csrmm, csrmm_p,
     csrmv_yw2y, csrmv_yw2y_p,
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
+    update_csc_on_binary_pre, update_csc_on_binary_post,
     csr_slice_rows, csr_slice_rows_p,
 )
 from ._data import (
@@ -65,7 +67,6 @@ from ._event import (
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
-    EllLayout, CscLayout,
     binary_fcnmv, ell_binary_matvec_p,
     csc_binary_matvec, csc_binary_matvec_p,
     binary_fcnmm, ell_binary_matmat_p,
@@ -96,7 +97,7 @@ from ._jit_uniform import (
     jitumm, jitumm_p,
 )
 from ._misc import (
-    csr_to_coo_index, coo_to_csc_index, csr_to_csc_index, coo2csr,
+    csr_to_coo_index, coo_to_csc_index, csr_to_csc_index, csc_to_csr_index, coo2csr,
 )
 from ._op import (
     XLACustomKernel, KernelEntry,
@@ -146,12 +147,14 @@ __all__ = [
     # --- CSR --- #
     'CSR', 'CSC',
     'binary_csrmv', 'binary_csrmv_p',
+    'binary_csrmv_indexed', 'binary_csrmv_indexed_p',
     'binary_csrmm', 'binary_csrmm_p',
     'csrmv', 'csrmv_p',
     'csrmm', 'csrmm_p',
     'csrmv_yw2y', 'csrmv_yw2y_p',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
+    'update_csc_on_binary_pre', 'update_csc_on_binary_post',
     'csr_slice_rows', 'csr_slice_rows_p',
 
     # --- dense matrix --- #
@@ -183,7 +186,6 @@ __all__ = [
 
     # --- Fixed number connectivity --- #
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
-    'EllLayout', 'CscLayout',
     'binary_fcnmv', 'ell_binary_matvec_p',
     'csc_binary_matvec', 'csc_binary_matvec_p',
     'binary_fcnmm', 'ell_binary_matmat_p',
@@ -230,7 +232,7 @@ __all__ = [
     'KernelLoadError',
 
     # --- utilities --- #
-    'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index', 'coo2csr',
+    'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index', 'csc_to_csr_index', 'coo2csr',
 
     # --- config & registry --- #
     'config', 'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
@@ -258,4 +260,12 @@ def __getattr__(name):
     if name == 'JITCHomoC':
         warnings.warn(f'JITCHomoC is deprecated, use {JITCScalarC.__name__} instead')
         return JITCScalarC
+    if name in ('EllLayout', 'CscLayout'):
+        raise AttributeError(
+            f'{name} has been removed. The fixed-number-connection layout '
+            'abstraction was replaced by inline favorable/unfavorable dispatch on '
+            'FixedPreNumConn / FixedPostNumConn (mirroring CSR / CSC). Use those '
+            'classes directly; the column-major view is now an internal, lazily '
+            'cached structure built via brainevent._misc.fixed_conn_num_csc_structure.'
+        )
     raise AttributeError(name)
