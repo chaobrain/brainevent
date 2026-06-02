@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import brainunit as bu
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -23,6 +24,10 @@ from brainevent._fcn.plasticity_binary import (
     fcn_plasticity_col_p,
     fcn_plasticity_row_prim_call,
     fcn_plasticity_col_prim_call,
+    update_fixed_post_conn_on_binary_pre,
+    update_fixed_post_conn_on_binary_post,
+    update_fixed_pre_conn_on_binary_pre,
+    update_fixed_pre_conn_on_binary_post,
 )
 
 PLATFORM = jax.default_backend()
@@ -123,3 +128,107 @@ def test_col_numba_matches_ref(spike_dtype):
         )
     ref = _ell_ref_col(data, indices, spike, trace)
     assert np.allclose(got, ref, atol=1e-5)
+
+
+# --------------------------------------------------------------------------- #
+# Module functions: 4 directions, clip, duplicates, units, homogeneous guard
+# --------------------------------------------------------------------------- #
+
+_W_MIN_MAX = [(None, None), (0.0, 1.5), (0.2, None), (None, 0.9)]
+
+
+def _clip(x, lo, hi):
+    return np.clip(x, lo, hi)
+
+
+@pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
+@pytest.mark.parametrize("w_min,w_max", _W_MIN_MAX)
+def test_post_conn_on_pre(spike_dtype, w_min, w_max):
+    rng = np.random.default_rng(10)
+    n_pre, n_conn, n_post = 5, 3, 7
+    data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn)), dtype=jnp.int32)
+    pre_spike = jnp.asarray(rng.random(n_pre) > 0.5, dtype=spike_dtype)
+    post_trace = jnp.asarray(rng.random(n_post), dtype=jnp.float32)
+    got = update_fixed_post_conn_on_binary_pre(
+        data, indices, pre_spike, post_trace, w_min, w_max, shape=(n_pre, n_post))
+    ref = _clip(_ell_ref_row(data, indices, pre_spike, post_trace), w_min, w_max)
+    assert np.allclose(np.asarray(got), ref, atol=1e-5)
+
+
+@pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
+@pytest.mark.parametrize("w_min,w_max", _W_MIN_MAX)
+def test_post_conn_on_post(spike_dtype, w_min, w_max):
+    rng = np.random.default_rng(11)
+    n_pre, n_conn, n_post = 6, 4, 8
+    data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn)), dtype=jnp.int32)
+    pre_trace = jnp.asarray(rng.random(n_pre), dtype=jnp.float32)
+    post_spike = jnp.asarray(rng.random(n_post) > 0.5, dtype=spike_dtype)
+    got = update_fixed_post_conn_on_binary_post(
+        data, indices, pre_trace, post_spike, w_min, w_max, shape=(n_pre, n_post))
+    ref = _clip(_ell_ref_col(data, indices, post_spike, pre_trace), w_min, w_max)
+    assert np.allclose(np.asarray(got), ref, atol=1e-5)
+
+
+@pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
+@pytest.mark.parametrize("w_min,w_max", _W_MIN_MAX)
+def test_pre_conn_on_post(spike_dtype, w_min, w_max):
+    rng = np.random.default_rng(12)
+    n_pre, n_conn, n_post = 7, 3, 6
+    data = jnp.asarray(rng.random((n_post, n_conn)) + 0.3, dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_pre, (n_post, n_conn)), dtype=jnp.int32)
+    pre_trace = jnp.asarray(rng.random(n_pre), dtype=jnp.float32)
+    post_spike = jnp.asarray(rng.random(n_post) > 0.5, dtype=spike_dtype)
+    got = update_fixed_pre_conn_on_binary_post(
+        data, indices, pre_trace, post_spike, w_min, w_max, shape=(n_pre, n_post))
+    ref = _clip(_ell_ref_row(data, indices, post_spike, pre_trace), w_min, w_max)
+    assert np.allclose(np.asarray(got), ref, atol=1e-5)
+
+
+@pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
+@pytest.mark.parametrize("w_min,w_max", _W_MIN_MAX)
+def test_pre_conn_on_pre(spike_dtype, w_min, w_max):
+    rng = np.random.default_rng(13)
+    n_pre, n_conn, n_post = 8, 4, 5
+    data = jnp.asarray(rng.random((n_post, n_conn)) + 0.3, dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_pre, (n_post, n_conn)), dtype=jnp.int32)
+    pre_spike = jnp.asarray(rng.random(n_pre) > 0.5, dtype=spike_dtype)
+    post_trace = jnp.asarray(rng.random(n_post), dtype=jnp.float32)
+    got = update_fixed_pre_conn_on_binary_pre(
+        data, indices, pre_spike, post_trace, w_min, w_max, shape=(n_pre, n_post))
+    ref = _clip(_ell_ref_col(data, indices, pre_spike, post_trace), w_min, w_max)
+    assert np.allclose(np.asarray(got), ref, atol=1e-5)
+
+
+def test_duplicate_indices_accumulate():
+    data = jnp.array([[1.0, 2.0]], dtype=jnp.float32)
+    indices = jnp.array([[0, 0]], dtype=jnp.int32)  # duplicate post id 0 in the row
+    pre_spike = jnp.array([True])
+    post_trace = jnp.array([0.5, 9.9], dtype=jnp.float32)
+    got = update_fixed_post_conn_on_binary_pre(data, indices, pre_spike, post_trace, shape=(1, 2))
+    # both stored synapses point at post 0 -> each gets +0.5 independently
+    assert np.allclose(np.asarray(got), np.array([[1.5, 2.5]]), atol=1e-6)
+
+
+def test_units_preserved():
+    rng = np.random.default_rng(20)
+    n_pre, n_conn, n_post = 4, 2, 5
+    data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32) * bu.siemens
+    indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn)), dtype=jnp.int32)
+    pre_spike = jnp.asarray(rng.random(n_pre) > 0.5)
+    post_trace = jnp.asarray(rng.random(n_post), dtype=jnp.float32) * bu.siemens
+    got = update_fixed_post_conn_on_binary_pre(
+        data, indices, pre_spike, post_trace, shape=(n_pre, n_post))
+    assert bu.get_unit(got) == bu.siemens
+    ref = _ell_ref_row(bu.get_mantissa(data), indices, pre_spike, bu.get_mantissa(post_trace))
+    assert np.allclose(np.asarray(bu.get_mantissa(got)), ref, atol=1e-5)
+
+
+def test_homogeneous_data_raises():
+    data = jnp.asarray([1.5], dtype=jnp.float32)  # homogeneous
+    indices = jnp.array([[0, 1], [1, 2]], dtype=jnp.int32)
+    pre_spike = jnp.array([True, False])
+    post_trace = jnp.array([0.1, 0.2, 0.3], dtype=jnp.float32)
+    with pytest.raises(ValueError, match="per-synapse"):
+        update_fixed_post_conn_on_binary_pre(data, indices, pre_spike, post_trace, shape=(2, 3))

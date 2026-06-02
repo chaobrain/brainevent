@@ -225,3 +225,230 @@ fcn_plasticity_col_p.def_kernel('jax_raw', 'gpu', _fcn_plasticity_col_jax_kernel
 fcn_plasticity_col_p.def_kernel('jax_raw', 'tpu', _fcn_plasticity_col_jax_kernel)
 fcn_plasticity_col_p.def_call(fcn_plasticity_col_prim_call)
 fcn_plasticity_col_p.def_tags('fcn', 'plasticity')
+
+
+# --------------------------------------------------------------------------- #
+# Module functions (units, homogeneous guard, clip)
+# --------------------------------------------------------------------------- #
+
+def _apply_row(data, indices, spike, trace, w_min, w_max, backend):
+    data, wunit = u.split_mantissa_unit(data)
+    trace = u.Quantity(trace).to(wunit).mantissa
+    _check_heterogeneous(data, indices)
+    new = fcn_plasticity_row_prim_call(data, indices, spike, trace, backend=backend)[0]
+    new = u.maybe_decimal(new * wunit)
+    return u.math.clip(new, w_min, w_max)
+
+
+def _apply_col(data, indices, spike, trace, w_min, w_max, backend):
+    data, wunit = u.split_mantissa_unit(data)
+    trace = u.Quantity(trace).to(wunit).mantissa
+    _check_heterogeneous(data, indices)
+    new = fcn_plasticity_col_prim_call(data, indices, spike, trace, backend=backend)[0]
+    new = u.maybe_decimal(new * wunit)
+    return u.math.clip(new, w_min, w_max)
+
+
+@namescope(static_argnames=['shape'])
+def update_fixed_post_conn_on_binary_pre(
+    data, indices, pre_spike, post_trace,
+    w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
+):
+    """Pre-spike STDP update for a ``FixedPostNumConn`` (favorable, row-driven).
+
+    For each firing pre neuron ``i`` and every stored synapse ``(i, j)``:
+    ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.
+
+    Parameters
+    ----------
+    data : jax.Array or Quantity
+        Heterogeneous ELL weights, shape ``(num_pre, num_conn)``.
+    indices : jax.Array
+        Post-synaptic ids, shape ``(num_pre, num_conn)``.
+    pre_spike : jax.Array
+        Pre-synaptic spikes (bool or float), shape ``(num_pre,)``.
+    post_trace : jax.Array or Quantity
+        Post-synaptic trace, shape ``(num_post,)``.
+    w_min, w_max : jax.Array, Quantity, number, or None, optional
+        Clip bounds (``None`` disables the corresponding bound).
+    shape : tuple of int
+        Logical ``(num_pre, num_post)``.
+    backend : str or None, optional
+        Backend override.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Updated weights, shape ``(num_pre, num_conn)``.
+
+    Raises
+    ------
+    ValueError
+        If ``data`` is homogeneous (size-1) while the connectivity stores more
+        than one synapse.
+
+    See Also
+    --------
+    update_fixed_post_conn_on_binary_post : Post-spike counterpart for the same layout.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._fcn.plasticity_binary import update_fixed_post_conn_on_binary_pre
+        >>> data = jnp.array([[0.5, 0.3], [0.8, 0.2]], dtype=jnp.float32)
+        >>> indices = jnp.array([[0, 1], [1, 2]], dtype=jnp.int32)
+        >>> pre_spike = jnp.array([True, False])
+        >>> post_trace = jnp.array([0.1, 0.2, 0.05], dtype=jnp.float32)
+        >>> update_fixed_post_conn_on_binary_pre(
+        ...     data, indices, pre_spike, post_trace, shape=(2, 3))
+    """
+    assert indices.shape[0] == shape[0], 'indices rows must equal num_pre.'
+    assert pre_spike.shape[0] == shape[0], 'pre_spike length must equal num_pre.'
+    assert post_trace.shape[0] == shape[1], 'post_trace length must equal num_post.'
+    return _apply_row(data, indices, pre_spike, post_trace, w_min, w_max, backend)
+
+
+@namescope(static_argnames=['shape'])
+def update_fixed_post_conn_on_binary_post(
+    data, indices, pre_trace, post_spike,
+    w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
+):
+    """Post-spike STDP update for a ``FixedPostNumConn`` (unfavorable, column-scan).
+
+    For each firing post neuron ``j`` and every stored synapse ``(i, j)``:
+    ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.
+
+    Parameters
+    ----------
+    data : jax.Array or Quantity
+        Heterogeneous ELL weights, shape ``(num_pre, num_conn)``.
+    indices : jax.Array
+        Post-synaptic ids, shape ``(num_pre, num_conn)``.
+    pre_trace : jax.Array or Quantity
+        Pre-synaptic trace, shape ``(num_pre,)``.
+    post_spike : jax.Array
+        Post-synaptic spikes (bool or float), shape ``(num_post,)``.
+    w_min, w_max : jax.Array, Quantity, number, or None, optional
+        Clip bounds (``None`` disables the corresponding bound).
+    shape : tuple of int
+        Logical ``(num_pre, num_post)``.
+    backend : str or None, optional
+        Backend override.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Updated weights, shape ``(num_pre, num_conn)``.
+
+    Raises
+    ------
+    ValueError
+        If ``data`` is homogeneous (size-1) while the connectivity stores more
+        than one synapse.
+
+    See Also
+    --------
+    update_fixed_post_conn_on_binary_pre : Pre-spike counterpart for the same layout.
+    """
+    assert indices.shape[0] == shape[0], 'indices rows must equal num_pre.'
+    assert pre_trace.shape[0] == shape[0], 'pre_trace length must equal num_pre.'
+    assert post_spike.shape[0] == shape[1], 'post_spike length must equal num_post.'
+    return _apply_col(data, indices, post_spike, pre_trace, w_min, w_max, backend)
+
+
+@namescope(static_argnames=['shape'])
+def update_fixed_pre_conn_on_binary_pre(
+    data, indices, pre_spike, post_trace,
+    w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
+):
+    """Pre-spike STDP update for a ``FixedPreNumConn`` (unfavorable, column-scan).
+
+    For each firing pre neuron ``i`` and every stored synapse ``(i, j)``:
+    ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.
+
+    Parameters
+    ----------
+    data : jax.Array or Quantity
+        Heterogeneous ELL weights, shape ``(num_post, num_conn)``.
+    indices : jax.Array
+        Pre-synaptic ids, shape ``(num_post, num_conn)``.
+    pre_spike : jax.Array
+        Pre-synaptic spikes (bool or float), shape ``(num_pre,)``.
+    post_trace : jax.Array or Quantity
+        Post-synaptic trace, shape ``(num_post,)``.
+    w_min, w_max : jax.Array, Quantity, number, or None, optional
+        Clip bounds (``None`` disables the corresponding bound).
+    shape : tuple of int
+        Logical ``(num_pre, num_post)``.
+    backend : str or None, optional
+        Backend override.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Updated weights, shape ``(num_post, num_conn)``.
+
+    Raises
+    ------
+    ValueError
+        If ``data`` is homogeneous (size-1) while the connectivity stores more
+        than one synapse.
+
+    See Also
+    --------
+    update_fixed_pre_conn_on_binary_post : Post-spike counterpart for the same layout.
+    """
+    assert indices.shape[0] == shape[1], 'indices rows must equal num_post.'
+    assert pre_spike.shape[0] == shape[0], 'pre_spike length must equal num_pre.'
+    assert post_trace.shape[0] == shape[1], 'post_trace length must equal num_post.'
+    return _apply_col(data, indices, pre_spike, post_trace, w_min, w_max, backend)
+
+
+@namescope(static_argnames=['shape'])
+def update_fixed_pre_conn_on_binary_post(
+    data, indices, pre_trace, post_spike,
+    w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
+):
+    """Post-spike STDP update for a ``FixedPreNumConn`` (favorable, row-driven).
+
+    For each firing post neuron ``j`` and every stored synapse ``(i, j)``:
+    ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.
+
+    Parameters
+    ----------
+    data : jax.Array or Quantity
+        Heterogeneous ELL weights, shape ``(num_post, num_conn)``.
+    indices : jax.Array
+        Pre-synaptic ids, shape ``(num_post, num_conn)``.
+    pre_trace : jax.Array or Quantity
+        Pre-synaptic trace, shape ``(num_pre,)``.
+    post_spike : jax.Array
+        Post-synaptic spikes (bool or float), shape ``(num_post,)``.
+    w_min, w_max : jax.Array, Quantity, number, or None, optional
+        Clip bounds (``None`` disables the corresponding bound).
+    shape : tuple of int
+        Logical ``(num_pre, num_post)``.
+    backend : str or None, optional
+        Backend override.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Updated weights, shape ``(num_post, num_conn)``.
+
+    Raises
+    ------
+    ValueError
+        If ``data`` is homogeneous (size-1) while the connectivity stores more
+        than one synapse.
+
+    See Also
+    --------
+    update_fixed_pre_conn_on_binary_pre : Pre-spike counterpart for the same layout.
+    """
+    assert indices.shape[0] == shape[1], 'indices rows must equal num_post.'
+    assert pre_trace.shape[0] == shape[0], 'pre_trace length must equal num_pre.'
+    assert post_spike.shape[0] == shape[1], 'post_spike length must equal num_post.'
+    return _apply_row(data, indices, post_spike, pre_trace, w_min, w_max, backend)
