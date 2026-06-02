@@ -4,9 +4,13 @@
 name: Continuous Integration
 
 on:
-  # Trigger on pull requests only. A PR-branch push already fires the
-  # `pull_request` (synchronize) event, so also listening on `push` would
-  # start a second, redundant run for the same commit — one event, one run.
+  # Run on direct pushes/merges to `main`, plus every pull request.
+  # `push` is scoped to `main` only so that pushing a PR branch fires just the
+  # `pull_request` (synchronize) event — one event, one run, no duplicates.
+  # Merging/pushing to `main` is not a PR-head update, so it fires only `push`.
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - '**'        # matches every branch
