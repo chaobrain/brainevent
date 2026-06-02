@@ -71,13 +71,13 @@ Next steps
    :gutter: 2
 
    .. grid-item-card:: Learn step by step
-      :link: /tutorials/index
+      :link: /tutorials/data-structures/index
       :link-type: doc
 
       Work through the tutorial notebooks.
 
    .. grid-item-card:: Solve a specific task
-      :link: /how-to/index
+      :link: /how-to/data-structures/index
       :link-type: doc
 
       Jump to a how-to recipe.
@@ -89,7 +89,7 @@ Next steps
       Read the conceptual background.
 
    .. grid-item-card:: Look up an API
-      :link: /reference/index
+      :link: /reference/apis/index
       :link-type: doc
 
       Browse the reference.

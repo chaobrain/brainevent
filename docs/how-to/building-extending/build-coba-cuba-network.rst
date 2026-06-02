@@ -37,7 +37,7 @@ excitatory and inhibitory groups with opposite-sign weights gives a balanced net
 Because the spike vector is a :class:`~brainevent.BinaryArray`, only neurons that fired this
 step contribute work — the cost scales with the spike count, not the network size. Swap
 ``FixedPostNumConn`` for a :class:`~brainevent.JITCScalarR` to scale to networks too large to
-store explicitly (see :doc:`jit-connectivity-large-networks`).
+store explicitly (see :doc:`/how-to/data-structures/jit-connectivity-large-networks`).
 
 
 Full models (COBA & CUBA)
