@@ -32,7 +32,7 @@ from brainevent._csr.slice import csr_slice_rows
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
 from brainevent._misc import (
-    _coo_todense, COOInfo, coo2csr, fixed_conn_num_csc_structure,
+    _coo_todense, COOInfo, fixed_conn_num_csc_structure,
     fixed_conn_num_csr_indptr, normalize_row_index, build_sub_csr,
 )
 from brainevent._typing import Data, MatrixShape, Index
@@ -353,6 +353,19 @@ class FixedNumConn(DataRepresentation):
         """
         raise NotImplementedError
 
+    def _csr_index(self):
+        """Return ``(indptr, indices, order)`` for the CSR view of ``W``.
+
+        Builds the Compressed Sparse Row layout of the logical matrix ``W``
+        directly from the stored ELL structure, without a generic COO-to-CSR
+        conversion.  ``indptr`` has length ``num_pre + 1`` and ``indices`` are
+        the column (post-synaptic) ids ordered by row.  ``order`` is a
+        permutation mapping the flattened ELL ``data`` into CSR order, or
+        ``None`` when the stored layout is already row-major and the data needs
+        no reordering.  Concrete behavior is defined per subclass.
+        """
+        raise NotImplementedError
+
     def to_dense(self):
         """Convert to a dense ``(num_pre, num_post)`` matrix.
 
@@ -419,21 +432,24 @@ class FixedNumConn(DataRepresentation):
         """
         from brainevent._csr import CSR  # local import avoids an import cycle
 
-        # Building the CSR layout reorders connections by row (``coo2csr`` runs
-        # ``jnp.unique`` over concrete row ids), so it must run outside jit. With
-        # the data-only pytree leaf, ``indices`` is static (concrete even under
-        # jit), so the in-trace signal is the ``data`` leaf becoming a tracer.
+        # Building the CSR layout reads concrete indices (and, for the
+        # column-major orientation, reorders connections by row), so it must run
+        # outside jit. With the data-only pytree leaf, ``indices`` is static
+        # (concrete even under jit), so the in-trace signal is the ``data`` leaf
+        # becoming a tracer.
         if isinstance(self.data, Tracer) or isinstance(self.indices, Tracer):
             raise RuntimeError(
                 f'{type(self).__name__}.to_csr() reorders connections by row and '
                 'must be called outside `jax.jit` / `brainstate.transform.jit`. '
                 'Convert the connection before entering the jitted function.'
             )
-        pre_ids, post_ids, _ = self._to_coo()
-        indptr, indices, order = coo2csr(pre_ids, post_ids, shape=self.shape)
+        indptr, indices, order = self._csr_index()
         if self.data.size == 1:
             # Homogeneous weight: keep the single shared value.
             data = self.data.reshape(1)
+        elif order is None:
+            # Row-major storage is already in CSR order; no permutation needed.
+            data = self.data.reshape(-1)
         else:
             data = self.data.reshape(-1)[order]
         return CSR((data, indices, indptr), shape=self.shape, backend=self.backend)
@@ -696,6 +712,14 @@ class FixedNumPerPre(FixedNumConn):
     def _to_coo(self):
         return fixed_post_num_to_coo(self)
 
+    def _csr_index(self):
+        # Row-major ELL is structurally a CSR of ``W``: a uniform row pointer
+        # and the stored indices flattened in row order, with the ``data``
+        # already in CSR order (no permutation).
+        indptr = fixed_conn_num_csr_indptr(self.indices)
+        indices = self.indices.reshape(-1)
+        return indptr, indices, None
+
     def with_data(self, data: Data) -> 'FixedNumPerPre':
         """Return a new matrix with the same connectivity and replaced values."""
         assert data.shape == self.data.shape
@@ -884,7 +908,7 @@ class FixedNumPerPost(FixedNumConn):
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
-        super().__init__(self.data, self.indices, shape=shape, backend=backend, buffers=buffers)
+        super().__init__((self.data, self.indices), shape=shape, backend=backend, buffers=buffers)
         _contains_invalid_indices(self.indices, upper_bound=self.shape[0])
         if precompute_weight_indices:
             self._weight_indices()
@@ -899,6 +923,14 @@ class FixedNumPerPost(FixedNumConn):
 
     def _to_coo(self):
         return fixed_pre_num_to_coo(self)
+
+    def _csr_index(self):
+        # Column-major ELL stores ``W^T`` row-major, so the compact CSC structure
+        # of the stored operand (built and cached by ``_weight_indices``) is
+        # exactly the CSR of ``W``; ``perm`` maps each CSR slot to the position
+        # of its weight in the flattened ELL ``data``.
+        csr_indptr, csr_indices, perm = self._weight_indices()
+        return csr_indptr, csr_indices, perm
 
     def with_data(self, data: Data) -> 'FixedNumPerPost':
         """Return a new matrix with the same connectivity and replaced values."""
