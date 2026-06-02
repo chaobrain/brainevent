@@ -75,3 +75,34 @@ class TestFixedNumPerPreGetitem:
         assert jnp.allclose(conn[-1], dense[7], atol=1e-5)
         with pytest.raises(IndexError):
             _ = conn[8]
+
+
+class TestFixedNumPerPreSliceRows:
+
+    @pytest.mark.parametrize('homo', [False, True])
+    def test_returns_same_type_and_matches_dense(self, homo):
+        conn = _make_perpre(8, 12, 3, homo=homo)
+        dense = conn.todense()
+        sub = conn.slice_rows([1, 3, 5])
+        assert isinstance(sub, FixedNumPerPre)
+        assert sub.shape == (3, 12)
+        assert sub.num_conn == 3
+        assert jnp.allclose(sub.todense(), np.asarray(dense)[[1, 3, 5]], atol=1e-5)
+
+    def test_single_int_is_one_row(self):
+        conn = _make_perpre(8, 12, 3)
+        dense = conn.todense()
+        sub = conn.slice_rows(4)
+        assert isinstance(sub, FixedNumPerPre)
+        assert sub.shape == (1, 12)
+        assert jnp.allclose(sub.todense(), dense[4:5], atol=1e-5)
+
+    def test_jit_safe(self):
+        conn = _make_perpre(8, 12, 3)
+        dense = conn.todense()
+        idx = jnp.array([0, 2, 4], dtype=jnp.int32)
+
+        def f(c, i):
+            return c.slice_rows(i).todense()
+        out = jax.jit(f)(conn, idx)
+        assert jnp.allclose(out, np.asarray(dense)[[0, 2, 4]], atol=1e-5)

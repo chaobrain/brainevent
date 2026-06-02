@@ -20,6 +20,7 @@ from typing import Optional
 
 import brainunit as u
 import jax
+import jax.numpy as jnp
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import DataRepresentation
@@ -574,6 +575,34 @@ class FixedNumPerPre(FixedNumConn):
         return csr_slice_rows(
             flat_data, flat_indices, indptr, rows,
             shape=self.shape, backend=self.backend,
+        )
+
+    def slice_rows(self, index) -> 'FixedNumPerPre':
+        """Return ``W[rows, :]`` as a new :class:`FixedNumPerPre`.
+
+        Selecting pre-synaptic rows preserves the fixed-connection invariant
+        (each selected row keeps its ``num_conn`` entries), so this is a static
+        gather and is safe under ``jax.jit``.
+
+        Parameters
+        ----------
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0 (pre-synaptic).
+
+        Returns
+        -------
+        FixedNumPerPre
+            Sparse sub-matrix of shape ``(len(rows), num_post)``.
+        """
+        rows = jnp.atleast_1d(normalize_row_index(index, self.shape[0]))
+        new_indices = self.indices[rows]
+        new_data = self.data if self.data.size == 1 else self.data[rows]
+        k = new_indices.shape[0]
+        # Structure-preserving build that bypasses the outside-jit constructor
+        # guard (indices are a validated subset), matching `_rebuild_with_data`.
+        return FixedNumPerPre.tree_unflatten(
+            {'shape': (k, self.shape[1]), 'backend': self.backend},
+            (new_data, new_indices),
         )
 
     def todense(self):
