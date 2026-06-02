@@ -134,7 +134,7 @@ class TestCSRSliceRows:
 
 def _make_homo_csr_and_dense(m, n, prob=0.3):
     """Create a homogeneous-weight CSR matrix and its dense equivalent."""
-    indptr, indices = get_csr(m, n, prob, replace=False)
+    indptr, indices = _csr_index_arrays(m, n, prob)
     data = jnp.array([1.5], dtype=jnp.float32)
     dense = np.zeros((m, n), dtype=np.float32)
     indptr_np = np.asarray(indptr)
@@ -499,31 +499,34 @@ class TestCSRSliceBatching:
     reason=f'No csr_slice_rows implementation on platform={platform}',
 )
 class TestCSCGetitem:
+    # ``CSC.__getitem__`` indexes *rows* of the logical matrix ``W`` (NumPy
+    # semantics), matching ``CSR``; previously it indexed columns. See PR #145
+    # / changelog.md ("CSC.__getitem__ now returns row i of W").
 
-    def test_single_col(self):
+    def test_single_int_index(self):
         m, n = 10, 15
         dense = np.random.randn(m, n).astype(np.float32)
         csc = CSC.fromdense(jnp.asarray(dense))
         result = csc[3]
-        expected = dense[:, 3]
-        assert result.shape == (m,)
+        expected = dense[3]
+        assert result.shape == (n,)
         assert jnp.allclose(result, jnp.asarray(expected), atol=1e-5)
 
-    def test_multi_col(self):
+    def test_tuple_index(self):
         m, n = 10, 15
         dense = np.random.randn(m, n).astype(np.float32)
         csc = CSC.fromdense(jnp.asarray(dense))
         result = csc[(0, 3, 7)]
-        expected = dense[:, [0, 3, 7]]
-        assert result.shape == (m, 3)
+        expected = dense[np.array([0, 3, 7])]
+        assert result.shape == (3, n)
         assert jnp.allclose(result, jnp.asarray(expected), atol=1e-5)
 
-    def test_array_col(self):
+    def test_array_index(self):
         m, n = 10, 15
         dense = np.random.randn(m, n).astype(np.float32)
         csc = CSC.fromdense(jnp.asarray(dense))
         idx = jnp.array([1, 5, 9], dtype=jnp.int32)
         result = csc[idx]
-        expected = dense[:, [1, 5, 9]]
-        assert result.shape == (m, 3)
+        expected = dense[np.array([1, 5, 9])]
+        assert result.shape == (3, n)
         assert jnp.allclose(result, jnp.asarray(expected), atol=1e-5)

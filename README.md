@@ -24,23 +24,25 @@ Brain is characterized by the discrete spiking events, which are the fundamental
 **CPUs**, **GPUs**, **TPUs**, and maybe more, which can be used to model the brain dynamics in an
 efficient and biologically plausible way.
 
-Particularly, it provides the following class to represent binary events in the brain:
+Particularly, it provides the following classes to represent binary (spiking) events in the brain:
 
-- ``BinaryArray``: representing array with a vector/matrix of events.
+- ``BinaryArray``: an array wrapping a vector/matrix of binary events (spikes).
+- ``BitPackedBinary``: a memory-efficient representation that packs binary events into bits
+  (see also the ``bitpack`` helper).
+- ``CompactBinary``: a compact representation that stores only the indices of the active (non-zero) events.
 
 Furthermore, it implements the following commonly used data structures for event-driven computation
-of the above class:
+of the above classes. Most structures come in row-oriented (``R``) and column-oriented (``C``) variants:
 
-- ``COO``: a sparse matrix in COO format for sparse and event-driven computation.
-- ``CSR``: a sparse matrix in CSR format for sparse and event-driven computation.
-- ``CSC``: a sparse matrix in CSC format for sparse and event-driven computation.
-- ``JITCHomoR``: a just-in-time connectivity matrix with homogenous weight for sparse and event-driven computation.
-- ``JITCNormalR``: a just-in-time connectivity matrix with normal distribution weight for sparse and event-driven
-  computation.
-- ``JITCUniformR``: a just-in-time connectivity matrix with uniform distribution weight for sparse and event-driven
-  computation.
-- ``FixedPreNumConn``: a fixed number of pre-synaptic connections for sparse and event-driven computation.
-- ``FixedPostNumConn``: a fixed number of post-synaptic connections for sparse and event-driven computation.
+- ``CSR`` / ``CSC``: sparse matrices in CSR / CSC format for sparse and event-driven computation.
+- ``JITCScalarR`` / ``JITCScalarC``: a just-in-time connectivity matrix with homogeneous (scalar)
+  weight for sparse and event-driven computation.
+- ``JITCNormalR`` / ``JITCNormalC``: a just-in-time connectivity matrix with normal-distribution
+  weights for sparse and event-driven computation.
+- ``JITCUniformR`` / ``JITCUniformC``: a just-in-time connectivity matrix with uniform-distribution
+  weights for sparse and event-driven computation.
+- ``FixedNumConn`` / ``FixedNumPerPre`` / ``FixedNumPerPost``: fixed-number connectivity matrices,
+  where each neuron has a fixed number of synaptic connections.
 - ...
 
 `BrainEvent` is fully compatible with physical units and unit-aware computations provided
@@ -62,8 +64,8 @@ will take advantage of event-driven computations:
 
 - Sparse data structures provided by ``brainevent``, like:
     - ``brainevent.CSR``
-    - ``brainevent.JITCHomoR``
-    - ``brainevent.FixedPostNumConn``
+    - ``brainevent.JITCScalarR``
+    - ``brainevent.FixedNumPerPre``
     - ...
 - Dense data structures provided by JAX/NumPy, like:
     - ``jax.numpy.ndarray``
@@ -73,7 +75,7 @@ will take advantage of event-driven computations:
 data = jax.random.rand(...)  # normal dense array
 data = brainevent.CSR(...)  # CSR structure
 data = brainevent.JITCScalarR(...)  # JIT connectivity
-data = brainevent.FixedPostNumConn(...)  # fixed number of post-synaptic connections
+data = brainevent.FixedNumPerPre(...)  # fixed number of post-synaptic connections per pre-neuron
 
 # event-driven matrix multiplication
 r = event_array @ data
