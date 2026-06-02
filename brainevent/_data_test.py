@@ -477,17 +477,23 @@ class TestDiagAddBufferIntegration:
 
     def test_diag_add_reuses_cached_positions(self):
         n = 3
+        # A dense matrix already has its full diagonal, so diag_add does not
+        # change the structure -- the cached structural plan is reused as-is.
         col_indices = [j for i in range(n) for j in range(n)]
         data = jnp.ones(n * n, dtype=jnp.float32)
         indices = jnp.array(col_indices, dtype=jnp.int32)
         indptr = jnp.array([i * n for i in range(n + 1)], dtype=jnp.int32)
         csr = brainevent.CSR((data, indices, indptr), shape=(n, n))
 
+        assert not hasattr(csr, 'diag_positions')
         result1 = csr.diag_add(jnp.ones(n))
-        diag_pos1 = result1.diag_positions
-        result2 = result1.diag_add(jnp.ones(n) * 2)
-        diag_pos2 = result2.diag_positions
-        np.testing.assert_array_equal(diag_pos1, diag_pos2)
+        cached = csr.diag_positions
+        result2 = csr.diag_add(jnp.ones(n) * 2)
+        # The second call reuses the cached plan rather than recomputing it.
+        assert csr.diag_positions is cached
+        # Both results share the (unchanged) sparsity structure.
+        np.testing.assert_array_equal(np.asarray(result1.indices), np.asarray(result2.indices))
+        np.testing.assert_array_equal(np.asarray(result1.indptr), np.asarray(result2.indptr))
 
     def test_diag_add_positions_survive_jit(self):
         n = 3
@@ -505,7 +511,10 @@ class TestDiagAddBufferIntegration:
 
         jitted = identity(result)
         assert 'diag_positions' in jitted._buffer_registry
-        np.testing.assert_array_equal(jitted.diag_positions, result.diag_positions)
+        # The structural plan is a tuple of arrays; compare component by component.
+        assert len(jitted.diag_positions) == len(result.diag_positions)
+        for got, expected in zip(jitted.diag_positions, result.diag_positions):
+            np.testing.assert_array_equal(np.asarray(got), np.asarray(expected))
 
 
 # ===========================================================================
