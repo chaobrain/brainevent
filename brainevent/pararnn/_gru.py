@@ -228,22 +228,38 @@ class GRUDiagMH(brainstate.nn.Module):
     This module wraps the ``GRUDiagMHImpl`` cell with ``brainstate.nn.Module``
     for state management and provides a clean API for training.
 
-    Args:
-        input_dim: Input feature dimension.
-        state_dim: Hidden state dimension.
-        num_heads: Number of heads for input projection. Must divide both
-            ``input_dim`` and ``state_dim``.
-        mode: Application mode (``'sequential'`` or ``'parallel'``).
-        nonlin_update: Activation for update gate z (default: ``'sigmoid'``).
-        nonlin_reset: Activation for reset gate r (default: ``'sigmoid'``).
-        nonlin_state: Activation for candidate state (default: ``'tanh'``).
-        a_init: Initialization for A weights (default: ``'xlstm'``).
-        b_init: Initialization for bias b (default: ``'bias_minus_linspace'``).
-        w_init: Initialization for B weights (default: ``'xavier_uniform'``).
-        newton_config: Configuration for Newton solver.
-        seed: Random seed for initialization.
+    Parameters
+    ----------
+    input_dim : int
+        Input feature dimension.
+    state_dim : int
+        Hidden state dimension.
+    num_heads : int, default 2
+        Number of heads for input projection. Must divide both ``input_dim``
+        and ``state_dim``.
+    mode : str, default 'parallel'
+        Application mode (``'sequential'`` or ``'parallel'``).
+    nonlin_update : str, default 'sigmoid'
+        Activation for update gate z.
+    nonlin_reset : str, default 'sigmoid'
+        Activation for reset gate r.
+    nonlin_state : str, default 'tanh'
+        Activation for candidate state.
+    a_init : str, default 'xlstm'
+        Initialization for A weights.
+    b_init : str, default 'bias_minus_linspace'
+        Initialization for bias b.
+    w_init : str, default 'xavier_uniform'
+        Initialization for B weights.
+    newton_config : NewtonConfig, optional
+        Configuration for the Newton solver. If ``None``, a default
+        :class:`NewtonConfig` is used.
+    seed : int, default 0
+        Random seed for initialization.
 
-    Example::
+    Examples
+    --------
+    .. code-block:: python
 
         >>> import jax.numpy as jnp
         >>> import brainstate
@@ -310,10 +326,14 @@ class GRUDiagMH(brainstate.nn.Module):
     def __call__(self, x: jax.Array) -> jax.Array:
         """Run the GRU on an input sequence.
 
-        Args:
-            x: Input tensor, shape ``(B, T, input_dim)``.
+        Parameters
+        ----------
+        x : jax.Array
+            Input tensor, shape ``(B, T, input_dim)``.
 
-        Returns:
+        Returns
+        -------
+        jax.Array
             Hidden states, shape ``(B, T, state_dim)``.
         """
         if self.mode == 'fused':
