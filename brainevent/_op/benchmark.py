@@ -22,7 +22,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import jax
 import numpy as np
@@ -1512,7 +1512,7 @@ def _json_safe(v: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 def benchmark_function(
-    fn,
+    fn: Callable,
     n_warmup: int,
     n_runs: int,
     n_batch_per_run: int = 1,
@@ -1523,7 +1523,8 @@ def benchmark_function(
     Parameters
     ----------
     fn : callable
-        A callable that takes no arguments and returns the result.
+        The callable to benchmark.  It is invoked as ``fn(*data)`` and its
+        result is used to seed the timing loop's carry.
     n_warmup : int
         Number of warmup runs (not timed).
     n_runs : int
@@ -1536,6 +1537,9 @@ def benchmark_function(
         which is useful for measuring throughput on asynchronous
         GPU/TPU execution.  The reported times are always **per-call**
         (i.e. the interval time divided by *n_batch_per_run*).
+    data : tuple, optional
+        Positional arguments forwarded to ``fn`` on every call.  Default
+        is the empty tuple ``()`` (``fn`` is called with no arguments).
 
     Returns
     -------

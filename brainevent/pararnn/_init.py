@@ -159,18 +159,28 @@ def initialize(name: str, key: jax.Array, shape: Tuple[int, ...],
                fan_in: int = 1, fan_out: Optional[int] = None) -> jax.Array:
     """Initialize a weight tensor using the named strategy.
 
-    Args:
-        name: Name of the initialization strategy.
-        key: JAX PRNG key.
-        shape: Shape of the tensor to initialize.
-        fan_in: Fan-in dimension (number of input features).
-        fan_out: Fan-out dimension (number of output features).
+    Parameters
+    ----------
+    name : str
+        Name of the initialization strategy.
+    key : jax.Array
+        JAX PRNG key.
+    shape : Tuple[int, ...]
+        Shape of the tensor to initialize.
+    fan_in : int, default=1
+        Fan-in dimension (number of input features).
+    fan_out : Optional[int], default=None
+        Fan-out dimension (number of output features).
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Initialized JAX array.
 
-    Raises:
-        KeyError: If the name is not in the registry.
+    Raises
+    ------
+    KeyError
+        If the name is not in the registry.
     """
     if name not in INITIALIZERS:
         raise KeyError(

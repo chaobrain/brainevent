@@ -560,7 +560,7 @@ def _register_numba_cuda_ffi_target(
 
 
 def numba_cuda_kernel(
-    kernel,
+    kernel: Callable,
     outs: OutType,
     *,
     grid: Union[int, Tuple[int, ...], None] = None,
@@ -570,7 +570,7 @@ def numba_cuda_kernel(
     shared_mem: int = 0,
     vmap_method: str | None = None,
     input_output_aliases: dict[int, int] | None = None,
-):
+) -> Callable:
     """Create a JAX-callable function from a single Numba CUDA kernel.
 
     Wraps a Numba CUDA kernel (decorated with ``@cuda.jit``) so that it
@@ -993,7 +993,7 @@ def numba_cuda_callable(
     *,
     vmap_method: str | None = None,
     input_output_aliases: dict[int, int] | None = None,
-):
+) -> Callable:
     """Create a JAX-callable from a Python function that launches Numba CUDA kernels.
 
     Unlike :func:`numba_cuda_kernel` (which wraps a single

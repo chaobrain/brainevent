@@ -1,5 +1,12 @@
-Quick Start
-===========
+Compile a raw CUDA/C++ kernel
+=============================
+
+Write a kernel in plain CUDA (GPU) or C++ (CPU), compile it, and call it from JAX — with no
+manual XLA FFI boilerplate. ``brainevent`` handles compilation, wrapper generation, caching,
+and registration. For the design behind this bridge, see
+:doc:`/explanation/custom-kernel-architecture`; for a guided walkthrough, see the
+:doc:`/tutorials/custom-operators/04_cpp` and :doc:`/tutorials/custom-operators/05_cuda`
+tutorials.
 
 CUDA (GPU)
 ----------
@@ -50,9 +57,9 @@ Write a CUDA kernel, compile it, and call it from JAX:
 
    print(result)  # [3. 3. 3. ... 3.]
 
-The ``functions`` dict maps each function name to its :doc:`arg_spec <arg_spec>`
-token list.  ``brainevent`` auto-generates the XLA FFI wrapper and registers the
-function as ``"my_kernels.vector_add"``.
+The ``functions`` dict maps each function name to its
+:doc:`arg_spec </reference/kernels/arg-spec>` token list.  ``brainevent`` auto-generates the
+XLA FFI wrapper and registers the function as ``"my_kernels.vector_add"``.
 
 .. tip::
 
@@ -151,3 +158,10 @@ Instead of inline source strings, compile directly from files on disk:
        functions={"func_a": ["arg", "ret", "stream"],
                   "func_b": ["arg", "arg", "ret", "stream"]},
    )
+
+.. seealso::
+
+   - :doc:`/reference/kernels/arg-spec` — the full token grammar for ``functions``.
+   - :doc:`/reference/kernels/cpp-api` — the ``BE::Tensor`` type and helper macros.
+   - :doc:`/reference/kernels/compiler-options` — optimization level, fast math, extra flags.
+   - :doc:`/reference/kernels/caching` — how compiled artifacts are cached and reused.

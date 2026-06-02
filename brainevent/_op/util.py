@@ -17,7 +17,7 @@
 
 import functools
 import importlib.util
-from typing import Protocol, Union, Tuple, Sequence
+from typing import Any, Callable, Optional, Protocol, Sequence, Tuple, TYPE_CHECKING, Union
 
 import jax
 import numpy as np
@@ -25,6 +25,9 @@ from jax import tree_util
 from jax.interpreters import ad
 
 from brainevent._compatible_import import Primitive, init_zero
+
+if TYPE_CHECKING:
+    from .main import XLACustomKernel
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -123,7 +126,7 @@ def check_warp_installed():
         raise RuntimeError(_WARP_INSTALL_ERROR_MESSAGE) from exc
 
 
-def defjvp(primitive, *jvp_rules):
+def defjvp(primitive: Union[Primitive, 'XLACustomKernel'], *jvp_rules: Optional[Callable]) -> None:
     """Define per-input JVP rules for a JAX primitive.
 
     This function allows defining Jacobian-vector product (JVP) rules
@@ -266,7 +269,12 @@ def _add_tangents(xs, ys):
     return tree_util.tree_map(ad.add_tangents, xs, ys, is_leaf=lambda a: isinstance(a, ad.Zero))
 
 
-def general_batching_rule(prim, args, axes, **kwargs):
+def general_batching_rule(
+    prim: Primitive,
+    args: Sequence,
+    axes: Sequence[Optional[int]],
+    **kwargs
+) -> Tuple[Any, Any]:
     """General-purpose batching rule for custom JAX primitives.
 
     Implements batching by separating batched and non-batched arguments,
@@ -329,15 +337,20 @@ def general_batching_rule(prim, args, axes, **kwargs):
             batch_axes.append(ax_i)
 
     def f(_, x):
-        """
-        Internal function for jax.lax.scan that applies the primitive to a single batch element.
+        """Apply the primitive to a single batch element for ``jax.lax.scan``.
 
-        Args:
-            _: Carry value (unused).
-            x: Dictionary containing the current batch slice for each batched argument.
+        Parameters
+        ----------
+        _ : int
+            Scan carry value (unused).
+        x : dict
+            The current batch slice for each batched argument.
 
-        Returns:
-            tuple: (carry value, primitive output)
+        Returns
+        -------
+        tuple
+            A pair ``(carry, primitive_output)`` where *carry* is the
+            unchanged scan carry (``0``).
         """
         pars = tuple(
             [(x[f'ax{i}'] if i in batch_axes else non_batch_args[f'ax{i}'])
@@ -472,7 +485,7 @@ def abstract_arguments(outs):
     return outs, tree_def
 
 
-def jaxtype_to_warptype(dtype):
+def jaxtype_to_warptype(dtype: Union[np.dtype, type]) -> Any:
     """Convert a JAX / NumPy dtype to the corresponding Warp scalar type.
 
     Maps standard NumPy data types (which are also used by JAX) to their
@@ -560,7 +573,7 @@ def jaxtype_to_warptype(dtype):
         raise ValueError(f"Warp does not support computations with dtype: {dtype}")
 
 
-def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct):
+def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct) -> Any:
     """Convert a ``jax.ShapeDtypeStruct`` to a Warp array type descriptor.
 
     Takes a JAX shape-and-dtype specification and creates the

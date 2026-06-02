@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+import jax
 import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 
@@ -28,7 +29,7 @@ __all__ = [
 ]
 
 
-def bitpack(arr, axis):
+def bitpack(arr: jax.Array, axis: int) -> jax.Array:
     """Pack a boolean array into uint32 words along the given axis.
 
     Each uint32 word stores 32 binary values.  Bit ``b`` of word ``w``

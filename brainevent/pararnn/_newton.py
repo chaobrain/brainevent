@@ -26,7 +26,7 @@ differentiation through Newton iterations.
 """
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import jax
 
@@ -37,10 +37,13 @@ __all__ = ['NewtonConfig', 'newton_solve']
 class NewtonConfig:
     """Configuration for the Newton solver.
 
-    Attributes:
-        max_its: Maximum number of Newton iterations.
-        omega_sor: Successive-over-relaxation parameter.
-            < 1: stabilizing, = 1: vanilla Newton, > 1: accelerating.
+    Attributes
+    ----------
+    max_its : int
+        Maximum number of Newton iterations.
+    omega_sor : float
+        Successive-over-relaxation parameter.
+        ``< 1``: stabilizing, ``= 1``: vanilla Newton, ``> 1``: accelerating.
     """
     max_its: int = 3
     omega_sor: float = 1.0
@@ -48,29 +51,39 @@ class NewtonConfig:
 
 def newton_solve(
     h0: jax.Array,
-    compute_negative_residuals: Callable,
-    compute_jacobians: Callable,
-    linear_solve: Callable,
+    compute_negative_residuals: Callable[[jax.Array], jax.Array],
+    compute_jacobians: Callable[[jax.Array], Any],
+    linear_solve: Callable[[Any, jax.Array], jax.Array],
     newton_config: NewtonConfig = NewtonConfig(),
 ) -> jax.Array:
     """Solve F(h) = 0 via Newton iteration with parallel reduction.
 
     At each iteration:
-        1. Compute residuals: rhs = -(h - f(h_prev, x))
-        2. Compute Jacobians: J = -df/dh_prev
-        3. Solve bidiagonal system: dh = linear_solve(J, rhs)
-        4. Update: h = h + omega * dh
+
+    1. Compute residuals: ``rhs = -(h - f(h_prev, x))``
+    2. Compute Jacobians: ``J = -df/dh_prev``
+    3. Solve bidiagonal system: ``dh = linear_solve(J, rhs)``
+    4. Update: ``h = h + omega * dh``
 
     Uses ``jax.lax.fori_loop`` for JIT compatibility.
 
-    Args:
-        h0: Initial guess for hidden states, shape ``(B, T, N)``.
-        compute_negative_residuals: ``h -> rhs``, computes negative residuals.
-        compute_jacobians: ``h -> jac``, computes Jacobians.
-        linear_solve: ``(jac, rhs) -> dh``, solves the bidiagonal system.
-        newton_config: Solver configuration.
+    Parameters
+    ----------
+    h0 : jax.Array
+        Initial guess for hidden states, shape ``(B, T, N)``.
+    compute_negative_residuals : Callable[[jax.Array], jax.Array]
+        ``h -> rhs``, computes negative residuals.
+    compute_jacobians : Callable[[jax.Array], Any]
+        ``h -> jac``, computes Jacobians. The returned Jacobian structure
+        is cell-specific and consumed by ``linear_solve``.
+    linear_solve : Callable[[Any, jax.Array], jax.Array]
+        ``(jac, rhs) -> dh``, solves the bidiagonal system.
+    newton_config : NewtonConfig
+        Solver configuration.
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Solution ``h`` with shape ``(B, T, N)``.
     """
     omega = newton_config.omega_sor
