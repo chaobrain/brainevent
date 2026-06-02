@@ -27,7 +27,8 @@ from brainevent._event.binary import BinaryArray
 from brainevent._misc import _coo_todense, COOInfo, fixed_conn_num_csc_structure
 from brainevent._typing import Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec, csc_binary_matmat
-from .float import fcnmv, fcnmm, fcnmv_yw2y
+from .float import fcnmv, fcnmm
+from .yw2y import fcnmv_yw2y
 from .plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_post_conn_on_binary_post,
