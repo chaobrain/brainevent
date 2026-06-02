@@ -24,7 +24,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brainevent._csr.yw2y import csrmv_yw2y, csrmv_yw2y_p
+from brainevent._csr.yw2y import csrmv_yw2y, cscmv_yw2y, csrmv_yw2y_p
 from brainevent._csr.test_util import get_csr
 
 platform = jax.default_backend()
@@ -63,3 +63,55 @@ class TestCSRMVYw2y:
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
 
         jax.block_until_ready((data, y, indptr, indices, result, expected))
+
+
+@pytest.mark.skipif(
+    not CSRMV_YW2Y_IMPLEMENTATIONS,
+    reason=f'No csrmv_yw2y implementation on platform={platform}',
+)
+class TestCSCMVYw2y:
+    @pytest.mark.parametrize('implementation', CSRMV_YW2Y_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('shape', [(100, 200), (200, 400)])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_csc(self, implementation, shape, transpose):
+        m, k = shape
+        # CSC structure of an (m, k) matrix: ``indptr`` partitions the nse
+        # entries over the k columns, and ``indices`` holds the row ids in
+        # ``[0, m)``.  ``get_csr`` produces exactly this layout when its
+        # ``(n_pre, n_post)`` roles are swapped to ``(k, m)``.
+        indptr, indices = get_csr(k, m, 0.5)
+
+        data = braintools.init.Normal(0.0, 1.0)(indices.shape)
+        y = brainstate.random.rand(k) if transpose else brainstate.random.rand(m)
+
+        result = cscmv_yw2y(y, data, indices, indptr, shape=(m, k), transpose=transpose, backend=implementation)
+
+        if transpose:
+            # index by CSC column id (derived from indptr)
+            col_ids = _row_ids_from_indptr(indptr)
+            expected = data * y[col_ids]
+        else:
+            # index by CSC row id (stored directly in indices)
+            expected = data * y[indices]
+
+        assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((data, y, indptr, indices, result, expected))
+
+    @pytest.mark.parametrize('implementation', CSRMV_YW2Y_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_csc_matches_transposed_csr(self, implementation, transpose):
+        # cscmv_yw2y(shape=(m, k), transpose=t) must equal
+        # csrmv_yw2y(shape=(k, m), transpose=not t) on the same arrays.
+        m, k = 120, 80
+        indptr, indices = get_csr(k, m, 0.5)
+
+        data = braintools.init.Normal(0.0, 1.0)(indices.shape)
+        y = brainstate.random.rand(k) if transpose else brainstate.random.rand(m)
+
+        csc_result = cscmv_yw2y(y, data, indices, indptr, shape=(m, k), transpose=transpose, backend=implementation)
+        csr_result = csrmv_yw2y(y, data, indices, indptr, shape=(k, m), transpose=not transpose, backend=implementation)
+
+        assert jnp.allclose(csc_result, csr_result, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((data, y, indptr, indices, csc_result, csr_result))

@@ -14,8 +14,8 @@
 // ==============================================================================
 
 /*
- * csrmv_yw2y.cu -- CSR Weighted-to-Nonzero CUDA Kernels
- * ======================================================
+ * yw2y.cu -- CSR Weighted-to-Nonzero CUDA Kernels
+ * ================================================
  *
  * Python API:
  *   brainevent.csrmv_yw2y(y, w, indices, indptr, shape=(m,k), transpose=False)

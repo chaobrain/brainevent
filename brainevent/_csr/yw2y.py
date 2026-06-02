@@ -29,6 +29,7 @@ from brainevent._typing import Data, Indptr, Index, MatrixShape
 
 __all__ = [
     'csrmv_yw2y',
+    'cscmv_yw2y',
     'csrmv_yw2y_p',
 ]
 
@@ -131,6 +132,104 @@ def csrmv_yw2y(
     return u.maybe_decimal(res * w_unit)
 
 
+def cscmv_yw2y(
+    y: Data,
+    w: Data,
+    indices: Index,
+    indptr: Indptr,
+    *,
+    shape,
+    transpose: bool = False,
+    backend: Optional[str] = None,
+) -> Data:
+    """
+    Element-wise product of a vector and CSC weights, indexed by CSC
+    structure.
+
+    For each non-zero entry ``j`` in the CSC matrix at position
+    ``(row, col)``, computes ``out[j] = w[j] * y[row]`` (non-transposed)
+    or ``out[j] = w[j] * y[col]`` (transposed).  The result has the same
+    shape as ``w`` and ``indices`` (i.e., one value per structural
+    non-zero).
+
+    This is the CSC counterpart of :func:`csrmv_yw2y`.  Because the CSC
+    arrays of a matrix ``W`` of shape ``(m, k)`` are, array-for-array, the
+    CSR arrays of ``W.T`` of shape ``(k, m)``, this function simply
+    forwards to :func:`csrmv_yw2y` with the shape reversed and the
+    ``transpose`` flag flipped.  No data permutation is required, so it
+    inherits the differentiability, unit handling, and backend dispatch of
+    the underlying CSR primitive.
+
+    The function supports physical units via :mod:`brainunit`.
+
+    Parameters
+    ----------
+    y : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Dense vector indexed by the CSC structure.  Shape ``(shape[0],)``
+        when ``transpose=False`` or ``(shape[1],)`` when ``transpose=True``.
+    w : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Per-synapse weight values in CSC data order.  Shape ``(nse,)``,
+        must match the shape of ``indices``.
+    indices : jax.Array or numpy.ndarray
+        Row indices of the CSC matrix.  Shape ``(nse,)`` with integer
+        dtype.
+    indptr : jax.Array or numpy.ndarray
+        Column index pointer array.  Shape ``(shape[1] + 1,)`` with integer
+        dtype.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        CSC matrix.
+    transpose : bool, optional
+        If ``True``, index ``y`` by column indices instead of row indices.
+        Default is ``False``.
+    backend : str or None, optional
+        Compute backend.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    out : jax.Array or brainunit.Quantity
+        Per-synapse result vector.  Shape ``(nse,)``, same as ``w``.
+
+    See Also
+    --------
+    csrmv_yw2y : The CSR primitive this wraps.
+
+    Notes
+    -----
+    A matrix ``W`` of shape ``(m, k)`` stored in CSC order has the same
+    ``data`` / ``indices`` / ``indptr`` arrays as ``W.T`` stored in CSR
+    order with shape ``(k, m)``.  Under that view, indexing ``y`` by the
+    CSC row (``transpose=False``) corresponds to indexing the CSR
+    *column* axis, and indexing by the CSC column (``transpose=True``)
+    corresponds to the CSR *row* axis.  Hence the call delegates to::
+
+        csrmv_yw2y(y, w, indices, indptr,
+                   shape=shape[::-1], transpose=not transpose)
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import cscmv_yw2y
+        >>> # CSC of a (3, 2) matrix: indptr over the 2 columns.
+        >>> y = jnp.array([1.0, 2.0, 3.0])
+        >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> cscmv_yw2y(y, w, indices, indptr, shape=(3, 2))
+    """
+    return csrmv_yw2y(
+        y,
+        w,
+        indices,
+        indptr,
+        shape=tuple(shape)[::-1],
+        transpose=not transpose,
+        backend=backend,
+    )
+
+
 def _csrmv_yw2y_numba_kernels(
     transpose: bool,
     **kwargs
@@ -180,7 +279,7 @@ def _csrmv_yw2y_cuda_kernel(
         return _csrmv_yw2y_jax_kernel(transpose=transpose, **kwargs)
 
     load_cuda_file(
-        Path(__file__).parent.joinpath('yw2y_csrmv_yw2y.cu'),
+        Path(__file__).parent.joinpath('yw2y.cu'),
         name='csrmv_yw2y',
     )
 
