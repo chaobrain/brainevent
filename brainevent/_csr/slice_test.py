@@ -24,15 +24,33 @@ import pytest
 
 from brainevent._csr.slice import csr_slice_rows, csr_slice_rows_p
 from brainevent._csr.main import CSR, CSC
-from brainevent._csr.test_util import get_csr
 
 platform = jax.default_backend()
 SLICE_IMPLEMENTATIONS = tuple(csr_slice_rows_p.available_backends(platform))
 
 
+def _csr_index_arrays(m, n, prob):
+    """Generate CSR ``(indptr, indices)`` with distinct per-row columns via NumPy.
+
+    Avoids brainstate's typed-PRNG-key ``for_loop`` path, which trips a
+    ``jax.lax.scan`` carry-dtype mismatch (``key<fry>`` vs ``uint32[2]``) on the
+    first call in a process.
+    """
+    n_conn = int(n * prob)
+    indptr = np.arange(m + 1, dtype=np.int32) * n_conn
+    rng = np.random.default_rng()
+    if m > 0 and n_conn > 0:
+        indices = np.concatenate(
+            [rng.choice(n, size=n_conn, replace=False) for _ in range(m)]
+        ).astype(np.int32)
+    else:
+        indices = np.zeros((0,), dtype=np.int32)
+    return indptr, indices
+
+
 def _make_csr_and_dense(m, n, prob=0.3):
     """Create a CSR matrix and its dense equivalent for testing."""
-    indptr, indices = get_csr(m, n, prob, replace=False)
+    indptr, indices = _csr_index_arrays(m, n, prob)
     data = jnp.asarray(np.random.randn(indices.shape[0]).astype(np.float32))
     dense = np.zeros((m, n), dtype=np.float32)
     indptr_np = np.asarray(indptr)
@@ -115,7 +133,7 @@ class TestCSRSliceRows:
 
 def _make_homo_csr_and_dense(m, n, prob=0.3):
     """Create a homogeneous-weight CSR matrix and its dense equivalent."""
-    indptr, indices = get_csr(m, n, prob, replace=False)
+    indptr, indices = _csr_index_arrays(m, n, prob)
     data = jnp.array([1.5], dtype=jnp.float32)
     dense = np.zeros((m, n), dtype=np.float32)
     indptr_np = np.asarray(indptr)
@@ -508,3 +526,71 @@ class TestCSCGetitem:
         expected = dense[:, [1, 5, 9]]
         assert result.shape == (m, 3)
         assert jnp.allclose(result, jnp.asarray(expected), atol=1e-5)
+
+
+from brainevent._misc import normalize_row_index, build_sub_csr
+
+
+class TestSliceHelpers:
+
+    def test_normalize_int_is_scalar(self):
+        out = normalize_row_index(3, 10)
+        assert out.ndim == 0
+        assert int(out) == 3
+        assert out.dtype == jnp.int32
+
+    def test_normalize_negative_wraps(self):
+        out = normalize_row_index(-1, 10)
+        assert int(out) == 9
+
+    def test_normalize_list_and_array(self):
+        out = normalize_row_index([0, -1, 2], 5)
+        assert out.ndim == 1
+        assert list(np.asarray(out)) == [0, 4, 2]
+
+    def test_normalize_python_slice(self):
+        out = normalize_row_index(slice(1, 8, 2), 10)
+        assert list(np.asarray(out)) == [1, 3, 5, 7]
+
+    def test_normalize_slice_negative_bounds(self):
+        out = normalize_row_index(slice(None, None, -1), 4)
+        assert list(np.asarray(out)) == [3, 2, 1, 0]
+
+    def test_normalize_oob_raises(self):
+        with pytest.raises(IndexError):
+            normalize_row_index(10, 10)
+        with pytest.raises(IndexError):
+            normalize_row_index([0, 99], 10)
+        with pytest.raises(IndexError):
+            normalize_row_index(-11, 10)
+
+    def test_build_sub_csr_matches_dense(self):
+        m, n = 8, 6
+        data, indices, indptr, dense = _make_csr_and_dense(m, n)
+        rows = jnp.array([1, 3, 5], dtype=jnp.int32)
+        nd, ni, nip, shape = build_sub_csr(data, indices, indptr, rows, n)
+        assert shape == (3, n)
+        sub = np.zeros(shape, dtype=np.float32)
+        nip_np, ni_np, nd_np = np.asarray(nip), np.asarray(ni), np.asarray(nd)
+        for r in range(3):
+            for j in range(nip_np[r], nip_np[r + 1]):
+                sub[r, ni_np[j]] += nd_np[j]
+        assert np.allclose(sub, np.asarray(dense)[[1, 3, 5]], atol=1e-5)
+
+    def test_build_sub_csr_homogeneous(self):
+        m, n = 6, 5
+        data, indices, indptr, dense = _make_homo_csr_and_dense(m, n)
+        rows = jnp.array([0, 2], dtype=jnp.int32)
+        nd, ni, nip, shape = build_sub_csr(data, indices, indptr, rows, n)
+        assert nd.size == 1
+        assert shape == (2, n)
+
+    def test_build_sub_csr_traced_raises(self):
+        m, n = 6, 5
+        data, indices, indptr, dense = _make_csr_and_dense(m, n)
+
+        def f(rows):
+            build_sub_csr(data, indices, indptr, rows, n)
+            return rows
+        with pytest.raises(Exception):
+            jax.jit(f)(jnp.array([0, 1], dtype=jnp.int32))
