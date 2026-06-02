@@ -20,11 +20,16 @@ from typing import Optional
 
 import brainunit as u
 import jax
+import jax.numpy as jnp
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
-from brainevent._misc import _coo_todense, COOInfo, coo2csr, fixed_conn_num_csc_structure
+from brainevent._misc import (
+    _coo_todense, COOInfo, coo2csr, fixed_conn_num_csc_structure,
+    fixed_conn_num_csr_indptr, normalize_row_index, build_sub_csr,
+)
+from brainevent._csr.slice import csr_slice_rows
 from brainevent._typing import Data, MatrixShape, Index
 from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from brainevent._csr.plasticity_binary import update_csr_on_binary_post
@@ -696,6 +701,60 @@ class FixedNumPerPre(FixedNumConn):
         return FixedNumPerPre((data, self.indices), shape=self.shape,
                               backend=self.backend, buffers=self.buffers)
 
+    def __getitem__(self, index):
+        """Extract rows of ``W`` as a dense array (NumPy semantics).
+
+        Row slicing is favorable for :class:`FixedNumPerPre`: the ELL is a CSR
+        with an implicit uniform ``indptr``, fed straight to ``csr_slice_rows``.
+
+        Parameters
+        ----------
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0 (pre-synaptic). Negative indices wrap;
+            Python slices are supported; concrete OOB indices raise ``IndexError``.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            ``(num_post,)`` for a single int, otherwise ``(len(rows), num_post)``.
+        """
+        rows = normalize_row_index(index, self.shape[0])
+        indptr = fixed_conn_num_csr_indptr(self.indices)
+        flat_indices = self.indices.reshape(-1)
+        flat_data = self.data if self.data.size == 1 else self.data.reshape(-1)
+        return csr_slice_rows(
+            flat_data, flat_indices, indptr, rows,
+            shape=self.shape, backend=self.backend,
+        )
+
+    def slice_rows(self, index) -> 'FixedNumPerPre':
+        """Return ``W[rows, :]`` as a new :class:`FixedNumPerPre`.
+
+        Selecting pre-synaptic rows preserves the fixed-connection invariant
+        (each selected row keeps its ``num_conn`` entries), so this is a static
+        gather and is safe under ``jax.jit``.
+
+        Parameters
+        ----------
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0 (pre-synaptic).
+
+        Returns
+        -------
+        FixedNumPerPre
+            Sparse sub-matrix of shape ``(len(rows), num_post)``.
+        """
+        rows = jnp.atleast_1d(normalize_row_index(index, self.shape[0]))
+        new_indices = self.indices[rows]
+        new_data = self.data if self.data.size == 1 else self.data[rows]
+        k = new_indices.shape[0]
+        # Structure-preserving build that bypasses the outside-jit constructor
+        # guard (a validated subset of rows), mirroring `_rebuild_with_data`.
+        # The CSC mirror is not carried over (the structure changed); it rebuilds
+        # lazily on first need.
+        aux = {'indices': new_indices, 'shape': (k, self.shape[1]), 'backend': self.backend}
+        return FixedNumPerPre.tree_unflatten((aux, {}), (new_data,))
+
     def todense(self):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""
         pre_ids, post_ids, spinfo = fixed_post_num_to_coo(self)
@@ -849,6 +908,61 @@ class FixedNumPerPost(FixedNumConn):
         assert u.get_unit(data) == u.get_unit(self.data)
         return FixedNumPerPost((data, self.indices), shape=self.shape,
                                backend=self.backend, buffers=self.buffers)
+
+    def __getitem__(self, index):
+        """Extract rows of ``W`` as a dense array (NumPy semantics).
+
+        Row slicing is the *unfavorable* direction for :class:`FixedNumPerPost`
+        (which stores ``W`` column-major), so it reuses the cached CSR-of-``W``
+        view from :meth:`_weight_indices` and the shared ``csr_slice_rows``
+        kernel.
+
+        Parameters
+        ----------
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0 (pre-synaptic). Negative indices wrap;
+            Python slices are supported; concrete OOB indices raise ``IndexError``.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            ``(num_post,)`` for a single int, otherwise ``(len(rows), num_post)``.
+        """
+        rows = normalize_row_index(index, self.shape[0])
+        csc_indptr, csc_indices, perm = self._weight_indices()
+        weights = self.data if self.data.size == 1 else self.data.reshape(-1)[perm]
+        return csr_slice_rows(
+            weights, csc_indices, csc_indptr, rows,
+            shape=self.shape, backend=self.backend,
+        )
+
+    def slice_rows(self, index) -> 'CSR':
+        """Return ``W[rows, :]`` as a :class:`~brainevent.CSR` (outside ``jax.jit``).
+
+        Selecting pre-synaptic rows breaks the fixed-per-post invariant (each
+        post keeps a variable number of incoming pre), so the canonical
+        row-major result is a :class:`CSR`. Built from the cached CSR-of-``W``
+        view; the output non-zero count is data-dependent, so ``index`` must be
+        concrete.
+
+        Parameters
+        ----------
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0 (pre-synaptic).
+
+        Returns
+        -------
+        CSR
+            Sparse sub-matrix of shape ``(len(rows), num_post)``.
+        """
+        from brainevent._csr.main import CSR  # local import avoids import cycle
+        rows = jnp.atleast_1d(normalize_row_index(index, self.shape[0]))
+        csc_indptr, csc_indices, perm = self._weight_indices()
+        weights = self.data if self.data.size == 1 else self.data.reshape(-1)[perm]
+        new_data, new_indices, new_indptr, shape = build_sub_csr(
+            weights, csc_indices, csc_indptr, rows, self.shape[1],
+        )
+        return CSR((new_data, new_indices, new_indptr), shape=shape, backend=self.backend)
 
     def todense(self):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""

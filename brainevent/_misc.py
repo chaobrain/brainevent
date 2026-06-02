@@ -22,7 +22,7 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.sparse import csr_todense_p, coo_todense_p
+from jax.experimental.sparse import coo_todense_p
 
 from ._typing import MatrixShape, Data, Index
 from ._compatible_import import Tracer
@@ -209,11 +209,22 @@ def _csr_todense(
     -------
     Data
         A dense array with the given *shape* and dtype matching *data*.
+
+    Notes
+    -----
+    Repeated ``(row, col)`` coordinates are **accumulated** (summed), matching
+    the semantics of the CSR matmul kernels.  Materialisation is performed with
+    an additive scatter (``jnp.zeros(...).at[row, col].add(data)``) so the result
+    is correct on every backend -- unlike JAX's ``csr_todense`` primitive (which
+    overwrites on duplicate columns) and the cuSPARSE ``coo_todense`` lowering
+    (which assumes a canonical, duplicate-free matrix).  Canonical matrices are
+    unaffected by the choice of reduction.
     """
     data, unit = u.split_mantissa_unit(data)
     if data.size == 1:
         data = jnp.ones(indices.shape, dtype=data.dtype) * data
-    mat = csr_todense_p.bind(data, indices, indptr, shape=shape)
+    row, col = _csr_to_coo(indices, indptr)
+    mat = jnp.zeros(shape, dtype=data.dtype).at[row, col].add(data)
     return u.maybe_decimal(mat * unit)
 
 
@@ -1124,6 +1135,105 @@ def fixed_conn_num_csr_indptr(
     if isinstance(indices, np.ndarray):
         return np.arange(n_pre + 1, dtype=indices.dtype) * n_conn
     return jnp.arange(n_pre + 1, dtype=indices.dtype) * n_conn
+
+
+def normalize_row_index(index, n_rows: int):
+    """Normalize a row index/slice into an ``int32`` array for row slicing.
+
+    Accepts ``int`` / ``list`` / ``tuple`` / ``np.ndarray`` / ``jax.Array`` and
+    Python ``slice`` objects. A scalar ``int`` returns a 0-D array (so a dense
+    slice yields a 1-D row); everything else returns a 1-D array. Negative
+    indices wrap against ``n_rows`` (NumPy semantics). When the indices are
+    concrete, out-of-bounds values raise :class:`IndexError`; traced indices
+    (under ``jax.jit``) are left unchecked and the slice kernel zero-fills any
+    out-of-bounds rows.
+
+    Parameters
+    ----------
+    index : int, list, tuple, numpy.ndarray, jax.Array, or slice
+        Row selector.
+    n_rows : int
+        Size of axis 0 of the logical matrix ``W``.
+
+    Returns
+    -------
+    jax.Array
+        ``int32`` row indices: 0-D for a scalar ``int``, otherwise 1-D.
+    """
+    if isinstance(index, slice):
+        start, stop, step = index.indices(int(n_rows))
+        return jnp.arange(start, stop, step, dtype=jnp.int32)
+
+    arr = jnp.asarray(index)
+    if not jnp.issubdtype(arr.dtype, jnp.integer):
+        raise IndexError(f"Row index must be integer, got dtype {arr.dtype}.")
+    arr = arr.astype(jnp.int32)
+    arr = jnp.where(arr < 0, arr + n_rows, arr)
+
+    if not isinstance(arr, Tracer):
+        with jax.ensure_compile_time_eval():
+            arr_np = np.asarray(arr)
+        if arr_np.size and (arr_np.min() < 0 or arr_np.max() >= n_rows):
+            raise IndexError(
+                f"Row index out of bounds for axis 0 with size {n_rows}."
+            )
+    return arr
+
+
+def build_sub_csr(data, indices, indptr, rows, n_cols: int):
+    """Build the CSR arrays of ``W[rows, :]`` from a CSR-of-``W`` view.
+
+    The output number of non-zeros depends on the *values* of ``indptr`` and
+    ``rows``, so this requires concrete (non-traced) ``rows`` / ``indptr`` and
+    must run outside ``jax.jit``. Homogeneous (size-1) ``data`` is returned
+    unchanged (still size-1).
+
+    Parameters
+    ----------
+    data : jax.Array
+        CSR-view values, shape ``(nnz,)`` or ``(1,)`` (homogeneous).
+    indices : jax.Array
+        CSR-view column indices, shape ``(nnz,)``.
+    indptr : jax.Array
+        CSR-view row pointers, shape ``(n_rows + 1,)``.
+    rows : jax.Array
+        Concrete 1-D row indices to extract.
+    n_cols : int
+        Number of columns of ``W``.
+
+    Returns
+    -------
+    new_data : jax.Array
+    new_indices : jax.Array
+    new_indptr : jax.Array
+    shape : tuple of int
+        ``(len(rows), n_cols)``.
+    """
+    if isinstance(rows, Tracer) or isinstance(indptr, Tracer):
+        raise RuntimeError(
+            "build_sub_csr requires concrete row indices and indptr; the sparse "
+            "`slice_rows` for CSR/CSC/FixedNumPerPost has a data-dependent number "
+            "of non-zeros and cannot run under jax.jit. Call it outside jit."
+        )
+    with jax.ensure_compile_time_eval():
+        indptr_np = np.asarray(indptr)
+        rows_np = np.asarray(rows).reshape(-1).astype(np.int64)
+        starts = indptr_np[rows_np]
+        ends = indptr_np[rows_np + 1]
+        counts = (ends - starts).astype(np.int64)
+        new_indptr_np = np.zeros(rows_np.shape[0] + 1, dtype=indptr_np.dtype)
+        np.cumsum(counts, out=new_indptr_np[1:])
+        if counts.sum() == 0:
+            gather_np = np.zeros((0,), dtype=np.int64)
+        else:
+            gather_np = np.concatenate(
+                [np.arange(s, e, dtype=np.int64) for s, e in zip(starts, ends)]
+            )
+    gather = jnp.asarray(gather_np)
+    new_indptr = jnp.asarray(new_indptr_np)
+    new_indices = jnp.asarray(indices).reshape(-1)[gather]
+    new_data = data if data.size == 1 else data.reshape(-1)[gather]
+    return new_data, new_indices, new_indptr, (int(rows_np.shape[0]), int(n_cols))
 
 
 def fixed_conn_num_csc_structure(

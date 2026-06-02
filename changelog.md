@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Sparse row slicing** for `CSR`, `CSC`, `FixedNumPerPre`, and `FixedNumPerPost`:
+  a dense `__getitem__` returning row(s) of the logical matrix `W` with full NumPy
+  index semantics (`int` / `list` / `tuple` / `array` / Python `slice`, negative-index
+  wrapping, concrete out-of-bounds raising `IndexError`), plus a sparse
+  `slice_rows(index)` returning `W[rows, :]`
+  (`CSR`→`CSR`, `CSC`→`CSC`, `FixedNumPerPre`→`FixedNumPerPre`, `FixedNumPerPost`→`CSR`).
+  `FixedNumPerPre.slice_rows` is `jax.jit`-safe; the other `slice_rows` paths have a
+  data-dependent number of non-zeros and must run outside `jax.jit`.
+
+### Changed
+
+- **`CSC.__getitem__` now returns row `i` of `W`** (NumPy semantics) instead of column
+  `i`. This is a breaking change for code relying on the previous column-indexing
+  behavior; use `csc.transpose()[i]` or `csc.todense()[:, i]` for the old result.
+
 ## [0.0.7] - 2026-03-12
 
 ### Added
