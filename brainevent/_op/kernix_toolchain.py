@@ -467,7 +467,15 @@ def detect_cuda_toolchain() -> CudaToolchain:
 
     # nvcc version
     nvcc_version = ""
-    proc = subprocess.run([nvcc, "--version"], capture_output=True, text=True, timeout=10)
+    try:
+        proc = subprocess.run([nvcc, "--version"], capture_output=True, text=True, timeout=10)
+    except (FileNotFoundError, subprocess.SubprocessError) as e:
+        raise NvccNotFoundError(render_toolchain_error(
+            stage="nvcc discovery", code="E-NVCC",
+            summary=f"nvcc could not be executed: {nvcc} ({e.__class__.__name__})",
+            probes=nvcc_probes,
+            remediation=["Verify this nvcc is executable and not corrupted, or use a different nvcc."],
+        )) from e
     for line in proc.stdout.splitlines():
         if "release" in line.lower():
             nvcc_version = line.strip()
