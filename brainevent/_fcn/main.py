@@ -37,8 +37,8 @@ from .plasticity_binary import (
 
 __all__ = [
     'FixedNumConn',
-    'FixedPostNumConn',
-    'FixedPreNumConn',
+    'FixedNumPerPre',
+    'FixedNumPerPost',
 ]
 
 
@@ -90,9 +90,9 @@ class FixedNumConn(DataRepresentation):
     ``(num_pre, num_post)`` stored row-major in fixed-connection ELL format
     (``data`` / ``indices``).  The concrete subclasses fix the orientation:
 
-    * :class:`FixedPostNumConn` (``axis == 0``): each pre-synaptic neuron has a
+    * :class:`FixedNumPerPre` (``axis == 0``): each pre-synaptic neuron has a
       fixed number of outgoing connections; ``indices`` are post-synaptic ids.
-    * :class:`FixedPreNumConn` (``axis == 1``): each post-synaptic neuron has a
+    * :class:`FixedNumPerPost` (``axis == 1``): each post-synaptic neuron has a
       fixed number of incoming connections; ``indices`` are pre-synaptic ids.
 
     Event-driven matrix-vector products follow the same favorable/unfavorable
@@ -119,8 +119,8 @@ class FixedNumConn(DataRepresentation):
 
     See Also
     --------
-    FixedPostNumConn : Concrete subclass for fixed post-synaptic connections.
-    FixedPreNumConn : Concrete subclass for fixed pre-synaptic connections.
+    FixedNumPerPre : Concrete subclass for fixed post-synaptic connections.
+    FixedNumPerPost : Concrete subclass for fixed pre-synaptic connections.
     """
     data: Data
     indices: Index
@@ -325,8 +325,8 @@ class FixedNumConn(DataRepresentation):
 
         For each firing pre neuron ``i`` every stored synapse is updated
         ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.  Favorable
-        (row-driven) for :class:`FixedPostNumConn`, unfavorable (column-scan) for
-        :class:`FixedPreNumConn`; dispatched on ``self.axis``.
+        (row-driven) for :class:`FixedNumPerPre`, unfavorable (column-scan) for
+        :class:`FixedNumPerPost`; dispatched on ``self.axis``.
 
         Parameters
         ----------
@@ -363,8 +363,8 @@ class FixedNumConn(DataRepresentation):
 
         For each firing post neuron ``j`` every stored synapse is updated
         ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.  Unfavorable
-        (column-scan) for :class:`FixedPostNumConn`, favorable (row-driven) for
-        :class:`FixedPreNumConn`; dispatched on ``self.axis``.
+        (column-scan) for :class:`FixedNumPerPre`, favorable (row-driven) for
+        :class:`FixedNumPerPost`; dispatched on ``self.axis``.
 
         Parameters
         ----------
@@ -482,7 +482,7 @@ class FixedNumConn(DataRepresentation):
 
 
 @jax.tree_util.register_pytree_node_class
-class FixedPostNumConn(FixedNumConn):
+class FixedNumPerPre(FixedNumConn):
     """
     Sparse matrix with a fixed number of post-synaptic connections per
     pre-synaptic neuron (row-major ELL, ``axis == 0``).
@@ -496,11 +496,11 @@ class FixedPostNumConn(FixedNumConn):
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent import FixedPostNumConn
+        >>> from brainevent import FixedNumPerPre
         >>>
         >>> data = jnp.array([[1., 2.], [3., 4.]])
         >>> indices = jnp.array([[0, 1], [1, 2]])
-        >>> mat = FixedPostNumConn(data, indices, shape=(2, 3))
+        >>> mat = FixedNumPerPre(data, indices, shape=(2, 3))
         >>> mat.shape
         (2, 3)
     """
@@ -529,7 +529,7 @@ class FixedPostNumConn(FixedNumConn):
         else:
             args = (data, indices)
         self.data, self.indices = map(u.math.asarray, args)
-        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedPostNumConn')
+        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedNumPerPre')
         _validate_fixed_conn_indices(self.indices, expected_rows=shape[0], kind='Post-synaptic')
         if self.data.size != 1 and self.data.shape != self.indices.shape:
             raise ValueError(
@@ -539,29 +539,29 @@ class FixedPostNumConn(FixedNumConn):
         super().__init__((self.data, self.indices), shape=shape, backend=backend)
         _contains_invalid_indices(self.indices, upper_bound=self.shape[1])
 
-    def with_data(self, data: Data) -> 'FixedPostNumConn':
+    def with_data(self, data: Data) -> 'FixedNumPerPre':
         """Return a new matrix with the same connectivity and replaced values."""
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return FixedPostNumConn((data, self.indices), shape=self.shape, backend=self.backend)
+        return FixedNumPerPre((data, self.indices), shape=self.shape, backend=self.backend)
 
     def todense(self):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""
         pre_ids, post_ids, spinfo = fixed_post_num_to_coo(self)
         return _coo_todense(self.data.flatten(), pre_ids, post_ids, spinfo=spinfo)
 
-    def transpose(self, axes=None) -> 'FixedPreNumConn':
-        """Transpose to a :class:`FixedPreNumConn` (O(1); reinterprets indices)."""
+    def transpose(self, axes=None) -> 'FixedNumPerPost':
+        """Transpose to a :class:`FixedNumPerPost` (O(1); reinterprets indices)."""
         assert axes is None, "transpose does not support axes argument."
-        return FixedPreNumConn(
+        return FixedNumPerPost(
             (self.data, self.indices),
             shape=self.shape[::-1],
             backend=self.backend,
         )
 
     def _unitary_op(self, op):
-        return FixedPostNumConn((op(self.data), self.indices), shape=self.shape, backend=self.backend)
+        return FixedNumPerPre((op(self.data), self.indices), shape=self.shape, backend=self.backend)
 
     def _binary_op(self, other, op):
         if isinstance(other, u.sparse.SparseMatrix):
@@ -569,11 +569,11 @@ class FixedPostNumConn(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedPostNumConn((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPre((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_post_num_to_coo(self)
             other = other[rows, cols]
-            return FixedPostNumConn((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPre((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -583,17 +583,17 @@ class FixedPostNumConn(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedPostNumConn((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPre((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_post_num_to_coo(self)
             other = other[rows, cols]
-            return FixedPostNumConn((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPre((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
 
 @jax.tree_util.register_pytree_node_class
-class FixedPreNumConn(FixedNumConn):
+class FixedNumPerPost(FixedNumConn):
     """
     Sparse matrix with a fixed number of pre-synaptic connections per
     post-synaptic neuron (``axis == 1``; stores ``W^T`` row-major).
@@ -607,11 +607,11 @@ class FixedPreNumConn(FixedNumConn):
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent import FixedPreNumConn
+        >>> from brainevent import FixedNumPerPost
         >>>
         >>> data = jnp.array([[1., 2.], [3., 4.], [5., 6.]])
         >>> indices = jnp.array([[0, 1], [1, 0], [0, 2]])
-        >>> mat = FixedPreNumConn(data, indices, shape=(3, 3))
+        >>> mat = FixedNumPerPost(data, indices, shape=(3, 3))
         >>> mat.shape
         (3, 3)
     """
@@ -640,7 +640,7 @@ class FixedPreNumConn(FixedNumConn):
         else:
             args = (data, indices)
         self.data, self.indices = map(u.math.asarray, args)
-        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedPreNumConn')
+        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedNumPerPost')
         _validate_fixed_conn_indices(self.indices, expected_rows=shape[1], kind='Pre-synaptic')
         if self.data.size != 1 and self.data.shape != self.indices.shape:
             raise ValueError(
@@ -650,29 +650,29 @@ class FixedPreNumConn(FixedNumConn):
         super().__init__((self.data, self.indices), shape=shape, backend=backend)
         _contains_invalid_indices(self.indices, upper_bound=self.shape[0])
 
-    def with_data(self, data: Data) -> 'FixedPreNumConn':
+    def with_data(self, data: Data) -> 'FixedNumPerPost':
         """Return a new matrix with the same connectivity and replaced values."""
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return FixedPreNumConn((data, self.indices), shape=self.shape, backend=self.backend)
+        return FixedNumPerPost((data, self.indices), shape=self.shape, backend=self.backend)
 
     def todense(self):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""
         pre_ids, post_ids, spinfo = fixed_pre_num_to_coo(self)
         return _coo_todense(self.data.flatten(), pre_ids, post_ids, spinfo=spinfo)
 
-    def transpose(self, axes=None) -> FixedPostNumConn:
-        """Transpose to a :class:`FixedPostNumConn` (O(1); reinterprets indices)."""
+    def transpose(self, axes=None) -> FixedNumPerPre:
+        """Transpose to a :class:`FixedNumPerPre` (O(1); reinterprets indices)."""
         assert axes is None, "transpose does not support axes argument."
-        return FixedPostNumConn(
+        return FixedNumPerPre(
             (self.data, self.indices),
             shape=self.shape[::-1],
             backend=self.backend,
         )
 
     def _unitary_op(self, op):
-        return FixedPreNumConn((op(self.data), self.indices), shape=self.shape, backend=self.backend)
+        return FixedNumPerPost((op(self.data), self.indices), shape=self.shape, backend=self.backend)
 
     def _binary_op(self, other, op):
         if isinstance(other, u.sparse.SparseMatrix):
@@ -680,11 +680,11 @@ class FixedPreNumConn(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedPreNumConn((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPost((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_pre_num_to_coo(self)
             other = other[rows, cols]
-            return FixedPreNumConn((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPost((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -694,17 +694,17 @@ class FixedPreNumConn(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedPreNumConn((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPost((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_pre_num_to_coo(self)
             other = other[rows, cols]
-            return FixedPreNumConn((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPost((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
 
-def fixed_post_num_to_coo(self: FixedPostNumConn):
-    """Convert a :class:`FixedPostNumConn` to ``(pre_ids, post_ids, COOInfo)``."""
+def fixed_post_num_to_coo(self: FixedNumPerPre):
+    """Convert a :class:`FixedNumPerPre` to ``(pre_ids, post_ids, COOInfo)``."""
     import jax.numpy as jnp
     pre_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
     post_ids = self.indices.flatten()
@@ -714,8 +714,8 @@ def fixed_post_num_to_coo(self: FixedPostNumConn):
     return pre_ids, post_ids, spinfo
 
 
-def fixed_pre_num_to_coo(self: FixedPreNumConn):
-    """Convert a :class:`FixedPreNumConn` to ``(pre_ids, post_ids, COOInfo)``."""
+def fixed_pre_num_to_coo(self: FixedNumPerPost):
+    """Convert a :class:`FixedNumPerPost` to ``(pre_ids, post_ids, COOInfo)``."""
     import jax.numpy as jnp
     pre_ids = self.indices.flatten()
     post_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])

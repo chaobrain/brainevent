@@ -67,7 +67,7 @@ from ._event import (
     CompactBinary,
 )
 from ._fcn import (
-    FixedNumConn, FixedPreNumConn, FixedPostNumConn,
+    FixedNumConn, FixedNumPerPost, FixedNumPerPre,
     binary_fcnmv, ell_binary_matvec_p,
     csc_binary_matvec, csc_binary_matvec_p,
     csc_binary_matmat, csc_binary_matmat_p,
@@ -191,7 +191,7 @@ __all__ = [
     'jitumm', 'jitumm_p',
 
     # --- Fixed number connectivity --- #
-    'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
+    'FixedNumConn', 'FixedNumPerPost', 'FixedNumPerPre',
     'binary_fcnmv', 'ell_binary_matvec_p',
     'csc_binary_matvec', 'csc_binary_matvec_p',
     'csc_binary_matmat', 'csc_binary_matmat_p',
@@ -275,8 +275,24 @@ def __getattr__(name):
         raise AttributeError(
             f'{name} has been removed. The fixed-number-connection layout '
             'abstraction was replaced by inline favorable/unfavorable dispatch on '
-            'FixedPreNumConn / FixedPostNumConn (mirroring CSR / CSC). Use those '
+            'FixedNumPerPost / FixedNumPerPre (mirroring CSR / CSC). Use those '
             'classes directly; the column-major view is now an internal, lazily '
             'cached structure built via brainevent._misc.fixed_conn_num_csc_structure.'
         )
+    if name == 'FixedPostNumConn':
+        warnings.warn(
+            'FixedPostNumConn is deprecated, use '
+            f'{FixedNumPerPre.__name__} instead (each pre-neuron has a fixed '
+            'number of post-synaptic connections; the new name states the '
+            'subject neuron).'
+        )
+        return FixedNumPerPre
+    if name == 'FixedPreNumConn':
+        warnings.warn(
+            'FixedPreNumConn is deprecated, use '
+            f'{FixedNumPerPost.__name__} instead (each post-neuron has a fixed '
+            'number of pre-synaptic connections; the new name states the '
+            'subject neuron).'
+        )
+        return FixedNumPerPost
     raise AttributeError(name)

@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Golden parity pinning FixedPreNumConn/FixedPostNumConn matmat behavior.
+"""Golden parity pinning FixedNumPerPost/FixedNumPerPre matmat behavior.
 
 Captured BEFORE the unfavorable-direction scatter refactor. Assertions are
 against the dense reference ``M.todense()``.
@@ -23,15 +23,15 @@ import brainunit as u
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent import FixedPreNumConn, FixedPostNumConn, BinaryArray
+from brainevent import FixedNumPerPost, FixedNumPerPre, BinaryArray
 
 
 def _cases():
     rng = np.random.default_rng(0)
     n_pre, n_post, n_conn = 6, 5, 3
-    for cls in (FixedPostNumConn, FixedPreNumConn):
-        rows = n_pre if cls is FixedPostNumConn else n_post
-        upper = n_post if cls is FixedPostNumConn else n_pre
+    for cls in (FixedNumPerPre, FixedNumPerPost):
+        rows = n_pre if cls is FixedNumPerPre else n_post
+        upper = n_post if cls is FixedNumPerPre else n_pre
         for homo in (True, False):
             indices = rng.integers(0, upper, size=(rows, n_conn)).astype(np.int32)
             if homo:
@@ -62,11 +62,11 @@ def test_fcn_matmat_golden():
 
 def test_fcn_matmat_unfavorable_builds_weight_indices():
     # Unfavorable matmat must build the cached CSC view (scatter path), exactly
-    # as the matvec unfavorable path does. For FixedPostNumConn (axis==0),
+    # as the matvec unfavorable path does. For FixedNumPerPre (axis==0),
     # _ell_plan gives ell_transpose == transpose_W, so __matmul__ (W @ M,
     # transpose_W=False) is the *unfavorable* direction.
     rng = np.random.default_rng(5)
-    cls, data, indices, shape = next(_cases())   # FixedPostNumConn, homo
+    cls, data, indices, shape = next(_cases())   # FixedNumPerPre, homo
     M = cls(data, indices, shape=shape)
     n_pre, n_post = shape
     assert M._csc is None                          # FCN caches its CSC view in self._csc

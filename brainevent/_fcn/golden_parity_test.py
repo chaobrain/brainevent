@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Golden parity tests pinning FixedPreNumConn/FixedPostNumConn matvec behavior.
+"""Golden parity tests pinning FixedNumPerPost/FixedNumPerPre matvec behavior.
 
 Captured BEFORE the dispatch simplification (Phase 9) so the refactor can be
 checked for behavioral drift. All assertions are against the dense reference
@@ -23,15 +23,15 @@ checked for behavioral drift. All assertions are against the dense reference
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent import FixedPreNumConn, FixedPostNumConn, BinaryArray
+from brainevent import FixedNumPerPost, FixedNumPerPre, BinaryArray
 
 
 def _cases():
     rng = np.random.default_rng(0)
     n_pre, n_post, n_conn = 6, 5, 3
-    for cls in (FixedPostNumConn, FixedPreNumConn):
-        rows = n_pre if cls is FixedPostNumConn else n_post
-        upper = n_post if cls is FixedPostNumConn else n_pre
+    for cls in (FixedNumPerPre, FixedNumPerPost):
+        rows = n_pre if cls is FixedNumPerPre else n_post
+        upper = n_post if cls is FixedNumPerPre else n_pre
         for homo in (True, False):
             indices = rng.integers(0, upper, size=(rows, n_conn)).astype(np.int32)
             if homo:
