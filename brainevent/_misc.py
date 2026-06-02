@@ -22,7 +22,7 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.sparse import csr_todense_p, coo_todense_p
+from jax.experimental.sparse import coo_todense_p
 
 from ._typing import MatrixShape, Data, Index
 from ._compatible_import import Tracer
@@ -209,11 +209,22 @@ def _csr_todense(
     -------
     Data
         A dense array with the given *shape* and dtype matching *data*.
+
+    Notes
+    -----
+    Repeated ``(row, col)`` coordinates are **accumulated** (summed), matching
+    the semantics of the CSR matmul kernels.  Materialisation is performed with
+    an additive scatter (``jnp.zeros(...).at[row, col].add(data)``) so the result
+    is correct on every backend -- unlike JAX's ``csr_todense`` primitive (which
+    overwrites on duplicate columns) and the cuSPARSE ``coo_todense`` lowering
+    (which assumes a canonical, duplicate-free matrix).  Canonical matrices are
+    unaffected by the choice of reduction.
     """
     data, unit = u.split_mantissa_unit(data)
     if data.size == 1:
         data = jnp.ones(indices.shape, dtype=data.dtype) * data
-    mat = csr_todense_p.bind(data, indices, indptr, shape=shape)
+    row, col = _csr_to_coo(indices, indptr)
+    mat = jnp.zeros(shape, dtype=data.dtype).at[row, col].add(data)
     return u.maybe_decimal(mat * unit)
 
 
