@@ -28,17 +28,17 @@ import pytest
 
 from brainevent._fcn.binary import (
     binary_fcnmv,
-    ell_binary_matvec_p,
+    binary_fcnmv_p,
     binary_fcnmm,
-    ell_binary_matmat_p,
+    binary_fcnmm_p,
 )
 from brainevent._misc import fixed_conn_num_to_csc
 from brainevent._test_util import generate_fixed_conn_num_indices
 
 
 platform = jax.default_backend()
-ELL_MV_IMPLEMENTATIONS = tuple(impl for impl in ell_binary_matvec_p.available_backends(platform))
-FCNMM_IMPLEMENTATIONS = tuple(impl for impl in ell_binary_matmat_p.available_backends(platform))
+ELL_MV_IMPLEMENTATIONS = tuple(impl for impl in binary_fcnmv_p.available_backends(platform))
+FCNMM_IMPLEMENTATIONS = tuple(impl for impl in binary_fcnmm_p.available_backends(platform))
 
 if platform == 'cpu':
     SHAPES = (

@@ -15,9 +15,9 @@
 
 from .binary import (
     binary_fcnmv,
-    ell_binary_matvec_p,
+    binary_fcnmv_p,
     binary_fcnmm,
-    ell_binary_matmat_p,
+    binary_fcnmm_p,
 )
 from .float import fcnmv, fcnmm
 from .yw2y import fcnmv_yw2y
@@ -30,8 +30,8 @@ from .plasticity_binary import (
 
 __all__ = [
     'FixedNumConn', 'FixedNumPerPost', 'FixedNumPerPre',
-    'binary_fcnmv', 'ell_binary_matvec_p',
-    'binary_fcnmm', 'ell_binary_matmat_p',
+    'binary_fcnmv', 'binary_fcnmv_p',
+    'binary_fcnmm', 'binary_fcnmm_p',
     'fcnmv', 'fcnmm', 'fcnmv_yw2y',
     'update_fixed_post_conn_on_binary_pre',
     'update_fixed_pre_conn_on_binary_post',

@@ -67,7 +67,7 @@ This needs three things:
 
    Pure event-driven array and sparse-matrix operations work out of the box on every
    backend. The C++ compiler is only needed when you compile **custom** C++/CUDA kernels
-   (see :doc:`/how-to/compile-raw-cuda-cpp`).
+   (see :doc:`/how-to/building-extending/compile-raw-cuda-cpp`).
 
 
 Optional toolchain configuration

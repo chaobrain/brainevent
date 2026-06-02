@@ -69,8 +69,8 @@ from ._event import (
 )
 from ._fcn import (
     FixedNumConn, FixedNumPerPost, FixedNumPerPre,
-    binary_fcnmv, ell_binary_matvec_p,
-    binary_fcnmm, ell_binary_matmat_p,
+    binary_fcnmv, binary_fcnmv_p,
+    binary_fcnmm, binary_fcnmm_p,
     fcnmv, fcnmm, fcnmv_yw2y,
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
@@ -191,8 +191,8 @@ __all__ = [
 
     # --- Fixed number connectivity --- #
     'FixedNumConn', 'FixedNumPerPost', 'FixedNumPerPre',
-    'binary_fcnmv', 'ell_binary_matvec_p',
-    'binary_fcnmm', 'ell_binary_matmat_p',
+    'binary_fcnmv', 'binary_fcnmv_p',
+    'binary_fcnmm', 'binary_fcnmm_p',
     'fcnmv',
     'fcnmm',
     'fcnmv_yw2y',

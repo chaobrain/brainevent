@@ -25,6 +25,7 @@ from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
+from brainevent._jit_conn_csr import jitc_to_csr
 from .binary import binary_jitnmv, binary_jitnmm
 from .float import jitn, jitnmv, jitnmm
 
@@ -306,6 +307,56 @@ class JITCNormalMatrix(JITCMatrix):
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
+        )
+
+    def tocsr(self):
+        """
+        Convert the sparse normal-weight matrix to Compressed Sparse Row (CSR) format.
+
+        Generates the non-zero structure ``(data, indices, indptr)`` directly
+        from the connectivity parameters using dedicated CPU/CUDA operators,
+        without ever materializing the dense matrix. The resulting
+        :class:`~brainevent.CSR` reproduces exactly the same matrix as
+        :meth:`todense` for the active compute backend, with each stored value
+        drawn from ``Normal(wloc, wscale)``.
+
+        Returns
+        -------
+        CSR
+            A :class:`~brainevent.CSR` matrix with the same shape and values as
+            :meth:`todense`. The data type matches ``wloc``, and physical units
+            (``brainunit.Quantity``) are preserved on the stored values.
+
+        See Also
+        --------
+        todense : Materialize the matrix as a dense array.
+
+        Notes
+        -----
+        Generation uses a count pass followed by a fill pass; the number of
+        stored elements is read back between the two passes, so ``tocsr`` is an
+        eager-only conversion and cannot be traced under ``jax.jit``. Peak
+        memory is ``O(nnz)`` rather than ``O(rows * cols)``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> from brainevent import JITCNormalR
+            >>> mat = JITCNormalR((1.5, 0.2, 0.2, 42), shape=(10, 10))
+            >>> csr = mat.tocsr()
+            >>> csr.shape
+            (10, 10)
+        """
+        return jitc_to_csr(
+            self.wloc,
+            self.wscale,
+            self.prob,
+            self.seed,
+            shape=self.shape,
+            corder=self.corder,
+            dist='normal',
+            backend=self.backend,
         )
 
     def tree_flatten(self):

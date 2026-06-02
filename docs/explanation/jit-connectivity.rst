@@ -3,7 +3,7 @@ Just-in-time connectivity
 
 Just-in-time connectivity (**JITC**) is ``brainevent``'s answer to a hard scaling problem:
 how do you multiply a spike vector by a random connectivity matrix that is too large to
-store? For the practical recipe, see :doc:`/how-to/jit-connectivity-large-networks`.
+store? For the practical recipe, see :doc:`/how-to/data-structures/jit-connectivity-large-networks`.
 
 
 The memory problem
