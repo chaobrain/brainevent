@@ -67,6 +67,8 @@ brainevent/pararnn/_fused.py:0: note: Use https://github.com/hauntsaninja/no_imp
 brainevent/_jit_normal/main.py:0: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
 brainevent/_jit_normal/main.py:0: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
 brainevent/_fcn/main.py:0: error: Missing return statement  [return]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Number" has no attribute "reshape"  [union-attr]
+brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Number" has no attribute "size"  [union-attr]
 brainevent/_fcn/main.py:0: error: Incompatible types in assignment (expression has type "CscLayout", variable has type "None")  [assignment]
 brainevent/_fcn/main.py:0: error: Incompatible return value type (got "None", expected "CscLayout")  [return-value]
 brainevent/_fcn/main.py:0: error: Item "Number" of "Any | Any | Any | Number" has no attribute "shape"  [union-attr]
