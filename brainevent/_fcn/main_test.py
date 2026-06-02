@@ -783,3 +783,61 @@ class TestMatrix:
             assert allclose(y1, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y2, y_true, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((indices, xs, y1, y2, y_true))
+
+
+class Test_Yw2y:
+    def test_fixed_post(self):
+        m, n, k = 5, 7, 3
+        indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
+        data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
+        conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
+        y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
+
+        # yw_to_w: y indexed by row=pre -> broadcast
+        assert allclose(conn.yw_to_w(y_pre), data * y_pre[:, None])
+        # yw_to_w_transposed: y indexed by col=post -> gather
+        assert allclose(conn.yw_to_w_transposed(y_post), data * y_post[indices])
+
+    def test_fixed_pre(self):
+        num_pre, num_post, k = 7, 5, 3
+        # indices: (num_post, k) with values in [0, num_pre)
+        indices = generate_fixed_conn_num_indices(num_post, num_pre, k, replace=True)
+        data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
+        conn = brainevent.FixedPreNumConn((data, indices), shape=(num_pre, num_post))
+        y_pre = jnp.arange(1, num_pre + 1, dtype=jnp.float32)
+        y_post = jnp.arange(1, num_post + 1, dtype=jnp.float32)
+
+        # yw_to_w: y indexed by row=pre -> gather (indices are pre ids)
+        assert allclose(conn.yw_to_w(y_pre), data * y_pre[indices])
+        # yw_to_w_transposed: y indexed by col=post=leading -> broadcast
+        assert allclose(conn.yw_to_w_transposed(y_post), data * y_post[:, None])
+
+    def test_default_w_uses_self_data(self):
+        m, n, k = 5, 7, 3
+        indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
+        data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
+        conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
+        y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
+        assert allclose(conn.yw_to_w(y_pre), conn.yw_to_w(y_pre, data))
+        assert allclose(conn.yw_to_w_transposed(y_post),
+                        conn.yw_to_w_transposed(y_post, data))
+
+    def test_golden_parity_csr(self):
+        m, n, k = 5, 7, 3
+        indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
+        data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
+        conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+
+        indptr = jnp.arange(m + 1, dtype=jnp.int32) * k
+        csr = brainevent.CSR(
+            (data.flatten(), indices.flatten().astype(jnp.int32), indptr), shape=(m, n)
+        )
+        y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
+        y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
+
+        assert allclose(conn.yw_to_w(y_pre).flatten(),
+                        csr.yw_to_w(y_pre, data.flatten()))
+        assert allclose(conn.yw_to_w_transposed(y_post).flatten(),
+                        csr.yw_to_w_transposed(y_post, data.flatten()))
