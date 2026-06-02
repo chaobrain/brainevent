@@ -82,3 +82,39 @@ def test_gencode_multi_ptx_for_highest():
 def test_gencode_empty_raises():
     with pytest.raises(ValueError):
         kt.gencode_flags([])
+
+
+# --- cache: platform extension + atomic store -----------------------------
+
+def test_cache_uses_platform_ext(tmp_path, monkeypatch):
+    from brainevent._op import kernix_cache as kcache
+    from brainevent._op import kernix_toolchain as ktool
+    monkeypatch.setattr(ktool.sys, "platform", "win32")
+    c = kcache.CompilationCache(base_dir=str(tmp_path))
+    assert c.lookup("m", "deadbeef") is None
+    src = tmp_path / "src.dll"
+    src.write_bytes(b"x")
+    dest = c.store("m", "deadbeef", str(src))
+    assert dest.name == "m.dll"
+    assert c.lookup("m", "deadbeef") == dest
+
+
+def test_cache_store_atomic_move(tmp_path):
+    from brainevent._op import kernix_cache as kcache
+    c = kcache.CompilationCache(base_dir=str(tmp_path))
+    build = tmp_path / "build"
+    build.mkdir()
+    so = build / "m.so"
+    so.write_bytes(b"hello")
+    dest = c.store("m", "k", str(so))
+    assert dest.read_bytes() == b"hello"
+    assert not so.exists()  # moved, not copied
+
+
+# --- pipeline: empty-functions guard --------------------------------------
+
+def test_empty_functions_guard():
+    import brainevent
+    from brainevent._error import KernelError
+    with pytest.raises(KernelError):
+        brainevent.load_cpp_inline("noop", "int main(){return 0;}", functions={})
