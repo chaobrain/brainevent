@@ -31,6 +31,49 @@ from brainevent._error import (
 )
 
 
+_ARCH_OK = re.compile(r"^sm_\d{2,3}[a-z]?$")
+
+
+def normalize_arch(value: "str") -> str:
+    """Normalize a compute-capability spec to nvcc's ``sm_XX`` form.
+
+    Accepts ``"8.6"``, ``"86"``, ``"sm_86"``, ``"compute_86"`` and
+    architecture-suffixed forms such as ``"9.0a"``/``"90a"``.
+
+    Parameters
+    ----------
+    value : str
+        Compute capability in any common spelling.
+
+    Returns
+    -------
+    str
+        Canonical ``sm_XX`` (optionally suffixed) string.
+
+    Raises
+    ------
+    ValueError
+        If *value* is empty or not a valid capability.
+    """
+    s = str(value).strip().lower()
+    if not s:
+        raise ValueError(f"invalid compute capability: {value!r}")
+    if s.startswith("sm_"):
+        s = s[3:]
+    elif s.startswith("compute_"):
+        s = s[8:]
+    suffix = ""
+    if s and s[-1].isalpha():
+        suffix, s = s[-1], s[:-1]
+    digits = s.replace(".", "")
+    if not digits.isdigit() or len(digits) < 2:
+        raise ValueError(f"invalid compute capability: {value!r}")
+    arch = f"sm_{digits}{suffix}"
+    if not _ARCH_OK.match(arch):
+        raise ValueError(f"invalid compute capability: {value!r}")
+    return arch
+
+
 @dataclass(frozen=True)
 class CudaToolchain:
     """Immutable description of available CUDA compilation tools."""
@@ -145,6 +188,28 @@ def get_nvcc_discovery() -> str:
     if env in _VALID_NVCC_DISCOVERY:
         return env
     return "pip"
+
+
+# ---------------------------------------------------------------------------
+# Compute-capability pin (process-global override of auto-detection)
+# ---------------------------------------------------------------------------
+
+_COMPUTE_CAPABILITIES: "list[str] | None" = None
+
+
+def set_compute_capabilities(value: "str | list[str] | None") -> None:
+    """Pin the target compute capability/-ies process-wide (``None`` = auto)."""
+    global _COMPUTE_CAPABILITIES
+    if value is None:
+        _COMPUTE_CAPABILITIES = None
+        return
+    items = [value] if isinstance(value, str) else list(value)
+    _COMPUTE_CAPABILITIES = [normalize_arch(v) for v in items]
+
+
+def get_compute_capabilities() -> "list[str] | None":
+    """Return the pinned compute capabilities, or ``None`` if auto."""
+    return list(_COMPUTE_CAPABILITIES) if _COMPUTE_CAPABILITIES is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -553,38 +618,137 @@ def nvcc_host_pic_flags() -> list[str]:
     return ["--compiler-options", "-fPIC"]
 
 
-def detect_cuda_arch() -> list[str]:
-    """Auto-detect GPU compute capabilities via nvidia-smi.
+def _dedup(seq: "list[str]") -> "list[str]":
+    """Return *seq* with duplicates removed, order preserved."""
+    out: "list[str]" = []
+    for x in seq:
+        if x not in out:
+            out.append(x)
+    return out
 
-    Returns a list like ``["sm_86"]``.  Falls back to ``["sm_80"]`` if
-    detection fails.
+
+def _arch_from_jax() -> "list[str] | None":
+    """Compute capabilities of visible JAX GPU devices (never raises).
+
+    Returns device order (device 0 first), so the first element is JAX's
+    default device.  ``None`` when no GPU device / attribute is available.
     """
-    fallback = os.environ.get("BRAINEVENT_COMPUTE_CAPABILITIES", "")
-    if fallback:
-        return [f"sm_{c.replace('.', '')}" for c in fallback.split(",")]
+    try:
+        devices = jax.devices("gpu")
+    except Exception:
+        return None
+    caps: "list[str]" = []
+    for d in devices:
+        cc = getattr(d, "compute_capability", None)
+        if not cc:
+            continue
+        try:
+            caps.append(normalize_arch(cc))
+        except ValueError:
+            continue
+    return _dedup(caps) or None
 
+
+def _arch_from_nvidia_smi() -> "list[str] | None":
+    """Compute capabilities via the nvidia-smi binary (never raises)."""
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=10,
         )
     except (FileNotFoundError, subprocess.SubprocessError):
-        result = None
+        return None
+    if result.returncode != 0:
+        return None
+    caps: "list[str]" = []
+    for line in result.stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            caps.append(normalize_arch(line))
+        except ValueError:
+            continue
+    return _dedup(caps) or None
 
-    if result is not None and result.returncode == 0:
-        caps = set()
-        for line in result.stdout.strip().splitlines():
-            cap = line.strip().replace(".", "")
-            caps.add(f"sm_{cap}")
-        if caps:
-            return sorted(caps)
 
+def resolve_compute_capabilities(explicit: "str | list[str] | None" = None) -> "list[str]":
+    """Resolve target compute capabilities by precedence.
+
+    Order (first hit wins): *explicit* argument >
+    :func:`set_compute_capabilities` pin > the
+    ``BRAINEVENT_COMPUTE_CAPABILITIES`` env var > JAX device query >
+    nvidia-smi > raise :class:`GpuArchDetectionError`.
+
+    Every source is passed through :func:`normalize_arch`.
+    """
+    if explicit:
+        items = [explicit] if isinstance(explicit, str) else list(explicit)
+        return [normalize_arch(v) for v in items]
+    if _COMPUTE_CAPABILITIES is not None:
+        return list(_COMPUTE_CAPABILITIES)
+    env = os.environ.get("BRAINEVENT_COMPUTE_CAPABILITIES", "").strip()
+    if env:
+        out = [normalize_arch(p.strip()) for p in env.split(",") if p.strip()]
+        if out:
+            return out
+    for source in (_arch_from_jax, _arch_from_nvidia_smi):
+        arches = source()
+        if arches:
+            return arches
     raise GpuArchDetectionError(render_toolchain_error(
         stage="compute capability detection", code="E-ARCH",
-        summary="Could not detect GPU compute capability via nvidia-smi (driver missing or nvidia-smi unavailable).",
+        summary="Could not detect a GPU compute capability (no JAX GPU device, and nvidia-smi unavailable).",
         probes=[CandidateProbe("nvidia-smi", shutil.which("nvidia-smi") or "", "not-found")],
         remediation=[
-            "Install/repair the NVIDIA driver so that nvidia-smi works",
-            "Or set BRAINEVENT_COMPUTE_CAPABILITIES (e.g. '8.6,8.0') to skip auto-detection",
+            "Run on a machine with a visible GPU, or",
+            "Set BRAINEVENT_COMPUTE_CAPABILITIES (e.g. '8.6,8.0'), or",
+            "Call brainevent.config.set_compute_capability('8.6'), or",
+            "Pass compute_capability='sm_86' to the load function",
         ],
     ))
+
+
+def detect_cuda_arch() -> "list[str]":
+    """Auto-detect GPU compute capabilities.
+
+    Resolves via :func:`resolve_compute_capabilities` (config/env pins, then
+    JAX device query, then nvidia-smi).  Raises :class:`GpuArchDetectionError`
+    when none are available.
+    """
+    return resolve_compute_capabilities()
+
+
+def gencode_flags(arches: "list[str]") -> "list[str]":
+    """Return nvcc ``-gencode`` flags: native SASS per arch + PTX for the highest.
+
+    The PTX (``code=compute_X``) for the newest arch keeps the binary
+    forward-compatible: it JITs onto GPU generations newer than any compiled
+    SASS target.
+
+    Parameters
+    ----------
+    arches : list of str
+        Target architectures in any spelling accepted by :func:`normalize_arch`.
+
+    Returns
+    -------
+    list of str
+        Flattened ``-gencode`` argument list.
+
+    Raises
+    ------
+    ValueError
+        If *arches* is empty.
+    """
+    if not arches:
+        raise ValueError("gencode_flags requires at least one architecture")
+    norm = _dedup([normalize_arch(a) for a in arches])
+    flags: "list[str]" = []
+    for a in norm:
+        num = a[3:]
+        flags += ["-gencode", f"arch=compute_{num},code=sm_{num}"]
+    highest = max(norm, key=lambda a: int("".join(c for c in a[3:] if c.isdigit())))
+    hnum = highest[3:]
+    flags += ["-gencode", f"arch=compute_{hnum},code=compute_{hnum}"]
+    return flags

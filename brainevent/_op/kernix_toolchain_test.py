@@ -259,6 +259,9 @@ def test_detect_cpp_toolchain_no_cxx(monkeypatch):
 def test_detect_cuda_arch_failure(monkeypatch):
     from brainevent._error import GpuArchDetectionError
     monkeypatch.delenv("BRAINEVENT_COMPUTE_CAPABILITIES", raising=False)
+    # Neutralize JAX device detection so the nvidia-smi failure path is reached
+    # (otherwise this passes on a real GPU box).
+    monkeypatch.setattr(kt, "_arch_from_jax", lambda: None)
 
     def fake_run(*a, **k):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": "no smi"})()
