@@ -26,9 +26,9 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
-from brainevent._typing import Data, MatrixShape
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
+from brainevent._typing import Data, MatrixShape
 
 __all__ = [
     "jitu",
@@ -453,6 +453,32 @@ def _jitu_numba_kernel_generator(
     return kernel
 
 
+_dtype_sfx = {
+    np.dtype('float16'): '_f16',
+    np.dtype('float32'): '_f32',
+    np.dtype('float64'): '_f64',
+    np.dtype('bfloat16'): '_bf16',
+}
+
+
+def _jitu_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitu.cu'),
+        name='float_jitu',
+    )
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    variant = 'corder_true' if corder else 'corder_false'
+    kernel_name = f'float_jitu.jitu_{variant}{sfx}'
+
+    def kernel(w_low, w_high, clen, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed)
+
+    return kernel
+
+
 def _jitu_jvp_wlow(w_low_dot, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
     """
     JVP rule for the ``w_low`` argument of the JIT-uniform dense matrix generation.
@@ -777,32 +803,6 @@ def jitu_p_call(
     )
 
 
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
-
-
-def _jitu_cuda_kernel(
-    corder: bool = True,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('float_jitu.cu'),
-        name='float_jitu',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'float_jitu.jitu_{variant}{sfx}'
-
-    def kernel(w_low, w_high, clen, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed)
-
-    return kernel
-
-
 jitu_p = XLACustomKernel(
     'float_jitu',
     doc="""
@@ -907,6 +907,24 @@ def _jitumv_numba_kernel_generator(
 
     def kernel(w_low, w_high, clen, vector, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, vector, seed)
+
+    return kernel
+
+
+def _jitumv_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitumv.cu'),
+        name='float_jitumv',
+    )
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'float_jitumv.jitumv_{variant}{sfx}'
+
+    def kernel(w_low, w_high, clen, vector, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
 
     return kernel
 
@@ -1312,24 +1330,6 @@ def jitumv_p_call(
     )
 
 
-def _jitumv_cuda_kernel(
-    corder: bool = True,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('float_jitumv.cu'),
-        name='float_jitumv',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'float_jitumv.jitumv_{variant}{sfx}'
-
-    def kernel(w_low, w_high, clen, vector, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
-
-    return kernel
-
-
 jitumv_p = XLACustomKernel(
     'float_jitumv',
     doc="""
@@ -1439,6 +1439,24 @@ def _jitumm_numba_kernel_generator(
 
     def kernel(w_low, w_high, clen, B, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)
+
+    return kernel
+
+
+def _jitumm_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitumm.cu'),
+        name='float_jitumm',
+    )
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'float_jitumm.jitumm_{variant}{sfx}'
+
+    def kernel(w_low, w_high, clen, B, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
 
     return kernel
 
@@ -1866,24 +1884,6 @@ def jitumm_p_call(
         TITLE_SIZE=B.shape[1],
         backend=backend,
     )
-
-
-def _jitumm_cuda_kernel(
-    corder: bool = True,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('float_jitumm.cu'),
-        name='float_jitumm',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'float_jitumm.jitumm_{variant}{sfx}'
-
-    def kernel(w_low, w_high, clen, B, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
-
-    return kernel
 
 
 jitumm_p = XLACustomKernel(

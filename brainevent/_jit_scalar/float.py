@@ -26,9 +26,9 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
-from brainevent._typing import Data, MatrixShape
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
+from brainevent._typing import Data, MatrixShape
 
 __all__ = [
     "jits",
@@ -437,6 +437,32 @@ def _jitc_homo_matrix_numba_kernel(
     return kernel
 
 
+_dtype_sfx = {
+    np.dtype('float16'): '_f16',
+    np.dtype('float32'): '_f32',
+    np.dtype('float64'): '_f64',
+    np.dtype('bfloat16'): '_bf16',
+}
+
+
+def _jits_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jits.cu'),
+        name='jit_scalar_jits',
+    )
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    variant = 'corder_true' if corder else 'corder_false'
+    kernel_name = f'jit_scalar_jits.jits_{variant}{sfx}'
+
+    def kernel(weight, clen, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed)
+
+    return kernel
+
+
 def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
     """
     JVP rule for the weight argument of the JIT scalar matrix generation primitive.
@@ -667,68 +693,6 @@ def jits_p_call(
     )
 
 
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
-
-
-def _jits_cuda_kernel(
-    corder: bool = True,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('float_jits.cu'),
-        name='jit_scalar_jits',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
-    variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'jit_scalar_jits.jits_{variant}{sfx}'
-
-    def kernel(weight, clen, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed)
-
-    return kernel
-
-
-def _jitsmv_cuda_kernel(
-    corder: bool = True,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('float_jitsmv.cu'),
-        name='jit_scalar_jitsmv',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_scalar_jitsmv.jitsmv_{variant}{sfx}'
-
-    def kernel(weight, clen, vector, seed, _):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, vector)
-
-    return kernel
-
-
-def _jitsmm_cuda_kernel(
-    corder: bool = True,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('float_jitsmm.cu'),
-        name='jit_scalar_jitsmm',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_scalar_jitsmm.jitsmm_{variant}{sfx}'
-
-    def kernel(weight, clen, B, seed, _):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, B)
-
-    return kernel
-
-
 jits_p = XLACustomKernel(
     'float_jitc_homo_matrix',
     doc="""
@@ -827,6 +791,24 @@ def _jitsmv_numba_kernel(
 
     def kernel(weight, clen, vector, seed, _):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, vector, seed)
+
+    return kernel
+
+
+def _jitsmv_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitsmv.cu'),
+        name='jit_scalar_jitsmv',
+    )
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_scalar_jitsmv.jitsmv_{variant}{sfx}'
+
+    def kernel(weight, clen, vector, seed, _):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, vector)
 
     return kernel
 
@@ -1257,6 +1239,24 @@ def _jitsmm_numba_kernel(
 
     def kernel(weight, clen, B, seed, _):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, B, seed)
+
+    return kernel
+
+
+def _jitsmm_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitsmm.cu'),
+        name='jit_scalar_jitsmm',
+    )
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_scalar_jitsmm.jitsmm_{variant}{sfx}'
+
+    def kernel(weight, clen, B, seed, _):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, B)
 
     return kernel
 

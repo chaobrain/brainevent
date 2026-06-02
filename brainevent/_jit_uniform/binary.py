@@ -26,9 +26,9 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
-from brainevent._typing import Data, MatrixShape
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
+from brainevent._typing import Data, MatrixShape
 from .float import jitumv_p_call, jitumm_p_call, _dtype_sfx
 
 __all__ = [
@@ -401,6 +401,36 @@ def _jitumv_numba_kernel_generator(
 
     def kernel(w_low, w_high, clen, vector, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, vector, seed)
+
+    return kernel
+
+
+_spike_sfx = {
+    np.dtype('bool'): '_bool',
+    np.dtype('int8'): '_bool',
+    np.dtype('float32'): '_float',
+    np.dtype('float16'): '_float',
+    np.dtype('float64'): '_float',
+    np.dtype('bfloat16'): '_float',
+}
+
+
+def _binary_jitumv_cuda_kernel(
+    corder: bool,
+    vector_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitumv.cu'),
+        name='binary_jitumv',
+    )
+    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'binary_jitumv.binary_jitumv_{variant}{wt_sfx}{sp_sfx}'
+
+    def kernel(w_low, w_high, clen, vector, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
 
     return kernel
 
@@ -809,36 +839,6 @@ def binary_jitumv_p_call(
     )
 
 
-_spike_sfx = {
-    np.dtype('bool'): '_bool',
-    np.dtype('int8'): '_bool',
-    np.dtype('float32'): '_float',
-    np.dtype('float16'): '_float',
-    np.dtype('float64'): '_float',
-    np.dtype('bfloat16'): '_float',
-}
-
-
-def _binary_jitumv_cuda_kernel(
-    corder: bool,
-    vector_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('binary_jitumv.cu'),
-        name='binary_jitumv',
-    )
-    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'binary_jitumv.binary_jitumv_{variant}{wt_sfx}{sp_sfx}'
-
-    def kernel(w_low, w_high, clen, vector, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
-
-    return kernel
-
-
 binary_jitumv_p = XLACustomKernel(
     'binary_jitumv',
     doc="""
@@ -990,6 +990,26 @@ def _jitumm_numba_kernel_generator(
 
     def kernel(w_low, w_high, clen, B, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)
+
+    return kernel
+
+
+def _binary_jitumm_cuda_kernel(
+    corder: bool,
+    B_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitumm.cu'),
+        name='binary_jitumm',
+    )
+    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'binary_jitumm.binary_jitumm_{variant}{wt_sfx}{sp_sfx}'
+
+    def kernel(w_low, w_high, clen, B, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
 
     return kernel
 
@@ -1411,26 +1431,6 @@ def binary_jitumm_p_call(
         corder=corder,
         backend=backend,
     )
-
-
-def _binary_jitumm_cuda_kernel(
-    corder: bool,
-    B_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('binary_jitumm.cu'),
-        name='binary_jitumm',
-    )
-    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'binary_jitumm.binary_jitumm_{variant}{wt_sfx}{sp_sfx}'
-
-    def kernel(w_low, w_high, clen, B, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
-
-    return kernel
 
 
 binary_jitumm_p = XLACustomKernel(

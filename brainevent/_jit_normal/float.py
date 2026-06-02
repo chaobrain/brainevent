@@ -28,8 +28,8 @@ from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
-from brainevent._typing import Data, MatrixShape
 from brainevent._op import load_cuda_file
+from brainevent._typing import Data, MatrixShape
 
 __all__ = [
     "jitn",
@@ -39,6 +39,13 @@ __all__ = [
     "jitnmm",
     "jitnmm_p",
 ]
+
+_dtype_sfx = {
+    np.dtype('float16'): '_f16',
+    np.dtype('float32'): '_f32',
+    np.dtype('float64'): '_f64',
+    np.dtype('bfloat16'): '_bf16',
+}
 
 
 def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
@@ -460,6 +467,24 @@ def _jitn_numba_kernel_generator(corder: bool = True, **kwargs):
     return run
 
 
+def _jitn_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitn.cu'),
+        name='jit_normal_jitn',
+    )
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    variant = 'corder_true' if corder else 'corder_false'
+    kernel_name = f'jit_normal_jitn.jitn_{variant}{sfx}'
+
+    def kernel(w_loc, w_scale, clen, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed)
+
+    return kernel
+
+
 def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs):
     out = jnp.ones_like(out_info) * w_loc_dot
     return [out]
@@ -603,68 +628,6 @@ def jitn_p_call(
     )
 
 
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
-
-
-def _jitn_cuda_kernel(
-    corder: bool = True,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('float_jitn.cu'),
-        name='jit_normal_jitn',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
-    variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'jit_normal_jitn.jitn_{variant}{sfx}'
-
-    def kernel(w_loc, w_scale, clen, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed)
-
-    return kernel
-
-
-def _jitnmv_cuda_kernel(
-    corder: bool = True,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('float_jitnmv.cu'),
-        name='jit_normal_jitnmv',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_normal_jitnmv.jitnmv_{variant}{sfx}'
-
-    def kernel(w_loc, w_scale, clen, vector, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, vector)
-
-    return kernel
-
-
-def _jitnmm_cuda_kernel(
-    corder: bool = True,
-    **kwargs
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('float_jitnmm.cu'),
-        name='jit_normal_jitnmm',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_normal_jitnmm.jitnmm_{variant}{sfx}'
-
-    def kernel(w_loc, w_scale, clen, B, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, B)
-
-    return kernel
-
-
 jitn_p = XLACustomKernel(
     'float_jitn',
     doc="""
@@ -751,6 +714,24 @@ def _jitnmv_numba_kernel_generator(
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
 
     return run
+
+
+def _jitnmv_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitnmv.cu'),
+        name='jit_normal_jitnmv',
+    )
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_normal_jitnmv.jitnmv_{variant}{sfx}'
+
+    def kernel(w_loc, w_scale, clen, vector, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, vector)
+
+    return kernel
 
 
 def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend, **kwargs):
@@ -1090,6 +1071,24 @@ def _jitnmm_numba_kernel_generator(
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, B, seed)
 
     return run
+
+
+def _jitnmm_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitnmm.cu'),
+        name='jit_normal_jitnmm',
+    )
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_normal_jitnmm.jitnmm_{variant}{sfx}'
+
+    def kernel(w_loc, w_scale, clen, B, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, B)
+
+    return kernel
 
 
 def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
