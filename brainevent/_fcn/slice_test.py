@@ -106,3 +106,44 @@ class TestFixedNumPerPreSliceRows:
             return c.slice_rows(i).todense()
         out = jax.jit(f)(conn, idx)
         assert jnp.allclose(out, np.asarray(dense)[[0, 2, 4]], atol=1e-5)
+
+
+class TestFixedNumPerPostGetitem:
+
+    @pytest.mark.parametrize('homo', [False, True])
+    def test_single_and_multi_row(self, homo):
+        conn = _make_perpost(10, 7, 4, homo=homo)  # W is (10, 7)
+        dense = conn.todense()
+        assert conn[3].shape == (7,)
+        assert jnp.allclose(conn[3], dense[3], atol=1e-5)
+        assert jnp.allclose(conn[[0, 4, 8]], np.asarray(dense)[[0, 4, 8]], atol=1e-5)
+
+    def test_slice_negative_oob(self):
+        conn = _make_perpost(10, 7, 4)
+        dense = conn.todense()
+        assert jnp.allclose(conn[1:9:3], dense[np.arange(1, 9, 3)], atol=1e-5)
+        assert jnp.allclose(conn[-1], dense[9], atol=1e-5)
+        with pytest.raises(IndexError):
+            _ = conn[10]
+
+
+class TestFixedNumPerPostSliceRows:
+
+    @pytest.mark.parametrize('homo', [False, True])
+    def test_returns_csr_and_matches_dense(self, homo):
+        conn = _make_perpost(10, 7, 4, homo=homo)
+        dense = conn.todense()
+        sub = conn.slice_rows([1, 3, 5])
+        assert isinstance(sub, CSR)
+        assert sub.shape == (3, 7)
+        assert jnp.allclose(sub.todense(), np.asarray(dense)[[1, 3, 5]], atol=1e-5)
+
+    def test_slice_and_single(self):
+        conn = _make_perpost(10, 7, 4)
+        dense = conn.todense()
+        sub = conn.slice_rows(slice(0, 6, 2))
+        assert isinstance(sub, CSR)
+        assert jnp.allclose(sub.todense(), dense[np.arange(0, 6, 2)], atol=1e-5)
+        one = conn.slice_rows(4)
+        assert one.shape == (1, 7)
+        assert jnp.allclose(one.todense(), dense[4:5], atol=1e-5)
