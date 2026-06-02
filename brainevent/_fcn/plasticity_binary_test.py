@@ -249,9 +249,9 @@ def test_class_methods_match_module_and_preserve_structure():
     pre_trace = jnp.asarray(rng.random(n_pre), dtype=jnp.float32)
     post_spike = jnp.asarray(rng.random(n_post) > 0.5)
 
-    m = be.FixedPostNumConn(data, indices, shape=(n_pre, n_post))
+    m = be.FixedNumPerPre(data, indices, shape=(n_pre, n_post))
     m2 = m.update_on_pre(pre_spike, post_trace, w_min=0.0, w_max=1.2)
-    assert isinstance(m2, be.FixedPostNumConn)
+    assert isinstance(m2, be.FixedNumPerPre)
     assert np.array_equal(np.asarray(m2.indices), np.asarray(indices))  # structure preserved
     mod = update_fixed_post_conn_on_binary_pre(
         data, indices, pre_spike, post_trace, 0.0, 1.2, shape=(n_pre, n_post))
@@ -272,9 +272,9 @@ def test_transpose_duality():
     pre_spike = jnp.asarray(rng.random(n_pre) > 0.5)
     post_trace = jnp.asarray(rng.random(n_post), dtype=jnp.float32)
 
-    m = be.FixedPostNumConn(data, indices, shape=(n_pre, n_post))
+    m = be.FixedNumPerPre(data, indices, shape=(n_pre, n_post))
     a = m.update_on_pre(pre_spike, post_trace)
-    # transpose -> FixedPreNumConn sharing the same arrays; on_post is its favorable dir
+    # transpose -> FixedNumPerPost sharing the same arrays; on_post is its favorable dir
     mt = m.transpose()
     b = mt.update_on_post(pre_trace=post_trace, post_spike=pre_spike)
     assert np.allclose(np.asarray(a.data), np.asarray(b.data), atol=1e-6)
@@ -286,7 +286,7 @@ def test_jit_class_method():
     n_pre, n_conn, n_post = 5, 3, 7
     data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
     indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn)), dtype=jnp.int32)
-    m = be.FixedPostNumConn(data, indices, shape=(n_pre, n_post))
+    m = be.FixedNumPerPre(data, indices, shape=(n_pre, n_post))
     pre_spike = jnp.asarray(rng.random(n_pre) > 0.5)
     post_trace = jnp.asarray(rng.random(n_post), dtype=jnp.float32)
 

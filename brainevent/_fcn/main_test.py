@@ -98,7 +98,7 @@ class Test_To_Dense:
         x = brainstate.random.rand(m)
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        csr = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
         csc = csr.T
 
         out1 = csr.todense()
@@ -114,7 +114,7 @@ class Test_To_Dense:
 def test_fixed_post_num_conn_tree_flatten_keeps_indices_dynamic():
     indices = jnp.array([[0, 1], [1, 2]], dtype=jnp.int32)
     data = jnp.array([1.5], dtype=jnp.float32)
-    conn = brainevent.FixedPostNumConn((data, indices), shape=(2, 3))
+    conn = brainevent.FixedNumPerPre((data, indices), shape=(2, 3))
 
     children, aux = conn.tree_flatten()
 
@@ -129,26 +129,26 @@ class Test_Illegal_Slots:
         idx = jnp.array([[0, -1, 2, 2], [1, 4, 3, 1], [2, 0, -3, 1]], dtype=jnp.int32)
         data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
         with pytest.raises(ValueError, match="invalid indices"):
-            brainevent.FixedPostNumConn((data, idx), shape=(3, 4))
+            brainevent.FixedNumPerPre((data, idx), shape=(3, 4))
         jax.block_until_ready((idx, data))
 
     def test_invalid_indices_rejected_pre(self):
         idx = jnp.array([[0, -1, 2, 2], [1, 4, 3, 1], [2, 0, -3, 1]], dtype=jnp.int32)
         data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
         with pytest.raises(ValueError, match="invalid indices"):
-            brainevent.FixedPreNumConn((data, idx), shape=(4, 3))
+            brainevent.FixedNumPerPost((data, idx), shape=(4, 3))
         jax.block_until_ready((idx, data))
 
     def test_invalid_indices_rejected_homo(self):
         idx = jnp.array([[0, -1, 2], [1, 5, 1]], dtype=jnp.int32)
         with pytest.raises(ValueError, match="invalid indices"):
-            brainevent.FixedPostNumConn((jnp.array(1.5, dtype=jnp.float32), idx), shape=(2, 4))
+            brainevent.FixedNumPerPre((jnp.array(1.5, dtype=jnp.float32), idx), shape=(2, 4))
         jax.block_until_ready((idx,))
 
     def test_duplicates_are_supported_post(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
         data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
-        conn = brainevent.FixedPostNumConn((data, idx), shape=(3, 4))
+        conn = brainevent.FixedNumPerPre((data, idx), shape=(3, 4))
 
         dense = conn.todense()
         x = jnp.array([1., 2., 3.], dtype=jnp.float32)
@@ -165,7 +165,7 @@ class Test_Illegal_Slots:
     def test_duplicates_are_supported_pre(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
         data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
-        conn = brainevent.FixedPreNumConn((data, idx), shape=(4, 3))
+        conn = brainevent.FixedNumPerPost((data, idx), shape=(4, 3))
 
         dense = conn.todense()
         x = jnp.array([1., 2., 3., 4.], dtype=jnp.float32)
@@ -181,7 +181,7 @@ class Test_Illegal_Slots:
 
     def test_homo_weight_with_duplicates(self):
         idx = jnp.array([[0, 1, 2], [1, 3, 1]], dtype=jnp.int32)
-        conn = brainevent.FixedPostNumConn((jnp.array(1.5, dtype=jnp.float32), idx), shape=(2, 4))
+        conn = brainevent.FixedNumPerPre((jnp.array(1.5, dtype=jnp.float32), idx), shape=(2, 4))
         dense = conn.todense()
         x = jnp.array([1., 2.], dtype=jnp.float32)
         v = jnp.array([1., 2., 3., 4.], dtype=jnp.float32)
@@ -196,19 +196,19 @@ class Test_Lazy_Csc_Layout:
         shape = (3, 4)
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
-        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
+        conn = brainevent.FixedNumPerPre((data, idx), shape=shape)
 
         assert conn._csc is None
 
     @pytest.mark.parametrize(
         ('cls', 'shape', 'a_shape'),
         [
-            (brainevent.FixedPostNumConn, (3, 4), (3, 4)),
-            (brainevent.FixedPreNumConn, (4, 3), (3, 4)),
+            (brainevent.FixedNumPerPre, (3, 4), (3, 4)),
+            (brainevent.FixedNumPerPost, (4, 3), (3, 4)),
         ],
     )
     def test_weight_indices_builds_expected_structure(self, cls, shape, a_shape):
-        if cls is brainevent.FixedPostNumConn:
+        if cls is brainevent.FixedNumPerPre:
             idx = generate_fixed_conn_num_indices(shape[0], shape[1], 2)
         else:
             idx = generate_fixed_conn_num_indices(shape[1], shape[0], 2)
@@ -228,7 +228,7 @@ class Test_Lazy_Csc_Layout:
         shape = (3, 4)
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
-        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
+        conn = brainevent.FixedNumPerPre((data, idx), shape=shape)
 
         first = conn._weight_indices()
         second = conn._weight_indices()
@@ -238,7 +238,7 @@ class Test_Lazy_Csc_Layout:
         shape = (3, 4)
         idx = jnp.array([[0, 1], [1, 3], [2, 0]], dtype=jnp.int32)
         data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
-        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
+        conn = brainevent.FixedNumPerPre((data, idx), shape=shape)
         spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.7, 1.0], dtype=jnp.float32))
         dense = conn.todense()
 
@@ -248,7 +248,7 @@ class Test_Lazy_Csc_Layout:
         shape = (4, 3)
         idx = jnp.array([[0, 1], [2, 1], [3, 0]], dtype=jnp.int32)
         data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
-        conn = brainevent.FixedPreNumConn((data, idx), shape=shape)
+        conn = brainevent.FixedNumPerPost((data, idx), shape=shape)
         spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.7, 1.0], dtype=jnp.float32))
         dense = conn.todense()
 
@@ -258,7 +258,7 @@ class Test_Lazy_Csc_Layout:
         shape = (3, 4)
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
-        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
+        conn = brainevent.FixedNumPerPre((data, idx), shape=shape)
         conn._weight_indices()  # populate the structure cache
 
         new_data = data + 1.0
@@ -280,9 +280,9 @@ class Test_Lazy_Csc_Layout:
         shape = (3, 4)
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
-        conn = brainevent.FixedPostNumConn((data, idx), shape=shape)
+        conn = brainevent.FixedNumPerPre((data, idx), shape=shape)
         transposed = conn.T
-        assert isinstance(transposed, brainevent.FixedPreNumConn)
+        assert isinstance(transposed, brainevent.FixedNumPerPost)
         assert transposed.shape == (4, 3)
 
         spikes = brainevent.BinaryArray(jnp.array([1.0, 0.0, 0.5], dtype=jnp.float32))
@@ -297,7 +297,7 @@ class Test_Init_Outside_JIT:
         def build():
             idx = jnp.array([[0, 1], [1, 3]], dtype=jnp.int32)
             data = jnp.array([[1., 2.], [3., 4.]], dtype=jnp.float32)
-            conn = brainevent.FixedPostNumConn((data, idx), shape=(2, 4))
+            conn = brainevent.FixedNumPerPre((data, idx), shape=(2, 4))
             return conn.nse
 
         with pytest.raises(RuntimeError, match='must be first constructed outside'):
@@ -308,7 +308,7 @@ class Test_Init_Outside_JIT:
         def build():
             idx = jnp.array([[0, 1], [2, 1], [3, 0]], dtype=jnp.int32)
             data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
-            conn = brainevent.FixedPreNumConn(
+            conn = brainevent.FixedNumPerPost(
                 (data, idx),
                 shape=(4, 3),
             )
@@ -322,7 +322,7 @@ class Test_Operator_Behavior:
     def test_fixed_post_binary_array_operator_behavior(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
         data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
-        conn = brainevent.FixedPostNumConn((data, idx), shape=(3, 4))
+        conn = brainevent.FixedNumPerPre((data, idx), shape=(3, 4))
         dense = conn.todense()
 
         left_vector = brainevent.BinaryArray(jnp.array([0.2, 0.0, 1.0], dtype=jnp.float32))
@@ -344,7 +344,7 @@ class Test_Operator_Behavior:
     def test_fixed_pre_binary_array_operator_behavior(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
         data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
-        conn = brainevent.FixedPreNumConn((data, idx), shape=(4, 3))
+        conn = brainevent.FixedNumPerPost((data, idx), shape=(4, 3))
         dense = conn.todense()
 
         left_vector = brainevent.BinaryArray(jnp.array([0.0, 1.0, 0.4, 1.0], dtype=jnp.float32))
@@ -381,7 +381,7 @@ class TestVector:
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
 
             data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-            conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
             y1 = jax.jit(lambda: x @ conn)()
             y2 = jax.jit(lambda: conn.T @ x)()
             y3 = _remove_event_array(x) @ conn.todense()
@@ -399,7 +399,7 @@ class TestVector:
         for v in self._generate_x(n):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
             data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-            conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
             y1 = jax.jit(lambda: conn @ v)()
             y2 = jax.jit(lambda: v @ conn.T)()
             y_true = fcn_vector(v, conn.data, indices, (m, n))
@@ -412,7 +412,7 @@ class TestVector:
 
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1))
         w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        conn = brainevent.FixedPostNumConn((w, indices), shape=shape)
+        conn = brainevent.FixedNumPerPre((w, indices), shape=shape)
 
         def f_brainevent(x, w_data):
             if transpose:
@@ -447,7 +447,7 @@ class TestVector:
 
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1))
         w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        conn = brainevent.FixedPostNumConn((w, indices), shape=shape)
+        conn = brainevent.FixedNumPerPre((w, indices), shape=shape)
 
         def f_brainevent(x, w_data):
             if transpose:
@@ -505,7 +505,7 @@ class TestVector:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=(0, None))
         def f_compare_vector_conn(w, x):
-            conn = brainevent.FixedPostNumConn((w, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((w, indices), shape=(m, n))
             y1 = x @ conn
             y2 = conn.T @ x
             y_true = vector_fcn(x, conn.data, indices, (m, n))
@@ -519,7 +519,7 @@ class TestVector:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=(0, None))
         def f_compare_conn_vector(w, x):
-            conn = brainevent.FixedPostNumConn((w, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((w, indices), shape=(m, n))
             y1 = conn @ x
             y2 = x @ conn.T
             y_true = fcn_vector(x, conn.data, indices, (m, n))
@@ -543,7 +543,7 @@ class TestVector:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=batch_axis)
         def f_compare_vector_conn(x):
-            conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
             y1 = x @ conn
             y2 = conn.T @ x
             y_true = vector_fcn(x, conn.data, indices, (m, n))
@@ -557,7 +557,7 @@ class TestVector:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=batch_axis)
         def f_compare_conn_vector(x):
-            conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
             y1 = conn @ x
             y2 = x @ conn.T
             y_true = fcn_vector(x, conn.data, indices, (m, n))
@@ -585,7 +585,7 @@ class TestMatrix:
         for x in self._generate_x([k, m]):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
             data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-            conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
             y1 = jax.jit(lambda: x @ conn)()
             y2 = jax.jit(lambda: (conn.T @ x.T).T)()
             y_true = matrix_fcn(x, conn.data, indices, (m, n))
@@ -601,7 +601,7 @@ class TestMatrix:
         for matrix in self._generate_x([n, k]):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
             data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-            conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
             y1 = jax.jit(lambda: conn @ matrix)()
             y2 = jax.jit(lambda: (matrix.T @ conn.T).T)()
             y_true = fcn_matrix(matrix, conn.data, indices, (m, n))
@@ -614,7 +614,7 @@ class TestMatrix:
 
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1))
         w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        conn = brainevent.FixedPostNumConn((w, indices), shape=shape)
+        conn = brainevent.FixedNumPerPre((w, indices), shape=shape)
 
         def f_brainevent(x, w_data):
             if transpose:
@@ -650,7 +650,7 @@ class TestMatrix:
 
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1))
         w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        conn = brainevent.FixedPostNumConn((w, indices), shape=shape)
+        conn = brainevent.FixedNumPerPre((w, indices), shape=shape)
 
         def f_brainevent(x, w_data):
             if transpose:
@@ -706,7 +706,7 @@ class TestMatrix:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=(0, None))
         def f_compare_matrix_conn(w, x):
-            conn = brainevent.FixedPostNumConn((w, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((w, indices), shape=(m, n))
             y1 = x @ conn
             y2 = (conn.T @ x.T).T
             y_true = matrix_fcn(x, conn.data, indices, (m, n))
@@ -720,7 +720,7 @@ class TestMatrix:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=(0, None))
         def f_compare_conn_vector(w, x):
-            conn = brainevent.FixedPostNumConn((w, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((w, indices), shape=(m, n))
             y1 = conn @ x
             y2 = (x.T @ conn.T).T
             y_true = fcn_matrix(x, conn.data, indices, (m, n))
@@ -746,7 +746,7 @@ class TestMatrix:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=batch_axis)
         def f_compare_vector_conn(x):
-            conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
             y1 = x @ conn
             y2 = (conn.T @ x.T).T
             y_true = matrix_fcn(x, conn.data, indices, (m, n))
@@ -766,7 +766,7 @@ class TestMatrix:
         @jax.jit
         @functools.partial(jax.vmap, in_axes=batch_axis)
         def f_compare_conn_vector(x):
-            conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+            conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
             y1 = conn @ x
             y2 = (x.T @ conn.T).T
             y_true = fcn_matrix(x, conn.data, indices, (m, n))
@@ -790,7 +790,7 @@ class Test_Yw2y:
         m, n, k = 5, 7, 3
         indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
         data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
-        conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
 
@@ -804,7 +804,7 @@ class Test_Yw2y:
         # indices: (num_post, k) with values in [0, num_pre)
         indices = generate_fixed_conn_num_indices(num_post, num_pre, k, replace=True)
         data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
-        conn = brainevent.FixedPreNumConn((data, indices), shape=(num_pre, num_post))
+        conn = brainevent.FixedNumPerPost((data, indices), shape=(num_pre, num_post))
         y_pre = jnp.arange(1, num_pre + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, num_post + 1, dtype=jnp.float32)
 
@@ -817,7 +817,7 @@ class Test_Yw2y:
         m, n, k = 5, 7, 3
         indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
         data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
-        conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
         assert allclose(conn.yw_to_w(y_pre), conn.yw_to_w(y_pre, data))
@@ -828,7 +828,7 @@ class Test_Yw2y:
         m, n, k = 5, 7, 3
         indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
         data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
-        conn = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
 
         indptr = jnp.arange(m + 1, dtype=jnp.int32) * k
         csr = brainevent.CSR(

@@ -245,7 +245,7 @@ fcn_plasticity_row_p = XLACustomKernel(
 Favorable (row-driven) ELL plasticity primitive.
 
 For each row ``r`` whose spike is active, ``data[r, k] += trace[indices[r, k]]``.
-Backs ``FixedPostNumConn.update_on_pre`` and ``FixedPreNumConn.update_on_post``.
+Backs ``FixedNumPerPre.update_on_pre`` and ``FixedNumPerPost.update_on_post``.
 """,
 )
 fcn_plasticity_row_p.def_numba_kernel(_fcn_plasticity_row_numba_kernel)
@@ -262,8 +262,8 @@ fcn_plasticity_col_p = XLACustomKernel(
 Unfavorable (column-scan) ELL plasticity primitive.
 
 Scans every stored synapse: ``data[r, k] += trace[r]`` when ``spike[indices[r, k]]``
-is active.  Backs ``FixedPostNumConn.update_on_post`` and
-``FixedPreNumConn.update_on_pre``.
+is active.  Backs ``FixedNumPerPre.update_on_post`` and
+``FixedNumPerPost.update_on_pre``.
 """,
 )
 fcn_plasticity_col_p.def_numba_kernel(_fcn_plasticity_col_numba_kernel)
@@ -301,7 +301,7 @@ def update_fixed_post_conn_on_binary_pre(
     data, indices, pre_spike, post_trace,
     w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
 ):
-    """Pre-spike STDP update for a ``FixedPostNumConn`` (favorable, row-driven).
+    """Pre-spike STDP update for a ``FixedNumPerPre`` (favorable, row-driven).
 
     For each firing pre neuron ``i`` and every stored synapse ``(i, j)``:
     ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.
@@ -362,7 +362,7 @@ def update_fixed_post_conn_on_binary_post(
     data, indices, pre_trace, post_spike,
     w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
 ):
-    """Post-spike STDP update for a ``FixedPostNumConn`` (unfavorable, column-scan).
+    """Post-spike STDP update for a ``FixedNumPerPre`` (unfavorable, column-scan).
 
     For each firing post neuron ``j`` and every stored synapse ``(i, j)``:
     ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.
@@ -410,7 +410,7 @@ def update_fixed_pre_conn_on_binary_pre(
     data, indices, pre_spike, post_trace,
     w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
 ):
-    """Pre-spike STDP update for a ``FixedPreNumConn`` (unfavorable, column-scan).
+    """Pre-spike STDP update for a ``FixedNumPerPost`` (unfavorable, column-scan).
 
     For each firing pre neuron ``i`` and every stored synapse ``(i, j)``:
     ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.
@@ -458,7 +458,7 @@ def update_fixed_pre_conn_on_binary_post(
     data, indices, pre_trace, post_spike,
     w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
 ):
-    """Post-spike STDP update for a ``FixedPreNumConn`` (favorable, row-driven).
+    """Post-spike STDP update for a ``FixedNumPerPost`` (favorable, row-driven).
 
     For each firing post neuron ``j`` and every stored synapse ``(i, j)``:
     ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.
