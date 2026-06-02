@@ -88,6 +88,66 @@ def _fcn_plasticity_col_jax_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
 
 
 # --------------------------------------------------------------------------- #
+# numba kernels (CPU, in-place via input_output_aliases={0: 0})
+# --------------------------------------------------------------------------- #
+
+def _fcn_plasticity_row_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
+    import numba
+    parallel = get_numba_parallel()
+
+    if spike_info.dtype == jnp.bool_:
+        @numba.njit(parallel=parallel, fastmath=True, nogil=True)
+        def kern(data, indices, spike, trace, out):
+            for r in numba.prange(data.shape[0]):
+                if spike[r]:
+                    for k in range(data.shape[1]):
+                        out[r, k] += trace[indices[r, k]]
+    else:
+        @numba.njit(parallel=parallel, fastmath=True, nogil=True)
+        def kern(data, indices, spike, trace, out):
+            for r in numba.prange(data.shape[0]):
+                if spike[r] != 0.:
+                    for k in range(data.shape[1]):
+                        out[r, k] += trace[indices[r, k]]
+
+    def kernel(data, indices, spike, trace):
+        return numba_kernel(kern, outs=kwargs['outs'], input_output_aliases={0: 0})(
+            data, indices, spike, trace
+        )
+
+    return kernel
+
+
+def _fcn_plasticity_col_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
+    import numba
+    parallel = get_numba_parallel()
+
+    if spike_info.dtype == jnp.bool_:
+        @numba.njit(parallel=parallel, fastmath=True, nogil=True)
+        def kern(data, indices, spike, trace, out):
+            for r in numba.prange(data.shape[0]):
+                tr = trace[r]
+                for k in range(data.shape[1]):
+                    if spike[indices[r, k]]:
+                        out[r, k] += tr
+    else:
+        @numba.njit(parallel=parallel, fastmath=True, nogil=True)
+        def kern(data, indices, spike, trace, out):
+            for r in numba.prange(data.shape[0]):
+                tr = trace[r]
+                for k in range(data.shape[1]):
+                    if spike[indices[r, k]] != 0.:
+                        out[r, k] += tr
+
+    def kernel(data, indices, spike, trace):
+        return numba_kernel(kern, outs=kwargs['outs'], input_output_aliases={0: 0})(
+            data, indices, spike, trace
+        )
+
+    return kernel
+
+
+# --------------------------------------------------------------------------- #
 # Primitive calls
 # --------------------------------------------------------------------------- #
 
@@ -142,6 +202,7 @@ For each row ``r`` whose spike is active, ``data[r, k] += trace[indices[r, k]]``
 Backs ``FixedPostNumConn.update_on_pre`` and ``FixedPreNumConn.update_on_post``.
 """,
 )
+fcn_plasticity_row_p.def_numba_kernel(_fcn_plasticity_row_numba_kernel)
 fcn_plasticity_row_p.def_kernel('jax_raw', 'cpu', _fcn_plasticity_row_jax_kernel)
 fcn_plasticity_row_p.def_kernel('jax_raw', 'gpu', _fcn_plasticity_row_jax_kernel)
 fcn_plasticity_row_p.def_kernel('jax_raw', 'tpu', _fcn_plasticity_row_jax_kernel)
@@ -158,6 +219,7 @@ is active.  Backs ``FixedPostNumConn.update_on_post`` and
 ``FixedPreNumConn.update_on_pre``.
 """,
 )
+fcn_plasticity_col_p.def_numba_kernel(_fcn_plasticity_col_numba_kernel)
 fcn_plasticity_col_p.def_kernel('jax_raw', 'cpu', _fcn_plasticity_col_jax_kernel)
 fcn_plasticity_col_p.def_kernel('jax_raw', 'gpu', _fcn_plasticity_col_jax_kernel)
 fcn_plasticity_col_p.def_kernel('jax_raw', 'tpu', _fcn_plasticity_col_jax_kernel)

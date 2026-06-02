@@ -29,6 +29,11 @@ PLATFORM = jax.default_backend()
 ROW_BACKENDS = tuple(fcn_plasticity_row_p.available_backends(PLATFORM))
 COL_BACKENDS = tuple(fcn_plasticity_col_p.available_backends(PLATFORM))
 
+try:
+    _CPU_DEVICE = jax.devices('cpu')[0]
+except Exception:  # pragma: no cover - cpu backend always present in practice
+    _CPU_DEVICE = None
+
 
 def _ell_ref_row(data, indices, row_spike, col_trace):
     data = np.asarray(data, dtype=np.float64)
@@ -82,3 +87,39 @@ def test_col_prim(backend, spike_dtype):
     got = fcn_plasticity_col_prim_call(data, indices, spike, trace, backend=backend)[0]
     ref = _ell_ref_col(data, indices, spike, trace)
     assert np.allclose(np.asarray(got), ref, atol=1e-5)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(_CPU_DEVICE is None, reason="no CPU device for numba backend")
+@pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
+def test_row_numba_matches_ref(spike_dtype):
+    rng = np.random.default_rng(2)
+    n_row, n_conn, n_col = 8, 5, 9
+    with jax.default_device(_CPU_DEVICE):
+        data = jnp.asarray(rng.random((n_row, n_conn)), dtype=jnp.float32)
+        indices = jnp.asarray(rng.integers(0, n_col, (n_row, n_conn)), dtype=jnp.int32)
+        spike = jnp.asarray(rng.random(n_row) > 0.5, dtype=spike_dtype)
+        trace = jnp.asarray(rng.random(n_col), dtype=jnp.float32)
+        got = np.asarray(
+            fcn_plasticity_row_prim_call(data, indices, spike, trace, backend='numba')[0]
+        )
+    ref = _ell_ref_row(data, indices, spike, trace)
+    assert np.allclose(got, ref, atol=1e-5)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(_CPU_DEVICE is None, reason="no CPU device for numba backend")
+@pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
+def test_col_numba_matches_ref(spike_dtype):
+    rng = np.random.default_rng(3)
+    n_row, n_conn, n_col = 9, 6, 7
+    with jax.default_device(_CPU_DEVICE):
+        data = jnp.asarray(rng.random((n_row, n_conn)), dtype=jnp.float32)
+        indices = jnp.asarray(rng.integers(0, n_col, (n_row, n_conn)), dtype=jnp.int32)
+        spike = jnp.asarray(rng.random(n_col) > 0.5, dtype=spike_dtype)
+        trace = jnp.asarray(rng.random(n_row), dtype=jnp.float32)
+        got = np.asarray(
+            fcn_plasticity_col_prim_call(data, indices, spike, trace, backend='numba')[0]
+        )
+    ref = _ell_ref_col(data, indices, spike, trace)
+    assert np.allclose(got, ref, atol=1e-5)
