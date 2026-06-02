@@ -28,6 +28,7 @@ from brainevent._misc import _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
 from .binary_indexed import binary_csrmv_indexed
+from .binary_indexed_mm import binary_csrmm_indexed
 from .diag_add import csr_diag_position, csr_diag_add
 from .float import csrmv, csrmm
 from .plasticity_binary_csr import update_csr_on_binary_pre, update_csr_on_binary_post
@@ -1317,8 +1318,16 @@ class CSR(CompressedSparseData):
                     shape=self.shape[::-1], transpose=True, backend=self.backend,
                 )
             elif other.ndim == 2:
-                return binary_csrmm(self.data, self.indices, self.indptr, other,
-                                    shape=self.shape, backend=self.backend)
+                # ``CSR @ M`` is the *unfavorable* matmat direction: a row-major
+                # gather cannot skip inactive columns.  Traverse the CSC-like
+                # view (column-major scatter), reading canonical weights through
+                # ``perm`` so only active columns are touched -- parity with the
+                # matvec ``CSR @ event`` path above.
+                csc_indptr, csc_indices, perm = self._weight_indices()
+                return binary_csrmm_indexed(
+                    self.data, csc_indices, csc_indptr, perm, other,
+                    shape=self.shape[::-1], transpose=True, backend=self.backend,
+                )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -2184,8 +2193,17 @@ class CSC(CompressedSparseData):
                     shape=self.shape, transpose=True, backend=self.backend,
                 )
             elif other.ndim == 2:
-                return binary_csrmm(data, self.indices, self.indptr, other.T,
-                                    shape=self.shape[::-1], transpose=False, backend=self.backend).T
+                # ``M @ CSC`` is the *unfavorable* matmat direction: a
+                # column-major gather cannot skip inactive rows.  Traverse the
+                # CSR-like view (row-major scatter), reading canonical weights
+                # through ``perm`` so only active rows are touched -- parity with
+                # the matvec ``event @ CSC`` path above.
+                csr_indptr, csr_indices, perm = self._weight_indices()
+                r = binary_csrmm_indexed(
+                    self.data, csr_indices, csr_indptr, perm, other.T,
+                    shape=self.shape, transpose=True, backend=self.backend,
+                )
+                return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 

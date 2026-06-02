@@ -18,6 +18,8 @@ from .binary import (
     ell_binary_matvec_p,
     csc_binary_matvec,
     csc_binary_matvec_p,
+    csc_binary_matmat,
+    csc_binary_matmat_p,
     binary_fcnmm,
     ell_binary_matmat_p,
 )
@@ -28,6 +30,7 @@ __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
     'binary_fcnmv', 'ell_binary_matvec_p',
     'csc_binary_matvec', 'csc_binary_matvec_p',
+    'csc_binary_matmat', 'csc_binary_matmat_p',
     'binary_fcnmm', 'ell_binary_matmat_p',
     'fcnmv', 'fcnmm',
 ]

@@ -35,6 +35,8 @@ __all__ = [
     'ell_binary_matvec_p',
     'csc_binary_matvec',
     'csc_binary_matvec_p',
+    'csc_binary_matmat',
+    'csc_binary_matmat_p',
     'binary_fcnmm',
     'ell_binary_matmat_p',
 ]
@@ -912,6 +914,382 @@ def csc_binary_matvec(
         backend=backend,
     )[0]
     return u.maybe_decimal(r * v_unit * w_unit)
+
+
+# ---------------------------------------------------------------------------
+# CSC column-scatter matmat primitive: Y = W @ M (event-driven), W stored
+# column-major.  This is the matmat peer of ``csc_binary_matvec`` and serves
+# the *unfavorable* FCN matmat direction: weights are pre-permuted into CSC
+# order by the caller, so the kernel reads them positionally (no fused gather).
+# ---------------------------------------------------------------------------
+
+
+def _csc_binary_matmat_numba_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import numba
+
+    if weight_info.size == 1:
+        if matrix_info.dtype == jnp.bool_:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            def csc_mm(weights, indices, indptr, matrix, posts):
+                w = weights[0]
+                posts[:] = 0.
+                for k in numba.prange(matrix.shape[1]):
+                    for col in range(matrix.shape[0]):
+                        if matrix[col, k]:
+                            for pos in range(indptr[col], indptr[col + 1]):
+                                posts[indices[pos], k] += w
+        else:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            def csc_mm(weights, indices, indptr, matrix, posts):
+                w = weights[0]
+                posts[:] = 0.
+                for k in numba.prange(matrix.shape[1]):
+                    for col in range(matrix.shape[0]):
+                        if matrix[col, k] > 0.:
+                            for pos in range(indptr[col], indptr[col + 1]):
+                                posts[indices[pos], k] += w
+    else:
+        if matrix_info.dtype == jnp.bool_:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            def csc_mm(weights, indices, indptr, matrix, posts):
+                posts[:] = 0.
+                for k in numba.prange(matrix.shape[1]):
+                    for col in range(matrix.shape[0]):
+                        if matrix[col, k]:
+                            for pos in range(indptr[col], indptr[col + 1]):
+                                posts[indices[pos], k] += weights[pos]
+        else:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            def csc_mm(weights, indices, indptr, matrix, posts):
+                posts[:] = 0.
+                for k in numba.prange(matrix.shape[1]):
+                    for col in range(matrix.shape[0]):
+                        if matrix[col, k] > 0.:
+                            for pos in range(indptr[col], indptr[col + 1]):
+                                posts[indices[pos], k] += weights[pos]
+
+    def kernel(weights, indices, indptr, matrix):
+        return numba_kernel(csc_mm, outs=kwargs['outs'])(weights, indices, indptr, matrix)
+
+    return kernel
+
+
+def _csc_binary_matmat_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_fcnmm_col_scatter.cu'),
+        name='fcn_binary_mm_col_scatter',
+    )
+
+    out_info = kwargs['outs']
+    n_pre = out_info[0].shape[0]
+    n_batch = out_info[0].shape[1]
+    out_dtype = out_info[0].dtype
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
+    spike_sfx = '_bool' if matrix_info.dtype == jnp.bool_ else '_float'
+    kernel_name = f'fcn_binary_mm_col_scatter.binary_fcnmm_col_scatter{mode_sfx}{spike_sfx}{sfx}'
+
+    # The .cu kernel works in a transposed physical layout: ``matrix_t`` is read
+    # as ``(n_batch, num_post)`` and ``output`` written as ``(n_batch, num_pre)``.
+    cu_out_info = (jax.ShapeDtypeStruct((n_batch, n_pre), out_dtype),)
+
+    def kernel(weights, indices, indptr, matrix):
+        matrix_t = matrix.T  # (n_batch, num_post)
+        if matrix_info.dtype == jnp.bool_:
+            matrix_t = u.math.asarray(matrix_t, dtype=bool)
+        r = jax.ffi.ffi_call(kernel_name, cu_out_info)(weights, indices, indptr, matrix_t)
+        return r.T,  # (num_pre, n_batch)
+
+    return kernel
+
+
+def _csc_binary_matmat_jax_kernel(
+    shape: Tuple[int, int],
+    **kwargs,
+):
+    """Pure JAX reference: Y = W @ M via column scatter (segment_sum)."""
+    n_pre, n_post = shape
+
+    def kernel(weights, indices, indptr, matrix):
+        mat_f = _binary_fcnmv_spike_activity(matrix, weights.dtype)  # [n_post, n]
+        col_ids = jnp.repeat(
+            jnp.arange(indptr.shape[0] - 1),
+            jnp.diff(indptr),
+            total_repeat_length=indices.shape[0],
+        )
+        contrib = mat_f[col_ids]  # [NNZ, n]
+        if weights.size == 1:
+            contrib = contrib * weights[0]
+        else:
+            contrib = contrib * weights[:, None]
+        return jax.ops.segment_sum(contrib, indices, num_segments=n_pre),
+
+    return kernel
+
+
+def _csc_binary_matmat_jvp_matrix(
+    mat_dot,
+    weights,
+    indices,
+    indptr,
+    matrix,
+    *,
+    shape,
+    **kwargs
+):
+    # Y = W @ M linear in M: dY = W @ M_dot (float column-scatter).
+    n_pre = shape[0]
+    col_ids = jnp.repeat(
+        jnp.arange(indptr.shape[0] - 1),
+        jnp.diff(indptr),
+        total_repeat_length=indices.shape[0],
+    )
+    contrib = mat_dot[col_ids]
+    if weights.size == 1:
+        contrib = contrib * weights[0]
+    else:
+        contrib = contrib * weights[:, None]
+    return jax.ops.segment_sum(contrib, indices, num_segments=n_pre),
+
+
+def _csc_binary_matmat_jvp_weights(
+    w_dot,
+    weights,
+    indices,
+    indptr,
+    matrix,
+    *,
+    shape,
+    **kwargs
+):
+    return csc_binary_matmat_p_call(
+        w_dot,
+        indices,
+        indptr,
+        matrix,
+        shape=shape,
+        backend=kwargs['backend'],
+    )
+
+
+def _csc_binary_matmat_transpose_rule(
+    ct,
+    weights,
+    indices,
+    indptr,
+    matrix,
+    *,
+    shape,
+    weight_info,
+    **kwargs
+):
+    if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr):
+        raise ValueError("Cannot transpose with respect to sparse structure.")
+
+    ct = ct[0]
+    n_pre, n_post = shape
+    homo = weight_info.size == 1
+    col_ids = jnp.repeat(
+        jnp.arange(indptr.shape[0] - 1),
+        jnp.diff(indptr),
+        total_repeat_length=indices.shape[0],
+    )
+
+    if ad.is_undefined_primal(matrix):
+        # dL/dM = W^T @ ct: dM[col, j] = sum_{pos in col} weights[pos] * ct[indices[pos], j]
+        if type(ct) is ad.Zero:
+            ct_mat = ad.Zero(matrix)
+        else:
+            w = weights[0] if homo else weights[:, None]
+            contrib = w * ct[indices]  # [NNZ, n]
+            ct_mat = jax.ops.segment_sum(contrib, col_ids, num_segments=n_post)
+        return weights, indices, indptr, ct_mat
+
+    else:
+        # dL/dw: dL/dweights[pos] = sum_j ct[indices[pos], j] * M_active[col(pos), j]
+        if type(ct) is ad.Zero:
+            ct_w = ad.Zero(weights)
+        else:
+            spk_active = _binary_fcnmv_spike_activity(matrix, weight_info.dtype)
+            per_pos = jnp.sum(ct[indices] * spk_active[col_ids], axis=1)  # [NNZ]
+            if homo:
+                ct_w = jnp.sum(per_pos).reshape(*weight_info.shape)
+            else:
+                ct_w = per_pos
+        return ct_w, indices, indptr, matrix
+
+
+def _csc_binary_matmat_batching(args, axes, **kwargs):
+    return general_batching_rule(csc_binary_matmat_p, args, axes, **kwargs)
+
+
+def csc_binary_matmat_p_call(
+    weights: jax.Array,
+    indices: jax.Array,
+    indptr: jax.Array,
+    matrix: jax.Array,
+    *,
+    shape: Tuple[int, int],
+    backend: Optional[str] = None,
+) -> Tuple[jax.Array]:
+    """
+    Low-level primitive call for the CSC column-scatter event-driven matrix
+    --matrix product ``Y = W @ M``.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        Column-major non-zero weights, already permuted into CSC order.  Shape
+        ``(1,)`` for homogeneous or ``(NNZ,)`` for heterogeneous weights.  Must
+        be floating-point.
+    indices : jax.Array
+        Row-index array of shape ``(NNZ,)``.
+    indptr : jax.Array
+        Column pointer array of shape ``(num_post + 1,)``.
+    matrix : jax.Array
+        Dense binary event matrix of shape ``(num_post, n)`` (boolean or float).
+    shape : tuple[int, int]
+        Logical ``(num_pre, num_post)`` dense-matrix shape.
+    backend : str or None, optional
+        Backend override (``'numba'``, ``'cuda_raw'``, or ``None``).
+
+    Returns
+    -------
+    tuple[jax.Array]
+        Single-element tuple containing the result matrix ``(num_pre, n)``.
+    """
+    n_pre, n_post = shape
+    weights = u.math.asarray(weights)
+    indices = u.math.asarray(indices)
+    indptr = u.math.asarray(indptr)
+    matrix = u.math.asarray(matrix)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    assert matrix.ndim == 2, 'matrix must be 2D.'
+    assert matrix.shape[0] == n_post, 'matrix row count must equal num_post.'
+    out = jax.ShapeDtypeStruct((n_pre, matrix.shape[1]), weights.dtype)
+    return csc_binary_matmat_p(
+        weights,
+        indices,
+        indptr,
+        matrix,
+        outs=[out],
+        shape=shape,
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
+        backend=backend,
+    )
+
+
+csc_binary_matmat_p = XLACustomKernel(
+    'csc_binary_matmat',
+    doc="""
+Low-level XLA custom-kernel primitive for the CSC column-scatter
+event-driven matrix-matrix product ``Y = W @ M``.
+
+The matrix ``W`` is stored column-major (CSC) as
+``(weights, indices, indptr)`` with ``weights`` already permuted into CSC
+order.  For each active ``(column, batch)`` entry the kernel scatter-adds the
+column's weights to the output rows.  CUDA provides the real column-scatter
+kernel; numba and jax provide a ``segment_sum`` reference so the path is
+testable on every platform.
+
+The primitive takes four positional arguments
+``(weights, indices, indptr, matrix)``.
+
+See Also
+--------
+csc_binary_matmat : High-level user-facing function wrapper.
+csc_binary_matvec : Matrix-vector peer primitive.
+"""
+)
+
+
+csc_binary_matmat_p.def_numba_kernel(_csc_binary_matmat_numba_kernel)
+csc_binary_matmat_p.def_cuda_raw_kernel(_csc_binary_matmat_cuda_kernel, asdefault=True)
+csc_binary_matmat_p.def_kernel('jax_raw', 'cpu', _csc_binary_matmat_jax_kernel)
+csc_binary_matmat_p.def_kernel('jax_raw', 'gpu', _csc_binary_matmat_jax_kernel)
+csc_binary_matmat_p.def_kernel('jax_raw', 'tpu', _csc_binary_matmat_jax_kernel)
+
+csc_binary_matmat_p.def_jvp_rule2(
+    _csc_binary_matmat_jvp_weights,
+    None,
+    None,
+    _csc_binary_matmat_jvp_matrix,
+)
+csc_binary_matmat_p.def_transpose_rule(_csc_binary_matmat_transpose_rule)
+csc_binary_matmat_p.def_batching_rule(_csc_binary_matmat_batching)
+csc_binary_matmat_p.def_call(csc_binary_matmat_p_call)
+csc_binary_matmat_p.def_tags('fcn', 'binary')
+
+
+@namescope(static_argnames=['shape'])
+def csc_binary_matmat(
+    weights: Union[jax.Array, u.Quantity],
+    indices: jax.Array,
+    indptr: jax.Array,
+    matrix: Union[jax.Array, u.Quantity],
+    *,
+    shape: Tuple[int, int],
+    backend: Optional[str] = None,
+) -> Union[jax.Array, u.Quantity]:
+    """
+    Event-driven CSC column-scatter sparse matrix--matrix product ``Y = W @ M``.
+
+    Parameters
+    ----------
+    weights : jax.Array or u.Quantity
+        Column-major non-zero weights, already permuted into CSC order.  Shape
+        ``(1,)`` (homogeneous) or ``(NNZ,)`` (heterogeneous).  Must have a
+        floating-point dtype.
+    indices : jax.Array
+        Row-index array of shape ``(NNZ,)``.
+    indptr : jax.Array
+        Column pointer array of shape ``(num_post + 1,)``.
+    matrix : jax.Array or u.Quantity
+        Dense binary event matrix of shape ``(num_post, n)``.
+    shape : tuple[int, int]
+        Logical ``(num_pre, num_post)`` shape of the dense weight matrix.
+    backend : str or None, optional
+        Execution backend override.
+
+    Returns
+    -------
+    jax.Array or u.Quantity
+        Result matrix of shape ``(num_pre, n)``.
+
+    See Also
+    --------
+    csc_binary_matvec : CSC column-scatter matrix--vector product.
+    binary_fcnmm : ELL event-driven matrix--matrix product.
+    """
+    weights, w_unit = u.split_mantissa_unit(weights)
+    matrix, m_unit = u.split_mantissa_unit(matrix)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    r = csc_binary_matmat_p_call(
+        weights,
+        indices,
+        indptr,
+        matrix,
+        shape=shape,
+        backend=backend,
+    )[0]
+    return u.maybe_decimal(r * m_unit * w_unit)
 
 
 @namescope(static_argnames=['shape', 'transpose'])

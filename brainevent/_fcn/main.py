@@ -26,7 +26,7 @@ from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
 from brainevent._misc import _coo_todense, COOInfo, fixed_conn_num_csc_structure
 from brainevent._typing import Data, MatrixShape, Index
-from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec
+from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec, csc_binary_matmat
 from .float import fcnmv, fcnmm
 
 __all__ = [
@@ -174,9 +174,22 @@ class FixedNumConn(DataRepresentation):
 
     def _binary_matmat(self, matrix, transpose_W: bool):
         a_shape, ell_transpose = self._ell_plan(transpose_W)
-        return binary_fcnmm(
-            self.data, self.indices, matrix,
-            shape=a_shape, transpose=ell_transpose, backend=self.backend,
+        if ell_transpose:
+            # Favorable: the event matrix indexes the ELL stored axis -> direct
+            # column-scatter over active events.
+            return binary_fcnmm(
+                self.data, self.indices, matrix,
+                shape=a_shape, transpose=True, backend=self.backend,
+            )
+        # Unfavorable: convert to a column-major (CSC) view and permute weights
+        # into CSC order so the scatter matmat kernel applies on every backend --
+        # parity with the matvec unfavorable path.
+        csc_indptr, csc_indices, perm = self._weight_indices()
+        data = self.data
+        weights = data.reshape(1) if data.size == 1 else data.reshape(-1)[perm]
+        return csc_binary_matmat(
+            weights, csc_indices, csc_indptr, matrix,
+            shape=a_shape, backend=self.backend,
         )
 
     def _float_matvec(self, vector, transpose_W: bool, data):
