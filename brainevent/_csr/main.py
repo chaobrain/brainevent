@@ -27,11 +27,10 @@ from brainevent._event import BinaryArray
 from brainevent._misc import _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to_csr_index
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
-from .binary_indexed import binary_csrmv_indexed
-from .binary_indexed_mm import binary_csrmm_indexed
+from .binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from .diag_add import csr_diag_position, csr_diag_add
 from .float import csrmv, csrmm
-from .plasticity_binary_csr import update_csr_on_binary_pre, update_csr_on_binary_post
+from .plasticity_binary import update_csr_on_binary_pre, update_csr_on_binary_post
 from .slice import csr_slice_rows
 from .spsolve import csr_solve
 from .yw2y import csrmv_yw2y

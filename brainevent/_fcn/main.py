@@ -28,6 +28,12 @@ from brainevent._misc import _coo_todense, COOInfo, fixed_conn_num_csc_structure
 from brainevent._typing import Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec, csc_binary_matmat
 from .float import fcnmv, fcnmm, fcnmv_yw2y
+from .plasticity_binary import (
+    update_fixed_post_conn_on_binary_pre,
+    update_fixed_post_conn_on_binary_post,
+    update_fixed_pre_conn_on_binary_pre,
+    update_fixed_pre_conn_on_binary_post,
+)
 
 __all__ = [
     'FixedNumConn',
@@ -294,6 +300,101 @@ class FixedNumConn(DataRepresentation):
     def __rmatmul__(self, other):
         """Reflected matrix multiplication ``other @ self`` (logical ``W^T @ other``)."""
         return self._dispatch(other, transpose_W=True)
+
+    # ------------------------------------------------------------------ #
+    # Event-driven plasticity (STDP) updates
+    # ------------------------------------------------------------------ #
+
+    def _rebuild_with_data(self, new_data):
+        """Structure-preserving rebuild that is safe under ``jax.jit``.
+
+        Plasticity updates run inside the jitted simulation loop, so the result
+        matrix must be reconstructible from traced arrays.  Unlike
+        :meth:`with_data`, this bypasses the constructor's outside-``jit``
+        validation (the connectivity is unchanged and was validated when ``self``
+        was first built) by going through the registered pytree
+        :meth:`tree_unflatten` path.
+        """
+        return type(self).tree_unflatten(
+            {'shape': self.shape, 'backend': self.backend},
+            (new_data, self.indices),
+        )
+
+    def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
+        """Apply a pre-spike-triggered STDP update, returning a new matrix.
+
+        For each firing pre neuron ``i`` every stored synapse is updated
+        ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.  Favorable
+        (row-driven) for :class:`FixedPostNumConn`, unfavorable (column-scan) for
+        :class:`FixedPreNumConn`; dispatched on ``self.axis``.
+
+        Parameters
+        ----------
+        pre_spike : jax.Array
+            Pre-synaptic spikes, shape ``(shape[0],)``.
+        post_trace : jax.Array or Quantity
+            Post-synaptic trace, shape ``(shape[1],)``.
+        w_min, w_max : jax.Array, Quantity, number, or None, optional
+            Clip bounds; ``None`` disables the corresponding bound.
+
+        Returns
+        -------
+        FixedNumConn
+            A new matrix of the same subclass with updated data and identical structure.
+
+        See Also
+        --------
+        update_on_post : Post-spike-triggered counterpart.
+        """
+        if self.axis == 0:
+            new = update_fixed_post_conn_on_binary_pre(
+                self.data, self.indices, pre_spike, post_trace, w_min, w_max,
+                shape=self.shape, backend=self.backend,
+            )
+        else:
+            new = update_fixed_pre_conn_on_binary_pre(
+                self.data, self.indices, pre_spike, post_trace, w_min, w_max,
+                shape=self.shape, backend=self.backend,
+            )
+        return self._rebuild_with_data(new)
+
+    def update_on_post(self, pre_trace, post_spike, w_min=None, w_max=None):
+        """Apply a post-spike-triggered STDP update, returning a new matrix.
+
+        For each firing post neuron ``j`` every stored synapse is updated
+        ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.  Unfavorable
+        (column-scan) for :class:`FixedPostNumConn`, favorable (row-driven) for
+        :class:`FixedPreNumConn`; dispatched on ``self.axis``.
+
+        Parameters
+        ----------
+        pre_trace : jax.Array or Quantity
+            Pre-synaptic trace, shape ``(shape[0],)``.
+        post_spike : jax.Array
+            Post-synaptic spikes, shape ``(shape[1],)``.
+        w_min, w_max : jax.Array, Quantity, number, or None, optional
+            Clip bounds; ``None`` disables the corresponding bound.
+
+        Returns
+        -------
+        FixedNumConn
+            A new matrix of the same subclass with updated data and identical structure.
+
+        See Also
+        --------
+        update_on_pre : Pre-spike-triggered counterpart.
+        """
+        if self.axis == 0:
+            new = update_fixed_post_conn_on_binary_post(
+                self.data, self.indices, pre_trace, post_spike, w_min, w_max,
+                shape=self.shape, backend=self.backend,
+            )
+        else:
+            new = update_fixed_pre_conn_on_binary_post(
+                self.data, self.indices, pre_trace, post_spike, w_min, w_max,
+                shape=self.shape, backend=self.backend,
+            )
+        return self._rebuild_with_data(new)
 
     # ------------------------------------------------------------------ #
     # Pytree protocol
