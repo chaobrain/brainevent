@@ -169,6 +169,16 @@ def _csrmv_yw2y_cuda_kernel(
     w_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
+    # Transpose path: ``out[j] = w[j] * y[indices[j]]`` is an embarrassingly
+    # parallel gather-multiply whose cost is dominated by the irreducible
+    # scattered read of ``y[indices]``.  XLA's gather matches the hand-written
+    # CUDA transpose kernel, so reuse the pure-JAX implementation here and keep
+    # the bespoke CUDA kernel only for the non-transpose path, where a
+    # row-centric kernel reads ``y[row]`` once per row and reaches near-peak
+    # memory bandwidth.
+    if transpose:
+        return _csrmv_yw2y_jax_kernel(transpose=transpose, **kwargs)
+
     load_cuda_file(
         Path(__file__).parent.joinpath('yw2y_csrmv_yw2y.cu'),
         name='csrmv_yw2y',
@@ -185,10 +195,7 @@ def _csrmv_yw2y_cuda_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
 
-    if transpose:
-        kernel_name = f'csrmv_yw2y.csrmv_yw2y_t_nz_thread{wt_sfx}'
-    else:
-        kernel_name = f'csrmv_yw2y.csrmv_yw2y_nt_auto{wt_sfx}'
+    kernel_name = f'csrmv_yw2y.csrmv_yw2y_nt_auto{wt_sfx}'
 
     def kernel(y, w, indices, indptr):
         return jax.ffi.ffi_call(kernel_name, out_info)(y, w, indices, indptr)
