@@ -24,7 +24,7 @@ import jax
 from brainevent._compatible_import import Tracer
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
-from brainevent._misc import _coo_todense, COOInfo, fixed_conn_num_csc_structure
+from brainevent._misc import _coo_todense, COOInfo, coo2csr, fixed_conn_num_csc_structure
 from brainevent._typing import Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec, csc_binary_matmat
 from .float import fcnmv, fcnmm
@@ -301,6 +301,120 @@ class FixedNumConn(DataRepresentation):
     def __rmatmul__(self, other):
         """Reflected matrix multiplication ``other @ self`` (logical ``W^T @ other``)."""
         return self._dispatch(other, transpose_W=True)
+
+    # ------------------------------------------------------------------ #
+    # Format conversions
+    # ------------------------------------------------------------------ #
+
+    def _to_coo(self):
+        """Return ``(pre_ids, post_ids, COOInfo)`` for the logical matrix ``W``.
+
+        Dispatches on :attr:`axis` so both orientations describe the *same*
+        logical matrix of shape ``(num_pre, num_post)``: ``pre_ids`` are row
+        (pre-synaptic) indices and ``post_ids`` are column (post-synaptic)
+        indices, each of length ``self.indices.size``.
+        """
+        if self.axis == 0:
+            return fixed_post_num_to_coo(self)
+        return fixed_pre_num_to_coo(self)
+
+    def to_dense(self):
+        """Convert to a dense ``(num_pre, num_post)`` matrix.
+
+        Alias of :meth:`todense` provided for naming parity with
+        :meth:`to_csr` and :meth:`to_csc`.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Dense matrix of shape ``self.shape``.  Stored entries that share a
+            ``(row, column)`` coordinate (duplicate connections) are summed,
+            matching :meth:`todense` and the event-driven matmul kernels.
+
+        See Also
+        --------
+        todense : Underlying implementation.
+        to_csr : Convert to Compressed Sparse Row format.
+        to_csc : Convert to Compressed Sparse Column format.
+        """
+        return self.todense()
+
+    def to_csr(self):
+        """Convert to a :class:`brainevent.CSR` matrix of the logical matrix ``W``.
+
+        The result is a Compressed Sparse Row view of the same logical weight
+        matrix ``W`` of shape ``(num_pre, num_post)``, irrespective of the
+        storage orientation (:class:`FixedNumPerPre` or
+        :class:`FixedNumPerPost`).  Duplicate connections are preserved as
+        repeated entries within a row (CSR matmul / :meth:`CSR.todense` sum
+        them, matching :meth:`todense`).  Homogeneous (size-1) weights are kept
+        as a single shared value.
+
+        Returns
+        -------
+        CSR
+            Equivalent matrix in CSR format with the same ``shape``, ``dtype``,
+            unit, and ``backend`` as ``self``.
+
+        Notes
+        -----
+        Building the CSR layout reorders the stored connections by row, which
+        requires concrete indices.  Like the lazy CSC mirror, it must therefore
+        run outside ``jax.jit`` / ``brainstate.transform.jit``; construct the
+        connection and call this method before entering a jitted function.
+
+        See Also
+        --------
+        to_csc : Convert to Compressed Sparse Column format.
+        to_dense : Convert to a dense matrix.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> from brainevent import FixedNumPerPre
+            >>>
+            >>> data = jnp.array([[1., 2.], [3., 4.]])
+            >>> indices = jnp.array([[0, 1], [1, 2]])
+            >>> mat = FixedNumPerPre((data, indices), shape=(2, 3))
+            >>> csr = mat.to_csr()
+            >>> bool((csr.todense() == mat.todense()).all())
+            True
+        """
+        from brainevent._csr import CSR  # local import avoids an import cycle
+
+        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind=type(self).__name__)
+        pre_ids, post_ids, _ = self._to_coo()
+        indptr, indices, order = coo2csr(pre_ids, post_ids, shape=self.shape)
+        if self.data.size == 1:
+            # Homogeneous weight: keep the single shared value.
+            data = self.data.reshape(1)
+        else:
+            data = self.data.reshape(-1)[order]
+        return CSR((data, indices, indptr), shape=self.shape, backend=self.backend)
+
+    def to_csc(self):
+        """Convert to a :class:`brainevent.CSC` matrix of the logical matrix ``W``.
+
+        The result is a Compressed Sparse Column view of the same logical
+        weight matrix ``W`` of shape ``(num_pre, num_post)``.  It is built by
+        transposing to the opposite orientation, taking the CSR view of ``W^T``,
+        and reinterpreting it as the (array-identical) CSC view of ``W`` -- so
+        the same outside-``jit`` requirement as :meth:`to_csr` applies.
+
+        Returns
+        -------
+        CSC
+            Equivalent matrix in CSC format with the same ``shape``, ``dtype``,
+            unit, and ``backend`` as ``self``.
+
+        See Also
+        --------
+        to_csr : Convert to Compressed Sparse Row format.
+        to_dense : Convert to a dense matrix.
+        """
+        return self.transpose().to_csr().transpose()
 
     # ------------------------------------------------------------------ #
     # Event-driven plasticity (STDP) updates
