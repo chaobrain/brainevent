@@ -30,6 +30,15 @@ JITU_IMPLEMENTATIONS = tuple(jitu_p.available_backends(platform))
 JITUMV_IMPLEMENTATIONS = tuple(jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(jitumm_p.available_backends(platform))
 
+
+@pytest.fixture(autouse=True)
+def _seed_rng():
+    """Seed the global NumPy RNG so unseeded ``np.random`` probe draws are
+    deterministic; keeps tolerance-sensitive autodiff-vs-finite-difference
+    gradient checks from being order-dependently flaky."""
+    np.random.seed(0x5EED)
+
+
 SHAPES = [(20, 30), (100, 50)]
 W_LOW = -1.5
 W_HIGH = 1.5

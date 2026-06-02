@@ -17,6 +17,7 @@
 
 
 import inspect
+import random
 
 import brainstate
 import braintools
@@ -34,6 +35,21 @@ from brainevent._fcn.binary import (
 )
 from brainevent._misc import fixed_conn_num_to_csc
 from brainevent._test_util import generate_fixed_conn_num_indices
+
+
+@pytest.fixture(autouse=True)
+def _seed_rng():
+    """Make the random connectivity / event draws in this module deterministic.
+
+    Test data comes from unseeded ``brainstate.random`` / ``np.random`` draws and
+    from ``generate_fixed_conn_num_indices`` (which uses Python's ``random`` to
+    decide sampling-with-replacement). Without a fixed seed an occasional draw on
+    a small problem pushes the kernel-vs-dense comparison past its tolerance,
+    making the test order-dependently flaky. Seeding every RNG source per test
+    removes that dependence."""
+    random.seed(0x5EED)
+    np.random.seed(0x5EED)
+    brainstate.random.seed(0x5EED)
 
 
 platform = jax.default_backend()

@@ -1,0 +1,31 @@
+# Codecov configuration.
+#
+# Coverage here is measured ONLY on the Linux CI job, which runs on CPU. A large
+# part of brainevent is GPU/TPU kernel code (CUDA, pallas, warp, taichi) that
+# never executes in CI, so the reported number is a CPU-backend lower bound, not
+# the union of all backends. To keep that reality from blocking merges, every
+# status check is informational (never fails the PR) -- the badge and the diff
+# annotations are the value, not a hard gate.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+        target: auto
+    patch:
+      default:
+        informational: true
+        target: auto
+
+# Don't post the giant comment on every PR; the badge + checks page suffice.
+comment:
+  layout: "reach, diff, flags"
+  require_changes: true
+
+# Exclude code that cannot run under the CPU CI job or is not product code.
+ignore:
+  - "**/*_test.py"
+  - "**/_test_util.py"
+  - "benchmark/**"
+  - "examples/**"
+  - "docs/**"

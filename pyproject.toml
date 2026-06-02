@@ -106,7 +106,7 @@ cpu = ['jax[cpu]>=0.7.2', 'numba']
 cuda12 = ['jax[cuda12]>=0.7.2']
 cuda13 = ['jax[cuda13]>=0.7.2']
 tpu = ['jax[tpu]>=0.7.2']
-testing = ['pytest']
+testing = ['pytest', 'pytest-cov']
 
 
 [tool.pytest.ini_options]
@@ -136,3 +136,41 @@ python_version = "3.13"
 platform = "linux"
 ignore_missing_imports = true
 show_error_codes = true
+
+
+[tool.coverage.run]
+# Measure line coverage of the importable package only. Test modules, throwaway
+# benchmark helpers and the pure-CUDA ``.cu`` sources (not Python, hence invisible
+# to coverage.py) are excluded so the reported figure reflects exercised library code.
+source = ["brainevent"]
+branch = false
+omit = [
+    "*/_test.py",
+    "*_test.py",
+    "brainevent/test_util.py",
+    "brainevent/_test_util.py",
+    "brainevent/**/test_util.py",
+    "brainevent/_op/benchmark.py",
+    "brainevent/pararnn/_benchmark.py",
+]
+
+[tool.coverage.report]
+# Lines that are unreachable-by-design or environment-gated should not count against
+# coverage. ``skip_covered`` keeps the terminal report focused on the gaps.
+show_missing = true
+precision = 2
+exclude_also = [
+    "def __repr__",
+    "raise NotImplementedError",
+    "raise AssertionError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@(abc\\.)?abstractmethod",
+    "@(typing\\.)?overload",
+    "pragma: no cover",
+]
+
+[tool.coverage.paths]
+# Treat the repo checkout and any installed copy as the same source so coverage data
+# combined across environments (local + CI) maps back to a single set of files.
+source = ["brainevent/", "*/site-packages/brainevent/"]
