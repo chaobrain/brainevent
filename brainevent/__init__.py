@@ -73,6 +73,9 @@ from ._fcn import (
     csc_binary_matmat, csc_binary_matmat_p,
     binary_fcnmm, ell_binary_matmat_p,
     fcnmv, fcnmm,
+    update_fixed_post_conn_on_binary_pre, update_fixed_post_conn_on_binary_post,
+    update_fixed_pre_conn_on_binary_pre, update_fixed_pre_conn_on_binary_post,
+    fcn_plasticity_row_p, fcn_plasticity_col_p,
 )
 from ._jit_normal import (
     JITCNormalR, JITCNormalC,
@@ -195,6 +198,9 @@ __all__ = [
     'binary_fcnmm', 'ell_binary_matmat_p',
     'fcnmv',
     'fcnmm',
+    'update_fixed_post_conn_on_binary_pre', 'update_fixed_post_conn_on_binary_post',
+    'update_fixed_pre_conn_on_binary_pre', 'update_fixed_pre_conn_on_binary_post',
+    'fcn_plasticity_row_p', 'fcn_plasticity_col_p',
 
     # --- operator customization routines --- #
     'XLACustomKernel', 'KernelEntry',

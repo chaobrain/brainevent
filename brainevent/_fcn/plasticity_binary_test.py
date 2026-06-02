@@ -232,3 +232,78 @@ def test_homogeneous_data_raises():
     post_trace = jnp.array([0.1, 0.2, 0.3], dtype=jnp.float32)
     with pytest.raises(ValueError, match="per-synapse"):
         update_fixed_post_conn_on_binary_pre(data, indices, pre_spike, post_trace, shape=(2, 3))
+
+
+# --------------------------------------------------------------------------- #
+# Class methods, transpose duality, jit, exports
+# --------------------------------------------------------------------------- #
+
+def test_class_methods_match_module_and_preserve_structure():
+    import brainevent as be
+    rng = np.random.default_rng(30)
+    n_pre, n_conn, n_post = 5, 3, 7
+    data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn)), dtype=jnp.int32)
+    pre_spike = jnp.asarray(rng.random(n_pre) > 0.5)
+    post_trace = jnp.asarray(rng.random(n_post), dtype=jnp.float32)
+    pre_trace = jnp.asarray(rng.random(n_pre), dtype=jnp.float32)
+    post_spike = jnp.asarray(rng.random(n_post) > 0.5)
+
+    m = be.FixedPostNumConn(data, indices, shape=(n_pre, n_post))
+    m2 = m.update_on_pre(pre_spike, post_trace, w_min=0.0, w_max=1.2)
+    assert isinstance(m2, be.FixedPostNumConn)
+    assert np.array_equal(np.asarray(m2.indices), np.asarray(indices))  # structure preserved
+    mod = update_fixed_post_conn_on_binary_pre(
+        data, indices, pre_spike, post_trace, 0.0, 1.2, shape=(n_pre, n_post))
+    assert np.allclose(np.asarray(m2.data), np.asarray(mod), atol=1e-6)
+
+    m3 = m.update_on_post(pre_trace, post_spike, w_min=0.0, w_max=1.2)
+    mod3 = update_fixed_post_conn_on_binary_post(
+        data, indices, pre_trace, post_spike, 0.0, 1.2, shape=(n_pre, n_post))
+    assert np.allclose(np.asarray(m3.data), np.asarray(mod3), atol=1e-6)
+
+
+def test_transpose_duality():
+    import brainevent as be
+    rng = np.random.default_rng(31)
+    n_pre, n_conn, n_post = 6, 3, 5
+    data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn)), dtype=jnp.int32)
+    pre_spike = jnp.asarray(rng.random(n_pre) > 0.5)
+    post_trace = jnp.asarray(rng.random(n_post), dtype=jnp.float32)
+
+    m = be.FixedPostNumConn(data, indices, shape=(n_pre, n_post))
+    a = m.update_on_pre(pre_spike, post_trace)
+    # transpose -> FixedPreNumConn sharing the same arrays; on_post is its favorable dir
+    mt = m.transpose()
+    b = mt.update_on_post(pre_trace=post_trace, post_spike=pre_spike)
+    assert np.allclose(np.asarray(a.data), np.asarray(b.data), atol=1e-6)
+
+
+def test_jit_class_method():
+    import brainevent as be
+    rng = np.random.default_rng(32)
+    n_pre, n_conn, n_post = 5, 3, 7
+    data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn)), dtype=jnp.int32)
+    m = be.FixedPostNumConn(data, indices, shape=(n_pre, n_post))
+    pre_spike = jnp.asarray(rng.random(n_pre) > 0.5)
+    post_trace = jnp.asarray(rng.random(n_post), dtype=jnp.float32)
+
+    @jax.jit
+    def f(mat, s, t):
+        return mat.update_on_pre(s, t).data
+
+    got = f(m, pre_spike, post_trace)
+    ref = m.update_on_pre(pre_spike, post_trace).data
+    assert np.allclose(np.asarray(got), np.asarray(ref), atol=1e-6)
+
+
+def test_top_level_exports():
+    import brainevent as be
+    for name in [
+        'update_fixed_post_conn_on_binary_pre', 'update_fixed_post_conn_on_binary_post',
+        'update_fixed_pre_conn_on_binary_pre', 'update_fixed_pre_conn_on_binary_post',
+        'fcn_plasticity_row_p', 'fcn_plasticity_col_p',
+    ]:
+        assert hasattr(be, name), f'missing export: {name}'
