@@ -233,7 +233,7 @@ def _csrmv_cuda_kernel(
 
     else:
         def kernel(weights, indices, indptr, vector):
-            return csr_matvec_p.bind(weights, indices, indptr, vector, shape=kwargs['shape'], transpose=transpose)
+            return csr_matvec_p.bind(weights, indices, indptr, vector, shape=kwargs['shape'], transpose=transpose),
 
     return kernel
 
