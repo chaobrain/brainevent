@@ -147,3 +147,46 @@ class TestFixedNumPerPostSliceRows:
         one = conn.slice_rows(4)
         assert one.shape == (1, 7)
         assert jnp.allclose(one.todense(), dense[4:5], atol=1e-5)
+
+
+class TestFcnSliceAD:
+
+    def test_grad_perpre(self):
+        conn = _make_perpre(8, 12, 3)
+        rows = jnp.array([1, 3, 5], dtype=jnp.int32)
+
+        def loss(data):
+            c = FixedNumPerPre((data, conn.indices), shape=conn.shape)
+            return jnp.sum(c[rows] ** 2)
+        g = jax.grad(loss)(conn.data)
+        # finite-difference check on one entry
+        eps = 1e-3
+        d = conn.data
+        d1 = d.at[0, 0].add(eps)
+        d2 = d.at[0, 0].add(-eps)
+        num = (loss(d1) - loss(d2)) / (2 * eps)
+        assert jnp.allclose(g[0, 0], num, atol=1e-2)
+
+    def test_grad_perpost(self):
+        conn = _make_perpost(10, 7, 4)
+        rows = jnp.array([0, 4, 8], dtype=jnp.int32)
+
+        def loss(data):
+            c = FixedNumPerPost((data, conn.indices), shape=conn.shape)
+            return jnp.sum(c[rows] ** 2)
+        g = jax.grad(loss)(conn.data)
+        eps = 1e-3
+        d = conn.data
+        d1 = d.at[0, 0].add(eps)
+        d2 = d.at[0, 0].add(-eps)
+        num = (loss(d1) - loss(d2)) / (2 * eps)
+        assert jnp.allclose(g[0, 0], num, atol=1e-2)
+
+    def test_vmap_perpre(self):
+        conn = _make_perpre(8, 12, 3)
+        dense = conn.todense()
+        batched_rows = jnp.array([[0, 1], [2, 3], [4, 5]], dtype=jnp.int32)
+        out = jax.vmap(lambda r: conn[r])(batched_rows)
+        assert out.shape == (3, 2, 12)
+        assert jnp.allclose(out[0], np.asarray(dense)[[0, 1]], atol=1e-5)
+        assert jnp.allclose(out[2], np.asarray(dense)[[4, 5]], atol=1e-5)
