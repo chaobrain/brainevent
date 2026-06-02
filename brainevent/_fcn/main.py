@@ -24,7 +24,11 @@ import jax
 from brainevent._compatible_import import Tracer
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
-from brainevent._misc import _coo_todense, COOInfo, fixed_conn_num_csc_structure
+from brainevent._misc import (
+    _coo_todense, COOInfo, fixed_conn_num_csc_structure,
+    fixed_conn_num_csr_indptr, normalize_row_index, build_sub_csr,
+)
+from brainevent._csr.slice import csr_slice_rows
 from brainevent._typing import Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec, csc_binary_matmat
 from .float import fcnmv, fcnmm, fcnmv_yw2y
@@ -545,6 +549,32 @@ class FixedNumPerPre(FixedNumConn):
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
         return FixedNumPerPre((data, self.indices), shape=self.shape, backend=self.backend)
+
+    def __getitem__(self, index):
+        """Extract rows of ``W`` as a dense array (NumPy semantics).
+
+        Row slicing is favorable for :class:`FixedNumPerPre`: the ELL is a CSR
+        with an implicit uniform ``indptr``, fed straight to ``csr_slice_rows``.
+
+        Parameters
+        ----------
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0 (pre-synaptic). Negative indices wrap;
+            Python slices are supported; concrete OOB indices raise ``IndexError``.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            ``(num_post,)`` for a single int, otherwise ``(len(rows), num_post)``.
+        """
+        rows = normalize_row_index(index, self.shape[0])
+        indptr = fixed_conn_num_csr_indptr(self.indices)
+        flat_indices = self.indices.reshape(-1)
+        flat_data = self.data if self.data.size == 1 else self.data.reshape(-1)
+        return csr_slice_rows(
+            flat_data, flat_indices, indptr, rows,
+            shape=self.shape, backend=self.backend,
+        )
 
     def todense(self):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""
