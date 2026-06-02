@@ -113,3 +113,73 @@ def test_csc_to_csr_index_roundtrip():
     np.testing.assert_array_equal(np.asarray(back_indices), indices)
     # perm composition returns to identity over the canonical CSR order.
     np.testing.assert_array_equal(np.asarray(perm)[np.asarray(perm2)], np.arange(len(perm)))
+
+
+class TestCsrToCooIndex(unittest.TestCase):
+    def test_expands_indptr_into_row_ids(self):
+        from brainevent._misc import csr_to_coo_index
+        indptr = np.array([0, 2, 3, 5])
+        indices = np.array([0, 2, 1, 0, 3])
+        row_ids, col_ids = csr_to_coo_index(indptr, indices)
+        # row i repeats (indptr[i+1]-indptr[i]) times; columns pass through.
+        np.testing.assert_array_equal(row_ids, [0, 0, 1, 2, 2])
+        np.testing.assert_array_equal(col_ids, indices)
+
+    def test_empty_row_produces_no_entries(self):
+        from brainevent._misc import csr_to_coo_index
+        # Row 1 is empty -> never appears in the expanded row ids.
+        indptr = np.array([0, 2, 2, 3])
+        indices = np.array([1, 3, 0])
+        row_ids, col_ids = csr_to_coo_index(indptr, indices)
+        np.testing.assert_array_equal(row_ids, [0, 0, 2])
+        np.testing.assert_array_equal(col_ids, [1, 3, 0])
+
+    def test_roundtrips_back_to_csr_via_coo2csr(self):
+        from brainevent._misc import csr_to_coo_index, coo2csr
+        indptr = np.array([0, 2, 3, 5])
+        indices = np.array([0, 2, 1, 0, 3])
+        row_ids, col_ids = csr_to_coo_index(indptr, indices)
+        new_indptr, new_indices, _ = coo2csr(row_ids, col_ids, shape=(3, 4))
+        np.testing.assert_array_equal(np.asarray(new_indptr), indptr)
+        np.testing.assert_array_equal(np.asarray(new_indices), indices)
+
+
+class TestCooToCscIndex(unittest.TestCase):
+    def test_matches_dense_column_structure(self):
+        from brainevent._misc import coo_to_csc_index
+        row_ids = np.array([0, 0, 1, 2, 2])
+        col_ids = np.array([0, 2, 1, 0, 3])
+        data = np.array([10., 20., 30., 40., 50.])
+        shape = (3, 4)
+        csc_indptr, csc_rows, perm = coo_to_csc_index(row_ids, col_ids, shape=shape)
+
+        # Column pointer has n_cols + 1 entries and brackets the nnz.
+        self.assertEqual(np.asarray(csc_indptr).shape, (shape[1] + 1,))
+        self.assertEqual(int(np.asarray(csc_indptr)[0]), 0)
+        self.assertEqual(int(np.asarray(csc_indptr)[-1]), col_ids.size)
+
+        # Reconstruct the dense matrix column-by-column from the CSC structure
+        # plus the permuted data, and compare against the COO ground truth.
+        csc_indptr = np.asarray(csc_indptr)
+        csc_rows = np.asarray(csc_rows)
+        csc_data = data[np.asarray(perm)]
+        dense_csc = np.zeros(shape)
+        for c in range(shape[1]):
+            for k in range(int(csc_indptr[c]), int(csc_indptr[c + 1])):
+                dense_csc[int(csc_rows[k]), c] += csc_data[k]
+
+        dense_coo = np.zeros(shape)
+        for r, c, v in zip(row_ids, col_ids, data):
+            dense_coo[int(r), int(c)] += v
+
+        np.testing.assert_allclose(dense_csc, dense_coo)
+
+    def test_empty_column_yields_zero_width_pointer_gap(self):
+        from brainevent._misc import coo_to_csc_index
+        # No entry in column 2 -> indptr is flat across that column.
+        row_ids = np.array([0, 1, 2])
+        col_ids = np.array([0, 1, 3])
+        csc_indptr, _, _ = coo_to_csc_index(row_ids, col_ids, shape=(3, 4))
+        csc_indptr = np.asarray(csc_indptr)
+        # column 2 spans [csc_indptr[2], csc_indptr[3]) and must be empty.
+        self.assertEqual(int(csc_indptr[2]), int(csc_indptr[3]))

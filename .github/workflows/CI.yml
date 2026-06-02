@@ -56,7 +56,16 @@ jobs:
         run: |
           # Run the FULL suite, including `slow` (compilation-heavy numba) variants that the
           # default `pytest` invocation skips via addopts in pyproject.toml.
-          pytest brainevent/ -m ""
+          # Collect line coverage (config lives in pyproject.toml [tool.coverage]).
+          pytest brainevent/ -m "" --cov=brainevent --cov-report=xml --cov-report=term
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          flags: cpu
+          # Tokenless upload works for public repos; a flaky upload must not fail CI.
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
 
   test_macos:

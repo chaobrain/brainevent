@@ -786,7 +786,7 @@ def _csrmm_numba_kernel_generator(
                     posts[i_m] = r
 
     def kernel(weights, indices, indptr, B):
-        return numba_kernel(mm, outs=kwargs['outs'])(weights, indices, indptr, B),
+        return numba_kernel(mm, outs=kwargs['outs'])(weights, indices, indptr, B)
 
     return kernel
 
