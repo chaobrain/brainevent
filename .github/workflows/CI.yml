@@ -4,9 +4,9 @@
 name: Continuous Integration
 
 on:
-  push:
-    branches:
-      - '**'        # matches every branch
+  # Trigger on pull requests only. A PR-branch push already fires the
+  # `pull_request` (synchronize) event, so also listening on `push` would
+  # start a second, redundant run for the same commit — one event, one run.
   pull_request:
     branches:
       - '**'        # matches every branch
