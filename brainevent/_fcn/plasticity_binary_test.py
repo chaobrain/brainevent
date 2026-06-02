@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import brainunit as bu
+import brainevent as be
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -21,18 +22,13 @@ import pytest
 
 from brainevent._fcn.plasticity_binary import (
     fcn_plasticity_row_p,
-    fcn_plasticity_col_p,
     fcn_plasticity_row_prim_call,
-    fcn_plasticity_col_prim_call,
     update_fixed_post_conn_on_binary_pre,
-    update_fixed_post_conn_on_binary_post,
-    update_fixed_pre_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
 )
 
 PLATFORM = jax.default_backend()
 ROW_BACKENDS = tuple(fcn_plasticity_row_p.available_backends(PLATFORM))
-COL_BACKENDS = tuple(fcn_plasticity_col_p.available_backends(PLATFORM))
 
 try:
     _CPU_DEVICE = jax.devices('cpu')[0]
@@ -54,6 +50,9 @@ def _ell_ref_row(data, indices, row_spike, col_trace):
 
 
 def _ell_ref_col(data, indices, col_spike, row_trace):
+    """Per-synapse unfavorable reference: ``data[r, k] += row_trace[r]`` when
+    ``col_spike[indices[r, k]]`` is active.  Operates on the stored ELL ``data``
+    directly (no ``todense``), so it is valid even with duplicate columns."""
     data = np.asarray(data, dtype=np.float64)
     idx = np.asarray(indices)
     active = (np.asarray(col_spike) != 0)
@@ -80,20 +79,6 @@ def test_row_prim(backend, spike_dtype):
     assert np.allclose(np.asarray(got), ref, atol=1e-5)
 
 
-@pytest.mark.parametrize("backend", COL_BACKENDS)
-@pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
-def test_col_prim(backend, spike_dtype):
-    rng = np.random.default_rng(1)
-    n_row, n_conn, n_col = 6, 4, 5
-    data = jnp.asarray(rng.random((n_row, n_conn)), dtype=jnp.float32)
-    indices = jnp.asarray(rng.integers(0, n_col, (n_row, n_conn)), dtype=jnp.int32)
-    spike = jnp.asarray(rng.random(n_col) > 0.5, dtype=spike_dtype)
-    trace = jnp.asarray(rng.random(n_row), dtype=jnp.float32)
-    got = fcn_plasticity_col_prim_call(data, indices, spike, trace, backend=backend)[0]
-    ref = _ell_ref_col(data, indices, spike, trace)
-    assert np.allclose(np.asarray(got), ref, atol=1e-5)
-
-
 @pytest.mark.slow
 @pytest.mark.skipif(_CPU_DEVICE is None, reason="no CPU device for numba backend")
 @pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
@@ -112,26 +97,8 @@ def test_row_numba_matches_ref(spike_dtype):
     assert np.allclose(got, ref, atol=1e-5)
 
 
-@pytest.mark.slow
-@pytest.mark.skipif(_CPU_DEVICE is None, reason="no CPU device for numba backend")
-@pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
-def test_col_numba_matches_ref(spike_dtype):
-    rng = np.random.default_rng(3)
-    n_row, n_conn, n_col = 9, 6, 7
-    with jax.default_device(_CPU_DEVICE):
-        data = jnp.asarray(rng.random((n_row, n_conn)), dtype=jnp.float32)
-        indices = jnp.asarray(rng.integers(0, n_col, (n_row, n_conn)), dtype=jnp.int32)
-        spike = jnp.asarray(rng.random(n_col) > 0.5, dtype=spike_dtype)
-        trace = jnp.asarray(rng.random(n_row), dtype=jnp.float32)
-        got = np.asarray(
-            fcn_plasticity_col_prim_call(data, indices, spike, trace, backend='numba')[0]
-        )
-    ref = _ell_ref_col(data, indices, spike, trace)
-    assert np.allclose(got, ref, atol=1e-5)
-
-
 # --------------------------------------------------------------------------- #
-# Module functions: 4 directions, clip, duplicates, units, homogeneous guard
+# Module / class plasticity: favorable (native row) + unfavorable (CSR-fused)
 # --------------------------------------------------------------------------- #
 
 _W_MIN_MAX = [(None, None), (0.0, 1.5), (0.2, None), (None, 0.9)]
@@ -144,6 +111,7 @@ def _clip(x, lo, hi):
 @pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
 @pytest.mark.parametrize("w_min,w_max", _W_MIN_MAX)
 def test_post_conn_on_pre(spike_dtype, w_min, w_max):
+    """FixedNumPerPre favorable (row-driven) pre-spike update."""
     rng = np.random.default_rng(10)
     n_pre, n_conn, n_post = 5, 3, 7
     data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
@@ -158,15 +126,16 @@ def test_post_conn_on_pre(spike_dtype, w_min, w_max):
 
 @pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
 @pytest.mark.parametrize("w_min,w_max", _W_MIN_MAX)
-def test_post_conn_on_post(spike_dtype, w_min, w_max):
+def test_fixed_per_pre_on_post_unfavorable(spike_dtype, w_min, w_max):
+    """FixedNumPerPre.update_on_post is the unfavorable (perm-fused CSR) direction."""
     rng = np.random.default_rng(11)
     n_pre, n_conn, n_post = 6, 4, 8
     data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
     indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn)), dtype=jnp.int32)
     pre_trace = jnp.asarray(rng.random(n_pre), dtype=jnp.float32)
     post_spike = jnp.asarray(rng.random(n_post) > 0.5, dtype=spike_dtype)
-    got = update_fixed_post_conn_on_binary_post(
-        data, indices, pre_trace, post_spike, w_min, w_max, shape=(n_pre, n_post))
+    m = be.FixedNumPerPre(data, indices, shape=(n_pre, n_post))
+    got = m.update_on_post(pre_trace, post_spike, w_min=w_min, w_max=w_max).data
     ref = _clip(_ell_ref_col(data, indices, post_spike, pre_trace), w_min, w_max)
     assert np.allclose(np.asarray(got), ref, atol=1e-5)
 
@@ -174,6 +143,7 @@ def test_post_conn_on_post(spike_dtype, w_min, w_max):
 @pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
 @pytest.mark.parametrize("w_min,w_max", _W_MIN_MAX)
 def test_pre_conn_on_post(spike_dtype, w_min, w_max):
+    """FixedNumPerPost favorable (row-driven) post-spike update."""
     rng = np.random.default_rng(12)
     n_pre, n_conn, n_post = 7, 3, 6
     data = jnp.asarray(rng.random((n_post, n_conn)) + 0.3, dtype=jnp.float32)
@@ -188,15 +158,16 @@ def test_pre_conn_on_post(spike_dtype, w_min, w_max):
 
 @pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
 @pytest.mark.parametrize("w_min,w_max", _W_MIN_MAX)
-def test_pre_conn_on_pre(spike_dtype, w_min, w_max):
+def test_fixed_per_post_on_pre_unfavorable(spike_dtype, w_min, w_max):
+    """FixedNumPerPost.update_on_pre is the unfavorable (perm-fused CSR) direction."""
     rng = np.random.default_rng(13)
     n_pre, n_conn, n_post = 8, 4, 5
     data = jnp.asarray(rng.random((n_post, n_conn)) + 0.3, dtype=jnp.float32)
     indices = jnp.asarray(rng.integers(0, n_pre, (n_post, n_conn)), dtype=jnp.int32)
     pre_spike = jnp.asarray(rng.random(n_pre) > 0.5, dtype=spike_dtype)
     post_trace = jnp.asarray(rng.random(n_post), dtype=jnp.float32)
-    got = update_fixed_pre_conn_on_binary_pre(
-        data, indices, pre_spike, post_trace, w_min, w_max, shape=(n_pre, n_post))
+    m = be.FixedNumPerPost(data, indices, shape=(n_pre, n_post))
+    got = m.update_on_pre(pre_spike, post_trace, w_min=w_min, w_max=w_max).data
     ref = _clip(_ell_ref_col(data, indices, pre_spike, post_trace), w_min, w_max)
     assert np.allclose(np.asarray(got), ref, atol=1e-5)
 
@@ -238,8 +209,7 @@ def test_homogeneous_data_raises():
 # Class methods, transpose duality, jit, exports
 # --------------------------------------------------------------------------- #
 
-def test_class_methods_match_module_and_preserve_structure():
-    import brainevent as be
+def test_class_methods_match_reference_and_preserve_structure():
     rng = np.random.default_rng(30)
     n_pre, n_conn, n_post = 5, 3, 7
     data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
@@ -250,6 +220,7 @@ def test_class_methods_match_module_and_preserve_structure():
     post_spike = jnp.asarray(rng.random(n_post) > 0.5)
 
     m = be.FixedNumPerPre(data, indices, shape=(n_pre, n_post))
+    # favorable: matches the native row module function
     m2 = m.update_on_pre(pre_spike, post_trace, w_min=0.0, w_max=1.2)
     assert isinstance(m2, be.FixedNumPerPre)
     assert np.array_equal(np.asarray(m2.indices), np.asarray(indices))  # structure preserved
@@ -257,14 +228,13 @@ def test_class_methods_match_module_and_preserve_structure():
         data, indices, pre_spike, post_trace, 0.0, 1.2, shape=(n_pre, n_post))
     assert np.allclose(np.asarray(m2.data), np.asarray(mod), atol=1e-6)
 
+    # unfavorable: matches the per-synapse column reference + clip
     m3 = m.update_on_post(pre_trace, post_spike, w_min=0.0, w_max=1.2)
-    mod3 = update_fixed_post_conn_on_binary_post(
-        data, indices, pre_trace, post_spike, 0.0, 1.2, shape=(n_pre, n_post))
-    assert np.allclose(np.asarray(m3.data), np.asarray(mod3), atol=1e-6)
+    ref3 = _clip(_ell_ref_col(data, indices, post_spike, pre_trace), 0.0, 1.2)
+    assert np.allclose(np.asarray(m3.data), ref3, atol=1e-5)
 
 
 def test_transpose_duality():
-    import brainevent as be
     rng = np.random.default_rng(31)
     n_pre, n_conn, n_post = 6, 3, 5
     data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
@@ -281,7 +251,6 @@ def test_transpose_duality():
 
 
 def test_jit_class_method():
-    import brainevent as be
     rng = np.random.default_rng(32)
     n_pre, n_conn, n_post = 5, 3, 7
     data = jnp.asarray(rng.random((n_pre, n_conn)) + 0.3, dtype=jnp.float32)
@@ -300,13 +269,21 @@ def test_jit_class_method():
 
 
 def test_top_level_exports():
-    import brainevent as be
     for name in [
-        'update_fixed_post_conn_on_binary_pre', 'update_fixed_post_conn_on_binary_post',
-        'update_fixed_pre_conn_on_binary_pre', 'update_fixed_pre_conn_on_binary_post',
-        'fcn_plasticity_row_p', 'fcn_plasticity_col_p',
+        'update_fixed_post_conn_on_binary_pre',
+        'update_fixed_pre_conn_on_binary_post',
+        'fcn_plasticity_row_p',
     ]:
         assert hasattr(be, name), f'missing export: {name}'
+    # The redundant native unfavorable operators were removed (breaking change).
+    for name in [
+        'update_fixed_post_conn_on_binary_post',
+        'update_fixed_pre_conn_on_binary_pre',
+        'fcn_plasticity_col_p',
+        'csc_binary_matvec',
+        'csc_binary_matmat',
+    ]:
+        assert not hasattr(be, name), f'unexpected lingering export: {name}'
 
 
 # --------------------------------------------------------------------------- #

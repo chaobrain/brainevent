@@ -61,18 +61,18 @@ def test_fcn_matmat_golden():
 
 
 def test_fcn_matmat_unfavorable_builds_weight_indices():
-    # Unfavorable matmat must build the cached CSC view (scatter path), exactly
-    # as the matvec unfavorable path does. For FixedNumPerPre (axis==0),
-    # _ell_plan gives ell_transpose == transpose_W, so __matmul__ (W @ M,
-    # transpose_W=False) is the *unfavorable* direction.
+    # Unfavorable matmat must build the cached CSC mirror (perm-fused path),
+    # exactly as the matvec unfavorable path does. FixedNumPerPre mirrors CSR,
+    # so __matmul__ (W @ M, transpose_W=False) is the *unfavorable* direction.
+    # The mirror is cached in the buffer registry (self.buffers['csc']).
     rng = np.random.default_rng(5)
     cls, data, indices, shape = next(_cases())   # FixedNumPerPre, homo
     M = cls(data, indices, shape=shape)
     n_pre, n_post = shape
-    assert M._csc is None                          # FCN caches its CSC view in self._csc
+    assert M.buffers.get('csc') is None            # FCN caches its CSC view in buffers['csc']
     right = jnp.asarray(rng.random((n_post, 3)) > 0.5, dtype=jnp.bool_)
     _ = M @ BinaryArray(right)
-    assert M._csc is not None
+    assert M.buffers.get('csc') is not None
 
 
 def test_fcn_matmat_units():

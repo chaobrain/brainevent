@@ -69,13 +69,11 @@ from ._event import (
 from ._fcn import (
     FixedNumConn, FixedNumPerPost, FixedNumPerPre,
     binary_fcnmv, ell_binary_matvec_p,
-    csc_binary_matvec, csc_binary_matvec_p,
-    csc_binary_matmat, csc_binary_matmat_p,
     binary_fcnmm, ell_binary_matmat_p,
     fcnmv, fcnmm, fcnmv_yw2y,
-    update_fixed_post_conn_on_binary_pre, update_fixed_post_conn_on_binary_post,
-    update_fixed_pre_conn_on_binary_pre, update_fixed_pre_conn_on_binary_post,
-    fcn_plasticity_row_p, fcn_plasticity_col_p,
+    update_fixed_post_conn_on_binary_pre,
+    update_fixed_pre_conn_on_binary_post,
+    fcn_plasticity_row_p,
 )
 from ._jit_normal import (
     JITCNormalR, JITCNormalC,
@@ -193,15 +191,13 @@ __all__ = [
     # --- Fixed number connectivity --- #
     'FixedNumConn', 'FixedNumPerPost', 'FixedNumPerPre',
     'binary_fcnmv', 'ell_binary_matvec_p',
-    'csc_binary_matvec', 'csc_binary_matvec_p',
-    'csc_binary_matmat', 'csc_binary_matmat_p',
     'binary_fcnmm', 'ell_binary_matmat_p',
     'fcnmv',
     'fcnmm',
     'fcnmv_yw2y',
-    'update_fixed_post_conn_on_binary_pre', 'update_fixed_post_conn_on_binary_post',
-    'update_fixed_pre_conn_on_binary_pre', 'update_fixed_pre_conn_on_binary_post',
-    'fcn_plasticity_row_p', 'fcn_plasticity_col_p',
+    'update_fixed_post_conn_on_binary_pre',
+    'update_fixed_pre_conn_on_binary_post',
+    'fcn_plasticity_row_p',
 
     # --- operator customization routines --- #
     'XLACustomKernel', 'KernelEntry',

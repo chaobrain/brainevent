@@ -16,10 +16,6 @@
 from .binary import (
     binary_fcnmv,
     ell_binary_matvec_p,
-    csc_binary_matvec,
-    csc_binary_matvec_p,
-    csc_binary_matmat,
-    csc_binary_matmat_p,
     binary_fcnmm,
     ell_binary_matmat_p,
 )
@@ -28,21 +24,16 @@ from .yw2y import fcnmv_yw2y
 from .main import FixedNumConn, FixedNumPerPost, FixedNumPerPre
 from .plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
-    update_fixed_post_conn_on_binary_post,
-    update_fixed_pre_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
     fcn_plasticity_row_p,
-    fcn_plasticity_col_p,
 )
 
 __all__ = [
     'FixedNumConn', 'FixedNumPerPost', 'FixedNumPerPre',
     'binary_fcnmv', 'ell_binary_matvec_p',
-    'csc_binary_matvec', 'csc_binary_matvec_p',
-    'csc_binary_matmat', 'csc_binary_matmat_p',
     'binary_fcnmm', 'ell_binary_matmat_p',
     'fcnmv', 'fcnmm', 'fcnmv_yw2y',
-    'update_fixed_post_conn_on_binary_pre', 'update_fixed_post_conn_on_binary_post',
-    'update_fixed_pre_conn_on_binary_pre', 'update_fixed_pre_conn_on_binary_post',
-    'fcn_plasticity_row_p', 'fcn_plasticity_col_p',
+    'update_fixed_post_conn_on_binary_pre',
+    'update_fixed_pre_conn_on_binary_post',
+    'fcn_plasticity_row_p',
 ]
