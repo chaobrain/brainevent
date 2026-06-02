@@ -388,3 +388,65 @@ class Test_JITC_Scalar_Validation:
         assert updated.prob == mat.prob
         assert updated.seed == mat.seed
         assert updated.shape == mat.shape
+
+
+class Test_JITC_To_CSR:
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_tocsr_roundtrip(self, cls, corder):
+        shape = (20, 30)
+        mat = cls((1.5, 0.2, 123), shape=shape, corder=corder)
+
+        csr = mat.tocsr()
+        assert isinstance(csr, brainevent.CSR)
+        assert csr.shape == shape
+        # Converting to CSR and back to dense must reproduce the dense matrix.
+        assert allclose(csr.todense(), mat.todense())
+        jax.block_until_ready((csr.data, csr.indices, csr.indptr))
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_tocsr_transpose_roundtrip(self, cls, corder):
+        shape = (20, 30)
+        mat = cls((1.5, 0.2, 123), shape=shape, corder=corder).T
+
+        csr = mat.tocsr()
+        assert isinstance(csr, brainevent.CSR)
+        assert csr.shape == mat.shape
+        assert allclose(csr.todense(), mat.todense())
+        jax.block_until_ready((csr.data, csr.indices, csr.indptr))
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_tocsr_structure_valid(self, cls, corder):
+        shape = (20, 30)
+        mat = cls((1.5, 0.2, 123), shape=shape, corder=corder)
+
+        csr = mat.tocsr()
+        indptr = np.asarray(csr.indptr)
+        indices = np.asarray(csr.indices)
+        assert indptr.shape == (shape[0] + 1,)
+        assert indptr[0] == 0
+        assert indptr[-1] == indices.shape[0]
+        assert np.all(np.diff(indptr) >= 0)
+        assert np.all((indices >= 0) & (indices < shape[1]))
+        # Each CSR row is column-sorted with no duplicate columns (CPU backend).
+        for r in range(shape[0]):
+            seg = indices[indptr[r]:indptr[r + 1]]
+            assert np.all(np.diff(seg) > 0)
+        # Scalar matrices store the constant weight at every connection.
+        assert allclose(csr.data, jnp.full_like(csr.data, 1.5))
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    def test_tocsr_units(self, cls):
+        import brainunit as u
+
+        shape = (20, 30)
+        mat = cls((1.5 * u.mV, 0.2, 123), shape=shape)
+
+        csr = mat.tocsr()
+        dense = mat.todense()
+        assert isinstance(csr, brainevent.CSR)
+        assert u.get_unit(csr.data) == u.get_unit(dense)
+        assert u.math.allclose(csr.todense(), dense)
+        jax.block_until_ready((csr.data, csr.indices, csr.indptr))
