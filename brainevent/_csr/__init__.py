@@ -19,7 +19,7 @@ from .binary_indexed import binary_csrmv_indexed, binary_csrmv_indexed_p
 from .binary_indexed_mm import binary_csrmm_indexed, binary_csrmm_indexed_p
 from .float import csrmv, csrmv_p, csrmm, csrmm_p
 from .main import CSR, CSC
-from .plasticity_binary import (
+from .plasticity_binary_csr import (
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
 )

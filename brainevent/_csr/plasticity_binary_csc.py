@@ -42,7 +42,7 @@ import numpy as np
 
 from brainevent._misc import csc_to_csr_index
 from brainevent._typing import MatrixShape
-from .plasticity_binary import update_csr_on_binary_pre, update_csr_on_binary_post
+from .plasticity_binary_csr import update_csr_on_binary_pre, update_csr_on_binary_post
 
 __all__ = [
     'update_csc_on_binary_pre',

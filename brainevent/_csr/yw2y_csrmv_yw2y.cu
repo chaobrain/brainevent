@@ -24,11 +24,16 @@
  *   For each structural non-zero j at CSR position (row, col):
  *
  *   Non-transpose (NT):  out[j] = w[j] * y[row]
- *   Transpose    (T):    out[j] = w[j] * y[col]   (col = indices[j])
  *
  *   The output has shape (nse,), one element per non-zero of the CSR matrix.
  *   This is NOT a matrix-vector product (no reduction); it is a gather-multiply
  *   operation where each output is independently computed.
+ *
+ *   This file implements ONLY the non-transpose (NT) path.  The transpose path
+ *   (out[j] = w[j] * y[indices[j]]) is an embarrassingly parallel gather that is
+ *   bottlenecked by the scattered read of y; XLA's gather matches a bespoke CUDA
+ *   kernel there, so it is handled in pure JAX (see ``_csrmv_yw2y_jax_kernel`` in
+ *   yw2y.py) rather than here.
  *
  * Use case:
  *   Computing per-synapse quantities in spiking neural network models.
@@ -63,14 +68,6 @@
  *
  *   NT_auto:        Host-side dispatch to row_thread / row_warp / nz_thread
  *                   based on avg_nnz = nse / m.
- *
- * Transpose (T):
- *   T_nz_thread:    1 thread per non-zero j.  Computes out[j] = w[j]*y[indices[j]]
- *                   directly — no scatter, no atomics.  Reads of w[], indices[],
- *                   and output[] are coalesced; reads of y[] are scattered
- *                   (indirect gather).  This is the only T variant because the
- *                   operation is embarrassingly parallel.
- *                   Grid: (ceil(nse/256), 1, 1)   Block: (256, 1, 1)
  *
  * Weight convention
  * -----------------
@@ -261,74 +258,6 @@ __global__ void _yw2y_nt_nz_thread_kern##SUFFIX(                           \
 }
 
 // =========================================================================
-// T_nz_thread kernel (transpose)
-//
-// One thread per non-zero j.  Computes out[j] = w[j] * y[indices[j]].
-// This is the transpose variant: the column index (indices[j]) addresses y
-// rather than the row index.
-//
-// Memory access pattern:
-//   w[j]       : coalesced
-//   indices[j] : coalesced
-//   y[indices[j]]: scattered (indirect gather); quality depends on sparsity
-//   output[j]  : coalesced
-//
-// No atomics needed (unlike binary_csrmv transpose): each output element
-// out[j] is owned exclusively by thread j.
-//
-// FUNDAMENTAL LIMITATION — Roofline Analysis:
-//   Achieved:     28-32% efficiency (435-511 GB/s on A100)
-//   Theoretical:  100% efficiency would require zero-latency scattered reads
-//
-// Bottleneck: Random/scattered y[indices[j]] reads.
-//   - Each warp's 32 threads read from 32 potentially random addresses in y[]
-//   - Memory controller cannot coalesce or pipeline random accesses efficiently
-//   - L2 cache hit rate depends on sparsity pattern (unpredictable for random graphs)
-//   - Even with texture cache (__ldg), each miss goes to DRAM at ~450ns latency
-//
-// Why 28-32% is near-optimal for random sparsity:
-//   - Memory transaction efficiency: ~30-35% for completely random 4-byte accesses
-//   - Each DRAM transaction fetches a 32-byte cache line (only 4 bytes used = 12.5% utilization)
-//   - 32 threads × 4 bytes = 128 bytes wanted, but may require up to 32 transactions = 1024 bytes
-//   - Transaction efficiency: 128/1024 = 12.5% per warp in worst case
-//   - Actual 28-32% indicates ~2-3x better than worst case (some L2 hits, some coalescing luck)
-//
-// Optimizations attempted:
-//   ✗ __ldg() intrinsic: already done automatically by compiler for __restrict__ const
-//   ✗ ILP / multiple elements per thread: reduces occupancy, hurts latency hiding
-//   ✗ Shared memory caching: no locality in random indices
-//   ✗ Software prefetching: scatter pattern precludes predictive loading
-//
-// Possible future improvements (require algorithm/format changes):
-//   - CSC format for transpose: makes y[] access sequential (requires format conversion)
-//   - Pre-sorted indices: group by column to improve y[] locality (changes semantics)
-//   - Batched/fused operations: amortize gather overhead across multiple operations
-//   - Persistent kernel with index sorting: sort indices within each block before gather
-//
-// Conclusion: 28-32% efficiency is NEAR-OPTIMAL for this algorithm on random sparse matrices.
-// Any further improvement requires changing the data format (CSR→CSC) or algorithm.
-//
-// Grid: (ceil(nse/BLOCK), 1, 1)   Block: (BLOCK=256, 1, 1)
-// =========================================================================
-
-#define DEFINE_YW2Y_T_NZ_THREAD(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W)   \
-__global__ void _yw2y_t_nz_thread_kern##SUFFIX(                             \
-    const WEIGHT_T* __restrict__ y,                                         \
-    const WEIGHT_T* __restrict__ w,                                         \
-    const int32_t*  __restrict__ indices,                                   \
-    WEIGHT_T*       __restrict__ output,                                    \
-    int nse                                                                 \
-) {                                                                         \
-    int j = blockIdx.x * blockDim.x + threadIdx.x;                          \
-    if (j >= nse) return;                                                   \
-    /* Scattered gather: each thread reads from a random position in y[] */ \
-    int col = __ldg(indices + j);                                           \
-    ACC_T w_val = READ_W(__ldg(w + j));                                     \
-    ACC_T y_val = READ_W(__ldg(y + col));                                   \
-    output[j] = WRITE_W(w_val * y_val);                                     \
-}
-
-// =========================================================================
 // Kernel instantiations: 4 weight dtypes
 // =========================================================================
 
@@ -336,25 +265,21 @@ __global__ void _yw2y_t_nz_thread_kern##SUFFIX(                             \
 DEFINE_YW2Y_NT_ROW_THREAD(_f32, float,          float,  READ_F32,  WRITE_F32)
 DEFINE_YW2Y_NT_ROW_WARP  (_f32, float,          float,  READ_F32,  WRITE_F32)
 DEFINE_YW2Y_NT_NZ_THREAD (_f32, float,          float,  READ_F32,  WRITE_F32)
-DEFINE_YW2Y_T_NZ_THREAD  (_f32, float,          float,  READ_F32,  WRITE_F32)
 
 // ---- Float64 ----
 DEFINE_YW2Y_NT_ROW_THREAD(_f64, double,         double, READ_F64,  WRITE_F64)
 DEFINE_YW2Y_NT_ROW_WARP  (_f64, double,         double, READ_F64,  WRITE_F64)
 DEFINE_YW2Y_NT_NZ_THREAD (_f64, double,         double, READ_F64,  WRITE_F64)
-DEFINE_YW2Y_T_NZ_THREAD  (_f64, double,         double, READ_F64,  WRITE_F64)
 
 // ---- Float16 (accumulate in float32) ----
 DEFINE_YW2Y_NT_ROW_THREAD(_f16, __half,         float,  READ_F16,  WRITE_F16)
 DEFINE_YW2Y_NT_ROW_WARP  (_f16, __half,         float,  READ_F16,  WRITE_F16)
 DEFINE_YW2Y_NT_NZ_THREAD (_f16, __half,         float,  READ_F16,  WRITE_F16)
-DEFINE_YW2Y_T_NZ_THREAD  (_f16, __half,         float,  READ_F16,  WRITE_F16)
 
 // ---- BFloat16 (accumulate in float32) ----
 DEFINE_YW2Y_NT_ROW_THREAD(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 DEFINE_YW2Y_NT_ROW_WARP  (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 DEFINE_YW2Y_NT_NZ_THREAD (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
-DEFINE_YW2Y_T_NZ_THREAD  (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
 // CUDA Entry Point Macros
@@ -369,7 +294,6 @@ DEFINE_YW2Y_T_NZ_THREAD  (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 //   avg_nnz = nse / max(m, 1)  (for NT_auto dispatch)
 //
 // NT variants use (y, w, indptr, output); indices is received but unused.
-// T  variant uses (y, w, indices, output); indptr is received but unused.
 //
 // IMPORTANT: data_ptr() is a GPU pointer — never dereference on the host.
 // =========================================================================
@@ -464,24 +388,6 @@ void csrmv_yw2y_nt_auto##SUFFIX(                                                
     }                                                                                           \
 }
 
-// ---- FFI macro: T nz-thread kernel (transpose) ----
-#define FFI_YW2Y_T_NZ_THREAD(SUFFIX, WEIGHT_C_T)             \
-void csrmv_yw2y_t_nz_thread##SUFFIX(                         \
-    const BE::Tensor y,       const BE::Tensor w,            \
-    const BE::Tensor indices, const BE::Tensor indptr,       \
-    BE::Tensor output,  int64_t stream                       \
-) {                                                          \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
-    int nse = static_cast<int>(w.size(0));                   \
-    int blocks = (nse + 255) / 256;                          \
-    _yw2y_t_nz_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(   \
-        static_cast<const WEIGHT_C_T*>(y.data_ptr()),        \
-        static_cast<const WEIGHT_C_T*>(w.data_ptr()),        \
-        static_cast<const int32_t*>(indices.data_ptr()),     \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), nse);   \
-}
-
-
 // =========================================================================
 // Instantiate CUDA entry points via macros + @cuda annotations
 // =========================================================================
@@ -495,23 +401,15 @@ FFI_YW2Y_NT_ROW_WARP(_f32,   float)
 FFI_YW2Y_NT_NZ_THREAD(_f32,  float)
 // @BE csrmv_yw2y_nt_auto_f32
 FFI_YW2Y_NT_AUTO(_f32,       float)
-// @BE csrmv_yw2y_t_nz_thread_f32
-FFI_YW2Y_T_NZ_THREAD(_f32,   float)
 
 // ---- Float64 ----
 // @BE csrmv_yw2y_nt_auto_f64
 FFI_YW2Y_NT_AUTO(_f64,       double)
-// @BE csrmv_yw2y_t_nz_thread_f64
-FFI_YW2Y_T_NZ_THREAD(_f64,   double)
 
 // ---- Float16 (accumulates in float32) ----
 // @BE csrmv_yw2y_nt_auto_f16
 FFI_YW2Y_NT_AUTO(_f16,       __half)
-// @BE csrmv_yw2y_t_nz_thread_f16
-FFI_YW2Y_T_NZ_THREAD(_f16,   __half)
 
 // ---- BFloat16 (accumulates in float32) ----
 // @BE csrmv_yw2y_nt_auto_bf16
 FFI_YW2Y_NT_AUTO(_bf16,      __nv_bfloat16)
-// @BE csrmv_yw2y_t_nz_thread_bf16
-FFI_YW2Y_T_NZ_THREAD(_bf16,  __nv_bfloat16)
