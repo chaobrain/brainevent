@@ -265,3 +265,13 @@ class Test_on_post:
         assert jnp.allclose(csr.todense(), mat, rtol=1e-1, atol=1e-1)
 
         jax.block_until_ready((mat, post_spike, pre_trace))
+
+
+def test_csr_homogeneous_weight_raises():
+    weight = jnp.asarray([1.5], dtype=jnp.float32)  # homogeneous over >1 synapse
+    indices = jnp.array([0, 1, 0, 2], dtype=jnp.int32)
+    indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+    pre_spike = jnp.array([True, False])
+    post_trace = jnp.array([0.1, 0.2, 0.05], dtype=jnp.float32)
+    with pytest.raises(ValueError, match="per-synapse"):
+        update_csr_on_binary_pre(weight, indices, indptr, pre_spike, post_trace, shape=(2, 3))

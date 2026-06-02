@@ -154,6 +154,12 @@ def update_csr_on_binary_pre(
         ... )
     """
     weight, wunit = u.split_mantissa_unit(weight)
+    if weight.size == 1 and indices.shape[0] > 1:
+        raise ValueError(
+            "Plasticity updates require per-synapse (heterogeneous) weights, but received "
+            "a homogeneous (size-1) weight. Materialize per-synapse weights first "
+            "(e.g. broadcast to the connectivity shape) before applying a plasticity update."
+        )
     post_trace = u.Quantity(post_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
         csr_on_pre_prim_call(
@@ -605,6 +611,12 @@ def update_csr_on_binary_post(
         ... )
     """
     weight, wunit = u.split_mantissa_unit(weight)
+    if weight.size == 1 and indices.shape[0] > 1:
+        raise ValueError(
+            "Plasticity updates require per-synapse (heterogeneous) weights, but received "
+            "a homogeneous (size-1) weight. Materialize per-synapse weights first "
+            "(e.g. broadcast to the connectivity shape) before applying a plasticity update."
+        )
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
         csr2csc_on_post_prim_call(
