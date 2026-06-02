@@ -69,22 +69,39 @@ class CompilationCache:
     def cache_dir_for(self, name: str, key: str) -> Path:
         return self.base_dir / f"{name}_{key}"
 
+    def _ext(self) -> str:
+        """Shared-library extension for the current OS (.so/.dylib/.dll)."""
+        from .kernix_toolchain import so_ext
+        return so_ext()
+
     # ------------------------------------------------------------------
 
     def lookup(self, name: str, key: str) -> Path | None:
-        """Return the .so path if the cache entry exists, else None."""
-        so_path = self.cache_dir_for(name, key) / f"{name}.so"
+        """Return the shared-lib path if the cache entry exists, else None."""
+        so_path = self.cache_dir_for(name, key) / f"{name}{self._ext()}"
         if so_path.exists():
             return so_path
         return None
 
     def store(self, name: str, key: str, so_path: str) -> Path:
-        """Copy a built .so into the cache and return the cached path."""
+        """Atomically publish a built shared lib into the cache.
+
+        The artefact is moved (or copied across filesystems) into a temp file
+        next to the destination, then ``os.replace``-d into place so concurrent
+        readers never observe a partially written library.
+        """
         dest_dir = self.cache_dir_for(name, key)
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / f"{name}.so"
-        if str(Path(so_path).resolve()) != str(dest.resolve()):
-            shutil.copy2(so_path, dest)
+        dest = dest_dir / f"{name}{self._ext()}"
+        src = Path(so_path).resolve()
+        if str(src) == str(dest.resolve()):
+            return dest
+        tmp = dest_dir / f".{name}.{os.getpid()}.tmp{self._ext()}"
+        try:
+            os.replace(src, tmp)            # same-filesystem atomic move
+        except OSError:
+            shutil.copy2(src, tmp)          # cross-filesystem fallback
+        os.replace(tmp, dest)               # atomic publish
         return dest
 
     # ------------------------------------------------------------------

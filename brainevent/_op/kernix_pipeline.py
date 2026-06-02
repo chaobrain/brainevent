@@ -22,7 +22,9 @@ Public API: load_cuda_inline, load_cuda_file, load_cuda_dir,
 """
 
 import os
+import shutil
 import sys
+import uuid
 from pathlib import Path
 
 import jax
@@ -39,18 +41,19 @@ from .kernix_compiler import CPPBackend, CUDABackend
 from .kernix_runtime import CompiledModule, _REGISTERED_TARGETS, register_ffi_target
 from .kernix_toolchain import (
     collect_toolchain_diagnostics, detect_cpp_toolchain, detect_cuda_arch,
-    detect_cuda_toolchain, so_ext,
+    detect_cuda_toolchain, get_compute_capabilities, resolve_compute_capabilities,
+    so_ext,
 )
 
 # Shared cache instance
 _cache = CompilationCache()
 
-# In-process set of so_path values for which FFI targets have already been
-# registered.  When load_cuda_inline / load_cpp_inline resolves a cache hit,
-# the same so_path is returned on every subsequent call.  We only register
-# FFI targets the first time a given CompiledModule (identified by its so_path)
-# is instantiated; subsequent calls with the same so_path are no-ops.
-_registered_so_paths: set[str] = set()
+# In-process map of FFI target name -> the so_path it was registered from.
+# Re-loading the same artefact (cache hit, same target_prefix) is a no-op, but
+# loading the same source under a *different* target_prefix still registers the
+# new target names.  A different artefact claiming an existing target name
+# surfaces a KernelRegistrationError (via register_ffi_target).
+_REGISTERED_TARGET_SO: dict[str, str] = {}
 
 
 def _join_sources(sources: str | list[str]) -> str:
@@ -78,13 +81,20 @@ def _register_targets(
     target_prefix: str | None,
     platform: str,
 ) -> None:
-    """Register each spec as a JAX FFI target, once per unique so_path."""
-    if so_path in _registered_so_paths:
-        return
+    """Register each spec as a JAX FFI target, deduped per target name.
+
+    A target already registered from the same *so_path* is skipped (idempotent
+    re-load).  The same source under a different *target_prefix* yields new
+    target names, which are registered.  A name already taken by a *different*
+    artefact raises ``KernelRegistrationError`` from ``register_ffi_target``.
+    """
     prefix = target_prefix or name
     for spec in specs:
-        register_ffi_target(f"{prefix}.{spec.name}", module, spec.name, platform=platform)
-    _registered_so_paths.add(so_path)
+        target = f"{prefix}.{spec.name}"
+        if _REGISTERED_TARGET_SO.get(target) == so_path:
+            continue
+        register_ffi_target(target, module, spec.name, platform=platform)
+        _REGISTERED_TARGET_SO[target] = so_path
 
 
 def set_cache_dir(path: str | Path) -> None:
@@ -183,15 +193,31 @@ def load_cuda_inline(
     # Discover functions from annotations if not provided
     if functions is None:
         functions = parse_annotations(user_source)
+    if not functions:
+        raise KernelError(
+            "No functions found. Pass functions={...} or add '// @BE <name>' "
+            "annotations to the source."
+        )
 
     # Detect toolchain
     toolchain = detect_cuda_toolchain()
-    gpu_arch = compute_capability or detect_cuda_arch()[0]
+
+    # Resolve target architecture(s).  Pure auto-detection compiles for the
+    # default device only (with PTX forward-compat); an explicit pin (arg /
+    # config / env) honours the full list (fat binary).
+    explicit_pin = (
+        compute_capability is not None
+        or get_compute_capabilities() is not None
+        or bool(os.environ.get("BRAINEVENT_COMPUTE_CAPABILITIES", "").strip())
+    )
+    resolved = resolve_compute_capabilities(compute_capability)
+    gpu_arches = resolved if explicit_pin else resolved[:1]
+    arch_key = "+".join(gpu_arches)
 
     # Compute cache key (includes optimization settings so changing them rebuilds)
     cache_key = _cache.cache_key(
         source=user_source,
-        arch=gpu_arch,
+        arch=arch_key,
         cxx_version=f"{toolchain.nvcc_version}|{toolchain.cxx_version}",
         extra_cflags=(
             (extra_cuda_cflags or [])
@@ -213,27 +239,37 @@ def load_cuda_inline(
         # Preprocess: inject headers + generate FFI wrappers
         full_source = preprocess_source(user_source, specs, allow_cuda_graph=allow_cuda_graph)
 
-        # Determine build directory
-        build_dir = build_directory or str(_cache.cache_dir_for(name, cache_key))
+        # Build in a unique temp dir, then atomically publish into the cache so
+        # concurrent builds never expose a partial .so.  A user-supplied
+        # build_directory is honoured as-is (and not cleaned up).
+        if build_directory:
+            build_dir, cleanup = build_directory, False
+        else:
+            build_dir = os.path.join(
+                str(_cache.base_dir), f".build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+            cleanup = True
+        os.makedirs(build_dir, exist_ok=True)
         so_path = os.path.join(build_dir, f"{name}{so_ext()}")
 
-        # Compile via CUDA backend (ninja if available, direct nvcc otherwise)
-        CUDABackend(toolchain).compile_source(
-            full_source,
-            so_path,
-            build_dir,
-            extra_cuda_cflags=extra_cuda_cflags,
-            extra_ldflags=extra_ldflags,
-            extra_include_paths=extra_include_paths,
-            verbose=verbose,
-            gpu_arch=gpu_arch,
-            optimization_level=optimization_level,
-            use_fast_math=use_fast_math,
-            ninja_workers=ninja_workers,
-        )
-
-        # Store in cache
-        _cache.store(name, cache_key, so_path)
+        try:
+            # Compile via CUDA backend (ninja if available, direct nvcc otherwise)
+            CUDABackend(toolchain).compile_source(
+                full_source,
+                so_path,
+                build_dir,
+                extra_cuda_cflags=extra_cuda_cflags,
+                extra_ldflags=extra_ldflags,
+                extra_include_paths=extra_include_paths,
+                verbose=verbose,
+                gpu_arch=gpu_arches,
+                optimization_level=optimization_level,
+                use_fast_math=use_fast_math,
+                ninja_workers=ninja_workers,
+            )
+            so_path = str(_cache.store(name, cache_key, so_path))
+        finally:
+            if cleanup:
+                shutil.rmtree(build_dir, ignore_errors=True)
 
     # Load module
     module = CompiledModule(so_path, list(functions.keys()))
@@ -268,7 +304,7 @@ def load_cuda_file(
     filepath = Path(filepath)
     if name is None:
         name = filepath.stem
-    source = filepath.read_text()
+    source = filepath.read_text(encoding="utf-8")
     return load_cuda_inline(name=name, cuda_sources=source, functions=functions, **kwargs)
 
 
@@ -304,7 +340,7 @@ def load_cuda_dir(
     sources: list[str] = []
     for pat in patterns:
         for path in sorted(directory.glob(pat)):
-            sources.append(path.read_text())
+            sources.append(path.read_text(encoding="utf-8"))
 
     if not sources:
         raise KernelError(f"No source files matching {patterns} found in {directory}")
@@ -373,6 +409,11 @@ def load_cpp_inline(
         functions = parse_annotations(user_source)
     elif isinstance(functions, list):
         functions = {fn: infer_arg_spec_from_source(user_source, fn) for fn in functions}
+    if not functions:
+        raise KernelError(
+            "No functions found. Pass functions={...} or add '// @BE <name>' "
+            "annotations to the source."
+        )
 
     specs = _build_specs(functions, user_source)
 
@@ -395,21 +436,29 @@ def load_cpp_inline(
     else:
         full_source = preprocess_source(user_source, specs, platform="cpu")
 
-        build_dir = build_directory or str(_cache.cache_dir_for(name, cache_key))
-        so_path = os.path.join(build_dir, f"{name}{so_ext()}")
+        if build_directory:
+            build_dir, cleanup = build_directory, False
+        else:
+            build_dir = os.path.join(
+                str(_cache.base_dir), f".build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+            cleanup = True
         os.makedirs(build_dir, exist_ok=True)
+        so_path = os.path.join(build_dir, f"{name}{so_ext()}")
 
-        CPPBackend(toolchain).compile_source(
-            full_source,
-            so_path,
-            build_dir,
-            extra_cflags=extra_cflags,
-            extra_ldflags=extra_ldflags,
-            extra_include_paths=extra_include_paths,
-            verbose=verbose,
-        )
-
-        _cache.store(name, cache_key, so_path)
+        try:
+            CPPBackend(toolchain).compile_source(
+                full_source,
+                so_path,
+                build_dir,
+                extra_cflags=extra_cflags,
+                extra_ldflags=extra_ldflags,
+                extra_include_paths=extra_include_paths,
+                verbose=verbose,
+            )
+            so_path = str(_cache.store(name, cache_key, so_path))
+        finally:
+            if cleanup:
+                shutil.rmtree(build_dir, ignore_errors=True)
 
     module = CompiledModule(so_path, list(functions.keys()))
 
@@ -442,7 +491,7 @@ def load_cpp_file(
     filepath = Path(filepath)
     if name is None:
         name = filepath.stem
-    source = filepath.read_text()
+    source = filepath.read_text(encoding="utf-8")
     return load_cpp_inline(name=name, cpp_sources=source, functions=functions, **kwargs)
 
 

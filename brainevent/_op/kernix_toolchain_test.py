@@ -259,6 +259,9 @@ def test_detect_cpp_toolchain_no_cxx(monkeypatch):
 def test_detect_cuda_arch_failure(monkeypatch):
     from brainevent._error import GpuArchDetectionError
     monkeypatch.delenv("BRAINEVENT_COMPUTE_CAPABILITIES", raising=False)
+    # Neutralize JAX device detection so the nvidia-smi failure path is reached
+    # (otherwise this passes on a real GPU box).
+    monkeypatch.setattr(kt, "_arch_from_jax", lambda: None)
 
     def fake_run(*a, **k):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": "no smi"})()
@@ -272,6 +275,17 @@ def test_detect_cuda_arch_failure(monkeypatch):
 def test_detect_cuda_arch_env_override(monkeypatch):
     monkeypatch.setenv("BRAINEVENT_COMPUTE_CAPABILITIES", "8.6,8.0")
     assert kt.detect_cuda_arch() == ["sm_86", "sm_80"]
+
+
+def test_find_host_cxx_msvc_on_windows(monkeypatch):
+    monkeypatch.setattr(kt.sys, "platform", "win32")
+    monkeypatch.delenv("CXX", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setattr(
+        kt.shutil, "which",
+        lambda n: "C:\\VC\\cl.exe" if n in ("cl", "cl.exe") else None)
+    cxx, probes = kt._find_host_cxx()
+    assert cxx and cxx.lower().endswith("cl.exe")
 
 
 # --- diagnostics snapshot -------------------------------------------------
