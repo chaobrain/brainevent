@@ -277,6 +277,17 @@ def test_detect_cuda_arch_env_override(monkeypatch):
     assert kt.detect_cuda_arch() == ["sm_86", "sm_80"]
 
 
+def test_find_host_cxx_msvc_on_windows(monkeypatch):
+    monkeypatch.setattr(kt.sys, "platform", "win32")
+    monkeypatch.delenv("CXX", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setattr(
+        kt.shutil, "which",
+        lambda n: "C:\\VC\\cl.exe" if n in ("cl", "cl.exe") else None)
+    cxx, probes = kt._find_host_cxx()
+    assert cxx and cxx.lower().endswith("cl.exe")
+
+
 # --- diagnostics snapshot -------------------------------------------------
 
 def test_collect_diagnostics_keys(monkeypatch):

@@ -33,6 +33,8 @@ __all__ = [
     'get_backend',
     'clear_backends',
     'prefer_system_nvcc',
+    'set_compute_capability',
+    'get_compute_capability',
 ]
 
 
@@ -341,3 +343,48 @@ def prefer_system_nvcc(enable: bool = True) -> None:
     """
     from brainevent._op.kernix_toolchain import set_nvcc_discovery
     set_nvcc_discovery("system" if enable else "pip")
+
+
+def set_compute_capability(value: "str | list[str] | None" = None) -> None:
+    """Pin the target GPU compute capability for CUDA compilation.
+
+    By default brainevent auto-detects the architecture from the visible JAX
+    GPU device (falling back to ``nvidia-smi``).  Use this to override that —
+    for cross-compilation on a machine without a visible GPU, or to build a
+    fat binary covering several architectures.
+
+    Parameters
+    ----------
+    value : str or list of str or None
+        A compute capability in any common spelling (``"8.6"``, ``"sm_86"``,
+        ``"compute_86"``) or a list of them.  ``None`` restores automatic
+        detection.
+
+    See Also
+    --------
+    get_compute_capability : Query the current pin.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import brainevent
+        >>> brainevent.config.set_compute_capability("8.6")
+        >>> brainevent.config.get_compute_capability()
+        ['sm_86']
+        >>> brainevent.config.set_compute_capability(["8.0", "9.0"])  # fat binary
+        >>> brainevent.config.set_compute_capability(None)  # back to auto-detect
+    """
+    from brainevent._op.kernix_toolchain import set_compute_capabilities
+    set_compute_capabilities(value)
+
+
+def get_compute_capability() -> "list[str] | None":
+    """Return the pinned compute capabilities, or ``None`` if auto-detecting.
+
+    See Also
+    --------
+    set_compute_capability : Pin the target compute capability.
+    """
+    from brainevent._op.kernix_toolchain import get_compute_capabilities
+    return get_compute_capabilities()

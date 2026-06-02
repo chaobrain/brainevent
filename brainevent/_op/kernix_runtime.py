@@ -33,7 +33,12 @@ def _format_load_error(so_path: str, err: Exception) -> str:
         "",
         "How to fix:",
     ]
-    if "cudart" in low or "cannot open shared object" in low:
+    if "insufficient" in low or "forward compatibility" in low or "driver version" in low:
+        lines += [
+            "  1) The NVIDIA driver is too old for this CUDA toolkit. Upgrade the driver,",
+            "     or install a jax[cudaNN] whose CUDA version matches your driver.",
+        ]
+    elif "cudart" in low or "cannot open shared object" in low:
         lines += [
             "  1) Missing CUDA runtime libraries (typically cu12). Ensure jax[cuda*] is installed correctly.",
             "  2) Add the CUDA runtime library directory to LD_LIBRARY_PATH (e.g. site-packages/nvidia/cuda_runtime/lib).",

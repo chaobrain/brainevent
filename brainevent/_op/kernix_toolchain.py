@@ -326,6 +326,31 @@ def _find_host_cxx():
     else:
         probes.append(CandidateProbe("$CONDA_PREFIX", "", "unset"))
 
+    # 2b. Windows: MSVC cl.exe (nvcc's required host compiler there) — preferred
+    #     over g++/clang on Windows, so probe it before the generic PATH search.
+    if sys.platform == "win32":
+        cl = shutil.which("cl") or shutil.which("cl.exe")
+        if cl:
+            probes.append(CandidateProbe("PATH:cl", cl, "ok"))
+            return cl, probes
+        probes.append(CandidateProbe("PATH:cl", "", "not-found"))
+        vswhere = os.path.join(
+            os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"),
+            "Microsoft Visual Studio", "Installer", "vswhere.exe")
+        if os.path.isfile(vswhere):
+            try:
+                out = subprocess.run(
+                    [vswhere, "-latest", "-products", "*", "-find",
+                     "VC\\Tools\\MSVC\\**\\bin\\Hostx64\\x64\\cl.exe"],
+                    capture_output=True, text=True, timeout=10,
+                ).stdout.strip().splitlines()
+                if out:
+                    probes.append(CandidateProbe("vswhere:cl", out[0], "ok"))
+                    return out[0], probes
+            except (OSError, subprocess.SubprocessError):
+                pass
+            probes.append(CandidateProbe("vswhere:cl", vswhere, "not-found"))
+
     # 3. system PATH
     for name in ("g++", "c++", "clang++"):
         found = shutil.which(name)

@@ -118,3 +118,17 @@ def test_empty_functions_guard():
     from brainevent._error import KernelError
     with pytest.raises(KernelError):
         brainevent.load_cpp_inline("noop", "int main(){return 0;}", functions={})
+
+
+# --- config.set_compute_capability public API -----------------------------
+
+def test_config_set_compute_capability():
+    import brainevent
+    from brainevent._op import kernix_toolchain as ktool
+    brainevent.config.set_compute_capability("8.6")
+    try:
+        assert brainevent.config.get_compute_capability() == ["sm_86"]
+        assert ktool.resolve_compute_capabilities() == ["sm_86"]
+    finally:
+        brainevent.config.set_compute_capability(None)
+    assert brainevent.config.get_compute_capability() is None
