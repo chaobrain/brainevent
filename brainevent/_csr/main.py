@@ -15,7 +15,7 @@
 
 
 import operator
-from typing import Optional, Union, Sequence, Dict
+from typing import Optional, Union, Sequence, Dict, cast
 
 import brainunit as u
 import jax
@@ -2034,7 +2034,8 @@ class CSC(CompressedSparseData):
         """
         rows = jnp.atleast_1d(normalize_row_index(index, self.shape[0]))
         csr_indptr, csr_indices, perm = self._weight_indices()
-        weights = self.data if self.data.size == 1 else self.data.reshape(-1)[perm]
+        data = cast(jax.Array, self.data)
+        weights = data if data.size == 1 else data.reshape(-1)[perm]
         sub_data, sub_indices, sub_indptr, shape = build_sub_csr(
             weights, csr_indices, csr_indptr, rows, self.shape[1],
         )

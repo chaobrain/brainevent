@@ -16,11 +16,14 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from typing import Optional
+from typing import Optional, TYPE_CHECKING, cast
 
 import brainunit as u
 import jax
 import jax.numpy as jnp
+
+if TYPE_CHECKING:
+    from brainevent._csr.main import CSR
 
 from brainevent._compatible_import import Tracer
 from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
@@ -746,7 +749,8 @@ class FixedNumPerPre(FixedNumConn):
         """
         rows = jnp.atleast_1d(normalize_row_index(index, self.shape[0]))
         new_indices = self.indices[rows]
-        new_data = self.data if self.data.size == 1 else self.data[rows]
+        data = cast(jax.Array, self.data)
+        new_data = data if data.size == 1 else data[rows]
         k = new_indices.shape[0]
         # Structure-preserving build that bypasses the outside-jit constructor
         # guard (a validated subset of rows), mirroring `_rebuild_with_data`.
@@ -953,7 +957,8 @@ class FixedNumPerPost(FixedNumConn):
         from brainevent._csr.main import CSR  # local import avoids import cycle
         rows = jnp.atleast_1d(normalize_row_index(index, self.shape[0]))
         csc_indptr, csc_indices, perm = self._weight_indices()
-        weights = self.data if self.data.size == 1 else self.data.reshape(-1)[perm]
+        data = cast(jax.Array, self.data)
+        weights = data if data.size == 1 else data.reshape(-1)[perm]
         new_data, new_indices, new_indptr, shape = build_sub_csr(
             weights, csc_indices, csc_indptr, rows, self.shape[1],
         )

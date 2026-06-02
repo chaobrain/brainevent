@@ -14,7 +14,7 @@
 # ==============================================================================
 
 """Compiler backend abstraction: CompilerBackend ABC, CUDABackend, CPPBackend,
-HIPBackend, and NinjaBuild.
+and HIPBackend.
 
 Adding a new backend
 --------------------
@@ -24,19 +24,17 @@ Adding a new backend
 """
 
 import os
-import shutil
 import subprocess
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any
 
 from brainevent._error import (
-    CompilationError, HostCompilerIncompatibleError, KernelToolchainError,
+    CompilationError, HostCompilerIncompatibleError,
     UnsupportedArchError,
 )
 from .kernix_toolchain import (
     CppToolchain, CudaToolchain, cxx_shared_flags, cxx_std_flag,
-    gencode_flags, nvcc_host_pic_flags, so_ext,
+    gencode_flags, nvcc_host_pic_flags,
 )
 
 
@@ -57,11 +55,6 @@ def _allow_unsupported_compiler() -> bool:
     return os.environ.get("BRAINEVENT_ALLOW_UNSUPPORTED_COMPILER", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
-
-
-def _q(path: str) -> str:
-    """Quote a path for the ninja/shell command line if it contains spaces."""
-    return f'"{path}"' if " " in str(path) else str(path)
 
 
 def _compile_timeout() -> int:
@@ -173,167 +166,11 @@ class CompilerBackend(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Ninja build helper
-# ---------------------------------------------------------------------------
-
-class NinjaBuild:
-    """Generates and executes a ninja build for CUDA sources.
-
-    Parameters
-    ----------
-    toolchain : CudaToolchain
-        Detected compilation toolchain.
-    build_dir : str
-        Directory for build artefacts and the ``build.ninja`` file.
-    output_name : str
-        Base name of the output shared library (without ``.so``).
-    gpu_arch : str
-        Target GPU architecture.
-    extra_cuda_cflags, extra_ldflags, extra_include_paths
-        Additional flags and include directories.
-    """
-
-    def __init__(
-        self,
-        toolchain: CudaToolchain,
-        build_dir: str,
-        output_name: str,
-        gpu_arch: "str | list[str]" = "sm_80",
-        extra_cuda_cflags: list[str] | None = None,
-        extra_ldflags: list[str] | None = None,
-        extra_include_paths: list[str] | None = None,
-        optimization_level: int = 3,
-        use_fast_math: bool = False,
-    ):
-        self.toolchain = toolchain
-        self.build_dir = Path(build_dir)
-        self.output_name = output_name
-        self.gpu_arch = [gpu_arch] if isinstance(gpu_arch, str) else list(gpu_arch)
-        self.extra_cuda_cflags = extra_cuda_cflags or []
-        self.extra_ldflags = extra_ldflags or []
-        self.extra_include_paths = extra_include_paths or []
-        self.optimization_level = optimization_level
-        self.use_fast_math = use_fast_math
-        self._sources: list[str] = []
-
-    def add_source(self, src_path: str) -> None:
-        """Register a ``.cu`` source file to compile."""
-        self._sources.append(str(src_path))
-
-    @property
-    def so_path(self) -> str:
-        return str(self.build_dir / f"{self.output_name}{so_ext()}")
-
-    # ------------------------------------------------------------------
-
-    def _cuda_flags(self) -> str:
-        # Native SASS per arch + PTX for the highest (forward-compatible).
-        flags: list[str] = list(gencode_flags(self.gpu_arch))
-        # Platform-aware PIC flags: Linux/macOS need --compiler-options -fPIC;
-        # Windows (PE format) does not.
-        pic = nvcc_host_pic_flags()
-        if pic:
-            # In the ninja build file, nvcc passes host options via
-            # --compiler-options; quote the sub-flag so the shell doesn't
-            # interpret it separately.
-            flags += ["--compiler-options", f"'{pic[-1]}'"]
-        flags += [
-            "--std=c++17",
-            f"-O{self.optimization_level}",
-            "-ccbin", _q(self.toolchain.cxx),
-            f"-I{_q(self.toolchain.brainevent_include_dir)}",
-            f"-I{_q(self.toolchain.xla_ffi_include_dir)}",
-        ]
-        for inc in self.toolchain.cuda_include_dirs:
-            flags.append(f"-I{_q(inc)}")
-        if _allow_unsupported_compiler():
-            flags.append("-allow-unsupported-compiler")
-        if self.use_fast_math:
-            flags.append("--use_fast_math")
-        for p in self.extra_include_paths:
-            flags.append(f"-I{_q(p)}")
-        flags.extend(self.extra_cuda_cflags)
-        return " ".join(flags)
-
-    def _ld_flags(self) -> str:
-        return " ".join(self.extra_ldflags)
-
-    def generate(self) -> str:
-        """Write ``build.ninja`` and return the output .so path."""
-        self.build_dir.mkdir(parents=True, exist_ok=True)
-        ninja_path = self.build_dir / "build.ninja"
-
-        objects: list[str] = []
-        build_stmts: list[str] = []
-
-        for src in self._sources:
-            obj = os.path.splitext(os.path.basename(src))[0] + ".o"
-            objects.append(obj)
-            build_stmts.append(f"build {obj}: nvcc_compile {src}")
-
-        so_file = f"{self.output_name}{so_ext()}"
-        objs = " ".join(objects)
-        build_stmts.append(f"build {so_file}: nvcc_link {objs}")
-
-        content = f"""\
-# Auto-generated by brainevent — do not edit.
-ninja_required_version = 1.3
-
-nvcc = {_q(self.toolchain.nvcc)}
-cuda_flags = {self._cuda_flags()}
-ld_flags = {self._ld_flags()}
-
-rule nvcc_compile
-  command = $nvcc $cuda_flags -c $in -o $out
-  description = NVCC $in
-
-rule nvcc_link
-  command = $nvcc -shared $in -o $out $ld_flags
-  description = LINK $out
-
-{chr(10).join(build_stmts)}
-
-default {so_file}
-"""
-        ninja_path.write_text(content)
-        return self.so_path
-
-    # ------------------------------------------------------------------
-
-    def build(self, verbose: bool = False, workers: int | None = None) -> str:
-        """Run ``ninja`` and return the output .so path.
-
-        Raises CompilationError on failure.
-        """
-        ninja = shutil.which("ninja")
-        if ninja is None:
-            raise KernelToolchainError("ninja not found. Install with: pip install ninja")
-
-        self.generate()
-
-        cmd = [ninja, "-C", str(self.build_dir)]
-        if workers is not None:
-            cmd.extend(["-j", str(workers)])
-        if verbose:
-            cmd.append("-v")
-
-        result = _run(cmd, timeout=_compile_timeout(), stage="build")
-
-        if result.returncode != 0:
-            _raise_compile_error(result.stderr + result.stdout, " ".join(cmd), stage="build")
-
-        if verbose and result.stdout:
-            print(f"ninja output:\n{result.stdout}")
-
-        return self.so_path
-
-
-# ---------------------------------------------------------------------------
 # CUDA backend
 # ---------------------------------------------------------------------------
 
 class CUDABackend(CompilerBackend):
-    """Compile CUDA sources with nvcc (ninja if available, direct nvcc otherwise).
+    """Compile CUDA sources directly with nvcc.
 
     Parameters
     ----------
@@ -359,15 +196,9 @@ class CUDABackend(CompilerBackend):
         gpu_arch: "str | list[str]" = "sm_80",
         optimization_level: int = 3,
         use_fast_math: bool = False,
-        ninja_workers: int | None = None,
         **kwargs: Any,
     ) -> str:
-        """Compile preprocessed source to .so.
-
-        Uses ninja when it is installed (parallel, incremental); otherwise
-        compiles directly with nvcc.  A ninja *failure* is a real error and
-        propagates — it is **not** silently retried with nvcc.
-        """
+        """Compile preprocessed source to .so directly with nvcc."""
         os.makedirs(build_dir, exist_ok=True)
         arches = [gpu_arch] if isinstance(gpu_arch, str) else list(gpu_arch)
 
@@ -375,25 +206,6 @@ class CUDABackend(CompilerBackend):
         src_path = os.path.join(build_dir, "kernel.cu")
         with open(src_path, "w", encoding="utf-8") as f:
             f.write(source)
-
-        if shutil.which("ninja"):
-            nb = NinjaBuild(
-                toolchain=self.toolchain,
-                build_dir=build_dir,
-                output_name=Path(output_path).stem,
-                gpu_arch=arches,
-                extra_cuda_cflags=extra_cuda_cflags,
-                extra_ldflags=extra_ldflags,
-                extra_include_paths=extra_include_paths,
-                optimization_level=optimization_level,
-                use_fast_math=use_fast_math,
-            )
-            nb.add_source(src_path)
-            nb.build(verbose=verbose, workers=ninja_workers)
-            built = nb.so_path
-            if os.path.abspath(built) != os.path.abspath(output_path):
-                os.replace(built, output_path)
-            return output_path
 
         return self._compile_direct(
             src_path, output_path, arches, extra_cuda_cflags, extra_ldflags,
@@ -403,7 +215,7 @@ class CUDABackend(CompilerBackend):
         self, src_path, output_path, arches, extra_cuda_cflags, extra_ldflags,
         extra_include_paths, verbose, optimization_level, use_fast_math,
     ) -> str:
-        """Compile + link a single .cu directly with nvcc (no ninja)."""
+        """Compile + link a single .cu directly with nvcc."""
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
         cmd = [

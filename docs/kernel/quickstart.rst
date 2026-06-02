@@ -145,7 +145,7 @@ Instead of inline source strings, compile directly from files on disk:
        functions={"my_func": ["arg", "ret", "stream"]},
    )
 
-   # Entire directory (uses ninja for parallel compilation when available)
+   # Entire directory (sources are concatenated and compiled together)
    mod = brainevent.load_cuda_dir(
        "kernels/",
        functions={"func_a": ["arg", "ret", "stream"],

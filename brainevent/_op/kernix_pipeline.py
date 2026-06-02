@@ -131,7 +131,6 @@ def load_cuda_inline(
     force_rebuild: bool = False,
     auto_register: bool = True,
     target_prefix: str | None = None,
-    ninja_workers: int | None = None,
     optimization_level: int = 3,
     use_fast_math: bool = False,
     allow_cuda_graph: bool = True,
@@ -167,8 +166,6 @@ def load_cuda_inline(
         if *target_prefix* is ``None``).
     target_prefix : str, optional
         Prefix for auto-registered FFI target names.
-    ninja_workers : int, optional
-        Number of parallel ninja workers (default: all CPUs).
     optimization_level : int
         Compiler optimization level passed as ``-O<n>`` to nvcc (0–3).
         Applies to both host code and device PTX generation.  Default: ``3``.
@@ -252,7 +249,7 @@ def load_cuda_inline(
         so_path = os.path.join(build_dir, f"{name}{so_ext()}")
 
         try:
-            # Compile via CUDA backend (ninja if available, direct nvcc otherwise)
+            # Compile via the CUDA backend (direct nvcc).
             CUDABackend(toolchain).compile_source(
                 full_source,
                 so_path,
@@ -264,7 +261,6 @@ def load_cuda_inline(
                 gpu_arch=gpu_arches,
                 optimization_level=optimization_level,
                 use_fast_math=use_fast_math,
-                ninja_workers=ninja_workers,
             )
             so_path = str(_cache.store(name, cache_key, so_path))
         finally:
