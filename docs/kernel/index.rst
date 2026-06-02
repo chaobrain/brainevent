@@ -28,7 +28,6 @@ Key Features
 - **Automatic FFI wrapper generation** — no manual XLA FFI binding code
 - **Multi-platform** — CUDA (GPU) and C++ (CPU)
 - **Smart caching** — SHA-256-based compilation cache, survives process restarts
-- **Ninja parallel builds** — fast multi-file compilation when ninja is available
 - **Auto-registration** — compiled functions are automatically registered as
   JAX FFI targets; re-importing the same module is a no-op
 

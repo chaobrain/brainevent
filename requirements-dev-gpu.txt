@@ -2,7 +2,6 @@
 warp-lang
 brainstate
 braintools
-ninja
 ml_dtypes
 
 # test requirements
