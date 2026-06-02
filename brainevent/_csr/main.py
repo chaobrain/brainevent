@@ -27,11 +27,10 @@ from brainevent._event import BinaryArray
 from brainevent._misc import _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to_csr_index
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
-from .binary_indexed import binary_csrmv_indexed
-from .binary_indexed_mm import binary_csrmm_indexed
+from .binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from .diag_add import csr_diag_position, csr_diag_add
 from .float import csrmv, csrmm
-from .plasticity_binary_csr import update_csr_on_binary_pre, update_csr_on_binary_post
+from .plasticity_binary import update_csr_on_binary_pre, update_csr_on_binary_post
 from .slice import csr_slice_rows
 from .spsolve import csr_solve
 from .yw2y import csrmv_yw2y
@@ -686,36 +685,72 @@ class CompressedSparseData(DataRepresentation):
         """
         Add values to the matrix diagonal and return a new sparse matrix.
 
-        This method adds the provided diagonal value to the diagonal elements of the
-        sparse matrix represented in Compressed Sparse Row (CSR) format. If the diagonal
-        positions have not been computed yet, it will first calculate them.
+        Computes ``A + diag(other)`` exactly. Diagonal entries that are missing
+        from the current sparsity pattern are **inserted**, so in general the
+        returned matrix has a different ``indices``/``indptr`` (and a larger
+        ``nse``) than ``self``: its pattern is the union of ``self``'s pattern
+        and the full main diagonal ``{(i, i) : 0 <= i < min(shape)}``.
 
         Parameters
         ----------
         other : array-like
-            The diagonal value to be added to the sparse matrix. It should be compatible
-            with the data type of the matrix's non-zero elements.
+            The diagonal values to add, with one entry per diagonal element
+            (i.e. length ``min(self.shape)``). It should share the dtype and be
+            unit-compatible with the matrix's non-zero elements.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix of the same class and shape holding
+            ``A + diag(other)`` with the diagonal-augmented sparsity pattern.
 
         Raises
         ------
         AssertionError
-            If `other` is an instance of `JAXSparse`, as this operation does not support
-            `JAXSparse` objects.
+            If ``other`` is an instance of ``JAXSparse``, as this operation does
+            not support sparse operands.
 
         Notes
         -----
-        - The diagonal positions are computed only once and cached in the `diag_positions`
-          attribute of the matrix instance.
-        - This method relies on `csr_diag_position_v2` to find diagonal positions and
-          `csr_diag_add_v2` to perform the actual addition.
+        - The structural plan describing where existing entries move and where
+          diagonals are inserted depends only on the sparsity structure, so it is
+          computed once and cached in the ``diag_positions`` buffer. The returned
+          matrix already has its full diagonal present, so it carries a matching
+          ``diag_positions`` plan that subsequent ``diag_add`` calls reuse without
+          recomputation.
+        - Structure-dependent caches (e.g. the transposed-view weight indices) are
+          intentionally not propagated, since the new matrix has a different
+          sparsity pattern.
+        - This method relies on :func:`csr_diag_position` to plan the structural
+          change and :func:`csr_diag_add` to compute the augmented values.
         """
+        assert not isinstance(other, u.sparse.SparseMatrix), "diag_add does not support JAXSparse objects."
         if not hasattr(self, 'diag_positions'):
             self.register_buffer(
                 'diag_positions',
                 csr_diag_position(self.indptr, self.indices, shape=self.shape)
             )
-        assert not isinstance(other, u.sparse.SparseMatrix), "diag_add does not support JAXSparse objects."
-        return self.with_data(csr_diag_add(self.data, self.diag_positions, other))
+        new_data = csr_diag_add(self.data, self.diag_positions, other)
+        new_indptr, new_indices, _, diag_dest = self.diag_positions
+        # Materialise the augmented structure as concrete device arrays even when
+        # this method runs inside ``jax.jit``. Converting Numba's NumPy output to
+        # JAX arrays mid-trace would otherwise produce constant tracers that leak
+        # through the static (aux) part of the returned matrix's pytree.
+        with jax.ensure_compile_time_eval():
+            new_indptr = jnp.asarray(new_indptr)
+            new_indices = jnp.asarray(new_indices)
+            diag_dest = jnp.asarray(diag_dest)
+            # The result already contains the full diagonal, so its own plan is an
+            # identity relocation of every stored element plus the same diagonal
+            # destinations -- reusable by a later diag_add without touching Numba.
+            identity = jnp.arange(new_indices.shape[0], dtype=new_indices.dtype)
+        result_plan = (new_indptr, new_indices, identity, diag_dest)
+        return type(self)(
+            (new_data, new_indices, new_indptr),
+            shape=self.shape,
+            backend=self.backend,
+            buffers={'diag_positions': result_plan},
+        )
 
     def solve(self, b: Union[jax.Array, u.Quantity]) -> Union[jax.Array, u.Quantity]:
         """
