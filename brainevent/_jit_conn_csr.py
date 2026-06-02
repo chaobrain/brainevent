@@ -449,13 +449,16 @@ def jitc_to_csr(w0, w1, prob, seed, *, shape: MatrixShape, corder: bool, dist: s
     from brainevent._csr import CSR
 
     n_rows = int(shape[0])
+    out_shape = (int(shape[0]), int(shape[1]))
 
     # Unit handling mirrors the dense ``jitu``/``jits``/``jitn`` wrappers.
     w0, unitd = u.split_mantissa_unit(w0)
     w1 = u.Quantity(w1).to(unitd).mantissa
-    w0, w1 = u.math.promote_dtypes(w0, w1)
-    w0 = jnp.atleast_1d(w0)
-    w1 = jnp.atleast_1d(w1)
+    # Promote both weight parameters to a common dtype so the kernels (which
+    # read ``w0``/``w1`` through a single ``WEIGHT_T`` pointer) see identical types.
+    common_dtype = jnp.result_type(w0, w1)
+    w0 = jnp.atleast_1d(jnp.asarray(w0, dtype=common_dtype))
+    w1 = jnp.atleast_1d(jnp.asarray(w1, dtype=common_dtype))
 
     # The normal kernels normalize the seed (matching ``jitn``); the uniform and
     # scalar kernels use the seed verbatim (matching ``jitu``/``jits``).
@@ -467,7 +470,7 @@ def jitc_to_csr(w0, w1, prob, seed, *, shape: MatrixShape, corder: bool, dist: s
         indptr = jnp.zeros(n_rows + 1, dtype=jnp.int32)
         indices = jnp.zeros(0, dtype=jnp.int32)
         data = u.maybe_decimal(jnp.zeros(0, dtype=w0.dtype) * unitd)
-        return CSR((data, indices, indptr), shape=tuple(shape))
+        return CSR((data, indices, indptr), shape=out_shape)
 
     clen = _initialize_conn_length(prob)
 
@@ -483,4 +486,4 @@ def jitc_to_csr(w0, w1, prob, seed, *, shape: MatrixShape, corder: bool, dist: s
         w0, w1, clen, seed, indptr, nnz, shape=shape, corder=corder, dist=dist, backend=backend,
     )
     data = u.maybe_decimal(data * unitd)
-    return CSR((data, indices, indptr), shape=tuple(shape))
+    return CSR((data, indices, indptr), shape=out_shape)
