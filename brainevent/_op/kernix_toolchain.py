@@ -74,6 +74,25 @@ def normalize_arch(value: "str") -> str:
     return arch
 
 
+def _parse_arch_spec(value: "str | list[str]") -> "list[str]":
+    """Expand a compute-capability spec into raw, comma-split tokens.
+
+    A single string may carry several capabilities separated by commas
+    (e.g. ``"8.6,8.0"``), mirroring the ``BRAINEVENT_COMPUTE_CAPABILITIES``
+    env var.  List items are likewise comma-expanded.  Whitespace is trimmed
+    and empty tokens dropped.  Tokens are returned verbatim (not normalized);
+    callers pass each through :func:`normalize_arch`.
+    """
+    items = [value] if isinstance(value, str) else list(value)
+    tokens: "list[str]" = []
+    for item in items:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part:
+                tokens.append(part)
+    return tokens
+
+
 @dataclass(frozen=True)
 class CudaToolchain:
     """Immutable description of available CUDA compilation tools."""
@@ -203,8 +222,11 @@ def set_compute_capabilities(value: "str | list[str] | None") -> None:
     if value is None:
         _COMPUTE_CAPABILITIES = None
         return
-    items = [value] if isinstance(value, str) else list(value)
-    _COMPUTE_CAPABILITIES = [normalize_arch(v) for v in items]
+    tokens = _parse_arch_spec(value)
+    if not tokens:
+        _COMPUTE_CAPABILITIES = None
+        return
+    _COMPUTE_CAPABILITIES = _dedup([normalize_arch(v) for v in tokens])
 
 
 def get_compute_capabilities() -> "list[str] | None":
@@ -716,13 +738,14 @@ def resolve_compute_capabilities(explicit: "str | list[str] | None" = None) -> "
     Every source is passed through :func:`normalize_arch`.
     """
     if explicit:
-        items = [explicit] if isinstance(explicit, str) else list(explicit)
-        return [normalize_arch(v) for v in items]
+        tokens = _parse_arch_spec(explicit)
+        if tokens:
+            return _dedup([normalize_arch(v) for v in tokens])
     if _COMPUTE_CAPABILITIES is not None:
         return list(_COMPUTE_CAPABILITIES)
     env = os.environ.get("BRAINEVENT_COMPUTE_CAPABILITIES", "").strip()
     if env:
-        out = [normalize_arch(p.strip()) for p in env.split(",") if p.strip()]
+        out = _dedup([normalize_arch(v) for v in _parse_arch_spec(env)])
         if out:
             return out
     for source in (_arch_from_jax, _arch_from_nvidia_smi):

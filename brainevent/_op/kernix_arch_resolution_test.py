@@ -30,6 +30,17 @@ def test_resolve_explicit_wins(monkeypatch):
     assert kt.resolve_compute_capabilities(["8.6", "9.0"]) == ["sm_86", "sm_90"]
 
 
+def test_resolve_explicit_comma_string(monkeypatch):
+    # A comma-separated explicit string must behave like the env var: split,
+    # trim, and drop empties (not be parsed as one bogus token).
+    monkeypatch.setattr(kt, "_arch_from_jax", lambda: ["sm_99"])
+    assert kt.resolve_compute_capabilities("8.0,8.6") == ["sm_80", "sm_86"]
+    assert kt.resolve_compute_capabilities(" 8.0 , , 8.6 ") == ["sm_80", "sm_86"]
+    # commas inside list items are also expanded
+    assert kt.resolve_compute_capabilities(["8.0,8.6", "9.0"]) == [
+        "sm_80", "sm_86", "sm_90"]
+
+
 def test_resolve_precedence_config_over_env(monkeypatch):
     monkeypatch.setenv("BRAINEVENT_COMPUTE_CAPABILITIES", "8.0")
     monkeypatch.setattr(kt, "_arch_from_jax", lambda: ["sm_99"])
@@ -132,3 +143,22 @@ def test_config_set_compute_capability():
     finally:
         brainevent.config.set_compute_capability(None)
     assert brainevent.config.get_compute_capability() is None
+
+
+def test_set_compute_capabilities_comma_string():
+    # The process-wide pin accepts the same comma syntax as the env var.
+    kt.set_compute_capabilities("8.6,8.0")
+    try:
+        assert kt.get_compute_capabilities() == ["sm_86", "sm_80"]
+    finally:
+        kt.set_compute_capabilities(None)
+    assert kt.get_compute_capabilities() is None
+
+
+def test_config_set_compute_capability_comma():
+    import brainevent
+    brainevent.config.set_compute_capability("8.6, 8.0")
+    try:
+        assert brainevent.config.get_compute_capability() == ["sm_86", "sm_80"]
+    finally:
+        brainevent.config.set_compute_capability(None)
