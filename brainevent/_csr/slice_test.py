@@ -499,34 +499,44 @@ class TestCSRSliceBatching:
 )
 class TestCSCGetitem:
 
-    def test_single_col(self):
+    def test_single_row(self):
         m, n = 10, 15
         dense = np.random.randn(m, n).astype(np.float32)
         csc = CSC.fromdense(jnp.asarray(dense))
         result = csc[3]
-        expected = dense[:, 3]
-        assert result.shape == (m,)
-        assert jnp.allclose(result, jnp.asarray(expected), atol=1e-5)
+        assert result.shape == (n,)
+        assert jnp.allclose(result, jnp.asarray(dense[3]), atol=1e-5)
 
-    def test_multi_col(self):
+    def test_multi_row(self):
         m, n = 10, 15
         dense = np.random.randn(m, n).astype(np.float32)
         csc = CSC.fromdense(jnp.asarray(dense))
         result = csc[(0, 3, 7)]
-        expected = dense[:, [0, 3, 7]]
-        assert result.shape == (m, 3)
-        assert jnp.allclose(result, jnp.asarray(expected), atol=1e-5)
+        assert result.shape == (3, n)
+        assert jnp.allclose(result, jnp.asarray(dense[[0, 3, 7]]), atol=1e-5)
 
-    def test_array_col(self):
+    def test_array_row(self):
         m, n = 10, 15
         dense = np.random.randn(m, n).astype(np.float32)
         csc = CSC.fromdense(jnp.asarray(dense))
         idx = jnp.array([1, 5, 9], dtype=jnp.int32)
         result = csc[idx]
-        expected = dense[:, [1, 5, 9]]
-        assert result.shape == (m, 3)
-        assert jnp.allclose(result, jnp.asarray(expected), atol=1e-5)
+        assert result.shape == (3, n)
+        assert jnp.allclose(result, jnp.asarray(dense[[1, 5, 9]]), atol=1e-5)
 
+    def test_python_slice_and_negative(self):
+        m, n = 10, 15
+        dense = np.random.randn(m, n).astype(np.float32)
+        csc = CSC.fromdense(jnp.asarray(dense))
+        assert jnp.allclose(csc[2:8:2], jnp.asarray(dense[np.arange(2, 8, 2)]), atol=1e-5)
+        assert jnp.allclose(csc[-1], jnp.asarray(dense[m - 1]), atol=1e-5)
+
+    def test_oob_raises(self):
+        m, n = 10, 15
+        dense = np.random.randn(m, n).astype(np.float32)
+        csc = CSC.fromdense(jnp.asarray(dense))
+        with pytest.raises(IndexError):
+            _ = csc[m]
 
 from brainevent._misc import normalize_row_index, build_sub_csr
 
@@ -670,3 +680,30 @@ class TestCSRSliceRowsSparse:
             for j in range(nip[r], nip[r + 1]):
                 rec[r, nidx[j]] += w
         assert np.allclose(rec, np.asarray(dense)[[0, 2, 4]], atol=1e-5)
+
+
+@pytest.mark.skipif(
+    not SLICE_IMPLEMENTATIONS,
+    reason=f'No csr_slice_rows implementation on platform={platform}',
+)
+class TestCSCSliceRowsSparse:
+
+    def test_returns_csc_and_matches_dense(self):
+        m, n = 10, 15
+        dense = np.random.randn(m, n).astype(np.float32)
+        csc = CSC.fromdense(jnp.asarray(dense))
+        sub = csc.slice_rows([1, 3, 5])
+        assert isinstance(sub, CSC)
+        assert sub.shape == (3, n)
+        assert jnp.allclose(sub.todense(), jnp.asarray(dense[[1, 3, 5]]), atol=1e-5)
+
+    def test_slice_and_single(self):
+        m, n = 10, 15
+        dense = np.random.randn(m, n).astype(np.float32)
+        csc = CSC.fromdense(jnp.asarray(dense))
+        sub = csc.slice_rows(slice(0, 6, 2))
+        assert isinstance(sub, CSC)
+        assert jnp.allclose(sub.todense(), jnp.asarray(dense[np.arange(0, 6, 2)]), atol=1e-5)
+        one = csc.slice_rows(4)
+        assert one.shape == (1, n)
+        assert jnp.allclose(one.todense(), jnp.asarray(dense[4:5]), atol=1e-5)

@@ -1991,37 +1991,59 @@ class CSC(CompressedSparseData):
         return self.with_data(new_w)
 
     def __getitem__(self, index):
-        """Extract columns from the CSC matrix as a dense array.
+        """Extract rows of the matrix ``W`` as a dense array (NumPy semantics).
+
+        Row slicing is the *unfavorable* direction for CSC, so it reuses the
+        cached row-major (CSR-of-``W``) view from :meth:`_weight_indices` and the
+        shared ``csr_slice_rows`` kernel.
 
         Parameters
         ----------
-        index : int, tuple, list, or array
-            Column index or indices to extract.
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0. Negative indices wrap; Python slices are
+            supported. Concrete out-of-bounds indices raise ``IndexError``.
 
         Returns
         -------
         jax.Array or brainunit.Quantity
-            For a single integer index, a 1-D dense vector of length
-            ``n_rows``. For multiple indices, a 2-D dense matrix of shape
-            ``(n_rows, len(index))``.
+            ``(n_cols,)`` for a single int, otherwise ``(len(rows), n_cols)``.
         """
-        # CSC stores columns as "rows" of the transposed CSR.
-        # csr_slice_rows on the transposed shape gives us (num_selected, n_rows).
-        # We transpose the result to get (n_rows, num_selected).
-        transposed_shape = self.shape[::-1]
-        if isinstance(index, (int, np.integer)):
-            col_indices = jnp.array(index, dtype=jnp.int32)
-        elif isinstance(index, (tuple, list)):
-            col_indices = jnp.asarray(index, dtype=jnp.int32)
-        elif isinstance(index, (jnp.ndarray, np.ndarray)):
-            col_indices = jnp.asarray(index, dtype=jnp.int32)
-        else:
-            raise IndexError(f"Unsupported index type: {type(index)}")
-        result = csr_slice_rows(
-            self.data, self.indices, self.indptr, col_indices,
-            shape=transposed_shape, backend=self.backend
+        rows = normalize_row_index(index, self.shape[0])
+        csr_indptr, csr_indices, perm = self._weight_indices()
+        weights = self.data if self.data.size == 1 else self.data.reshape(-1)[perm]
+        return csr_slice_rows(
+            weights, csr_indices, csr_indptr, rows,
+            shape=self.shape, backend=self.backend,
         )
-        return result if col_indices.ndim == 0 else result.T
+    def slice_rows(self, index) -> 'CSC':
+        """Return ``W[rows, :]`` as a new :class:`CSC` (outside ``jax.jit``).
+
+        Builds the CSR arrays of ``W[rows, :]`` through the cached CSR-of-``W``
+        view, then converts to CSC. The output non-zero count is data-dependent,
+        so ``index`` must be concrete.
+
+        Parameters
+        ----------
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0.
+
+        Returns
+        -------
+        CSC
+            Sparse sub-matrix of shape ``(len(rows), n_cols)``.
+        """
+        rows = jnp.atleast_1d(normalize_row_index(index, self.shape[0]))
+        csr_indptr, csr_indices, perm = self._weight_indices()
+        weights = self.data if self.data.size == 1 else self.data.reshape(-1)[perm]
+        sub_data, sub_indices, sub_indptr, shape = build_sub_csr(
+            weights, csr_indices, csr_indptr, rows, self.shape[1],
+        )
+        with jax.ensure_compile_time_eval():
+            csc_indptr, csc_indices, cperm = csr_to_csc_index(
+                sub_indptr, sub_indices, shape=shape,
+            )
+        csc_data = sub_data if sub_data.size == 1 else sub_data[cperm]
+        return CSC((csc_data, csc_indices, csc_indptr), shape=shape, backend=self.backend)
 
     def _binary_op(self, other, op) -> 'CSC':
         if op in [operator.add, operator.sub]:
