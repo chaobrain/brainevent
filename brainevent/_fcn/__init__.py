@@ -23,7 +23,7 @@ from .binary import (
     binary_fcnmm,
     ell_binary_matmat_p,
 )
-from .float import fcnmv, fcnmm
+from .float import fcnmv, fcnmm, fcnmv_yw2y
 from .main import FixedNumConn, FixedPreNumConn, FixedPostNumConn
 
 __all__ = [
@@ -32,5 +32,5 @@ __all__ = [
     'csc_binary_matvec', 'csc_binary_matvec_p',
     'csc_binary_matmat', 'csc_binary_matmat_p',
     'binary_fcnmm', 'ell_binary_matmat_p',
-    'fcnmv', 'fcnmm',
+    'fcnmv', 'fcnmm', 'fcnmv_yw2y',
 ]
