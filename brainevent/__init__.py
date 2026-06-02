@@ -23,7 +23,7 @@ from ._csr import (
     binary_csrmm_indexed, binary_csrmm_indexed_p,
     csrmv, csrmv_p,
     csrmm, csrmm_p,
-    csrmv_yw2y, csrmv_yw2y_p,
+    csrmv_yw2y, cscmv_yw2y, csrmv_yw2y_p,
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
     update_csc_on_binary_pre, update_csc_on_binary_post,
@@ -73,6 +73,9 @@ from ._fcn import (
     csc_binary_matmat, csc_binary_matmat_p,
     binary_fcnmm, ell_binary_matmat_p,
     fcnmv, fcnmm, fcnmv_yw2y,
+    update_fixed_post_conn_on_binary_pre, update_fixed_post_conn_on_binary_post,
+    update_fixed_pre_conn_on_binary_pre, update_fixed_pre_conn_on_binary_post,
+    fcn_plasticity_row_p, fcn_plasticity_col_p,
 )
 from ._jit_normal import (
     JITCNormalR, JITCNormalC,
@@ -154,7 +157,7 @@ __all__ = [
     'binary_csrmm_indexed', 'binary_csrmm_indexed_p',
     'csrmv', 'csrmv_p',
     'csrmm', 'csrmm_p',
-    'csrmv_yw2y', 'csrmv_yw2y_p',
+    'csrmv_yw2y', 'cscmv_yw2y', 'csrmv_yw2y_p',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',
@@ -196,6 +199,9 @@ __all__ = [
     'fcnmv',
     'fcnmm',
     'fcnmv_yw2y',
+    'update_fixed_post_conn_on_binary_pre', 'update_fixed_post_conn_on_binary_post',
+    'update_fixed_pre_conn_on_binary_pre', 'update_fixed_pre_conn_on_binary_post',
+    'fcn_plasticity_row_p', 'fcn_plasticity_col_p',
 
     # --- operator customization routines --- #
     'XLACustomKernel', 'KernelEntry',

@@ -25,6 +25,14 @@ from .binary import (
 )
 from .float import fcnmv, fcnmm, fcnmv_yw2y
 from .main import FixedNumConn, FixedPreNumConn, FixedPostNumConn
+from .plasticity_binary import (
+    update_fixed_post_conn_on_binary_pre,
+    update_fixed_post_conn_on_binary_post,
+    update_fixed_pre_conn_on_binary_pre,
+    update_fixed_pre_conn_on_binary_post,
+    fcn_plasticity_row_p,
+    fcn_plasticity_col_p,
+)
 
 __all__ = [
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
@@ -33,4 +41,7 @@ __all__ = [
     'csc_binary_matmat', 'csc_binary_matmat_p',
     'binary_fcnmm', 'ell_binary_matmat_p',
     'fcnmv', 'fcnmm', 'fcnmv_yw2y',
+    'update_fixed_post_conn_on_binary_pre', 'update_fixed_post_conn_on_binary_post',
+    'update_fixed_pre_conn_on_binary_pre', 'update_fixed_pre_conn_on_binary_post',
+    'fcn_plasticity_row_p', 'fcn_plasticity_col_p',
 ]
