@@ -26,6 +26,9 @@
  *
  * Where A is an m×k CSR sparse matrix and x is a dense vector.
  *
+ * These kernels assume a single homogeneous weight shared across all non-zeros.
+ * Heterogeneous (per-entry) weights are handled by a separate code path.
+ *
  * Kernel Variants:
  *   - csrmv_nt_thread_{f32,f64,f16,bf16} : one thread per row (avg_nnz < 8)
  *   - csrmv_nt_warp_{f32,f64,f16,bf16}   : one warp per row  (8 <= avg_nnz < 512)
@@ -34,7 +37,7 @@
  *   - csrmv_t_warp_{f32,f64,f16,bf16}    : transpose scatter, one warp per row
  *
  * Parameters (CUDA entry points):
- *   weights  : [nnz] or [1] float array  (hetero or homo weights)
+ *   weights  : [1] float array  (homogeneous weight)
  *   indices  : [nnz] int32 column indices
  *   indptr   : [m+1] int32 row pointers
  *   vector   : [k] float input vector
@@ -57,21 +60,15 @@ __global__ void _csrmv_nt_thread_kern##SUFFIX(                                  
     const int32_t*  __restrict__ indptr,                                           \
     const WEIGHT_T* __restrict__ vector,                                           \
     WEIGHT_T*       __restrict__ output,                                           \
-    int m, int is_homo                                                             \
+    int m                                                                          \
 ) {                                                                                \
     int row = blockIdx.x * blockDim.x + threadIdx.x;                               \
     if (row >= m) return;                                                          \
     int start = indptr[row], end = indptr[row + 1];                                \
     ACC_T acc = ACC_ZERO;                                                          \
-    if (is_homo) {                                                                 \
-        ACC_T w = READ_W(weights[0]);                                              \
-        for (int j = start; j < end; j++) {                                        \
-            acc += w * READ_W(vector[indices[j]]);                                 \
-        }                                                                          \
-    } else {                                                                       \
-        for (int j = start; j < end; j++) {                                        \
-            acc += READ_W(weights[j]) * READ_W(vector[indices[j]]);                \
-        }                                                                          \
+    ACC_T w   = READ_W(weights[0]);                                                \
+    for (int j = start; j < end; j++) {                                            \
+        acc += w * READ_W(vector[indices[j]]);                                     \
     }                                                                              \
     output[row] = WRITE_W(acc);                                                    \
 }
@@ -83,21 +80,15 @@ __global__ void _csrmv_nt_warp_kern##SUFFIX(                                    
     const int32_t*  __restrict__ indptr,                                                   \
     const WEIGHT_T* __restrict__ vector,                                                   \
     WEIGHT_T*       __restrict__ output,                                                   \
-    int m, int is_homo                                                                     \
+    int m                                                                                  \
 ) {                                                                                        \
     int row = blockIdx.x;                                                                  \
     if (row >= m) return;                                                                  \
     int start = indptr[row], end = indptr[row + 1];                                        \
     ACC_T acc = ACC_ZERO;                                                                  \
-    if (is_homo) {                                                                         \
-        ACC_T w = READ_W(weights[0]);                                                      \
-        for (int j = start + (int)threadIdx.x; j < end; j += 32) {                         \
-            acc += w * READ_W(vector[indices[j]]);                                         \
-        }                                                                                  \
-    } else {                                                                               \
-        for (int j = start + (int)threadIdx.x; j < end; j += 32) {                         \
-            acc += READ_W(weights[j]) * READ_W(vector[indices[j]]);                        \
-        }                                                                                  \
+    ACC_T w   = READ_W(weights[0]);                                                        \
+    for (int j = start + (int)threadIdx.x; j < end; j += 32) {                             \
+        acc += w * READ_W(vector[indices[j]]);                                             \
     }                                                                                      \
     acc = WARP_RED(acc);                                                                   \
     if (threadIdx.x == 0) output[row] = WRITE_W(acc);                                      \
@@ -110,7 +101,7 @@ __global__ void _csrmv_nt_block_kern##SUFFIX(                                   
     const int32_t*  __restrict__ indptr,                                                    \
     const WEIGHT_T* __restrict__ vector,                                                    \
     WEIGHT_T*       __restrict__ output,                                                    \
-    int m, int is_homo                                                                      \
+    int m                                                                                   \
 ) {                                                                                         \
     extern __shared__ char _smem_bytes[];                                                   \
     ACC_T* smem_red = reinterpret_cast<ACC_T*>(_smem_bytes);                                \
@@ -118,15 +109,9 @@ __global__ void _csrmv_nt_block_kern##SUFFIX(                                   
     if (row >= m) return;                                                                   \
     int start = indptr[row], end = indptr[row + 1];                                         \
     ACC_T acc = ACC_ZERO;                                                                   \
-    if (is_homo) {                                                                          \
-        ACC_T w = READ_W(weights[0]);                                                       \
-        for (int j = start + (int)threadIdx.x; j < end; j += blockDim.x) {                  \
-            acc += w * READ_W(vector[indices[j]]);                                          \
-        }                                                                                   \
-    } else {                                                                                \
-        for (int j = start + (int)threadIdx.x; j < end; j += blockDim.x) {                  \
-            acc += READ_W(weights[j]) * READ_W(vector[indices[j]]);                         \
-        }                                                                                   \
+    ACC_T w   = READ_W(weights[0]);                                                         \
+    for (int j = start + (int)threadIdx.x; j < end; j += blockDim.x) {                      \
+        acc += w * READ_W(vector[indices[j]]);                                              \
     }                                                                                       \
     int lane   = threadIdx.x & 31;                                                          \
     int warpid = threadIdx.x >> 5;                                                          \
@@ -146,21 +131,15 @@ __global__ void _csrmv_t_warp_kern##SUFFIX(                                     
     const int32_t*  __restrict__ indptr,                                         \
     const WEIGHT_T* __restrict__ vector,                                         \
     WEIGHT_T*       __restrict__ output,                                         \
-    int m, int is_homo                                                           \
+    int m                                                                        \
 ) {                                                                              \
     int row = blockIdx.x;                                                        \
     if (row >= m) return;                                                        \
     ACC_T v_val = READ_W(vector[row]);                                           \
     int start = indptr[row], end = indptr[row + 1];                              \
-    if (is_homo) {                                                               \
-        WEIGHT_T contrib = WRITE_W(READ_W(weights[0]) * v_val);                  \
-        for (int j = start + (int)threadIdx.x; j < end; j += 32) {               \
-            atomicAdd(&output[indices[j]], contrib);                             \
-        }                                                                        \
-    } else {                                                                     \
-        for (int j = start + (int)threadIdx.x; j < end; j += 32) {               \
-            atomicAdd(&output[indices[j]], WRITE_W(READ_W(weights[j]) * v_val)); \
-        }                                                                        \
+    WEIGHT_T contrib = WRITE_W(READ_W(weights[0]) * v_val);                      \
+    for (int j = start + (int)threadIdx.x; j < end; j += 32) {                   \
+        atomicAdd(&output[indices[j]], contrib);                                 \
     }                                                                            \
 }
 
@@ -191,14 +170,13 @@ void csrmv_nt_thread##SUFFIX(                                     \
 ) {                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
     int m           = static_cast<int>(indptr.size(0)) - 1;       \
-    int is_homo     = (weights.size(0) == 1) ? 1 : 0;             \
     int blocks      = (m + 255) / 256;                            \
     _csrmv_nt_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(         \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),       \
         static_cast<const int32_t*>(indices.data_ptr()),          \
         static_cast<const int32_t*>(indptr.data_ptr()),           \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),        \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, is_homo); \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);          \
 }
 
 #define FFI_CSRMV_NT_WARP(SUFFIX, WEIGHT_C_T)                     \
@@ -209,13 +187,12 @@ void csrmv_nt_warp##SUFFIX(                                       \
 ) {                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
     int m           = static_cast<int>(indptr.size(0)) - 1;       \
-    int is_homo     = (weights.size(0) == 1) ? 1 : 0;             \
     _csrmv_nt_warp_kern##SUFFIX<<<m, 32, 0, s>>>(                 \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),       \
         static_cast<const int32_t*>(indices.data_ptr()),          \
         static_cast<const int32_t*>(indptr.data_ptr()),           \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),        \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, is_homo); \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);          \
 }
 
 #define FFI_CSRMV_NT_BLOCK(SUFFIX, WEIGHT_C_T, SHM_SIZE)          \
@@ -226,13 +203,12 @@ void csrmv_nt_block##SUFFIX(                                      \
 ) {                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
     int m           = static_cast<int>(indptr.size(0)) - 1;       \
-    int is_homo     = (weights.size(0) == 1) ? 1 : 0;             \
     _csrmv_nt_block_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(        \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),       \
         static_cast<const int32_t*>(indices.data_ptr()),          \
         static_cast<const int32_t*>(indptr.data_ptr()),           \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),        \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, is_homo); \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);          \
 }
 
 #define FFI_CSRMV_NT_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                         \
@@ -244,7 +220,6 @@ void csrmv_nt_auto##SUFFIX(                                                     
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                   \
     int m           = static_cast<int>(indptr.size(0)) - 1;                     \
     int nse         = static_cast<int>(indices.size(0));                        \
-    int is_homo     = (weights.size(0) == 1) ? 1 : 0;                           \
     int avg_nnz     = (m > 0) ? (nse / m) : 0;                                  \
     const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
     const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr());    \
@@ -254,13 +229,13 @@ void csrmv_nt_auto##SUFFIX(                                                     
     if (avg_nnz < 8) {                                                          \
         int blocks = (m + 255) / 256;                                           \
         _csrmv_nt_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(                   \
-            d_w, d_i, d_p, d_v, d_o, m, is_homo);                               \
+            d_w, d_i, d_p, d_v, d_o, m);                                        \
     } else if (avg_nnz < 512) {                                                 \
         _csrmv_nt_warp_kern##SUFFIX<<<m, 32, 0, s>>>(                           \
-            d_w, d_i, d_p, d_v, d_o, m, is_homo);                               \
+            d_w, d_i, d_p, d_v, d_o, m);                                        \
     } else {                                                                    \
         _csrmv_nt_block_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(                  \
-            d_w, d_i, d_p, d_v, d_o, m, is_homo);                               \
+            d_w, d_i, d_p, d_v, d_o, m);                                        \
     }                                                                           \
 }
 
@@ -273,7 +248,6 @@ void csrmv_t_warp##SUFFIX(                                           \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);        \
     int m           = static_cast<int>(indptr.size(0)) - 1;          \
     int k           = static_cast<int>(output.size(0));              \
-    int is_homo     = (weights.size(0) == 1) ? 1 : 0;                \
     WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr()); \
     cudaMemsetAsync(d_out, 0, (size_t)k * sizeof(WEIGHT_C_T), s);    \
     _csrmv_t_warp_kern##SUFFIX<<<m, 32, 0, s>>>(                     \
@@ -281,7 +255,7 @@ void csrmv_t_warp##SUFFIX(                                           \
         static_cast<const int32_t*>(indices.data_ptr()),             \
         static_cast<const int32_t*>(indptr.data_ptr()),              \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),           \
-        d_out, m, is_homo);                                          \
+        d_out, m);                                                   \
 }
 
 // SpMV FFI Instantiations
