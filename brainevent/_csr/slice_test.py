@@ -24,15 +24,33 @@ import pytest
 
 from brainevent._csr.slice import csr_slice_rows, csr_slice_rows_p
 from brainevent._csr.main import CSR, CSC
-from brainevent._csr.test_util import get_csr
 
 platform = jax.default_backend()
 SLICE_IMPLEMENTATIONS = tuple(csr_slice_rows_p.available_backends(platform))
 
 
+def _csr_index_arrays(m, n, prob):  # numpy-based, avoids brainstate typed-key bug
+    """Generate CSR ``(indptr, indices)`` with distinct per-row columns via NumPy.
+
+    Avoids brainstate's typed-PRNG-key ``for_loop`` path, which trips a
+    ``jax.lax.scan`` carry-dtype mismatch (``key<fry>`` vs ``uint32[2]``) on the
+    first call in a process.
+    """
+    n_conn = int(n * prob)
+    indptr = np.arange(m + 1, dtype=np.int32) * n_conn
+    rng = np.random.default_rng()
+    if m > 0 and n_conn > 0:
+        indices = np.concatenate(
+            [rng.choice(n, size=n_conn, replace=False) for _ in range(m)]
+        ).astype(np.int32)
+    else:
+        indices = np.zeros((0,), dtype=np.int32)
+    return indptr, indices
+
+
 def _make_csr_and_dense(m, n, prob=0.3):
     """Create a CSR matrix and its dense equivalent for testing."""
-    indptr, indices = get_csr(m, n, prob, replace=False)
+    indptr, indices = _csr_index_arrays(m, n, prob)
     data = jnp.asarray(np.random.randn(indices.shape[0]).astype(np.float32))
     dense = np.zeros((m, n), dtype=np.float32)
     indptr_np = np.asarray(indptr)
@@ -115,7 +133,7 @@ class TestCSRSliceRows:
 
 def _make_homo_csr_and_dense(m, n, prob=0.3):
     """Create a homogeneous-weight CSR matrix and its dense equivalent."""
-    indptr, indices = get_csr(m, n, prob, replace=False)
+    indptr, indices = _csr_index_arrays(m, n, prob)
     data = jnp.array([1.5], dtype=jnp.float32)
     dense = np.zeros((m, n), dtype=np.float32)
     indptr_np = np.asarray(indptr)
