@@ -594,3 +594,79 @@ class TestSliceHelpers:
             return rows
         with pytest.raises(Exception):
             jax.jit(f)(jnp.array([0, 1], dtype=jnp.int32))
+
+
+@pytest.mark.skipif(
+    not SLICE_IMPLEMENTATIONS,
+    reason=f'No csr_slice_rows implementation on platform={platform}',
+)
+class TestCSRGetitemNumpy:
+
+    def test_python_slice(self):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_csr_and_dense(m, n)
+        csr = CSR(data, indices, indptr, shape=(m, n))
+        result = csr[2:8:2]
+        expected = dense[np.arange(2, 8, 2)]
+        assert result.shape == (3, n)
+        assert jnp.allclose(result, expected, atol=1e-5)
+
+    def test_negative_index(self):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_csr_and_dense(m, n)
+        csr = CSR(data, indices, indptr, shape=(m, n))
+        assert jnp.allclose(csr[-1], dense[m - 1], atol=1e-5)
+        assert jnp.allclose(csr[[-1, -2]], np.asarray(dense)[[m - 1, m - 2]], atol=1e-5)
+
+    def test_oob_raises(self):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_csr_and_dense(m, n)
+        csr = CSR(data, indices, indptr, shape=(m, n))
+        with pytest.raises(IndexError):
+            _ = csr[m]
+
+
+@pytest.mark.skipif(
+    not SLICE_IMPLEMENTATIONS,
+    reason=f'No csr_slice_rows implementation on platform={platform}',
+)
+class TestCSRSliceRowsSparse:
+
+    def test_returns_csr_and_matches_dense(self):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_csr_and_dense(m, n)
+        csr = CSR(data, indices, indptr, shape=(m, n))
+        sub = csr.slice_rows([1, 3, 5])
+        assert isinstance(sub, CSR)
+        assert sub.shape == (3, n)
+        assert jnp.allclose(sub.todense(), dense[np.array([1, 3, 5])], atol=1e-5)
+
+    def test_slice_object(self):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_csr_and_dense(m, n)
+        csr = CSR(data, indices, indptr, shape=(m, n))
+        sub = csr.slice_rows(slice(0, 6, 2))
+        assert sub.shape == (3, n)
+        assert jnp.allclose(sub.todense(), dense[np.arange(0, 6, 2)], atol=1e-5)
+
+    def test_single_int_is_one_row(self):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_csr_and_dense(m, n)
+        csr = CSR(data, indices, indptr, shape=(m, n))
+        sub = csr.slice_rows(4)
+        assert sub.shape == (1, n)
+        assert jnp.allclose(sub.todense(), dense[4:5], atol=1e-5)
+
+    def test_homogeneous(self):
+        m, n = 8, 12
+        data, indices, indptr, dense = _make_homo_csr_and_dense(m, n)
+        csr = CSR(data, indices, indptr, shape=(m, n))
+        sub = csr.slice_rows([0, 2, 4])
+        assert isinstance(sub, CSR)
+        assert sub.data.size == 1
+        rec = np.zeros((3, n), dtype=np.float32)
+        nip = np.asarray(sub.indptr); nidx = np.asarray(sub.indices); w = float(np.asarray(sub.data)[0])
+        for r in range(3):
+            for j in range(nip[r], nip[r + 1]):
+                rec[r, nidx[j]] += w
+        assert np.allclose(rec, np.asarray(dense)[[0, 2, 4]], atol=1e-5)

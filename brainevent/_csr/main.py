@@ -24,7 +24,7 @@ import numpy as np
 
 from brainevent._data import DataRepresentation
 from brainevent._event import BinaryArray
-from brainevent._misc import _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to_csr_index
+from brainevent._misc import _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to_csr_index, normalize_row_index, build_sub_csr
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
 from .binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
@@ -1182,32 +1182,47 @@ class CSR(CompressedSparseData):
         return self.with_data(new_w)
 
     def __getitem__(self, index):
-        """Extract rows from the CSR matrix as a dense array.
+        """Extract rows of the matrix ``W`` as a dense array (NumPy semantics).
 
         Parameters
         ----------
-        index : int, tuple, list, or array
-            Row index or indices to extract.
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0. Negative indices wrap; Python slices are
+            supported. Concrete out-of-bounds indices raise ``IndexError``.
 
         Returns
         -------
         jax.Array or brainunit.Quantity
-            For a single integer index, a 1-D dense vector of length
-            ``n_cols``. For multiple indices, a 2-D dense matrix of shape
-            ``(len(index), n_cols)``.
+            ``(n_cols,)`` for a single int, otherwise ``(len(rows), n_cols)``.
         """
-        if isinstance(index, (int, np.integer)):
-            row_indices = jnp.array(index, dtype=jnp.int32)
-        elif isinstance(index, (tuple, list)):
-            row_indices = jnp.asarray(index, dtype=jnp.int32)
-        elif isinstance(index, (jnp.ndarray, np.ndarray)):
-            row_indices = jnp.asarray(index, dtype=jnp.int32)
-        else:
-            raise IndexError(f"Unsupported index type: {type(index)}")
+        rows = normalize_row_index(index, self.shape[0])
         return csr_slice_rows(
-            self.data, self.indices, self.indptr, row_indices, shape=self.shape,
-            backend=self.backend
+            self.data, self.indices, self.indptr, rows,
+            shape=self.shape, backend=self.backend,
         )
+
+    def slice_rows(self, index) -> 'CSR':
+        """Return ``W[rows, :]`` as a new :class:`CSR` (outside ``jax.jit``).
+
+        The output non-zero count is data-dependent, so ``index`` must be
+        concrete. Accepts the same selectors as :meth:`__getitem__`; a single
+        int yields a ``1 x n_cols`` matrix.
+
+        Parameters
+        ----------
+        index : int, list, tuple, array, or slice
+            Row selector along axis 0.
+
+        Returns
+        -------
+        CSR
+            Sparse sub-matrix of shape ``(len(rows), n_cols)``.
+        """
+        rows = jnp.atleast_1d(normalize_row_index(index, self.shape[0]))
+        new_data, new_indices, new_indptr, shape = build_sub_csr(
+            self.data, self.indices, self.indptr, rows, self.shape[1],
+        )
+        return CSR((new_data, new_indices, new_indptr), shape=shape, backend=self.backend)
 
     def _binary_op(self, other, op) -> 'CSR':
         if op in [operator.add, operator.sub]:
