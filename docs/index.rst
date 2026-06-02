@@ -22,9 +22,6 @@ than dense matrix operations — while integrating seamlessly with JAX's autodif
 Where to go next
 ^^^^^^^^^^^^^^^^^
 
-This documentation follows the `Diátaxis <https://diataxis.fr/>`_ framework — each section
-serves a different need.
-
 .. grid:: 1 2 2 2
    :gutter: 3
 
@@ -35,28 +32,28 @@ serves a different need.
       Install ``brainevent`` and run your first event-driven computation in 60 seconds.
 
    .. grid-item-card:: 📘 Tutorials
-      :link: tutorials/index
+      :link: tutorials/data-structures/index
       :link-type: doc
 
       Learning-oriented, step-by-step notebooks — from event arrays to writing your own
       custom kernels.
 
    .. grid-item-card:: 🛠️ How-to Guides
-      :link: how-to/index
+      :link: how-to/data-structures/index
       :link-type: doc
 
       Task-oriented recipes for concrete problems: choosing a sparse format, building a
       network, compiling raw CUDA.
 
    .. grid-item-card:: 💡 Explanation
-      :link: explanation/index
+      :link: explanation/event-driven-computation
       :link-type: doc
 
       Understanding-oriented background: the event-driven model, sparse-format trade-offs,
       and the FAQ.
 
    .. grid-item-card:: 📖 Reference
-      :link: reference/index
+      :link: reference/apis/index
       :link-type: doc
 
       Information-oriented API and kernel reference, plus the changelog.
@@ -80,22 +77,30 @@ serves a different need.
    :hidden:
    :caption: Tutorials
 
-   tutorials/index
+   tutorials/data-structures/index
+   tutorials/custom-operators/index
 
 .. toctree::
    :hidden:
    :caption: How-to Guides
 
-   how-to/index
+   how-to/data-structures/index
+   how-to/building-extending/index
 
 .. toctree::
    :hidden:
    :caption: Explanation
 
-   explanation/index
+   explanation/event-driven-computation
+   explanation/sparse-formats
+   explanation/jit-connectivity
+   explanation/custom-kernel-architecture
+   explanation/faq
 
 .. toctree::
    :hidden:
    :caption: Reference
 
-   reference/index
+   reference/apis/index
+   reference/kernels/index
+   reference/changelog

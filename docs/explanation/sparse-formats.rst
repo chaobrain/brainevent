@@ -3,7 +3,7 @@ Sparse format trade-offs
 
 ``brainevent`` provides several connectivity representations because no single format is best
 for every situation. This page explains the trade-offs so you can reason about the choice;
-for a quick decision table, see :doc:`/how-to/choosing-a-sparse-format`.
+for a quick decision table, see :doc:`/how-to/data-structures/choosing-a-sparse-format`.
 
 
 Coordinate (COO) input

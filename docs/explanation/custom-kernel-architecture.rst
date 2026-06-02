@@ -3,8 +3,8 @@ The custom-kernel architecture
 
 ``brainevent`` lets you write performance-critical operators in plain C++ (CPU) or CUDA
 (GPU) and call them from JAX with **zero boilerplate**. This page explains how that bridge
-is put together; for the step-by-step recipe see :doc:`/how-to/compile-raw-cuda-cpp`, and for
-the full reference see the :doc:`/reference/index` *Custom kernels* section.
+is put together; for the step-by-step recipe see :doc:`/how-to/building-extending/compile-raw-cuda-cpp`, and for
+the full reference see the :doc:`/reference/kernels/index` *Custom kernels* section.
 
 
 The problem it solves

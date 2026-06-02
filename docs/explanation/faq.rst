@@ -40,7 +40,7 @@ Which connectivity format should I use?
 - Fixed number of connections per neuron → :class:`~brainevent.FixedPreNumConn` /
   :class:`~brainevent.FixedPostNumConn`.
 
-See :doc:`/how-to/choosing-a-sparse-format` and :doc:`sparse-formats`.
+See :doc:`/how-to/data-structures/choosing-a-sparse-format` and :doc:`sparse-formats`.
 
 
 Can I learn or inspect individual JITC weights?
@@ -64,7 +64,7 @@ Can I attach physical units to weights?
 
 Yes. ``brainevent`` integrates with `BrainUnit <https://github.com/chaobrain/brainunit>`_, so
 weights and currents can carry units and be dimensionally checked, with no runtime cost. See
-:doc:`/how-to/unit-aware-computation`.
+:doc:`/how-to/data-structures/unit-aware-computation`.
 
 
 Which custom-kernel backend should I use?
@@ -76,7 +76,7 @@ Which custom-kernel backend should I use?
 
 For raw CUDA kernels, ``brainevent`` compiles your source via ``nvcc``, registers XLA FFI
 targets, and caches compiled artifacts on disk for fast reloads. See
-:doc:`custom-kernel-architecture` and :doc:`/how-to/compile-raw-cuda-cpp`.
+:doc:`custom-kernel-architecture` and :doc:`/how-to/building-extending/compile-raw-cuda-cpp`.
 
 
 How do I ship a custom CUDA kernel with my project?

@@ -32,9 +32,9 @@ from .float import fcnmv, fcnmm
 
 __all__ = [
     'binary_fcnmv',
-    'ell_binary_matvec_p',
+    'binary_fcnmv_p',
     'binary_fcnmm',
-    'ell_binary_matmat_p',
+    'binary_fcnmm_p',
 ]
 
 
@@ -131,7 +131,7 @@ def binary_fcnmv(
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    r = ell_binary_matvec_p_call(
+    r = binary_fcnmv_p_call(
         weights,
         indices,
         spikes,
@@ -342,7 +342,7 @@ def _binary_fcnmv_jvp_weights(
     transpose,
     **kwargs
 ):
-    return ell_binary_matvec_p_call(
+    return binary_fcnmv_p_call(
         w_dot,
         indices,
         spikes,
@@ -383,7 +383,7 @@ def _binary_fcnmv_transpose_rule(
             ct_gmax = ad.Zero(weights)
         elif homo:
             # scalar
-            ct_gmax = ell_binary_matvec_p_call(
+            ct_gmax = binary_fcnmv_p_call(
                 jnp.asarray(1., dtype=weight_info.dtype),
                 indices,
                 spikes,
@@ -404,7 +404,7 @@ def _binary_fcnmv_transpose_rule(
 def _binary_fcnmv_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, 0):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = ell_binary_matmat_p_call(
+        r = binary_fcnmm_p_call(
             args[0],
             args[1],
             args[2].T,
@@ -415,7 +415,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
         return r, [1]
     elif tuple(axes) == (None, None, 1):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = ell_binary_matmat_p_call(
+        r = binary_fcnmm_p_call(
             args[0],
             args[1],
             args[2],
@@ -425,7 +425,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
         )
         return r, [1]
     else:
-        return general_batching_rule(ell_binary_matvec_p, args, axes, **kwargs)
+        return general_batching_rule(binary_fcnmv_p, args, axes, **kwargs)
 
 
 def _binary_fcnmv_benchmark_data(*, platform):
@@ -452,7 +452,7 @@ def _binary_fcnmv_benchmark_data(*, platform):
                 )
 
 
-def ell_binary_matvec_p_call(
+def binary_fcnmv_p_call(
     weights: jax.Array,
     indices: jax.Array,
     spikes: jax.Array,
@@ -500,7 +500,7 @@ def ell_binary_matvec_p_call(
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    return ell_binary_matvec_p(
+    return binary_fcnmv_p(
         weights,
         indices,
         spikes,
@@ -514,7 +514,7 @@ def ell_binary_matvec_p_call(
     )
 
 
-ell_binary_matvec_p = XLACustomKernel(
+binary_fcnmv_p = XLACustomKernel(
     'ell_binary_matvec',
     doc="""
 Low-level XLA custom-kernel primitive for the ELL ``binary_fcnmv``.
@@ -537,8 +537,8 @@ The CUDA ``transpose=False`` row-gather path was removed; the unfavorable
 ``W @ s`` direction routes through the perm-fused CSR kernel
 ``brainevent.binary_csrmv_indexed``.
 
-Available backends can be queried with ``ell_binary_matvec_p.available_backends(platform)``,
-and the default backend can be configured with ``ell_binary_matvec_p.set_default(platform, backend)``.
+Available backends can be queried with ``binary_fcnmv_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_fcnmv_p.set_default(platform, backend)``.
 
 See Also
 --------
@@ -547,22 +547,22 @@ binary_fcnmv : High-level user-facing function wrapper.
 )
 
 
-ell_binary_matvec_p.def_numba_kernel(_ell_binary_matvec_numba_kernel)
-ell_binary_matvec_p.def_cuda_raw_kernel(_ell_binary_matvec_cuda_kernel, asdefault=True)
-ell_binary_matvec_p.def_kernel('jax_raw', 'cpu', _ell_binary_matvec_jax_kernel)
-ell_binary_matvec_p.def_kernel('jax_raw', 'gpu', _ell_binary_matvec_jax_kernel)
-ell_binary_matvec_p.def_kernel('jax_raw', 'tpu', _ell_binary_matvec_jax_kernel)
+binary_fcnmv_p.def_numba_kernel(_ell_binary_matvec_numba_kernel)
+binary_fcnmv_p.def_cuda_raw_kernel(_ell_binary_matvec_cuda_kernel, asdefault=True)
+binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _ell_binary_matvec_jax_kernel)
+binary_fcnmv_p.def_kernel('jax_raw', 'gpu', _ell_binary_matvec_jax_kernel)
+binary_fcnmv_p.def_kernel('jax_raw', 'tpu', _ell_binary_matvec_jax_kernel)
 
-ell_binary_matvec_p.def_jvp_rule2(
+binary_fcnmv_p.def_jvp_rule2(
     _binary_fcnmv_jvp_weights,
     None,
     _binary_fcnmv_jvp_spikes,
 )
-ell_binary_matvec_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
-ell_binary_matvec_p.def_batching_rule(_binary_fcnmv_batching)
-ell_binary_matvec_p.def_call(ell_binary_matvec_p_call)
-ell_binary_matvec_p.def_tags('fcn', 'binary')
-ell_binary_matvec_p.def_benchmark_data(_binary_fcnmv_benchmark_data)
+binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
+binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
+binary_fcnmv_p.def_call(binary_fcnmv_p_call)
+binary_fcnmv_p.def_tags('fcn', 'binary')
+binary_fcnmv_p.def_benchmark_data(_binary_fcnmv_benchmark_data)
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -661,7 +661,7 @@ def binary_fcnmm(
     weights, w_unit = u.split_mantissa_unit(weights)
     matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    r = ell_binary_matmat_p_call(
+    r = binary_fcnmm_p_call(
         weights,
         indices,
         matrix,
@@ -886,7 +886,7 @@ def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, tra
 
 
 def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return ell_binary_matmat_p_call(
+    return binary_fcnmm_p_call(
         weights_dot, indices, matrix, shape=shape, transpose=transpose, backend=kwargs['backend']
     )
 
@@ -913,7 +913,7 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
             ct_weight = ad.Zero(weights)
 
         elif homo:
-            ct_weight = ell_binary_matmat_p_call(
+            ct_weight = binary_fcnmm_p_call(
                 jnp.ones([1], dtype=weight_info.dtype),
                 indices,
                 matrix,
@@ -939,7 +939,7 @@ def _batching_base_fn(args, axis=1, **kwargs):
     assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
     m, maybe_batch1, maybe_batch2 = args[2].shape
     B = args[2].reshape(m, maybe_batch1 * maybe_batch2)
-    r = ell_binary_matmat_p_call(
+    r = binary_fcnmm_p_call(
         args[0],
         args[1],
         B,
@@ -966,7 +966,7 @@ def _binary_fcnmm_batching(args, axes, **kwargs):
         return _batching_base_fn(args, axis=2, **kwargs)
 
     else:
-        return general_batching_rule(ell_binary_matmat_p, args, axes, **kwargs)
+        return general_batching_rule(binary_fcnmm_p, args, axes, **kwargs)
 
 
 def _binary_fcnmm_benchmark_data(*, platform):
@@ -997,7 +997,7 @@ def _binary_fcnmm_benchmark_data(*, platform):
     return configs
 
 
-def ell_binary_matmat_p_call(
+def binary_fcnmm_p_call(
     weights: jax.Array,
     indices: jax.Array,
     matrix: jax.Array,
@@ -1044,7 +1044,7 @@ def ell_binary_matmat_p_call(
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    return ell_binary_matmat_p(
+    return binary_fcnmm_p(
         weights,
         indices,
         matrix,
@@ -1058,7 +1058,7 @@ def ell_binary_matmat_p_call(
     )
 
 
-ell_binary_matmat_p = XLACustomKernel(
+binary_fcnmm_p = XLACustomKernel(
     'binary_fcnmm',
     doc="""
 Low-level XLA custom-kernel primitive for ``binary_fcnmm``.
@@ -1076,23 +1076,23 @@ Beyond backend dispatch, the primitive stores JAX transformation bindings
 (JVP, transpose, batching, and call registration) so the operation integrates
 correctly with ``jit``, ``vmap``, and autodiff.
 
-Available backends can be queried with ``ell_binary_matmat_p.available_backends(platform)``,
-and the default backend can be configured with ``ell_binary_matmat_p.set_default(platform, backend)``.
+Available backends can be queried with ``binary_fcnmm_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_fcnmm_p.set_default(platform, backend)``.
 
 See Also
 --------
 binary_fcnmm : High-level user-facing function wrapper.
 """
 )
-ell_binary_matmat_p.def_numba_kernel(_binary_fcnmm_numba_kernel)
-ell_binary_matmat_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel, asdefault=True)
-ell_binary_matmat_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
-ell_binary_matmat_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
-ell_binary_matmat_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
+binary_fcnmm_p.def_numba_kernel(_binary_fcnmm_numba_kernel)
+binary_fcnmm_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel, asdefault=True)
+binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
+binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
+binary_fcnmm_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
 
-ell_binary_matmat_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
-ell_binary_matmat_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
-ell_binary_matmat_p.def_batching_rule(_binary_fcnmm_batching)
-ell_binary_matmat_p.def_call(ell_binary_matmat_p_call)
-ell_binary_matmat_p.def_tags('fcn', 'binary')
-ell_binary_matmat_p.def_benchmark_data(_binary_fcnmm_benchmark_data)
+binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
+binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
+binary_fcnmm_p.def_batching_rule(_binary_fcnmm_batching)
+binary_fcnmm_p.def_call(binary_fcnmm_p_call)
+binary_fcnmm_p.def_tags('fcn', 'binary')
+binary_fcnmm_p.def_benchmark_data(_binary_fcnmm_benchmark_data)
