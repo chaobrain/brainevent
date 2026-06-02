@@ -72,7 +72,7 @@ from ._fcn import (
     csc_binary_matvec, csc_binary_matvec_p,
     csc_binary_matmat, csc_binary_matmat_p,
     binary_fcnmm, ell_binary_matmat_p,
-    fcnmv, fcnmm,
+    fcnmv, fcnmm, fcnmv_yw2y,
 )
 from ._jit_normal import (
     JITCNormalR, JITCNormalC,
@@ -195,6 +195,7 @@ __all__ = [
     'binary_fcnmm', 'ell_binary_matmat_p',
     'fcnmv',
     'fcnmm',
+    'fcnmv_yw2y',
 
     # --- operator customization routines --- #
     'XLACustomKernel', 'KernelEntry',

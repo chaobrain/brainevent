@@ -27,7 +27,7 @@ from brainevent._event.binary import BinaryArray
 from brainevent._misc import _coo_todense, COOInfo, fixed_conn_num_csc_structure
 from brainevent._typing import Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec, csc_binary_matmat
-from .float import fcnmv, fcnmm
+from .float import fcnmv, fcnmm, fcnmv_yw2y
 
 __all__ = [
     'FixedNumConn',
@@ -199,6 +199,67 @@ class FixedNumConn(DataRepresentation):
     def _float_matmat(self, matrix, transpose_W: bool, data):
         a_shape, ell_transpose = self._ell_plan(transpose_W)
         return fcnmm(data, self.indices, matrix, shape=a_shape, transpose=ell_transpose)
+
+    # ------------------------------------------------------------------ #
+    # Per-synapse y * w product (yw2y), parity with CSR / CSC
+    # ------------------------------------------------------------------ #
+
+    def yw_to_w(self, y_dim_arr, w_dim_arr=None):
+        """Per-synapse ``w * y`` with ``y`` indexed by the row (pre) of ``W``.
+
+        For every stored connection, returns ``w * y[row]`` where ``row`` is the
+        pre-synaptic index of that connection, regardless of storage axis.  This
+        is the fixed-connection analog of :meth:`brainevent.CSR.yw_to_w` and
+        implements the ``yw_to_w`` protocol of :class:`brainunit.sparse.SparseMatrix`.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array or brainunit.Quantity
+            Pre-synaptic (row) vector, sized ``shape[0]``.
+        w_dim_arr : jax.Array or brainunit.Quantity, optional
+            Per-synapse weights of shape ``indices.shape`` (or size-1).  Defaults
+            to ``self.data``.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Per-synapse result of shape ``self.indices.shape``.
+
+        See Also
+        --------
+        yw_to_w_transposed : ``y`` indexed by the column (post) of ``W``.
+        """
+        w = self.data if w_dim_arr is None else w_dim_arr
+        a_shape = tuple(self.shape) if self.axis == 0 else tuple(self.shape)[::-1]
+        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=a_shape, transpose=(self.axis == 1))
+
+    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr=None):
+        """Per-synapse ``w * y`` with ``y`` indexed by the column (post) of ``W``.
+
+        Adjoint counterpart of :meth:`yw_to_w`: for every stored connection,
+        returns ``w * y[col]`` where ``col`` is the post-synaptic index of that
+        connection, regardless of storage axis.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array or brainunit.Quantity
+            Post-synaptic (column) vector, sized ``shape[1]``.
+        w_dim_arr : jax.Array or brainunit.Quantity, optional
+            Per-synapse weights of shape ``indices.shape`` (or size-1).  Defaults
+            to ``self.data``.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Per-synapse result of shape ``self.indices.shape``.
+
+        See Also
+        --------
+        yw_to_w : ``y`` indexed by the row (pre) of ``W``.
+        """
+        w = self.data if w_dim_arr is None else w_dim_arr
+        a_shape = tuple(self.shape) if self.axis == 0 else tuple(self.shape)[::-1]
+        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=a_shape, transpose=(self.axis == 0))
 
     def _dispatch(self, other, transpose_W: bool):
         if isinstance(other, u.sparse.SparseMatrix):
