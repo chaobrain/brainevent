@@ -148,6 +148,52 @@ def _fcn_plasticity_col_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs)
 
 
 # --------------------------------------------------------------------------- #
+# cuda_raw kernel (row-driven / favorable direction only)
+# --------------------------------------------------------------------------- #
+
+def _fcn_plasticity_row_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """CUDA Raw kernel for the favorable (row-driven) ELL plasticity update.
+
+    Dispatches to ``update_fcn_row{wt}{spk}`` compiled from
+    ``plasticity_row_driven.cu``; the entry point auto-selects a thread-,
+    warp-, or block-per-row sub-kernel based on ``num_conn``.  Only int32
+    indices are supported -- callers with int64 indices should select
+    ``backend='jax_raw'``.
+    """
+    if indices_info.dtype == jnp.int64:
+        raise TypeError(
+            "fcn row-driven plasticity 'cuda_raw' backend only supports int32 "
+            "indices. Use backend='jax_raw' for int64 indices."
+        )
+    load_cuda_file(
+        Path(__file__).parent.joinpath('plasticity_row_driven.cu'),
+        name='fcn_plasticity_row_driven',
+    )
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'fcn_plasticity_row_driven.update_fcn_row{wt_sfx}{spk_suffix}'
+
+    def kernel(data, indices, spike, trace):
+        return jax.ffi.ffi_call(kernel_name, out_info, input_output_aliases={0: 0})(
+            data, indices, spike, trace
+        )
+
+    return kernel
+
+
+# --------------------------------------------------------------------------- #
 # Primitive calls
 # --------------------------------------------------------------------------- #
 
@@ -203,6 +249,7 @@ Backs ``FixedPostNumConn.update_on_pre`` and ``FixedPreNumConn.update_on_post``.
 """,
 )
 fcn_plasticity_row_p.def_numba_kernel(_fcn_plasticity_row_numba_kernel)
+fcn_plasticity_row_p.def_cuda_raw_kernel(_fcn_plasticity_row_cuda_kernel, asdefault=True)
 fcn_plasticity_row_p.def_kernel('jax_raw', 'cpu', _fcn_plasticity_row_jax_kernel)
 fcn_plasticity_row_p.def_kernel('jax_raw', 'gpu', _fcn_plasticity_row_jax_kernel)
 fcn_plasticity_row_p.def_kernel('jax_raw', 'tpu', _fcn_plasticity_row_jax_kernel)

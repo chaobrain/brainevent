@@ -307,3 +307,28 @@ def test_top_level_exports():
         'fcn_plasticity_row_p', 'fcn_plasticity_col_p',
     ]:
         assert hasattr(be, name), f'missing export: {name}'
+
+
+# --------------------------------------------------------------------------- #
+# Favorable-direction CUDA kernel (registration always; runtime only on GPU)
+# --------------------------------------------------------------------------- #
+
+def test_cuda_registered_and_import_ok():
+    assert 'cuda_raw' in fcn_plasticity_row_p.available_backends('gpu')
+
+
+@pytest.mark.skipif(
+    not any(d.platform == 'gpu' for d in jax.devices()),
+    reason="no GPU device available",
+)
+@pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
+def test_row_cuda_matches_jax(spike_dtype):
+    rng = np.random.default_rng(40)
+    n_row, n_conn, n_col = 64, 16, 50
+    data = jnp.asarray(rng.random((n_row, n_conn)), dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_col, (n_row, n_conn)), dtype=jnp.int32)
+    spike = jnp.asarray(rng.random(n_row) > 0.5, dtype=spike_dtype)
+    trace = jnp.asarray(rng.random(n_col), dtype=jnp.float32)
+    a = fcn_plasticity_row_prim_call(data, indices, spike, trace, backend='cuda_raw')[0]
+    b = fcn_plasticity_row_prim_call(data, indices, spike, trace, backend='jax_raw')[0]
+    assert np.allclose(np.asarray(a), np.asarray(b), atol=1e-5)
