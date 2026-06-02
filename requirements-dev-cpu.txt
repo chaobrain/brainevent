@@ -6,3 +6,4 @@ ml_dtypes
 
 # test requirements
 pytest
+pytest-cov

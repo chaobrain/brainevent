@@ -121,6 +121,14 @@ class TestConstruction2D:
         assert cb.packed.shape == (20, (100 + 31) // 32)
 
     def test_light_matches_from_array_for_2d(self):
+        # For 2D input ``from_array_light`` is documented to be identical to
+        # ``from_array`` (both call the fused bitpack+compaction kernel), so the
+        # *meaningful* outputs must match. Only the first ``n_active`` entries of
+        # ``active_ids`` are defined; the remaining slots are scratch padding that
+        # the kernel does not zero-initialize (undefined on the CUDA backend), so
+        # comparing the full buffers is not portable. We therefore compare the
+        # fully-defined ``packed`` array, the active count, and the set of active
+        # row ids.
         x = jnp.asarray(
             [[True, False, True], [False, False, False], [True, True, False]],
             dtype=jnp.bool_,
@@ -128,8 +136,16 @@ class TestConstruction2D:
         cb = CompactBinary.from_array(x)
         cb_light = CompactBinary.from_array_light(x)
         np.testing.assert_array_equal(cb_light.packed, cb.packed)
-        np.testing.assert_array_equal(cb_light.active_ids, cb.active_ids)
-        np.testing.assert_array_equal(cb_light.n_active, cb.n_active)
+
+        n = int(cb.n_active[0])
+        assert int(cb_light.n_active[0]) == n
+        # Active rows are exactly those with any True entry.
+        expected_rows = np.flatnonzero(np.asarray(jnp.any(x, axis=1)))
+        assert n == expected_rows.size
+        full_ids = np.sort(np.asarray(cb.active_ids[:n]))
+        light_ids = np.sort(np.asarray(cb_light.active_ids[:n]))
+        np.testing.assert_array_equal(full_ids, light_ids)
+        np.testing.assert_array_equal(full_ids, expected_rows.astype(full_ids.dtype))
 
 
 class TestFromPacked:

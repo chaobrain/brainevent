@@ -28,6 +28,20 @@ JITNMV_IMPLEMENTATIONS = tuple(jitnmv_p.available_backends(platform))
 JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends(platform))
 
 
+@pytest.fixture(autouse=True)
+def _seed_rng():
+    """Make the unseeded ``np.random`` draws in this module deterministic.
+
+    Several tests validate an analytic (autodiff) gradient against a float32
+    finite-difference estimate with a tight tolerance. The probe vectors are
+    drawn from the global NumPy RNG, so without a fixed seed an unlucky draw on
+    a small problem can push the finite-difference error past the tolerance,
+    making the test order-dependently flaky. Seeding per test removes that
+    dependence without changing the statistical nature of the checks.
+    """
+    np.random.seed(0x5EED)
+
+
 # ---- Forward: jitnmv (matrix @ vector, transpose=False) ----
 
 @pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
