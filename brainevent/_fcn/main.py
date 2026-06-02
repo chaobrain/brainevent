@@ -23,23 +23,23 @@ import jax
 import jax.numpy as jnp
 
 from brainevent._compatible_import import Tracer
+from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
+from brainevent._csr.plasticity_binary import update_csr_on_binary_post
+from brainevent._csr.slice import csr_slice_rows
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
 from brainevent._misc import (
     _coo_todense, COOInfo, coo2csr, fixed_conn_num_csc_structure,
     fixed_conn_num_csr_indptr, normalize_row_index, build_sub_csr,
 )
-from brainevent._csr.slice import csr_slice_rows
 from brainevent._typing import Data, MatrixShape, Index
-from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
-from brainevent._csr.plasticity_binary import update_csr_on_binary_post
 from .binary import binary_fcnmv, binary_fcnmm
 from .float import fcnmv, fcnmm
-from .yw2y import fcnmv_yw2y
 from .plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
 )
+from .yw2y import fcnmv_yw2y
 
 __all__ = [
     'FixedNumConn',
@@ -767,11 +767,7 @@ class FixedNumPerPre(FixedNumConn):
         the new matrix rebuilds its own mirror lazily on first need.
         """
         assert axes is None, "transpose does not support axes argument."
-        return FixedNumPerPost(
-            (self.data, self.indices),
-            shape=self.shape[::-1],
-            backend=self.backend,
-        )
+        return FixedNumPerPost(self.data, self.indices, shape=self.shape[::-1], backend=self.backend)
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
         """Pre-spike STDP (favorable, row-driven) -- mirrors :meth:`brainevent.CSR.update_on_pre`."""
@@ -792,8 +788,7 @@ class FixedNumPerPre(FixedNumConn):
         return self._rebuild_with_data(new.reshape(self.data.shape))
 
     def _unitary_op(self, op):
-        return FixedNumPerPre((op(self.data), self.indices), shape=self.shape,
-                              backend=self.backend, buffers=self.buffers)
+        return FixedNumPerPre(op(self.data), self.indices, shape=self.shape, backend=self.backend, buffers=self.buffers)
 
     def _binary_op(self, other, op):
         if isinstance(other, u.sparse.SparseMatrix):
@@ -801,12 +796,12 @@ class FixedNumPerPre(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedNumPerPre((op(self.data, other), self.indices), shape=self.shape,
+            return FixedNumPerPre(op(self.data, other), self.indices, shape=self.shape,
                                   backend=self.backend, buffers=self.buffers)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_post_num_to_coo(self)
             other = other[rows, cols]
-            return FixedNumPerPre((op(self.data, other), self.indices), shape=self.shape,
+            return FixedNumPerPre(op(self.data, other), self.indices, shape=self.shape,
                                   backend=self.backend, buffers=self.buffers)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -817,12 +812,12 @@ class FixedNumPerPre(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedNumPerPre((op(other, self.data), self.indices), shape=self.shape,
+            return FixedNumPerPre(op(other, self.data), self.indices, shape=self.shape,
                                   backend=self.backend, buffers=self.buffers)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_post_num_to_coo(self)
             other = other[rows, cols]
-            return FixedNumPerPre((op(other, self.data), self.indices), shape=self.shape,
+            return FixedNumPerPre(op(other, self.data), self.indices, shape=self.shape,
                                   backend=self.backend, buffers=self.buffers)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -885,7 +880,7 @@ class FixedNumPerPost(FixedNumConn):
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
-        super().__init__((self.data, self.indices), shape=shape, backend=backend, buffers=buffers)
+        super().__init__(self.data, self.indices, shape=shape, backend=backend, buffers=buffers)
         _contains_invalid_indices(self.indices, upper_bound=self.shape[0])
         if precompute_weight_indices:
             self._weight_indices()
@@ -1039,7 +1034,6 @@ class FixedNumPerPost(FixedNumConn):
 
 def fixed_post_num_to_coo(self: FixedNumPerPre):
     """Convert a :class:`FixedNumPerPre` to ``(pre_ids, post_ids, COOInfo)``."""
-    import jax.numpy as jnp
     pre_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
     post_ids = self.indices.flatten()
     # Keep COO metadata unsorted to preserve duplicate accumulation semantics
@@ -1050,7 +1044,6 @@ def fixed_post_num_to_coo(self: FixedNumPerPre):
 
 def fixed_pre_num_to_coo(self: FixedNumPerPost):
     """Convert a :class:`FixedNumPerPost` to ``(pre_ids, post_ids, COOInfo)``."""
-    import jax.numpy as jnp
     pre_ids = self.indices.flatten()
     post_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
     # Keep COO metadata unsorted to preserve duplicate accumulation semantics
