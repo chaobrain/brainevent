@@ -1,203 +1,101 @@
 ``brainevent`` documentation
-============================
+=============================
 
-`BrainEvent <https://github.com/chaobrain/brainevent>`_ provides a set of data structures and algorithms for event-driven computation, which can be used to
-model the brain dynamics in a more efficient and biologically plausible way.
-
-----
-
-
-Installation
-^^^^^^^^^^^^
-
-.. tab-set::
-
-    .. tab-item:: CPU
-
-       .. code-block:: bash
-
-          pip install -U brainevent[cpu]
-
-    .. tab-item:: GPU (CUDA)
-
-       .. code-block:: bash
-
-          pip install -U brainevent[cuda12]
-
-          pip install -U brainevent[cuda13]
-
-    .. tab-item:: TPU
-
-       .. code-block:: bash
-
-          pip install -U brainevent[tpu]
-
-----
-
-
-What is BrainEvent?
-^^^^^^^^^^^^^^^^^^^
-
-The brain is fundamentally an **event-driven system**, where discrete spiking events are the primary units of computation.
-Traditional dense matrix operations process all array elements, even zeros, leading to significant computational waste
-in sparse spike-based scenarios where only a small fraction of neurons are active at any given time.
-
-**BrainEvent** addresses this challenge by:
-
-- **Processing only active events**: Computations skip zero elements, focusing only on neurons that fire spikes
-- **Hardware acceleration**: Optimized custom kernels for CPU, GPU, and TPU
-- **Seamless JAX integration**: Full support for automatic differentiation, JIT compilation, and vmap
-- **Biologically plausible**: Mirrors the sparse, event-driven nature of real neural systems
-
-
-Core Components
-^^^^^^^^^^^^^^^
-
-**1. Event Representation**
-  BrainEvent provides specialized array types for representing neural events:
-
-  - ``BinaryArray``: Binary arrays representing spike events (1 = spike, 0 = no spike)
-
-**2. Sparse Data Structures**
-  Multiple sparse matrix formats optimized for event-driven computation:
-
-  - ``CSR`` / ``CSC`` (Compressed Sparse Row/Column): Fast row/column-oriented operations
-
-  Coordinate (row/column) triplets can be converted into ``CSR`` with the
-  :func:`~brainevent.coo2csr` helper.
-
-**3. Just-In-Time Connectivity**
-  Generate connectivity matrices on-the-fly without storing full weight matrices (memory-efficient for large networks):
-
-  - ``JITCScalarR`` / ``JITCScalarC``: Scalar (constant) weights
-  - ``JITCNormalR`` / ``JITCNormalC``: Normally distributed weights
-  - ``JITCUniformR`` / ``JITCUniformC``: Uniformly distributed weights
-
-**4. Fixed Connectivity Patterns**
-  Specialized structures for biologically realistic fixed-degree connectivity:
-
-  - ``FixedPostNumConn``: Fixed number of post-synaptic connections per pre-synaptic neuron
-  - ``FixedPreNumConn``: Fixed number of pre-synaptic connections per post-synaptic neuron
-
-**5. Custom Kernel Framework**
-  Extensible system for defining high-performance custom operators:
-
-  - **Numba**: CPU-optimized operations with ``@numba_kernel`` decorator
-  - **Warp**: NVIDIA GPU operations using Warp language
-  - **Pallas**: TPU/GPU operations using JAX Pallas
-  - **XLA Integration**: ``XLACustomKernel`` for custom XLA operators
-
-**6. Synaptic Plasticity**
-  Built-in support for learning and plasticity rules:
-
-  - ``update_csr_on_binary_pre`` / ``update_csr_on_binary_post``: CSR-based plasticity updates
-  - ``update_dense_on_binary_pre`` / ``update_dense_on_binary_post``: Dense matrix plasticity
-
-**7. Unit-Aware Computation**
-  Fully compatible with `BrainUnit <https://github.com/chaobrain/brainunit>`_ for physical unit tracking and dimensional analysis.
-
-
-
-Quick Start
-^^^^^^^^^^^
-
-**Basic Usage**
-
-To use event-driven computation, wrap your spike arrays with ``BinaryArray``:
+`BrainEvent <https://github.com/chaobrain/brainevent>`_ provides data structures and
+algorithms for **event-driven computation** on CPUs, GPUs, and TPUs. By processing only
+the active (non-zero) spikes in a network, it models brain dynamics far more efficiently
+than dense matrix operations — while integrating seamlessly with JAX's autodiff, JIT, and
+``vmap``.
 
 .. code-block:: python
 
    import brainevent
-   import jax.numpy
+   import jax.numpy as jnp
 
-   # Create spike events (binary array)
-   spikes = brainevent.BinaryArray(jax.numpy.array([1, 0, 1, 0, 1]))
+   spikes = brainevent.BinaryArray(jnp.array([1, 0, 1, 0, 1]))
+   conn = brainevent.JITCScalarR(num_pre=5, num_post=3, prob=0.5, weight=0.2, seed=0)
 
-   # Create a sparse connectivity matrix
-   conn = brainevent.CSR(...)
-
-   # Event-driven matrix multiplication
-   output = spikes @ conn
-
-BrainEvent automatically optimizes computations when ``BinaryArray`` is involved,
-processing only the active (non-zero) events.
-
-**Working with Different Data Structures**
-
-.. code-block:: python
-
-   import brainevent
-   import jax.numpy
-
-   # Sparse matrices
-   csr_matrix = brainevent.CSR(...)
-   csc_matrix = brainevent.CSC(...)
-
-   # Just-in-time connectivity (memory efficient)
-   jitc_conn = brainevent.JITCScalarR(num_pre=1000, num_post=1000,
-                               prob=0.1, weight=0.5, seed=0)
-
-   # Fixed connectivity patterns
-   fixed_conn = brainevent.FixedPostNumConn(num_pre=1000, num_post=1000,
-                                     conn_num=100, weight=0.5, seed=0)
-
-   # Event-driven computations work with all structures
-   spikes = brainevent.BinaryArray(jax.numpy.array([...]))
-   output = spikes @ jitc_conn  # Only active spikes are processed
-
-
-
-See also the ecosystem
-^^^^^^^^^^^^^^^^^^^^^^
-
-
-``brainevent`` is one part of our `brain modeling ecosystem <https://brainx.chaobrain.com/>`_.
-
+   output = spikes @ conn        # only active spikes are processed
 
 ----
 
+Where to go next
+^^^^^^^^^^^^^^^^^
+
+This documentation follows the `Diátaxis <https://diataxis.fr/>`_ framework — each section
+serves a different need.
+
+.. grid:: 1 2 2 2
+   :gutter: 3
+
+   .. grid-item-card:: 🚀 Getting Started
+      :link: getting-started/installation
+      :link-type: doc
+
+      Install ``brainevent`` and run your first event-driven computation in 60 seconds.
+
+   .. grid-item-card:: 📘 Tutorials
+      :link: tutorials/index
+      :link-type: doc
+
+      Learning-oriented, step-by-step notebooks — from event arrays to writing your own
+      custom kernels.
+
+   .. grid-item-card:: 🛠️ How-to Guides
+      :link: how-to/index
+      :link-type: doc
+
+      Task-oriented recipes for concrete problems: choosing a sparse format, building a
+      network, compiling raw CUDA.
+
+   .. grid-item-card:: 💡 Explanation
+      :link: explanation/index
+      :link-type: doc
+
+      Understanding-oriented background: the event-driven model, sparse-format trade-offs,
+      and the FAQ.
+
+   .. grid-item-card:: 📖 Reference
+      :link: reference/index
+      :link-type: doc
+
+      Information-oriented API and kernel reference, plus the changelog.
+
+   .. grid-item-card:: 🌐 Ecosystem
+      :link: https://brainx.chaobrain.com/
+
+      ``brainevent`` is one part of the `BrainX <https://brainx.chaobrain.com/>`_ brain
+      modeling ecosystem.
+
+----
 
 .. toctree::
    :hidden:
-   :maxdepth: 2
-   :caption: Tutorials: Event-Driven Computation
+   :caption: Getting Started
 
-   tutorial/01_eventarray_basics.ipynb
-   tutorial/02_sparse_matrices.ipynb
-   tutorial/03_jit_connectivity.ipynb
-   tutorial/04_fixed_connections.ipynb
-   tutorial/05_synaptic_plasticity.ipynb
-
-
+   getting-started/installation
+   getting-started/quickstart
 
 .. toctree::
    :hidden:
-   :maxdepth: 2
-   :caption: Tutorials: Custom Kernels
+   :caption: Tutorials
 
-   kernel/index.rst
-   kernel/custom_operators_numba_cuda.ipynb
-   kernel/custom_operators_numba.ipynb
-   kernel/custom_operators_warp.ipynb
+   tutorials/index
 
 .. toctree::
    :hidden:
-   :maxdepth: 1
-   :caption: FAQ
+   :caption: How-to Guides
 
-   FQA.rst
-
+   how-to/index
 
 .. toctree::
    :hidden:
-   :maxdepth: 2
-   :caption: API Reference
+   :caption: Explanation
 
-   apis/events.rst
-   apis/sparsedata.rst
-   apis/operations.rst
-   apis/operator.rst
-   apis/errors.rst
-   apis/utilities.rst
-   apis/config.rst
+   explanation/index
 
+.. toctree::
+   :hidden:
+   :caption: Reference
+
+   reference/index

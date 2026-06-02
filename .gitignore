@@ -50,6 +50,8 @@ docs/apis/_autosummary
 docs/apis/generated
 docs/apis/math/generated
 docs/apis/integrators/generated
+docs/reference/apis/generated
+docs/reference/changelog.md
 
 develop/benchmark/COBA/brian2*
 develop/benchmark/COBA/annarchy*
