@@ -57,6 +57,7 @@ from ._error import (
     HeaderNotFoundError,
     GpuArchDetectionError,
     HostCompilerIncompatibleError,
+    UnsupportedArchError,
     KernelLoadError,
 )
 from ._event import (
@@ -236,6 +237,7 @@ __all__ = [
     'HeaderNotFoundError',
     'GpuArchDetectionError',
     'HostCompilerIncompatibleError',
+    'UnsupportedArchError',
     'KernelLoadError',
 
     # --- utilities --- #

@@ -34,6 +34,7 @@ __all__ = [
     'HeaderNotFoundError',
     'GpuArchDetectionError',
     'HostCompilerIncompatibleError',
+    'UnsupportedArchError',
     'KernelLoadError',
 ]
 
@@ -325,6 +326,33 @@ class CompilationError(KernelCompilationError):
 class HostCompilerIncompatibleError(CompilationError):
     """Host C++ compiler version is not supported by this CUDA/nvcc (E-CXXVER)."""
     __module__ = 'brainevent'
+
+
+class UnsupportedArchError(KernelToolchainError):
+    """nvcc does not support the requested GPU architecture (E-ARCH-UNSUP).
+
+    Raised when the detected/requested compute capability is newer than the
+    installed CUDA toolkit understands (e.g. ``sm_120`` on a CUDA 12 nvcc).
+
+    Parameters
+    ----------
+    message : str
+        Human-readable description and remediation.
+    compiler_output : str, optional
+        Captured nvcc stderr/stdout.
+    command : str, optional
+        The nvcc command that failed.
+    stage : str, optional
+        Compilation stage (``"compile"`` / ``"build"``).
+    """
+    __module__ = 'brainevent'
+
+    def __init__(self, message: str, *, compiler_output: str = "",
+                 command: str = "", stage: str = ""):
+        super().__init__(message)
+        self.compiler_output = compiler_output
+        self.command = command
+        self.stage = stage
 
 
 class KernelLoadError(KernelError):
