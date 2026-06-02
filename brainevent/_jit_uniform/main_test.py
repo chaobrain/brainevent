@@ -426,6 +426,67 @@ class Test_JITC_To_Dense:
         jax.block_until_ready((base, primals1, true_grad, expected_grad, primals2, jitc_grad))
 
 
+class Test_JITC_To_CSR:
+    @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_tocsr_roundtrip(self, cls, corder):
+        shape = (20, 30)
+        mat = cls((-0.1, 0.1, 0.2, 123), shape=shape, corder=corder)
+
+        csr = mat.tocsr()
+        assert isinstance(csr, brainevent.CSR)
+        assert csr.shape == shape
+        # Converting to CSR and back to dense must reproduce the dense matrix.
+        assert allclose(csr.todense(), mat.todense())
+        jax.block_until_ready((csr.data, csr.indices, csr.indptr))
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_tocsr_transpose_roundtrip(self, cls, corder):
+        shape = (20, 30)
+        mat = cls((-0.1, 0.1, 0.2, 123), shape=shape, corder=corder).T
+
+        csr = mat.tocsr()
+        assert isinstance(csr, brainevent.CSR)
+        assert csr.shape == mat.shape
+        assert allclose(csr.todense(), mat.todense())
+        jax.block_until_ready((csr.data, csr.indices, csr.indptr))
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_tocsr_structure_valid(self, cls, corder):
+        shape = (20, 30)
+        mat = cls((-0.1, 0.1, 0.2, 123), shape=shape, corder=corder)
+
+        csr = mat.tocsr()
+        indptr = np.asarray(csr.indptr)
+        indices = np.asarray(csr.indices)
+        assert indptr.shape == (shape[0] + 1,)
+        assert indptr[0] == 0
+        assert indptr[-1] == indices.shape[0]
+        assert np.all(np.diff(indptr) >= 0)
+        assert np.all((indices >= 0) & (indices < shape[1]))
+        # Each CSR row is column-sorted with no duplicate columns (CPU backend).
+        for r in range(shape[0]):
+            seg = indices[indptr[r]:indptr[r + 1]]
+            assert np.all(np.diff(seg) > 0)
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+    def test_tocsr_units(self, cls):
+        import brainunit as u
+
+        shape = (20, 30)
+        weight = 2.1 * u.mV
+        mat = cls((-weight, weight, 0.2, 123), shape=shape)
+
+        csr = mat.tocsr()
+        dense = mat.todense()
+        assert isinstance(csr, brainevent.CSR)
+        assert u.get_unit(csr.data) == u.get_unit(dense)
+        assert u.math.allclose(csr.todense(), dense)
+        jax.block_until_ready((csr.data, csr.indices, csr.indptr))
+
+
 class Test_JITC_Uniform_Validation:
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
     @pytest.mark.parametrize('prob', [-0.1, 1.1, float('nan')])
