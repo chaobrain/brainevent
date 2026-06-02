@@ -23,7 +23,8 @@ from .binary import (
     binary_fcnmm,
     ell_binary_matmat_p,
 )
-from .float import fcnmv, fcnmm, fcnmv_yw2y
+from .float import fcnmv, fcnmm
+from .yw2y import fcnmv_yw2y
 from .main import FixedNumConn, FixedNumPerPost, FixedNumPerPre
 from .plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
