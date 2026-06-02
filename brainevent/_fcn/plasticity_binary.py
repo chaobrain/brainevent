@@ -15,16 +15,17 @@
 
 """Native ELL event-driven STDP weight updates for fixed-connection matrices.
 
-Two write-conflict-free kernels back all four FCN plasticity operations:
+This module provides the **favorable** (row-driven) plasticity kernel: the spike
+vector indexes the ELL row axis, so the update streams over the spiking rows --
+``data[r, k] += trace[indices[r, k]]``.  Each ``data[r, k]`` is written by exactly
+one ``(r, k)`` pair, so no atomics or scatter permutation are required.
 
-* **row-driven** (favorable): the spike vector indexes the ELL row axis, so the
-  update streams over the spiking rows -- ``data[r, k] += trace[indices[r, k]]``.
-* **column-scan** (unfavorable): the spike vector indexes the stored column ids,
-  so every synapse is scanned -- ``data[r, k] += trace[r]`` when
-  ``spike[indices[r, k]]`` is active.
-
-Each ``data[r, k]`` is written by exactly one ``(r, k)`` pair, so no atomics or
-scatter permutation are required.
+The **unfavorable** direction (spikes index the stored column ids) is served by
+the reused perm-fused CSR primitive
+:func:`brainevent.update_csr_on_binary_post`, which touches only the synapses of
+spiking neurons (event-driven) rather than scanning every stored synapse.  See
+:meth:`brainevent.FixedNumPerPre.update_on_post` and
+:meth:`brainevent.FixedNumPerPost.update_on_pre`.
 """
 
 from pathlib import Path
@@ -41,11 +42,8 @@ from brainevent.config import get_numba_parallel
 
 __all__ = [
     'update_fixed_post_conn_on_binary_pre',
-    'update_fixed_post_conn_on_binary_post',
-    'update_fixed_pre_conn_on_binary_pre',
     'update_fixed_pre_conn_on_binary_post',
     'fcn_plasticity_row_p',
-    'fcn_plasticity_col_p',
 ]
 
 _HOMO_MSG = (
@@ -75,18 +73,6 @@ def _fcn_plasticity_row_jax_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
     return kernel
 
 
-def _fcn_plasticity_col_jax_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
-    is_bool = (spike_info.dtype == jnp.bool_)
-
-    def kernel(data, indices, spike, trace):
-        active = spike if is_bool else (spike != 0)
-        gathered = active[indices]
-        delta = jnp.where(gathered, trace[:, None], jnp.zeros_like(data))
-        return [data + delta]
-
-    return kernel
-
-
 # --------------------------------------------------------------------------- #
 # numba kernels (CPU, in-place via input_output_aliases={0: 0})
 # --------------------------------------------------------------------------- #
@@ -109,35 +95,6 @@ def _fcn_plasticity_row_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs)
                 if spike[r] != 0.:
                     for k in range(data.shape[1]):
                         out[r, k] += trace[indices[r, k]]
-
-    def kernel(data, indices, spike, trace):
-        return numba_kernel(kern, outs=kwargs['outs'], input_output_aliases={0: 0})(
-            data, indices, spike, trace
-        )
-
-    return kernel
-
-
-def _fcn_plasticity_col_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
-    import numba
-    parallel = get_numba_parallel()
-
-    if spike_info.dtype == jnp.bool_:
-        @numba.njit(parallel=parallel, fastmath=True, nogil=True)
-        def kern(data, indices, spike, trace, out):
-            for r in numba.prange(data.shape[0]):
-                tr = trace[r]
-                for k in range(data.shape[1]):
-                    if spike[indices[r, k]]:
-                        out[r, k] += tr
-    else:
-        @numba.njit(parallel=parallel, fastmath=True, nogil=True)
-        def kern(data, indices, spike, trace, out):
-            for r in numba.prange(data.shape[0]):
-                tr = trace[r]
-                for k in range(data.shape[1]):
-                    if spike[indices[r, k]] != 0.:
-                        out[r, k] += tr
 
     def kernel(data, indices, spike, trace):
         return numba_kernel(kern, outs=kwargs['outs'], input_output_aliases={0: 0})(
@@ -216,25 +173,6 @@ def fcn_plasticity_row_prim_call(data, indices, spike, trace, *, backend: Option
     )
 
 
-def fcn_plasticity_col_prim_call(data, indices, spike, trace, *, backend: Optional[str] = None):
-    assert data.ndim == 2, 'FCN plasticity requires 2D (heterogeneous) weight data.'
-    assert data.shape == indices.shape, f'data shape {data.shape} must equal indices shape {indices.shape}.'
-    assert spike.ndim == 1, 'spike must be 1D.'
-    assert trace.ndim == 1, 'trace must be 1D.'
-    assert trace.shape[0] == data.shape[0], (
-        f'row_trace length {trace.shape[0]} must equal number of ELL rows {data.shape[0]}.'
-    )
-    return fcn_plasticity_col_p(
-        data, indices, spike, trace,
-        outs=[jax.ShapeDtypeStruct(data.shape, data.dtype)],
-        weight_info=jax.ShapeDtypeStruct(data.shape, data.dtype),
-        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        spike_info=jax.ShapeDtypeStruct(spike.shape, spike.dtype),
-        trace_info=jax.ShapeDtypeStruct(trace.shape, trace.dtype),
-        backend=backend,
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Primitive registration
 # --------------------------------------------------------------------------- #
@@ -256,23 +194,6 @@ fcn_plasticity_row_p.def_kernel('jax_raw', 'tpu', _fcn_plasticity_row_jax_kernel
 fcn_plasticity_row_p.def_call(fcn_plasticity_row_prim_call)
 fcn_plasticity_row_p.def_tags('fcn', 'plasticity')
 
-fcn_plasticity_col_p = XLACustomKernel(
-    'fcn_plasticity_col',
-    doc="""
-Unfavorable (column-scan) ELL plasticity primitive.
-
-Scans every stored synapse: ``data[r, k] += trace[r]`` when ``spike[indices[r, k]]``
-is active.  Backs ``FixedNumPerPre.update_on_post`` and
-``FixedNumPerPost.update_on_pre``.
-""",
-)
-fcn_plasticity_col_p.def_numba_kernel(_fcn_plasticity_col_numba_kernel)
-fcn_plasticity_col_p.def_kernel('jax_raw', 'cpu', _fcn_plasticity_col_jax_kernel)
-fcn_plasticity_col_p.def_kernel('jax_raw', 'gpu', _fcn_plasticity_col_jax_kernel)
-fcn_plasticity_col_p.def_kernel('jax_raw', 'tpu', _fcn_plasticity_col_jax_kernel)
-fcn_plasticity_col_p.def_call(fcn_plasticity_col_prim_call)
-fcn_plasticity_col_p.def_tags('fcn', 'plasticity')
-
 
 # --------------------------------------------------------------------------- #
 # Module functions (units, homogeneous guard, clip)
@@ -283,15 +204,6 @@ def _apply_row(data, indices, spike, trace, w_min, w_max, backend):
     trace = u.Quantity(trace).to(wunit).mantissa
     _check_heterogeneous(data, indices)
     new = fcn_plasticity_row_prim_call(data, indices, spike, trace, backend=backend)[0]
-    new = u.maybe_decimal(new * wunit)
-    return u.math.clip(new, w_min, w_max)
-
-
-def _apply_col(data, indices, spike, trace, w_min, w_max, backend):
-    data, wunit = u.split_mantissa_unit(data)
-    trace = u.Quantity(trace).to(wunit).mantissa
-    _check_heterogeneous(data, indices)
-    new = fcn_plasticity_col_prim_call(data, indices, spike, trace, backend=backend)[0]
     new = u.maybe_decimal(new * wunit)
     return u.math.clip(new, w_min, w_max)
 
@@ -336,7 +248,8 @@ def update_fixed_post_conn_on_binary_pre(
 
     See Also
     --------
-    update_fixed_post_conn_on_binary_post : Post-spike counterpart for the same layout.
+    brainevent.FixedNumPerPre.update_on_post : Post-spike (unfavorable) counterpart,
+        served by the perm-fused CSR plasticity primitive.
 
     Examples
     --------
@@ -355,102 +268,6 @@ def update_fixed_post_conn_on_binary_pre(
     assert pre_spike.shape[0] == shape[0], 'pre_spike length must equal num_pre.'
     assert post_trace.shape[0] == shape[1], 'post_trace length must equal num_post.'
     return _apply_row(data, indices, pre_spike, post_trace, w_min, w_max, backend)
-
-
-@namescope(static_argnames=['shape'])
-def update_fixed_post_conn_on_binary_post(
-    data, indices, pre_trace, post_spike,
-    w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
-):
-    """Post-spike STDP update for a ``FixedNumPerPre`` (unfavorable, column-scan).
-
-    For each firing post neuron ``j`` and every stored synapse ``(i, j)``:
-    ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.
-
-    Parameters
-    ----------
-    data : jax.Array or Quantity
-        Heterogeneous ELL weights, shape ``(num_pre, num_conn)``.
-    indices : jax.Array
-        Post-synaptic ids, shape ``(num_pre, num_conn)``.
-    pre_trace : jax.Array or Quantity
-        Pre-synaptic trace, shape ``(num_pre,)``.
-    post_spike : jax.Array
-        Post-synaptic spikes (bool or float), shape ``(num_post,)``.
-    w_min, w_max : jax.Array, Quantity, number, or None, optional
-        Clip bounds (``None`` disables the corresponding bound).
-    shape : tuple of int
-        Logical ``(num_pre, num_post)``.
-    backend : str or None, optional
-        Backend override.
-
-    Returns
-    -------
-    jax.Array or Quantity
-        Updated weights, shape ``(num_pre, num_conn)``.
-
-    Raises
-    ------
-    ValueError
-        If ``data`` is homogeneous (size-1) while the connectivity stores more
-        than one synapse.
-
-    See Also
-    --------
-    update_fixed_post_conn_on_binary_pre : Pre-spike counterpart for the same layout.
-    """
-    assert indices.shape[0] == shape[0], 'indices rows must equal num_pre.'
-    assert pre_trace.shape[0] == shape[0], 'pre_trace length must equal num_pre.'
-    assert post_spike.shape[0] == shape[1], 'post_spike length must equal num_post.'
-    return _apply_col(data, indices, post_spike, pre_trace, w_min, w_max, backend)
-
-
-@namescope(static_argnames=['shape'])
-def update_fixed_pre_conn_on_binary_pre(
-    data, indices, pre_spike, post_trace,
-    w_min=None, w_max=None, *, shape: MatrixShape, backend: Optional[str] = None,
-):
-    """Pre-spike STDP update for a ``FixedNumPerPost`` (unfavorable, column-scan).
-
-    For each firing pre neuron ``i`` and every stored synapse ``(i, j)``:
-    ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.
-
-    Parameters
-    ----------
-    data : jax.Array or Quantity
-        Heterogeneous ELL weights, shape ``(num_post, num_conn)``.
-    indices : jax.Array
-        Pre-synaptic ids, shape ``(num_post, num_conn)``.
-    pre_spike : jax.Array
-        Pre-synaptic spikes (bool or float), shape ``(num_pre,)``.
-    post_trace : jax.Array or Quantity
-        Post-synaptic trace, shape ``(num_post,)``.
-    w_min, w_max : jax.Array, Quantity, number, or None, optional
-        Clip bounds (``None`` disables the corresponding bound).
-    shape : tuple of int
-        Logical ``(num_pre, num_post)``.
-    backend : str or None, optional
-        Backend override.
-
-    Returns
-    -------
-    jax.Array or Quantity
-        Updated weights, shape ``(num_post, num_conn)``.
-
-    Raises
-    ------
-    ValueError
-        If ``data`` is homogeneous (size-1) while the connectivity stores more
-        than one synapse.
-
-    See Also
-    --------
-    update_fixed_pre_conn_on_binary_post : Post-spike counterpart for the same layout.
-    """
-    assert indices.shape[0] == shape[1], 'indices rows must equal num_post.'
-    assert pre_spike.shape[0] == shape[0], 'pre_spike length must equal num_pre.'
-    assert post_trace.shape[0] == shape[1], 'post_trace length must equal num_post.'
-    return _apply_col(data, indices, pre_spike, post_trace, w_min, w_max, backend)
 
 
 @namescope(static_argnames=['shape'])
@@ -493,7 +310,8 @@ def update_fixed_pre_conn_on_binary_post(
 
     See Also
     --------
-    update_fixed_pre_conn_on_binary_pre : Pre-spike counterpart for the same layout.
+    brainevent.FixedNumPerPost.update_on_pre : Pre-spike (unfavorable) counterpart,
+        served by the perm-fused CSR plasticity primitive.
     """
     assert indices.shape[0] == shape[1], 'indices rows must equal num_post.'
     assert pre_trace.shape[0] == shape[0], 'pre_trace length must equal num_pre.'

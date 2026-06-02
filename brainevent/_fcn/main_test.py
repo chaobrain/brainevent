@@ -111,17 +111,21 @@ class Test_To_Dense:
         jax.block_until_ready((x, indices, out1, out2, out3, out4))
 
 
-def test_fixed_post_num_conn_tree_flatten_keeps_indices_dynamic():
+def test_fixed_post_num_conn_tree_flatten_data_only_leaf():
     indices = jnp.array([[0, 1], [1, 2]], dtype=jnp.int32)
     data = jnp.array([1.5], dtype=jnp.float32)
     conn = brainevent.FixedNumPerPre((data, indices), shape=(2, 3))
 
     children, aux = conn.tree_flatten()
+    aux_dict, buffers = aux
 
+    # ``data`` is the only traced leaf; indices/shape/backend live in static aux
+    # (mirrors CompressedSparseData / CSR).
+    assert len(children) == 1
     assert children[0] is conn.data
-    assert children[1] is conn.indices
-    assert len(children) == 2
-    assert aux['shape'] == (2, 3)
+    assert aux_dict['indices'] is conn.indices
+    assert aux_dict['shape'] == (2, 3)
+    assert isinstance(buffers, dict)
 
 
 class Test_Illegal_Slots:
@@ -198,7 +202,7 @@ class Test_Lazy_Csc_Layout:
         data = braintools.init.Normal(0., 1.)(idx.shape)
         conn = brainevent.FixedNumPerPre((data, idx), shape=shape)
 
-        assert conn._csc is None
+        assert conn.buffers.get('csc') is None
 
     @pytest.mark.parametrize(
         ('cls', 'shape', 'a_shape'),
@@ -254,7 +258,7 @@ class Test_Lazy_Csc_Layout:
 
         assert allclose(spikes @ conn, _binary_mask(spikes.value, dense.dtype) @ dense)
 
-    def test_with_data_resets_mirror_and_matches_new_values(self):
+    def test_with_data_carries_mirror_and_matches_new_values(self):
         shape = (3, 4)
         idx = generate_fixed_conn_num_indices(*shape, 2)
         data = braintools.init.Normal(0., 1.)(idx.shape)
@@ -265,9 +269,9 @@ class Test_Lazy_Csc_Layout:
         updated = conn.with_data(new_data)
         exp_p, exp_i, exp_perm = fixed_conn_num_csc_structure(idx, shape=shape)
 
-        # ``with_data`` keeps connectivity, so the structure cache resets but
-        # rebuilds to the same (data-independent) CSC structure.
-        assert updated._csc is None
+        # ``with_data`` is structure-preserving, so the (data-independent) CSC
+        # mirror is carried through to the new matrix (parity with CSR/CSC).
+        assert updated.buffers.get('csc') is not None
         csc_indptr, csc_indices, perm = updated._weight_indices()
         assert jnp.array_equal(csc_indptr, exp_p)
         assert jnp.array_equal(csc_indices, exp_i)
@@ -841,3 +845,61 @@ class Test_Yw2y:
                         csr.yw_to_w(y_pre, data.flatten()))
         assert allclose(conn.yw_to_w_transposed(y_post).flatten(),
                         csr.yw_to_w_transposed(y_post, data.flatten()))
+
+
+# --------------------------------------------------------------------------- #
+# Buffer model + data-only pytree leaf + jit-survives-mirror (CSR/CSC parity)
+# --------------------------------------------------------------------------- #
+
+def test_fcn_buffers_and_build_weight_indices():
+    rng = np.random.default_rng(0)
+    for cls, rows, upper in ((brainevent.FixedNumPerPre, 6, 5),
+                             (brainevent.FixedNumPerPost, 5, 6)):
+        idx = jnp.asarray(rng.integers(0, upper, size=(rows, 3)).astype(np.int32))
+        dat = jnp.asarray(rng.random((rows, 3)) + 0.5, dtype=jnp.float32)
+        m = cls(dat, idx, shape=(6, 5))
+        # mirror not built yet (lazy)
+        assert m.buffers.get('csc') is None
+        # eager builder returns a new instance with the mirror cached
+        m2 = m.build_weight_indices()
+        assert m2.buffers.get('csc') is not None
+        assert m2.data is m.data and m2.indices is m.indices
+        # precompute flag builds it at construction time
+        m3 = cls(dat, idx, shape=(6, 5), precompute_weight_indices=True)
+        assert m3.buffers.get('csc') is not None
+
+
+def test_fcn_pytree_roundtrip_data_only_leaf():
+    rng = np.random.default_rng(1)
+    idx = jnp.asarray(rng.integers(0, 5, size=(6, 3)).astype(np.int32))
+    dat = jnp.asarray(rng.random((6, 3)) + 0.5, dtype=jnp.float32)
+    m = brainevent.FixedNumPerPre(dat, idx, shape=(6, 5), precompute_weight_indices=True)
+    leaves, treedef = jax.tree_util.tree_flatten(m)
+    assert len(leaves) == 1  # data only
+    m2 = jax.tree_util.tree_unflatten(treedef, leaves)
+    assert jnp.allclose(m2.data, m.data)
+    assert jnp.array_equal(m2.indices, m.indices)
+    assert m2.shape == m.shape
+    assert m2.buffers.get('csc') is not None  # mirror carried through aux
+
+
+def test_fcn_jit_plasticity_loop_with_precomputed_mirror():
+    rng = np.random.default_rng(2)
+    # Distinct columns per row so todense() has one slot per (i, j) and the dense
+    # reference does not double-count the per-synapse delta.
+    idx = jnp.asarray(
+        np.stack([rng.choice(5, size=3, replace=False) for _ in range(6)]).astype(np.int32)
+    )
+    dat = jnp.asarray(rng.random((6, 3)) + 0.5, dtype=jnp.float32)
+    m = brainevent.FixedNumPerPre(dat, idx, shape=(6, 5), precompute_weight_indices=True)
+    pre_trace = jnp.asarray(rng.random(6), dtype=jnp.float32)
+    post_spike = jnp.asarray(rng.random(5) > 0.5)
+
+    @jax.jit
+    def step(mat):
+        return mat.update_on_post(pre_trace, post_spike)
+
+    out = step(m)  # unfavorable plasticity inside jit; mirror precomputed
+    dense = jnp.asarray(m.todense(), jnp.float32)
+    ref = dense + (pre_trace[:, None] * jnp.asarray(post_spike, jnp.float32)[None, :]) * (dense != 0)
+    assert jnp.allclose(jnp.asarray(out.todense(), jnp.float32), ref, atol=1e-5)

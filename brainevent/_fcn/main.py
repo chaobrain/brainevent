@@ -26,17 +26,18 @@ from brainevent._compatible_import import Tracer
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
 from brainevent._misc import (
-    _coo_todense, COOInfo, fixed_conn_num_csc_structure,
+    _coo_todense, COOInfo, coo2csr, fixed_conn_num_csc_structure,
     fixed_conn_num_csr_indptr, normalize_row_index, build_sub_csr,
 )
 from brainevent._csr.slice import csr_slice_rows
 from brainevent._typing import Data, MatrixShape, Index
-from .binary import binary_fcnmv, binary_fcnmm, csc_binary_matvec, csc_binary_matmat
-from .float import fcnmv, fcnmm, fcnmv_yw2y
+from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
+from brainevent._csr.plasticity_binary import update_csr_on_binary_post
+from .binary import binary_fcnmv, binary_fcnmm
+from .float import fcnmv, fcnmm
+from .yw2y import fcnmv_yw2y
 from .plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
-    update_fixed_post_conn_on_binary_post,
-    update_fixed_pre_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
 )
 
@@ -95,10 +96,12 @@ class FixedNumConn(DataRepresentation):
     ``(num_pre, num_post)`` stored row-major in fixed-connection ELL format
     (``data`` / ``indices``).  The concrete subclasses fix the orientation:
 
-    * :class:`FixedNumPerPre` (``axis == 0``): each pre-synaptic neuron has a
-      fixed number of outgoing connections; ``indices`` are post-synaptic ids.
-    * :class:`FixedNumPerPost` (``axis == 1``): each post-synaptic neuron has a
-      fixed number of incoming connections; ``indices`` are pre-synaptic ids.
+    * :class:`FixedNumPerPre` (≡ :class:`brainevent.CSR`): each pre-synaptic
+      neuron has a fixed number of outgoing connections; ``indices`` are
+      post-synaptic ids.
+    * :class:`FixedNumPerPost` (≡ :class:`brainevent.CSC`): each post-synaptic
+      neuron has a fixed number of incoming connections; ``indices`` are
+      pre-synaptic ids.
 
     Event-driven matrix-vector products follow the same favorable/unfavorable
     dispatch as :class:`brainevent.CSR` / :class:`brainevent.CSC`.  When the
@@ -107,11 +110,11 @@ class FixedNumConn(DataRepresentation):
     ``transpose=True``).  Otherwise the product would require a gather over every
     stored synapse; instead the structure is converted once to a column-major
     (CSC) view -- ``(indptr, indices, perm)`` built by
-    :func:`brainevent._misc.fixed_conn_num_csc_structure` -- and the weights are
-    permuted into CSC order so the same scatter kernel
-    (:func:`brainevent._fcn.binary.csc_binary_matvec`) applies on every backend.
-    The CSC view is built lazily on first need from concrete indices and cached
-    in ``self._csc``, so it must be triggered outside ``jax.jit``.
+    :func:`brainevent._misc.fixed_conn_num_csc_structure` -- and the reused,
+    perm-fused CSR kernel (:func:`brainevent.binary_csrmv_indexed`) reads
+    ``data[perm[j]]`` so only active columns are touched.  The CSC view is built
+    lazily on first need from concrete indices and cached in the ``'csc'`` buffer,
+    so it must be triggered outside ``jax.jit``.
 
     Parameters
     ----------
@@ -131,38 +134,68 @@ class FixedNumConn(DataRepresentation):
     indices: Index
     shape: MatrixShape
     backend: Optional[str]
-    # ELL axis (0 == fixed-post / row-major W, 1 == fixed-pre / W^T). Set by subclasses.
-    axis: int = 0
 
-    def __init__(self, *args, shape: MatrixShape, backend: Optional[str] = None):
+    def __init__(self, *args, shape: MatrixShape, backend: Optional[str] = None,
+                 buffers: Optional[dict] = None):
         self.backend = backend
-        self._csc = None
-        super().__init__(*args, shape=shape)
+        super().__init__(*args, shape=shape, buffers=buffers)
+
+    # ------------------------------------------------------------------ #
+    # Orientation hooks (override per subclass; replace the old ``axis`` flag)
+    # ------------------------------------------------------------------ #
+
+    @property
+    def _a_shape(self):
+        """Stored CSR-structure shape ``S`` (``FixedNumPerPre`` ≡ CSR ``self.shape``;
+        ``FixedNumPerPost`` ≡ CSC ``self.shape[::-1]``)."""
+        raise NotImplementedError
+
+    def _ell_transpose(self, transpose_W: bool) -> bool:
+        """ELL transpose flag for the stored structure (favorable column-scatter ⇔ True)."""
+        raise NotImplementedError
 
     # ------------------------------------------------------------------ #
     # Layout / dispatch helpers
     # ------------------------------------------------------------------ #
 
     def _ell_plan(self, transpose_W: bool):
-        a_shape = tuple(self.shape) if self.axis == 0 else tuple(self.shape)[::-1]
-        ell_transpose = bool(transpose_W) ^ (self.axis == 1)
-        return a_shape, ell_transpose
+        return self._a_shape, self._ell_transpose(transpose_W)
 
     def _weight_indices(self):
-        """Lazily build and cache the column-major (CSC) view of the structure.
+        """Lazily build and cache the column-major (CSC) view in ``buffers['csc']``.
 
-        Returns the triple ``(csc_indptr, csc_indices, perm)`` for the ELL
-        operand matrix (shape ``a_shape``), where ``perm`` maps each CSC slot to
-        the position of its weight in the flattened ELL ``data``.  Built from
-        concrete indices via :func:`fixed_conn_num_csc_structure`, so it must be
-        triggered outside ``jax.jit``; the result is cached in ``self._csc``.
+        Returns the triple ``(csc_indptr, csc_indices, perm)`` for the ELL operand
+        matrix of shape :attr:`_a_shape`, where ``perm`` maps each CSC slot to the
+        position of its weight in the flattened ELL ``data``.  Built from concrete
+        indices via :func:`fixed_conn_num_csc_structure`, so it must be triggered
+        outside ``jax.jit``; cached in the buffer registry under ``'csc'``.
         """
-        if self._csc is None:
-            _ensure_fixed_conn_initialized_outside_jit(self.indices, kind=type(self).__name__)
-            a_shape = tuple(self.shape) if self.axis == 0 else tuple(self.shape)[::-1]
-            with jax.ensure_compile_time_eval():
-                self._csc = fixed_conn_num_csc_structure(self.indices, shape=a_shape)
-        return self._csc
+        cached = self.buffers.get('csc')
+        if cached is not None:
+            return cached
+        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind=type(self).__name__)
+        with jax.ensure_compile_time_eval():
+            csc = fixed_conn_num_csc_structure(self.indices, shape=self._a_shape)
+        self.register_buffer('csc', csc)
+        return csc
+
+    def build_weight_indices(self):
+        """Eagerly build and cache the CSC mirror, returning a new instance.
+
+        Parity with :meth:`brainevent.CSR.build_weight_indices`: builds the
+        column-major ``(indptr, indices, perm)`` triple from concrete indices and
+        stores it in the ``'csc'`` buffer of the returned matrix; the underlying
+        ``data`` and ``indices`` arrays are shared (not copied).
+        """
+        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind=type(self).__name__)
+        with jax.ensure_compile_time_eval():
+            csc = fixed_conn_num_csc_structure(self.indices, shape=self._a_shape)
+        buffers = dict(self.buffers)
+        buffers['csc'] = csc
+        return type(self).tree_unflatten(
+            ({'indices': self.indices, 'shape': self.shape, 'backend': self.backend}, buffers),
+            (self.data,),
+        )
 
     def _binary_matvec(self, s, transpose_W: bool):
         a_shape, ell_transpose = self._ell_plan(transpose_W)
@@ -173,14 +206,13 @@ class FixedNumConn(DataRepresentation):
                 self.data, self.indices, s,
                 shape=a_shape, transpose=True, backend=self.backend,
             )
-        # Unfavorable: convert to a column-major (CSC) view and permute weights
-        # into CSC order so the scatter kernel applies on every backend.
+        # Unfavorable: traverse the cached CSC mirror with the reused, perm-fused
+        # CSR kernel -- it reads ``data[perm[j]]`` so only active columns are
+        # touched (no full-size weight gather). Same shape/transpose as CSR/CSC.
         csc_indptr, csc_indices, perm = self._weight_indices()
-        data = self.data
-        weights = data.reshape(1) if data.size == 1 else data.reshape(-1)[perm]
-        return csc_binary_matvec(
-            weights, csc_indices, csc_indptr, s,
-            shape=a_shape, backend=self.backend,
+        return binary_csrmv_indexed(
+            self.data.reshape(-1), csc_indices, csc_indptr, perm, s,
+            shape=a_shape[::-1], transpose=True, backend=self.backend,
         )
 
     def _binary_matmat(self, matrix, transpose_W: bool):
@@ -192,15 +224,12 @@ class FixedNumConn(DataRepresentation):
                 self.data, self.indices, matrix,
                 shape=a_shape, transpose=True, backend=self.backend,
             )
-        # Unfavorable: convert to a column-major (CSC) view and permute weights
-        # into CSC order so the scatter matmat kernel applies on every backend --
+        # Unfavorable: perm-fused indexed matmat over the cached CSC mirror --
         # parity with the matvec unfavorable path.
         csc_indptr, csc_indices, perm = self._weight_indices()
-        data = self.data
-        weights = data.reshape(1) if data.size == 1 else data.reshape(-1)[perm]
-        return csc_binary_matmat(
-            weights, csc_indices, csc_indptr, matrix,
-            shape=a_shape, backend=self.backend,
+        return binary_csrmm_indexed(
+            self.data.reshape(-1), csc_indices, csc_indptr, perm, matrix,
+            shape=a_shape[::-1], transpose=True, backend=self.backend,
         )
 
     def _float_matvec(self, vector, transpose_W: bool, data):
@@ -241,8 +270,8 @@ class FixedNumConn(DataRepresentation):
         yw_to_w_transposed : ``y`` indexed by the column (post) of ``W``.
         """
         w = self.data if w_dim_arr is None else w_dim_arr
-        a_shape = tuple(self.shape) if self.axis == 0 else tuple(self.shape)[::-1]
-        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=a_shape, transpose=(self.axis == 1))
+        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=self._a_shape,
+                          transpose=self._ell_transpose(False))
 
     def yw_to_w_transposed(self, y_dim_arr, w_dim_arr=None):
         """Per-synapse ``w * y`` with ``y`` indexed by the column (post) of ``W``.
@@ -269,8 +298,8 @@ class FixedNumConn(DataRepresentation):
         yw_to_w : ``y`` indexed by the row (pre) of ``W``.
         """
         w = self.data if w_dim_arr is None else w_dim_arr
-        a_shape = tuple(self.shape) if self.axis == 0 else tuple(self.shape)[::-1]
-        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=a_shape, transpose=(self.axis == 0))
+        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=self._a_shape,
+                          transpose=self._ell_transpose(True))
 
     def _dispatch(self, other, transpose_W: bool):
         if isinstance(other, u.sparse.SparseMatrix):
@@ -307,6 +336,128 @@ class FixedNumConn(DataRepresentation):
         return self._dispatch(other, transpose_W=True)
 
     # ------------------------------------------------------------------ #
+    # Format conversions
+    # ------------------------------------------------------------------ #
+
+    def _to_coo(self):
+        """Return ``(pre_ids, post_ids, COOInfo)`` for the logical matrix ``W``.
+
+        Both orientations describe the *same* logical matrix of shape
+        ``(num_pre, num_post)``: ``pre_ids`` are row (pre-synaptic) indices and
+        ``post_ids`` are column (post-synaptic) indices, each of length
+        ``self.indices.size``.  Concrete behavior is defined per subclass
+        (``FixedNumPerPre`` stores by pre, ``FixedNumPerPost`` by post).
+        """
+        raise NotImplementedError
+
+    def to_dense(self):
+        """Convert to a dense ``(num_pre, num_post)`` matrix.
+
+        Alias of :meth:`todense` provided for naming parity with
+        :meth:`to_csr` and :meth:`to_csc`.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Dense matrix of shape ``self.shape``.  Stored entries that share a
+            ``(row, column)`` coordinate (duplicate connections) are summed,
+            matching :meth:`todense` and the event-driven matmul kernels.
+
+        See Also
+        --------
+        todense : Underlying implementation.
+        to_csr : Convert to Compressed Sparse Row format.
+        to_csc : Convert to Compressed Sparse Column format.
+        """
+        return self.todense()
+
+    def to_csr(self):
+        """Convert to a :class:`brainevent.CSR` matrix of the logical matrix ``W``.
+
+        The result is a Compressed Sparse Row view of the same logical weight
+        matrix ``W`` of shape ``(num_pre, num_post)``, irrespective of the
+        storage orientation (:class:`FixedNumPerPre` or
+        :class:`FixedNumPerPost`).  Duplicate connections are preserved as
+        repeated entries within a row (CSR matmul / :meth:`CSR.todense` sum
+        them, matching :meth:`todense`).  Homogeneous (size-1) weights are kept
+        as a single shared value.
+
+        Returns
+        -------
+        CSR
+            Equivalent matrix in CSR format with the same ``shape``, ``dtype``,
+            unit, and ``backend`` as ``self``.
+
+        Notes
+        -----
+        Building the CSR layout reorders the stored connections by row, which
+        requires concrete indices.  Like the lazy CSC mirror, it must therefore
+        run outside ``jax.jit`` / ``brainstate.transform.jit``; construct the
+        connection and call this method before entering a jitted function.
+
+        See Also
+        --------
+        to_csc : Convert to Compressed Sparse Column format.
+        to_dense : Convert to a dense matrix.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> from brainevent import FixedNumPerPre
+            >>>
+            >>> data = jnp.array([[1., 2.], [3., 4.]])
+            >>> indices = jnp.array([[0, 1], [1, 2]])
+            >>> mat = FixedNumPerPre((data, indices), shape=(2, 3))
+            >>> csr = mat.to_csr()
+            >>> bool((csr.todense() == mat.todense()).all())
+            True
+        """
+        from brainevent._csr import CSR  # local import avoids an import cycle
+
+        # Building the CSR layout reorders connections by row (``coo2csr`` runs
+        # ``jnp.unique`` over concrete row ids), so it must run outside jit. With
+        # the data-only pytree leaf, ``indices`` is static (concrete even under
+        # jit), so the in-trace signal is the ``data`` leaf becoming a tracer.
+        if isinstance(self.data, Tracer) or isinstance(self.indices, Tracer):
+            raise RuntimeError(
+                f'{type(self).__name__}.to_csr() reorders connections by row and '
+                'must be called outside `jax.jit` / `brainstate.transform.jit`. '
+                'Convert the connection before entering the jitted function.'
+            )
+        pre_ids, post_ids, _ = self._to_coo()
+        indptr, indices, order = coo2csr(pre_ids, post_ids, shape=self.shape)
+        if self.data.size == 1:
+            # Homogeneous weight: keep the single shared value.
+            data = self.data.reshape(1)
+        else:
+            data = self.data.reshape(-1)[order]
+        return CSR((data, indices, indptr), shape=self.shape, backend=self.backend)
+
+    def to_csc(self):
+        """Convert to a :class:`brainevent.CSC` matrix of the logical matrix ``W``.
+
+        The result is a Compressed Sparse Column view of the same logical
+        weight matrix ``W`` of shape ``(num_pre, num_post)``.  It is built by
+        transposing to the opposite orientation, taking the CSR view of ``W^T``,
+        and reinterpreting it as the (array-identical) CSC view of ``W`` -- so
+        the same outside-``jit`` requirement as :meth:`to_csr` applies.
+
+        Returns
+        -------
+        CSC
+            Equivalent matrix in CSC format with the same ``shape``, ``dtype``,
+            unit, and ``backend`` as ``self``.
+
+        See Also
+        --------
+        to_csr : Convert to Compressed Sparse Row format.
+        to_dense : Convert to a dense matrix.
+        """
+        return self.transpose().to_csr().transpose()
+
+    # ------------------------------------------------------------------ #
     # Event-driven plasticity (STDP) updates
     # ------------------------------------------------------------------ #
 
@@ -318,20 +469,19 @@ class FixedNumConn(DataRepresentation):
         :meth:`with_data`, this bypasses the constructor's outside-``jit``
         validation (the connectivity is unchanged and was validated when ``self``
         was first built) by going through the registered pytree
-        :meth:`tree_unflatten` path.
+        :meth:`tree_unflatten` path.  The cached ``buffers`` mirror is carried
+        through (the structure is unchanged), so it survives the rebuild.
         """
-        return type(self).tree_unflatten(
-            {'shape': self.shape, 'backend': self.backend},
-            (new_data, self.indices),
-        )
+        aux = {'indices': self.indices, 'shape': self.shape, 'backend': self.backend}
+        return type(self).tree_unflatten((aux, self.buffers), (new_data,))
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
         """Apply a pre-spike-triggered STDP update, returning a new matrix.
 
         For each firing pre neuron ``i`` every stored synapse is updated
         ``W[i, j] <- clip(W[i, j] + post_trace[j], w_min, w_max)``.  Favorable
-        (row-driven) for :class:`FixedNumPerPre`, unfavorable (column-scan) for
-        :class:`FixedNumPerPost`; dispatched on ``self.axis``.
+        (row-driven) for :class:`FixedNumPerPre`, unfavorable for
+        :class:`FixedNumPerPost`.  Concrete behavior is defined per subclass.
 
         Parameters
         ----------
@@ -351,25 +501,15 @@ class FixedNumConn(DataRepresentation):
         --------
         update_on_post : Post-spike-triggered counterpart.
         """
-        if self.axis == 0:
-            new = update_fixed_post_conn_on_binary_pre(
-                self.data, self.indices, pre_spike, post_trace, w_min, w_max,
-                shape=self.shape, backend=self.backend,
-            )
-        else:
-            new = update_fixed_pre_conn_on_binary_pre(
-                self.data, self.indices, pre_spike, post_trace, w_min, w_max,
-                shape=self.shape, backend=self.backend,
-            )
-        return self._rebuild_with_data(new)
+        raise NotImplementedError
 
     def update_on_post(self, pre_trace, post_spike, w_min=None, w_max=None):
         """Apply a post-spike-triggered STDP update, returning a new matrix.
 
         For each firing post neuron ``j`` every stored synapse is updated
         ``W[i, j] <- clip(W[i, j] + pre_trace[i], w_min, w_max)``.  Unfavorable
-        (column-scan) for :class:`FixedNumPerPre`, favorable (row-driven) for
-        :class:`FixedNumPerPost`; dispatched on ``self.axis``.
+        for :class:`FixedNumPerPre`, favorable (row-driven) for
+        :class:`FixedNumPerPost`.  Concrete behavior is defined per subclass.
 
         Parameters
         ----------
@@ -389,35 +529,29 @@ class FixedNumConn(DataRepresentation):
         --------
         update_on_pre : Pre-spike-triggered counterpart.
         """
-        if self.axis == 0:
-            new = update_fixed_post_conn_on_binary_post(
-                self.data, self.indices, pre_trace, post_spike, w_min, w_max,
-                shape=self.shape, backend=self.backend,
-            )
-        else:
-            new = update_fixed_pre_conn_on_binary_post(
-                self.data, self.indices, pre_trace, post_spike, w_min, w_max,
-                shape=self.shape, backend=self.backend,
-            )
-        return self._rebuild_with_data(new)
+        raise NotImplementedError
 
     # ------------------------------------------------------------------ #
     # Pytree protocol
     # ------------------------------------------------------------------ #
 
     def tree_flatten(self):
-        """Flatten into ``((data, indices), aux)``; the CSC mirror is a rebuildable cache."""
-        aux = {'shape': self.shape, 'backend': self.backend}
-        return (self.data, self.indices), aux
+        """Flatten: ``data`` is the only leaf; ``indices``/``shape``/``backend`` and
+        the rebuildable ``buffers`` mirror are static aux (mirrors CompressedSparseData)."""
+        aux = {'indices': self.indices, 'shape': self.shape, 'backend': self.backend}
+        return (self.data,), (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        """Reconstruct from pytree components. The CSC mirror cache resets to lazy."""
+        """Reconstruct from pytree components, restoring the buffer registry."""
         obj = object.__new__(cls)
-        obj.data, obj.indices = children
-        obj.shape = aux_data['shape']
-        obj.backend = aux_data['backend']
-        obj._csc = None
+        obj.data, = children
+        aux, buffers = aux_data
+        obj._buffer_registry = set(buffers.keys())
+        for k, v in aux.items():
+            setattr(obj, k, v)
+        for k, v in buffers.items():
+            setattr(obj, k, v)
         return obj
 
     # ------------------------------------------------------------------ #
@@ -490,7 +624,8 @@ class FixedNumConn(DataRepresentation):
 class FixedNumPerPre(FixedNumConn):
     """
     Sparse matrix with a fixed number of post-synaptic connections per
-    pre-synaptic neuron (row-major ELL, ``axis == 0``).
+    pre-synaptic neuron (row-major ELL; structurally equivalent to
+    :class:`brainevent.CSR`).
 
     ``data`` and ``indices`` have shape ``(num_pre, num_conn)``; the equivalent
     dense matrix is ``W[i, indices[i, k]] = data[i, k]``.
@@ -514,7 +649,6 @@ class FixedNumPerPre(FixedNumConn):
     data: Data
     indices: Index
     shape: MatrixShape
-    axis = 0
     num_pre = property(lambda self: self.indices.shape[0])
     num_conn = property(lambda self: self.indices.shape[1])
     num_post = property(lambda self: self.shape[1])
@@ -528,6 +662,8 @@ class FixedNumPerPre(FixedNumConn):
         *,
         shape: MatrixShape,
         backend: Optional[str] = None,
+        precompute_weight_indices: bool = False,
+        buffers: Optional[dict] = None,
     ):
         if indices is None:
             args = data
@@ -541,15 +677,29 @@ class FixedNumPerPre(FixedNumConn):
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
-        super().__init__((self.data, self.indices), shape=shape, backend=backend)
+        super().__init__((self.data, self.indices), shape=shape, backend=backend, buffers=buffers)
         _contains_invalid_indices(self.indices, upper_bound=self.shape[1])
+        if precompute_weight_indices:
+            self._weight_indices()
+
+    # FixedNumPerPre ≡ CSR: stored structure shape is ``self.shape``.
+    @property
+    def _a_shape(self):
+        return tuple(self.shape)
+
+    def _ell_transpose(self, transpose_W: bool) -> bool:
+        return bool(transpose_W)
+
+    def _to_coo(self):
+        return fixed_post_num_to_coo(self)
 
     def with_data(self, data: Data) -> 'FixedNumPerPre':
         """Return a new matrix with the same connectivity and replaced values."""
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return FixedNumPerPre((data, self.indices), shape=self.shape, backend=self.backend)
+        return FixedNumPerPre((data, self.indices), shape=self.shape,
+                              backend=self.backend, buffers=self.buffers)
 
     def __getitem__(self, index):
         """Extract rows of ``W`` as a dense array (NumPy semantics).
@@ -599,11 +749,11 @@ class FixedNumPerPre(FixedNumConn):
         new_data = self.data if self.data.size == 1 else self.data[rows]
         k = new_indices.shape[0]
         # Structure-preserving build that bypasses the outside-jit constructor
-        # guard (indices are a validated subset), matching `_rebuild_with_data`.
-        return FixedNumPerPre.tree_unflatten(
-            {'shape': (k, self.shape[1]), 'backend': self.backend},
-            (new_data, new_indices),
-        )
+        # guard (a validated subset of rows), mirroring `_rebuild_with_data`.
+        # The CSC mirror is not carried over (the structure changed); it rebuilds
+        # lazily on first need.
+        aux = {'indices': new_indices, 'shape': (k, self.shape[1]), 'backend': self.backend}
+        return FixedNumPerPre.tree_unflatten((aux, {}), (new_data,))
 
     def todense(self):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""
@@ -611,7 +761,11 @@ class FixedNumPerPre(FixedNumConn):
         return _coo_todense(self.data.flatten(), pre_ids, post_ids, spinfo=spinfo)
 
     def transpose(self, axes=None) -> 'FixedNumPerPost':
-        """Transpose to a :class:`FixedNumPerPost` (O(1); reinterprets indices)."""
+        """Transpose to a :class:`FixedNumPerPost` (O(1); reinterprets indices).
+
+        Orientation flips, so the cached ``'csc'`` mirror is *not* carried over;
+        the new matrix rebuilds its own mirror lazily on first need.
+        """
         assert axes is None, "transpose does not support axes argument."
         return FixedNumPerPost(
             (self.data, self.indices),
@@ -619,8 +773,27 @@ class FixedNumPerPre(FixedNumConn):
             backend=self.backend,
         )
 
+    def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
+        """Pre-spike STDP (favorable, row-driven) -- mirrors :meth:`brainevent.CSR.update_on_pre`."""
+        new = update_fixed_post_conn_on_binary_pre(
+            self.data, self.indices, pre_spike, post_trace, w_min, w_max,
+            shape=self.shape, backend=self.backend,
+        )
+        return self._rebuild_with_data(new)
+
+    def update_on_post(self, pre_trace, post_spike, w_min=None, w_max=None):
+        """Post-spike STDP (unfavorable) -- mirrors :meth:`brainevent.CSR.update_on_post` (perm-fused)."""
+        csc_indptr, csc_indices, perm = self._weight_indices()
+        new = update_csr_on_binary_post(
+            self.data.reshape(-1), csc_indices, csc_indptr, perm,
+            pre_trace, post_spike, w_min, w_max,
+            shape=self._a_shape, backend=self.backend,
+        )
+        return self._rebuild_with_data(new.reshape(self.data.shape))
+
     def _unitary_op(self, op):
-        return FixedNumPerPre((op(self.data), self.indices), shape=self.shape, backend=self.backend)
+        return FixedNumPerPre((op(self.data), self.indices), shape=self.shape,
+                              backend=self.backend, buffers=self.buffers)
 
     def _binary_op(self, other, op):
         if isinstance(other, u.sparse.SparseMatrix):
@@ -628,11 +801,13 @@ class FixedNumPerPre(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedNumPerPre((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPre((op(self.data, other), self.indices), shape=self.shape,
+                                  backend=self.backend, buffers=self.buffers)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_post_num_to_coo(self)
             other = other[rows, cols]
-            return FixedNumPerPre((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPre((op(self.data, other), self.indices), shape=self.shape,
+                                  backend=self.backend, buffers=self.buffers)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -642,11 +817,13 @@ class FixedNumPerPre(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedNumPerPre((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPre((op(other, self.data), self.indices), shape=self.shape,
+                                  backend=self.backend, buffers=self.buffers)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_post_num_to_coo(self)
             other = other[rows, cols]
-            return FixedNumPerPre((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPre((op(other, self.data), self.indices), shape=self.shape,
+                                  backend=self.backend, buffers=self.buffers)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -655,7 +832,8 @@ class FixedNumPerPre(FixedNumConn):
 class FixedNumPerPost(FixedNumConn):
     """
     Sparse matrix with a fixed number of pre-synaptic connections per
-    post-synaptic neuron (``axis == 1``; stores ``W^T`` row-major).
+    post-synaptic neuron (stores ``W^T`` row-major; structurally equivalent to
+    :class:`brainevent.CSC`).
 
     ``data`` and ``indices`` have shape ``(num_post, num_conn)``; the equivalent
     dense matrix is ``W[indices[j, k], j] = data[j, k]``.
@@ -679,7 +857,6 @@ class FixedNumPerPost(FixedNumConn):
     data: Data
     indices: Index
     shape: MatrixShape
-    axis = 1
     num_conn = property(lambda self: self.indices.shape[1])
     num_post = property(lambda self: self.indices.shape[0])
     num_pre = property(lambda self: self.shape[0])
@@ -693,6 +870,8 @@ class FixedNumPerPost(FixedNumConn):
         *,
         shape: MatrixShape,
         backend: Optional[str] = None,
+        precompute_weight_indices: bool = False,
+        buffers: Optional[dict] = None,
     ):
         if indices is None:
             args = data
@@ -706,15 +885,29 @@ class FixedNumPerPost(FixedNumConn):
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
-        super().__init__((self.data, self.indices), shape=shape, backend=backend)
+        super().__init__((self.data, self.indices), shape=shape, backend=backend, buffers=buffers)
         _contains_invalid_indices(self.indices, upper_bound=self.shape[0])
+        if precompute_weight_indices:
+            self._weight_indices()
+
+    # FixedNumPerPost ≡ CSC: stored structure shape is ``self.shape[::-1]``.
+    @property
+    def _a_shape(self):
+        return tuple(self.shape)[::-1]
+
+    def _ell_transpose(self, transpose_W: bool) -> bool:
+        return not bool(transpose_W)
+
+    def _to_coo(self):
+        return fixed_pre_num_to_coo(self)
 
     def with_data(self, data: Data) -> 'FixedNumPerPost':
         """Return a new matrix with the same connectivity and replaced values."""
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return FixedNumPerPost((data, self.indices), shape=self.shape, backend=self.backend)
+        return FixedNumPerPost((data, self.indices), shape=self.shape,
+                               backend=self.backend, buffers=self.buffers)
 
     def __getitem__(self, index):
         """Extract rows of ``W`` as a dense array (NumPy semantics).
@@ -777,7 +970,11 @@ class FixedNumPerPost(FixedNumConn):
         return _coo_todense(self.data.flatten(), pre_ids, post_ids, spinfo=spinfo)
 
     def transpose(self, axes=None) -> FixedNumPerPre:
-        """Transpose to a :class:`FixedNumPerPre` (O(1); reinterprets indices)."""
+        """Transpose to a :class:`FixedNumPerPre` (O(1); reinterprets indices).
+
+        Orientation flips, so the cached ``'csc'`` mirror is *not* carried over;
+        the new matrix rebuilds its own mirror lazily on first need.
+        """
         assert axes is None, "transpose does not support axes argument."
         return FixedNumPerPre(
             (self.data, self.indices),
@@ -785,8 +982,27 @@ class FixedNumPerPost(FixedNumConn):
             backend=self.backend,
         )
 
+    def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
+        """Pre-spike STDP (unfavorable) -- mirrors :meth:`brainevent.CSC.update_on_pre` (perm-fused)."""
+        csc_indptr, csc_indices, perm = self._weight_indices()
+        new = update_csr_on_binary_post(
+            self.data.reshape(-1), csc_indices, csc_indptr, perm,
+            post_trace, pre_spike, w_min, w_max,
+            shape=self._a_shape, backend=self.backend,
+        )
+        return self._rebuild_with_data(new.reshape(self.data.shape))
+
+    def update_on_post(self, pre_trace, post_spike, w_min=None, w_max=None):
+        """Post-spike STDP (favorable, row-driven) -- mirrors :meth:`brainevent.CSC.update_on_post`."""
+        new = update_fixed_pre_conn_on_binary_post(
+            self.data, self.indices, pre_trace, post_spike, w_min, w_max,
+            shape=self.shape, backend=self.backend,
+        )
+        return self._rebuild_with_data(new)
+
     def _unitary_op(self, op):
-        return FixedNumPerPost((op(self.data), self.indices), shape=self.shape, backend=self.backend)
+        return FixedNumPerPost((op(self.data), self.indices), shape=self.shape,
+                               backend=self.backend, buffers=self.buffers)
 
     def _binary_op(self, other, op):
         if isinstance(other, u.sparse.SparseMatrix):
@@ -794,11 +1010,13 @@ class FixedNumPerPost(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedNumPerPost((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPost((op(self.data, other), self.indices), shape=self.shape,
+                                   backend=self.backend, buffers=self.buffers)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_pre_num_to_coo(self)
             other = other[rows, cols]
-            return FixedNumPerPost((op(self.data, other), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPost((op(self.data, other), self.indices), shape=self.shape,
+                                   backend=self.backend, buffers=self.buffers)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -808,11 +1026,13 @@ class FixedNumPerPost(FixedNumConn):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return FixedNumPerPost((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPost((op(other, self.data), self.indices), shape=self.shape,
+                                   backend=self.backend, buffers=self.buffers)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_pre_num_to_coo(self)
             other = other[rows, cols]
-            return FixedNumPerPost((op(other, self.data), self.indices), shape=self.shape, backend=self.backend)
+            return FixedNumPerPost((op(other, self.data), self.indices), shape=self.shape,
+                                   backend=self.backend, buffers=self.buffers)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
