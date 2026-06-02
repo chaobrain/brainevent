@@ -325,22 +325,40 @@ class LSTMCIFGDiagMH(brainstate.nn.Module):
     dimension (``h``). Internally, the state is ``[c, h]`` with dimension
     ``2 * state_dim``.
 
-    Args:
-        input_dim: Input feature dimension.
-        state_dim: Hidden state dimension (output dimension ``h``).
-        num_heads: Number of heads for input projection.
-        mode: Application mode (``'sequential'`` or ``'parallel'``).
-        nonlin_f: Activation for forget gate (default: ``'sigmoid'``).
-        nonlin_o: Activation for output gate (default: ``'sigmoid'``).
-        nonlin_c: Activation for cell candidate (default: ``'tanh'``).
-        nonlin_state: Activation for cell state (default: ``'tanh'``).
-        a_init: Initialization for A weights (default: ``'xlstm'``).
-        w_init: Initialization for B weights (default: ``'xavier_uniform'``).
-        b_init: Initialization for bias b (default: ``'bias_minus_linspace'``).
-        newton_config: Configuration for Newton solver.
-        seed: Random seed for initialization.
+    Parameters
+    ----------
+    input_dim : int
+        Input feature dimension.
+    state_dim : int
+        Hidden state dimension (output dimension ``h``).
+    num_heads : int, default 2
+        Number of heads for input projection. Must divide both ``input_dim``
+        and ``state_dim``.
+    mode : str, default 'parallel'
+        Application mode (``'sequential'`` or ``'parallel'``).
+    nonlin_f : str, default 'sigmoid'
+        Activation for forget gate.
+    nonlin_o : str, default 'sigmoid'
+        Activation for output gate.
+    nonlin_c : str, default 'tanh'
+        Activation for cell candidate.
+    nonlin_state : str, default 'tanh'
+        Activation for cell state.
+    a_init : str, default 'xlstm'
+        Initialization for A weights.
+    w_init : str, default 'xavier_uniform'
+        Initialization for B weights.
+    b_init : str, default 'bias_minus_linspace'
+        Initialization for bias b.
+    newton_config : NewtonConfig, optional
+        Configuration for the Newton solver. If ``None``, a default
+        :class:`NewtonConfig` is used.
+    seed : int, default 0
+        Random seed for initialization.
 
-    Example::
+    Examples
+    --------
+    .. code-block:: python
 
         >>> import jax.numpy as jnp
         >>> import brainstate
@@ -412,12 +430,16 @@ class LSTMCIFGDiagMH(brainstate.nn.Module):
     def __call__(self, x: jax.Array) -> jax.Array:
         """Run the LSTM on an input sequence.
 
-        Args:
-            x: Input tensor, shape ``(B, T, input_dim)``.
+        Parameters
+        ----------
+        x : jax.Array
+            Input tensor, shape ``(B, T, input_dim)``.
 
-        Returns:
-            Hidden states ``h``, shape ``(B, T, state_dim)``.
-            (Cell states ``c`` are internal and not returned.)
+        Returns
+        -------
+        jax.Array
+            Hidden states ``h``, shape ``(B, T, state_dim)``. Cell states ``c``
+            are internal and not returned.
         """
         if self.mode == 'fused':
             return self._apply_fused(x)

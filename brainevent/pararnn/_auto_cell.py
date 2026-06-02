@@ -42,6 +42,8 @@ Three Jacobian structures are supported:
 - ``'auto'``: auto-detect from the cell function (default)
 """
 
+from typing import Callable, Optional
+
 import jax
 import jax.numpy as jnp
 
@@ -180,16 +182,25 @@ class AutoRNNCell(BaseRNNCell):
 
     The cell function operates on single vectors (no batch/time dims).
 
-    Args:
-        cell_fn: Recurrence function ``(h_prev, x_t, *params) -> h_new``.
-        jacobian_structure: ``'auto'``, ``'diagonal'``, ``'block_diagonal'``,
-            or ``'dense'``.
-        block_size: Block size K for ``'block_diagonal'`` structure.
-            Required when ``jacobian_structure='block_diagonal'``.
-            Ignored for other structures.
+    Parameters
+    ----------
+    cell_fn : callable
+        Recurrence function ``(h_prev, x_t, *params) -> h_new``.
+    jacobian_structure : str, optional
+        One of ``'auto'``, ``'diagonal'``, ``'block_diagonal'``, or
+        ``'dense'``.  Default is ``'auto'``.
+    block_size : int or None, optional
+        Block size ``K`` for the ``'block_diagonal'`` structure.  Required
+        when ``jacobian_structure='block_diagonal'``; ignored for other
+        structures.
     """
 
-    def __init__(self, cell_fn, jacobian_structure='auto', block_size=None):
+    def __init__(
+        self,
+        cell_fn: Callable,
+        jacobian_structure: str = 'auto',
+        block_size: Optional[int] = None,
+    ):
         self.cell_fn = cell_fn
         self._jac_structure = jacobian_structure
         self._block_size = block_size
@@ -495,15 +506,15 @@ def _apply_sequential_auto(cell, x, state_dim, params):
 
 
 def parallel_rnn(
-    cell_fn,
-    x,
+    cell_fn: Callable,
+    x: jax.Array,
     *params,
-    jacobian_structure='auto',
-    block_size=None,
-    state_dim=None,
-    newton_config=None,
-    mode='parallel',
-):
+    jacobian_structure: str = 'auto',
+    block_size: Optional[int] = None,
+    state_dim: Optional[int] = None,
+    newton_config: Optional[NewtonConfig] = None,
+    mode: str = 'parallel',
+) -> jax.Array:
     """Train any RNN cell in parallel via Newton + parallel scan.
 
     Given a cell function ``cell_fn(h_prev, x_t, *params) -> h_new``,
@@ -511,24 +522,42 @@ def parallel_rnn(
     for O(log T) parallel training.
 
     The cell function operates on **single vectors** (no batch/time dims):
+
     - ``h_prev``: shape ``(state_dim,)``
     - ``x_t``: shape ``(input_dim,)``
     - returns: ``h_new`` with shape ``(state_dim,)``
 
-    Args:
-        cell_fn: Recurrence function ``(h_prev, x_t, *params) -> h_new``.
-        x: Input sequence, shape ``(B, T, input_dim)``.
-        *params: Cell parameters (JAX arrays).
-        jacobian_structure: ``'auto'`` (default), ``'diagonal'``,
-            ``'block_diagonal'``, or ``'dense'``.
-        block_size: Block size K for ``'block_diagonal'`` structure.
-        state_dim: Hidden state dimension. If ``None``, inferred from
-            ``cell_fn`` and ``params``.
-        newton_config: Newton solver configuration.
-        mode: ``'sequential'`` or ``'parallel'`` (default).
+    Parameters
+    ----------
+    cell_fn : callable
+        Recurrence function ``(h_prev, x_t, *params) -> h_new``.
+    x : jax.Array
+        Input sequence, shape ``(B, T, input_dim)``.
+    *params : jax.Array
+        Cell parameters (JAX arrays).
+    jacobian_structure : str, optional
+        One of ``'auto'`` (default), ``'diagonal'``, ``'block_diagonal'``,
+        or ``'dense'``.
+    block_size : int or None, optional
+        Block size ``K`` for the ``'block_diagonal'`` structure.
+    state_dim : int or None, optional
+        Hidden state dimension.  If ``None``, inferred from ``cell_fn`` and
+        ``params``.
+    newton_config : NewtonConfig or None, optional
+        Newton solver configuration.  If ``None``, a default
+        :class:`NewtonConfig` is used.
+    mode : str, optional
+        Either ``'sequential'`` or ``'parallel'`` (default).
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Hidden states, shape ``(B, T, state_dim)``.
+
+    Raises
+    ------
+    ValueError
+        If *mode* is not ``'sequential'`` or ``'parallel'``.
     """
     if newton_config is None:
         newton_config = NewtonConfig()

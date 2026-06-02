@@ -156,14 +156,20 @@ NONLINEARITIES: Dict[str, Tuple[Callable, Callable]] = {
 def get_nonlinearity(name: str) -> Tuple[Callable, Callable]:
     """Get (activation, derivative) pair by name.
 
-    Args:
-        name: Name of the nonlinearity.
+    Parameters
+    ----------
+    name : str
+        Name of the nonlinearity.
 
-    Returns:
-        Tuple of (activation_fn, derivative_fn).
+    Returns
+    -------
+    Tuple[Callable, Callable]
+        Tuple of ``(activation_fn, derivative_fn)``.
 
-    Raises:
-        KeyError: If the name is not in the registry.
+    Raises
+    ------
+    KeyError
+        If the name is not in the registry.
     """
     if name not in NONLINEARITIES:
         raise KeyError(

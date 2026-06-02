@@ -33,6 +33,7 @@ Functions:
 """
 
 from pathlib import Path
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -485,19 +486,25 @@ def fused_gru_diag_forward(
     A: jax.Array,
     Bxpb: jax.Array,
     *,
-    backend: str = None,
+    backend: Optional[str] = None,
 ) -> jax.Array:
     """Fused GRU forward pass.
 
     Runs the complete Newton-parallel-reduction solve. Input projection
-    (Bxpb = B @ x + b) must be precomputed.
+    (``Bxpb = B @ x + b``) must be precomputed.
 
-    Args:
-        A: Diagonal recurrence weights, shape ``(3, hidden_dim)``.
-        Bxpb: Precomputed input projection, shape ``(B, T, 3, hidden_dim)``.
-        backend: ``'cuda_raw'`` for CUDA, ``None`` for default (``jax_raw``).
+    Parameters
+    ----------
+    A : jax.Array
+        Diagonal recurrence weights, shape ``(3, hidden_dim)``.
+    Bxpb : jax.Array
+        Precomputed input projection, shape ``(B, T, 3, hidden_dim)``.
+    backend : str, optional
+        ``'cuda_raw'`` for CUDA, ``None`` for default (``jax_raw``).
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Hidden states ``h``, shape ``(B, T, hidden_dim)``.
     """
     batch_size, seq_len = Bxpb.shape[0], Bxpb.shape[1]
@@ -601,21 +608,29 @@ def fused_gru_diag_backward(
     A: jax.Array,
     Bxpb: jax.Array,
     *,
-    backend: str = None,
+    backend: Optional[str] = None,
 ) -> jax.Array:
     """Fused GRU backward pass (transposed system solve).
 
-    Solves the transposed bidiagonal system for dl/dh.
+    Solves the transposed bidiagonal system for ``dl/dh``.
 
-    Args:
-        grad_y: Gradient w.r.t. output, shape ``(B, T, hidden_dim)``.
-        h: Forward hidden states, shape ``(B, T, hidden_dim)``.
-        A: Diagonal recurrence weights, shape ``(3, hidden_dim)``.
-        Bxpb: Precomputed input projection, shape ``(B, T, 3, hidden_dim)``.
-        backend: ``'cuda_raw'`` for CUDA, ``None`` for default.
+    Parameters
+    ----------
+    grad_y : jax.Array
+        Gradient w.r.t. output, shape ``(B, T, hidden_dim)``.
+    h : jax.Array
+        Forward hidden states, shape ``(B, T, hidden_dim)``.
+    A : jax.Array
+        Diagonal recurrence weights, shape ``(3, hidden_dim)``.
+    Bxpb : jax.Array
+        Precomputed input projection, shape ``(B, T, 3, hidden_dim)``.
+    backend : str, optional
+        ``'cuda_raw'`` for CUDA, ``None`` for default.
 
-    Returns:
-        dl/dh with shape ``(B, T, hidden_dim)``.
+    Returns
+    -------
+    jax.Array
+        ``dl/dh`` with shape ``(B, T, hidden_dim)``.
     """
     return fused_gru_diag_bwd_p(
         grad_y, h, A, Bxpb,
@@ -796,20 +811,27 @@ def fused_lstm_cifg_diag_forward(
     Bxpb: jax.Array,
     C: jax.Array,
     *,
-    backend: str = None,
+    backend: Optional[str] = None,
 ) -> jax.Array:
     """Fused LSTM-CIFG forward pass.
 
     Runs the complete Newton-parallel-reduction solve with 2x2 block-diagonal
     Jacobians.
 
-    Args:
-        A: Diagonal recurrence weights, shape ``(3, state_dim)``.
-        Bxpb: Precomputed input projection, shape ``(B, T, 3, state_dim)``.
-        C: Peephole connection weights, shape ``(2, state_dim)``.
-        backend: ``'cuda_raw'`` for CUDA, ``None`` for default (``jax_raw``).
+    Parameters
+    ----------
+    A : jax.Array
+        Diagonal recurrence weights, shape ``(3, state_dim)``.
+    Bxpb : jax.Array
+        Precomputed input projection, shape ``(B, T, 3, state_dim)``.
+    C : jax.Array
+        Peephole connection weights, shape ``(2, state_dim)``.
+    backend : str, optional
+        ``'cuda_raw'`` for CUDA, ``None`` for default (``jax_raw``).
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Full state ``[c, h]``, shape ``(B, T, 2, state_dim)``.
     """
     batch_size, seq_len = Bxpb.shape[0], Bxpb.shape[1]
@@ -940,22 +962,31 @@ def fused_lstm_cifg_diag_backward(
     Bxpb: jax.Array,
     C: jax.Array,
     *,
-    backend: str = None,
+    backend: Optional[str] = None,
 ) -> jax.Array:
     """Fused LSTM-CIFG backward pass.
 
-    Solves the transposed 2x2 block-diagonal system for dl/d[c,h].
+    Solves the transposed 2x2 block-diagonal system for ``dl/d[c, h]``.
 
-    Args:
-        grad_y: Gradient w.r.t. output h only, shape ``(B, T, state_dim)``.
-        full_state: Forward full state [c, h], shape ``(B, T, 2, state_dim)``.
-        A: Diagonal recurrence weights, shape ``(3, state_dim)``.
-        Bxpb: Precomputed input projection, shape ``(B, T, 3, state_dim)``.
-        C: Peephole connection weights, shape ``(2, state_dim)``.
-        backend: ``'cuda_raw'`` for CUDA, ``None`` for default.
+    Parameters
+    ----------
+    grad_y : jax.Array
+        Gradient w.r.t. output ``h`` only, shape ``(B, T, state_dim)``.
+    full_state : jax.Array
+        Forward full state ``[c, h]``, shape ``(B, T, 2, state_dim)``.
+    A : jax.Array
+        Diagonal recurrence weights, shape ``(3, state_dim)``.
+    Bxpb : jax.Array
+        Precomputed input projection, shape ``(B, T, 3, state_dim)``.
+    C : jax.Array
+        Peephole connection weights, shape ``(2, state_dim)``.
+    backend : str, optional
+        ``'cuda_raw'`` for CUDA, ``None`` for default.
 
-    Returns:
-        dl/d[c,h] with shape ``(B, T, 2, state_dim)``.
+    Returns
+    -------
+    jax.Array
+        ``dl/d[c, h]`` with shape ``(B, T, 2, state_dim)``.
     """
     batch_size, seq_len = grad_y.shape[0], grad_y.shape[1]
     state_dim = A.shape[1]

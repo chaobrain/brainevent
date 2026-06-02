@@ -19,7 +19,7 @@ import importlib.util
 import threading
 import traceback
 from ctypes import c_void_p, c_int, c_int64, c_uint32, c_size_t, POINTER, Structure, CFUNCTYPE
-from typing import Dict, Sequence, Tuple
+from typing import Callable, Dict, Sequence, Tuple
 
 import jax
 import numpy as np
@@ -321,12 +321,12 @@ def _register_numba_cpu_ffi_target(
 
 
 def numba_kernel(
-    kernel,
+    kernel: Callable,
     outs: OutType,
     *,
     vmap_method: str | None = None,
     input_output_aliases: dict[int, int] | None = None,
-):
+) -> Callable:
     """Create a JAX-callable function from a Numba CPU kernel.
 
     Wraps a Numba JIT-compiled CPU kernel (decorated with ``@numba.njit``)
@@ -353,6 +353,21 @@ def numba_kernel(
         A function that takes JAX arrays as inputs and returns JAX
         arrays as outputs.  Compatible with ``jax.jit`` and other
         transformations.
+
+    Raises
+    ------
+    ImportError
+        If Numba is not installed.
+    AssertionError
+        If *kernel* is not a Numba CPU dispatcher.
+
+    Notes
+    -----
+    The Numba kernel function should:
+
+    - Accept input arrays followed by output arrays as arguments.
+    - Write results directly to the output arrays.
+    - Not return any values (outputs are written in-place).
 
     Examples
     --------
@@ -402,16 +417,6 @@ def numba_kernel(
         ... def parallel_add_kernel(x, y, out):
         ...     for i in numba.prange(out.size):
         ...         out[i] = x[i] + y[i]
-
-    Raises:
-        ImportError: If Numba is not installed.
-        AssertionError: If kernel is not a Numba CPU dispatcher.
-
-    Note:
-        The Numba kernel function should:
-        - Accept input arrays followed by output arrays as arguments
-        - Write results directly to the output arrays
-        - Not return any values (outputs are written in-place)
     """
     if not numba_installed:
         raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')

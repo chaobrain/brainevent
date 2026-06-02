@@ -36,6 +36,7 @@ Backends:
 """
 
 from pathlib import Path
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -389,7 +390,7 @@ parallel_reduce_dense_p.def_transpose_rule(_reduce_dense_transpose)
 def parallel_reduce_diag(
     jac: jax.Array,
     rhs: jax.Array,
-    backend: str = None,
+    backend: Optional[str] = None,
 ) -> jax.Array:
     """Solve h[t] = jac[t]*h[t-1] + rhs[t] with diagonal Jacobians.
 
@@ -398,12 +399,18 @@ def parallel_reduce_diag(
     is specified, dispatches through ``XLACustomKernel`` to CUDA kernels
     (not differentiable — use inside ``jax.custom_vjp``).
 
-    Args:
-        jac: Jacobian diagonals, shape ``(B, T, N)``.
-        rhs: Right-hand side, shape ``(B, T, N)``.
-        backend: ``'cuda_raw'`` for GPU kernels, ``None`` for JAX native.
+    Parameters
+    ----------
+    jac : jax.Array
+        Jacobian diagonals, shape ``(B, T, N)``.
+    rhs : jax.Array
+        Right-hand side, shape ``(B, T, N)``.
+    backend : str, optional
+        ``'cuda_raw'`` for GPU kernels, ``None`` for JAX native.
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Solution ``h`` with shape ``(B, T, N)``.
     """
     if backend is not None and backend != 'jax_raw':
@@ -419,19 +426,25 @@ def parallel_reduce_diag(
 def parallel_reduce_diag_bwd(
     jac: jax.Array,
     rhs: jax.Array,
-    backend: str = None,
+    backend: Optional[str] = None,
 ) -> jax.Array:
     """Backward (transposed) solve for diagonal Jacobians.
 
     The Jacobian for backward is already prepared (flipped and shifted) by
     ``compute_jacobians_bwd``, so this function just does a forward scan.
 
-    Args:
-        jac: Prepared backward Jacobians, shape ``(B, T, N)``.
-        rhs: Gradient right-hand side (flipped), shape ``(B, T, N)``.
-        backend: ``'cuda_raw'`` for GPU kernels, ``None`` for default.
+    Parameters
+    ----------
+    jac : jax.Array
+        Prepared backward Jacobians, shape ``(B, T, N)``.
+    rhs : jax.Array
+        Gradient right-hand side (flipped), shape ``(B, T, N)``.
+    backend : str, optional
+        ``'cuda_raw'`` for GPU kernels, ``None`` for default.
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Solution with shape ``(B, T, N)``.
     """
     return parallel_reduce_diag(jac, rhs, backend=backend)
@@ -440,7 +453,7 @@ def parallel_reduce_diag_bwd(
 def parallel_reduce_block_diag(
     jac: jax.Array,
     rhs: jax.Array,
-    backend: str = None,
+    backend: Optional[str] = None,
 ) -> jax.Array:
     """Solve h[t] = jac[t] @ h[t-1] + rhs[t] with block-diagonal Jacobians.
 
@@ -448,14 +461,20 @@ def parallel_reduce_block_diag(
     When ``backend='cuda_raw'`` is specified, dispatches through
     ``XLACustomKernel`` to CUDA kernels (K=2 only).
 
-    Args:
-        jac: Block-diagonal Jacobians, shape ``(B, T, N, K, K)`` where K is
-            the block size (2 or 3).
-        rhs: Right-hand side, shape ``(B, T, N, K)``.
-        backend: ``'cuda_raw'`` for GPU kernels (K=2 only), ``None`` for
-            JAX native.
+    Parameters
+    ----------
+    jac : jax.Array
+        Block-diagonal Jacobians, shape ``(B, T, N, K, K)`` where K is
+        the block size (2 or 3).
+    rhs : jax.Array
+        Right-hand side, shape ``(B, T, N, K)``.
+    backend : str, optional
+        ``'cuda_raw'`` for GPU kernels (K=2 only), ``None`` for
+        JAX native.
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Solution ``h`` with shape ``(B, T, N, K)``.
     """
     if backend is not None and backend != 'jax_raw':
@@ -475,16 +494,22 @@ def parallel_reduce_block_diag(
 def parallel_reduce_block_diag_bwd(
     jac: jax.Array,
     rhs: jax.Array,
-    backend: str = None,
+    backend: Optional[str] = None,
 ) -> jax.Array:
     """Backward (transposed) solve for block-diagonal Jacobians.
 
-    Args:
-        jac: Prepared backward Jacobians, shape ``(B, T, N, K, K)``.
-        rhs: Gradient right-hand side, shape ``(B, T, N, K)``.
-        backend: ``'cuda_raw'`` for GPU kernels, ``None`` for default.
+    Parameters
+    ----------
+    jac : jax.Array
+        Prepared backward Jacobians, shape ``(B, T, N, K, K)``.
+    rhs : jax.Array
+        Gradient right-hand side, shape ``(B, T, N, K)``.
+    backend : str, optional
+        ``'cuda_raw'`` for GPU kernels, ``None`` for default.
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Solution with shape ``(B, T, N, K)``.
     """
     return parallel_reduce_block_diag(jac, rhs, backend=backend)
@@ -493,19 +518,25 @@ def parallel_reduce_block_diag_bwd(
 def parallel_reduce_dense(
     jac: jax.Array,
     rhs: jax.Array,
-    backend: str = None,
+    backend: Optional[str] = None,
 ) -> jax.Array:
     """Solve h[t] = jac[t] @ h[t-1] + rhs[t] with dense N×N Jacobians.
 
     Uses ``jax.lax.associative_scan`` for O(log T) parallel depth with
     O(N^3) matrix multiply cost per step.
 
-    Args:
-        jac: Dense Jacobian matrices, shape ``(B, T, N, N)``.
-        rhs: Right-hand side, shape ``(B, T, N)``.
-        backend: ``None`` for JAX native (default).
+    Parameters
+    ----------
+    jac : jax.Array
+        Dense Jacobian matrices, shape ``(B, T, N, N)``.
+    rhs : jax.Array
+        Right-hand side, shape ``(B, T, N)``.
+    backend : str, optional
+        ``None`` for JAX native (default).
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Solution ``h`` with shape ``(B, T, N)``.
     """
     if backend is not None and backend != 'jax_raw':

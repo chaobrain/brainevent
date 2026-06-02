@@ -34,6 +34,7 @@ All params are split into array params (differentiable) and static params
 
 import abc
 from enum import Enum
+from typing import Any, Type
 
 import jax
 import jax.numpy as jnp
@@ -46,10 +47,15 @@ __all__ = ['BaseRNNCell', 'ApplicationMode', 'apply_rnn']
 class ApplicationMode(str, Enum):
     """Application modes for RNN cell evaluation.
 
-    - ``SEQUENTIAL``: O(T) sequential scan via ``jax.lax.scan``.
-    - ``PARALLEL``: O(log T) parallel via Newton + ``jax.lax.associative_scan``.
-    - ``FUSED``: Single CUDA kernel combining Newton + parallel reduction.
-      Requires CUDA and a GPU. Falls back to ``PARALLEL`` if unavailable.
+    Attributes
+    ----------
+    SEQUENTIAL : str
+        ``O(T)`` sequential scan via ``jax.lax.scan``.
+    PARALLEL : str
+        ``O(log T)`` parallel via Newton + ``jax.lax.associative_scan``.
+    FUSED : str
+        Single CUDA kernel combining Newton + parallel reduction.
+        Requires CUDA and a GPU. Falls back to ``PARALLEL`` if unavailable.
     """
     SEQUENTIAL = "sequential"
     PARALLEL = "parallel"
@@ -69,6 +75,12 @@ class BaseRNNCell(abc.ABC):
     Subclasses must set ``num_array_params`` to indicate how many of the
     leading ``*params`` arguments are JAX arrays (differentiable). The
     remaining params are treated as static (e.g., activation functions).
+
+    Attributes
+    ----------
+    num_array_params : int
+        Number of leading ``*params`` arguments that are JAX arrays
+        (differentiable). The remaining params are treated as static.
     """
 
     # Number of leading params that are JAX arrays
@@ -97,7 +109,11 @@ class BaseRNNCell(abc.ABC):
     def backprop_to_params(dl_dh, x, h, *params):
         """Compute gradients w.r.t. x and all params.
 
-        Returns: (grad_x, *grad_all_params) where grad for static params is None.
+        Returns
+        -------
+        tuple
+            ``(grad_x, *grad_all_params)`` where the gradient for static
+            params is ``None``.
         """
         ...
 
@@ -126,24 +142,45 @@ class BaseRNNCell(abc.ABC):
         return jnp.zeros((*x.shape[:-1], state_dim), dtype=x.dtype)
 
 
-def apply_rnn(cell_cls, x, state_dim, mode='parallel',
-              newton_config=NewtonConfig(), *params):
+def apply_rnn(
+    cell_cls: Type[BaseRNNCell],
+    x: jax.Array,
+    state_dim: int,
+    mode: str = 'parallel',
+    newton_config: NewtonConfig = NewtonConfig(),
+    *params: Any,
+) -> jax.Array:
     """Apply an RNN cell to an input sequence.
 
     Dispatches to sequential or parallel mode. In parallel mode, uses
     ``jax.custom_vjp`` with implicit differentiation for the backward pass.
 
-    Args:
-        cell_cls: The RNN cell class (subclass of BaseRNNCell).
-        x: Input sequence, shape ``(B, T, input_dim)``.
-        state_dim: Hidden state dimension.
-        mode: ``'sequential'`` or ``'parallel'``.
-        newton_config: Newton solver configuration (for parallel mode).
-        *params: Cell parameters. The first ``cell_cls.num_array_params``
-            are JAX arrays; the rest are static (e.g., activation functions).
+    Parameters
+    ----------
+    cell_cls : Type[BaseRNNCell]
+        The RNN cell class (subclass of ``BaseRNNCell``).
+    x : jax.Array
+        Input sequence, shape ``(B, T, input_dim)``.
+    state_dim : int
+        Hidden state dimension.
+    mode : str, default='parallel'
+        ``'sequential'``, ``'parallel'``, or ``'fused'``.
+    newton_config : NewtonConfig
+        Newton solver configuration (for parallel mode).
+    *params : Any
+        Cell parameters. The first ``cell_cls.num_array_params``
+        are JAX arrays; the rest are static (e.g., activation functions).
 
-    Returns:
+    Returns
+    -------
+    jax.Array
         Output sequence, shape ``(B, T, output_dim)``.
+
+    Raises
+    ------
+    ValueError
+        If ``mode`` is not one of ``'sequential'``, ``'parallel'``, or
+        ``'fused'``.
     """
     n_arr = cell_cls.num_array_params
     array_params = params[:n_arr]

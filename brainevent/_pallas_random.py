@@ -1202,12 +1202,26 @@ _PALLAS_LFSR_CLASSES = {
 }
 
 
-def get_pallas_lfsr_rng_class():
-    """Return the Pallas RNG class for the current global LFSR algorithm."""
+def get_pallas_lfsr_rng_class() -> type[LFSRBase]:
+    """Return the Pallas RNG class for the current global LFSR algorithm.
+
+    The active algorithm is read from the global configuration via
+    :func:`brainevent.config.get_lfsr_algorithm`.
+
+    Returns
+    -------
+    type[LFSRBase]
+        The Pallas RNG class (a subclass of :class:`LFSRBase`) implementing
+        the currently configured LFSR algorithm.
+
+    See Also
+    --------
+    PallasLFSRRNG : Instantiate the configured RNG class directly.
+    """
     return _PALLAS_LFSR_CLASSES[get_lfsr_algorithm()]
 
 
-def PallasLFSRRNG(seed):
+def PallasLFSRRNG(seed: int) -> LFSRBase:
     """Factory: create a Pallas RNG instance using the globally configured algorithm.
 
     Parameters
