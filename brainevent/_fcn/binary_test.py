@@ -17,7 +17,6 @@
 
 
 import inspect
-from pathlib import Path
 
 import brainstate
 import braintools
@@ -30,8 +29,6 @@ import pytest
 from brainevent._fcn.binary import (
     binary_fcnmv,
     ell_binary_matvec_p,
-    csc_binary_matvec,
-    csc_binary_matvec_p,
     binary_fcnmm,
     ell_binary_matmat_p,
 )
@@ -41,7 +38,6 @@ from brainevent._test_util import generate_fixed_conn_num_indices
 
 platform = jax.default_backend()
 ELL_MV_IMPLEMENTATIONS = tuple(impl for impl in ell_binary_matvec_p.available_backends(platform))
-CSC_MV_IMPLEMENTATIONS = tuple(impl for impl in csc_binary_matvec_p.available_backends(platform))
 FCNMM_IMPLEMENTATIONS = tuple(impl for impl in ell_binary_matmat_p.available_backends(platform))
 
 if platform == 'cpu':
@@ -69,7 +65,6 @@ def _implementation_params(implementations, op_name: str):
 
 
 ELL_MV_PARAMS = _implementation_params(ELL_MV_IMPLEMENTATIONS, 'ell_binary_matvec')
-CSC_MV_PARAMS = _implementation_params(CSC_MV_IMPLEMENTATIONS, 'csc_binary_matvec')
 FCNMM_PARAMS = _implementation_params(FCNMM_IMPLEMENTATIONS, 'binary_fcnmm')
 
 
@@ -81,7 +76,8 @@ FCNMM_PARAMS = _implementation_params(FCNMM_IMPLEMENTATIONS, 'binary_fcnmm')
 def test_ell_binary_matvec_cuda_kernel_is_scatter_only():
     cuda_kernel_source = inspect.getsource(binary_mod._ell_binary_matvec_cuda_kernel)
     # ELL primitive loads only the row-major source and scatters; the
-    # transpose=False row-gather path was removed and is delegated to CSC.
+    # transpose=False row-gather path was removed and the unfavorable W @ s
+    # direction now routes through the perm-fused CSR kernel.
     assert "binary_fcnmv.cu" in cuda_kernel_source
     assert "fcn_binary_mv.binary_fcnmv_scatter" in cuda_kernel_source
     assert "binary_fcnmv_col_scatter" not in cuda_kernel_source
@@ -89,47 +85,14 @@ def test_ell_binary_matvec_cuda_kernel_is_scatter_only():
     assert "NotImplementedError" in cuda_kernel_source
 
 
-def test_csc_binary_matvec_cuda_kernel_uses_col_scatter_names():
-    cuda_kernel_source = inspect.getsource(binary_mod._csc_binary_matvec_cuda_kernel)
-    assert "binary_fcnmv_col_scatter.cu" in cuda_kernel_source
-    assert "fcn_binary_mv_col_scatter" in cuda_kernel_source
-    assert "binary_fcnmv_col_scatter" in cuda_kernel_source
-
-    source_path = Path(binary_mod.__file__).with_name("binary_fcnmv_col_scatter.cu")
-    source = source_path.read_text()
-    assert "DEFINE_BFCNMV_COL_TPR_HOMO" in source
-    assert "_bfcnmv_col_tpr_homo_kern" in source
-    assert "FFI_BFCNMV_COL_HOMO" in source
-    assert "n_blocks_tpr" in source
-    assert "binary_fcnmv_col_scatter_homo_bool_f32" in source
-
-
 def test_binary_fcnmm_cuda_operator_names_are_not_col_scatter():
+    # The FCN matmat CUDA kernel must use the native ELL gather/scatter names,
+    # never the (removed) column-scatter variants.
     cuda_kernel_source = inspect.getsource(binary_mod._binary_fcnmm_cuda_kernel)
+    assert "binary_fcnmm.cu" in cuda_kernel_source
     assert "binary_fcnmm_col_scatter.cu" not in cuda_kernel_source
     assert "fcn_binary_mm_col_scatter" not in cuda_kernel_source
     assert "binary_fcnmm_col_scatter" not in cuda_kernel_source
-
-    source_path = Path(binary_mod.__file__).with_name("binary_fcnmm_col_scatter.cu")
-    assert source_path.exists()
-    source = source_path.read_text()
-    assert "binary_fcnmm_col_scatter.cu" in source
-    assert "DEFINE_BFCNMM_COL_WARP_HOMO" in source
-    assert "_bfcnmm_col_warp_homo_kern" in source
-    assert "FFI_BFCNMM_COL_HOMO" in source
-    assert "binary_fcnmm_col_scatter_homo_bool_f32" in source
-
-
-def test_binary_fcnmm_col_scatter_uses_wpr_batch_grid_contract():
-    source_path = Path(binary_mod.__file__).with_name("binary_fcnmm_col_scatter.cu")
-    source = source_path.read_text()
-
-    assert "int batch = static_cast<int>(blockIdx.y)" in source
-    assert "matrix_t[static_cast<size_t>(batch) * n_pre + col]" in source
-    assert "output[static_cast<size_t>(batch) * n_post + row]" in source
-    assert "for (int pos = start + lane; pos < end; pos += BFCNMM_COL_WARP_THREADS)" in source
-    assert "dim3 grid(grid_x, n_batch)" in source
-    assert "lane >= n_batch" not in source
 
 
 # ---------------------------------------------------------------------------
@@ -161,43 +124,6 @@ def _dense_from_fixed_conn(weights, indices, shape):
     else:
         values = weights.reshape(-1)
     return jnp.zeros(shape, dtype=weights.dtype).at[rows, cols].add(values)
-
-
-def _mv_reference_from_col_major(col_weights, col_indices, col_indptr, events, shape):
-    events = _to_binary_events(events, jnp.asarray(col_weights).dtype)
-    out = np.zeros(shape[0], dtype=np.asarray(col_weights).dtype)
-    col_weights_np = np.asarray(col_weights)
-    col_indices_np = np.asarray(col_indices)
-    col_indptr_np = np.asarray(col_indptr)
-    events_np = np.asarray(events)
-    homo = col_weights_np.size == 1
-    scalar_weight = col_weights_np.reshape(-1)[0] if homo else None
-
-    for col in range(shape[1]):
-        if not events_np[col]:
-            continue
-        start = col_indptr_np[col]
-        end = col_indptr_np[col + 1]
-        for pos in range(start, end):
-            row = col_indices_np[pos]
-            out[row] += scalar_weight if homo else col_weights_np[pos]
-    return jnp.asarray(out)
-
-
-def _csc_forward_dense(col_weights, col_indices, col_indptr, events, shape):
-    """Differentiable CSC ``y = W @ s`` reference (autodiff-friendly)."""
-    n_pre, n_post = shape
-    col_weights = jnp.asarray(col_weights)
-    events_f = _to_binary_events(events, col_weights.dtype)
-    col_ids = jnp.repeat(
-        jnp.arange(n_post), jnp.diff(col_indptr), total_repeat_length=col_indices.shape[0]
-    )
-    if col_weights.size == 1:
-        vals = jnp.broadcast_to(col_weights.reshape(()), col_indices.shape)
-    else:
-        vals = col_weights
-    dense = jnp.zeros(shape, dtype=col_weights.dtype).at[col_indices, col_ids].add(vals)
-    return dense @ events_f
 
 
 def _mv_reference(weights, indices, events, shape, transpose):
@@ -239,7 +165,8 @@ def test_ell_binary_matvec_forward_matches_reference(implementation, homo_w, tra
         events = jnp.where(raw > 0.4, raw, 0.0)
 
     if implementation == 'cuda_raw' and not transpose:
-        # The CUDA row-gather matvec was removed; W @ s goes through CSC instead.
+        # The CUDA row-gather matvec was removed; W @ s goes through the
+        # perm-fused CSR kernel instead.
         with pytest.raises((NotImplementedError, ValueError), match='row-gather'):
             binary_fcnmv(weights, indices, events, shape=shape, transpose=transpose, backend=implementation)
         return
@@ -251,32 +178,8 @@ def test_ell_binary_matvec_forward_matches_reference(implementation, homo_w, tra
 
 
 # ---------------------------------------------------------------------------
-# CSC binary matvec (column scatter, y = W @ s)
+# Column-major (CSC) mirror structure builder
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize('implementation', CSC_MV_PARAMS)
-@pytest.mark.parametrize('homo_w', [True, False])
-@pytest.mark.parametrize('event_dtype', [bool, float])
-@pytest.mark.parametrize('shape', SHAPES)
-def test_csc_binary_matvec_forward_matches_reference(implementation, homo_w, event_dtype, shape):
-    m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
-    weights = _make_weights(indices, homo_w)
-    col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=shape)
-
-    if event_dtype is bool:
-        events = brainstate.random.rand(n) < 0.5
-    else:
-        raw = jnp.asarray(brainstate.random.rand(n), dtype=jnp.float32)
-        events = jnp.where(raw > 0.4, raw, 0.0)
-
-    y = csc_binary_matvec(col_weights, col_indices, col_indptr, events, shape=shape, backend=implementation)
-    y_ref = _mv_reference(weights, indices, events, shape, transpose=False)
-    y_col = _mv_reference_from_col_major(col_weights, col_indices, col_indptr, events, shape)
-    assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
-    assert jnp.allclose(y_col, y_ref, rtol=1e-6, atol=1e-6)
-    jax.block_until_ready((indices, weights, events, col_weights, col_indices, col_indptr, y, y_ref, y_col))
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
@@ -297,92 +200,6 @@ def test_column_major_mirror_has_expected_sizes(homo_w, shape):
         assert jnp.asarray(col_weights).size == 1
     else:
         assert jnp.asarray(col_weights).size == nnz
-
-
-@pytest.mark.parametrize('implementation', CSC_MV_PARAMS)
-@pytest.mark.parametrize('homo_w', [True, False])
-@pytest.mark.parametrize('event_dtype', [bool, float])
-@pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
-def test_csc_binary_matvec_jvp_weights_matches_reference(implementation, homo_w, event_dtype, shape):
-    m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
-    weights = _make_weights(indices, homo_w)
-    col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=shape)
-
-    if event_dtype is bool:
-        events = brainstate.random.rand(n) < 0.5
-    else:
-        raw = jnp.asarray(brainstate.random.rand(n), dtype=jnp.float32)
-        events = jnp.where(raw > 0.4, raw, 0.0)
-
-    w_dot = jnp.ones_like(col_weights) * 0.1
-
-    f = lambda w: csc_binary_matvec(w, col_indices, col_indptr, events, shape=shape, backend=implementation)
-    primals_out, tangents_out = jax.jvp(f, (col_weights,), (w_dot,))
-
-    expected_tangent = csc_binary_matvec(w_dot, col_indices, col_indptr, events, shape=shape, backend=implementation)
-    y_ref = _mv_reference_from_col_major(col_weights, col_indices, col_indptr, events, shape)
-
-    assert jnp.allclose(primals_out, y_ref, rtol=1e-3, atol=1e-3)
-    assert jnp.allclose(tangents_out, expected_tangent, rtol=1e-3, atol=1e-3)
-
-
-@pytest.mark.parametrize('implementation', CSC_MV_PARAMS)
-@pytest.mark.parametrize('homo_w', [True, False])
-@pytest.mark.parametrize('event_dtype', [bool, float])
-@pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
-def test_csc_binary_matvec_vjp_weights_matches_dense(implementation, homo_w, event_dtype, shape):
-    m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
-    weights = _make_weights(indices, homo_w)
-    col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=shape)
-
-    if event_dtype is bool:
-        events = brainstate.random.rand(n) < 0.5
-    else:
-        raw = jnp.asarray(brainstate.random.rand(n), dtype=jnp.float32)
-        events = jnp.where(raw > 0.4, raw, 0.0)
-
-    ct = jnp.ones(m, dtype=jnp.float32)
-
-    f = lambda w: csc_binary_matvec(w, col_indices, col_indptr, events, shape=shape, backend=implementation)
-    _, vjp_fn = jax.vjp(f, col_weights)
-    (ct_w,) = vjp_fn(ct)
-
-    f_dense = lambda w: _csc_forward_dense(w, col_indices, col_indptr, events, shape)
-    _, vjp_dense = jax.vjp(f_dense, col_weights)
-    (ct_w_dense,) = vjp_dense(ct)
-
-    tol = 1e-3 if homo_w else 5e-2
-    assert ct_w.shape == col_weights.shape
-    assert jnp.allclose(ct_w, ct_w_dense, rtol=tol, atol=tol), (
-        f"max diff={jnp.max(jnp.abs(ct_w - ct_w_dense)):.4e}"
-    )
-
-
-@pytest.mark.parametrize('implementation', CSC_MV_PARAMS)
-@pytest.mark.parametrize('homo_w', [True, False])
-@pytest.mark.parametrize('shape', [(20, 40), (30, 30)])
-def test_csc_binary_matvec_vjp_spikes_matches_dense(implementation, homo_w, shape):
-    m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
-    weights = _make_weights(indices, homo_w)
-    col_weights, col_indices, col_indptr = fixed_conn_num_to_csc(weights, indices, shape=shape)
-
-    raw = jnp.asarray(brainstate.random.rand(n), dtype=jnp.float32)
-    events = jnp.where(raw > 0.4, raw, 0.0)
-    ct = jnp.ones(m, dtype=jnp.float32)
-
-    f = lambda s: csc_binary_matvec(col_weights, col_indices, col_indptr, s, shape=shape, backend=implementation)
-    _, vjp_fn = jax.vjp(f, events)
-    (ct_s,) = vjp_fn(ct)
-
-    # dL/ds = W^T @ ct (treating spikes as the float-linear map, matching fcnmv).
-    dense = _dense_from_fixed_conn(weights, indices, shape)
-    ct_s_dense = dense.T @ ct
-
-    assert ct_s.shape == events.shape
-    assert jnp.allclose(ct_s, ct_s_dense, rtol=5e-2, atol=5e-2)
 
 
 # ---------------------------------------------------------------------------
