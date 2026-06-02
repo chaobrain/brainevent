@@ -164,6 +164,62 @@ def _csrmv_yw2y_numba_kernels(
     return kernel
 
 
+def _csrmv_yw2y_cuda_kernel(
+    transpose: bool,
+    w_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    load_cuda_file(
+        Path(__file__).parent.joinpath('yw2y_csrmv_yw2y.cu'),
+        name='csrmv_yw2y',
+    )
+
+    out_info = kwargs['outs']
+
+    # Weight dtype suffix
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'csrmv_yw2y.csrmv_yw2y_t_nz_thread{wt_sfx}'
+    else:
+        kernel_name = f'csrmv_yw2y.csrmv_yw2y_nt_auto{wt_sfx}'
+
+    def kernel(y, w, indices, indptr):
+        return jax.ffi.ffi_call(kernel_name, out_info)(y, w, indices, indptr)
+
+    return kernel
+
+
+def _csrmv_yw2y_jax_kernel(
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for CSR yw2y (out[j] = w[j] * y[row/col]) (all platforms)."""
+    m, k = shape
+    nse = kwargs['indices_info'].size
+
+    if transpose:
+        # col index is directly in `indices`
+        def kernel(y, w, indices, indptr):
+            return (w * y[indices],)
+    else:
+        def kernel(y, w, indices, indptr):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            return (w * y[row_ids],)
+    return kernel
+
+
 def _csrmv_yw2y_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
     return csrmv_yw2y_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
@@ -223,62 +279,6 @@ def _csrmv_yw2y_benchmark_data(*, platform):
                 )
             )
     return configs
-
-
-def _csrmv_yw2y_jax_kernel(
-    shape: MatrixShape,
-    transpose: bool,
-    **kwargs,
-):
-    """Pure-JAX kernel for CSR yw2y (out[j] = w[j] * y[row/col]) (all platforms)."""
-    m, k = shape
-    nse = kwargs['indices_info'].size
-
-    if transpose:
-        # col index is directly in `indices`
-        def kernel(y, w, indices, indptr):
-            return (w * y[indices],)
-    else:
-        def kernel(y, w, indices, indptr):
-            row_ids = jnp.repeat(
-                jnp.arange(m, dtype=indptr.dtype),
-                jnp.diff(indptr),
-                total_repeat_length=nse,
-            )
-            return (w * y[row_ids],)
-    return kernel
-
-
-def _csrmv_yw2y_cuda_kernel(
-    transpose: bool,
-    w_info: jax.ShapeDtypeStruct,
-    **kwargs,
-):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('yw2y_csrmv_yw2y.cu'),
-        name='csrmv_yw2y',
-    )
-
-    out_info = kwargs['outs']
-
-    # Weight dtype suffix
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
-
-    if transpose:
-        kernel_name = f'csrmv_yw2y.csrmv_yw2y_t_nz_thread{wt_sfx}'
-    else:
-        kernel_name = f'csrmv_yw2y.csrmv_yw2y_nt_auto{wt_sfx}'
-
-    def kernel(y, w, indices, indptr):
-        return jax.ffi.ffi_call(kernel_name, out_info)(y, w, indices, indptr)
-
-    return kernel
 
 
 def csrmv_yw2y_p_call(
