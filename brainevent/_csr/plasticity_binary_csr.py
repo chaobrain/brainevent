@@ -142,7 +142,7 @@ def update_csr_on_binary_pre(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.plasticity_binary import update_csr_on_binary_pre
+        >>> from brainevent._csr.plasticity_binary_csr import update_csr_on_binary_pre
         >>> weight = jnp.array([0.5, 0.3, 0.8, 0.2], dtype=jnp.float32)
         >>> indices = jnp.array([0, 1, 0, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
@@ -408,7 +408,7 @@ def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shap
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.plasticity_binary import csr_on_pre_prim_call
+        >>> from brainevent._csr.plasticity_binary_csr import csr_on_pre_prim_call
         >>> weight = jnp.array([0.5, 0.3, 0.8, 0.2], dtype=jnp.float32)
         >>> indices = jnp.array([0, 1, 0, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
@@ -592,7 +592,7 @@ def update_csr_on_binary_post(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.plasticity_binary import update_csr_on_binary_post
+        >>> from brainevent._csr.plasticity_binary_csr import update_csr_on_binary_post
         >>> weight = jnp.array([0.5, 0.3, 0.8, 0.2], dtype=jnp.float32)
         >>> indices = jnp.array([0, 1, 0, 1], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
@@ -875,7 +875,7 @@ def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.plasticity_binary import csr2csc_on_post_prim_call
+        >>> from brainevent._csr.plasticity_binary_csr import csr2csc_on_post_prim_call
         >>> weight = jnp.array([0.5, 0.3, 0.8, 0.2], dtype=jnp.float32)
         >>> indices = jnp.array([0, 1, 0, 1], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
