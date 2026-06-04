@@ -21,6 +21,7 @@ os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import functools
 import inspect
+from pathlib import Path
 import numpy as np
 
 import brainstate
@@ -1070,6 +1071,20 @@ def test_fixed_num_per_post_sraw_matmul_route_contract():
     assert "transpose=True" in source
     assert "backend='SRAW_MM_kernel'" in source
     assert ".T" not in source
+
+
+def test_fcn_sraw_kernel_names_do_not_use_test_prefix():
+    fcn_dir = Path(__file__).parent
+    cuda_source = fcn_dir.joinpath('fcnmm_SRAW.cu').read_text()
+    binary_source = fcn_dir.joinpath('binary.py').read_text()
+    combined = cuda_source + binary_source
+
+    assert 'test_fcnmm_colmajor_fullwarp' not in combined
+    assert 'TEST_FCNMM' not in cuda_source
+    assert 'NOCAP' not in cuda_source
+    assert 'nocap' not in combined
+    assert 'binary_fcnmm_sraw_homo' in combined
+    assert 'binary_fcnmm_sraw_hetero' in combined
 
 
 def test_fcn_matmat_unfavorable_builds_weight_indices():

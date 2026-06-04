@@ -874,7 +874,7 @@ def _SRAW_MM_kernel(
     spike_sfx = '_bool' if is_bool_matrix else '_float'
     kernel_name = (
         'fcn_binary_mm_sraw.'
-        f'binary_fcnmm_test_colmajor_fullwarp_nocap{mode_sfx}{spike_sfx}{sfx}'
+        f'binary_fcnmm_sraw{mode_sfx}{spike_sfx}{sfx}'
     )
 
     def kernel(weights, indices, matrix):

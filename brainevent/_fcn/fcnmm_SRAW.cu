@@ -46,12 +46,12 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
-#define TEST_FCNMM_WARP_THREADS 32
-#define TEST_FCNMM_WARPS_PER_BLOCK 8
-#define TEST_FCNMM_BLOCK_THREADS (TEST_FCNMM_WARPS_PER_BLOCK * TEST_FCNMM_WARP_THREADS)
+#define SRAW_FCNMM_WARP_THREADS 32
+#define SRAW_FCNMM_WARPS_PER_BLOCK 8
+#define SRAW_FCNMM_BLOCK_THREADS (SRAW_FCNMM_WARPS_PER_BLOCK * SRAW_FCNMM_WARP_THREADS)
 
-#define DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-    __global__ void _test_fcnmm_colmajor_fullwarp_homo_kern##SUFFIX(                                                 \
+#define DEFINE_SRAW_FCNMM_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+    __global__ void _sraw_fcnmm_homo_kern##SUFFIX(                                                \
         const int32_t* __restrict__ indices,                                                                          \
         const SPIKE_T* __restrict__ matrix,                                                                           \
         WEIGHT_T*      __restrict__ output,                                                                           \
@@ -60,20 +60,20 @@
     {                                                                                                                 \
         int warp_id = threadIdx.x >> 5;                                                                               \
         int lane = threadIdx.x & 31;                                                                                  \
-        int row = static_cast<int>(blockIdx.x) * TEST_FCNMM_WARPS_PER_BLOCK + warp_id;                               \
+        int row = static_cast<int>(blockIdx.x) * SRAW_FCNMM_WARPS_PER_BLOCK + warp_id;                               \
         int j = static_cast<int>(blockIdx.y);                                                                         \
         if (row >= n_pre || j >= n_batch) return;                                                                     \
         ACC_T w0 = READ_W(__ldg(&weights[0]));                                                                        \
         if (!IS_ACTIVE(__ldg(&matrix[static_cast<size_t>(row) * n_batch + j]))) return;                              \
         const int32_t* i_row = indices + static_cast<size_t>(row) * n_conn;                                          \
-        for (int k = lane; k < n_conn; k += TEST_FCNMM_WARP_THREADS) {                                               \
+        for (int k = lane; k < n_conn; k += SRAW_FCNMM_WARP_THREADS) {                                               \
             int target = __ldg(&i_row[k]);                                                                            \
             ATOMIC_ADD_W(&output[static_cast<size_t>(j) * n_post + target], w0);                                     \
         }                                                                                                             \
     }
 
-#define DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-    __global__ void _test_fcnmm_colmajor_fullwarp_hetero_kern##SUFFIX(                                                 \
+#define DEFINE_SRAW_FCNMM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+    __global__ void _sraw_fcnmm_hetero_kern##SUFFIX(                                               \
         const int32_t* __restrict__ indices,                                                                           \
         const SPIKE_T* __restrict__ matrix,                                                                            \
         WEIGHT_T*      __restrict__ output,                                                                            \
@@ -82,13 +82,13 @@
     {                                                                                                                  \
         int warp_id = threadIdx.x >> 5;                                                                                \
         int lane = threadIdx.x & 31;                                                                                   \
-        int row = static_cast<int>(blockIdx.x) * TEST_FCNMM_WARPS_PER_BLOCK + warp_id;                                \
+        int row = static_cast<int>(blockIdx.x) * SRAW_FCNMM_WARPS_PER_BLOCK + warp_id;                                \
         int j = static_cast<int>(blockIdx.y);                                                                          \
         if (row >= n_pre || j >= n_batch) return;                                                                      \
         if (!IS_ACTIVE(__ldg(&matrix[static_cast<size_t>(row) * n_batch + j]))) return;                               \
         const int32_t* i_row = indices + static_cast<size_t>(row) * n_conn;                                           \
         const WEIGHT_T* w_row = weights + static_cast<size_t>(row) * n_conn;                                          \
-        for (int k = lane; k < n_conn; k += TEST_FCNMM_WARP_THREADS) {                                                \
+        for (int k = lane; k < n_conn; k += SRAW_FCNMM_WARP_THREADS) {                                                \
             int target = __ldg(&i_row[k]);                                                                             \
             ACC_T wk = READ_W(__ldg(&w_row[k]));                                                                       \
             ATOMIC_ADD_W(&output[static_cast<size_t>(j) * n_post + target], wk);                                      \
@@ -96,25 +96,25 @@
     }
 
 
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HOMO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HOMO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HOMO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HOMO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HOMO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HOMO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HOMO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HOMO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SRAW_FCNMM_HOMO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_SRAW_FCNMM_HOMO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
+DEFINE_SRAW_FCNMM_HOMO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_SRAW_FCNMM_HOMO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_SRAW_FCNMM_HOMO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SRAW_FCNMM_HOMO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SRAW_FCNMM_HOMO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SRAW_FCNMM_HOMO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SRAW_FCNMM_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_SRAW_FCNMM_HETERO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
+DEFINE_SRAW_FCNMM_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_SRAW_FCNMM_HETERO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_SRAW_FCNMM_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SRAW_FCNMM_HETERO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SRAW_FCNMM_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SRAW_FCNMM_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 
-#define FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                        \
-    void binary_fcnmm_test_colmajor_fullwarp_nocap_homo##SUFFIX(                                           \
+#define FFI_SRAW_FCNMM_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                  \
+    void binary_fcnmm_sraw_homo##SUFFIX(                                                                    \
         const BE::Tensor weights, const BE::Tensor indices, const BE::Tensor matrix,                      \
         BE::Tensor output, int64_t stream)                                                                 \
     {                                                                                                      \
@@ -136,13 +136,13 @@ DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE
         int warps_per_block = 8;                                                                           \
         int grid_x = (n_pre + warps_per_block - 1) / warps_per_block;                                      \
         dim3 grid(grid_x, n_batch);                                                                        \
-        _test_fcnmm_colmajor_fullwarp_homo_kern##SUFFIX<<<grid, 256, 0, s>>>(                            \
+        _sraw_fcnmm_homo_kern##SUFFIX<<<grid, 256, 0, s>>>(                                                \
             d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_post, n_batch);                                     \
         BE_CHECK_KERNEL_LAUNCH();                                                                          \
     }
 
-#define FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                       \
-    void binary_fcnmm_test_colmajor_fullwarp_nocap_hetero##SUFFIX(                                         \
+#define FFI_SRAW_FCNMM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                \
+    void binary_fcnmm_sraw_hetero##SUFFIX(                                                                  \
         const BE::Tensor weights, const BE::Tensor indices, const BE::Tensor matrix,                       \
         BE::Tensor output, int64_t stream)                                                                  \
     {                                                                                                       \
@@ -164,40 +164,40 @@ DEFINE_TEST_FCNMM_COLMAJOR_FULLWARP_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE
         int warps_per_block = 8;                                                                            \
         int grid_x = (n_pre + warps_per_block - 1) / warps_per_block;                                       \
         dim3 grid(grid_x, n_batch);                                                                         \
-        _test_fcnmm_colmajor_fullwarp_hetero_kern##SUFFIX<<<grid, 256, 0, s>>>(                            \
+        _sraw_fcnmm_hetero_kern##SUFFIX<<<grid, 256, 0, s>>>(                                               \
             d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_post, n_batch);                                      \
         BE_CHECK_KERNEL_LAUNCH();                                                                           \
     }
     
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_homo_bool_f32
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HOMO(_bool_f32, float, uint8_t)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_homo_float_f32
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HOMO(_float_f32, float, float)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_homo_bool_f64
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HOMO(_bool_f64, double, uint8_t)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_homo_float_f64
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HOMO(_float_f64, double, double)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_homo_bool_f16
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HOMO(_bool_f16, __half, uint8_t)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_homo_float_f16
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HOMO(_float_f16, __half, __half)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_homo_bool_bf16
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HOMO(_bool_bf16, __nv_bfloat16, uint8_t)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_homo_float_bf16
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HOMO(_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_bool_f32
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HETERO(_bool_f32, float, uint8_t)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_float_f32
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HETERO(_float_f32, float, float)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_bool_f64
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HETERO(_bool_f64, double, uint8_t)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_float_f64
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HETERO(_float_f64, double, double)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_bool_f16
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HETERO(_bool_f16, __half, uint8_t)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_float_f16
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HETERO(_float_f16, __half, __half)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_bool_bf16
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HETERO(_bool_bf16, __nv_bfloat16, uint8_t)
-// @BE binary_fcnmm_test_colmajor_fullwarp_nocap_hetero_float_bf16
-FFI_TEST_FCNMM_COLMAJOR_FULLWARP_NOCAP_HETERO(_float_bf16, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_fcnmm_sraw_homo_bool_f32
+FFI_SRAW_FCNMM_HOMO(_bool_f32, float, uint8_t)
+// @BE binary_fcnmm_sraw_homo_float_f32
+FFI_SRAW_FCNMM_HOMO(_float_f32, float, float)
+// @BE binary_fcnmm_sraw_homo_bool_f64
+FFI_SRAW_FCNMM_HOMO(_bool_f64, double, uint8_t)
+// @BE binary_fcnmm_sraw_homo_float_f64
+FFI_SRAW_FCNMM_HOMO(_float_f64, double, double)
+// @BE binary_fcnmm_sraw_homo_bool_f16
+FFI_SRAW_FCNMM_HOMO(_bool_f16, __half, uint8_t)
+// @BE binary_fcnmm_sraw_homo_float_f16
+FFI_SRAW_FCNMM_HOMO(_float_f16, __half, __half)
+// @BE binary_fcnmm_sraw_homo_bool_bf16
+FFI_SRAW_FCNMM_HOMO(_bool_bf16, __nv_bfloat16, uint8_t)
+// @BE binary_fcnmm_sraw_homo_float_bf16
+FFI_SRAW_FCNMM_HOMO(_float_bf16, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_fcnmm_sraw_hetero_bool_f32
+FFI_SRAW_FCNMM_HETERO(_bool_f32, float, uint8_t)
+// @BE binary_fcnmm_sraw_hetero_float_f32
+FFI_SRAW_FCNMM_HETERO(_float_f32, float, float)
+// @BE binary_fcnmm_sraw_hetero_bool_f64
+FFI_SRAW_FCNMM_HETERO(_bool_f64, double, uint8_t)
+// @BE binary_fcnmm_sraw_hetero_float_f64
+FFI_SRAW_FCNMM_HETERO(_float_f64, double, double)
+// @BE binary_fcnmm_sraw_hetero_bool_f16
+FFI_SRAW_FCNMM_HETERO(_bool_f16, __half, uint8_t)
+// @BE binary_fcnmm_sraw_hetero_float_f16
+FFI_SRAW_FCNMM_HETERO(_float_f16, __half, __half)
+// @BE binary_fcnmm_sraw_hetero_bool_bf16
+FFI_SRAW_FCNMM_HETERO(_bool_bf16, __nv_bfloat16, uint8_t)
+// @BE binary_fcnmm_sraw_hetero_float_bf16
+FFI_SRAW_FCNMM_HETERO(_float_bf16, __nv_bfloat16, __nv_bfloat16)
