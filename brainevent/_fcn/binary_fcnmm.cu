@@ -22,7 +22,7 @@
  *
  * Operator: binary_fcnmm
  *   - Gather mode (transpose=False): output[i,j] = sum_k weights[i,k] * is_active(matrix[indices[i,k], j])
- *   - Scatter mode (transpose=True): output[indices[i,k], j] += weights[i,k] * is_active(matrix[i,j])
+ *   - SRAW scatter mode (transpose=True): output[j, indices[i,k]] += weights[i,k] * is_active(matrix[i,j])
  *
  * Supports weight dtypes: float32, float64, float16, bfloat16
  * Supports spike dtypes:  bool (uint8), float32, float64, float16, bfloat16
@@ -38,11 +38,8 @@
  *     the matrix by 32x (float32) so it fits in L2. Packed gather kernels
  *     (BGM_PACKED_*) read one uint32 per source row per warp — all threads
  *     broadcast the same L2 transaction, giving near-perfect L2 hit rates.
- *   - BSM_WARP: Multi-row per block, shuffle-based index/weight loading,
- *               cooperative warp execution (no early thread exit)
- *   - BSM_BASIC: Batch tiling via grid.y, single-pass active column detection,
- *                index/weight caching in shared memory, single-pass output
- *                (no output tiling — avoids O(n_tiles) redundant index reads)
+ *   - SRAW scatter-read / aggregate-write: writes physical CUDA output as
+ *     [n_batch, target_rows]; Python transposes it for API compatibility.
  */
 
 #include "cuda_common.h"
@@ -55,24 +52,12 @@
 // Rows per block for warp kernels (multi-row for better occupancy)
 #define WARP_ROWS_PER_BLOCK 4
 
-// Tile size for batch dimension in BSM_BASIC kernels
-#define BSM_BASIC_TILE_J 32
-
-// Maximum grid.x for scatter kernels (grid-stride loop).
-// Caps block count to reduce scheduling overhead at large n_pre.
-// 4096 blocks × 256 threads ≈ 1M threads → saturates all SMs with margin.
-#define BSM_MAX_GRID_X 4096
-
-// Note: Output tiling was previously used for scatter kernels to improve L2
-// cache hit rate on atomicAdd. However, at large scale the tiling loop causes
-// O(n_tiles) redundant index reads (each tile re-reads ALL indices), creating
-// super-linear scaling. Single-pass without tiling is faster because:
-// 1. Indices are read exactly once (no redundant DRAM reads)
-// 2. Ampere+ hardware atomics have acceptable DRAM latency
-// 3. The kernel's early-exit on inactive rows already reduces work
-
 // Maximum grid.x for gather kernels (grid-stride loop).
 #define BGM_MAX_GRID_X 4096
+
+#define SRAW_FCNMM_WARP_THREADS 32
+#define SRAW_FCNMM_WARPS_PER_BLOCK 8
+#define SRAW_FCNMM_BLOCK_THREADS (SRAW_FCNMM_WARPS_PER_BLOCK * SRAW_FCNMM_WARP_THREADS)
 
 // -----------------------------------------------------------------------
 // BGM_WARP: Gather warp/WPR kernel (temporarily supports any n_conn)
@@ -493,186 +478,54 @@ __global__ void _bgm_packed_basic_hetero_kern##SUFFIX(                          
 }
 
 // -----------------------------------------------------------------------
-// BSM_WARP: Scatter warp/WPR kernel (temporarily supports any n_conn)
-//   - Multi-row per block (4 warps)
-//   - Shuffle-based index/weight loading
-//   - All threads stay alive for shuffle; only active threads do atomicAdd
+// SRAW_FCNMM: Scatter-read / aggregate-write kernel
+//   - One warp handles one stored row and one batch column.
+//   - Reads matrix[n_pre, n_batch], scatters active rows to output
+//     physically laid out as [n_batch, n_post].
 // -----------------------------------------------------------------------
-#define DEFINE_BSM_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bsm_warp_homo_kern##SUFFIX(                                                    \
-    const int32_t* __restrict__ indices,                                                        \
-    const SPIKE_T* __restrict__ matrix,                                                         \
-    WEIGHT_T*      __restrict__ output,                                                         \
-    const WEIGHT_T* __restrict__ weights,                                                       \
-    int n_pre, int n_conn, int n_batch, int tile_start, int tile_size                            \
-) {                                                                                             \
-    int warp_id = threadIdx.x >> 5;                                                             \
-    int lane    = threadIdx.x & 31;                                                             \
-    int rpb     = blockDim.x >> 5;                                                              \
-    int j       = (int)blockIdx.y * 32 + lane;                                                  \
-    bool col_valid = (j < n_batch);                                                             \
-    int  safe_j    = col_valid ? j : 0;                                                         \
-    ACC_T w0 = READ_W(__ldg(&weights[0]));                                                      \
-    for (int base = blockIdx.x * rpb; base < n_pre; base += gridDim.x * rpb) {                  \
-        int row = base + warp_id;                                                                \
-        if (row >= n_pre) continue;                                                              \
-        bool active = col_valid &&                                                               \
-                      IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + safe_j]));                  \
-        uint32_t active_mask = __ballot_sync(0xffffffff, active);                                \
-        if (active_mask == 0) continue;                                                          \
-        const int32_t* i_row = indices + (size_t)row * n_conn;                                   \
-        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                                \
-            int k_lane = k0 + lane;                                                              \
-            int my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;                          \
-            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {                            \
-                int target = __shfl_sync(0xffffffff, my_idx, off);                               \
-                if (active && (unsigned)(target - tile_start) < (unsigned)tile_size)              \
-                    ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], w0);                     \
-            }                                                                                    \
-        }                                                                                        \
-    }                                                                                            \
-}
-
-#define DEFINE_BSM_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bsm_warp_hetero_kern##SUFFIX(                                                    \
+#define DEFINE_SRAW_FCNMM_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _sraw_fcnmm_homo_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                          \
     const SPIKE_T* __restrict__ matrix,                                                           \
     WEIGHT_T*      __restrict__ output,                                                           \
     const WEIGHT_T* __restrict__ weights,                                                         \
-    int n_pre, int n_conn, int n_batch, int tile_start, int tile_size                              \
-) {                                                                                               \
-    int warp_id = threadIdx.x >> 5;                                                               \
-    int lane    = threadIdx.x & 31;                                                               \
-    int rpb     = blockDim.x >> 5;                                                                \
-    int j       = (int)blockIdx.y * 32 + lane;                                                    \
-    bool col_valid = (j < n_batch);                                                               \
-    int  safe_j    = col_valid ? j : 0;                                                           \
-    for (int base = blockIdx.x * rpb; base < n_pre; base += gridDim.x * rpb) {                    \
-        int row = base + warp_id;                                                                  \
-        if (row >= n_pre) continue;                                                                \
-        bool active = col_valid &&                                                                 \
-                      IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + safe_j]));                    \
-        uint32_t active_mask = __ballot_sync(0xffffffff, active);                                  \
-        if (active_mask == 0) continue;                                                            \
-        const int32_t*  i_row = indices + (size_t)row * n_conn;                                    \
-        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                    \
-        for (int k0 = 0; k0 < n_conn; k0 += 32) {                                                  \
-            int k_lane = k0 + lane;                                                                \
-            int   my_idx = (k_lane < n_conn) ? __ldg(&i_row[k_lane]) : 0;                          \
-            ACC_T my_w   = (k_lane < n_conn) ? READ_W(__ldg(&w_row[k_lane])) : (ACC_T)0;           \
-            for (int off = 0; off < 32 && k0 + off < n_conn; off++) {                              \
-                int   target = __shfl_sync(0xffffffff, my_idx, off);                               \
-                ACC_T wk     = __shfl_sync(0xffffffff, my_w, off);                                 \
-                if (active && (unsigned)(target - tile_start) < (unsigned)tile_size)                \
-                    ATOMIC_ADD_W(&output[(size_t)target * n_batch + j], wk);                       \
-            }                                                                                      \
-        }                                                                                          \
+    int n_pre, int n_conn, int n_post, int n_batch                                                \
+) {                                                                                                \
+    int warp_id = threadIdx.x >> 5;                                                                \
+    int lane = threadIdx.x & 31;                                                                   \
+    int row = static_cast<int>(blockIdx.x) * SRAW_FCNMM_WARPS_PER_BLOCK + warp_id;                 \
+    int j = static_cast<int>(blockIdx.y);                                                          \
+    if (row >= n_pre || j >= n_batch) return;                                                      \
+    if (!IS_ACTIVE(__ldg(&matrix[static_cast<size_t>(row) * n_batch + j]))) return;                \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                                         \
+    const int32_t* i_row = indices + static_cast<size_t>(row) * n_conn;                            \
+    for (int k = lane; k < n_conn; k += SRAW_FCNMM_WARP_THREADS) {                                 \
+        int target = __ldg(&i_row[k]);                                                             \
+        ATOMIC_ADD_W(&output[static_cast<size_t>(j) * n_post + target], w0);                       \
     }                                                                                              \
 }
 
-// -----------------------------------------------------------------------
-// BSM_BASIC: Scatter basic kernel (n_conn > 32)
-//   - Batch tiling via grid.y: eliminates serial batch loop
-//   - Single-pass active column detection (matrix read once, not twice)
-//   - Index caching in shared memory (hetero: weights too)
-// -----------------------------------------------------------------------
-#define DEFINE_BSM_BASIC_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bsm_basic_homo_kern##SUFFIX(                                                    \
-    const int32_t* __restrict__ indices,                                                         \
-    const SPIKE_T* __restrict__ matrix,                                                          \
-    WEIGHT_T*      __restrict__ output,                                                          \
-    const WEIGHT_T* __restrict__ weights,                                                        \
-    int n_pre, int n_conn, int n_batch, int tile_start, int tile_size                            \
-) {                                                                                              \
-    extern __shared__ char _smem_bytes[];                                                        \
-    int32_t* s_idx      = reinterpret_cast<int32_t*>(_smem_bytes);                               \
-    int*     s_active_j = reinterpret_cast<int*>(s_idx + n_conn);                                \
-    int*     s_n_active = s_active_j + BSM_BASIC_TILE_J;                                         \
-    int tile_base = (int)blockIdx.y * BSM_BASIC_TILE_J;                                          \
-    ACC_T w0 = READ_W(__ldg(&weights[0]));                                                       \
-    for (int row = blockIdx.x; row < n_pre; row += gridDim.x) {                                  \
-        /* Phase 1: Check activity FIRST (lightweight — only reads matrix) */                    \
-        if (threadIdx.x == 0) *s_n_active = 0;                                                  \
-        __syncthreads();                                                                         \
-        if (threadIdx.x < BSM_BASIC_TILE_J) {                                                   \
-            int j_local = tile_base + threadIdx.x;                                               \
-            if (j_local < n_batch &&                                                             \
-                IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + j_local]))) {                    \
-                int pos = atomicAdd(s_n_active, 1);                                              \
-                s_active_j[pos] = j_local;                                                       \
-            }                                                                                    \
-        }                                                                                        \
-        __syncthreads();                                                                         \
-        int n_active = *s_n_active;                                                              \
-        if (n_active == 0) continue;                                                             \
-        /* Phase 2: Load indices only for active rows */                                         \
-        const int32_t* i_row = indices + (size_t)row * n_conn;                                   \
-        for (int i = threadIdx.x; i < n_conn; i += blockDim.x)                                   \
-            s_idx[i] = __ldg(&i_row[i]);                                                         \
-        __syncthreads();                                                                         \
-        /* Phase 3: Scatter (filtered to output tile) */                                         \
-        for (int a = 0; a < n_active; a++) {                                                     \
-            int j = s_active_j[a];                                                               \
-            for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                             \
-                int tgt = s_idx[k];                                                              \
-                if ((unsigned)(tgt - tile_start) < (unsigned)tile_size)                           \
-                    ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + j], w0);                        \
-            }                                                                                    \
-        }                                                                                        \
-    }                                                                                            \
-}
-
-#define DEFINE_BSM_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)   \
-__global__ void _bsm_basic_hetero_kern##SUFFIX(                                                      \
-    const int32_t* __restrict__ indices,                                                             \
-    const SPIKE_T* __restrict__ matrix,                                                              \
-    WEIGHT_T*      __restrict__ output,                                                              \
-    const WEIGHT_T* __restrict__ weights,                                                            \
-    int n_pre, int n_conn, int n_batch, int tile_start, int tile_size                                \
-) {                                                                                                  \
-    extern __shared__ char _smem_bytes[];                                                            \
-    int32_t* s_idx = reinterpret_cast<int32_t*>(_smem_bytes);                                        \
-    /* Align weight array to 8-byte boundary */                                                      \
-    size_t wt_off = ((size_t)n_conn * sizeof(int32_t) + 7) & ~(size_t)7;                            \
-    WEIGHT_T* s_wt = reinterpret_cast<WEIGHT_T*>(_smem_bytes + wt_off);                             \
-    size_t active_off = wt_off + (size_t)n_conn * sizeof(WEIGHT_T);                                 \
-    active_off = (active_off + 3) & ~(size_t)3;  /* align to int */                                 \
-    int* s_active_j = reinterpret_cast<int*>(_smem_bytes + active_off);                              \
-    int* s_n_active = s_active_j + BSM_BASIC_TILE_J;                                                 \
-    int tile_base = (int)blockIdx.y * BSM_BASIC_TILE_J;                                              \
-    for (int row = blockIdx.x; row < n_pre; row += gridDim.x) {                                      \
-        /* Phase 1: Check activity FIRST (lightweight — only reads matrix) */                        \
-        if (threadIdx.x == 0) *s_n_active = 0;                                                       \
-        __syncthreads();                                                                             \
-        if (threadIdx.x < BSM_BASIC_TILE_J) {                                                        \
-            int j_local = tile_base + threadIdx.x;                                                   \
-            if (j_local < n_batch &&                                                                 \
-                IS_ACTIVE(__ldg(&matrix[(size_t)row * n_batch + j_local]))) {                        \
-                int pos = atomicAdd(s_n_active, 1);                                                  \
-                s_active_j[pos] = j_local;                                                           \
-            }                                                                                        \
-        }                                                                                            \
-        __syncthreads();                                                                             \
-        int n_active = *s_n_active;                                                                  \
-        if (n_active == 0) continue;                                                                 \
-        /* Phase 2: Load indices and weights only for active rows */                                 \
-        const int32_t*  i_row = indices + (size_t)row * n_conn;                                      \
-        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                      \
-        for (int i = threadIdx.x; i < n_conn; i += blockDim.x) {                                     \
-            s_idx[i] = __ldg(&i_row[i]);                                                             \
-            s_wt[i]  = __ldg(&w_row[i]);                                                             \
-        }                                                                                            \
-        __syncthreads();                                                                             \
-        /* Phase 3: Scatter (filtered to output tile) */                                             \
-        for (int a = 0; a < n_active; a++) {                                                         \
-            int j = s_active_j[a];                                                                   \
-            for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                                 \
-                int tgt = s_idx[k];                                                                  \
-                if ((unsigned)(tgt - tile_start) < (unsigned)tile_size)                               \
-                    ATOMIC_ADD_W(&output[(size_t)tgt * n_batch + j], READ_W(s_wt[k]));               \
-            }                                                                                        \
-        }                                                                                            \
-    }                                                                                                \
+#define DEFINE_SRAW_FCNMM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _sraw_fcnmm_hetero_kern##SUFFIX(                                                   \
+    const int32_t* __restrict__ indices,                                                           \
+    const SPIKE_T* __restrict__ matrix,                                                            \
+    WEIGHT_T*      __restrict__ output,                                                            \
+    const WEIGHT_T* __restrict__ weights,                                                          \
+    int n_pre, int n_conn, int n_post, int n_batch                                                 \
+) {                                                                                                 \
+    int warp_id = threadIdx.x >> 5;                                                                 \
+    int lane = threadIdx.x & 31;                                                                    \
+    int row = static_cast<int>(blockIdx.x) * SRAW_FCNMM_WARPS_PER_BLOCK + warp_id;                  \
+    int j = static_cast<int>(blockIdx.y);                                                           \
+    if (row >= n_pre || j >= n_batch) return;                                                       \
+    if (!IS_ACTIVE(__ldg(&matrix[static_cast<size_t>(row) * n_batch + j]))) return;                 \
+    const int32_t* i_row = indices + static_cast<size_t>(row) * n_conn;                             \
+    const WEIGHT_T* w_row = weights + static_cast<size_t>(row) * n_conn;                            \
+    for (int k = lane; k < n_conn; k += SRAW_FCNMM_WARP_THREADS) {                                  \
+        int target = __ldg(&i_row[k]);                                                              \
+        ACC_T wk = READ_W(__ldg(&w_row[k]));                                                        \
+        ATOMIC_ADD_W(&output[static_cast<size_t>(j) * n_post + target], wk);                        \
+    }                                                                                               \
 }
 
 // Instantiations
@@ -685,14 +538,6 @@ DEFINE_BGM_BASIC_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F
 DEFINE_BGM_BASIC_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f)
 DEFINE_BGM_BASIC_HOMO  (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f)
 DEFINE_BGM_BASIC_HETERO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_BSM_WARP_HOMO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_BSM_WARP_HOMO   (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
 
 // ---- float64 ----
 DEFINE_BGM_WARP_HOMO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64)
@@ -703,14 +548,6 @@ DEFINE_BGM_BASIC_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ
 DEFINE_BGM_BASIC_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
 DEFINE_BGM_BASIC_HOMO  (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0)
 DEFINE_BGM_BASIC_HETERO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_BSM_WARP_HOMO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_BSM_WARP_HETERO (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_BSM_WARP_HOMO   (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_BSM_WARP_HETERO (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_BSM_BASIC_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_BSM_BASIC_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_BSM_BASIC_HOMO  (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_BSM_BASIC_HETERO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
 
 // ---- float16 ----
 DEFINE_BGM_WARP_HOMO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16)
@@ -721,14 +558,6 @@ DEFINE_BGM_BASIC_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_
 DEFINE_BGM_BASIC_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
 DEFINE_BGM_BASIC_HOMO  (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
 DEFINE_BGM_BASIC_HETERO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_BSM_WARP_HOMO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BSM_WARP_HETERO (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BSM_WARP_HOMO   (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BSM_WARP_HETERO (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BSM_BASIC_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BSM_BASIC_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BSM_BASIC_HOMO  (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BSM_BASIC_HETERO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
 
 // ---- bfloat16 ----
 DEFINE_BGM_WARP_HOMO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
@@ -739,14 +568,24 @@ DEFINE_BGM_BASIC_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, floa
 DEFINE_BGM_BASIC_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
 DEFINE_BGM_BASIC_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
 DEFINE_BGM_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_BSM_WARP_HOMO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BSM_WARP_HETERO (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BSM_WARP_HOMO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BSM_WARP_HETERO (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BSM_BASIC_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BSM_BASIC_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BSM_BASIC_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BSM_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+
+// ---- SRAW scatter kernel instantiations ----
+DEFINE_SRAW_FCNMM_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_SRAW_FCNMM_HOMO  (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
+DEFINE_SRAW_FCNMM_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_SRAW_FCNMM_HETERO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
+DEFINE_SRAW_FCNMM_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_SRAW_FCNMM_HOMO  (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_SRAW_FCNMM_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_SRAW_FCNMM_HETERO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_SRAW_FCNMM_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SRAW_FCNMM_HOMO  (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SRAW_FCNMM_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SRAW_FCNMM_HETERO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SRAW_FCNMM_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SRAW_FCNMM_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SRAW_FCNMM_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SRAW_FCNMM_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 
 // ---- Packed BGM kernel instantiations (weight-type only) ----
 // float32
@@ -991,109 +830,54 @@ void binary_fcnmm_gather_packed_hetero_basic##SUFFIX(                           
         d_idx, d_pk, d_out, d_w, n_pre, n_conn, n_batch, nbw);                                              \
 }
 
-// ---- FFI macro: scatter homo warp (multi-row block) ----
-#define FFI_BSM_HOMO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                    \
-void binary_fcnmm_scatter_homo_warp##SUFFIX(                                                                 \
-    const BE::Tensor weights, const BE::Tensor indices,                                                      \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                              \
-) {                                                                                                          \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                 \
-    int n_pre   = static_cast<int>(indices.size(0));                                                         \
-    int n_conn  = static_cast<int>(indices.size(1));                                                         \
-    int n_post  = static_cast<int>(output.size(0));                                                          \
-    int n_batch = static_cast<int>(matrix.size(1));                                                          \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                            \
-    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                               \
-    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());                              \
-    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                                   \
-    int rpb = WARP_ROWS_PER_BLOCK;                                                                           \
-    int batch_tiles = (n_batch + 31) / 32;                                                                   \
-    int raw_gx = (n_pre + rpb - 1) / rpb;                                                                   \
-    int grid_x = (raw_gx < BSM_MAX_GRID_X) ? raw_gx : BSM_MAX_GRID_X;                                      \
-    dim3 grid(grid_x, batch_tiles);                                                                          \
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(WEIGHT_C_T), s);                             \
-    _bsm_warp_homo_kern##SUFFIX<<<grid, rpb * 32, 0, s>>>(                                                   \
-        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, 0, n_post);                                       \
+// ---- FFI macro: SRAW scatter homo ----
+#define FFI_SRAW_FCNMM_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                   \
+void binary_fcnmm_sraw_homo##SUFFIX(                                                                         \
+    const BE::Tensor weights, const BE::Tensor indices,                                                       \
+    const BE::Tensor matrix, BE::Tensor output, int64_t stream                                                \
+) {                                                                                                           \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                  \
+    int n_pre   = static_cast<int>(indices.size(0));                                                          \
+    int n_conn  = static_cast<int>(indices.size(1));                                                          \
+    int n_post  = static_cast<int>(output.size(1));                                                           \
+    int n_batch = static_cast<int>(matrix.size(1));                                                           \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                             \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                                \
+    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());                               \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                                    \
+    BE_CUDA_CHECK(cudaMemsetAsync(                                                                            \
+        d_out, 0, static_cast<size_t>(output.size(0)) * output.size(1) * sizeof(WEIGHT_C_T), s));             \
+    if (n_pre == 0 || n_conn == 0 || n_batch == 0) return;                                                    \
+    int grid_x = (n_pre + SRAW_FCNMM_WARPS_PER_BLOCK - 1) / SRAW_FCNMM_WARPS_PER_BLOCK;                       \
+    dim3 grid(grid_x, n_batch);                                                                               \
+    _sraw_fcnmm_homo_kern##SUFFIX<<<grid, SRAW_FCNMM_BLOCK_THREADS, 0, s>>>(                                   \
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_post, n_batch);                                            \
+    BE_CHECK_KERNEL_LAUNCH();                                                                                 \
 }
 
-// ---- FFI macro: scatter hetero warp (multi-row block) ----
-#define FFI_BSM_HETERO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                    \
-void binary_fcnmm_scatter_hetero_warp##SUFFIX(                                                                 \
-    const BE::Tensor weights, const BE::Tensor indices,                                                        \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                                \
-) {                                                                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                   \
-    int n_pre   = static_cast<int>(indices.size(0));                                                           \
-    int n_conn  = static_cast<int>(indices.size(1));                                                           \
-    int n_post  = static_cast<int>(output.size(0));                                                            \
-    int n_batch = static_cast<int>(matrix.size(1));                                                            \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                              \
-    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                                 \
-    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());                                \
-    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                                     \
-    int rpb = WARP_ROWS_PER_BLOCK;                                                                             \
-    int batch_tiles = (n_batch + 31) / 32;                                                                     \
-    int raw_gx = (n_pre + rpb - 1) / rpb;                                                                     \
-    int grid_x = (raw_gx < BSM_MAX_GRID_X) ? raw_gx : BSM_MAX_GRID_X;                                        \
-    dim3 grid(grid_x, batch_tiles);                                                                            \
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(WEIGHT_C_T), s);                               \
-    _bsm_warp_hetero_kern##SUFFIX<<<grid, rpb * 32, 0, s>>>(                                                   \
-        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, 0, n_post);                                         \
-}
-
-// ---- FFI macro: scatter homo basic (batch tiling + index caching) ----
-#define FFI_BSM_HOMO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                       \
-void binary_fcnmm_scatter_homo_basic##SUFFIX(                                                                    \
-    const BE::Tensor weights, const BE::Tensor indices,                                                          \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                                  \
-) {                                                                                                              \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                     \
-    int n_pre   = static_cast<int>(indices.size(0));                                                             \
-    int n_conn  = static_cast<int>(indices.size(1));                                                             \
-    int n_post  = static_cast<int>(output.size(0));                                                              \
-    int n_batch = static_cast<int>(matrix.size(1));                                                              \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                                \
-    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                                   \
-    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());                                  \
-    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                                       \
-    int bsz = 256;                                                                                               \
-    size_t idx_bytes = (size_t)n_conn * sizeof(int32_t);                                                         \
-    size_t active_bytes = (BSM_BASIC_TILE_J + 1) * sizeof(int);                                                  \
-    size_t shm = idx_bytes + active_bytes;                                                                       \
-    int batch_tiles = (n_batch + BSM_BASIC_TILE_J - 1) / BSM_BASIC_TILE_J;                                      \
-    int grid_x = (n_pre < BSM_MAX_GRID_X) ? n_pre : BSM_MAX_GRID_X;                                            \
-    dim3 grid(grid_x, batch_tiles);                                                                              \
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(WEIGHT_C_T), s);                                 \
-    _bsm_basic_homo_kern##SUFFIX<<<grid, bsz, shm, s>>>(                                                        \
-        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, 0, n_post);                                           \
-}
-
-// ---- FFI macro: scatter hetero basic (batch tiling + index/weight caching) ----
-#define FFI_BSM_HETERO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                     \
-void binary_fcnmm_scatter_hetero_basic##SUFFIX(                                                                  \
-    const BE::Tensor weights, const BE::Tensor indices,                                                          \
-    const BE::Tensor matrix,  BE::Tensor output, int64_t stream                                                  \
-) {                                                                                                              \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                     \
-    int n_pre   = static_cast<int>(indices.size(0));                                                             \
-    int n_conn  = static_cast<int>(indices.size(1));                                                             \
-    int n_post  = static_cast<int>(output.size(0));                                                              \
-    int n_batch = static_cast<int>(matrix.size(1));                                                              \
-    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                                \
-    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                                   \
-    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());                                  \
-    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                                       \
-    int bsz = 256;                                                                                               \
-    size_t wt_off = ((size_t)n_conn * sizeof(int32_t) + 7) & ~(size_t)7;                                        \
-    size_t idx_wt_bytes = wt_off + (size_t)n_conn * sizeof(WEIGHT_C_T);                                          \
-    size_t active_off = (idx_wt_bytes + 3) & ~(size_t)3;                                                        \
-    size_t shm = active_off + (BSM_BASIC_TILE_J + 1) * sizeof(int);                                             \
-    int batch_tiles = (n_batch + BSM_BASIC_TILE_J - 1) / BSM_BASIC_TILE_J;                                      \
-    int grid_x = (n_pre < BSM_MAX_GRID_X) ? n_pre : BSM_MAX_GRID_X;                                            \
-    dim3 grid(grid_x, batch_tiles);                                                                              \
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(WEIGHT_C_T), s);                                 \
-    _bsm_basic_hetero_kern##SUFFIX<<<grid, bsz, shm, s>>>(                                                      \
-        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, 0, n_post);                                           \
+// ---- FFI macro: SRAW scatter hetero ----
+#define FFI_SRAW_FCNMM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                                 \
+void binary_fcnmm_sraw_hetero##SUFFIX(                                                                       \
+    const BE::Tensor weights, const BE::Tensor indices,                                                       \
+    const BE::Tensor matrix, BE::Tensor output, int64_t stream                                                \
+) {                                                                                                           \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                                  \
+    int n_pre   = static_cast<int>(indices.size(0));                                                          \
+    int n_conn  = static_cast<int>(indices.size(1));                                                          \
+    int n_post  = static_cast<int>(output.size(1));                                                           \
+    int n_batch = static_cast<int>(matrix.size(1));                                                           \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());                             \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());                                \
+    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());                               \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                                    \
+    BE_CUDA_CHECK(cudaMemsetAsync(                                                                            \
+        d_out, 0, static_cast<size_t>(output.size(0)) * output.size(1) * sizeof(WEIGHT_C_T), s));             \
+    if (n_pre == 0 || n_conn == 0 || n_batch == 0) return;                                                    \
+    int grid_x = (n_pre + SRAW_FCNMM_WARPS_PER_BLOCK - 1) / SRAW_FCNMM_WARPS_PER_BLOCK;                       \
+    dim3 grid(grid_x, n_batch);                                                                               \
+    _sraw_fcnmm_hetero_kern##SUFFIX<<<grid, SRAW_FCNMM_BLOCK_THREADS, 0, s>>>(                                 \
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_post, n_batch);                                            \
+    BE_CHECK_KERNEL_LAUNCH();                                                                                 \
 }
 
 // ============================================================================
@@ -1126,24 +910,6 @@ FFI_BGM_PACKED_HETERO_WARP(_f32, float)
 FFI_BGM_PACKED_HOMO_BASIC (_f32, float, sizeof(float))
 // @BE binary_fcnmm_gather_packed_hetero_basic_f32
 FFI_BGM_PACKED_HETERO_BASIC(_f32, float, sizeof(float))
-// ---- float32: scatter ----
-// @BE binary_fcnmm_scatter_homo_warp_bool_f32
-FFI_BSM_HOMO_WARP  (_bool_f32, float, uint8_t)
-// @BE binary_fcnmm_scatter_hetero_warp_bool_f32
-FFI_BSM_HETERO_WARP(_bool_f32, float, uint8_t)
-// @BE binary_fcnmm_scatter_homo_warp_float_f32
-FFI_BSM_HOMO_WARP  (_float_f32, float, float)
-// @BE binary_fcnmm_scatter_hetero_warp_float_f32
-FFI_BSM_HETERO_WARP(_float_f32, float, float)
-// @BE binary_fcnmm_scatter_homo_basic_bool_f32
-FFI_BSM_HOMO_BASIC (_bool_f32, float, uint8_t)
-// @BE binary_fcnmm_scatter_hetero_basic_bool_f32
-FFI_BSM_HETERO_BASIC(_bool_f32, float, uint8_t)
-// @BE binary_fcnmm_scatter_homo_basic_float_f32
-FFI_BSM_HOMO_BASIC (_float_f32, float, float)
-// @BE binary_fcnmm_scatter_hetero_basic_float_f32
-FFI_BSM_HETERO_BASIC(_float_f32, float, float)
-
 // ---- float64: unpacked gather ----
 // @BE binary_fcnmm_gather_homo_warp_bool_f64
 FFI_BGM_HOMO_WARP  (_bool_f64, double, uint8_t)
@@ -1170,24 +936,6 @@ FFI_BGM_PACKED_HETERO_WARP(_f64, double)
 FFI_BGM_PACKED_HOMO_BASIC (_f64, double, sizeof(double))
 // @BE binary_fcnmm_gather_packed_hetero_basic_f64
 FFI_BGM_PACKED_HETERO_BASIC(_f64, double, sizeof(double))
-// ---- float64: scatter ----
-// @BE binary_fcnmm_scatter_homo_warp_bool_f64
-FFI_BSM_HOMO_WARP  (_bool_f64, double, uint8_t)
-// @BE binary_fcnmm_scatter_hetero_warp_bool_f64
-FFI_BSM_HETERO_WARP(_bool_f64, double, uint8_t)
-// @BE binary_fcnmm_scatter_homo_warp_float_f64
-FFI_BSM_HOMO_WARP  (_float_f64, double, double)
-// @BE binary_fcnmm_scatter_hetero_warp_float_f64
-FFI_BSM_HETERO_WARP(_float_f64, double, double)
-// @BE binary_fcnmm_scatter_homo_basic_bool_f64
-FFI_BSM_HOMO_BASIC (_bool_f64, double, uint8_t)
-// @BE binary_fcnmm_scatter_hetero_basic_bool_f64
-FFI_BSM_HETERO_BASIC(_bool_f64, double, uint8_t)
-// @BE binary_fcnmm_scatter_homo_basic_float_f64
-FFI_BSM_HOMO_BASIC (_float_f64, double, double)
-// @BE binary_fcnmm_scatter_hetero_basic_float_f64
-FFI_BSM_HETERO_BASIC(_float_f64, double, double)
-
 // ---- float16: unpacked gather ----
 // @BE binary_fcnmm_gather_homo_warp_bool_f16
 FFI_BGM_HOMO_WARP  (_bool_f16, __half, uint8_t)
@@ -1214,23 +962,6 @@ FFI_BGM_PACKED_HETERO_WARP(_f16, __half)
 FFI_BGM_PACKED_HOMO_BASIC (_f16, __half, sizeof(float))
 // @BE binary_fcnmm_gather_packed_hetero_basic_f16
 FFI_BGM_PACKED_HETERO_BASIC(_f16, __half, sizeof(float))
-// @BE binary_fcnmm_scatter_homo_warp_bool_f16
-FFI_BSM_HOMO_WARP  (_bool_f16, __half, uint8_t)
-// @BE binary_fcnmm_scatter_hetero_warp_bool_f16
-FFI_BSM_HETERO_WARP(_bool_f16, __half, uint8_t)
-// @BE binary_fcnmm_scatter_homo_warp_float_f16
-FFI_BSM_HOMO_WARP  (_float_f16, __half, __half)
-// @BE binary_fcnmm_scatter_hetero_warp_float_f16
-FFI_BSM_HETERO_WARP(_float_f16, __half, __half)
-// @BE binary_fcnmm_scatter_homo_basic_bool_f16
-FFI_BSM_HOMO_BASIC (_bool_f16, __half, uint8_t)
-// @BE binary_fcnmm_scatter_hetero_basic_bool_f16
-FFI_BSM_HETERO_BASIC(_bool_f16, __half, uint8_t)
-// @BE binary_fcnmm_scatter_homo_basic_float_f16
-FFI_BSM_HOMO_BASIC (_float_f16, __half, __half)
-// @BE binary_fcnmm_scatter_hetero_basic_float_f16
-FFI_BSM_HETERO_BASIC(_float_f16, __half, __half)
-
 // ---- bfloat16: unpacked gather ----
 // @BE binary_fcnmm_gather_homo_warp_bool_bf16
 FFI_BGM_HOMO_WARP  (_bool_bf16, __nv_bfloat16, uint8_t)
@@ -1257,23 +988,40 @@ FFI_BGM_PACKED_HETERO_WARP(_bf16, __nv_bfloat16)
 FFI_BGM_PACKED_HOMO_BASIC (_bf16, __nv_bfloat16, sizeof(float))
 // @BE binary_fcnmm_gather_packed_hetero_basic_bf16
 FFI_BGM_PACKED_HETERO_BASIC(_bf16, __nv_bfloat16, sizeof(float))
-// ---- bfloat16: scatter ----
-// @BE binary_fcnmm_scatter_homo_warp_bool_bf16
-FFI_BSM_HOMO_WARP  (_bool_bf16, __nv_bfloat16, uint8_t)
-// @BE binary_fcnmm_scatter_hetero_warp_bool_bf16
-FFI_BSM_HETERO_WARP(_bool_bf16, __nv_bfloat16, uint8_t)
-// @BE binary_fcnmm_scatter_homo_warp_float_bf16
-FFI_BSM_HOMO_WARP  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @BE binary_fcnmm_scatter_hetero_warp_float_bf16
-FFI_BSM_HETERO_WARP(_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @BE binary_fcnmm_scatter_homo_basic_bool_bf16
-FFI_BSM_HOMO_BASIC (_bool_bf16, __nv_bfloat16, uint8_t)
-// @BE binary_fcnmm_scatter_hetero_basic_bool_bf16
-FFI_BSM_HETERO_BASIC(_bool_bf16, __nv_bfloat16, uint8_t)
-// @BE binary_fcnmm_scatter_homo_basic_float_bf16
-FFI_BSM_HOMO_BASIC (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @BE binary_fcnmm_scatter_hetero_basic_float_bf16
-FFI_BSM_HETERO_BASIC(_float_bf16, __nv_bfloat16, __nv_bfloat16)
+
+// ---- SRAW scatter FFI ----
+// @BE binary_fcnmm_sraw_homo_bool_f32
+FFI_SRAW_FCNMM_HOMO(_bool_f32, float, uint8_t)
+// @BE binary_fcnmm_sraw_homo_float_f32
+FFI_SRAW_FCNMM_HOMO(_float_f32, float, float)
+// @BE binary_fcnmm_sraw_homo_bool_f64
+FFI_SRAW_FCNMM_HOMO(_bool_f64, double, uint8_t)
+// @BE binary_fcnmm_sraw_homo_float_f64
+FFI_SRAW_FCNMM_HOMO(_float_f64, double, double)
+// @BE binary_fcnmm_sraw_homo_bool_f16
+FFI_SRAW_FCNMM_HOMO(_bool_f16, __half, uint8_t)
+// @BE binary_fcnmm_sraw_homo_float_f16
+FFI_SRAW_FCNMM_HOMO(_float_f16, __half, __half)
+// @BE binary_fcnmm_sraw_homo_bool_bf16
+FFI_SRAW_FCNMM_HOMO(_bool_bf16, __nv_bfloat16, uint8_t)
+// @BE binary_fcnmm_sraw_homo_float_bf16
+FFI_SRAW_FCNMM_HOMO(_float_bf16, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_fcnmm_sraw_hetero_bool_f32
+FFI_SRAW_FCNMM_HETERO(_bool_f32, float, uint8_t)
+// @BE binary_fcnmm_sraw_hetero_float_f32
+FFI_SRAW_FCNMM_HETERO(_float_f32, float, float)
+// @BE binary_fcnmm_sraw_hetero_bool_f64
+FFI_SRAW_FCNMM_HETERO(_bool_f64, double, uint8_t)
+// @BE binary_fcnmm_sraw_hetero_float_f64
+FFI_SRAW_FCNMM_HETERO(_float_f64, double, double)
+// @BE binary_fcnmm_sraw_hetero_bool_f16
+FFI_SRAW_FCNMM_HETERO(_bool_f16, __half, uint8_t)
+// @BE binary_fcnmm_sraw_hetero_float_f16
+FFI_SRAW_FCNMM_HETERO(_float_f16, __half, __half)
+// @BE binary_fcnmm_sraw_hetero_bool_bf16
+FFI_SRAW_FCNMM_HETERO(_bool_bf16, __nv_bfloat16, uint8_t)
+// @BE binary_fcnmm_sraw_hetero_float_bf16
+FFI_SRAW_FCNMM_HETERO(_float_bf16, __nv_bfloat16, __nv_bfloat16)
 
 // ---- Spike packing FFI ----
 // @BE binary_fcnmm_pack_bool

@@ -1057,25 +1057,64 @@ def test_fcn_matmat_golden():
                 assert jnp.allclose(got_l, ref_l, atol=1e-5), (cls.__name__, str(ev), n, 'left')
 
 
-def test_fixed_num_per_pre_sraw_rmatmul_route_contract():
-    source = inspect.getsource(FixedNumPerPre.SRAW_rmatmul)
-    assert "value.T" in source
-    assert "transpose=True" in source
-    assert "backend='SRAW_MM_kernel'" in source
-    assert ".T" in source
+def test_fixed_num_per_post_rmatmul_mirror_path_transposes_indexed_output():
+    n_pre, n_post, nbatch = 3, 5, 4
+    indices = jnp.array(
+        [
+            [0, 1],
+            [1, 2],
+            [2, 0],
+            [0, 2],
+            [1, 0],
+        ],
+        dtype=jnp.int32,
+    )
+    data = jnp.arange(1, 11, dtype=jnp.float32).reshape(n_post, 2)
+    mat = FixedNumPerPost((data, indices), shape=(n_pre, n_post), backend='jax_raw')
+    left = jnp.array(
+        [
+            [True, False, True],
+            [False, True, False],
+            [True, True, False],
+            [False, False, True],
+        ],
+        dtype=jnp.bool_,
+    )
+
+    assert mat._ell_transpose(True) is False
+
+    got = BinaryArray(left) @ mat
+    ref = jnp.asarray(left, dtype=jnp.float32) @ jnp.asarray(mat.todense(), dtype=jnp.float32)
+
+    assert got.shape == (nbatch, n_post)
+    assert ref.shape == (nbatch, n_post)
+    assert jnp.allclose(got, ref, atol=1e-5)
 
 
-def test_fixed_num_per_post_sraw_matmul_route_contract():
-    source = inspect.getsource(FixedNumPerPost.SRAW_matmul)
-    assert "shape=self.shape[::-1]" in source
-    assert "transpose=True" in source
-    assert "backend='SRAW_MM_kernel'" in source
-    assert ".T" not in source
+def test_fcn_binary_matmat_dispatch_contract():
+    dispatch_source = inspect.getsource(fcn_main_mod.FixedNumConn._dispatch)
+    assert "_align_binary_matmat_output" in dispatch_source
+    assert "_binary_matmat(value.T, transpose_W).T" not in dispatch_source
+    assert "expected_shape = (value.shape[0], self.shape[1])" in dispatch_source
+    assert "expected_shape = (self.shape[0], value.shape[1])" in dispatch_source
+
+
+def test_fcn_binary_matmat_output_adapter_contract():
+    raw_batch_first = jnp.ones((3, 5))
+    raw_neuron_first = jnp.ones((5, 3))
+    assert fcn_main_mod._align_binary_matmat_output(
+        raw_batch_first, (3, 5), "pre"
+    ).shape == (3, 5)
+    assert fcn_main_mod._align_binary_matmat_output(
+        raw_neuron_first, (3, 5), "pre"
+    ).shape == (3, 5)
+    with pytest.raises(ValueError, match="binary matmat output shape mismatch"):
+        fcn_main_mod._align_binary_matmat_output(jnp.ones((2, 4)), (3, 5), "pre")
 
 
 def test_fcn_sraw_kernel_names_do_not_use_test_prefix():
     fcn_dir = Path(__file__).parent
-    cuda_source = fcn_dir.joinpath('fcnmm_SRAW.cu').read_text()
+    cuda_source = fcn_dir.joinpath('binary_fcnmm.cu').read_text()
     binary_source = fcn_dir.joinpath('binary.py').read_text()
     combined = cuda_source + binary_source
 

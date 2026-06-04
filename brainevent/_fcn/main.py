@@ -80,6 +80,18 @@ def _contains_invalid_indices(indices: Index, *, upper_bound: int) -> bool:
             )
 
 
+def _align_binary_matmat_output(result, expected_shape, op_name: str):
+    expected_shape = tuple(expected_shape)
+    if tuple(result.shape) == expected_shape:
+        return result
+    if result.ndim == 2 and tuple(result.T.shape) == expected_shape:
+        return result.T
+    raise ValueError(
+        f'binary matmat output shape mismatch in {op_name}: '
+        f'got {result.shape}, expected {expected_shape}.'
+    )
+
+
 def _ensure_fixed_conn_initialized_outside_jit(indices: Index, *, kind: str) -> None:
     if isinstance(indices, Tracer):
         raise RuntimeError(
@@ -314,8 +326,16 @@ class FixedNumConn(DataRepresentation):
                 return self._binary_matvec(value, transpose_W)
             elif value.ndim == 2:
                 if transpose_W:
-                    return self._binary_matmat(value.T, transpose_W).T
-                return self._binary_matmat(value, transpose_W)
+                    expected_shape = (value.shape[0], self.shape[1])
+                    result = self._binary_matmat(value.T, transpose_W)
+                    return _align_binary_matmat_output(
+                        result, expected_shape, f'{type(self).__name__}.__rmatmul__'
+                    )
+                expected_shape = (self.shape[0], value.shape[1])
+                result = self._binary_matmat(value, transpose_W)
+                return _align_binary_matmat_output(
+                    result, expected_shape, f'{type(self).__name__}.__matmul__'
+                )
             else:
                 raise NotImplementedError(f"matmul with object of shape {value.shape}")
 
@@ -797,22 +817,6 @@ class FixedNumPerPre(FixedNumConn):
         assert axes is None, "transpose does not support axes argument."
         return FixedNumPerPost(self.data, self.indices, shape=self.shape[::-1], backend=self.backend)
 
-    def SRAW_rmatmul(self, other):
-        """Special SRAW ``other @ self`` helper for 2D binary events.
-
-        This is an opt-in transitional implementation.  Once the indexed SRAW
-        path is available, SRAW is expected to replace the current FCN MM
-        operator family rather than remain a separate helper.
-        """
-        if isinstance(other, BinaryArray):
-            value = other.value
-            if value.ndim == 2:
-                return binary_fcnmm(
-                    self.data, self.indices, value.T,
-                    shape=self.shape, transpose=True, backend='SRAW_MM_kernel',
-                ).T
-        return self.__rmatmul__(other)
-
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
         """Pre-spike STDP (favorable, row-driven) -- mirrors :meth:`brainevent.CSR.update_on_pre`."""
         new = update_fixed_post_conn_on_binary_pre(
@@ -1029,22 +1033,6 @@ class FixedNumPerPost(FixedNumConn):
             shape=self.shape[::-1],
             backend=self.backend,
         )
-
-    def SRAW_matmul(self, other):
-        """Special SRAW ``self @ other`` helper for 2D binary events.
-
-        This is an opt-in transitional implementation.  Once the indexed SRAW
-        path is available, SRAW is expected to replace the current FCN MM
-        operator family rather than remain a separate helper.
-        """
-        if isinstance(other, BinaryArray):
-            value = other.value
-            if value.ndim == 2:
-                return binary_fcnmm(
-                    self.data, self.indices, value,
-                    shape=self.shape[::-1], transpose=True, backend='SRAW_MM_kernel',
-                )
-        return self.__matmul__(other)
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
         """Pre-spike STDP (unfavorable) -- mirrors :meth:`brainevent.CSC.update_on_pre` (perm-fused)."""

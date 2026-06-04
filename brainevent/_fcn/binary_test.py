@@ -18,6 +18,7 @@
 
 import inspect
 import random
+from pathlib import Path
 
 import brainstate
 import braintools
@@ -102,24 +103,69 @@ def test_ell_binary_matvec_cuda_kernel_is_scatter_only():
 
 
 def test_binary_fcnmm_cuda_operator_names_are_not_col_scatter():
-    # The FCN matmat CUDA kernel must use the native ELL gather/scatter names,
-    # never the (removed) column-scatter variants.
+    # The FCN matmat CUDA kernel keeps the native ELL gather names, but its
+    # scatter path is routed through SRAW rather than the old BSM scatter FFI.
     cuda_kernel_source = inspect.getsource(binary_mod._binary_fcnmm_cuda_kernel)
+    sraw_kernel_source = inspect.getsource(binary_mod._binary_fcnmm_sraw_cuda_kernel)
     assert "binary_fcnmm.cu" in cuda_kernel_source
+    assert "_binary_fcnmm_sraw_cuda_kernel" in cuda_kernel_source
+    assert "binary_fcnmm_pack" in cuda_kernel_source
+    assert "ell_binary_matmat_pack" not in cuda_kernel_source
+    assert "binary_fcnmm.cu" in sraw_kernel_source
+    assert "binary_fcnmm_sraw" in sraw_kernel_source
+    assert "fcn_binary_mm." in sraw_kernel_source
+    assert "binary_fcnmm_scatter" not in cuda_kernel_source
+    assert "binary_fcnmm_scatter" not in sraw_kernel_source
     assert "binary_fcnmm_col_scatter.cu" not in cuda_kernel_source
     assert "fcn_binary_mm_col_scatter" not in cuda_kernel_source
     assert "binary_fcnmm_col_scatter" not in cuda_kernel_source
 
 
+def test_binary_fcnmm_cuda_source_embeds_sraw_and_has_no_legacy_scatter_kernels():
+    fcn_dir = Path(__file__).parent
+    cuda_source = fcn_dir.joinpath('binary_fcnmm.cu').read_text()
+
+    assert not fcn_dir.joinpath('fcnmm_SRAW.cu').exists()
+    assert "binary_fcnmm_scatter" not in cuda_source
+    assert "BSM_" not in cuda_source
+    assert "_bsm_" not in cuda_source
+    assert "binary_fcnmm_sraw_homo" in cuda_source
+    assert "binary_fcnmm_sraw_hetero" in cuda_source
+
+
 def test_binary_fcnmm_sraw_backend_contract():
-    # The SRAW backend keeps its CUDA output as [batch, post], then transposes
-    # back to the binary_fcnmm transpose=True contract [post, batch].
-    sraw_kernel_source = inspect.getsource(binary_mod._SRAW_MM_kernel)
-    assert "fcnmm_SRAW.cu" in sraw_kernel_source
-    assert "fcn_binary_mm_sraw" in sraw_kernel_source
+    sraw_entry_source = inspect.getsource(binary_mod._SRAW_MM_kernel)
+    sraw_kernel_source = inspect.getsource(binary_mod._binary_fcnmm_sraw_cuda_kernel)
+    assert "_binary_fcnmm_sraw_cuda_kernel" in sraw_entry_source
+    assert "binary_fcnmm.cu" in sraw_kernel_source
+    assert "fcn_binary_mm" in sraw_kernel_source
+    assert "logical_out" not in sraw_kernel_source
     assert "sraw_out" in sraw_kernel_source
-    assert ".T" in sraw_kernel_source
+    assert "return raw," in sraw_kernel_source
+    assert "raw.T" not in sraw_kernel_source
     assert "SRAW_MM_kernel" in binary_mod.binary_fcnmm_p.available_backends('gpu')
+
+
+def test_binary_fcnmm_cuda_raw_transpose_true_out_shape_is_raw_batch_first():
+    source = inspect.getsource(binary_mod.binary_fcnmm_p_call)
+    assert binary_mod._binary_fcnmm_uses_raw_batch_first(transpose=True, backend='cuda_raw')
+    assert binary_mod._binary_fcnmm_uses_raw_batch_first(transpose=True, backend='SRAW_MM_kernel')
+    assert not binary_mod._binary_fcnmm_uses_raw_batch_first(transpose=False, backend='cuda_raw')
+    assert not binary_mod._binary_fcnmm_uses_raw_batch_first(transpose=True, backend='jax_raw')
+    assert "(matrix.shape[1], n_post)" in source
+
+
+def test_binary_fcnmm_transform_adapter_contract():
+    helper_source = inspect.getsource(binary_mod._binary_fcnmm_uses_raw_batch_first)
+    ct_shape_source = inspect.getsource(binary_mod._logical_transpose_true_shape_from_cotangent)
+    matrix_source = inspect.getsource(binary_mod._binary_fcnmm_jvp_matrix)
+    weights_source = inspect.getsource(binary_mod._binary_fcnmm_jvp_weights)
+    transpose_source = inspect.getsource(binary_mod._binary_fcnmm_transpose_rule)
+    combined = helper_source + ct_shape_source + matrix_source + weights_source + transpose_source
+    assert "_maybe_transpose_to_expected" in combined
+    assert "cuda_raw" in combined
+    assert "expected_shape" in combined
+    assert "_logical_transpose_true_shape_from_cotangent" in transpose_source
 
 
 # ---------------------------------------------------------------------------
