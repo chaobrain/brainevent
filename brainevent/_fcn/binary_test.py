@@ -111,6 +111,17 @@ def test_binary_fcnmm_cuda_operator_names_are_not_col_scatter():
     assert "binary_fcnmm_col_scatter" not in cuda_kernel_source
 
 
+def test_binary_fcnmm_sraw_backend_contract():
+    # The SRAW backend keeps its CUDA output as [batch, post], then transposes
+    # back to the binary_fcnmm transpose=True contract [post, batch].
+    sraw_kernel_source = inspect.getsource(binary_mod._SRAW_MM_kernel)
+    assert "fcnmm_SRAW.cu" in sraw_kernel_source
+    assert "fcn_binary_mm_sraw" in sraw_kernel_source
+    assert "sraw_out" in sraw_kernel_source
+    assert ".T" in sraw_kernel_source
+    assert "SRAW_MM_kernel" in binary_mod.binary_fcnmm_p.available_backends('gpu')
+
+
 # ---------------------------------------------------------------------------
 # Reference helpers
 # ---------------------------------------------------------------------------

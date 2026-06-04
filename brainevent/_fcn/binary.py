@@ -840,6 +840,50 @@ def _binary_fcnmm_cuda_kernel(
     return kernel
 
 
+def _SRAW_MM_kernel(
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    if not transpose:
+        return _binary_fcnmm_cuda_kernel(
+            transpose, weight_info, matrix_info, indices_info, **kwargs
+        )
+
+    load_cuda_file(
+        Path(__file__).parent.joinpath('fcnmm_SRAW.cu'),
+        name='fcn_binary_mm_sraw',
+    )
+
+    logical_out = kwargs['outs'][0]
+    sraw_out = jax.ShapeDtypeStruct(
+        (matrix_info.shape[1], logical_out.shape[0]),
+        logical_out.dtype,
+    )
+    is_bool_matrix = (matrix_info.dtype == jnp.bool_)
+    _dtype_sfx = {
+        np.dtype('float16'): '_f16',
+        np.dtype('float32'): '_f32',
+        np.dtype('float64'): '_f64',
+        np.dtype('bfloat16'): '_bf16'
+    }
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
+    spike_sfx = '_bool' if is_bool_matrix else '_float'
+    kernel_name = (
+        'fcn_binary_mm_sraw.'
+        f'binary_fcnmm_test_colmajor_fullwarp_nocap{mode_sfx}{spike_sfx}{sfx}'
+    )
+
+    def kernel(weights, indices, matrix):
+        raw = jax.ffi.ffi_call(kernel_name, sraw_out)(weights, indices, matrix)
+        return raw.T,
+
+    return kernel
+
+
 def _binary_fcnmm_jax_kernel(
     shape: Tuple[int, int],
     transpose: bool,
@@ -1089,6 +1133,8 @@ binary_fcnmm_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel, asdefault=True)
 binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
+
+binary_fcnmm_p.def_kernel('SRAW_MM_kernel', 'gpu', _SRAW_MM_kernel)
 
 binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
 binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)

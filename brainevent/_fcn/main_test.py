@@ -20,6 +20,7 @@ os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 
 import functools
+import inspect
 import numpy as np
 
 import brainstate
@@ -1053,6 +1054,22 @@ def test_fcn_matmat_golden():
                 got_l = BinaryArray(left) @ M
                 ref_l = jnp.asarray(left, dtype=jnp.float32) @ dense
                 assert jnp.allclose(got_l, ref_l, atol=1e-5), (cls.__name__, str(ev), n, 'left')
+
+
+def test_fixed_num_per_pre_sraw_rmatmul_route_contract():
+    source = inspect.getsource(FixedNumPerPre.SRAW_rmatmul)
+    assert "value.T" in source
+    assert "transpose=True" in source
+    assert "backend='SRAW_MM_kernel'" in source
+    assert ".T" in source
+
+
+def test_fixed_num_per_post_sraw_matmul_route_contract():
+    source = inspect.getsource(FixedNumPerPost.SRAW_matmul)
+    assert "shape=self.shape[::-1]" in source
+    assert "transpose=True" in source
+    assert "backend='SRAW_MM_kernel'" in source
+    assert ".T" not in source
 
 
 def test_fcn_matmat_unfavorable_builds_weight_indices():

@@ -797,6 +797,22 @@ class FixedNumPerPre(FixedNumConn):
         assert axes is None, "transpose does not support axes argument."
         return FixedNumPerPost(self.data, self.indices, shape=self.shape[::-1], backend=self.backend)
 
+    def SRAW_rmatmul(self, other):
+        """Special SRAW ``other @ self`` helper for 2D binary events.
+
+        This is an opt-in transitional implementation.  Once the indexed SRAW
+        path is available, SRAW is expected to replace the current FCN MM
+        operator family rather than remain a separate helper.
+        """
+        if isinstance(other, BinaryArray):
+            value = other.value
+            if value.ndim == 2:
+                return binary_fcnmm(
+                    self.data, self.indices, value.T,
+                    shape=self.shape, transpose=True, backend='SRAW_MM_kernel',
+                ).T
+        return self.__rmatmul__(other)
+
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
         """Pre-spike STDP (favorable, row-driven) -- mirrors :meth:`brainevent.CSR.update_on_pre`."""
         new = update_fixed_post_conn_on_binary_pre(
@@ -1013,6 +1029,22 @@ class FixedNumPerPost(FixedNumConn):
             shape=self.shape[::-1],
             backend=self.backend,
         )
+
+    def SRAW_matmul(self, other):
+        """Special SRAW ``self @ other`` helper for 2D binary events.
+
+        This is an opt-in transitional implementation.  Once the indexed SRAW
+        path is available, SRAW is expected to replace the current FCN MM
+        operator family rather than remain a separate helper.
+        """
+        if isinstance(other, BinaryArray):
+            value = other.value
+            if value.ndim == 2:
+                return binary_fcnmm(
+                    self.data, self.indices, value,
+                    shape=self.shape[::-1], transpose=True, backend='SRAW_MM_kernel',
+                )
+        return self.__matmul__(other)
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
         """Pre-spike STDP (unfavorable) -- mirrors :meth:`brainevent.CSC.update_on_pre` (perm-fused)."""
