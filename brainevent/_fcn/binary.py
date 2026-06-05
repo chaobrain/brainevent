@@ -771,13 +771,6 @@ def _binary_fcnmm_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    load_cuda_file(
-        Path(__file__).parent.joinpath('binary_fcnmm.cu'),
-        name='fcn_binary_mm',
-    )
-
-    out_info = kwargs['outs']
-    n_conn = indices_info.shape[1]
     is_bool_matrix = (matrix_info.dtype == jnp.bool_)
     _dtype_sfx = {
         np.dtype('float16'): '_f16',
@@ -791,54 +784,137 @@ def _binary_fcnmm_cuda_kernel(
     spike_sfx = '_bool' if is_bool_matrix else '_float'
 
     if transpose:
-        # Scatter mode
+        return _binary_fcnmm_sraw_cuda_kernel(
+            transpose, weight_info, matrix_info, indices_info, **kwargs
+        )
+
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_fcnmm.cu'),
+        name='fcn_binary_mm',
+    )
+
+    out_info = kwargs['outs']
+    n_conn = indices_info.shape[1]
+    # Gather mode — use packed path for large matrices to fit in L2 cache
+    n_rows = matrix_info.shape[0]
+    n_batch = matrix_info.shape[1]
+    elem_size = {
+        np.dtype('bool'): 1, np.dtype('uint8'): 1,
+        np.dtype('float16'): 2, np.dtype('bfloat16'): 2,
+        np.dtype('float32'): 4, np.dtype('float64'): 8,
+    }.get(np.dtype(matrix_info.dtype), 4)
+    mat_bytes = n_rows * n_batch * elem_size
+    # Use packed path when spike matrix exceeds ~1MB (half L2 on most GPUs)
+    use_packed = (mat_bytes > 1024 * 1024)
+
+    if use_packed:
+        # Step 1: pack spikes into uint32 bitmasks
+        pack_sfx = '_bool' if is_bool_matrix else sfx
+        pack_name = f'fcn_binary_mm.binary_fcnmm_pack{pack_sfx}'
+        n_batch_words = (n_batch + 31) // 32
+        packed_info = jax.ShapeDtypeStruct((n_rows, n_batch_words), jnp.uint32)
+        # Step 2: run packed gather kernel
+        size_sfx = '_warp' if n_conn <= 32 else '_basic'
+        packed_gather_name = f'fcn_binary_mm.binary_fcnmm_gather_packed{mode_sfx}{size_sfx}{sfx}'
+
+        def kernel(weights, indices, matrix):
+            packed = jax.ffi.ffi_call(pack_name, packed_info)(matrix)
+            return jax.ffi.ffi_call(packed_gather_name, out_info)(weights, indices, packed)
+    else:
+        # Small matrix — use unpacked gather directly
         kernel_name = (
-            f'fcn_binary_mm.binary_fcnmm_scatter{mode_sfx}_warp{spike_sfx}{sfx}'
+            f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_warp{spike_sfx}{sfx}'
             if n_conn <= 32
-            else f'fcn_binary_mm.binary_fcnmm_scatter{mode_sfx}_basic{spike_sfx}{sfx}'
+            else f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_basic{spike_sfx}{sfx}'
         )
 
         def kernel(weights, indices, matrix):
             return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
-    else:
-        # Gather mode — use packed path for large matrices to fit in L2 cache
-        n_rows = matrix_info.shape[0]
-        n_batch = matrix_info.shape[1]
-        elem_size = {
-            np.dtype('bool'): 1, np.dtype('uint8'): 1,
-            np.dtype('float16'): 2, np.dtype('bfloat16'): 2,
-            np.dtype('float32'): 4, np.dtype('float64'): 8,
-        }.get(np.dtype(matrix_info.dtype), 4)
-        mat_bytes = n_rows * n_batch * elem_size
-        # Use packed path when spike matrix exceeds ~1MB (half L2 on most GPUs)
-        use_packed = (mat_bytes > 1024 * 1024)
-
-        if use_packed:
-            # Step 1: pack spikes into uint32 bitmasks
-            pack_sfx = '_bool' if is_bool_matrix else sfx
-            pack_name = f'fcn_binary_mm.ell_binary_matmat_pack{pack_sfx}'
-            n_batch_words = (n_batch + 31) // 32
-            packed_info = jax.ShapeDtypeStruct((n_rows, n_batch_words), jnp.uint32)
-            # Step 2: run packed gather kernel
-            size_sfx = '_warp' if n_conn <= 32 else '_basic'
-            packed_gather_name = f'fcn_binary_mm.binary_fcnmm_gather_packed{mode_sfx}{size_sfx}{sfx}'
-
-            def kernel(weights, indices, matrix):
-                packed = jax.ffi.ffi_call(pack_name, packed_info)(matrix)
-                return jax.ffi.ffi_call(packed_gather_name, out_info)(weights, indices, packed)
-        else:
-            # Small matrix — use unpacked gather directly
-            kernel_name = (
-                f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_warp{spike_sfx}{sfx}'
-                if n_conn <= 32
-                else f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_basic{spike_sfx}{sfx}'
-            )
-
-            def kernel(weights, indices, matrix):
-                return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
 
     return kernel
 
+
+def _binary_fcnmm_sraw_cuda_kernel(
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_fcnmm.cu'),
+        name='fcn_binary_mm',
+    )
+
+    sraw_out = jax.ShapeDtypeStruct(
+        kwargs['outs'][0].shape,
+        kwargs['outs'][0].dtype,
+    )
+    is_bool_matrix = (matrix_info.dtype == jnp.bool_)
+    _dtype_sfx = {
+        np.dtype('float16'): '_f16',
+        np.dtype('float32'): '_f32',
+        np.dtype('float64'): '_f64',
+        np.dtype('bfloat16'): '_bf16'
+    }
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
+    spike_sfx = '_bool' if is_bool_matrix else '_float'
+    
+    '''
+    if araw :
+        kernel_name = (
+            'fcn_binary_mm.'
+            f'binary_fcnmm_araw{mode_sfx}{spike_sfx}{sfx}'
+        )
+    else sraw:
+
+    '''
+    
+    kernel_name = (
+        'fcn_binary_mm.'
+        f'binary_fcnmm_sraw{mode_sfx}{spike_sfx}{sfx}'
+    )
+
+    def kernel(weights, indices, matrix):
+        raw = jax.ffi.ffi_call(kernel_name, sraw_out)(weights, indices, matrix)
+        return raw,
+
+    return kernel
+
+
+
+
+def _binary_fcnmm_uses_raw_batch_first(*, transpose, backend, platform=None):
+    if not transpose:
+        return False
+    if backend in ('cuda_raw', 'SRAW_MM_kernel'):
+        return True
+    if backend is None:
+        platform = jax.default_backend() if platform is None else platform
+        if platform == 'gpu':
+            gpu_backend = get_backend('gpu')
+            return gpu_backend in (None, 'cuda_raw', 'SRAW_MM_kernel')
+    return False
+
+
+def _maybe_transpose_to_expected(value, expected_shape, *, op_name):
+    if type(value) is ad.Zero:
+        return value
+    if tuple(value.shape) == tuple(expected_shape):
+        return value
+    if value.ndim == 2 and tuple(value.T.shape) == tuple(expected_shape):
+        return value.T
+    raise ValueError(
+        f'{op_name} shape mismatch: got {value.shape}, expected {expected_shape}.'
+    )
+
+
+def _logical_transpose_true_shape_from_cotangent(ct, shape):
+    if tuple(ct.shape)[0] == shape[1]:
+        return tuple(ct.shape)
+    return (shape[1], ct.shape[0])
 
 def _binary_fcnmm_jax_kernel(
     shape: Tuple[int, int],
@@ -882,13 +958,25 @@ def _binary_fcnmm_jax_kernel(
 
 
 def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return fcnmm(weights, indices, matrix_dot, shape=shape, transpose=transpose),
+    tangent = fcnmm(weights, indices, matrix_dot, shape=shape, transpose=transpose)
+    if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=kwargs.get('backend')):
+        expected_shape = (matrix.shape[1], shape[1])
+        tangent = _maybe_transpose_to_expected(
+            tangent, expected_shape, op_name='binary_fcnmm matrix JVP'
+        )
+    return tangent,
 
 
 def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return binary_fcnmm_p_call(
+    tangent = binary_fcnmm_p_call(
         weights_dot, indices, matrix, shape=shape, transpose=transpose, backend=kwargs['backend']
-    )
+    )[0]
+    if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=kwargs.get('backend')):
+        expected_shape = (matrix.shape[1], shape[1])
+        tangent = _maybe_transpose_to_expected(
+            tangent, expected_shape, op_name='binary_fcnmm weight JVP'
+        )
+    return tangent,
 
 
 def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpose, weight_info, **kwargs):
@@ -896,6 +984,14 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
     ct = ct[0]
+    if (
+        type(ct) is not ad.Zero
+        and _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=kwargs.get('backend'))
+    ):
+        logical_ct_shape = _logical_transpose_true_shape_from_cotangent(ct, shape)
+        ct = _maybe_transpose_to_expected(
+            ct, logical_ct_shape, op_name='binary_fcnmm transpose cotangent'
+        )
 
     # dL/dspk = dL/dy * dy/dspk
     homo = weight_info.size == 1
@@ -921,6 +1017,9 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
                 transpose=transpose,
                 backend=kwargs['backend'],
             )[0]
+            ct_weight = _maybe_transpose_to_expected(
+                ct_weight, ct.shape, op_name='binary_fcnmm transpose homo weight'
+            )
             ct_weight = jnp.sum(ct * ct_weight).reshape(*weight_info.shape)
 
         else:
@@ -1043,6 +1142,8 @@ def binary_fcnmm_p_call(
     binary_fcnmm : High-level wrapper with unit support.
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
+    if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=backend):
+        out = jax.ShapeDtypeStruct((matrix.shape[1], n_post), weights.dtype)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
     return binary_fcnmm_p(
         weights,
