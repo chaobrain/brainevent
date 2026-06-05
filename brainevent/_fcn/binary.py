@@ -841,10 +841,6 @@ def _binary_fcnmm_sraw_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    if not transpose:
-        return _binary_fcnmm_cuda_kernel(
-            transpose, weight_info, matrix_info, indices_info, **kwargs
-        )
 
     load_cuda_file(
         Path(__file__).parent.joinpath('binary_fcnmm.cu'),
@@ -865,6 +861,17 @@ def _binary_fcnmm_sraw_cuda_kernel(
     sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
     mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
     spike_sfx = '_bool' if is_bool_matrix else '_float'
+    
+    '''
+    if araw :
+        kernel_name = (
+            'fcn_binary_mm.'
+            f'binary_fcnmm_araw{mode_sfx}{spike_sfx}{sfx}'
+        )
+    else sraw:
+
+    '''
+    
     kernel_name = (
         'fcn_binary_mm.'
         f'binary_fcnmm_sraw{mode_sfx}{spike_sfx}{sfx}'
@@ -877,16 +884,6 @@ def _binary_fcnmm_sraw_cuda_kernel(
     return kernel
 
 
-def _SRAW_MM_kernel(
-    transpose: bool,
-    weight_info: jax.ShapeDtypeStruct,
-    matrix_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    return _binary_fcnmm_sraw_cuda_kernel(
-        transpose, weight_info, matrix_info, indices_info, **kwargs
-    )
 
 
 def _binary_fcnmm_uses_raw_batch_first(*, transpose, backend, platform=None):
@@ -1193,8 +1190,6 @@ binary_fcnmm_p.def_cuda_raw_kernel(_binary_fcnmm_cuda_kernel, asdefault=True)
 binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
-
-binary_fcnmm_p.def_kernel('SRAW_MM_kernel', 'gpu', _SRAW_MM_kernel)
 
 binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
 binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
