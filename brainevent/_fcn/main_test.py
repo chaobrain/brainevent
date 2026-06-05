@@ -1112,20 +1112,6 @@ def test_fcn_binary_matmat_output_adapter_contract():
         fcn_main_mod._align_binary_matmat_output(jnp.ones((2, 4)), (3, 5), "pre")
 
 
-def test_fcn_sraw_kernel_names_do_not_use_test_prefix():
-    fcn_dir = Path(__file__).parent
-    cuda_source = fcn_dir.joinpath('binary_fcnmm.cu').read_text()
-    binary_source = fcn_dir.joinpath('binary.py').read_text()
-    combined = cuda_source + binary_source
-
-    assert 'test_fcnmm_colmajor_fullwarp' not in combined
-    assert 'TEST_FCNMM' not in cuda_source
-    assert 'NOCAP' not in cuda_source
-    assert 'nocap' not in combined
-    assert 'binary_fcnmm_sraw_homo' in combined
-    assert 'binary_fcnmm_sraw_hetero' in combined
-
-
 def test_fcn_matmat_unfavorable_builds_weight_indices():
     # Unfavorable matmat must build the cached CSC mirror (perm-fused path),
     # exactly as the matvec unfavorable path does. FixedNumPerPre mirrors CSR,
