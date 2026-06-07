@@ -26,8 +26,8 @@ from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
-from brainevent._jit_conn_csr import jitc_to_csr
 from .binary import binary_jitsmv, binary_jitsmm
+from .csr import jits_to_csr
 from .float import jits, jitsmv, jitsmm
 
 __all__ = [
@@ -338,14 +338,12 @@ class JITCScalarMatrix(JITCMatrix):
             >>> csr.shape
             (10, 10)
         """
-        return jitc_to_csr(
-            self.weight,
+        return jits_to_csr(
             self.weight,
             self.prob,
             self.seed,
             shape=self.shape,
             corder=self.corder,
-            dist='scalar',
             backend=self.backend,
         )
 
