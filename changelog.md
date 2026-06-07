@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-07
+
 ### Added
 
 - **Sparse row slicing** for `CSR`, `CSC`, `FixedNumPerPre`, and `FixedNumPerPost`:
@@ -156,7 +158,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CSR solve test tolerances for numerical stability (#37)
 - CI configuration to use development requirements for CPU installation
 
-## [0.1.0] - 2025-05-02
+## [V0.1.0] - 2025-05-02 — GitHub tag only, never published to PyPI
+
+> **Historical note:** The `V0.1.0` git tag was published on GitHub on 2025-05-02
+> but was **never released to PyPI**. The PyPI distribution line continued as
+> `0.0.1.postN` → `0.0.2` … `0.0.7`; the first `0.1.0` published to PyPI is the
+> entry dated 2026-06-07 at the top of this file. This section is retained for
+> historical accuracy.
 
 ### Added
 - Just-In-Time Connectivity (JITC) matrix operators for CSR format (#18)
@@ -221,8 +229,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version Comparison Links
 
+- [0.1.0](https://github.com/chaobrain/brainevent/compare/v0.0.7...v0.1.0)
 - [0.0.7](https://github.com/chaobrain/brainevent/compare/v0.0.6...v0.0.7)
 - [0.0.6](https://github.com/chaobrain/brainevent/compare/v0.0.5...v0.0.6)
 - [0.0.5](https://github.com/chaobrain/brainevent/compare/V0.0.4...v0.0.5)
 - [0.0.4](https://github.com/chaobrain/brainevent/compare/V0.1.0...V0.0.4)
-- [0.1.0](https://github.com/chaobrain/brainevent/releases/tag/V0.1.0)
+- [V0.1.0 — GitHub tag, 2025-05-02, never published to PyPI](https://github.com/chaobrain/brainevent/releases/tag/V0.1.0)

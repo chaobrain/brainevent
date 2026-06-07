@@ -17,7 +17,6 @@ import inspect
 from functools import partial
 from typing import Tuple, NamedTuple, Sequence, Union, Callable, Optional
 
-import brainstate.environ
 import brainunit as u
 import jax
 import jax.numpy as jnp
@@ -1001,31 +1000,34 @@ def coo_to_csc_index(
         ... )
     """
     n_post = shape[1]
+    # int32 is brainevent's canonical index dtype (cf. ``CSR`` / ``index_dtype``).
+    # Defined locally so this helper stays free of an external precision provider.
+    index_dtype = jnp.int32
     if isinstance(indices, np.ndarray) and isinstance(pre_ids, np.ndarray):
         # to maintain the original order of the elements with the same value
         new_post_position = np.argsort(indices, kind='stable')
-        pre_ids_new = np.asarray(pre_ids[new_post_position], dtype=brainstate.environ.ditype())
+        pre_ids_new = np.asarray(pre_ids[new_post_position], dtype=index_dtype)
 
         unique_post_ids, count = np.unique(indices, return_counts=True)
-        post_count = np.zeros(n_post, dtype=brainstate.environ.ditype())
+        post_count = np.zeros(n_post, dtype=index_dtype)
         post_count[unique_post_ids] = count
 
         indptr_new = np.insert(post_count.cumsum(), 0, 0)
-        indptr_new = np.asarray(indptr_new, dtype=brainstate.environ.ditype())
+        indptr_new = np.asarray(indptr_new, dtype=index_dtype)
 
     else:
         # to maintain the original order of the elements with the same value
 
         with jax.ensure_compile_time_eval():
             new_post_position = jnp.argsort(indices, stable=True)
-            pre_ids_new = jnp.asarray(pre_ids[new_post_position], dtype=brainstate.environ.ditype())
+            pre_ids_new = jnp.asarray(pre_ids[new_post_position], dtype=index_dtype)
 
             unique_post_ids, count = jnp.unique(indices, return_counts=True)
-            post_count = jnp.zeros(n_post, dtype=brainstate.environ.ditype())
+            post_count = jnp.zeros(n_post, dtype=index_dtype)
             post_count = post_count.at[unique_post_ids].set(count)
 
             indptr_new = jnp.insert(post_count.cumsum(), 0, 0)
-            indptr_new = jnp.asarray(indptr_new, dtype=brainstate.environ.ditype())
+            indptr_new = jnp.asarray(indptr_new, dtype=index_dtype)
 
     return indptr_new, pre_ids_new, new_post_position
 
@@ -1098,30 +1100,33 @@ def coo2csr(
         [0 2 1 3 0]
     """
     n_pre = shape[0]
+    # int32 is brainevent's canonical index dtype (cf. ``CSR`` / ``index_dtype``).
+    # Defined locally so this helper stays free of an external precision provider.
+    index_dtype = jnp.int32
     if isinstance(row_ids, np.ndarray) and isinstance(col_ids, np.ndarray):
         # stable sort keeps the original order of entries within each row
         order = np.argsort(row_ids, kind='stable')
-        csr_indices = np.asarray(col_ids[order], dtype=brainstate.environ.ditype())
+        csr_indices = np.asarray(col_ids[order], dtype=index_dtype)
 
         unique_row_ids, count = np.unique(row_ids, return_counts=True)
-        row_count = np.zeros(n_pre, dtype=brainstate.environ.ditype())
+        row_count = np.zeros(n_pre, dtype=index_dtype)
         row_count[unique_row_ids] = count
 
         csr_indptr = np.insert(row_count.cumsum(), 0, 0)
-        csr_indptr = np.asarray(csr_indptr, dtype=brainstate.environ.ditype())
+        csr_indptr = np.asarray(csr_indptr, dtype=index_dtype)
 
     else:
         with jax.ensure_compile_time_eval():
             # stable sort keeps the original order of entries within each row
             order = jnp.argsort(row_ids, stable=True)
-            csr_indices = jnp.asarray(col_ids[order], dtype=brainstate.environ.ditype())
+            csr_indices = jnp.asarray(col_ids[order], dtype=index_dtype)
 
             unique_row_ids, count = jnp.unique(row_ids, return_counts=True)
-            row_count = jnp.zeros(n_pre, dtype=brainstate.environ.ditype())
+            row_count = jnp.zeros(n_pre, dtype=index_dtype)
             row_count = row_count.at[unique_row_ids].set(count)
 
             csr_indptr = jnp.insert(row_count.cumsum(), 0, 0)
-            csr_indptr = jnp.asarray(csr_indptr, dtype=brainstate.environ.ditype())
+            csr_indptr = jnp.asarray(csr_indptr, dtype=index_dtype)
 
     return csr_indptr, csr_indices, order
 
