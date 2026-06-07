@@ -7,50 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [0.1.0] - 2026-06-07
+
+First stable feature release of `BrainEvent` on PyPI. It consolidates the
+event-driven data structures (binary / bit-packed / compact events; `CSR` / `CSC`,
+fixed-number connectivity, and just-in-time connectivity matrices) behind a
+single, uniform API, ships inline type information, and retires the legacy names
+accumulated during the `0.0.x` series.
+
+> **Not to be confused with the historical `V0.1.0` git tag** (2025-05-02), which
+> was tagged on GitHub but never published to PyPI. The PyPI line ran
+> `0.0.1.postN` → … → `0.0.7`; this `0.1.0` is the first `0.1.0` distributed on
+> PyPI. See the `[V0.1.0]` section below for the historical note.
+
+**Requirements:** Python ≥ 3.11, `jax` ≥ 0.5.0, `brainunit` ≥ 0.0.8, `numpy`,
+`absl-py`.
+
+### ⚠️ Breaking changes & migration
+
+This release standardizes naming, but **retains a backward-compatibility shim** so
+every public name exported by v0.0.7 stays importable (see _Deprecated_ below).
+Renamed symbols forward to their replacement with a `DeprecationWarning`; names
+whose underlying functionality was removed raise an `AttributeError` that names the
+replacement. Recommended updates:
+
+| Deprecated / changed name | Replacement / migration |
+| --- | --- |
+| `EventArray` | `BinaryArray` |
+| `JITCHomoR` / `JITCHomoC` | `JITCScalarR` / `JITCScalarC` |
+| `FixedPostNumConn` / `FixedPreNumConn` | `FixedNumPerPre` / `FixedNumPerPost` |
+| `FixedNumConn.to_csr` / `to_csc` / `to_dense` | `tocsr` / `tocsc` / `todense` |
+| `csr_on_pre`, `csr2csc_on_post`, `dense_on_pre`, `dense_on_post` | `update_csr_on_binary_pre`, `update_csc_on_binary_post`, `update_dense_on_binary_pre`, `update_dense_on_binary_post` |
+| `EllLayout` / `CscLayout` | (removed — use the canonical representations) |
+| `COO` sparse class & operators | `CSR` / `CSC` (+ `coo2csr` and the `*_index` helpers) |
+| `CSC.__getitem__(i)` → column `i` | now returns **row** `i`; use `csc.transpose()[i]` or `csc.todense()[:, i]` for the old result |
+| `JITCScalar*` / `JITCNormal*` / `JITCUniform*` `.fromdense` / `yw_to_w` / `update_on_*` | materialize with `.tocsr()` first, then operate |
+
+`import brainevent` no longer pulls in `brainstate`.
+
 ### Added
 
-- **Common-API contract on `DataRepresentation`**: every concrete data
-  representation now exposes (or deliberately refuses) a uniform conversion and
+- **Uniform common-API contract on `DataRepresentation`**: every concrete data
+  representation now exposes (or deliberately refuses) a single conversion and
   neural-plasticity surface — `fromdense`, `todense`, `tocoo`, `tocsr`, `tocsc`,
   `yw_to_w`, `yw_to_w_transposed`, `update_on_pre`, `update_on_post`. The base
-  class declares stubs so missing overrides fail loudly rather than silently
-  inheriting an unrelated implementation.
-- **`UnsupportedOperationError`** (subclass of `BrainEventError`): raised when an
-  operation is structurally meaningless for a representation, distinct from
-  `NotImplementedError`. The JIT-connectivity matrices (`JITCScalar*`,
-  `JITCNormal*`, `JITCUniform*`) raise it for `fromdense`, `yw_to_w`,
-  `yw_to_w_transposed`, `update_on_pre`, and `update_on_post`, pointing callers
-  to `.tocsr()` for a materialized, plastic representation.
+  class declares stubs so a missing override fails loudly rather than silently
+  inheriting an unrelated implementation (#161).
+- **Format conversions** `tocsr` / `tocsc` / `tocoo` for `CSR`, `CSC`,
+  `FixedNumPerPre`, `FixedNumPerPost`, and the JIT-connectivity matrices (the
+  latter materialize eagerly via `tocsr` and delegate the rest). CSR/CSC
+  conversions are `jax.jit`-safe (#153, #161).
 - **`FixedNumPerPre.fromdense` / `FixedNumPerPost.fromdense`**: build a
   fixed-num-connection matrix from a dense array. With `num_conn=None` the dense
   matrix must have a uniform per-row (per-column) non-zero count; passing
   `num_conn` pads short rows with in-range zero-weight sentinels and raises
-  `ValueError` on overflow. Units are preserved.
-- **Format conversions** `tocsr` / `tocsc` / `tocoo` for `CSR`, `CSC`,
-  `FixedNumPerPre`, `FixedNumPerPost`, and the JIT-connectivity matrices (the
-  latter materialize eagerly via `tocsr` and delegate the rest). CSR/CSC
-  conversions are `jax.jit`-safe.
-
-### Changed
-
-- **`FixedNumConn` conversion methods renamed to the no-underscore canonical
-  form** (scipy/saiunit convention): `to_csr` → `tocsr`, `to_csc` → `tocsc`,
-  `to_dense` → `todense`. **Breaking** — no aliases are kept (see Removed).
-
-### Removed
-
-- **Breaking: `FixedNumConn.to_csr` / `to_csc` / `to_dense` aliases removed.**
-  Use `tocsr` / `tocsc` / `todense`.
-- **Breaking: the module-level `__getattr__` deprecation shim removed.** The
-  retired names it forwarded (`EventArray`, `csr_on_pre`, `csr2csc_on_post`,
-  `dense_on_pre`, `dense_on_post`, `JITCHomoC`, `JITCHomoR`, `FixedPostNumConn`,
-  `FixedPreNumConn`, `EllLayout`, `CscLayout`) now raise a plain
-  `AttributeError` with no deprecation warning.
-
-## [0.1.0] - 2026-06-07
-
-### Added
-
+  `ValueError` on overflow. Physical units are preserved (#161).
 - **Sparse row slicing** for `CSR`, `CSC`, `FixedNumPerPre`, and `FixedNumPerPost`:
   a dense `__getitem__` returning row(s) of the logical matrix `W` with full NumPy
   index semantics (`int` / `list` / `tuple` / `array` / Python `slice`, negative-index
@@ -58,13 +71,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `slice_rows(index)` returning `W[rows, :]`
   (`CSR`→`CSR`, `CSC`→`CSC`, `FixedNumPerPre`→`FixedNumPerPre`, `FixedNumPerPost`→`CSR`).
   `FixedNumPerPre.slice_rows` is `jax.jit`-safe; the other `slice_rows` paths have a
-  data-dependent number of non-zeros and must run outside `jax.jit`.
+  data-dependent number of non-zeros and must run outside `jax.jit` (#145).
+- **`UnsupportedOperationError`** (subclass of `BrainEventError`): raised when an
+  operation is structurally meaningless for a representation, distinct from
+  `NotImplementedError`. The JIT-connectivity matrices (`JITCScalar*`,
+  `JITCNormal*`, `JITCUniform*`) raise it for `fromdense`, `yw_to_w`,
+  `yw_to_w_transposed`, `update_on_pre`, and `update_on_post`, pointing callers
+  to `.tocsr()` for a materialized, plastic representation (#161).
+- **PEP 561 inline type information**: ships a `py.typed` marker so downstream
+  type checkers consume `brainevent`'s annotations. Public-API type hints and
+  NumPy-style docstrings were completed across the package, guarded by a mypy
+  CI ratchet (#151).
 
 ### Changed
 
-- **`CSC.__getitem__` now returns row `i` of `W`** (NumPy semantics) instead of column
-  `i`. This is a breaking change for code relying on the previous column-indexing
-  behavior; use `csc.transpose()[i]` or `csc.todense()[:, i]` for the old result.
+- **`FixedNumConn` conversion methods renamed to the no-underscore canonical
+  form** (scipy / `saiunit` convention): `to_csr` → `tocsr`, `to_csc` → `tocsc`,
+  `to_dense` → `todense`. **Breaking** — no aliases are kept (#148, #161).
+- **`CSC.__getitem__` now returns row `i` of `W`** (NumPy semantics) instead of
+  column `i`. **Breaking** for code relying on the previous column-indexing
+  behavior (#145).
+- **`brainstate` dropped from the core import path**: importing `brainevent` no
+  longer imports `brainstate`, removing it as an implicit runtime dependency of
+  the core package (#159).
+- **Documentation reorganized into the Diátaxis structure** (tutorials / how-to /
+  reference / explanation); the README was updated to match the current public
+  API (#149, #152, #155).
+- **Internal CSR / JIT kernel layout**: `_jit_conn_csr` split into per-distribution
+  submodules, with JIT-matrix `.tocsr()` backed by dedicated CPU / CUDA operators
+  (#153, #160).
+
+### Deprecated
+
+- **Backward-compatibility shim for every v0.0.7 public name.** A module-level
+  `__getattr__` keeps the entire v0.0.7 import surface resolvable. Renamed symbols
+  emit a `DeprecationWarning` and forward to their replacement (slated for removal
+  in a future major release):
+  `EventArray` → `BinaryArray`;
+  `JITCHomoR` / `JITCHomoC` → `JITCScalarR` / `JITCScalarC`;
+  `FixedPostNumConn` / `FixedPreNumConn` → `FixedNumPerPre` / `FixedNumPerPost`;
+  `csr_on_pre` / `csr2csc_on_post` / `dense_on_pre` / `dense_on_post` → the
+  corresponding `update_*_on_binary_*` functions. Names whose functionality was
+  removed — the `COO` class & operators, the `bitpack_` / `compact_` FCN kernels,
+  and `EllLayout` / `CscLayout` — raise an `AttributeError` that names the
+  replacement instead of failing silently.
+
+### Removed
+
+- **`COO` sparse format class and its operators** removed; accessing them now
+  raises a guided `AttributeError`. Use `CSR` / `CSC` together with the `coo2csr`
+  helper and the `*_index` conversion utilities (`csr_to_coo_index`,
+  `coo_to_csc_index`, `csr_to_csc_index`, `csc_to_csr_index`) for index
+  manipulation (#124).
+- **Explicit `bitpack_` / `compact_` FCN kernels** removed; they were unified into
+  `fcnmv` / `fcnmm`, which dispatch on the input event type. Wrap spikes with
+  `BitPackedBinary` / `CompactBinary` and call `fcnmv` / `fcnmm`.
+- **`FixedNumConn.to_csr` / `to_csc` / `to_dense`** (added and renamed within the
+  0.1.0 cycle, never shipped in a release) standardized to `tocsr` / `tocsc` /
+  `todense` (#148, #161).
+- **cuSPARSE-based CSR SpMV / SpMM kernel implementations** removed in favor of
+  the native CUDA / JAX kernel paths (internal; no public-API change).
 
 ## [0.0.7] - 2026-03-12
 
