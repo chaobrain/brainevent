@@ -183,3 +183,97 @@ class TestCooToCscIndex(unittest.TestCase):
         csc_indptr = np.asarray(csc_indptr)
         # column 2 spans [csc_indptr[2], csc_indptr[3]) and must be empty.
         self.assertEqual(int(csc_indptr[2]), int(csc_indptr[3]))
+
+
+class TestIndexDtypeContract(unittest.TestCase):
+    """The public index helpers emit ``int32`` index arrays.
+
+    ``int32`` is brainevent's canonical index dtype (see ``CSR`` /
+    ``index_dtype=jnp.int32``). These assertions lock that contract so the
+    removal of the historical ``brainstate.environ.ditype()`` cast (which also
+    resolved to ``int32``) stays behaviour-preserving.
+    """
+
+    def test_coo2csr_emits_int32_numpy(self):
+        indptr, indices, _ = coo2csr(np.array([0, 2, 1, 0, 2]),
+                                     np.array([0, 3, 1, 2, 0]), shape=(3, 4))
+        self.assertEqual(np.asarray(indptr).dtype, np.int32)
+        self.assertEqual(np.asarray(indices).dtype, np.int32)
+
+    def test_coo2csr_emits_int32_even_for_int64_inputs(self):
+        # NumPy's default integer dtype is int64 on Linux/macOS; the output must
+        # still be the canonical int32, independent of the input index dtype.
+        row_ids = np.array([0, 2, 1, 0, 2], dtype=np.int64)
+        col_ids = np.array([0, 3, 1, 2, 0], dtype=np.int64)
+        indptr, indices, _ = coo2csr(row_ids, col_ids, shape=(3, 4))
+        self.assertEqual(np.asarray(indptr).dtype, np.int32)
+        self.assertEqual(np.asarray(indices).dtype, np.int32)
+
+    def test_coo2csr_emits_int32_jax(self):
+        import jax.numpy as jnp
+        indptr, indices, _ = coo2csr(jnp.array([0, 2, 1, 0, 2]),
+                                     jnp.array([0, 3, 1, 2, 0]), shape=(3, 4))
+        self.assertEqual(jnp.asarray(indices).dtype, jnp.int32)
+        self.assertEqual(jnp.asarray(indptr).dtype, jnp.int32)
+
+    def test_coo_to_csc_index_emits_int32(self):
+        from brainevent._misc import coo_to_csc_index
+        csc_indptr, csc_rows, _ = coo_to_csc_index(np.array([0, 0, 1, 2, 2]),
+                                                   np.array([0, 2, 1, 0, 3]), shape=(3, 4))
+        self.assertEqual(np.asarray(csc_indptr).dtype, np.int32)
+        self.assertEqual(np.asarray(csc_rows).dtype, np.int32)
+
+
+class TestNoBrainstateRuntimeDependency(unittest.TestCase):
+    """``import brainevent`` must not require the optional ``brainstate`` package.
+
+    ``brainstate`` is *not* a declared dependency of brainevent, so a clean
+    ``pip install brainevent`` does not provide it. This regression test pins
+    that the import graph reachable from ``import brainevent`` -- including the
+    index helpers in :mod:`brainevent._misc` -- stays free of a hard
+    ``brainstate`` import. Run in a subprocess with ``brainstate`` blocked so the
+    parent process's already-imported modules cannot mask the dependency.
+    """
+
+    def test_import_brainevent_and_index_helpers_without_brainstate(self):
+        import os
+        import sys
+        import subprocess
+        import textwrap
+        import brainevent._misc as _misc
+
+        pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(_misc.__file__)))
+        code = textwrap.dedent(
+            """
+            import sys, builtins
+            sys.path.insert(0, %r)
+            _real_import = builtins.__import__
+            def _blocked(name, *args, **kwargs):
+                if name == 'brainstate' or name.startswith('brainstate.'):
+                    raise ImportError('brainstate blocked (simulating a clean install)')
+                return _real_import(name, *args, **kwargs)
+            builtins.__import__ = _blocked
+
+            import numpy as np
+            import brainevent  # must not pull in brainstate
+            from brainevent._misc import coo2csr, coo_to_csc_index
+
+            indptr, indices, _ = coo2csr(
+                np.array([0, 2, 1, 0, 2]), np.array([0, 3, 1, 2, 0]), shape=(3, 4))
+            assert np.asarray(indices).dtype == np.int32, np.asarray(indices).dtype
+            assert list(np.asarray(indptr)) == [0, 2, 3, 5], list(np.asarray(indptr))
+
+            csc_indptr, _, _ = coo_to_csc_index(
+                np.array([0, 0, 1, 2, 2]), np.array([0, 2, 1, 0, 3]), shape=(3, 4))
+            assert np.asarray(csc_indptr).dtype == np.int32, np.asarray(csc_indptr).dtype
+
+            assert 'brainstate' not in sys.modules, 'brainstate was imported by brainevent'
+            print('OK')
+            """ % pkg_parent
+        )
+        proc = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+        self.assertEqual(
+            proc.returncode, 0,
+            msg=f"subprocess failed.\nstdout={proc.stdout!r}\nstderr={proc.stderr!r}",
+        )
+        self.assertIn('OK', proc.stdout)
