@@ -15,6 +15,7 @@
 
 
 from .binary import binary_jitsmv, binary_jitsmv_p, binary_jitsmm, binary_jitsmm_p
+from .csr import jits_to_csr, jits_csr_count_p, jits_csr_fill_p
 from .float import jits, jits_p, jitsmv, jitsmv_p, jitsmm, jitsmm_p
 from .main import JITCScalarMatrix, JITCScalarC, JITCScalarR
 
@@ -22,4 +23,5 @@ __all__ = [
     'JITCScalarMatrix', 'JITCScalarR', 'JITCScalarC',
     'binary_jitsmv', 'binary_jitsmv_p', 'binary_jitsmm', 'binary_jitsmm_p',
     'jits', 'jits_p', 'jitsmv', 'jitsmv_p', 'jitsmm', 'jitsmm_p',
+    'jits_to_csr', 'jits_csr_count_p', 'jits_csr_fill_p',
 ]
