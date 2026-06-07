@@ -19,6 +19,7 @@
 __all__ = [
     'BrainEventError',
     'MathError',
+    'UnsupportedOperationError',
     'KernelNotAvailableError',
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
@@ -73,6 +74,47 @@ class MathError(BrainEventError):
         Traceback (most recent call last):
             ...
         brainevent.MathError: Matrix dimensions are incompatible
+    """
+    __module__ = 'brainevent'
+
+
+class UnsupportedOperationError(BrainEventError):
+    """Raised when an operation is structurally meaningless for a representation.
+
+    This signals a *deliberate refusal*: the requested method is part of the
+    common :class:`~brainevent.DataRepresentation` contract, but the concrete
+    representation cannot give it a well-defined meaning. It is distinct from
+    :class:`NotImplementedError` (which marks an abstract base stub that a
+    subclass is expected to override) -- catching ``UnsupportedOperationError``
+    lets callers distinguish "this representation will never support this" from
+    "not written yet".
+
+    Parameters
+    ----------
+    message : str
+        A human-readable description naming why the operation is unsupported and,
+        where possible, an explicit alternative (for example, materialising a
+        just-in-time-connectivity matrix with ``.tocsr()`` first).
+
+    See Also
+    --------
+    MathError : Raised for invalid inputs to an otherwise-supported operation.
+
+    Notes
+    -----
+    A just-in-time-connectivity matrix, for instance, refuses :meth:`fromdense`
+    (it cannot recover the generating ``(prob, seed)``) and the per-synapse
+    ``yw_to_w`` / ``update_on_*`` protocols (its weight is a distribution
+    parameter, not a per-synapse array).
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._error import UnsupportedOperationError
+        >>> raise UnsupportedOperationError(
+        ...     "JITC connectivity cannot recover (prob, seed) from a dense matrix"
+        ... )  # doctest: +SKIP
     """
     __module__ = 'brainevent'
 

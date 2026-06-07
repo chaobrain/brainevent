@@ -42,6 +42,7 @@ from ._dense import (
 from ._error import (
     BrainEventError,
     MathError,
+    UnsupportedOperationError,
     KernelError,
     KernelNotAvailableError,
     KernelCompilationError,
@@ -222,6 +223,7 @@ __all__ = [
     # --- errors --- #
     'BrainEventError',
     'MathError',
+    'UnsupportedOperationError',
     'KernelError',
     'KernelNotAvailableError',
     'KernelCompilationError',
@@ -249,48 +251,3 @@ __all__ = [
 ]
 
 
-def __getattr__(name):
-    import warnings
-    if name == 'EventArray':
-        warnings.warn(f'EventArray is deprecated, use {BinaryArray.__name__} instead')
-        return BinaryArray
-    if name == 'csr_on_pre':
-        warnings.warn(f'csr_on_pre is deprecated, use {update_csr_on_binary_pre.__name__} instead')
-        return update_csr_on_binary_pre
-    if name == 'csr2csc_on_post':
-        warnings.warn(f'csr2csc_on_post is deprecated, use {update_csr_on_binary_post.__name__} instead')
-        return update_csr_on_binary_post
-    if name == 'dense_on_pre':
-        warnings.warn(f'dense_on_pre is deprecated, use {update_dense_on_binary_pre.__name__} instead')
-        return update_dense_on_binary_pre
-    if name == 'dense_on_post':
-        warnings.warn(f'dense_on_post is deprecated, use {update_dense_on_binary_post.__name__} instead')
-        return update_dense_on_binary_post
-    if name == 'JITCHomoC':
-        warnings.warn(f'JITCHomoC is deprecated, use {JITCScalarC.__name__} instead')
-        return JITCScalarC
-    if name in ('EllLayout', 'CscLayout'):
-        raise AttributeError(
-            f'{name} has been removed. The fixed-number-connection layout '
-            'abstraction was replaced by inline favorable/unfavorable dispatch on '
-            'FixedNumPerPost / FixedNumPerPre (mirroring CSR / CSC). Use those '
-            'classes directly; the column-major view is now an internal, lazily '
-            'cached structure built via brainevent._misc.fixed_conn_num_csc_structure.'
-        )
-    if name == 'FixedPostNumConn':
-        warnings.warn(
-            'FixedPostNumConn is deprecated, use '
-            f'{FixedNumPerPre.__name__} instead (each pre-neuron has a fixed '
-            'number of post-synaptic connections; the new name states the '
-            'subject neuron).'
-        )
-        return FixedNumPerPre
-    if name == 'FixedPreNumConn':
-        warnings.warn(
-            'FixedPreNumConn is deprecated, use '
-            f'{FixedNumPerPost.__name__} instead (each post-neuron has a fixed '
-            'number of pre-synaptic connections; the new name states the '
-            'subject neuron).'
-        )
-        return FixedNumPerPost
-    raise AttributeError(name)

@@ -488,12 +488,12 @@ class JITCScalarR(JITCScalarMatrix):
         # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
         >>> homo_matrix = JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
         >>> homo_matrix
-        JITCHomoR(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
+        JITCScalarR(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
 
         # Create a matrix with units
         >>> weighted_matrix = JITCScalarR((1.5 * u.mV, 0.1, 42), shape=(10, 10))
         >>> weighted_matrix
-        JITCHomoR(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
+        JITCScalarR(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
 
         # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
@@ -999,12 +999,12 @@ class JITCScalarC(JITCScalarMatrix):
         # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
         >>> homo_matrix = JITCScalarC((1.5, 0.1, 42), shape=(10, 10))
         >>> homo_matrix
-        JITCHomoC(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
+        JITCScalarC(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
 
         # Create a matrix with units
         >>> weighted_matrix = JITCScalarC((1.5 * u.mV, 0.1, 42), shape=(10, 10))
         >>> weighted_matrix
-        JITCHomoC(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
+        JITCScalarC(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
 
         # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)

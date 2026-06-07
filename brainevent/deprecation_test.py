@@ -15,13 +15,12 @@
 
 # -*- coding: utf-8 -*-
 
-"""Tests for the module-level ``__getattr__`` deprecation shim in
-:mod:`brainevent.__init__`.
+"""Tests pinning the removal of the module-level back-compat shim.
 
-Each retired public name must either resolve to its replacement (with a
-``DeprecationWarning``-style message) or, for fully removed names, raise an
-informative :class:`AttributeError`. These are the only dynamic-attribute
-paths on the package, so covering them pins the back-compat contract.
+The package previously exposed a ``__getattr__`` deprecation layer that
+forwarded retired public names to their replacements. That layer has been
+removed (breaking change), so every retired name must now raise a plain
+:class:`AttributeError`, and the curated ``__all__`` must stay importable.
 """
 
 import warnings
@@ -31,49 +30,42 @@ import pytest
 import brainevent
 
 
-# (deprecated name, replacement object) pairs that must warn-and-forward.
-_ALIASES = [
-    ("EventArray", brainevent.BinaryArray),
-    ("csr_on_pre", brainevent.update_csr_on_binary_pre),
-    ("csr2csc_on_post", brainevent.update_csr_on_binary_post),
-    ("dense_on_pre", brainevent.update_dense_on_binary_pre),
-    ("dense_on_post", brainevent.update_dense_on_binary_post),
-    ("JITCHomoC", brainevent.JITCScalarC),
-    ("FixedPostNumConn", brainevent.FixedNumPerPre),
-    ("FixedPreNumConn", brainevent.FixedNumPerPost),
+# Names that used to warn-and-forward, plus the already-removed layout names.
+# All must now be plain attribute misses -- no shim, no forwarding.
+_REMOVED_NAMES = [
+    "EventArray",
+    "csr_on_pre",
+    "csr2csc_on_post",
+    "dense_on_pre",
+    "dense_on_post",
+    "JITCHomoC",
+    "JITCHomoR",
+    "FixedPostNumConn",
+    "FixedPreNumConn",
+    "EllLayout",
+    "CscLayout",
 ]
 
 
-@pytest.mark.parametrize("name, target", _ALIASES, ids=[n for n, _ in _ALIASES])
-def test_deprecated_alias_warns_and_forwards(name, target):
-    with pytest.warns(Warning, match="deprecated"):
-        obj = getattr(brainevent, name)
-    assert obj is target
-
-
-@pytest.mark.parametrize("name", ["EllLayout", "CscLayout"])
-def test_removed_layout_names_raise_informative_attributeerror(name):
-    # These were not merely renamed -- the abstraction was removed -- so the
-    # shim must raise rather than silently forward.
-    with pytest.raises(AttributeError) as exc_info:
+@pytest.mark.parametrize("name", _REMOVED_NAMES)
+def test_removed_name_raises_attributeerror(name):
+    with pytest.raises(AttributeError):
         getattr(brainevent, name)
-    message = str(exc_info.value)
-    assert name in message
-    assert "removed" in message
-    assert "FixedNumPerPost" in message or "FixedNumPerPre" in message
+
+
+@pytest.mark.parametrize("name", _REMOVED_NAMES)
+def test_removed_name_does_not_warn(name):
+    # The shim is gone, so accessing a retired name must not emit a deprecation
+    # warning -- it is simply absent.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(AttributeError):
+            getattr(brainevent, name)
 
 
 def test_unknown_attribute_raises_plain_attributeerror():
     with pytest.raises(AttributeError):
         _ = brainevent.this_symbol_does_not_exist
-
-
-def test_unknown_attribute_does_not_warn():
-    # A genuine miss should not emit a spurious deprecation warning.
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        with pytest.raises(AttributeError):
-            _ = brainevent.totally_made_up_name
 
 
 def test_dir_lists_public_exports():

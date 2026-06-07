@@ -23,6 +23,8 @@ import jax
 import numpy as np
 from jax import numpy as jnp
 
+from brainevent._error import UnsupportedOperationError
+
 __all__ = [
     'DataRepresentation',
     'JITCMatrix',
@@ -54,6 +56,205 @@ class DataRepresentation(u.sparse.SparseMatrix):
     def buffers(self):
         """Dict of all registered buffer names to their current values."""
         return {name: getattr(self, name, None) for name in self._buffer_registry}
+
+    # ------------------------------------------------------------------ #
+    # Common-API contract
+    #
+    # Every operation meaningful for a generic sparse weight matrix is declared
+    # here, even where a particular family cannot support it. Subclasses either
+    # override a method or *deliberately refuse* it by raising
+    # :class:`~brainevent.UnsupportedOperationError`. The structure methods
+    # ``todense``, ``with_data``, ``transpose``/``T`` and ``yw_to_w`` are part of
+    # the same contract but already declared by ``saiunit.sparse.SparseMatrix``.
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def fromdense(cls, *args, **kwargs):
+        """Construct a representation from a dense matrix.
+
+        The concrete signature is defined per family; every subclass takes the
+        dense matrix as the first positional argument followed by
+        format-specific keyword options. A permissive ``*args, **kwargs`` is
+        used here so each subclass can declare its own parameters without
+        violating the Liskov substitution principle.
+
+        Parameters
+        ----------
+        dense : jax.Array or brainunit.Quantity
+            Dense ``(num_pre, num_post)`` matrix to encode.
+        **kwargs
+            Format-specific options (e.g. ``num_conn`` for fixed-num
+            connections, ``nse`` for compressed-sparse formats).
+
+        Returns
+        -------
+        DataRepresentation
+            A new instance of ``cls`` encoding ``dense``.
+
+        Raises
+        ------
+        NotImplementedError
+            On the abstract base; concrete subclasses must override.
+        UnsupportedOperationError
+            If the format cannot be reconstructed from a dense matrix
+            (e.g. just-in-time connectivity).
+        """
+        raise NotImplementedError(f"{cls.__name__}.fromdense")
+
+    def tocoo(self):
+        """Convert to coordinate (COO) format.
+
+        Returns
+        -------
+        brainunit.sparse.COO
+            The same logical matrix in COO format, shape unchanged.
+
+        Raises
+        ------
+        NotImplementedError
+            On the abstract base; concrete subclasses must override.
+
+        See Also
+        --------
+        tocsr : Convert to compressed sparse row format.
+        tocsc : Convert to compressed sparse column format.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.tocoo")
+
+    def tocsr(self):
+        """Convert to Compressed Sparse Row (CSR) format.
+
+        Returns
+        -------
+        CSR
+            The same logical matrix in CSR format, shape unchanged.
+
+        Raises
+        ------
+        NotImplementedError
+            On the abstract base; concrete subclasses must override.
+
+        See Also
+        --------
+        tocsc : Convert to compressed sparse column format.
+        tocoo : Convert to coordinate format.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.tocsr")
+
+    def tocsc(self):
+        """Convert to Compressed Sparse Column (CSC) format.
+
+        Returns
+        -------
+        CSC
+            The same logical matrix in CSC format, shape unchanged.
+
+        Raises
+        ------
+        NotImplementedError
+            On the abstract base; concrete subclasses must override.
+
+        See Also
+        --------
+        tocsr : Convert to compressed sparse row format.
+        tocoo : Convert to coordinate format.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.tocsc")
+
+    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
+        """Per-synapse ``w * y`` with ``y`` indexed by the column (post) of ``W``.
+
+        Adjoint counterpart of :meth:`yw_to_w`. Part of the per-synapse
+        eligibility protocol used by ``brainscale``.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array or brainunit.Quantity
+            Post-synaptic (column) vector, sized ``shape[1]``.
+        w_dim_arr : jax.Array or brainunit.Quantity
+            Per-synapse weights. Some formats (e.g. fixed-num connections)
+            accept ``None`` here, defaulting to the representation's own values.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Per-synapse result.
+
+        Raises
+        ------
+        NotImplementedError
+            On the abstract base; concrete subclasses must override.
+        UnsupportedOperationError
+            If the format has no per-synapse weight (e.g. just-in-time
+            connectivity).
+
+        See Also
+        --------
+        yw_to_w : ``y`` indexed by the row (pre) of ``W``.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.yw_to_w_transposed")
+
+    def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
+        """Apply a pre-spike-triggered STDP update, returning a new matrix.
+
+        Parameters
+        ----------
+        pre_spike : jax.Array
+            Pre-synaptic spikes, shape ``(shape[0],)``.
+        post_trace : jax.Array or brainunit.Quantity
+            Post-synaptic trace, shape ``(shape[1],)``.
+        w_min, w_max : jax.Array, brainunit.Quantity, number, or None, optional
+            Clip bounds; ``None`` disables the corresponding bound.
+
+        Returns
+        -------
+        DataRepresentation
+            A new matrix with updated values and identical structure.
+
+        Raises
+        ------
+        NotImplementedError
+            On the abstract base; concrete subclasses must override.
+        UnsupportedOperationError
+            If the format has no per-synapse plastic weight (e.g. just-in-time
+            connectivity).
+
+        See Also
+        --------
+        update_on_post : Post-spike-triggered counterpart.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.update_on_pre")
+
+    def update_on_post(self, pre_trace, post_spike, w_min=None, w_max=None):
+        """Apply a post-spike-triggered STDP update, returning a new matrix.
+
+        Parameters
+        ----------
+        pre_trace : jax.Array or brainunit.Quantity
+            Pre-synaptic trace, shape ``(shape[0],)``.
+        post_spike : jax.Array
+            Post-synaptic spikes, shape ``(shape[1],)``.
+        w_min, w_max : jax.Array, brainunit.Quantity, number, or None, optional
+            Clip bounds; ``None`` disables the corresponding bound.
+
+        Returns
+        -------
+        DataRepresentation
+            A new matrix with updated values and identical structure.
+
+        Raises
+        ------
+        NotImplementedError
+            On the abstract base; concrete subclasses must override.
+        UnsupportedOperationError
+            If the format has no per-synapse plastic weight (e.g. just-in-time
+            connectivity).
+
+        See Also
+        --------
+        update_on_pre : Pre-spike-triggered counterpart.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.update_on_post")
 
 
 class JITCMatrix(DataRepresentation):
@@ -690,6 +891,122 @@ class JITCMatrix(DataRepresentation):
             1.0
         """
         return self.apply2(other, operator.mod, reverse=True)
+
+    # ------------------------------------------------------------------ #
+    # Common-API contract for just-in-time connectivity
+    #
+    # JITC matrices are generated procedurally from ``(prob, seed)`` and are
+    # non-plastic: the "weight" is a scalar / distribution parameter, not a
+    # per-synapse array. Several contract methods are therefore deliberately
+    # refused; the conversions that *are* meaningful materialise through
+    # :meth:`tocsr` (an eager, ``O(nnz)`` count+fill defined per distribution).
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def fromdense(cls, dense, **kwargs):
+        """Unsupported: JITC connectivity cannot be recovered from a dense matrix.
+
+        Raises
+        ------
+        UnsupportedOperationError
+            Always. The generating ``(prob, seed)`` cannot be inferred from a
+            materialised matrix.
+        """
+        raise UnsupportedOperationError(
+            f"{cls.__name__}.fromdense is unsupported: just-in-time connectivity "
+            "is generated procedurally and cannot recover the (prob, seed) that "
+            "produced a dense matrix."
+        )
+
+    def yw_to_w(self, *args, **kwargs):
+        """Unsupported: JITC weights are not per-synapse.
+
+        Raises
+        ------
+        UnsupportedOperationError
+            Always. Materialise first with ``mat.tocsr().yw_to_w(...)``.
+        """
+        raise UnsupportedOperationError(
+            "JITC weights are a scalar / distribution parameter, not a "
+            "per-synapse array, so the yw_to_w eligibility protocol is undefined "
+            "for procedurally generated connectivity. Materialise first: "
+            "mat.tocsr().yw_to_w(y, w)."
+        )
+
+    def yw_to_w_transposed(self, *args, **kwargs):
+        """Unsupported: JITC weights are not per-synapse.
+
+        Raises
+        ------
+        UnsupportedOperationError
+            Always. Materialise first with ``mat.tocsr().yw_to_w_transposed(...)``.
+        """
+        raise UnsupportedOperationError(
+            "JITC weights are a scalar / distribution parameter, not a "
+            "per-synapse array, so the yw_to_w_transposed eligibility protocol is "
+            "undefined for procedurally generated connectivity. Materialise "
+            "first: mat.tocsr().yw_to_w_transposed(y, w)."
+        )
+
+    def update_on_pre(self, *args, **kwargs):
+        """Unsupported: JITC connectivity has no per-synapse plastic weight.
+
+        Raises
+        ------
+        UnsupportedOperationError
+            Always. Materialise first with ``mat.tocsr().update_on_pre(...)``.
+        """
+        raise UnsupportedOperationError(
+            "JITC connectivity has no per-synapse plastic weight; the STDP "
+            "update_on_pre protocol is undefined for procedurally generated "
+            "connectivity. Materialise first: mat.tocsr().update_on_pre(...)."
+        )
+
+    def update_on_post(self, *args, **kwargs):
+        """Unsupported: JITC connectivity has no per-synapse plastic weight.
+
+        Raises
+        ------
+        UnsupportedOperationError
+            Always. Materialise first with ``mat.tocsr().update_on_post(...)``.
+        """
+        raise UnsupportedOperationError(
+            "JITC connectivity has no per-synapse plastic weight; the STDP "
+            "update_on_post protocol is undefined for procedurally generated "
+            "connectivity. Materialise first: mat.tocsr().update_on_post(...)."
+        )
+
+    def tocsc(self):
+        """Convert to CSC by materialising through :meth:`tocsr`.
+
+        Returns
+        -------
+        CSC
+            The same logical matrix in CSC format. Eager-only (``O(nnz)``),
+            inheriting the tracing restriction of :meth:`tocsr`.
+
+        See Also
+        --------
+        tocsr : Direct count+fill materialisation to CSR.
+        tocoo : Convert to coordinate format.
+        """
+        return self.tocsr().tocsc()
+
+    def tocoo(self):
+        """Convert to COO by materialising through :meth:`tocsr`.
+
+        Returns
+        -------
+        brainunit.sparse.COO
+            The same logical matrix in COO format. Eager-only (``O(nnz)``),
+            inheriting the tracing restriction of :meth:`tocsr`.
+
+        See Also
+        --------
+        tocsr : Direct count+fill materialisation to CSR.
+        tocsc : Convert to compressed sparse column format.
+        """
+        return self.tocsr().tocoo()
 
 
 def _initialize_seed(seed=None):

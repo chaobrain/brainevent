@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Common-API contract on `DataRepresentation`**: every concrete data
+  representation now exposes (or deliberately refuses) a uniform conversion and
+  neural-plasticity surface — `fromdense`, `todense`, `tocoo`, `tocsr`, `tocsc`,
+  `yw_to_w`, `yw_to_w_transposed`, `update_on_pre`, `update_on_post`. The base
+  class declares stubs so missing overrides fail loudly rather than silently
+  inheriting an unrelated implementation.
+- **`UnsupportedOperationError`** (subclass of `BrainEventError`): raised when an
+  operation is structurally meaningless for a representation, distinct from
+  `NotImplementedError`. The JIT-connectivity matrices (`JITCScalar*`,
+  `JITCNormal*`, `JITCUniform*`) raise it for `fromdense`, `yw_to_w`,
+  `yw_to_w_transposed`, `update_on_pre`, and `update_on_post`, pointing callers
+  to `.tocsr()` for a materialized, plastic representation.
+- **`FixedNumPerPre.fromdense` / `FixedNumPerPost.fromdense`**: build a
+  fixed-num-connection matrix from a dense array. With `num_conn=None` the dense
+  matrix must have a uniform per-row (per-column) non-zero count; passing
+  `num_conn` pads short rows with in-range zero-weight sentinels and raises
+  `ValueError` on overflow. Units are preserved.
+- **Format conversions** `tocsr` / `tocsc` / `tocoo` for `CSR`, `CSC`,
+  `FixedNumPerPre`, `FixedNumPerPost`, and the JIT-connectivity matrices (the
+  latter materialize eagerly via `tocsr` and delegate the rest). CSR/CSC
+  conversions are `jax.jit`-safe.
+
+### Changed
+
+- **`FixedNumConn` conversion methods renamed to the no-underscore canonical
+  form** (scipy/saiunit convention): `to_csr` → `tocsr`, `to_csc` → `tocsc`,
+  `to_dense` → `todense`. **Breaking** — no aliases are kept (see Removed).
+
+### Removed
+
+- **Breaking: `FixedNumConn.to_csr` / `to_csc` / `to_dense` aliases removed.**
+  Use `tocsr` / `tocsc` / `todense`.
+- **Breaking: the module-level `__getattr__` deprecation shim removed.** The
+  retired names it forwarded (`EventArray`, `csr_on_pre`, `csr2csc_on_post`,
+  `dense_on_pre`, `dense_on_post`, `JITCHomoC`, `JITCHomoR`, `FixedPostNumConn`,
+  `FixedPreNumConn`, `EllLayout`, `CscLayout`) now raise a plain
+  `AttributeError` with no deprecation warning.
+
 ## [0.1.0] - 2026-06-07
 
 ### Added

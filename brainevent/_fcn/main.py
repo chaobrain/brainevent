@@ -21,6 +21,7 @@ from typing import Optional, TYPE_CHECKING, cast
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 if TYPE_CHECKING:
     from brainevent._csr.main import CSR
@@ -101,6 +102,61 @@ def _ensure_fixed_conn_initialized_outside_jit(indices: Index, *, kind: str) -> 
             'Construct the connection object before entering the jitted function, '
             'then reuse it inside JIT.'
         )
+
+
+def _ell_from_rows(mantissa: np.ndarray, num_conn: Optional[int], *, kind: str):
+    """Build fixed-connection ``(data, indices)`` from a row-major dense block.
+
+    Each row of ``mantissa`` becomes one fixed-connection row: its non-zero
+    columns are gathered (stable order) into ``indices`` and ``data``, padded to
+    ``num_conn`` with a zero-weight sentinel at column ``0`` (which contributes
+    nothing to the scatter kernels or :meth:`todense`).
+
+    Parameters
+    ----------
+    mantissa : numpy.ndarray
+        Unit-stripped dense block of shape ``(R, C)``.
+    num_conn : int or None
+        Target connections per row. ``None`` infers it and requires a uniform
+        per-row non-zero count; otherwise pads/validates against this value.
+    kind : str
+        Subclass name, used in error messages.
+
+    Returns
+    -------
+    data : numpy.ndarray
+        Values of shape ``(R, num_conn)``.
+    indices : numpy.ndarray
+        Column ids of shape ``(R, num_conn)`` (``int32``).
+    """
+    mask = mantissa != 0
+    nnz = mask.sum(axis=1)
+    if num_conn is None:
+        if mantissa.shape[0] == 0:
+            num_conn = 0
+        elif not bool((nnz == nnz[0]).all()):
+            raise ValueError(
+                f'{kind}.fromdense: rows have a non-uniform number of connections '
+                f'(min {int(nnz.min())}, max {int(nnz.max())}). Pass num_conn= to '
+                'pad to a fixed count, or use CSR.fromdense / CSC.fromdense for an '
+                'irregular matrix.'
+            )
+        else:
+            num_conn = int(nnz[0])
+    else:
+        num_conn = int(num_conn)
+        if bool((nnz > num_conn).any()):
+            raise ValueError(
+                f'{kind}.fromdense: num_conn={num_conn} is too small; a row has '
+                f'{int(nnz.max())} connections.'
+            )
+    # Stable argsort of ``~mask`` puts non-zero columns first, preserving column
+    # order; take the first ``num_conn`` slots.
+    order = np.argsort(~mask, axis=1, kind='stable')[:, :num_conn]
+    selected = np.take_along_axis(mask, order, axis=1)
+    data = np.where(selected, np.take_along_axis(mantissa, order, axis=1), 0).astype(mantissa.dtype)
+    indices = np.where(selected, order, 0).astype(np.int32)
+    return data, indices
 
 
 class FixedNumConn(DataRepresentation):
@@ -386,28 +442,37 @@ class FixedNumConn(DataRepresentation):
         """
         raise NotImplementedError
 
-    def to_dense(self):
-        """Convert to a dense ``(num_pre, num_post)`` matrix.
+    def tocoo(self) -> u.sparse.COO:
+        """Convert to coordinate (COO) format.
 
-        Alias of :meth:`todense` provided for naming parity with
-        :meth:`to_csr` and :meth:`to_csc`.
+        Builds the COO of the logical matrix ``W`` of shape
+        ``(num_pre, num_post)`` from the stored ELL structure, irrespective of
+        orientation. Promotes the per-subclass ``_to_coo`` helper to the common
+        conversion contract. Homogeneous (size-1) weights are broadcast to one
+        entry per stored element.
 
         Returns
         -------
-        jax.Array or brainunit.Quantity
-            Dense matrix of shape ``self.shape``.  Stored entries that share a
-            ``(row, column)`` coordinate (duplicate connections) are summed,
-            matching :meth:`todense` and the event-driven matmul kernels.
+        brainunit.sparse.COO
+            The same logical matrix in COO format, ``shape`` unchanged.
+
+        Notes
+        -----
+        Building the coordinate layout reads concrete indices, so -- like
+        :meth:`tocsr` -- it must run outside ``jax.jit``.
 
         See Also
         --------
-        todense : Underlying implementation.
-        to_csr : Convert to Compressed Sparse Row format.
-        to_csc : Convert to Compressed Sparse Column format.
+        tocsr : Convert to Compressed Sparse Row format.
+        tocsc : Convert to Compressed Sparse Column format.
         """
-        return self.todense()
+        pre_ids, post_ids, _ = self._to_coo()
+        data = self.data.reshape(-1)
+        if data.size != pre_ids.size:
+            data = u.math.broadcast_to(data, pre_ids.shape)
+        return u.sparse.COO((data, pre_ids, post_ids), shape=self.shape)
 
-    def to_csr(self):
+    def tocsr(self):
         """Convert to a :class:`brainevent.CSR` matrix of the logical matrix ``W``.
 
         The result is a Compressed Sparse Row view of the same logical weight
@@ -433,8 +498,8 @@ class FixedNumConn(DataRepresentation):
 
         See Also
         --------
-        to_csc : Convert to Compressed Sparse Column format.
-        to_dense : Convert to a dense matrix.
+        tocsc : Convert to Compressed Sparse Column format.
+        todense : Convert to a dense matrix.
 
         Examples
         --------
@@ -446,7 +511,7 @@ class FixedNumConn(DataRepresentation):
             >>> data = jnp.array([[1., 2.], [3., 4.]])
             >>> indices = jnp.array([[0, 1], [1, 2]])
             >>> mat = FixedNumPerPre((data, indices), shape=(2, 3))
-            >>> csr = mat.to_csr()
+            >>> csr = mat.tocsr()
             >>> bool((csr.todense() == mat.todense()).all())
             True
         """
@@ -459,7 +524,7 @@ class FixedNumConn(DataRepresentation):
         # becoming a tracer.
         if isinstance(self.data, Tracer) or isinstance(self.indices, Tracer):
             raise RuntimeError(
-                f'{type(self).__name__}.to_csr() reorders connections by row and '
+                f'{type(self).__name__}.tocsr() reorders connections by row and '
                 'must be called outside `jax.jit` / `brainstate.transform.jit`. '
                 'Convert the connection before entering the jitted function.'
             )
@@ -474,14 +539,14 @@ class FixedNumConn(DataRepresentation):
             data = self.data.reshape(-1)[order]
         return CSR((data, indices, indptr), shape=self.shape, backend=self.backend)
 
-    def to_csc(self):
+    def tocsc(self):
         """Convert to a :class:`brainevent.CSC` matrix of the logical matrix ``W``.
 
         The result is a Compressed Sparse Column view of the same logical
         weight matrix ``W`` of shape ``(num_pre, num_post)``.  It is built by
         transposing to the opposite orientation, taking the CSR view of ``W^T``,
         and reinterpreting it as the (array-identical) CSC view of ``W`` -- so
-        the same outside-``jit`` requirement as :meth:`to_csr` applies.
+        the same outside-``jit`` requirement as :meth:`tocsr` applies.
 
         Returns
         -------
@@ -491,10 +556,10 @@ class FixedNumConn(DataRepresentation):
 
         See Also
         --------
-        to_csr : Convert to Compressed Sparse Row format.
-        to_dense : Convert to a dense matrix.
+        tocsr : Convert to Compressed Sparse Row format.
+        todense : Convert to a dense matrix.
         """
-        return self.transpose().to_csr().transpose()
+        return self.transpose().tocsr().transpose()
 
     # ------------------------------------------------------------------ #
     # Event-driven plasticity (STDP) updates
@@ -729,6 +794,49 @@ class FixedNumPerPre(FixedNumConn):
     def _ell_transpose(self, transpose_W: bool) -> bool:
         return bool(transpose_W)
 
+    @classmethod
+    def fromdense(cls, mat, *, num_conn=None, backend=None) -> 'FixedNumPerPre':
+        """Construct from a dense matrix with a fixed number of connections per pre.
+
+        Each pre-synaptic row of ``mat`` is encoded with ``num_conn`` outgoing
+        connections (post-synaptic ids).
+
+        Parameters
+        ----------
+        mat : jax.Array or brainunit.Quantity
+            Dense ``(num_pre, num_post)`` matrix. Explicit zeros are treated as
+            absent connections.
+        num_conn : int, optional
+            Connections per pre-synaptic neuron. If ``None`` (default), inferred
+            from the matrix, which must then have a uniform per-row non-zero
+            count; otherwise short rows are padded with a zero-weight sentinel
+            and a row with more non-zeros than ``num_conn`` raises ``ValueError``.
+        backend : str, optional
+            Backend tag forwarded to the constructor.
+
+        Returns
+        -------
+        FixedNumPerPre
+            Encoded fixed-connection matrix, ``shape`` equal to ``mat.shape``.
+
+        Raises
+        ------
+        ValueError
+            If ``mat`` is not 2-D, if per-row counts are non-uniform and
+            ``num_conn`` is omitted, or if a row exceeds ``num_conn``.
+
+        See Also
+        --------
+        tocsr : Inverse-direction conversion to CSR.
+        brainevent.CSR.fromdense : For irregular matrices.
+        """
+        mantissa = np.asarray(u.get_mantissa(mat))
+        if mantissa.ndim != 2:
+            raise ValueError(f"FixedNumPerPre.fromdense expects a 2-D matrix; got {mantissa.ndim}-D.")
+        data, indices = _ell_from_rows(mantissa, num_conn, kind=cls.__name__)
+        data_q = u.maybe_decimal(u.Quantity(jnp.asarray(data), unit=u.get_unit(mat)))
+        return cls((data_q, jnp.asarray(indices)), shape=mantissa.shape, backend=backend)
+
     def _to_coo(self):
         return fixed_post_num_to_coo(self)
 
@@ -940,6 +1048,52 @@ class FixedNumPerPost(FixedNumConn):
 
     def _ell_transpose(self, transpose_W: bool) -> bool:
         return not bool(transpose_W)
+
+    @classmethod
+    def fromdense(cls, mat, *, num_conn=None, backend=None) -> 'FixedNumPerPost':
+        """Construct from a dense matrix with a fixed number of connections per post.
+
+        Each post-synaptic column of ``mat`` is encoded with ``num_conn``
+        incoming connections (pre-synaptic ids).
+
+        Parameters
+        ----------
+        mat : jax.Array or brainunit.Quantity
+            Dense ``(num_pre, num_post)`` matrix. Explicit zeros are treated as
+            absent connections.
+        num_conn : int, optional
+            Connections per post-synaptic neuron. If ``None`` (default), inferred
+            from the matrix, which must then have a uniform per-column non-zero
+            count; otherwise short columns are padded with a zero-weight sentinel
+            and a column with more non-zeros than ``num_conn`` raises
+            ``ValueError``.
+        backend : str, optional
+            Backend tag forwarded to the constructor.
+
+        Returns
+        -------
+        FixedNumPerPost
+            Encoded fixed-connection matrix, ``shape`` equal to ``mat.shape``.
+
+        Raises
+        ------
+        ValueError
+            If ``mat`` is not 2-D, if per-column counts are non-uniform and
+            ``num_conn`` is omitted, or if a column exceeds ``num_conn``.
+
+        See Also
+        --------
+        tocsc : Inverse-direction conversion to CSC.
+        brainevent.CSC.fromdense : For irregular matrices.
+        """
+        mantissa = np.asarray(u.get_mantissa(mat))
+        if mantissa.ndim != 2:
+            raise ValueError(f"FixedNumPerPost.fromdense expects a 2-D matrix; got {mantissa.ndim}-D.")
+        num_pre, num_post = mantissa.shape
+        # Encode by post-synaptic column: each post row gathers its pre ids.
+        data, indices = _ell_from_rows(mantissa.T, num_conn, kind=cls.__name__)
+        data_q = u.maybe_decimal(u.Quantity(jnp.asarray(data), unit=u.get_unit(mat)))
+        return cls((data_q, jnp.asarray(indices)), shape=(num_pre, num_post), backend=backend)
 
     def _to_coo(self):
         return fixed_pre_num_to_coo(self)
