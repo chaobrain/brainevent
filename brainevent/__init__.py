@@ -251,3 +251,99 @@ __all__ = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Backward-compatibility shim for public names retired between v0.0.7 and 0.1.0.
+#
+# Retired names stay *resolvable* so v0.0.7 code keeps importing:
+#   * renamed names return their replacement and emit a ``DeprecationWarning``;
+#   * names whose underlying functionality was removed raise an
+#     ``AttributeError`` stating the concrete migration path.
+# These names are intentionally NOT part of ``__all__`` -- they are hidden,
+# deprecated aliases surfaced only on explicit access (PEP 562).
+# ---------------------------------------------------------------------------
+
+#: old public name -> (replacement object, replacement display name)
+_DEPRECATED_RENAMES = {
+    'EventArray': (BinaryArray, 'BinaryArray'),
+    'csr_on_pre': (update_csr_on_binary_pre, 'update_csr_on_binary_pre'),
+    'csr2csc_on_post': (update_csr_on_binary_post, 'update_csr_on_binary_post'),
+    'dense_on_pre': (update_dense_on_binary_pre, 'update_dense_on_binary_pre'),
+    'dense_on_post': (update_dense_on_binary_post, 'update_dense_on_binary_post'),
+    'JITCHomoR': (JITCScalarR, 'JITCScalarR'),
+    'JITCHomoC': (JITCScalarC, 'JITCScalarC'),
+    'FixedPostNumConn': (FixedNumPerPre, 'FixedNumPerPre'),
+    'FixedPreNumConn': (FixedNumPerPost, 'FixedNumPerPost'),
+}
+
+_COO_MIGRATION = (
+    'The COO sparse format was removed in brainevent 0.1.0. Use CSR / CSC '
+    'instead (brainevent.CSR / brainevent.CSC); convert indices with '
+    'brainevent.coo2csr or the *_index helpers (csr_to_coo_index, '
+    'coo_to_csc_index, csr_to_csc_index, csc_to_csr_index).'
+)
+_FCN_PACK_MIGRATION = (
+    'The explicit bitpack_/compact_ FCN kernels were removed in brainevent '
+    '0.1.0; they were unified into fcnmv / fcnmm, which dispatch on the input '
+    'event type. Wrap spikes with brainevent.BitPackedBinary or '
+    'brainevent.CompactBinary and call brainevent.fcnmv / brainevent.fcnmm.'
+)
+_LAYOUT_MIGRATION = (
+    'The fixed-number-connection layout abstraction was removed. Use '
+    'FixedNumPerPost / FixedNumPerPre directly (favorable/unfavorable dispatch '
+    'is now internal).'
+)
+
+#: old public name -> migration message (functionality removed, no drop-in)
+_DEPRECATED_REMOVED = {}
+_DEPRECATED_REMOVED.update({
+    name: _COO_MIGRATION for name in (
+        'COO',
+        'binary_coomv', 'binary_coomv_p',
+        'binary_coomm', 'binary_coomm_p',
+        'coomv', 'coomv_p',
+        'coomm', 'coomm_p',
+        'update_coo_on_binary_pre', 'update_coo_on_binary_post',
+        'update_coo_on_binary_pre_p', 'update_coo_on_binary_post_p',
+    )
+})
+_DEPRECATED_REMOVED.update({
+    name: _FCN_PACK_MIGRATION for name in (
+        'bitpack_binary_fcnmv', 'bitpack_binary_fcnmv_p',
+        'bitpack_binary_fcnmm', 'bitpack_binary_fcnmm_p',
+        'compact_binary_fcnmv', 'compact_binary_fcnmv_p',
+        'compact_binary_fcnmm', 'compact_binary_fcnmm_p',
+    )
+})
+_DEPRECATED_REMOVED.update({
+    'EllLayout': _LAYOUT_MIGRATION,
+    'CscLayout': _LAYOUT_MIGRATION,
+})
+
+
+def __getattr__(name):
+    """Resolve retired v0.0.7 public names (PEP 562 module-level hook)."""
+    import warnings
+    if name in _DEPRECATED_RENAMES:
+        replacement, new_name = _DEPRECATED_RENAMES[name]
+        warnings.warn(
+            f'brainevent.{name} is deprecated and will be removed in a future '
+            f'release; use brainevent.{new_name} instead.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return replacement
+    if name in _DEPRECATED_REMOVED:
+        raise AttributeError(
+            f'brainevent.{name} was removed in 0.1.0. {_DEPRECATED_REMOVED[name]}'
+        )
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+
+def __dir__():
+    return sorted(
+        set(globals())
+        | set(_DEPRECATED_RENAMES)
+        | set(_DEPRECATED_REMOVED)
+    )
+
+
