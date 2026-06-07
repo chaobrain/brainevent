@@ -17,7 +17,7 @@
 
 """Tests for the :class:`FixedNumConn` format conversions.
 
-These exercise :meth:`to_dense`, :meth:`to_csr`, and :meth:`to_csc`.  All
+These exercise :meth:`todense`, :meth:`tocsr`, and :meth:`tocsc`.  All
 correctness checks route through the dense round-trip, which uses the pure-JAX
 ``jax.experimental.sparse`` primitives (``coo_todense`` / ``csr_todense``) and
 therefore needs no compilation-heavy backend -- so this module is *not* marked
@@ -64,10 +64,9 @@ class TestToDense:
     @pytest.mark.parametrize('cls', CLASSES)
     @pytest.mark.parametrize('shape', SHAPES)
     @pytest.mark.parametrize('homo', [True, False])
-    def test_to_dense_matches_todense(self, cls, shape, homo):
+    def test_todense_shape(self, cls, shape, homo):
         conn = _make(cls, homo, shape, n_conn=3)
-        assert allclose(conn.to_dense(), conn.todense())
-        assert conn.to_dense().shape == shape
+        assert conn.todense().shape == shape
 
 
 class TestToCsr:
@@ -76,7 +75,7 @@ class TestToCsr:
     @pytest.mark.parametrize('homo', [True, False])
     def test_roundtrip_matches_dense(self, cls, shape, homo):
         conn = _make(cls, homo, shape, n_conn=4)
-        csr = conn.to_csr()
+        csr = conn.tocsr()
         assert isinstance(csr, CSR)
         assert csr.shape == shape
         assert allclose(csr.todense(), conn.todense())
@@ -85,7 +84,7 @@ class TestToCsr:
     def test_metadata(self, cls):
         shape = (6, 8)
         conn = _make(cls, homo=False, shape=shape, n_conn=3)
-        csr = conn.to_csr()
+        csr = conn.tocsr()
         assert csr.nse == conn.indices.size
         assert csr.dtype == conn.dtype
         assert csr.indptr.shape == (shape[0] + 1,)
@@ -93,7 +92,7 @@ class TestToCsr:
     @pytest.mark.parametrize('cls', CLASSES)
     def test_homogeneous_weight_is_kept_compact(self, cls):
         conn = _make(cls, homo=True, shape=(6, 8), n_conn=3)
-        csr = conn.to_csr()
+        csr = conn.tocsr()
         # A single shared value is preserved rather than materialised per entry.
         assert csr.data.size == 1
         assert allclose(csr.todense(), conn.todense())
@@ -101,31 +100,31 @@ class TestToCsr:
     @pytest.mark.parametrize('cls', CLASSES)
     def test_num_conn_one(self, cls):
         conn = _make(cls, homo=False, shape=(5, 7), n_conn=1)
-        assert allclose(conn.to_csr().todense(), conn.todense())
+        assert allclose(conn.tocsr().todense(), conn.todense())
 
     def test_duplicates_preserved_pre(self):
         conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4))
-        assert allclose(conn.to_csr().todense(), conn.todense())
+        assert allclose(conn.tocsr().todense(), conn.todense())
 
     def test_duplicates_preserved_post(self):
         conn = FixedNumPerPost((DUP_DATA, DUP_INDICES), shape=(4, 3))
-        assert allclose(conn.to_csr().todense(), conn.todense())
+        assert allclose(conn.tocsr().todense(), conn.todense())
 
     def test_units_preserved(self):
         conn = FixedNumPerPre((DUP_DATA * u.mS, DUP_INDICES), shape=(3, 4))
-        csr = conn.to_csr()
+        csr = conn.tocsr()
         assert u.get_unit(csr.data) == u.mS
         assert u.get_unit(csr.todense()) == u.mS
         assert allclose(u.get_mantissa(csr.todense()), u.get_mantissa(conn.todense()))
 
     def test_backend_propagated(self):
         conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4), backend='numba')
-        assert conn.to_csr().backend == 'numba'
+        assert conn.tocsr().backend == 'numba'
 
     def test_requires_outside_jit(self):
         conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4))
         with pytest.raises(RuntimeError, match='outside'):
-            jax.jit(lambda m: m.to_csr())(conn)
+            jax.jit(lambda m: m.tocsr())(conn)
 
 
 class TestToCsc:
@@ -134,22 +133,22 @@ class TestToCsc:
     @pytest.mark.parametrize('homo', [True, False])
     def test_roundtrip_matches_dense(self, cls, shape, homo):
         conn = _make(cls, homo, shape, n_conn=4)
-        csc = conn.to_csc()
+        csc = conn.tocsc()
         assert isinstance(csc, CSC)
         assert csc.shape == shape
         assert allclose(csc.todense(), conn.todense())
 
     def test_duplicates_preserved_pre(self):
         conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4))
-        assert allclose(conn.to_csc().todense(), conn.todense())
+        assert allclose(conn.tocsc().todense(), conn.todense())
 
     def test_duplicates_preserved_post(self):
         conn = FixedNumPerPost((DUP_DATA, DUP_INDICES), shape=(4, 3))
-        assert allclose(conn.to_csc().todense(), conn.todense())
+        assert allclose(conn.tocsc().todense(), conn.todense())
 
     def test_units_preserved(self):
         conn = FixedNumPerPost((DUP_DATA * u.mV, DUP_INDICES), shape=(4, 3))
-        csc = conn.to_csc()
+        csc = conn.tocsc()
         assert u.get_unit(csc.data) == u.mV
         assert u.get_unit(csc.todense()) == u.mV
         assert allclose(u.get_mantissa(csc.todense()), u.get_mantissa(conn.todense()))
@@ -161,8 +160,8 @@ class TestCrossFormatConsistency:
     def test_csr_csc_dense_agree(self, cls, homo):
         conn = _make(cls, homo, (7, 9), n_conn=3)
         dense = conn.todense()
-        assert allclose(conn.to_csr().todense(), dense)
-        assert allclose(conn.to_csc().todense(), dense)
+        assert allclose(conn.tocsr().todense(), dense)
+        assert allclose(conn.tocsc().todense(), dense)
         # Transpose equivalence: CSR of W^T equals CSC of W, array-for-array.
-        assert allclose(conn.to_csr().todense().T, conn.transpose().to_csr().todense())
+        assert allclose(conn.tocsr().todense().T, conn.transpose().tocsr().todense())
         jax.block_until_ready((dense,))

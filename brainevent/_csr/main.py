@@ -51,8 +51,10 @@ class CompressedSparseData(DataRepresentation):
     event-driven neural simulation.
 
     Subclasses must implement :meth:`apply`, :meth:`_binary_op`,
-    :meth:`_binary_rop`, :meth:`todense`, :meth:`tocoo`, :meth:`with_data`,
-    :meth:`fromdense`, :meth:`yw_to_w`, and :meth:`yw_to_w_transposed`.
+    :meth:`_binary_rop`, :meth:`todense`, :meth:`with_data`,
+    :meth:`fromdense`, :meth:`yw_to_w`, and :meth:`yw_to_w_transposed`. Both
+    concrete subclasses (:class:`CSR`, :class:`CSC`) also provide the common
+    conversion contract :meth:`tocsr`, :meth:`tocsc`, and :meth:`tocoo`.
 
     Parameters
     ----------
@@ -963,6 +965,65 @@ class CSR(CompressedSparseData):
         """
         return _csr_todense(self.data, self.indices, self.indptr, shape=self.shape)
 
+    def tocsr(self) -> 'CSR':
+        """Return this matrix in CSR format (a no-op that returns ``self``).
+
+        Provided for a uniform conversion interface across data
+        representations; ``CSR`` is already row-compressed.
+
+        Returns
+        -------
+        CSR
+            ``self``, unchanged.
+
+        See Also
+        --------
+        tocsc : Re-encode the same logical matrix column-major.
+        tocoo : Convert to coordinate format.
+        """
+        return self
+
+    def tocsc(self) -> 'CSC':
+        """Re-encode the same logical matrix in CSC format.
+
+        Unlike :meth:`transpose` (which reinterprets the arrays as ``W.T`` with
+        swapped shape), ``tocsc`` returns a :class:`CSC` describing the *same*
+        matrix ``W`` with the *same* ``shape`` -- the entries are resorted into
+        column-major order.
+
+        Returns
+        -------
+        CSC
+            The same logical matrix in CSC format, ``shape`` unchanged.
+
+        See Also
+        --------
+        tocsr : Identity conversion.
+        transpose : Logical transpose (swaps ``shape``).
+        """
+        csc_indptr, csc_indices, perm = csr_to_csc_index(self.indptr, self.indices, shape=self.shape)
+        csc_data = self.data if self.data.size == 1 else self.data[perm]
+        return CSC((csc_data, csc_indices, csc_indptr), shape=self.shape, backend=self.backend)
+
+    def tocoo(self) -> u.sparse.COO:
+        """Convert to coordinate (COO) format.
+
+        Returns
+        -------
+        brainunit.sparse.COO
+            The same logical matrix in COO format, ``shape`` unchanged. A
+            homogeneous (size-1) value is broadcast to one entry per stored
+            element.
+
+        See Also
+        --------
+        tocsr : Identity conversion.
+        tocsc : Re-encode the same logical matrix column-major.
+        """
+        rows, cols = _csr_to_coo(self.indices, self.indptr)
+        data = self.data if self.data.size == rows.size else u.math.broadcast_to(self.data, rows.shape)
+        return u.sparse.COO((data, rows, cols), shape=self.shape, rows_sorted=True)
+
     def transpose(self, axes=None) -> 'CSC':
         """
         Transpose the CSR matrix.
@@ -1777,6 +1838,65 @@ class CSC(CompressedSparseData):
             dense = csc.todense()
         """
         return self.T.todense().T
+
+    def tocsc(self) -> 'CSC':
+        """Return this matrix in CSC format (a no-op that returns ``self``).
+
+        Provided for a uniform conversion interface across data
+        representations; ``CSC`` is already column-compressed.
+
+        Returns
+        -------
+        CSC
+            ``self``, unchanged.
+
+        See Also
+        --------
+        tocsr : Re-encode the same logical matrix row-major.
+        tocoo : Convert to coordinate format.
+        """
+        return self
+
+    def tocsr(self) -> 'CSR':
+        """Re-encode the same logical matrix in CSR format.
+
+        Unlike :meth:`transpose` (which reinterprets the arrays as ``W.T`` with
+        swapped shape), ``tocsr`` returns a :class:`CSR` describing the *same*
+        matrix ``W`` with the *same* ``shape`` -- the entries are resorted into
+        row-major order.
+
+        Returns
+        -------
+        CSR
+            The same logical matrix in CSR format, ``shape`` unchanged.
+
+        See Also
+        --------
+        tocsc : Identity conversion.
+        transpose : Logical transpose (swaps ``shape``).
+        """
+        csr_indptr, csr_indices, perm = csc_to_csr_index(self.indptr, self.indices, shape=self.shape)
+        csr_data = self.data if self.data.size == 1 else self.data[perm]
+        return CSR((csr_data, csr_indices, csr_indptr), shape=self.shape, backend=self.backend)
+
+    def tocoo(self) -> u.sparse.COO:
+        """Convert to coordinate (COO) format.
+
+        Returns
+        -------
+        brainunit.sparse.COO
+            The same logical matrix in COO format, ``shape`` unchanged. A
+            homogeneous (size-1) value is broadcast to one entry per stored
+            element.
+
+        See Also
+        --------
+        tocsr : Re-encode the same logical matrix row-major.
+        tocsc : Identity conversion.
+        """
+        cols, rows = _csr_to_coo(self.indices, self.indptr)
+        data = self.data if self.data.size == rows.size else u.math.broadcast_to(self.data, rows.shape)
+        return u.sparse.COO((data, rows, cols), shape=self.shape, cols_sorted=True)
 
     def transpose(self, axes=None) -> 'CSR':
         """
