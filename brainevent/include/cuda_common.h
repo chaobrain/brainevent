@@ -44,6 +44,22 @@
 // =========================================================================
 
 /*
+ * PRECONDITION (all warp_reduce_* helpers below): FULLY CONVERGED WARP.
+ * Every helper uses __shfl_down_sync(0xffffffff, ...), i.e. it asserts that
+ * ALL 32 lanes of the warp participate.  Calling any of these from a path that
+ * a subset of lanes reached -- e.g. after `if (tid >= n) return;` or inside a
+ * data-dependent branch -- is undefined behaviour: it may hang or fold in
+ * garbage from inactive/retired lanes (M17).
+ *
+ * Callers with partial warps MUST mask off out-of-range lanes BEFORE the
+ * reduction (pad the inactive lanes with the reduction identity -- 0 for sum,
+ * -inf/+inf for max/min -- and let all 32 lanes call the helper), rather than
+ * early-returning. Computing __activemask() INSIDE the helper is intentionally
+ * NOT done: it would silently fold over whatever lanes happen to be active and
+ * mask the real bug instead of surfacing it.
+ */
+
+/*
  * NOTE ON FP16/BF16 REDUCTIONS:
  * Reduction helpers are defined for accumulator types (f32/f64), not storage
  * types. fp16/bf16 kernels upcast with READ_F16/READ_BF16 and use float
@@ -334,6 +350,15 @@ __device__ __inline__ void atomic_add_f64(double* addr, double val) {
  * Uses native atomicAdd on sm_70+ (Volta and newer).
  * Falls back to CAS-based emulation on older architectures.
  *
+ * PRECONDITION (pre-sm_70 emulation path only): @p addr must lie within a
+ * buffer whose enclosing 4-byte word is fully owned by the allocation, i.e.
+ * half buffers must be 4-byte aligned and even-length (padded).  The emulation
+ * rounds @p addr down to a 4-byte boundary and performs a 32-bit atomicCAS,
+ * which reads AND writes the adjacent 2 bytes; for the last element of an
+ * odd-length buffer at an allocation boundary that is a 2-byte out-of-bounds
+ * read-modify-write and can corrupt a neighbouring allocation (M16).  On
+ * sm_70+ the native path is used and this restriction does not apply.
+ *
  * @param addr  Pointer to memory location
  * @param val   Value to add (float32, will be converted to float16)
  */
@@ -341,7 +366,9 @@ __device__ __inline__ void atomic_add_f16(__half* addr, float val) {
 #if __CUDA_ARCH__ >= 700
     atomicAdd(addr, __float2half(val));
 #else
-    // Emulate with CAS on older architectures
+    // Emulate with CAS on older architectures.
+    // WARNING: touches the neighbouring 2 bytes - see the M16 precondition above
+    // (half buffers must be 4-byte aligned and even-length / padded).
     unsigned int* base = reinterpret_cast<unsigned int*>(
         reinterpret_cast<size_t>(addr) & ~(size_t)2
     );
@@ -365,6 +392,12 @@ __device__ __inline__ void atomic_add_f16(__half* addr, float val) {
  * Uses native atomicAdd on sm_80+ (Ampere and newer).
  * Falls back to CAS-based emulation on older architectures.
  *
+ * PRECONDITION (pre-sm_80 emulation path only): same as atomic_add_f16 - @p addr
+ * must lie in a 4-byte-aligned, even-length (padded) bf16 buffer.  The 32-bit
+ * atomicCAS reads AND writes the adjacent 2 bytes, so the last element of an
+ * odd-length buffer at an allocation boundary is a 2-byte out-of-bounds
+ * read-modify-write (M16).  On sm_80+ the native path is used.
+ *
  * @param addr  Pointer to memory location
  * @param val   Value to add (float32, will be converted to bfloat16)
  */
@@ -372,7 +405,9 @@ __device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
 #if __CUDA_ARCH__ >= 800
     atomicAdd(addr, __float2bfloat16(val));
 #else
-    // Emulate with CAS on older architectures
+    // Emulate with CAS on older architectures.
+    // WARNING: touches the neighbouring 2 bytes - see the M16 precondition above
+    // (bf16 buffers must be 4-byte aligned and even-length / padded).
     unsigned int* base = reinterpret_cast<unsigned int*>(
         reinterpret_cast<size_t>(addr) & ~(size_t)2
     );

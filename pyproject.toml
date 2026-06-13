@@ -85,7 +85,12 @@ dependencies = [
     'numpy>=1.15',
     'brainunit>=0.0.8',
     'absl-py',
-    'jax>=0.5.0',
+    # Upper-bounded because the XLA FFI ABI (XLA_FFI_API_MINOR, ffi.h layout)
+    # used by the compiled kernels can change across minor releases; an
+    # incompatible jaxlib otherwise surfaces only as a runtime load/compile
+    # failure instead of at install time.  jax and jaxlib ship in lockstep, so
+    # bounding jax bounds jaxlib (L16).
+    'jax>=0.5.0,<0.11',
 ]
 
 
@@ -102,10 +107,12 @@ brainevent = "brainevent._cli:main"
 
 
 [project.optional-dependencies]
-cpu = ['jax[cpu]>=0.7.2', 'numba']
-cuda12 = ['jax[cuda12]>=0.7.2']
-cuda13 = ['jax[cuda13]>=0.7.2']
-tpu = ['jax[tpu]>=0.7.2']
+# Upper bound mirrors the core 'jax' pin above: the FFI ABI is only tested
+# through the 0.9.x/0.10.x line (L16).
+cpu = ['jax[cpu]>=0.7.2,<0.11', 'numba']
+cuda12 = ['jax[cuda12]>=0.7.2,<0.11']
+cuda13 = ['jax[cuda13]>=0.7.2,<0.11']
+tpu = ['jax[tpu]>=0.7.2,<0.11']
 testing = ['pytest', 'pytest-cov']
 
 

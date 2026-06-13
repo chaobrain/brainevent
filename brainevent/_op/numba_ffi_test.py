@@ -697,20 +697,20 @@ class TestNumbaKernelErrors(unittest.TestCase):
     """Tests for error handling."""
 
     def test_non_numba_function_raises(self):
-        """Test that non-Numba function raises AssertionError."""
+        """Test that a non-Numba function raises ``TypeError``."""
 
         def regular_function(x, out):
             pass
 
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(TypeError):
             numba_kernel(
                 regular_function,
                 outs=jax.ShapeDtypeStruct((64,), jnp.float32),
             )
 
     def test_lambda_raises(self):
-        """Test that lambda function raises AssertionError."""
-        with self.assertRaises(AssertionError):
+        """Test that a lambda function raises ``TypeError``."""
+        with self.assertRaises(TypeError):
             numba_kernel(
                 lambda x, out: None,
                 outs=jax.ShapeDtypeStruct((64,), jnp.float32),

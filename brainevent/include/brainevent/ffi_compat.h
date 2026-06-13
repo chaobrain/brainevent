@@ -17,7 +17,7 @@
 /// @file ffi_compat.h
 /// @brief Converts XLA FFI buffer types to BE::Tensor.
 ///
-/// INTERNAL HEADER — included only in auto-generated FFI wrappers,
+/// INTERNAL HEADER - included only in auto-generated FFI wrappers,
 /// never directly by user CUDA code.
 
 #include "xla/ffi/api/ffi.h"
@@ -34,11 +34,24 @@ namespace BE {
 namespace internal {
 
 /// Build a Tensor from an XLA FFI input buffer.
+///
+/// Throws ``std::invalid_argument`` (host only) for a dtype with no BE::DType
+/// mapping (f8/f4/sub-byte/token), instead of building a ``DType::Invalid``
+/// tensor whose ``element_size()`` is silently 0 (L11).  The generated FFI
+/// wrapper catches this and returns an ``xla::ffi::Error``.
 inline Tensor buffer_to_tensor(xla::ffi::AnyBuffer buf) {
     void* data = buf.untyped_data();
     auto dims = buf.dimensions();
     int ndim = static_cast<int>(dims.size());
     DType dtype = xla_to_jkb_dtype(buf.element_type());
+#ifndef __CUDA_ARCH__
+    if (dtype == DType::Invalid) {
+        throw std::invalid_argument(
+            "BE: unsupported XLA FFI buffer dtype (XLA DataType enum " +
+            std::to_string(static_cast<int>(buf.element_type())) +
+            "); no BE::DType mapping exists for this type");
+    }
+#endif
     return Tensor(data, dims.begin(), ndim, dtype);
 }
 

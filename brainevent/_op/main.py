@@ -15,13 +15,14 @@
 # ==============================================================================
 
 import functools
+import warnings
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Optional
 
 import jax
-from jax.interpreters import xla, batching, ad, mlir
+from jax.interpreters import batching, ad, mlir
 
-from brainevent._compatible_import import Primitive
+from brainevent._compatible_import import Primitive, apply_primitive
 from brainevent._error import KernelFallbackExhaustedError
 from brainevent._registry import register_primitive
 from brainevent._typing import KernelGenerator
@@ -104,8 +105,8 @@ class XLACustomKernel:
 
     Supported backends by platform:
 
-    - **CPU**: Numba, CUDA
-    - **GPU**: Pallas, CUDA, Numba CUDA, Warp, Triton
+    - **CPU**: Numba, Pallas
+    - **GPU**: Pallas, cuda_raw (nvcc), Numba CUDA, Warp, Triton
     - **TPU**: Pallas
 
     The workflow for using this class is:
@@ -167,19 +168,22 @@ class XLACustomKernel:
         if doc is not None:
             self.__doc__ = doc
 
-        # abstract evaluation
-        self.primitive.def_impl(functools.partial(xla.apply_primitive, self.primitive))
+        # abstract evaluation.  ``apply_primitive`` is resolved version-tolerantly
+        # in ``_compatible_import`` (L3).
+        self.primitive.def_impl(functools.partial(apply_primitive, self.primitive))
         self.primitive.def_abstract_eval(self._abstract_eval)
 
         # batching rule
         self.register_general_batching()
 
         # kernel storage: platform -> backend -> KernelEntry
-        self._kernels: Dict[str, Dict[str, KernelEntry]] = {}
+        self._kernels: dict[str, dict[str, KernelEntry]] = {}
         # default backends per platform: platform -> backend_name
-        self._defaults: Dict[str, str] = {}
+        self._defaults: dict[str, str] = {}
         # tracks which platforms have had lowering registered
         self._registered_platforms: set = set()
+        # backend-selection warnings already emitted (deduplicated, M13)
+        self._warned_backends: set = set()
 
         # call function for benchmarking
         self._call_fn: Optional[Callable] = None
@@ -190,6 +194,23 @@ class XLACustomKernel:
         self._benchmark_data_fn: Optional[Callable] = None
         # Auto-register in global registry
         register_primitive(name, self)
+
+    def _warn_backend_once(self, message: str) -> None:
+        """Emit *message* as a ``UserWarning`` at most once per instance.
+
+        Backend selection runs on every lowering; deduplicating on the message
+        text keeps an ambiguous-backend or ignored-global-backend warning (M13)
+        from repeating on each trace while still surfacing distinct situations.
+
+        Parameters
+        ----------
+        message : str
+            The warning text; also the deduplication key.
+        """
+        if message in self._warned_backends:
+            return
+        self._warned_backends.add(message)
+        warnings.warn(message, stacklevel=3)
 
     def _abstract_eval(self, *ins, outs: OutType, **kwargs):
         """Compute the abstract output types for the primitive.
@@ -400,14 +421,34 @@ class XLACustomKernel:
                 if global_be is not None and global_be in kernels:
                     backend_to_use = global_be
                 else:
+                    if global_be is not None:
+                        # A global backend was requested but is not registered for
+                        # this platform/primitive.  The per-call path raises here;
+                        # the global path stays lenient, but must not *silently*
+                        # discard the user's choice (M13).
+                        self._warn_backend_once(
+                            f"Global backend '{global_be}' is not registered for "
+                            f"platform '{platform}' in primitive '{self.name}'; "
+                            f"ignoring it and using the primitive default."
+                        )
                     backend_to_use = self._defaults.get(platform)
 
             # Get the kernel entry
             if backend_to_use and backend_to_use in kernels:
                 pass
             else:
-                # Fallback to first registered kernel
-                backend_to_use = next(iter(kernels))
+                # No explicit/global/default backend resolved: fall back to the
+                # first registered kernel.  When more than one is registered the
+                # choice is dict-insertion-order arbitrary, so log it (M13).
+                fallback_be = next(iter(kernels))
+                if len(kernels) > 1:
+                    self._warn_backend_once(
+                        f"No default backend set for platform '{platform}' in "
+                        f"primitive '{self.name}'; using first-registered backend "
+                        f"'{fallback_be}' out of {sorted(kernels)}. "
+                        f"Set one explicitly with set_default('{platform}', <backend>)."
+                    )
+                backend_to_use = fallback_be
 
             if backend_to_use == 'pallas':
                 check_pallas_jax_version()
@@ -575,24 +616,22 @@ class XLACustomKernel:
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a cuda_raw (nvcc-compiled) kernel for the CPU or GPU platform.
+        """Register a cuda_raw (nvcc-compiled) kernel for the GPU platform.
 
         Convenience wrapper around :meth:`def_kernel` with
-        ``backend='cuda_raw'``.  The kernel generator function should
-        call :func:`brainevent.load_cuda_file` or
-        :func:`brainevent.load_cuda_inline` to compile and
-        register the CUDA kernel, then return a closure that calls it via
-        ``jax.ffi.ffi_call``.
+        ``backend='cuda_raw'`` and ``platform='gpu'`` (a cuda_raw kernel is
+        always GPU; the platform is not configurable).  The kernel generator
+        function should call :func:`brainevent.load_cuda_file` or
+        :func:`brainevent.load_cuda_inline` to compile and register the CUDA
+        kernel, then return a closure that calls it via ``jax.ffi.ffi_call``.
 
         Parameters
         ----------
-        platform : str
-            Target platform.  Must be ``'cpu'`` or ``'gpu'``.
         kg : KernelGenerator
             A callable that compiles and returns the kernel function.
         asdefault : bool, optional
             If ``True``, set cuda_raw as the default backend for the
-            given platform.  Default is ``False``.
+            GPU platform.  Default is ``False``.
 
         See Also
         --------
@@ -711,7 +750,7 @@ class XLACustomKernel:
         return self._defaults.get(platform)
 
     @property
-    def defaults(self) -> Dict[str, str]:
+    def defaults(self) -> dict[str, str]:
         """Return a copy of all default backends.
 
         Returns
@@ -1002,7 +1041,7 @@ class XLACustomKernel:
         ----------
         fn : callable
             A callable with signature
-            ``fn(*, platform: str) -> List[BenchmarkConfig]``.
+            ``fn(*, platform: str) -> list[BenchmarkConfig]``.
 
         See Also
         --------
@@ -1019,7 +1058,7 @@ class XLACustomKernel:
         """
         self._benchmark_data_fn = fn
 
-    def available_backends(self, platform: str) -> List[str]:
+    def available_backends(self, platform: str) -> list[str]:
         """Return the list of registered backend names for a platform.
 
         Parameters
@@ -1063,7 +1102,7 @@ class XLACustomKernel:
         atol: float = 1e-3,
         verbose: bool = False,
         catch_errors: bool = True,
-        backends: Optional[List[str]] = None,
+        backends: Optional[list[str]] = None,
     ) -> BenchmarkResult:
         """Benchmark all registered backends across every configured data config.
 
@@ -1163,7 +1202,7 @@ class XLACustomKernel:
 
         configs = self._benchmark_data_fn(platform=platform)
 
-        records: List[BenchmarkRecord] = []
+        records: list[BenchmarkRecord] = []
 
         for config in configs:
             config_outputs = {}  # backend -> output for cross-backend comparison

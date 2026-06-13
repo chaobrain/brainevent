@@ -168,6 +168,7 @@ def test_select_nvcc_env_override(monkeypatch, tmp_path):
 def test_select_nvcc_pip_first(monkeypatch):
     monkeypatch.delenv("BRAINEVENT_NVCC_PATH", raising=False)
     monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)  # H6: now also probed
     monkeypatch.setattr(kt, "_NVCC_DISCOVERY", "pip")
     monkeypatch.setattr(kt, "_find_pip_cuda",
                         lambda roots=None: (("/pip/nvcc", ["/pip/include"]), []))
@@ -180,6 +181,7 @@ def test_select_nvcc_system_pref(monkeypatch, tmp_path):
     from pathlib import Path
     monkeypatch.delenv("BRAINEVENT_NVCC_PATH", raising=False)
     monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)  # H6: now also probed
     monkeypatch.setattr(kt, "_NVCC_DISCOVERY", "system")
     monkeypatch.setattr(kt, "_find_pip_cuda",
                         lambda roots=None: (("/pip/nvcc", ["/pip/include"]), []))
@@ -196,6 +198,7 @@ def test_select_nvcc_system_pref(monkeypatch, tmp_path):
 def test_select_nvcc_not_found(monkeypatch):
     monkeypatch.delenv("BRAINEVENT_NVCC_PATH", raising=False)
     monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)  # H6: now also probed
     monkeypatch.setattr(kt, "_NVCC_DISCOVERY", "pip")
     monkeypatch.setattr(kt, "_find_pip_cuda", lambda roots=None: (None, []))
     monkeypatch.setattr(kt.shutil, "which", lambda n: None)
@@ -222,13 +225,18 @@ def test_detect_cuda_toolchain_no_host_cxx(monkeypatch, tmp_path):
     from brainevent._error import HostCompilerNotFoundError
     nvcc = tmp_path / "cu13" / "bin" / "nvcc"
     _touch_exec(nvcc)
+    inc = tmp_path / "cu13" / "include"
+    inc.mkdir(parents=True, exist_ok=True)
+    (inc / "cuda_runtime.h").write_text("/* header */")  # L12: include is validated
     monkeypatch.setattr(
         kt, "_select_nvcc",
-        lambda: (str(nvcc), [str(tmp_path / "cu13" / "include")], []),
+        lambda: (str(nvcc), [str(inc)], []),
     )
+    # returncode is now inspected (H5), so the stub must provide it.
     monkeypatch.setattr(
         kt.subprocess, "run",
-        lambda *a, **k: type("R", (), {"stdout": "Cuda release 13.0", "stderr": ""})(),
+        lambda *a, **k: type(
+            "R", (), {"returncode": 0, "stdout": "Cuda release 13.0", "stderr": ""})(),
     )
     monkeypatch.setattr(kt, "_find_host_cxx", lambda: (None, []))
     with pytest.raises(HostCompilerNotFoundError) as ei:

@@ -24,6 +24,7 @@ Adding a new backend
 """
 
 import os
+import shlex
 import subprocess
 from abc import ABC, abstractmethod
 from typing import Any
@@ -66,18 +67,29 @@ def _compile_timeout() -> int:
 
 
 def _run(cmd, *, timeout, stage):
-    """``subprocess.run`` that maps FileNotFoundError/timeout to CompilationError."""
+    """``subprocess.run`` that maps FileNotFoundError/timeout to CompilationError.
+
+    Output is decoded as UTF-8 with ``errors="replace"`` rather than the
+    platform locale.  Compiler diagnostics (nvcc / cl / g++) routinely contain
+    bytes that are not valid in a non-UTF-8 locale (e.g. Windows ``cp1252``);
+    relying on the implicit locale decoding of ``text=True`` lets a
+    ``UnicodeDecodeError`` raise *inside* ``subprocess.run`` -- before this
+    function's ``except`` clauses can run -- masking the real compiler error.
+    """
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
     except FileNotFoundError as e:
         raise CompilationError(
             f"compiler executable not found: {cmd[0]}",
-            command=" ".join(map(str, cmd)), stage=stage) from e
+            command=shlex.join(map(str, cmd)), stage=stage) from e
     except subprocess.TimeoutExpired as e:
         out = ((e.stdout or "") + (e.stderr or "")) if isinstance(e.stdout, str) else ""
         raise CompilationError(
             f"compilation timed out after {timeout}s",
-            compiler_output=out, command=" ".join(map(str, cmd)), stage=stage) from e
+            compiler_output=out, command=shlex.join(map(str, cmd)), stage=stage) from e
 
 
 def _raise_compile_error(output: str, command: str, stage: str) -> None:
@@ -198,7 +210,18 @@ class CUDABackend(CompilerBackend):
         use_fast_math: bool = False,
         **kwargs: Any,
     ) -> str:
-        """Compile preprocessed source to .so directly with nvcc."""
+        """Compile preprocessed source to .so directly with nvcc.
+
+        Notes
+        -----
+        Each element of *extra_ldflags* is treated as a single, already-split
+        linker token (the caller is responsible for splitting, exactly as if
+        it were one ``shlex``-split argv entry).  Every element is forwarded to
+        the host linker unchanged via one ``-Xlinker <token>`` pair, so a value
+        such as ``"-L/path with spaces"`` reaches the linker as a single
+        argument.  This matches the :class:`CPPBackend` semantics, where each
+        element is likewise one already-split token passed straight through.
+        """
         os.makedirs(build_dir, exist_ok=True)
         arches = [gpu_arch] if isinstance(gpu_arch, str) else list(gpu_arch)
 
@@ -245,10 +268,14 @@ class CUDABackend(CompilerBackend):
 
         cmd.extend(extra_cuda_cflags or [])
 
-        for flag in (extra_ldflags or []):
-            cmd.extend(["--linker-options", flag])
+        # Each extra_ldflags element is one already-split token forwarded to the
+        # host linker via a single ``-Xlinker <token>`` pair (mirrors how
+        # ``nvcc_host_pic_flags`` forwards host-compiler options one per flag,
+        # and keeps multi-word values such as "-L/path with spaces" intact).
+        for token in (extra_ldflags or []):
+            cmd.extend(["-Xlinker", token])
 
-        cmd_str = " ".join(cmd)
+        cmd_str = shlex.join(cmd)
         if verbose:
             print(f"nvcc command:\n  {cmd_str}")
 
@@ -293,11 +320,27 @@ class CPPBackend(CompilerBackend):
         verbose: bool = False,
         **kwargs: Any,
     ) -> str:
+        """Compile preprocessed source to a shared library with g++ / clang++.
+
+        Notes
+        -----
+        Each element of *extra_ldflags* is treated as a single, already-split
+        linker token and passed through to the compiler driver unchanged (the
+        driver forwards ``-L`` / ``-l`` / ``-Wl,`` flags to the linker).  This
+        matches the :class:`CUDABackend` semantics, where each element is
+        likewise one already-split token forwarded to the host linker.
+        """
         toolchain = self.toolchain
 
+        # Honor the caller-provided build_dir for intermediate artefacts (the
+        # CUDABackend does the same); fall back to the output directory only
+        # when no build_dir was supplied.
+        if build_dir:
+            os.makedirs(build_dir, exist_ok=True)
+        else:
+            build_dir = os.path.dirname(os.path.abspath(output_path))
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-        build_dir = os.path.dirname(os.path.abspath(output_path))
         src_path = os.path.join(build_dir, "kernel.cpp")
         with open(src_path, "w", encoding="utf-8") as f:
             f.write(source)
@@ -316,9 +359,11 @@ class CPPBackend(CompilerBackend):
             cmd.extend(["-I", p])
 
         cmd.extend(extra_cflags or [])
+        # Each extra_ldflags element is one already-split token passed straight
+        # through to the compiler driver (which forwards it to the linker).
         cmd.extend(extra_ldflags or [])
 
-        cmd_str = " ".join(cmd)
+        cmd_str = shlex.join(cmd)
         if verbose:
             print(f"C++ command:\n  {cmd_str}")
 

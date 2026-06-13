@@ -21,6 +21,7 @@ Public API: load_cuda_inline, load_cuda_file, load_cuda_dir,
             print_diagnostics.
 """
 
+import glob
 import os
 import shutil
 import sys
@@ -59,6 +60,40 @@ _REGISTERED_TARGET_SO: dict[str, str] = {}
 def _join_sources(sources: str | list[str]) -> str:
     """Concatenate a list of sources, or return a single source unchanged."""
     return "\n\n".join(sources) if isinstance(sources, list) else sources
+
+
+def _cache_header_paths(toolchain) -> list[str]:
+    """Resolve the injected headers whose byte-contents affect the build.
+
+    Every ``brainevent`` header (``ffi_compat.h``, ``tensor.h``, ``check.h``,
+    ``cuda_common.h``, ...) can be pulled into a generated translation unit, so
+    a content change in *any* of them must rebuild — hashing only ``ffi_compat.h``
+    would miss, e.g., a ``check.h`` semantics change (abort -> throw) when the
+    ``brainevent`` version is unchanged (editable installs).  jaxlib's
+    ``xla/ffi/api/ffi.h`` is hashed too so an ABI bump rebuilds.
+
+    Parameters
+    ----------
+    toolchain : CudaToolchain or CppToolchain
+        A detected toolchain exposing ``brainevent_include_dir`` and
+        ``xla_ffi_include_dir``.
+
+    Returns
+    -------
+    list of str
+        Existing header paths to byte-hash (missing files are skipped; the
+        cache key tolerates absent entries).  The order is irrelevant — the
+        cache key sorts the paths.
+    """
+    be_inc = toolchain.brainevent_include_dir
+    candidates: list[str] = []
+    # All brainevent headers: both the ``brainevent/`` subdir and any top-level
+    # headers (cuda_common.h / curand_common.h live one level up).
+    candidates.extend(glob.glob(os.path.join(be_inc, "brainevent", "*.h")))
+    candidates.extend(glob.glob(os.path.join(be_inc, "*.h")))
+    # jaxlib FFI ABI header.
+    candidates.append(os.path.join(toolchain.xla_ffi_include_dir, "xla", "ffi", "api", "ffi.h"))
+    return [p for p in candidates if os.path.isfile(p)]
 
 
 def _build_specs(
@@ -211,7 +246,9 @@ def load_cuda_inline(
     gpu_arches = resolved if explicit_pin else resolved[:1]
     arch_key = "+".join(gpu_arches)
 
-    # Compute cache key (includes optimization settings so changing them rebuilds)
+    # Compute cache key (includes optimization settings so changing them
+    # rebuilds; also the include search path, injected-header bytes, and the
+    # jaxlib FFI ABI version — see CompilationCache.cache_key).
     cache_key = _cache.cache_key(
         source=user_source,
         arch=arch_key,
@@ -223,6 +260,8 @@ def load_cuda_inline(
             + [f"--be-allow-cuda-graph={int(allow_cuda_graph)}"]
         ),
         extra_ldflags=extra_ldflags,
+        extra_include_paths=extra_include_paths,
+        header_paths=_cache_header_paths(toolchain),
     )
 
     # Check cache
@@ -262,7 +301,10 @@ def load_cuda_inline(
                 optimization_level=optimization_level,
                 use_fast_math=use_fast_math,
             )
-            so_path = str(_cache.store(name, cache_key, so_path))
+            # A user-supplied build_directory is the caller's: copy (don't move)
+            # the artefact into the cache so their file stays put.
+            so_path = str(_cache.store(
+                name, cache_key, so_path, source_is_user_dir=bool(build_directory)))
         finally:
             if cleanup:
                 shutil.rmtree(build_dir, ignore_errors=True)
@@ -416,13 +458,16 @@ def load_cpp_inline(
     # Detect toolchain (CPU — no CUDA needed)
     toolchain = detect_cpp_toolchain()
 
-    # Cache key
+    # Cache key (include search path, injected-header bytes, and the jaxlib
+    # FFI ABI version participate — see CompilationCache.cache_key).
     cache_key = _cache.cache_key(
         source=user_source,
         arch="cpu",
         cxx_version=toolchain.cxx_version,
         extra_cflags=extra_cflags,
         extra_ldflags=extra_ldflags,
+        extra_include_paths=extra_include_paths,
+        header_paths=_cache_header_paths(toolchain),
     )
 
     cached_so = None if force_rebuild else _cache.lookup(name, cache_key)
@@ -451,7 +496,10 @@ def load_cpp_inline(
                 extra_include_paths=extra_include_paths,
                 verbose=verbose,
             )
-            so_path = str(_cache.store(name, cache_key, so_path))
+            # A user-supplied build_directory is the caller's: copy (don't move)
+            # the artefact into the cache so their file stays put.
+            so_path = str(_cache.store(
+                name, cache_key, so_path, source_is_user_dir=bool(build_directory)))
         finally:
             if cleanup:
                 shutil.rmtree(build_dir, ignore_errors=True)

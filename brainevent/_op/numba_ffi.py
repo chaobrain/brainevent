@@ -18,10 +18,11 @@ import enum
 import importlib.util
 import threading
 import traceback
-from ctypes import c_void_p, c_int, c_int64, c_uint32, c_size_t, POINTER, Structure, CFUNCTYPE
+from ctypes import c_void_p, c_int, c_int32, c_int64, c_uint32, c_size_t, c_char_p, POINTER, Structure, CFUNCTYPE
 from typing import Callable, Dict, Sequence, Tuple
 
 import jax
+import ml_dtypes
 import numpy as np
 
 from .util import OutType, abstract_arguments
@@ -32,8 +33,26 @@ __all__ = [
 
 numba_installed = importlib.util.find_spec('numba') is not None
 _NUMBA_CPU_FFI_HANDLES: Dict[str, object] = {}
+# Maps a kernel/shape/dtype signature to an already-registered FFI target name so
+# repeated eager calls reuse one registration instead of leaking one per call (H1).
+_NUMBA_CPU_FFI_TARGETS: Dict[tuple, str] = {}
 _FFI_CALLBACK_COUNTER = 0
-_FFI_CALLBACK_LOCK = threading.Lock()
+# Serializes target registration (trace/lowering time, distinct from execution).
+_REGISTRATION_LOCK = threading.Lock()
+
+# XLA FFI API version implemented by this bridge (jaxlib c_api.h
+# XLA_FFI_API_MAJOR / XLA_FFI_API_MINOR).  Reported back during the metadata
+# handshake so XLA does not reject the handler on a version mismatch.
+XLA_FFI_API_MAJOR = 0
+XLA_FFI_API_MINOR = 3
+
+
+class XLA_FFI_Error_Code(enum.IntEnum):
+    """Subset of XLA FFI error codes (mirrors ``absl::StatusCode``)."""
+    OK = 0
+    INVALID_ARGUMENT = 3
+    UNIMPLEMENTED = 12
+    INTERNAL = 13
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +95,25 @@ class XLA_FFI_Handler_TraitsBits(enum.IntEnum):
     COMMAND_BUFFER_COMPATIBLE = 1 << 0
 
 
+class XLA_FFI_TypeId(Structure):
+    """ctypes struct for an XLA FFI type identifier (state type id)."""
+    _fields_ = [
+        ("type_id", c_int64),
+    ]
+
+
 class XLA_FFI_Metadata(Structure):
-    """ctypes struct for XLA FFI handler metadata."""
+    """ctypes struct for XLA FFI handler metadata.
+
+    Mirrors ``struct XLA_FFI_Metadata`` in jaxlib ``c_api.h``: the trailing
+    ``state_type_id`` field must be present or XLA reads/writes past the end of
+    the struct during the metadata handshake.
+    """
     _fields_ = [
         ("struct_size", c_size_t),
         ("api_version", XLA_FFI_Api_Version),
         ("traits", c_uint32),
+        ("state_type_id", XLA_FFI_TypeId),
     ]
 
 
@@ -154,6 +186,209 @@ class XLA_FFI_CallFrame(Structure):
     ]
 
 
+class XLA_FFI_Error_Create_Args(Structure):
+    """ctypes struct for arguments to ``XLA_FFI_Error_Create``."""
+    _fields_ = [
+        ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("message", c_char_p),
+        ("errc", c_int),  # XLA_FFI_Error_Code
+    ]
+
+
+class XLA_FFI_Stream_Get_Args(Structure):
+    """ctypes struct for arguments to ``XLA_FFI_Stream_Get``."""
+    _fields_ = [
+        ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("ctx", c_void_p),  # XLA_FFI_ExecutionContext*
+        ("stream", c_void_p),  # void* (out)
+    ]
+
+
+class XLA_FFI_DeviceOrdinal_Get_Args(Structure):
+    """ctypes struct for arguments to ``XLA_FFI_DeviceOrdinal_Get``.
+
+    Mirrors ``struct XLA_FFI_DeviceOrdinal_Get_Args`` in jaxlib ``c_api.h``.
+    ``device_ordinal`` is an out parameter: XLA writes the ordinal of the
+    device this call executes on so the GPU bridge can bind the matching CUDA
+    context before building device arrays (C3).
+    """
+    _fields_ = [
+        ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("ctx", c_void_p),  # XLA_FFI_ExecutionContext*
+        ("device_ordinal", c_int32),  # int32_t (out)
+    ]
+
+
+# Function-pointer signatures for the API entries these bridges actually call.
+XLA_FFI_Error_Create_Func = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_Error_Create_Args))
+XLA_FFI_Stream_Get_Func = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_Stream_Get_Args))
+XLA_FFI_DeviceOrdinal_Get_Func = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_DeviceOrdinal_Get_Args))
+
+
+class XLA_FFI_Api(Structure):
+    """ctypes view of the XLA FFI API dispatch table (jaxlib ``c_api.h``).
+
+    Every ``_XLA_FFI_API_STRUCT_FIELD`` entry is a function pointer, so the
+    table can be modelled as a flat sequence of pointers.  The two entries this
+    bridge invokes (``XLA_FFI_Error_Create`` and ``XLA_FFI_Stream_Get``) are
+    typed as :class:`ctypes.CFUNCTYPE`; the rest are opaque ``c_void_p`` of the
+    same width so the field offsets stay exact.
+    """
+    _fields_ = [
+        ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("api_version", XLA_FFI_Api_Version),
+        ("internal_api", c_void_p),
+        ("XLA_FFI_Error_Create", XLA_FFI_Error_Create_Func),
+        ("XLA_FFI_Error_GetMessage", c_void_p),
+        ("XLA_FFI_Error_Destroy", c_void_p),
+        ("XLA_FFI_Handler_Register", c_void_p),
+        ("XLA_FFI_Stream_Get", XLA_FFI_Stream_Get_Func),
+        ("XLA_FFI_Type_Register", c_void_p),
+        ("XLA_FFI_ExecutionContext_Get", c_void_p),
+        ("XLA_FFI_State_Set", c_void_p),
+        ("XLA_FFI_State_Get", c_void_p),
+        ("XLA_FFI_DeviceMemory_Allocate", c_void_p),
+        ("XLA_FFI_DeviceMemory_Free", c_void_p),
+        ("XLA_FFI_ThreadPool_Schedule", c_void_p),
+        ("XLA_FFI_ThreadPool_NumThreads", c_void_p),
+        ("XLA_FFI_Future_Create", c_void_p),
+        ("XLA_FFI_Future_SetAvailable", c_void_p),
+        ("XLA_FFI_Future_SetError", c_void_p),
+        ("XLA_FFI_RunId_Get", c_void_p),
+        ("XLA_FFI_DeviceOrdinal_Get", XLA_FFI_DeviceOrdinal_Get_Func),
+    ]
+
+
+def make_ffi_error(api_ptr, code, message: str):
+    """Build an ``XLA_FFI_Error*`` to return from a failed FFI callback.
+
+    A typed FFI callback signals failure by returning a non-null
+    ``XLA_FFI_Error*``.  Returning ``None`` (a null pointer) is XLA's *Ok*
+    status, so an exception that is merely printed and swallowed is reported to
+    XLA as success — producing silent wrong answers.  This constructs a real
+    error object via the API table referenced by the call frame.
+
+    Parameters
+    ----------
+    api_ptr : int or None
+        Value of ``XLA_FFI_CallFrame.api`` (address of the ``XLA_FFI_Api``
+        table).  ``None``/0 disables error creation.
+    code : XLA_FFI_Error_Code or int
+        Status code to attach to the error.
+    message : str
+        Human-readable message surfaced to the JAX caller.
+
+    Returns
+    -------
+    int or None
+        The ``XLA_FFI_Error*`` pointer value, or ``None`` when the API table is
+        unavailable (in which case XLA falls back to Ok status).
+    """
+    if not api_ptr:
+        return None
+    api = ctypes.cast(api_ptr, POINTER(XLA_FFI_Api)).contents
+    args = XLA_FFI_Error_Create_Args(
+        struct_size=ctypes.sizeof(XLA_FFI_Error_Create_Args),
+        extension_start=None,
+        message=message.encode('utf-8'),
+        errc=int(code),
+    )
+    return api.XLA_FFI_Error_Create(ctypes.byref(args))
+
+
+def get_xla_stream(api_ptr, ctx) -> int:
+    """Return the CUDA stream XLA assigned to this FFI call.
+
+    A GPU FFI handler must launch its kernel on the stream XLA hands it, not on
+    a stream of its own; otherwise the kernel races XLA's own work on the device
+    (use-before-write / write-after-read hazards).  ``XLA_FFI_Stream_Get``
+    returns an ``XLA_FFI_Error*`` whose non-null value previously went unchecked
+    — a failed lookup would silently yield a null/garbage stream.
+
+    Parameters
+    ----------
+    api_ptr : int
+        Value of ``XLA_FFI_CallFrame.api`` (address of the ``XLA_FFI_Api``).
+    ctx : int
+        Value of ``XLA_FFI_CallFrame.ctx`` (the execution context).
+
+    Returns
+    -------
+    int
+        The CUDA stream handle as an integer (``0`` is the legal default
+        stream).
+
+    Raises
+    ------
+    RuntimeError
+        If the API table is unavailable or ``XLA_FFI_Stream_Get`` reports an
+        error.  Raised (not swallowed) so the surrounding callback converts it
+        into a real ``XLA_FFI_Error`` rather than returning a wrong answer.
+    """
+    if not api_ptr:
+        raise RuntimeError('XLA FFI API table pointer is null; cannot resolve the CUDA stream.')
+    api = ctypes.cast(api_ptr, POINTER(XLA_FFI_Api)).contents
+    args = XLA_FFI_Stream_Get_Args(
+        struct_size=ctypes.sizeof(XLA_FFI_Stream_Get_Args),
+        extension_start=None,
+        ctx=ctx,
+        stream=None,
+    )
+    err = api.XLA_FFI_Stream_Get(ctypes.byref(args))
+    if err:
+        raise RuntimeError('XLA_FFI_Stream_Get reported an error while resolving the CUDA stream.')
+    # ``stream`` may legitimately be 0 (the default stream); only a hard lookup
+    # failure (signalled by *err*) is an error.  Normalise None -> 0.
+    return int(args.stream) if args.stream else 0
+
+
+def get_device_ordinal(api_ptr, ctx):
+    """Return the device ordinal XLA placed this FFI call on, or ``None``.
+
+    Used by the GPU bridge to bind the matching CUDA context
+    (``with cuda.gpus[ordinal]:``) before constructing device arrays, so a
+    multi-GPU execution builds arrays and launches on the device that actually
+    owns the buffers (C3).  Returns ``None`` when the ordinal cannot be queried
+    (older jaxlib that does not populate ``XLA_FFI_DeviceOrdinal_Get``), letting
+    the caller fall back to numba's current device.
+
+    Parameters
+    ----------
+    api_ptr : int
+        Value of ``XLA_FFI_CallFrame.api``.
+    ctx : int
+        Value of ``XLA_FFI_CallFrame.ctx``.
+
+    Returns
+    -------
+    int or None
+        The device ordinal, or ``None`` if it is unavailable.
+    """
+    if not api_ptr:
+        return None
+    try:
+        api = ctypes.cast(api_ptr, POINTER(XLA_FFI_Api)).contents
+        fn = api.XLA_FFI_DeviceOrdinal_Get
+        if not fn:
+            return None
+        args = XLA_FFI_DeviceOrdinal_Get_Args(
+            struct_size=ctypes.sizeof(XLA_FFI_DeviceOrdinal_Get_Args),
+            extension_start=None,
+            ctx=ctx,
+            device_ordinal=-1,
+        )
+        err = fn(ctypes.byref(args))
+        if err or args.device_ordinal < 0:
+            return None
+        return int(args.device_ordinal)
+    except Exception:  # noqa: BLE001 - ordinal is best-effort; fall back to current device
+        return None
+
+
 # XLA FFI dtype enum -> numpy dtype mapping
 # (from xla/ffi/api/c_api.h XLA_FFI_DataType)
 _XLA_FFI_DTYPE_TO_NUMPY = {
@@ -170,21 +405,80 @@ _XLA_FFI_DTYPE_TO_NUMPY = {
     11: np.dtype(np.float32),  # F32
     12: np.dtype(np.float64),  # F64
     15: np.dtype(np.complex64),  # C64
-    16: np.dtype(np.bfloat16) if hasattr(np, 'bfloat16') else None,  # BF16
+    16: np.dtype(ml_dtypes.bfloat16),  # BF16
     18: np.dtype(np.complex128),  # C128
 }
 
 
+def resolve_buffer_dtype(dtype_code: int, fallback: np.dtype) -> np.dtype:
+    """Resolve an XLA FFI dtype enum to a numpy dtype.
+
+    Distinguishes a *known-but-unsupported* dtype code (raise, never silently
+    reinterpret the bytes) from an *unknown* code (use the caller's abstract
+    fallback).  Replaces ``dict.get(code, fallback)``, which returned the stored
+    ``None`` instead of *fallback* when a code was present-but-unmapped.
+
+    Parameters
+    ----------
+    dtype_code : int
+        ``XLA_FFI_Buffer.dtype`` value (an ``XLA_FFI_DataType`` enum).
+    fallback : numpy.dtype
+        Dtype to use when *dtype_code* is not in the table (the abstract dtype
+        JAX assigned to the buffer).
+
+    Returns
+    -------
+    numpy.dtype
+        The resolved element dtype.
+
+    Raises
+    ------
+    TypeError
+        If *dtype_code* is known to the table but maps to no numpy dtype.
+    """
+    if dtype_code in _XLA_FFI_DTYPE_TO_NUMPY:
+        resolved = _XLA_FFI_DTYPE_TO_NUMPY[dtype_code]
+        if resolved is None:
+            raise TypeError(
+                f'XLA FFI dtype code {dtype_code} has no numpy representation in this build.'
+            )
+        return resolved
+    return np.dtype(fallback)
+
+
 def _numpy_from_buffer(data_ptr, shape, dtype):
-    """Create a zero-copy numpy array from a raw data pointer."""
+    """Create a numpy array viewing a raw XLA buffer pointer.
+
+    Reconstructs the array from a raw-byte view (``np.frombuffer`` over a
+    ``ctypes`` char array) rather than ``numpy.ctypeslib.as_ctypes_type``, which
+    raises for ``float16``, ``bfloat16``, ``complex64`` and ``complex128``.  The
+    byte view is exact for every fixed-width dtype and remains writable, so a
+    numba kernel can write results straight into the output buffer.
+
+    Parameters
+    ----------
+    data_ptr : int
+        Address of the buffer's first byte.
+    shape : tuple of int
+        Logical shape of the array.
+    dtype : numpy.dtype
+        Element type used to interpret the raw bytes.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of *shape* and *dtype* sharing memory with the buffer, or a fresh
+        empty array when the buffer holds zero elements.
+    """
+    dtype = np.dtype(dtype)
     size = 1
     for dim in shape:
-        size *= dim
+        size *= int(dim)
     if size == 0:
         return np.empty(shape, dtype=dtype)
-    c_type = np.ctypeslib.as_ctypes_type(dtype)
-    buffer = (c_type * size).from_address(data_ptr)
-    return np.ctypeslib.as_array(buffer).reshape(shape)
+    nbytes = size * dtype.itemsize
+    raw = (ctypes.c_char * nbytes).from_address(data_ptr)
+    return np.frombuffer(raw, dtype=dtype).reshape(shape)
 
 
 # The typed FFI callback signature: void* fn(XLA_FFI_CallFrame*)
@@ -231,8 +525,8 @@ class NumbaCpuFfiHandler:
                         ext_ptr, POINTER(XLA_FFI_Metadata_Extension)
                     ).contents
                     metadata = metadata_ext.metadata.contents
-                    metadata.api_version.major_version = 0
-                    metadata.api_version.minor_version = 1
+                    metadata.api_version.major_version = XLA_FFI_API_MAJOR
+                    metadata.api_version.minor_version = XLA_FFI_API_MINOR
                     metadata.traits = 0  # not command-buffer-compatible
                     return None  # success
 
@@ -244,7 +538,7 @@ class NumbaCpuFfiHandler:
                     call_frame.args.args[i], POINTER(XLA_FFI_Buffer)
                 ).contents
                 shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
-                dtype = _XLA_FFI_DTYPE_TO_NUMPY.get(buf_ptr.dtype, self.input_dtypes[i])
+                dtype = resolve_buffer_dtype(buf_ptr.dtype, self.input_dtypes[i])
                 input_arrays.append(_numpy_from_buffer(buf_ptr.data, shape, dtype))
 
             # Extract output buffers
@@ -255,15 +549,26 @@ class NumbaCpuFfiHandler:
                     call_frame.rets.rets[i], POINTER(XLA_FFI_Buffer)
                 ).contents
                 shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
-                dtype = _XLA_FFI_DTYPE_TO_NUMPY.get(buf_ptr.dtype, self.output_dtypes[i])
+                dtype = resolve_buffer_dtype(buf_ptr.dtype, self.output_dtypes[i])
                 output_arrays.append(_numpy_from_buffer(buf_ptr.data, shape, dtype))
 
-            # Call the numba kernel
-            with _FFI_CALLBACK_LOCK:
-                self.kernel(*input_arrays, *output_arrays)
+            # Call the numba kernel.  No global lock is held: every call works
+            # only on its own call-local input/output arrays, so concurrent XLA
+            # worker threads cannot race here (H7).
+            self.kernel(*input_arrays, *output_arrays)
 
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - surfaced to XLA as an FFI error
             traceback.print_exc()
+            try:
+                api_ptr = call_frame_ptr.contents.api
+            except Exception:
+                api_ptr = None
+            return make_ffi_error(
+                api_ptr,
+                XLA_FFI_Error_Code.INTERNAL,
+                f'Numba CPU kernel {self.name!r} raised '
+                f'{type(exc).__name__}: {exc}',
+            )
 
         return None  # success
 
@@ -298,25 +603,38 @@ def _register_numba_cpu_ffi_target(
     if not numba_installed:
         raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
 
-    target_name = f'brainevent_numba_ffi_{_FFI_CALLBACK_COUNTER}'
-    _FFI_CALLBACK_COUNTER += 1
-
-    handler = NumbaCpuFfiHandler(
-        name=target_name,
-        kernel=kernel,
-        input_shapes=input_shapes,
-        input_dtypes=input_dtypes,
-        output_shapes=output_shapes,
-        output_dtypes=output_dtypes,
-    )
-
-    # Keep the handler alive to prevent GC of ctypes callback
-    _NUMBA_CPU_FFI_HANDLES[target_name] = handler
-
     out_types = tuple(
         jax.ShapeDtypeStruct(shape, dtype)
         for shape, dtype in zip(output_shapes, output_dtypes)
     )
+
+    # Reuse an existing registration for an identical kernel/signature.  Every
+    # eager call would otherwise mint a fresh target name and register a new FFI
+    # handler, leaking one handler (and ctypes callback) per call (H1).  The
+    # cached handler keeps *kernel* alive, so ``id(kernel)`` cannot be recycled
+    # while the entry lives.
+    signature = (id(kernel), input_shapes, input_dtypes, output_shapes, output_dtypes)
+    with _REGISTRATION_LOCK:
+        cached_name = _NUMBA_CPU_FFI_TARGETS.get(signature)
+        if cached_name is not None:
+            return cached_name, out_types
+
+        target_name = f'brainevent_numba_ffi_{_FFI_CALLBACK_COUNTER}'
+        _FFI_CALLBACK_COUNTER += 1
+
+        handler = NumbaCpuFfiHandler(
+            name=target_name,
+            kernel=kernel,
+            input_shapes=input_shapes,
+            input_dtypes=input_dtypes,
+            output_shapes=output_shapes,
+            output_dtypes=output_dtypes,
+        )
+
+        # Keep the handler alive to prevent GC of ctypes callback.
+        _NUMBA_CPU_FFI_HANDLES[target_name] = handler
+        _NUMBA_CPU_FFI_TARGETS[signature] = target_name
+
     return target_name, out_types
 
 
@@ -430,7 +748,17 @@ def numba_kernel(
         tuple(out.dtype for out in out_info),
         'output',
     )
-    assert isinstance(kernel, CPUDispatcher), 'The kernel must be a Numba JIT-compiled function.'
+    # Use an explicit ``raise`` rather than ``assert`` so the check survives
+    # ``python -O`` (which strips assertions) (L14).
+    if not isinstance(kernel, CPUDispatcher):
+        raise TypeError('The kernel must be a Numba JIT-compiled function (numba.njit).')
+
+    # Pin row-major layouts so XLA is contractually required to hand the handler
+    # C-contiguous buffers; the callback reshapes by ``dims`` only and cannot
+    # recover a non-default layout from ``XLA_FFI_Buffer`` (M4).  ``ffi_call``
+    # takes layouts in major-to-minor order, so row-major is the natural
+    # ``range(ndim)`` (it reverses these to XLA's minor-to-major internally).
+    output_layouts = tuple(tuple(range(len(out.shape))) for out in out_info)
 
     def call(*ins):
         # input information
@@ -440,6 +768,7 @@ def numba_kernel(
             tuple(inp.dtype for inp in in_info),
             'input',
         )
+        input_layouts = tuple(tuple(range(len(shape))) for shape in input_shapes)
 
         # register FFI target
         target_name, out_types = _register_numba_cpu_ffi_target(
@@ -452,6 +781,8 @@ def numba_kernel(
             out_types,
             input_output_aliases=input_output_aliases,
             vmap_method=vmap_method,
+            input_layouts=list(input_layouts),
+            output_layouts=list(output_layouts),
         )(*ins)
         return jax.tree.unflatten(out_treedef, results)
 

@@ -13,23 +13,29 @@
 # limitations under the License.
 # ==============================================================================
 
+import contextlib
 import ctypes
 import importlib.util
 import threading
 import traceback
-from ctypes import c_void_p, c_size_t, POINTER, CFUNCTYPE, Structure
+from ctypes import c_void_p, POINTER, CFUNCTYPE
 from typing import Callable, Dict, Tuple, Union
 
 import jax
 import numpy as np
 
 from .numba_ffi import (
+    XLA_FFI_API_MAJOR,
+    XLA_FFI_API_MINOR,
+    XLA_FFI_Error_Code,
     XLA_FFI_Extension_Type,
-    XLA_FFI_Extension_Base,
     XLA_FFI_Metadata_Extension,
     XLA_FFI_CallFrame,
     XLA_FFI_Buffer,
-    _XLA_FFI_DTYPE_TO_NUMPY,
+    make_ffi_error,
+    resolve_buffer_dtype,
+    get_xla_stream,
+    get_device_ordinal,
     _normalize_shapes_and_dtypes,
 )
 from .util import OutType, abstract_arguments
@@ -73,116 +79,57 @@ def import_numba_cuda():
     return cuda
 
 _NUMBA_CUDA_FFI_HANDLES: Dict[str, object] = {}
+# Maps a kernel/shape/dtype/launch signature to an already-registered FFI
+# target so repeated eager calls reuse one registration instead of leaking a
+# fresh handler (and ctypes callback) per call (H1).
+_NUMBA_CUDA_FFI_TARGETS: Dict[tuple, str] = {}
 _CUDA_FFI_CALLBACK_COUNTER = 0
-_CUDA_FFI_CALLBACK_LOCK = threading.Lock()
+# Serializes target registration (trace/lowering time).  There is deliberately
+# no per-launch lock: each callback operates only on its own call-local device
+# arrays and on XLA's stream, so concurrent launches cannot race (L15).
+_CUDA_REGISTRATION_LOCK = threading.Lock()
 
 # The typed FFI callback signature: void* fn(XLA_FFI_CallFrame*)
 _CUDA_FFI_CALLBACK_TYPE = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_CallFrame))
 
 
 # ---------------------------------------------------------------------------
-# XLA FFI API structures for CUDA stream extraction
-# (Based on XLA's C API: xla/ffi/api/c_api.h)
+# Device-context binding
+#
+# The XLA FFI ctypes structures, the stream getter and the device-ordinal
+# getter live in ``numba_ffi`` (the single source of truth for the FFI ABI).
+# This bridge imports ``get_xla_stream`` / ``get_device_ordinal`` from there
+# and only adds the numba-CUDA-specific device-context helper below.
 # ---------------------------------------------------------------------------
 
-class XLA_FFI_Api_Version(Structure):
-    """XLA FFI API version structure.
+def _device_context(ordinal):
+    """Return a context manager binding numba.cuda to device *ordinal*.
 
-    Mirrors the ``XLA_FFI_Api_Version`` struct from XLA's C API header
-    (``xla/ffi/api/c_api.h``).  Used internally to interpret version
-    information from the XLA FFI API pointer.
-    """
-    _fields_ = [
-        ("struct_size", c_size_t),
-        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
-        ("major_version", ctypes.c_int),
-        ("minor_version", ctypes.c_int),
-    ]
-
-
-class XLA_FFI_Stream_Get_Args(Structure):
-    """Arguments for the ``XLA_FFI_Stream_Get`` function.
-
-    Mirrors the ``XLA_FFI_Stream_Get_Args`` struct from XLA's C API.
-    The ``ctx`` field is set to the execution context from the call
-    frame, and ``stream`` is populated by XLA with the active CUDA
-    stream pointer upon return.
-    """
-    _fields_ = [
-        ("struct_size", c_size_t),
-        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
-        ("ctx", c_void_p),  # XLA_FFI_ExecutionContext*
-        ("stream", c_void_p),  # Output: cudaStream_t
-    ]
-
-
-# Function pointer type: XLA_FFI_Error* (*XLA_FFI_Stream_Get)(XLA_FFI_Stream_Get_Args*)
-_XLA_FFI_Stream_Get_Fn = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_Stream_Get_Args))
-
-
-class XLA_FFI_Api(Structure):
-    """Partial mirror of the ``XLA_FFI_Api`` structure from XLA's C API.
-
-    Only fields up to and including ``XLA_FFI_Stream_Get`` are declared;
-    later fields are not needed for CUDA stream extraction and are
-    omitted.
-
-    See Also
-    --------
-    _get_stream_from_callframe : Uses this structure to extract the
-        CUDA stream from an XLA call frame.
-    """
-    _fields_ = [
-        ("struct_size", c_size_t),
-        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
-        ("api_version", XLA_FFI_Api_Version),  # Embedded struct, not pointer
-        ("internal_api", c_void_p),
-        ("XLA_FFI_Error_Create", c_void_p),
-        ("XLA_FFI_Error_GetMessage", c_void_p),
-        ("XLA_FFI_Error_Destroy", c_void_p),
-        ("XLA_FFI_Handler_Register", c_void_p),
-        ("XLA_FFI_Stream_Get", _XLA_FFI_Stream_Get_Fn),
-        # ... other fields not needed for stream extraction
-    ]
-
-
-def _get_stream_from_callframe(call_frame) -> int:
-    """Extract the CUDA stream pointer from an XLA FFI call frame.
-
-    Calls the ``XLA_FFI_Stream_Get`` function exposed by XLA's API
-    pointer to obtain the ``cudaStream_t`` associated with the current
-    execution context.
+    XLA may place an FFI call on any visible GPU; the device arrays and the
+    stream must be constructed on *that* device's context, not on whatever
+    device numba currently has selected (C3).  Entering ``cuda.gpus[ordinal]``
+    pushes the matching device context for the duration of the launch.
 
     Parameters
     ----------
-    call_frame : XLA_FFI_CallFrame
-        The call frame structure passed to the FFI callback by XLA.
+    ordinal : int or None
+        Device ordinal reported by ``XLA_FFI_DeviceOrdinal_Get``.  ``None``
+        (older jaxlib that does not expose the ordinal) yields a
+        :class:`contextlib.nullcontext`, falling back to numba's current
+        device.
 
     Returns
     -------
-    int
-        The CUDA stream pointer (``cudaStream_t``) as a Python integer.
-
-    Notes
-    -----
-    This function is internal and should not be called directly.  It is
-    used by :class:`NumbaCudaFfiHandler` and
-    :class:`NumbaCudaCallableHandler` to obtain the XLA-managed CUDA
-    stream for zero-copy kernel launches.
+    context manager
+        Binds the requested device on ``__enter__`` and restores the previous
+        device on ``__exit__``.
     """
-    api = call_frame.api
-    # Prepare stream get arguments
-    stream_args = XLA_FFI_Stream_Get_Args()
-    stream_args.struct_size = ctypes.sizeof(XLA_FFI_Stream_Get_Args)
-    stream_args.extension_start = POINTER(XLA_FFI_Extension_Base)()
-    stream_args.ctx = call_frame.ctx
-    stream_args.stream = None
-
-    # Call XLA's stream getter
-    api_ptr = ctypes.cast(api, POINTER(XLA_FFI_Api))
-    api_ptr.contents.XLA_FFI_Stream_Get(stream_args)
-
-    return stream_args.stream
+    if ordinal is None:
+        return contextlib.nullcontext()
+    try:
+        return import_numba_cuda().gpus[ordinal]
+    except Exception:  # noqa: BLE001 - unknown ordinal -> keep current device
+        return contextlib.nullcontext()
 
 
 def _numba_stream_from_ptr(stream_ptr: int):
@@ -192,7 +139,7 @@ def _numba_stream_from_ptr(stream_ptr: int):
     ----------
     stream_ptr : int
         The ``cudaStream_t`` pointer as a Python integer (e.g.,
-        obtained from :func:`_get_stream_from_callframe`).
+        obtained from :func:`brainevent._op.numba_ffi.get_xla_stream`).
 
     Returns
     -------
@@ -229,7 +176,18 @@ def _device_array_from_buffer(data_ptr: int, shape: Tuple[int, ...], dtype: np.d
     The returned array does **not** own the underlying memory.  The
     caller must ensure that the memory remains valid for the lifetime
     of the array.
+
+    A zero-element buffer is materialised as a fresh empty device array
+    rather than wrapped, because XLA may hand a null pointer for an empty
+    buffer and ``as_cuda_array`` rejects a null base pointer (M3).
     """
+    dtype = np.dtype(dtype)
+    shape = tuple(int(d) for d in shape)
+    size = 1
+    for d in shape:
+        size *= d
+    if size == 0:
+        return import_numba_cuda().device_array(shape, dtype=dtype)
 
     class DevicePointerWrapper:
         """Wrapper class that implements __cuda_array_interface__ protocol."""
@@ -241,10 +199,14 @@ def _device_array_from_buffer(data_ptr: int, shape: Tuple[int, ...], dtype: np.d
 
         @property
         def __cuda_array_interface__(self):
+            # ``strides`` is ``None`` to declare the buffer C-contiguous; the
+            # ffi_call ``input_layouts``/``output_layouts`` make XLA honour
+            # this (M4), so the row-major reshape from ``shape`` is exact.
             return {
                 'shape': self._shape,
                 'typestr': self._dtype.str,
                 'data': (self._ptr, False),  # (ptr, read_only)
+                'strides': None,
                 'version': 3,
             }
 
@@ -283,7 +245,14 @@ def _compute_launch_config(
     Raises
     ------
     ValueError
-        If *launch_dims* has more than 3 dimensions.
+        If *launch_dims* has zero or more than 3 dimensions, contains a
+        negative extent, or if *threads_per_block* is not positive.
+
+    Notes
+    -----
+    A zero extent along an axis is allowed and yields a grid of ``0`` blocks
+    along that axis (an empty launch); the per-axis block size is clamped to a
+    minimum of ``1`` so the grid computation never divides by zero (M3).
 
     Examples
     --------
@@ -303,33 +272,22 @@ def _compute_launch_config(
     """
     if isinstance(launch_dims, int):
         launch_dims = (launch_dims,)
+    launch_dims = tuple(int(d) for d in launch_dims)
 
-    if len(launch_dims) == 1:
-        total = launch_dims[0]
-        block = (min(threads_per_block, total),)
-        grid = ((total + block[0] - 1) // block[0],)
-    elif len(launch_dims) == 2:
-        # For 2D, use a square-ish block
-        block_x = min(16, launch_dims[0])
-        block_y = min(16, launch_dims[1])
-        block = (block_x, block_y)
-        grid = (
-            (launch_dims[0] + block[0] - 1) // block[0],
-            (launch_dims[1] + block[1] - 1) // block[1],
-        )
-    elif len(launch_dims) == 3:
-        # For 3D
-        block_x = min(8, launch_dims[0])
-        block_y = min(8, launch_dims[1])
-        block_z = min(4, launch_dims[2])
-        block = (block_x, block_y, block_z)
-        grid = (
-            (launch_dims[0] + block[0] - 1) // block[0],
-            (launch_dims[1] + block[1] - 1) // block[1],
-            (launch_dims[2] + block[2] - 1) // block[2],
-        )
-    else:
-        raise ValueError(f"launch_dims must have 1-3 dimensions, got {len(launch_dims)}")
+    n = len(launch_dims)
+    if n < 1 or n > 3:
+        raise ValueError(f"launch_dims must have 1-3 dimensions, got {n}")
+    if any(d < 0 for d in launch_dims):
+        raise ValueError(f"launch_dims extents must be non-negative, got {launch_dims}")
+    if threads_per_block < 1:
+        raise ValueError(f"threads_per_block must be positive, got {threads_per_block}")
+
+    # Per-axis caps: 1-D uses the configurable budget, 2-D a 16x16 tile, 3-D an
+    # 8x8x4 tile.  ``max(1, ...)`` guards a zero extent so the grid division
+    # below never divides by zero; a zero extent then produces a 0-block grid.
+    caps = {1: (threads_per_block,), 2: (16, 16), 3: (8, 8, 4)}[n]
+    block = tuple(max(1, min(cap, dim)) for cap, dim in zip(caps, launch_dims))
+    grid = tuple((dim + blk - 1) // blk for dim, blk in zip(launch_dims, block))
 
     return grid, block
 
@@ -423,8 +381,11 @@ class NumbaCudaFfiHandler:
 
         Returns
         -------
-        None
-            Returns ``None`` to indicate success to XLA.
+        None or int
+            ``None`` (XLA OkStatus) on success, or an ``XLA_FFI_Error*``
+            pointer (as an integer) when the launch raised, so the failure
+            surfaces to the JAX caller instead of being reported as success
+            (C1).
         """
         try:
             call_frame = call_frame_ptr.contents
@@ -438,42 +399,64 @@ class NumbaCudaFfiHandler:
                         ext_ptr, POINTER(XLA_FFI_Metadata_Extension)
                     ).contents
                     metadata = metadata_ext.metadata.contents
-                    metadata.api_version.major_version = 0
-                    metadata.api_version.minor_version = 1
+                    metadata.api_version.major_version = XLA_FFI_API_MAJOR
+                    metadata.api_version.minor_version = XLA_FFI_API_MINOR
                     metadata.traits = 0  # not command-buffer-compatible
                     return None  # success
 
-            # Extract input buffers as CUDA device arrays
-            n_inputs = call_frame.args.size
-            input_arrays = []
-            for i in range(n_inputs):
-                buf_ptr = ctypes.cast(
-                    call_frame.args.args[i], POINTER(XLA_FFI_Buffer)
-                ).contents
-                shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
-                dtype = _XLA_FFI_DTYPE_TO_NUMPY.get(buf_ptr.dtype, self.input_dtypes[i])
-                input_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
+            api_ptr = call_frame.api
+            ctx = call_frame.ctx
 
-            # Extract output buffers as CUDA device arrays
-            n_outputs = call_frame.rets.size
-            output_arrays = []
-            for i in range(n_outputs):
-                buf_ptr = ctypes.cast(
-                    call_frame.rets.rets[i], POINTER(XLA_FFI_Buffer)
-                ).contents
-                shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
-                dtype = _XLA_FFI_DTYPE_TO_NUMPY.get(buf_ptr.dtype, self.output_dtypes[i])
-                output_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
+            # Bind the GPU XLA placed this call on before building any device
+            # array or stream, so they reference the correct device (C3).
+            ordinal = get_device_ordinal(api_ptr, ctx)
+            with _device_context(ordinal):
+                # Extract input buffers as CUDA device arrays.  ``resolve_buffer_dtype``
+                # raises on a known-but-unsupported dtype (e.g. bf16, which numba
+                # CUDA cannot launch) rather than silently mis-decoding it (C2).
+                n_inputs = call_frame.args.size
+                input_arrays = []
+                for i in range(n_inputs):
+                    buf_ptr = ctypes.cast(
+                        call_frame.args.args[i], POINTER(XLA_FFI_Buffer)
+                    ).contents
+                    shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
+                    dtype = resolve_buffer_dtype(buf_ptr.dtype, self.input_dtypes[i])
+                    input_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
 
-            # Extract XLA's CUDA stream and launch kernel on it
-            stream_ptr = _get_stream_from_callframe(call_frame)
-            # Use XLA's stream - no synchronization needed
-            stream = _numba_stream_from_ptr(stream_ptr)
-            with _CUDA_FFI_CALLBACK_LOCK:
-                self.kernel[self.grid, self.block, stream, self.shared_mem](*input_arrays, *output_arrays)
+                # Extract output buffers as CUDA device arrays
+                n_outputs = call_frame.rets.size
+                output_arrays = []
+                for i in range(n_outputs):
+                    buf_ptr = ctypes.cast(
+                        call_frame.rets.rets[i], POINTER(XLA_FFI_Buffer)
+                    ).contents
+                    shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
+                    dtype = resolve_buffer_dtype(buf_ptr.dtype, self.output_dtypes[i])
+                    output_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
 
-        except Exception:
+                # Extract XLA's CUDA stream (checked: a failed lookup raises
+                # rather than yielding a null/garbage stream) and launch on it.
+                stream_ptr = get_xla_stream(api_ptr, ctx)
+                stream = _numba_stream_from_ptr(stream_ptr)
+
+                # Skip a degenerate launch: a zero grid/block dimension is a
+                # driver error and there is no work for an empty problem (M3).
+                if 0 not in self.grid and 0 not in self.block:
+                    self.kernel[self.grid, self.block, stream, self.shared_mem](*input_arrays, *output_arrays)
+
+        except Exception as exc:  # noqa: BLE001 - surfaced to XLA as an FFI error
             traceback.print_exc()
+            try:
+                err_api_ptr = call_frame_ptr.contents.api
+            except Exception:
+                err_api_ptr = None
+            return make_ffi_error(
+                err_api_ptr,
+                XLA_FFI_Error_Code.INTERNAL,
+                f'Numba CUDA kernel {self.name!r} raised '
+                f'{type(exc).__name__}: {exc}',
+            )
 
         return None  # success
 
@@ -534,28 +517,44 @@ def _register_numba_cuda_ffi_target(
 
     import_numba_cuda()
 
-    target_name = f'brainevent_numba_cuda_ffi_{_CUDA_FFI_CALLBACK_COUNTER}'
-    _CUDA_FFI_CALLBACK_COUNTER += 1
-
-    handler = NumbaCudaFfiHandler(
-        name=target_name,
-        kernel=kernel,
-        input_shapes=input_shapes,
-        input_dtypes=input_dtypes,
-        output_shapes=output_shapes,
-        output_dtypes=output_dtypes,
-        grid=grid,
-        block=block,
-        shared_mem=shared_mem,
-    )
-
-    # Keep the handler alive to prevent GC of ctypes callback
-    _NUMBA_CUDA_FFI_HANDLES[target_name] = handler
-
     out_types = tuple(
         jax.ShapeDtypeStruct(shape, dtype)
         for shape, dtype in zip(output_shapes, output_dtypes)
     )
+
+    # Reuse an existing registration for an identical kernel/signature.  Every
+    # eager call would otherwise mint a fresh target name and register a new FFI
+    # handler, leaking one handler (and ctypes callback) per call (H1).  The
+    # cached handler keeps *kernel* alive, so ``id(kernel)`` cannot be recycled
+    # while the entry lives.
+    signature = (
+        id(kernel), input_shapes, input_dtypes, output_shapes, output_dtypes,
+        grid, block, shared_mem,
+    )
+    with _CUDA_REGISTRATION_LOCK:
+        cached_name = _NUMBA_CUDA_FFI_TARGETS.get(signature)
+        if cached_name is not None:
+            return cached_name, out_types
+
+        target_name = f'brainevent_numba_cuda_ffi_{_CUDA_FFI_CALLBACK_COUNTER}'
+        _CUDA_FFI_CALLBACK_COUNTER += 1
+
+        handler = NumbaCudaFfiHandler(
+            name=target_name,
+            kernel=kernel,
+            input_shapes=input_shapes,
+            input_dtypes=input_dtypes,
+            output_shapes=output_shapes,
+            output_dtypes=output_dtypes,
+            grid=grid,
+            block=block,
+            shared_mem=shared_mem,
+        )
+
+        # Keep the handler alive to prevent GC of ctypes callback
+        _NUMBA_CUDA_FFI_HANDLES[target_name] = handler
+        _NUMBA_CUDA_FFI_TARGETS[signature] = target_name
+
     return target_name, out_types
 
 
@@ -622,7 +621,7 @@ def numba_cuda_kernel(
         If Numba with CUDA support is not available.
     ValueError
         If neither ``(grid, block)`` nor ``launch_dims`` is specified.
-    AssertionError
+    TypeError
         If *kernel* is not a ``numba.cuda.dispatcher.CUDADispatcher``.
 
     See Also
@@ -634,9 +633,9 @@ def numba_cuda_kernel(
 
     Notes
     -----
-    Each call to the returned function registers a **new** FFI target.
-    For performance-critical inner loops, consider caching the returned
-    callable.
+    Registrations are memoised by ``(kernel, shapes, dtypes, grid, block,
+    shared_mem)``: repeated calls with an identical signature reuse a single
+    FFI target instead of leaking one handler per call (H1).
 
     Examples
     --------
@@ -676,11 +675,13 @@ def numba_cuda_kernel(
 
     from numba.cuda.dispatcher import CUDADispatcher
 
-    # Validate kernel type
-    assert isinstance(kernel, CUDADispatcher), (
-        f'The kernel must be a Numba CUDA JIT-compiled function (from @cuda.jit), '
-        f'but got {type(kernel).__name__}.'
-    )
+    # Validate kernel type.  Use an explicit ``raise`` rather than ``assert`` so
+    # the check survives ``python -O`` (which strips assertions) (L14).
+    if not isinstance(kernel, CUDADispatcher):
+        raise TypeError(
+            f'The kernel must be a Numba CUDA JIT-compiled function (from @cuda.jit), '
+            f'but got {type(kernel).__name__}.'
+        )
 
     # Compute grid and block dimensions
     if grid is not None and block is not None:
@@ -706,6 +707,11 @@ def numba_cuda_kernel(
         tuple(out.dtype for out in out_info),
         'output',
     )
+    # Pin row-major layouts so XLA hands the handler C-contiguous device
+    # buffers; the callback wraps them by ``dims`` only and cannot recover a
+    # non-default layout from ``XLA_FFI_Buffer`` (M4).  ``ffi_call`` takes
+    # layouts major-to-minor, so row-major is ``range(ndim)``.
+    output_layouts = tuple(tuple(range(len(out.shape))) for out in out_info)
 
     def call(*ins):
         """Invoke the registered Numba CUDA kernel through XLA FFI.
@@ -727,6 +733,7 @@ def numba_cuda_kernel(
             tuple(inp.dtype for inp in in_info),
             'input',
         )
+        input_layouts = tuple(tuple(range(len(shape))) for shape in input_shapes)
 
         # Register FFI target
         target_name, out_types = _register_numba_cuda_ffi_target(
@@ -746,6 +753,8 @@ def numba_cuda_kernel(
             out_types,
             input_output_aliases=input_output_aliases,
             vmap_method=vmap_method,
+            input_layouts=list(input_layouts),
+            output_layouts=list(output_layouts),
         )(*ins)
 
         return jax.tree.unflatten(out_treedef, result)
@@ -758,8 +767,10 @@ def numba_cuda_kernel(
 # ===========================================================================
 
 _NUMBA_CUDA_CALLABLE_HANDLES: Dict[str, object] = {}
+# Maps a func/io-count/shape/dtype signature to an already-registered target so
+# repeated eager calls reuse one registration instead of leaking per call (H1).
+_NUMBA_CUDA_CALLABLE_TARGETS: Dict[tuple, str] = {}
 _CUDA_CALLABLE_CALLBACK_COUNTER = 0
-_CUDA_CALLABLE_LOCK = threading.Lock()
 
 # The typed FFI callback signature: void* fn(XLA_FFI_CallFrame*)
 _CUDA_CALLABLE_CALLBACK_TYPE = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_CallFrame))
@@ -847,8 +858,11 @@ class NumbaCudaCallableHandler:
 
         Returns
         -------
-        None
-            Returns ``None`` to indicate success to XLA.
+        None or int
+            ``None`` (XLA OkStatus) on success, or an ``XLA_FFI_Error*``
+            pointer (as an integer) when the user function raised, so the
+            failure surfaces to the JAX caller instead of being reported as
+            success (C1).
         """
         try:
             call_frame = call_frame_ptr.contents
@@ -862,52 +876,64 @@ class NumbaCudaCallableHandler:
                         ext_ptr, POINTER(XLA_FFI_Metadata_Extension)
                     ).contents
                     metadata = metadata_ext.metadata.contents
-                    metadata.api_version.major_version = 0
-                    metadata.api_version.minor_version = 1
+                    metadata.api_version.major_version = XLA_FFI_API_MAJOR
+                    metadata.api_version.minor_version = XLA_FFI_API_MINOR
                     metadata.traits = 0  # not command-buffer-compatible
                     return None  # success
 
-            # Extract input buffers as Numba CUDA device arrays
-            n_inputs = call_frame.args.size
-            input_arrays = []
-            for i in range(n_inputs):
-                buf_ptr = ctypes.cast(
-                    call_frame.args.args[i], POINTER(XLA_FFI_Buffer)
-                ).contents
-                shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
-                dtype = _XLA_FFI_DTYPE_TO_NUMPY.get(buf_ptr.dtype)
-                if dtype is None and i < len(self.input_dtypes):
-                    dtype = self.input_dtypes[i]
-                elif dtype is None:
-                    dtype = np.dtype(np.float32)
-                input_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
+            api_ptr = call_frame.api
+            ctx = call_frame.ctx
 
-            # Extract output buffers as Numba CUDA device arrays
-            n_outputs = call_frame.rets.size
-            output_arrays = []
-            for i in range(n_outputs):
-                buf_ptr = ctypes.cast(
-                    call_frame.rets.rets[i], POINTER(XLA_FFI_Buffer)
-                ).contents
-                shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
-                dtype = _XLA_FFI_DTYPE_TO_NUMPY.get(buf_ptr.dtype)
-                if dtype is None and i < len(self.output_dtypes):
-                    dtype = self.output_dtypes[i]
-                elif dtype is None:
-                    dtype = np.dtype(np.float32)
-                output_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
+            # Bind the GPU XLA placed this call on before building any device
+            # array or stream, so they reference the correct device (C3).
+            ordinal = get_device_ordinal(api_ptr, ctx)
+            with _device_context(ordinal):
+                # Extract input buffers.  ``resolve_buffer_dtype`` raises on a
+                # known-but-unsupported dtype rather than silently mis-decoding
+                # it, and uses the abstract fallback for an unknown code (C2).
+                n_inputs = call_frame.args.size
+                input_arrays = []
+                for i in range(n_inputs):
+                    buf_ptr = ctypes.cast(
+                        call_frame.args.args[i], POINTER(XLA_FFI_Buffer)
+                    ).contents
+                    shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
+                    fallback = self.input_dtypes[i] if i < len(self.input_dtypes) else np.dtype(np.float32)
+                    dtype = resolve_buffer_dtype(buf_ptr.dtype, fallback)
+                    input_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
 
-            # Extract XLA's CUDA stream and create Numba stream wrapper
-            stream_ptr = _get_stream_from_callframe(call_frame)
-            stream = _numba_stream_from_ptr(stream_ptr)
+                # Extract output buffers as Numba CUDA device arrays
+                n_outputs = call_frame.rets.size
+                output_arrays = []
+                for i in range(n_outputs):
+                    buf_ptr = ctypes.cast(
+                        call_frame.rets.rets[i], POINTER(XLA_FFI_Buffer)
+                    ).contents
+                    shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
+                    fallback = self.output_dtypes[i] if i < len(self.output_dtypes) else np.dtype(np.float32)
+                    dtype = resolve_buffer_dtype(buf_ptr.dtype, fallback)
+                    output_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
 
-            # Call the user function
-            # Signature: func(in1, in2, ..., out1, out2, ..., stream)
-            with _CUDA_CALLABLE_LOCK:
+                # Extract XLA's CUDA stream (checked) and create Numba wrapper.
+                stream_ptr = get_xla_stream(api_ptr, ctx)
+                stream = _numba_stream_from_ptr(stream_ptr)
+
+                # Call the user function
+                # Signature: func(in1, in2, ..., out1, out2, ..., stream)
                 self.func(*input_arrays, *output_arrays, stream)
 
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - surfaced to XLA as an FFI error
             traceback.print_exc()
+            try:
+                err_api_ptr = call_frame_ptr.contents.api
+            except Exception:
+                err_api_ptr = None
+            return make_ffi_error(
+                err_api_ptr,
+                XLA_FFI_Error_Code.INTERNAL,
+                f'Numba CUDA callable {self.name!r} raised '
+                f'{type(exc).__name__}: {exc}',
+            )
 
         return None  # success
 
@@ -964,26 +990,39 @@ def _register_numba_cuda_callable_target(
 
     import_numba_cuda()
 
-    target_name = f'brainevent_numba_cuda_callable_{_CUDA_CALLABLE_CALLBACK_COUNTER}'
-    _CUDA_CALLABLE_CALLBACK_COUNTER += 1
-
-    handler = NumbaCudaCallableHandler(
-        name=target_name,
-        func=func,
-        num_inputs=num_inputs,
-        num_outputs=num_outputs,
-        input_dtypes=input_dtypes,
-        output_shapes=output_shapes,
-        output_dtypes=output_dtypes,
-    )
-
-    # Keep the handler alive to prevent GC of the ctypes callback
-    _NUMBA_CUDA_CALLABLE_HANDLES[target_name] = handler
-
     out_types = tuple(
         jax.ShapeDtypeStruct(shape, dtype)
         for shape, dtype in zip(output_shapes, output_dtypes)
     )
+
+    # Reuse an existing registration for an identical func/signature so repeated
+    # eager calls do not each leak a handler and ctypes callback (H1).  The
+    # cached handler keeps *func* alive, so ``id(func)`` cannot be recycled.
+    signature = (
+        id(func), num_inputs, num_outputs, input_dtypes, output_shapes, output_dtypes,
+    )
+    with _CUDA_REGISTRATION_LOCK:
+        cached_name = _NUMBA_CUDA_CALLABLE_TARGETS.get(signature)
+        if cached_name is not None:
+            return cached_name, out_types
+
+        target_name = f'brainevent_numba_cuda_callable_{_CUDA_CALLABLE_CALLBACK_COUNTER}'
+        _CUDA_CALLABLE_CALLBACK_COUNTER += 1
+
+        handler = NumbaCudaCallableHandler(
+            name=target_name,
+            func=func,
+            num_inputs=num_inputs,
+            num_outputs=num_outputs,
+            input_dtypes=input_dtypes,
+            output_shapes=output_shapes,
+            output_dtypes=output_dtypes,
+        )
+
+        # Keep the handler alive to prevent GC of the ctypes callback
+        _NUMBA_CUDA_CALLABLE_HANDLES[target_name] = handler
+        _NUMBA_CUDA_CALLABLE_TARGETS[signature] = target_name
+
     return target_name, out_types
 
 
@@ -1050,9 +1089,9 @@ def numba_cuda_callable(
 
     Notes
     -----
-    Each call to the returned function registers a new FFI target.  For
-    performance-critical inner loops, consider caching the returned
-    callable.
+    Registrations are memoised by ``(func, io-counts, shapes, dtypes)``:
+    repeated calls with an identical signature reuse a single FFI target
+    instead of leaking one handler per call (H1).
 
     Scalar (0-d) inputs are not supported because Numba CUDA cannot
     create device arrays from 0-d buffers.  Wrap scalar values in 1-d
@@ -1111,6 +1150,8 @@ def numba_cuda_callable(
         'output',
     )
     num_outputs = len(out_info)
+    # Pin row-major layouts so XLA hands C-contiguous device buffers (M4).
+    output_layouts = tuple(tuple(range(len(out.shape))) for out in out_info)
 
     def call(*inputs):
         """Invoke the registered callable through XLA FFI.
@@ -1139,6 +1180,7 @@ def numba_cuda_callable(
         # -- collect input metadata --------------------------------------------
         in_info, _ = abstract_arguments(inputs)
         input_dtypes = tuple(np.dtype(inp.dtype) for inp in in_info)
+        input_layouts = tuple(tuple(range(len(inp.shape))) for inp in in_info)
 
         # -- register the FFI target -------------------------------------------
         target_name, out_types = _register_numba_cuda_callable_target(
@@ -1156,6 +1198,8 @@ def numba_cuda_callable(
             out_types,
             input_output_aliases=input_output_aliases,
             vmap_method=vmap_method,
+            input_layouts=list(input_layouts),
+            output_layouts=list(output_layouts),
         )(*inputs)
 
         return jax.tree.unflatten(out_treedef, result)

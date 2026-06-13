@@ -496,13 +496,17 @@ class TestNumbaCudaKernelErrors(unittest.TestCase):
             )
 
     def test_non_cuda_kernel_raises(self):
-        """Test that non-CUDA kernel raises AssertionError."""
+        """Test that a non-CUDA kernel raises TypeError.
+
+        The check uses an explicit ``raise TypeError`` (not ``assert``) so it
+        survives ``python -O``, which strips assertions (L14).
+        """
         from brainevent import numba_cuda_kernel
 
         def regular_function(x, out):
             pass
 
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(TypeError):
             numba_cuda_kernel(
                 regular_function,
                 outs=jax.ShapeDtypeStruct((64,), jnp.float32),
@@ -533,16 +537,18 @@ class TestNumbaCudaKernelXLAStream(unittest.TestCase):
             launch_dims=n,
         )
 
-        # Track if XLA stream was used
+        # Track if XLA stream was used.  The bridge now resolves the stream via
+        # the shared, error-checked ``get_xla_stream(api_ptr, ctx)`` helper
+        # imported from ``numba_ffi``; patch that module-global to observe it.
         stream_ptrs = []
-        orig_get_stream = ffi._get_stream_from_callframe
+        orig_get_stream = ffi.get_xla_stream
 
-        def tracking_get_stream(call_frame):
-            ptr = orig_get_stream(call_frame)
+        def tracking_get_stream(api_ptr, ctx):
+            ptr = orig_get_stream(api_ptr, ctx)
             stream_ptrs.append(ptr)
             return ptr
 
-        ffi._get_stream_from_callframe = tracking_get_stream
+        ffi.get_xla_stream = tracking_get_stream
 
         try:
             a = jnp.arange(n, dtype=jnp.float32)
@@ -560,7 +566,7 @@ class TestNumbaCudaKernelXLAStream(unittest.TestCase):
             )
             jax.block_until_ready((a, b, result))
         finally:
-            ffi._get_stream_from_callframe = orig_get_stream
+            ffi.get_xla_stream = orig_get_stream
 
 
 # ===========================================================================
