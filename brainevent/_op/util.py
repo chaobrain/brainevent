@@ -22,7 +22,7 @@ from typing import Any, Callable, Optional, Protocol, Sequence, Tuple, TYPE_CHEC
 import jax
 import numpy as np
 from jax import tree_util
-from jax.interpreters import ad
+from jax.interpreters import ad, batching
 
 from brainevent._compatible_import import Primitive, init_zero
 
@@ -171,8 +171,10 @@ def defjvp(primitive: Union[Primitive, 'XLACustomKernel'], *jvp_rules: Optional[
     -----
     When the primitive has ``multiple_results=True``, a custom internal
     JVP implementation (``_standard_jvp``) is used that correctly
-    handles tuple outputs.  For single-result primitives, the standard
-    ``jax.interpreters.ad.standard_jvp`` is used.
+    handles tuple outputs.  For single-result primitives,
+    ``_single_result_jvp`` -- an inlined equivalent of the standard JAX
+    JVP -- is used.  (JAX's ``jax.interpreters.ad.standard_jvp`` was
+    removed in JAX 0.9, so this implementation no longer depends on it.)
 
     Examples
     --------
@@ -201,9 +203,49 @@ def defjvp(primitive: Union[Primitive, 'XLACustomKernel'], *jvp_rules: Optional[
         # functools.partial pre-fills the jvp_rules and primitive arguments for _standard_jvp.
         ad.primitive_jvps[primitive] = functools.partial(_standard_jvp, jvp_rules, primitive)
     else:
-        # If no (single result), use the standard JAX JVP handler (ad.standard_jvp).
-        # This maintains compatibility with standard JAX behavior for single-result primitives.
-        ad.primitive_jvps[primitive] = functools.partial(ad.standard_jvp, jvp_rules, primitive)
+        # If no (single result), use an inlined standard JVP.
+        # ``jax.interpreters.ad.standard_jvp`` was removed in JAX 0.9, so we
+        # reproduce its behavior here to keep single-result primitives working.
+        ad.primitive_jvps[primitive] = functools.partial(_single_result_jvp, jvp_rules, primitive)
+
+
+def _single_result_jvp(jvp_rules, primitive: Primitive, primals, tangents, **params):
+    """Compute the JVP for a single-result primitive.
+
+    This is an internal helper used by :func:`defjvp` when the primitive
+    has ``multiple_results=False``.  It reproduces the behavior of the
+    standard JAX JVP (``jax.interpreters.ad.standard_jvp``, removed in
+    JAX 0.9): it binds the primals, evaluates each per-input JVP rule
+    whose tangent is not ``Zero``, and sums the resulting tangent
+    contributions into the single output tangent.
+
+    Parameters
+    ----------
+    jvp_rules : sequence of callable or None
+        Per-input JVP rules (see :func:`defjvp`).
+    primitive : Primitive
+        The JAX primitive (single result).
+    primals : tuple
+        Primal input values.
+    tangents : tuple
+        Tangent input values (may contain ``ad.Zero``).
+    **params
+        Additional keyword arguments forwarded from the primitive bind.
+
+    Returns
+    -------
+    tuple
+        A pair ``(val_out, tangent_out)`` where *val_out* is the single
+        primal output and *tangent_out* is the summed tangent
+        contribution.
+    """
+    val_out = primitive.bind(*primals, **params)
+    tangents_out = [
+        rule(t, *primals, **params)
+        for rule, t in zip(jvp_rules, tangents)
+        if rule is not None and type(t) is not ad.Zero
+    ]
+    return val_out, functools.reduce(ad.add_tangents, tangents_out, init_zero(val_out))
 
 
 def _standard_jvp(jvp_rules, primitive: Primitive, primals, tangents, **params):
@@ -234,15 +276,37 @@ def _standard_jvp(jvp_rules, primitive: Primitive, primals, tangents, **params):
         of primal outputs and *tangents_out* is the summed tangent
         contributions with the same pytree structure as *val_out*.
     """
-    assert primitive.multiple_results
+    if not primitive.multiple_results:
+        raise ValueError(
+            f"_standard_jvp is only valid for multiple-result primitives, "
+            f"but {primitive} has multiple_results=False."
+        )
     val_out = tuple(primitive.bind(*primals, **params))
     tree = tree_util.tree_structure(val_out)
     tangents_out = []
     for rule, t in zip(jvp_rules, tangents):
         if rule is not None and type(t) is not ad.Zero:
-            r = tuple(rule(t, *primals, **params))
+            out = rule(t, *primals, **params)
+            # A multi-result JVP rule must return an explicit sequence (one
+            # tangent per output).  Wrapping a bare array in ``tuple(...)``
+            # would instead iterate its leading axis and silently fragment it
+            # into per-row leaves, so reject non-sequence returns loudly.
+            if not isinstance(out, (tuple, list)):
+                raise TypeError(
+                    f"JVP rule {getattr(rule, '__name__', rule)!r} for "
+                    f"multiple-result primitive {primitive} must return a "
+                    f"tuple/list of tangents (one per output), but got "
+                    f"{type(out).__name__}."
+                )
+            r = tuple(out)
+            if tree_util.tree_structure(r) != tree:
+                raise ValueError(
+                    f"JVP rule {getattr(rule, '__name__', rule)!r} for "
+                    f"{primitive} returned a tangent with pytree structure "
+                    f"{tree_util.tree_structure(r)}, which does not match the "
+                    f"primitive output structure {tree}."
+                )
             tangents_out.append(r)
-            assert tree_util.tree_structure(r) == tree
     r = functools.reduce(
         _add_tangents,
         tangents_out,
@@ -301,15 +365,22 @@ def general_batching_rule(
     outs : pytree
         The batched outputs from applying the primitive.
     out_dim : pytree
-        A pytree with the same structure as *outs*, where every leaf
-        is ``0``, indicating that the batch dimension is the leading
-        axis of each output.
+        A pytree with the same structure as *outs*.  When at least one
+        operand is batched, every leaf is ``0`` (the batch dimension is
+        the leading axis of each output).  When no operand is batched
+        (every entry of *axes* is ``None``), every leaf is
+        ``jax.interpreters.batching.not_mapped`` to signal that the
+        outputs carry no batch dimension.
 
     Notes
     -----
     All batch dimensions are moved to axis 0 before scanning.  The scan
     carry is unused (always ``0``); only the stacked scan outputs are
-    returned.
+    returned.  As a special case, if *no* operand is batched the function
+    short-circuits: it binds the primitive once on the original arguments
+    and reports every output as unbatched, avoiding an empty
+    ``jax.lax.scan`` (which would raise ``ValueError: scan got no values
+    to scan over``).
 
     See Also
     --------
@@ -335,6 +406,17 @@ def general_batching_rule(
         else:
             batch_args[f'ax{ax_i}'] = args[ax_i] if ax == 0 else jax.numpy.moveaxis(args[ax_i], ax, 0)
             batch_axes.append(ax_i)
+
+    # If no operand is actually batched (every axis is ``None``), there is
+    # nothing to scan over -- ``jax.lax.scan(f, 0, {})`` would raise
+    # "scan got no values to scan over".  Bind the primitive once and mark
+    # every output as unbatched.
+    if not batch_args:
+        if isinstance(prim, Primitive):
+            out = prim.bind(*args, **kwargs)
+        else:
+            out = prim(*args, **kwargs)
+        return out, tree_util.tree_map(lambda _: batching.not_mapped, out)
 
     def f(_, x):
         """Apply the primitive to a single batch element for ``jax.lax.scan``.
@@ -495,9 +577,13 @@ def jaxtype_to_warptype(dtype: Union[np.dtype, type]) -> Any:
     Parameters
     ----------
     dtype : numpy.dtype or type
-        The data type to convert.  Accepts any object that can be
-        compared with NumPy scalar types (e.g., ``np.float32``,
-        ``jnp.float32``, ``np.dtype('float32')``).
+        The data type to convert.  Accepts anything ``numpy.dtype`` can
+        normalize, including NumPy scalar types (``np.float32``), JAX
+        dtypes (``jnp.float32``), ``np.dtype`` instances
+        (``np.dtype('float32')``), and Python builtins (``float``,
+        ``int``, ``bool``).  Builtins are normalized via
+        ``numpy.dtype`` first (e.g. ``float`` -> ``float64``,
+        ``int`` -> the platform default integer, ``bool`` -> ``bool_``).
 
     Returns
     -------
@@ -510,10 +596,12 @@ def jaxtype_to_warptype(dtype: Union[np.dtype, type]) -> Any:
     ImportError
         If the ``warp`` package is not installed.
     ValueError
-        If *dtype* does not correspond to any supported Warp type.
-        Supported types include: ``float16``, ``float32``, ``float64``,
-        ``int8``, ``int16``, ``int32``, ``int64``, ``uint8``,
-        ``uint16``, ``uint32``, ``uint64``, and ``bool_``.
+        If *dtype* cannot be normalized by ``numpy.dtype`` or does not
+        correspond to any supported Warp type.  Supported types are:
+        ``float16``, ``float32``, ``float64``, ``int8``, ``int16``,
+        ``int32``, ``int64``, ``uint8``, ``uint16``, ``uint32``,
+        ``uint64``, and ``bool_``.  ``bfloat16`` and complex dtypes are
+        **not** supported by Warp and raise a clear ``ValueError``.
 
     See Also
     --------
@@ -523,10 +611,13 @@ def jaxtype_to_warptype(dtype: Union[np.dtype, type]) -> Any:
 
     Notes
     -----
-    The mapping covers all scalar types supported by both NumPy and
-    Warp: ``float16``, ``float32``, ``float64``, ``int8`` through
-    ``int64``, ``uint8`` through ``uint64``, and ``bool_``.  Complex
-    types are not supported by Warp and will raise ``ValueError``.
+    The dtype is first normalized with ``numpy.dtype(dtype)`` so that
+    Python builtins and dtype-like objects all resolve to a canonical
+    ``numpy.dtype`` before mapping.  This avoids the pitfall that
+    ``float == np.float64`` is ``False`` even though ``np.dtype(float)``
+    *is* ``float64``.  The mapping covers all scalar types supported by
+    both NumPy and Warp.  ``bfloat16`` (which Warp has no scalar for) and
+    complex types are unsupported and raise ``ValueError``.
 
     Examples
     --------
@@ -535,42 +626,49 @@ def jaxtype_to_warptype(dtype: Union[np.dtype, type]) -> Any:
         >>> import numpy as np
         >>> warp_type = jaxtype_to_warptype(np.float32)
         >>> warp_type  # warp.float32
+        >>> jaxtype_to_warptype(float) is jaxtype_to_warptype(np.float64)
+        True
     """
     warp_mod = import_warp()
 
-    # float
-    if dtype == np.float16:
-        return warp_mod.float16
-    elif dtype == np.float32:
-        return warp_mod.float32
-    elif dtype == np.float64:
-        return warp_mod.float64
+    # Normalize Python builtins (float/int/bool) and dtype-like objects to a
+    # canonical numpy.dtype.  Without this, ``float == np.float64`` is False
+    # and builtins would be spuriously rejected despite the Union[..., type]
+    # signature.  ``bfloat16`` / unrecognized objects raise TypeError here,
+    # which we surface as a clear ValueError below.
+    try:
+        np_dtype = np.dtype(dtype)
+    except TypeError as exc:
+        raise ValueError(
+            f"Warp does not support computations with dtype: {dtype!r}"
+        ) from exc
 
-    # integer
-    elif dtype == np.int8:
-        return warp_mod.int8
-    elif dtype == np.int16:
-        return warp_mod.int16
-    elif dtype == np.int32:
-        return warp_mod.int32
-    elif dtype == np.int64:
-        return warp_mod.int64
+    _warp_scalar_types = {
+        # float
+        np.dtype(np.float16): warp_mod.float16,
+        np.dtype(np.float32): warp_mod.float32,
+        np.dtype(np.float64): warp_mod.float64,
+        # integer
+        np.dtype(np.int8): warp_mod.int8,
+        np.dtype(np.int16): warp_mod.int16,
+        np.dtype(np.int32): warp_mod.int32,
+        np.dtype(np.int64): warp_mod.int64,
+        # unsigned integer
+        np.dtype(np.uint8): warp_mod.uint8,
+        np.dtype(np.uint16): warp_mod.uint16,
+        np.dtype(np.uint32): warp_mod.uint32,
+        np.dtype(np.uint64): warp_mod.uint64,
+        # boolean
+        np.dtype(np.bool_): warp_mod.bool,
+    }
 
-    # unsigned integer
-    elif dtype == np.uint8:
-        return warp_mod.uint8
-    elif dtype == np.uint16:
-        return warp_mod.uint16
-    elif dtype == np.uint32:
-        return warp_mod.uint32
-    elif dtype == np.uint64:
-        return warp_mod.uint64
-
-    # boolean
-    elif dtype == np.bool_:
-        return warp_mod.bool
-    else:
-        raise ValueError(f"Warp does not support computations with dtype: {dtype}")
+    try:
+        return _warp_scalar_types[np_dtype]
+    except KeyError:
+        raise ValueError(
+            f"Warp does not support computations with dtype: {np_dtype} "
+            f"(bfloat16 and complex types are unsupported)."
+        )
 
 
 def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct) -> Any:
@@ -600,7 +698,11 @@ def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct) -> Any:
         :func:`jaxtype_to_warptype`).
     ValueError
         If the dtype in *jax_info* is not supported by Warp (propagated
-        from :func:`jaxtype_to_warptype`).
+        from :func:`jaxtype_to_warptype`), or if *jax_info* describes a
+        0-D scalar (``ndim == 0``).  Warp arrays have a minimum
+        dimensionality of 1, so a 0-D input is rejected rather than
+        silently promoted to ``ndim=1`` (which would create a hidden
+        JAX<->Warp shape mismatch).
 
     See Also
     --------
@@ -614,6 +716,12 @@ def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct) -> Any:
     descriptor (not an actual array).  This is typically used in Warp
     kernel function signatures to define input/output types.
 
+    Warp has a minimum array dimensionality of 1.  A JAX 0-D scalar
+    (``shape == ()``, ``ndim == 0``) therefore has no faithful Warp array
+    representation; passing one raises ``ValueError`` instead of being
+    silently bumped to ``ndim=1``.  Reshape the scalar to ``(1,)`` before
+    conversion if a length-1 array is intended.
+
     Examples
     --------
     .. code-block:: python
@@ -624,5 +732,11 @@ def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct) -> Any:
         >>> warp_arr_type = jaxinfo_to_warpinfo(info)
     """
     warp_mod = import_warp()
+    if jax_info.ndim == 0:
+        raise ValueError(
+            "Warp arrays require ndim >= 1, but got a 0-D scalar "
+            f"(shape={jax_info.shape!r}). Reshape to (1,) before conversion "
+            "if a length-1 array is intended."
+        )
     dtype = jaxtype_to_warptype(jax_info.dtype)
     return warp_mod.array(dtype=dtype, ndim=jax_info.ndim)

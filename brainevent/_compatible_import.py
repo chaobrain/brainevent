@@ -16,6 +16,7 @@
 __all__ = [
     'Primitive',
     'Tracer',
+    'apply_primitive',
     'init_zero',
     'pallas_triton_params',
     'pallas_mosaic_tpu_params',
@@ -23,6 +24,16 @@ __all__ = [
 
 import jax
 from jax.interpreters import ad
+
+# ``apply_primitive`` is the eager (impl) evaluator for a primitive.  It has
+# lived at ``jax.interpreters.xla.apply_primitive`` for a long time but that
+# module is a thinning legacy shim; newer jax exposes the same function from
+# ``jax._src.dispatch``.  Resolve it once here so a jax version bump only needs
+# a change in this file rather than at every ``def_impl`` call site (L3).
+try:
+    from jax.interpreters.xla import apply_primitive
+except (ImportError, AttributeError):  # pragma: no cover - version-dependent path
+    from jax._src.dispatch import apply_primitive
 
 
 def pallas_triton_params():

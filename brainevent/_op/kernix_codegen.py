@@ -472,6 +472,38 @@ _ATTR_TYPES = (
 _ATTR_RE = re.compile(r"^attr\.(\w+):(" + "|".join(_ATTR_TYPES) + r")$")
 _ATTR_RE_BARE = re.compile(r"^attr\.(\w+)$")
 
+# A function/attribute name is interpolated verbatim into generated C++ (as a
+# called symbol ``name(...)``, a derived identifier ``be_<name>_impl`` and an
+# attribute string literal).  Restrict it to a strict ASCII C++ identifier so a
+# crafted name cannot inject arbitrary code into the translation unit (H8).
+# ``str.isidentifier()`` is intentionally *not* used: it accepts Unicode
+# identifiers (e.g. ``café``) that are not portable C++ identifiers.
+_CPP_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_cpp_identifier(name: str, kind: str) -> None:
+    """Raise :class:`KernelError` unless *name* is a valid ASCII C++ identifier.
+
+    Parameters
+    ----------
+    name : str
+        Candidate identifier (function or attribute name).
+    kind : str
+        Human-readable role of *name*, used in the error message.
+
+    Raises
+    ------
+    KernelError
+        If *name* is empty or contains anything other than ASCII letters,
+        digits and underscores, or starts with a digit.
+    """
+    if not _CPP_IDENT_RE.match(name):
+        raise KernelError(
+            f"Invalid {kind} {name!r}: must be a valid C++ identifier "
+            f"(ASCII letter or underscore followed by letters/digits/underscores). "
+            f"The name is emitted verbatim into generated C++."
+        )
+
 
 @dataclass
 class FunctionSpec:
@@ -503,7 +535,17 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
     Returns
     -------
     FunctionSpec
+
+    Raises
+    ------
+    KernelError
+        If *func_name* or any attribute name is not a valid C++ identifier, or
+        a token is malformed.
     """
+    # The function name is emitted verbatim into generated C++; reject anything
+    # that is not a plain ASCII identifier so it cannot inject code (H8).
+    _validate_cpp_identifier(func_name, "function name")
+
     spec = FunctionSpec(name=func_name)
     arg_idx = 0
     ret_idx = 0
@@ -526,6 +568,9 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
             m = _ATTR_RE.match(token)
             if m:
                 attr_name, attr_type = m.group(1), m.group(2)
+                # Emitted both as the identifier ``attr_<name>`` and as a C++
+                # string literal in the FFI binding; validate it (H8).
+                _validate_cpp_identifier(attr_name, "attribute name")
                 spec.attrs.append((attr_name, attr_type))
                 spec.user_param_order.append(f"attr_{attr_name}")
             else:
@@ -594,7 +639,7 @@ def generate_ffi_wrapper(spec: FunctionSpec, allow_cuda_graph: bool = True) -> s
     handler_name = f"be_{name}"
 
     lines: list[str] = []
-    lines.append(f"// ── FFI wrapper for {name} (auto-generated) ──")
+    lines.append(f"// -- FFI wrapper for {name} (auto-generated) --")
     lines.append("")
 
     # ------------------------------------------------------------------
@@ -626,17 +671,7 @@ def generate_ffi_wrapper(spec: FunctionSpec, allow_cuda_graph: bool = True) -> s
     lines.append(f"    {sig}")
     lines.append(") {")
 
-    # ------------------------------------------------------------------
-    # 2. Convert buffers to Tensor
-    # ------------------------------------------------------------------
-    for i in range(spec.num_args):
-        lines.append(f"    BE::Tensor tv_arg{i} = BE::internal::buffer_to_tensor(arg{i});")
-    for i in range(spec.num_rets):
-        lines.append(f"    BE::Tensor tv_ret{i} = BE::internal::result_buffer_to_tensor(ret{i});")
-
-    # ------------------------------------------------------------------
-    # 3. Call user function in the order specified by arg_spec
-    # ------------------------------------------------------------------
+    # Compute the user-function call arguments in arg_spec order.
     call_args: list[str] = []
     for p in spec.user_param_order:
         if p.startswith("arg"):
@@ -648,8 +683,26 @@ def generate_ffi_wrapper(spec: FunctionSpec, allow_cuda_graph: bool = True) -> s
         elif p.startswith("attr_"):
             call_args.append(p)  # same variable name
 
-    lines.append(f"    {name}({', '.join(call_args)});")
-    lines.append("    return xla::ffi::Error::Success();")
+    # ------------------------------------------------------------------
+    # 2+3. Convert buffers to Tensor and call the user function, wrapped in a
+    #      try/catch so a thrown BE::CheckError / BE::CudaError (host-side
+    #      BE_CHECK / BE_CUDA_CHECK failure) or a buffer_to_tensor dtype
+    #      rejection becomes an xla::ffi::Error the JAX caller raises, instead
+    #      of aborting the whole process (H3).  Device-side check failures
+    #      still trap; only host-side throws are catchable here.
+    # ------------------------------------------------------------------
+    lines.append("    try {")
+    for i in range(spec.num_args):
+        lines.append(f"        BE::Tensor tv_arg{i} = BE::internal::buffer_to_tensor(arg{i});")
+    for i in range(spec.num_rets):
+        lines.append(f"        BE::Tensor tv_ret{i} = BE::internal::result_buffer_to_tensor(ret{i});")
+    lines.append(f"        {name}({', '.join(call_args)});")
+    lines.append("        return xla::ffi::Error::Success();")
+    lines.append("    } catch (const std::exception& e) {")
+    lines.append(
+        f'        return xla::ffi::Error::Internal(std::string("{handler_name}: ") + e.what());'
+    )
+    lines.append("    }")
     lines.append("}")
     lines.append("")
 
@@ -707,11 +760,16 @@ def preprocess_source(
     """
     parts: list[str] = []
 
-    parts.append("// ════════════════════════════════════════════════════")
+    parts.append("// ====================================================")
     parts.append("// Auto-generated by brainevent. Do not edit.")
-    parts.append("// ════════════════════════════════════════════════════")
+    parts.append("// ====================================================")
     parts.append("")
-    # Internal header: XLA FFI ↔ Tensor bridge (platform-agnostic).
+    # <string> / <exception> back the generated try/catch (Error::Internal +
+    # e.what()); include them explicitly rather than relying on transitive
+    # includes from the FFI/Tensor headers.
+    parts.append("#include <string>")
+    parts.append("#include <exception>")
+    # Internal header: XLA FFI <-> Tensor bridge (platform-agnostic).
     # ffi_compat.h includes <cuda_runtime_api.h> under __CUDACC__ so the
     # generated wrapper's cudaStream_t reference compiles without the user
     # needing to add it manually.
@@ -719,12 +777,12 @@ def preprocess_source(
     parts.append("")
 
     # User source
-    parts.append("// ── user source ─────────────────────────────────────")
+    parts.append("// -- user source -------------------------------------")
     parts.append(user_source)
     parts.append("")
 
     # FFI wrappers
-    parts.append("// ── FFI wrappers ───────────────────────────────────")
+    parts.append("// -- FFI wrappers ------------------------------------")
     for spec in function_specs:
         parts.append(generate_ffi_wrapper(spec, allow_cuda_graph=allow_cuda_graph))
 

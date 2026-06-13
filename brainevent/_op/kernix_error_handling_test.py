@@ -62,10 +62,13 @@ def test_missing_ret_in_arg_spec():
         )
 
 
-def test_duplicate_registration():
-    """Registering the same target name twice raises RegistrationError."""
-    from brainevent._error import KernelRegistrationError
+def test_duplicate_registration_same_module_is_idempotent():
+    """Re-registering the identical module under one name is a no-op (M5).
 
+    Registration is idempotent for an equivalent module (same shared-library
+    path, function, platform) so repeated eager registration does not raise or
+    clobber the live keep-alive.
+    """
     CUDA_SRC = r"""
     #include <cuda_runtime.h>
     #include "brainevent/common.h"
@@ -81,9 +84,45 @@ def test_duplicate_registration():
     )
 
     brainevent.register_ffi_target("test_dup.noop", mod, "noop")
+    # Idempotent: the identical module re-registered is a no-op, not an error.
+    brainevent.register_ffi_target("test_dup.noop", mod, "noop")
+    assert "test_dup.noop" in brainevent.list_registered_targets()
 
-    with pytest.raises(KernelRegistrationError, match="already registered"):
-        brainevent.register_ffi_target("test_dup.noop", mod, "noop")
+
+def test_duplicate_registration_different_module_raises():
+    """A *different* module under an already-used name is refused (M5).
+
+    ``jax.ffi.register_ffi_target`` would silently overwrite the live target,
+    dropping a still-referenced module; the wrapper raises instead.
+    """
+    from brainevent._error import KernelRegistrationError
+
+    CUDA_SRC = r"""
+    #include <cuda_runtime.h>
+    #include "brainevent/common.h"
+    void noop(BE::Tensor out, int64_t stream) {}
+    """
+
+    mod = brainevent.load_cuda_inline(
+        name="test_dup_reg_a",
+        cuda_sources=CUDA_SRC,
+        functions={"noop": ["ret", "stream"]},
+        auto_register=False,
+        force_rebuild=True,
+    )
+    # A second, distinct shared library (different name -> different .so path).
+    mod2 = brainevent.load_cuda_inline(
+        name="test_dup_reg_b",
+        cuda_sources=CUDA_SRC,
+        functions={"noop": ["ret", "stream"]},
+        auto_register=False,
+        force_rebuild=True,
+    )
+
+    brainevent.register_ffi_target("test_dup_conflict.noop", mod, "noop")
+
+    with pytest.raises(KernelRegistrationError, match="already registered to a different"):
+        brainevent.register_ffi_target("test_dup_conflict.noop", mod2, "noop")
 
 
 def test_diagnostics_runs():

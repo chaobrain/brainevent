@@ -15,7 +15,7 @@
 
 #pragma once
 /// @file tensor.h
-/// @brief BE::Tensor — lightweight, self-contained tensor descriptor.
+/// @brief BE::Tensor - lightweight, self-contained tensor descriptor.
 ///
 /// Tensor does NOT own the data it points to. It stores shape and
 /// C-contiguous strides internally (up to kMaxDim dimensions) so that a
@@ -23,6 +23,13 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cassert>
+#include <climits>
+
+#ifndef __CUDA_ARCH__
+#include <stdexcept>
+#include <string>
+#endif
 
 namespace BE {
 
@@ -112,8 +119,20 @@ public:
 
     /// Construct from raw components.  Strides are computed assuming
     /// C-contiguous (row-major) layout.
+    ///
+    /// Throws ``std::out_of_range`` (host only) if @p ndim is negative or
+    /// exceeds ``kMaxDim`` - without this guard a rank-9+ buffer would read
+    /// past @p shape and silently truncate the rank, after which ``shape(i)``
+    /// returns uninitialised storage (M15).
     Tensor(void* data, const int64_t* shape, int ndim, DType dtype)
         : data_(data), ndim_(ndim), dtype_(dtype) {
+#ifndef __CUDA_ARCH__
+        if (ndim < 0 || ndim > kMaxDim) {
+            throw std::out_of_range(
+                "BE::Tensor: ndim " + std::to_string(ndim) +
+                " is out of range [0, " + std::to_string(kMaxDim) + "]");
+        }
+#endif
         for (int i = 0; i < kMaxDim; ++i) {
             shape_[i] = (i < ndim) ? shape[i] : 0;
             strides_[i] = 0;
@@ -142,7 +161,7 @@ public:
     template <typename T>
     T* data_ptr() const noexcept { return static_cast<T*>(data_); }
 
-    /// Alias for ``data_ptr()`` — kept for backward compatibility.
+    /// Alias for ``data_ptr()`` - kept for backward compatibility.
     void* data() const noexcept { return data_; }
 
     // -- shape / strides ----------------------------------------------
@@ -150,11 +169,19 @@ public:
     /// Number of dimensions.
     int ndim() const noexcept { return ndim_; }
 
-    /// Size along dimension @p i.
-    int64_t shape(int i) const noexcept { return shape_[i]; }
+    /// Size along dimension @p i.  Debug builds assert ``0 <= i < ndim`` (M15);
+    /// release builds trust the caller (the accessor stays ``noexcept`` and
+    /// device-callable).
+    int64_t shape(int i) const noexcept {
+        assert(i >= 0 && i < ndim_);
+        return shape_[i];
+    }
 
-    /// Stride (in elements) along dimension @p i.
-    int64_t stride(int i) const noexcept { return strides_[i]; }
+    /// Stride (in elements) along dimension @p i.  Debug builds assert bounds.
+    int64_t stride(int i) const noexcept {
+        assert(i >= 0 && i < ndim_);
+        return strides_[i];
+    }
 
     /// Pointer to the internal shape array.
     const int64_t* shape_ptr() const noexcept { return shape_; }
@@ -162,8 +189,11 @@ public:
     /// Pointer to the internal strides array.
     const int64_t* strides_ptr() const noexcept { return strides_; }
 
-    /// Alias: size(i) == shape(i).
-    int64_t size(int i) const noexcept { return shape_[i]; }
+    /// Alias: size(i) == shape(i).  Debug builds assert bounds.
+    int64_t size(int i) const noexcept {
+        assert(i >= 0 && i < ndim_);
+        return shape_[i];
+    }
 
     // -- dtype --------------------------------------------------------
 
@@ -176,8 +206,11 @@ public:
     // -- aggregate queries --------------------------------------------
 
     /// Total number of elements.
+    ///
+    /// A rank-0 tensor (scalar) has exactly one element: the empty product is
+    /// 1, not 0 (M14).  Returning 0 here previously made ``nbytes()`` 0 for
+    /// every scalar.
     int64_t numel() const noexcept {
-        if (ndim_ == 0) return 0;
         int64_t n = 1;
         for (int i = 0; i < ndim_; ++i) n *= shape_[i];
         return n;
@@ -188,7 +221,31 @@ public:
         return static_cast<size_t>(numel()) * element_size();
     }
 
+#ifndef __CUDA_ARCH__
+    /// ``numel()`` narrowed to ``int``, with an overflow guard (host only).
+    ///
+    /// CUDA launch extents are commonly passed as ``int``.  This throws
+    /// ``std::overflow_error`` instead of silently truncating (possibly to a
+    /// negative value) when the element count exceeds ``INT_MAX`` (M14).
+    int numel_checked_int() const {
+        int64_t n = numel();
+        if (n > static_cast<int64_t>(INT_MAX)) {
+            throw std::overflow_error(
+                "BE::Tensor::numel_checked_int: element count " +
+                std::to_string(n) + " exceeds INT_MAX");
+        }
+        return static_cast<int>(n);
+    }
+#endif
+
     /// Whether the tensor is C-contiguous.
+    ///
+    /// NOTE: with the current constructors this always returns ``true`` - the
+    /// raw-components constructor *fabricates* C-contiguous strides and XLA's
+    /// ``XLA_FFI_Buffer`` exposes only ``dims`` (no strides), so a non-default
+    /// layout is unrecoverable here.  The check is retained for the day a
+    /// constructor accepts explicit strides; until then treat it as an
+    /// invariant, not a runtime discriminator (L7).
     bool is_contiguous() const noexcept {
         if (ndim_ <= 1) return true;
         int64_t expected = 1;
