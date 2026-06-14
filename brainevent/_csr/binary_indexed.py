@@ -36,7 +36,12 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import _csr_to_coo, namescope
+from brainevent._misc import (
+    _check_csr_cuda_structure_dtypes,
+    _check_csr_structure_dtypes,
+    _csr_to_coo,
+    namescope,
+)
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, load_cuda_file
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -278,6 +283,7 @@ def _binary_csrmv_indexed_cuda_kernel(
     weights ignore ``perm`` entirely, so they reuse the plain homogeneous kernels
     (called without ``perm``).
     """
+    _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
     out_info = kwargs['outs']
     is_homo = (weight_info.size == 1)
 
@@ -354,14 +360,12 @@ def binary_csrmv_indexed_p_call(
     list of jax.Array
         Single-element list with the result vector.
     """
-    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
-    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
     assert perm.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "perm must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
     assert indices.ndim == 1, "Indices must be 1D."
     assert perm.ndim == 1, "perm must be 1D."
     assert perm.shape == indices.shape, "perm must have the same shape as indices."
-    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    _check_csr_structure_dtypes(indices, indptr)
     if transpose:
         assert shape[0] == vector.shape[0], "Shape mismatch for transpose operation."
     else:
@@ -709,6 +713,7 @@ def _binary_csrmm_indexed_cuda_kernel(
     ``weights[perm[j]]`` and pass ``perm`` as an extra tensor.  Homogeneous
     weights reuse the plain homogeneous kernels (called without ``perm``).
     """
+    _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
     out_info = kwargs['outs']
     is_homo = (weight_info.size == 1)
     spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
@@ -764,14 +769,12 @@ def binary_csrmm_indexed_p_call(
     Validates inputs and dispatches ``binary_csrmm_indexed_p``.  See
     :func:`binary_csrmm_indexed` for the math.
     """
-    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
-    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
     assert perm.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "perm must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
     assert indices.ndim == 1, "Indices must be 1D."
     assert perm.ndim == 1, "perm must be 1D."
     assert perm.shape == indices.shape, "perm must have the same shape as indices."
-    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    _check_csr_structure_dtypes(indices, indptr)
     assert B.ndim == 2, "B must be 2D."
     if transpose:
         assert shape[0] == B.shape[0], "Shape mismatch for transpose operation."

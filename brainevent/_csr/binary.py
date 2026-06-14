@@ -22,7 +22,12 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import _csr_to_coo, namescope
+from brainevent._misc import (
+    _check_csr_cuda_structure_dtypes,
+    _check_csr_structure_dtypes,
+    _csr_to_coo,
+    namescope,
+)
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
@@ -431,14 +436,14 @@ def _binary_csrmv_jax_kernel(
     return kernel
 
 
-def _binary_csrmv_cusparse_kernel(
+def _binary_csrmv_bcoo_cusparse_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """cuSPARSE-backed kernel for binary CSR SpMV via jax.experimental.sparse (GPU only)."""
+    """cuSPARSE-backed kernel for binary CSR SpMV via BCOO/BCSR sparse arrays."""
     import jax.experimental.sparse as jsparse
     m, k = shape
     is_homo = (weight_info.size == 1)
@@ -475,12 +480,41 @@ def _binary_csrmv_cusparse_kernel(
     return kernel
 
 
+def _binary_csrmv_jax_exp_csrmv_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """JAX experimental CSR-backed binary CSR SpMV reference kernel."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    def kernel(weights, indices, indptr, vector):
+        events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+        indices = indices.astype(indptr.dtype) if indices.dtype != indptr.dtype else indices
+        if is_homo:
+            data = jnp.ones(nse, dtype=out_dtype)
+            mat = jsparse.CSR((data, indices, indptr), shape=(m, k))
+            return (jsparse.csr_matvec(mat, events, transpose=transpose) * weights[0].astype(out_dtype),)
+        mat = jsparse.CSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+        return (jsparse.csr_matvec(mat, events, transpose=transpose),)
+
+    return kernel
+
+
 def _binary_csrmv_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs,
 ):
+    _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
     load_cuda_file(
         Path(__file__).parent.joinpath('binary_csrmv.cu'),
         name='csr_binary_csrmv',
@@ -756,11 +790,9 @@ def binary_csrmv_p_call(
         ...     weights, indices, indptr, vector,
         ...     shape=(2, 3), transpose=False)
     """
-    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
-    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
     assert indices.ndim == 1, "Indices must be 1D."
-    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    _check_csr_structure_dtypes(indices, indptr)
     if transpose:
         assert shape[0] == vector.shape[0], "Shape mismatch for transpose operation."
     else:
@@ -831,7 +863,8 @@ binary_csrmv_p.def_cuda_raw_kernel(_binary_csrmv_cuda_kernel, asdefault=True)
 binary_csrmv_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_jax_kernel)
-binary_csrmv_p.def_kernel('cusparse', 'gpu', _binary_csrmv_cusparse_kernel)
+binary_csrmv_p.def_kernel('BCOO_cusparse', 'gpu', _binary_csrmv_bcoo_cusparse_kernel)
+binary_csrmv_p.def_kernel('JAX_cusparse', 'gpu', _binary_csrmv_jax_exp_csrmv_kernel)
 binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
@@ -1063,6 +1096,7 @@ def _binary_csrmm_cuda_kernel(
     transpose: bool,
     **kwargs,
 ):
+    _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
     load_cuda_file(
         Path(__file__).parent.joinpath('binary_csrmm.cu'),
         name='csr_binary_csrmm',
@@ -1316,11 +1350,9 @@ def binary_csrmm_p_call(
         ...     weights, indices, indptr, B,
         ...     shape=(2, 3), transpose=False)
     """
-    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
-    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
     assert indices.ndim == 1, "Indices must be 1D."
-    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    _check_csr_structure_dtypes(indices, indptr)
     if transpose:
         assert shape[0] == B.shape[0], "Shape mismatch for transpose operation."
     else:

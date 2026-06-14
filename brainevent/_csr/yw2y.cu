@@ -102,7 +102,8 @@
 // then row = p - 1.
 // =========================================================================
 
-__device__ __inline__ int find_row_bsearch(const int32_t* __restrict__ indptr, int m, int j) {
+template <typename IndptrT>
+__device__ __inline__ int find_row_bsearch(const IndptrT* __restrict__ indptr, int m, int64_t j) {
     int lo = 0, hi = m;
     while (lo < hi) {
         int mid = (lo + hi) >> 1;
@@ -126,18 +127,19 @@ __device__ __inline__ int find_row_bsearch(const int32_t* __restrict__ indptr, i
 // =========================================================================
 
 #define DEFINE_YW2Y_NT_ROW_THREAD(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
 __global__ void _yw2y_nt_row_thread_kern##SUFFIX(                           \
     const WEIGHT_T* __restrict__ y,                                         \
     const WEIGHT_T* __restrict__ w,                                         \
-    const int32_t*  __restrict__ indptr,                                    \
+    const IndptrT*  __restrict__ indptr,                                    \
     WEIGHT_T*       __restrict__ output,                                    \
     int m                                                                   \
 ) {                                                                         \
     int row = blockIdx.x * blockDim.x + threadIdx.x;                        \
     if (row >= m) return;                                                   \
     ACC_T y_val = READ_W(y[row]);  /* load once; reused for all row j */    \
-    int start = indptr[row], end = indptr[row + 1];                         \
-    for (int j = start; j < end; j++) {                                     \
+    IndptrT start = indptr[row], end = indptr[row + 1];                         \
+    for (IndptrT j = start; j < end; j++) {                                     \
         output[j] = WRITE_W(READ_W(w[j]) * y_val);                          \
     }                                                                       \
 }
@@ -156,10 +158,11 @@ __global__ void _yw2y_nt_row_thread_kern##SUFFIX(                           \
 // =========================================================================
 
 #define DEFINE_YW2Y_NT_ROW_WARP(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W)        \
+template <typename IndptrT> \
 __global__ void _yw2y_nt_row_warp_kern##SUFFIX(                                  \
     const WEIGHT_T* __restrict__ y,                                              \
     const WEIGHT_T* __restrict__ w,                                              \
-    const int32_t*  __restrict__ indptr,                                         \
+    const IndptrT*  __restrict__ indptr,                                         \
     WEIGHT_T*       __restrict__ output,                                         \
     int m                                                                        \
 ) {                                                                              \
@@ -169,10 +172,10 @@ __global__ void _yw2y_nt_row_warp_kern##SUFFIX(                                 
     /* On modern NVIDIA GPUs this is served from L1 with a single cache line  */ \
     /* fetch; no extra transactions compared to a single-thread read.         */ \
     ACC_T y_val = READ_W(y[row]);                                                \
-    int start = indptr[row], end = indptr[row + 1];                              \
+    IndptrT start = indptr[row], end = indptr[row + 1];                              \
     /* Warp-stride loop: threads handle j = start+tid, start+tid+32, ...      */ \
     /* Consecutive threads write consecutive output elements -> coalesced.    */ \
-    for (int j = start + (int)threadIdx.x; j < end; j += 32) {                   \
+    for (IndptrT j = start + (int)threadIdx.x; j < end; j += 32) {                   \
         output[j] = WRITE_W(READ_W(w[j]) * y_val);                               \
     }                                                                            \
 }
@@ -224,10 +227,11 @@ __global__ void _yw2y_nt_row_warp_kern##SUFFIX(                                 
 // =========================================================================
 
 #define DEFINE_YW2Y_NT_NZ_THREAD(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
 __global__ void _yw2y_nt_nz_thread_kern##SUFFIX(                           \
     const WEIGHT_T* __restrict__ y,                                        \
     const WEIGHT_T* __restrict__ w,                                        \
-    const int32_t*  __restrict__ indptr,                                   \
+    const IndptrT*  __restrict__ indptr,                                   \
     WEIGHT_T*       __restrict__ output,                                   \
     int m, int nse                                                         \
 ) {                                                                        \
@@ -241,7 +245,7 @@ __global__ void _yw2y_nt_nz_thread_kern##SUFFIX(                           \
     /* Process up to VEC_SIZE elements, handling boundary */               \
     int row = find_row_bsearch(indptr, m, j_base);                         \
     ACC_T y_val = READ_W(y[row]);                                          \
-    int row_end = indptr[row + 1];                                         \
+    IndptrT row_end = indptr[row + 1];                                         \
                                                                            \
     _Pragma("unroll")                                                      \
     for (int i = 0; i < VEC_SIZE; i++) {                                   \
@@ -306,13 +310,16 @@ void csrmv_yw2y_nt_row_thread##SUFFIX(                       \
     BE::Tensor output,  int64_t stream                       \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    BE_CHECK_CSR_INDICES_INT32(indices);                     \
     int m     = static_cast<int>(indptr.size(0)) - 1;        \
     int blocks = (m + 255) / 256;                            \
-    _yw2y_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
-        static_cast<const WEIGHT_C_T*>(y.data_ptr()),        \
-        static_cast<const WEIGHT_C_T*>(w.data_ptr()),        \
-        static_cast<const int32_t*>(indptr.data_ptr()),      \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);     \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {        \
+        _yw2y_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
+            static_cast<const WEIGHT_C_T*>(y.data_ptr()),    \
+            static_cast<const WEIGHT_C_T*>(w.data_ptr()),    \
+            static_cast<const IndptrT*>(indptr.data_ptr()),  \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()), m); \
+    });                                                      \
 }
 
 // ---- FFI macro: NT row-warp kernel ----
@@ -323,12 +330,15 @@ void csrmv_yw2y_nt_row_warp##SUFFIX(                         \
     BE::Tensor output,  int64_t stream                       \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
+    BE_CHECK_CSR_INDICES_INT32(indices);                     \
     int m = static_cast<int>(indptr.size(0)) - 1;            \
-    _yw2y_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(         \
-        static_cast<const WEIGHT_C_T*>(y.data_ptr()),        \
-        static_cast<const WEIGHT_C_T*>(w.data_ptr()),        \
-        static_cast<const int32_t*>(indptr.data_ptr()),      \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);     \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {        \
+        _yw2y_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(     \
+            static_cast<const WEIGHT_C_T*>(y.data_ptr()),    \
+            static_cast<const WEIGHT_C_T*>(w.data_ptr()),    \
+            static_cast<const IndptrT*>(indptr.data_ptr()),  \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()), m); \
+    });                                                      \
 }
 
 // ---- FFI macro: NT nz-thread kernel ----
@@ -339,6 +349,7 @@ void csrmv_yw2y_nt_nz_thread##SUFFIX(                              \
     BE::Tensor output,  int64_t stream                             \
 ) {                                                                \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
+    BE_CHECK_CSR_INDICES_INT32(indices);                           \
     int m   = static_cast<int>(indptr.size(0)) - 1;                \
     int nse = static_cast<int>(w.size(0));                         \
     /* Each thread processes VEC_SIZE=4 elements */                \
@@ -346,11 +357,13 @@ void csrmv_yw2y_nt_nz_thread##SUFFIX(                              \
     const int BLOCK_SIZE = 256;                                    \
     int total_threads = (nse + VEC_SIZE - 1) / VEC_SIZE;           \
     int blocks = (total_threads + BLOCK_SIZE - 1) / BLOCK_SIZE;    \
-    _yw2y_nt_nz_thread_kern##SUFFIX<<<blocks, BLOCK_SIZE, 0, s>>>( \
-        static_cast<const WEIGHT_C_T*>(y.data_ptr()),              \
-        static_cast<const WEIGHT_C_T*>(w.data_ptr()),              \
-        static_cast<const int32_t*>(indptr.data_ptr()),            \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, nse);      \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {              \
+        _yw2y_nt_nz_thread_kern##SUFFIX<<<blocks, BLOCK_SIZE, 0, s>>>( \
+            static_cast<const WEIGHT_C_T*>(y.data_ptr()),          \
+            static_cast<const WEIGHT_C_T*>(w.data_ptr()),          \
+            static_cast<const IndptrT*>(indptr.data_ptr()),        \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()), m, nse);  \
+    });                                                            \
 }
 
 // ---- FFI macro: NT auto-dispatch (row_thread / row_warp / nz_thread) ----
@@ -367,25 +380,27 @@ void csrmv_yw2y_nt_auto##SUFFIX(                                                
     BE::Tensor output,  int64_t stream                                                          \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                                        \
     int m     = static_cast<int>(indptr.size(0)) - 1;                                           \
     int nse   = static_cast<int>(w.size(0));                                                    \
     int avg_nnz = (m > 0) ? (nse / m) : 0;                                                      \
     const WEIGHT_C_T* d_y   = static_cast<const WEIGHT_C_T*>(y.data_ptr());                     \
     const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(w.data_ptr());                     \
-    const int32_t*    d_ptr = static_cast<const int32_t*>(indptr.data_ptr());                   \
     WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                      \
-    if (avg_nnz < 8) {                                                                          \
-        int blocks = (m + 255) / 256;                                                           \
-        _yw2y_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m);     \
-    } else if (avg_nnz < 512) {                                                                 \
-        _yw2y_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(d_y, d_w, d_ptr, d_out, m);             \
-    } else {                                                                                    \
-        /* NT_nz_thread: each thread processes VEC_SIZE=4 elements */                           \
-        const int VEC_SIZE = 4;                                                                 \
-        int total_threads = (nse + VEC_SIZE - 1) / VEC_SIZE;                                    \
-        int blocks = (total_threads + 255) / 256;                                               \
-        _yw2y_nt_nz_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m, nse); \
-    }                                                                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                                           \
+        const IndptrT* d_ptr = static_cast<const IndptrT*>(indptr.data_ptr());                  \
+        if (avg_nnz < 8) {                                                                      \
+            int blocks = (m + 255) / 256;                                                       \
+            _yw2y_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m); \
+        } else if (avg_nnz < 512) {                                                             \
+            _yw2y_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(d_y, d_w, d_ptr, d_out, m);         \
+        } else {                                                                                \
+            const int VEC_SIZE = 4;                                                             \
+            int total_threads = (nse + VEC_SIZE - 1) / VEC_SIZE;                                \
+            int blocks = (total_threads + 255) / 256;                                           \
+            _yw2y_nt_nz_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m, nse); \
+        }                                                                                       \
+    });                                                                                         \
 }
 
 // =========================================================================

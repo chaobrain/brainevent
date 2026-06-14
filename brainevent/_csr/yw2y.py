@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._misc import namescope
+from brainevent._misc import _check_csr_cuda_structure_dtypes, namescope
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel
 from brainevent._op.benchmark import BenchmarkConfig
@@ -268,6 +268,7 @@ def _csrmv_yw2y_cuda_kernel(
     w_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
+    _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
     # Transpose path: ``out[j] = w[j] * y[indices[j]]`` is an embarrassingly
     # parallel gather-multiply whose cost is dominated by the irreducible
     # scattered read of ``y[indices]``.  XLA's gather matches the hand-written

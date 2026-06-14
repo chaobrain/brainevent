@@ -75,10 +75,11 @@ __device__ __forceinline__ int4 load_int4(const int32_t* __restrict__ ptr) {
 // =========================================================================
 
 #define DEFINE_SLICE_FWD_THREAD_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
 __global__ void _slice_fwd_thread_homo_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                  \
     const int32_t*  __restrict__ indices,                               \
-    const int32_t*  __restrict__ indptr,                                \
+    const IndptrT*  __restrict__ indptr,                                \
     const int32_t*  __restrict__ row_indices,                           \
     WEIGHT_T*       __restrict__ output,                                \
     int m, int n_cols, int num_selected                                 \
@@ -87,18 +88,19 @@ __global__ void _slice_fwd_thread_homo_kern##SUFFIX(                    \
     if (k >= num_selected) return;                                      \
     int r = row_indices[k];                                             \
     if (r < 0 || r >= m) return;                                        \
-    int start = indptr[r], end = indptr[r + 1];                         \
+    IndptrT start = indptr[r], end = indptr[r + 1];                         \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                 \
     WEIGHT_T w = WRITE_W(READ_W(data[0]));                              \
-    for (int j = start; j < end; j++)                                   \
+    for (IndptrT j = start; j < end; j++)                                   \
         row_out[indices[j]] = w;                                        \
 }
 
 #define DEFINE_SLICE_FWD_THREAD_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
 __global__ void _slice_fwd_thread_hetero_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                    \
     const int32_t*  __restrict__ indices,                                 \
-    const int32_t*  __restrict__ indptr,                                  \
+    const IndptrT*  __restrict__ indptr,                                  \
     const int32_t*  __restrict__ row_indices,                             \
     WEIGHT_T*       __restrict__ output,                                  \
     int m, int n_cols, int num_selected                                   \
@@ -107,9 +109,9 @@ __global__ void _slice_fwd_thread_hetero_kern##SUFFIX(                    \
     if (k >= num_selected) return;                                        \
     int r = row_indices[k];                                               \
     if (r < 0 || r >= m) return;                                          \
-    int start = indptr[r], end = indptr[r + 1];                           \
+    IndptrT start = indptr[r], end = indptr[r + 1];                           \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                   \
-    for (int j = start; j < end; j++)                                     \
+    for (IndptrT j = start; j < end; j++)                                     \
         row_out[indices[j]] = WRITE_W(READ_W(data[j]));                   \
 }
 
@@ -131,10 +133,11 @@ __global__ void _slice_fwd_thread_hetero_kern##SUFFIX(                    \
 // =========================================================================
 
 #define DEFINE_SLICE_FWD_WARP_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
 __global__ void _slice_fwd_warp_homo_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                \
     const int32_t*  __restrict__ indices,                             \
-    const int32_t*  __restrict__ indptr,                              \
+    const IndptrT*  __restrict__ indptr,                              \
     const int32_t*  __restrict__ row_indices,                         \
     WEIGHT_T*       __restrict__ output,                              \
     int m, int n_cols, int num_selected                               \
@@ -143,19 +146,20 @@ __global__ void _slice_fwd_warp_homo_kern##SUFFIX(                    \
     if (k >= num_selected) return;                                    \
     int r = row_indices[k];                                           \
     if (r < 0 || r >= m) return;                                      \
-    int start = indptr[r], end = indptr[r + 1];                       \
+    IndptrT start = indptr[r], end = indptr[r + 1];                       \
     int lane = (int)threadIdx.x;   /* 0..31 */                        \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;               \
     WEIGHT_T w = WRITE_W(READ_W(data[0]));                            \
-    for (int j = start + lane; j < end; j += 32)                      \
+    for (IndptrT j = start + lane; j < end; j += 32)                      \
         row_out[indices[j]] = w;                                      \
 }
 
 #define DEFINE_SLICE_FWD_WARP_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
 __global__ void _slice_fwd_warp_hetero_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                  \
     const int32_t*  __restrict__ indices,                               \
-    const int32_t*  __restrict__ indptr,                                \
+    const IndptrT*  __restrict__ indptr,                                \
     const int32_t*  __restrict__ row_indices,                           \
     WEIGHT_T*       __restrict__ output,                                \
     int m, int n_cols, int num_selected                                 \
@@ -164,10 +168,10 @@ __global__ void _slice_fwd_warp_hetero_kern##SUFFIX(                    \
     if (k >= num_selected) return;                                      \
     int r = row_indices[k];                                             \
     if (r < 0 || r >= m) return;                                        \
-    int start = indptr[r], end = indptr[r + 1];                         \
+    IndptrT start = indptr[r], end = indptr[r + 1];                         \
     int lane = (int)threadIdx.x;   /* 0..31 */                          \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                 \
-    for (int j = start + lane; j < end; j += 32) {                      \
+    for (IndptrT j = start + lane; j < end; j += 32) {                      \
         int col = __ldg(&indices[j]);                                   \
         WEIGHT_T val = WRITE_W(READ_W(__ldg(&data[j])));                \
         row_out[col] = val;                                             \
@@ -185,10 +189,11 @@ __global__ void _slice_fwd_warp_hetero_kern##SUFFIX(                    \
 // =========================================================================
 
 #define DEFINE_SLICE_FWD_BLOCK_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
 __global__ void _slice_fwd_block_homo_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                 \
     const int32_t*  __restrict__ indices,                              \
-    const int32_t*  __restrict__ indptr,                               \
+    const IndptrT*  __restrict__ indptr,                               \
     const int32_t*  __restrict__ row_indices,                          \
     WEIGHT_T*       __restrict__ output,                               \
     int m, int n_cols, int num_selected                                \
@@ -197,19 +202,20 @@ __global__ void _slice_fwd_block_homo_kern##SUFFIX(                    \
     if (k >= num_selected) return;                                     \
     int r = row_indices[k];                                            \
     if (r < 0 || r >= m) return;                                       \
-    int start = indptr[r], end = indptr[r + 1];                        \
+    IndptrT start = indptr[r], end = indptr[r + 1];                        \
     int tid = (int)threadIdx.x;                                        \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                \
     WEIGHT_T w = WRITE_W(READ_W(data[0]));                             \
-    for (int j = start + tid; j < end; j += blockDim.x)                \
+    for (IndptrT j = start + tid; j < end; j += blockDim.x)                \
         row_out[indices[j]] = w;                                       \
 }
 
 #define DEFINE_SLICE_FWD_BLOCK_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
 __global__ void _slice_fwd_block_hetero_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                   \
     const int32_t*  __restrict__ indices,                                \
-    const int32_t*  __restrict__ indptr,                                 \
+    const IndptrT*  __restrict__ indptr,                                 \
     const int32_t*  __restrict__ row_indices,                            \
     WEIGHT_T*       __restrict__ output,                                 \
     int m, int n_cols, int num_selected                                  \
@@ -218,10 +224,10 @@ __global__ void _slice_fwd_block_hetero_kern##SUFFIX(                    \
     if (k >= num_selected) return;                                       \
     int r = row_indices[k];                                              \
     if (r < 0 || r >= m) return;                                         \
-    int start = indptr[r], end = indptr[r + 1];                          \
+    IndptrT start = indptr[r], end = indptr[r + 1];                          \
     int tid = (int)threadIdx.x;                                          \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                  \
-    for (int j = start + tid; j < end; j += blockDim.x) {                \
+    for (IndptrT j = start + tid; j < end; j += blockDim.x) {                \
         int col = __ldg(&indices[j]);                                    \
         WEIGHT_T val = WRITE_W(READ_W(__ldg(&data[j])));                 \
         row_out[col] = val;                                              \
@@ -240,10 +246,11 @@ __global__ void _slice_fwd_block_hetero_kern##SUFFIX(                    \
 // =========================================================================
 
 #define DEFINE_SLICE_GRAD_THREAD(SUFFIX, WEIGHT_T, ATOMIC_ADD_W) \
+template <typename IndptrT> \
 __global__ void _slice_grad_thread_kern##SUFFIX(                 \
     const WEIGHT_T* __restrict__ ct,                             \
     const int32_t*  __restrict__ indices,                        \
-    const int32_t*  __restrict__ indptr,                         \
+    const IndptrT*  __restrict__ indptr,                         \
     const int32_t*  __restrict__ row_indices,                    \
     WEIGHT_T*       __restrict__ ct_data,                        \
     int m, int n_cols, int num_selected                          \
@@ -252,9 +259,9 @@ __global__ void _slice_grad_thread_kern##SUFFIX(                 \
     if (k >= num_selected) return;                               \
     int r = row_indices[k];                                      \
     if (r < 0 || r >= m) return;                                 \
-    int start = indptr[r], end = indptr[r + 1];                  \
+    IndptrT start = indptr[r], end = indptr[r + 1];                  \
     const WEIGHT_T* ct_row = ct + (ptrdiff_t)k * n_cols;         \
-    for (int j = start; j < end; j++)                            \
+    for (IndptrT j = start; j < end; j++)                            \
         ATOMIC_ADD_W(&ct_data[j], ct_row[indices[j]]);           \
 }
 
@@ -270,10 +277,11 @@ __global__ void _slice_grad_thread_kern##SUFFIX(                 \
 // =========================================================================
 
 #define DEFINE_SLICE_GRAD_WARP(SUFFIX, WEIGHT_T, ATOMIC_ADD_W) \
+template <typename IndptrT> \
 __global__ void _slice_grad_warp_kern##SUFFIX(                 \
     const WEIGHT_T* __restrict__ ct,                           \
     const int32_t*  __restrict__ indices,                      \
-    const int32_t*  __restrict__ indptr,                       \
+    const IndptrT*  __restrict__ indptr,                       \
     const int32_t*  __restrict__ row_indices,                  \
     WEIGHT_T*       __restrict__ ct_data,                      \
     int m, int n_cols, int num_selected                        \
@@ -282,10 +290,10 @@ __global__ void _slice_grad_warp_kern##SUFFIX(                 \
     if (k >= num_selected) return;                             \
     int r = row_indices[k];                                    \
     if (r < 0 || r >= m) return;                               \
-    int start = indptr[r], end = indptr[r + 1];                \
+    IndptrT start = indptr[r], end = indptr[r + 1];                \
     int lane = (int)threadIdx.x;                               \
     const WEIGHT_T* ct_row = ct + (ptrdiff_t)k * n_cols;       \
-    for (int j = start + lane; j < end; j += 32) {             \
+    for (IndptrT j = start + lane; j < end; j += 32) {             \
         int col = __ldg(&indices[j]);                          \
         WEIGHT_T val = __ldg(&ct_row[col]);                    \
         ATOMIC_ADD_W(&ct_data[j], val);                        \
@@ -382,6 +390,7 @@ void csr_slice_rows_fwd_homo_thread##SUFFIX(                                \
     const BE::Tensor indptr, const BE::Tensor row_indices,                  \
     BE::Tensor output, int64_t stream                                       \
 ) {                                                                         \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
     int num_selected  = static_cast<int>(row_indices.size(0));              \
@@ -389,13 +398,15 @@ void csr_slice_rows_fwd_homo_thread##SUFFIX(                                \
     size_t out_bytes  = (size_t)num_selected * n_cols * sizeof(WEIGHT_C_T); \
     cudaMemsetAsync(output.data_ptr(), 0, out_bytes, s);                    \
     int blocks = (num_selected + 255) / 256;                                \
-    _slice_fwd_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(             \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                    \
-        static_cast<const int32_t*>(indices.data_ptr()),                    \
-        static_cast<const int32_t*>(indptr.data_ptr()),                     \
-        static_cast<const int32_t*>(row_indices.data_ptr()),                \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),                        \
-        m, n_cols, num_selected);                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                       \
+        _slice_fwd_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(         \
+            static_cast<const WEIGHT_C_T*>(data.data_ptr()),                \
+            static_cast<const int32_t*>(indices.data_ptr()),                \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
+            static_cast<const int32_t*>(row_indices.data_ptr()),            \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()),                    \
+            m, n_cols, num_selected);                                       \
+    });                                                                     \
 }
 
 // ---- FFI macro: forward hetero thread ----
@@ -405,6 +416,7 @@ void csr_slice_rows_fwd_hetero_thread##SUFFIX(                              \
     const BE::Tensor indptr, const BE::Tensor row_indices,                  \
     BE::Tensor output, int64_t stream                                       \
 ) {                                                                         \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
     int num_selected  = static_cast<int>(row_indices.size(0));              \
@@ -412,13 +424,15 @@ void csr_slice_rows_fwd_hetero_thread##SUFFIX(                              \
     size_t out_bytes  = (size_t)num_selected * n_cols * sizeof(WEIGHT_C_T); \
     cudaMemsetAsync(output.data_ptr(), 0, out_bytes, s);                    \
     int blocks = (num_selected + 255) / 256;                                \
-    _slice_fwd_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(           \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                    \
-        static_cast<const int32_t*>(indices.data_ptr()),                    \
-        static_cast<const int32_t*>(indptr.data_ptr()),                     \
-        static_cast<const int32_t*>(row_indices.data_ptr()),                \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),                        \
-        m, n_cols, num_selected);                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                       \
+        _slice_fwd_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(       \
+            static_cast<const WEIGHT_C_T*>(data.data_ptr()),                \
+            static_cast<const int32_t*>(indices.data_ptr()),                \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
+            static_cast<const int32_t*>(row_indices.data_ptr()),            \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()),                    \
+            m, n_cols, num_selected);                                       \
+    });                                                                     \
 }
 
 // ---- FFI macro: forward homo warp ----
@@ -428,19 +442,22 @@ void csr_slice_rows_fwd_homo_warp##SUFFIX(                                  \
     const BE::Tensor indptr, const BE::Tensor row_indices,                  \
     BE::Tensor output, int64_t stream                                       \
 ) {                                                                         \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
     int num_selected  = static_cast<int>(row_indices.size(0));              \
     int n_cols        = static_cast<int>(output.size(1));                   \
     size_t out_bytes  = (size_t)num_selected * n_cols * sizeof(WEIGHT_C_T); \
     cudaMemsetAsync(output.data_ptr(), 0, out_bytes, s);                    \
-    _slice_fwd_warp_homo_kern##SUFFIX<<<num_selected, 32, 0, s>>>(          \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                    \
-        static_cast<const int32_t*>(indices.data_ptr()),                    \
-        static_cast<const int32_t*>(indptr.data_ptr()),                     \
-        static_cast<const int32_t*>(row_indices.data_ptr()),                \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),                        \
-        m, n_cols, num_selected);                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                       \
+        _slice_fwd_warp_homo_kern##SUFFIX<<<num_selected, 32, 0, s>>>(      \
+            static_cast<const WEIGHT_C_T*>(data.data_ptr()),                \
+            static_cast<const int32_t*>(indices.data_ptr()),                \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
+            static_cast<const int32_t*>(row_indices.data_ptr()),            \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()),                    \
+            m, n_cols, num_selected);                                       \
+    });                                                                     \
 }
 
 // ---- FFI macro: forward hetero warp ----
@@ -450,19 +467,22 @@ void csr_slice_rows_fwd_hetero_warp##SUFFIX(                                \
     const BE::Tensor indptr, const BE::Tensor row_indices,                  \
     BE::Tensor output, int64_t stream                                       \
 ) {                                                                         \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
     int num_selected  = static_cast<int>(row_indices.size(0));              \
     int n_cols        = static_cast<int>(output.size(1));                   \
     size_t out_bytes  = (size_t)num_selected * n_cols * sizeof(WEIGHT_C_T); \
     cudaMemsetAsync(output.data_ptr(), 0, out_bytes, s);                    \
-    _slice_fwd_warp_hetero_kern##SUFFIX<<<num_selected, 32, 0, s>>>(        \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                    \
-        static_cast<const int32_t*>(indices.data_ptr()),                    \
-        static_cast<const int32_t*>(indptr.data_ptr()),                     \
-        static_cast<const int32_t*>(row_indices.data_ptr()),                \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),                        \
-        m, n_cols, num_selected);                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                       \
+        _slice_fwd_warp_hetero_kern##SUFFIX<<<num_selected, 32, 0, s>>>(    \
+            static_cast<const WEIGHT_C_T*>(data.data_ptr()),                \
+            static_cast<const int32_t*>(indices.data_ptr()),                \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
+            static_cast<const int32_t*>(row_indices.data_ptr()),            \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()),                    \
+            m, n_cols, num_selected);                                       \
+    });                                                                     \
 }
 
 // ---- FFI macro: forward homo block ----
@@ -472,19 +492,22 @@ void csr_slice_rows_fwd_homo_block##SUFFIX(                                 \
     const BE::Tensor indptr, const BE::Tensor row_indices,                  \
     BE::Tensor output, int64_t stream                                       \
 ) {                                                                         \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
     int num_selected  = static_cast<int>(row_indices.size(0));              \
     int n_cols        = static_cast<int>(output.size(1));                   \
     size_t out_bytes  = (size_t)num_selected * n_cols * sizeof(WEIGHT_C_T); \
     cudaMemsetAsync(output.data_ptr(), 0, out_bytes, s);                    \
-    _slice_fwd_block_homo_kern##SUFFIX<<<num_selected, 256, 0, s>>>(        \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                    \
-        static_cast<const int32_t*>(indices.data_ptr()),                    \
-        static_cast<const int32_t*>(indptr.data_ptr()),                     \
-        static_cast<const int32_t*>(row_indices.data_ptr()),                \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),                        \
-        m, n_cols, num_selected);                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                       \
+        _slice_fwd_block_homo_kern##SUFFIX<<<num_selected, 256, 0, s>>>(    \
+            static_cast<const WEIGHT_C_T*>(data.data_ptr()),                \
+            static_cast<const int32_t*>(indices.data_ptr()),                \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
+            static_cast<const int32_t*>(row_indices.data_ptr()),            \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()),                    \
+            m, n_cols, num_selected);                                       \
+    });                                                                     \
 }
 
 // ---- FFI macro: forward hetero block ----
@@ -494,19 +517,22 @@ void csr_slice_rows_fwd_hetero_block##SUFFIX(                               \
     const BE::Tensor indptr, const BE::Tensor row_indices,                  \
     BE::Tensor output, int64_t stream                                       \
 ) {                                                                         \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
     int num_selected  = static_cast<int>(row_indices.size(0));              \
     int n_cols        = static_cast<int>(output.size(1));                   \
     size_t out_bytes  = (size_t)num_selected * n_cols * sizeof(WEIGHT_C_T); \
     cudaMemsetAsync(output.data_ptr(), 0, out_bytes, s);                    \
-    _slice_fwd_block_hetero_kern##SUFFIX<<<num_selected, 256, 0, s>>>(      \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                    \
-        static_cast<const int32_t*>(indices.data_ptr()),                    \
-        static_cast<const int32_t*>(indptr.data_ptr()),                     \
-        static_cast<const int32_t*>(row_indices.data_ptr()),                \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),                        \
-        m, n_cols, num_selected);                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                       \
+        _slice_fwd_block_hetero_kern##SUFFIX<<<num_selected, 256, 0, s>>>(  \
+            static_cast<const WEIGHT_C_T*>(data.data_ptr()),                \
+            static_cast<const int32_t*>(indices.data_ptr()),                \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
+            static_cast<const int32_t*>(row_indices.data_ptr()),            \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()),                    \
+            m, n_cols, num_selected);                                       \
+    });                                                                     \
 }
 
 // ---- FFI macro: forward homo auto (selects thread/warp/block by avg_nnz) ----
@@ -516,6 +542,7 @@ void csr_slice_rows_fwd_homo_auto##SUFFIX(                                      
     const BE::Tensor indptr, const BE::Tensor row_indices,                              \
     BE::Tensor output, int64_t stream                                                   \
 ) {                                                                                     \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                                \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                         \
     int m             = static_cast<int>(indptr.size(0)) - 1;                           \
     int nnz           = static_cast<int>(indices.size(0));                              \
@@ -526,23 +553,25 @@ void csr_slice_rows_fwd_homo_auto##SUFFIX(                                      
     float avg_nnz = (m > 0) ? (float)nnz / m : 0.0f;                                    \
     const WEIGHT_C_T* d_data     = static_cast<const WEIGHT_C_T*>(data.data_ptr());     \
     const int32_t*    d_indices  = static_cast<const int32_t*>(indices.data_ptr());     \
-    const int32_t*    d_indptr   = static_cast<const int32_t*>(indptr.data_ptr());      \
     const int32_t*    d_rows     = static_cast<const int32_t*>(row_indices.data_ptr()); \
     WEIGHT_C_T*       d_output   = static_cast<WEIGHT_C_T*>(output.data_ptr());         \
-    if (avg_nnz < 8.0f) {                                                               \
-        int blocks = (num_selected + 255) / 256;                                        \
-        _slice_fwd_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(                     \
-            d_data, d_indices, d_indptr, d_rows, d_output,                              \
-            m, n_cols, num_selected);                                                   \
-    } else if (avg_nnz < 512.0f) {                                                      \
-        _slice_fwd_warp_homo_kern##SUFFIX<<<num_selected, 32, 0, s>>>(                  \
-            d_data, d_indices, d_indptr, d_rows, d_output,                              \
-            m, n_cols, num_selected);                                                   \
-    } else {                                                                            \
-        _slice_fwd_block_homo_kern##SUFFIX<<<num_selected, 256, 0, s>>>(                \
-            d_data, d_indices, d_indptr, d_rows, d_output,                              \
-            m, n_cols, num_selected);                                                   \
-    }                                                                                   \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                                   \
+        const IndptrT* d_indptr = static_cast<const IndptrT*>(indptr.data_ptr());       \
+        if (avg_nnz < 8.0f) {                                                           \
+            int blocks = (num_selected + 255) / 256;                                    \
+            _slice_fwd_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(                 \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        } else if (avg_nnz < 512.0f) {                                                  \
+            _slice_fwd_warp_homo_kern##SUFFIX<<<num_selected, 32, 0, s>>>(              \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        } else {                                                                        \
+            _slice_fwd_block_homo_kern##SUFFIX<<<num_selected, 256, 0, s>>>(            \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        }                                                                               \
+    });                                                                                 \
 }
 
 // ---- FFI macro: forward hetero auto (selects thread/warp/block by avg_nnz) ----
@@ -552,6 +581,7 @@ void csr_slice_rows_fwd_hetero_auto##SUFFIX(                                    
     const BE::Tensor indptr, const BE::Tensor row_indices,                              \
     BE::Tensor output, int64_t stream                                                   \
 ) {                                                                                     \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                                \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                         \
     int m             = static_cast<int>(indptr.size(0)) - 1;                           \
     int nnz           = static_cast<int>(indices.size(0));                              \
@@ -562,23 +592,25 @@ void csr_slice_rows_fwd_hetero_auto##SUFFIX(                                    
     float avg_nnz = (m > 0) ? (float)nnz / m : 0.0f;                                    \
     const WEIGHT_C_T* d_data     = static_cast<const WEIGHT_C_T*>(data.data_ptr());     \
     const int32_t*    d_indices  = static_cast<const int32_t*>(indices.data_ptr());     \
-    const int32_t*    d_indptr   = static_cast<const int32_t*>(indptr.data_ptr());      \
     const int32_t*    d_rows     = static_cast<const int32_t*>(row_indices.data_ptr()); \
     WEIGHT_C_T*       d_output   = static_cast<WEIGHT_C_T*>(output.data_ptr());         \
-    if (avg_nnz < 8.0f) {                                                               \
-        int blocks = (num_selected + 255) / 256;                                        \
-        _slice_fwd_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(                   \
-            d_data, d_indices, d_indptr, d_rows, d_output,                              \
-            m, n_cols, num_selected);                                                   \
-    } else if (avg_nnz < 512.0f) {                                                      \
-        _slice_fwd_warp_hetero_kern##SUFFIX<<<num_selected, 32, 0, s>>>(                \
-            d_data, d_indices, d_indptr, d_rows, d_output,                              \
-            m, n_cols, num_selected);                                                   \
-    } else {                                                                            \
-        _slice_fwd_block_hetero_kern##SUFFIX<<<num_selected, 256, 0, s>>>(              \
-            d_data, d_indices, d_indptr, d_rows, d_output,                              \
-            m, n_cols, num_selected);                                                   \
-    }                                                                                   \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                                   \
+        const IndptrT* d_indptr = static_cast<const IndptrT*>(indptr.data_ptr());       \
+        if (avg_nnz < 8.0f) {                                                           \
+            int blocks = (num_selected + 255) / 256;                                    \
+            _slice_fwd_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(               \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        } else if (avg_nnz < 512.0f) {                                                  \
+            _slice_fwd_warp_hetero_kern##SUFFIX<<<num_selected, 32, 0, s>>>(            \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        } else {                                                                        \
+            _slice_fwd_block_hetero_kern##SUFFIX<<<num_selected, 256, 0, s>>>(          \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        }                                                                               \
+    });                                                                                 \
 }
 
 // ---- FFI macro: backward thread ----
@@ -588,6 +620,7 @@ void csr_slice_rows_grad_thread##SUFFIX(                        \
     const BE::Tensor indptr, const BE::Tensor row_indices,      \
     BE::Tensor ct_data, int64_t stream                    \
 ) {                                                             \
+    BE_CHECK_CSR_INDICES_INT32(indices);                        \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream); \
     int m             = static_cast<int>(indptr.size(0)) - 1;   \
     int num_selected  = static_cast<int>(row_indices.size(0));  \
@@ -596,13 +629,15 @@ void csr_slice_rows_grad_thread##SUFFIX(                        \
     size_t ct_bytes   = (size_t)nnz * sizeof(WEIGHT_C_T);       \
     cudaMemsetAsync(ct_data.data_ptr(), 0, ct_bytes, s);        \
     int blocks = (num_selected + 255) / 256;                    \
-    _slice_grad_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(     \
-        static_cast<const WEIGHT_C_T*>(ct.data_ptr()),          \
-        static_cast<const int32_t*>(indices.data_ptr()),        \
-        static_cast<const int32_t*>(indptr.data_ptr()),         \
-        static_cast<const int32_t*>(row_indices.data_ptr()),    \
-        static_cast<WEIGHT_C_T*>(ct_data.data_ptr()),           \
-        m, n_cols, num_selected);                               \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {           \
+        _slice_grad_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
+            static_cast<const WEIGHT_C_T*>(ct.data_ptr()),      \
+            static_cast<const int32_t*>(indices.data_ptr()),    \
+            static_cast<const IndptrT*>(indptr.data_ptr()),     \
+            static_cast<const int32_t*>(row_indices.data_ptr()),\
+            static_cast<WEIGHT_C_T*>(ct_data.data_ptr()),       \
+            m, n_cols, num_selected);                           \
+    });                                                         \
 }
 
 // ---- FFI macro: backward warp ----
@@ -612,6 +647,7 @@ void csr_slice_rows_grad_warp##SUFFIX(                          \
     const BE::Tensor indptr, const BE::Tensor row_indices,      \
     BE::Tensor ct_data, int64_t stream                    \
 ) {                                                             \
+    BE_CHECK_CSR_INDICES_INT32(indices);                        \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream); \
     int m             = static_cast<int>(indptr.size(0)) - 1;   \
     int num_selected  = static_cast<int>(row_indices.size(0));  \
@@ -619,13 +655,15 @@ void csr_slice_rows_grad_warp##SUFFIX(                          \
     int nnz           = static_cast<int>(ct_data.size(0));      \
     size_t ct_bytes   = (size_t)nnz * sizeof(WEIGHT_C_T);       \
     cudaMemsetAsync(ct_data.data_ptr(), 0, ct_bytes, s);        \
-    _slice_grad_warp_kern##SUFFIX<<<num_selected, 32, 0, s>>>(  \
-        static_cast<const WEIGHT_C_T*>(ct.data_ptr()),          \
-        static_cast<const int32_t*>(indices.data_ptr()),        \
-        static_cast<const int32_t*>(indptr.data_ptr()),         \
-        static_cast<const int32_t*>(row_indices.data_ptr()),    \
-        static_cast<WEIGHT_C_T*>(ct_data.data_ptr()),           \
-        m, n_cols, num_selected);                               \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {           \
+        _slice_grad_warp_kern##SUFFIX<<<num_selected, 32, 0, s>>>( \
+            static_cast<const WEIGHT_C_T*>(ct.data_ptr()),      \
+            static_cast<const int32_t*>(indices.data_ptr()),    \
+            static_cast<const IndptrT*>(indptr.data_ptr()),     \
+            static_cast<const int32_t*>(row_indices.data_ptr()),\
+            static_cast<WEIGHT_C_T*>(ct_data.data_ptr()),       \
+            m, n_cols, num_selected);                           \
+    });                                                         \
 }
 
 // ---- FFI macro: backward auto (selects thread/warp by avg_nnz) ----
@@ -635,6 +673,7 @@ void csr_slice_rows_grad_auto##SUFFIX(                                          
     const BE::Tensor indptr, const BE::Tensor row_indices,                             \
     BE::Tensor ct_data, int64_t stream                                           \
 ) {                                                                                    \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                               \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                        \
     int m             = static_cast<int>(indptr.size(0)) - 1;                          \
     int nnz           = static_cast<int>(indices.size(0));                             \
@@ -645,19 +684,21 @@ void csr_slice_rows_grad_auto##SUFFIX(                                          
     float avg_nnz = (m > 0) ? (float)nnz / m : 0.0f;                                   \
     const WEIGHT_C_T* d_ct      = static_cast<const WEIGHT_C_T*>(ct.data_ptr());       \
     const int32_t*    d_indices = static_cast<const int32_t*>(indices.data_ptr());     \
-    const int32_t*    d_indptr  = static_cast<const int32_t*>(indptr.data_ptr());      \
     const int32_t*    d_rows    = static_cast<const int32_t*>(row_indices.data_ptr()); \
     WEIGHT_C_T*       d_ctdata  = static_cast<WEIGHT_C_T*>(ct_data.data_ptr());        \
-    if (avg_nnz < 8.0f) {                                                              \
-        int blocks = (num_selected + 255) / 256;                                       \
-        _slice_grad_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(                        \
-            d_ct, d_indices, d_indptr, d_rows, d_ctdata,                               \
-            m, n_cols, num_selected);                                                  \
-    } else {                                                                           \
-        _slice_grad_warp_kern##SUFFIX<<<num_selected, 32, 0, s>>>(                     \
-            d_ct, d_indices, d_indptr, d_rows, d_ctdata,                               \
-            m, n_cols, num_selected);                                                  \
-    }                                                                                  \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                                  \
+        const IndptrT* d_indptr = static_cast<const IndptrT*>(indptr.data_ptr());      \
+        if (avg_nnz < 8.0f) {                                                          \
+            int blocks = (num_selected + 255) / 256;                                   \
+            _slice_grad_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(                    \
+                d_ct, d_indices, d_indptr, d_rows, d_ctdata,                           \
+                m, n_cols, num_selected);                                              \
+        } else {                                                                       \
+            _slice_grad_warp_kern##SUFFIX<<<num_selected, 32, 0, s>>>(                 \
+                d_ct, d_indices, d_indptr, d_rows, d_ctdata,                           \
+                m, n_cols, num_selected);                                              \
+        }                                                                              \
+    });                                                                                \
 }
 
 // =========================================================================

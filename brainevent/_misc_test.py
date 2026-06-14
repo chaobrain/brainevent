@@ -115,6 +115,57 @@ def test_csc_to_csr_index_roundtrip():
     np.testing.assert_array_equal(np.asarray(perm)[np.asarray(perm2)], np.arange(len(perm)))
 
 
+class TestCsrToCscIndexMethods(unittest.TestCase):
+    def test_default_matches_explicit_coo(self):
+        from brainevent._misc import csr_to_csc_index
+        indptr = np.array([0, 2, 3, 5], dtype=np.int32)
+        indices = np.array([0, 2, 1, 0, 3], dtype=np.int32)
+        default = csr_to_csc_index(indptr, indices, shape=(3, 4))
+        explicit = csr_to_csc_index(indptr, indices, shape=(3, 4), method="coo")
+        for got, expected in zip(default, explicit):
+            np.testing.assert_array_equal(np.asarray(got), np.asarray(expected))
+
+    def test_numpy_matches_coo_reordered_data(self):
+        from brainevent._misc import csr_to_csc_index
+        indptr = np.array([0, 2, 3, 5], dtype=np.int32)
+        indices = np.array([0, 2, 1, 0, 3], dtype=np.int32)
+        data = np.array([10., 20., 30., 40., 50.])
+        coo_indptr, coo_rows, coo_perm = csr_to_csc_index(indptr, indices, shape=(3, 4), method="coo")
+        np_indptr, np_rows, np_perm = csr_to_csc_index(indptr, indices, shape=(3, 4), method="numpy")
+        np.testing.assert_array_equal(np.asarray(np_indptr), np.asarray(coo_indptr))
+        np.testing.assert_array_equal(np.asarray(np_rows), np.asarray(coo_rows))
+        np.testing.assert_array_equal(data[np.asarray(np_perm)], data[np.asarray(coo_perm)])
+
+    def test_include_perm_false(self):
+        from brainevent._misc import csr_to_csc_index, csc_to_csr_index
+        indptr = np.array([0, 2, 3, 5], dtype=np.int32)
+        indices = np.array([0, 2, 1, 0, 3], dtype=np.int32)
+        csc_indptr, csc_indices, perm = csr_to_csc_index(
+            indptr, indices, shape=(3, 4), method="numpy", include_perm=False
+        )
+        self.assertIsNone(perm)
+        _, _, back_perm = csc_to_csr_index(csc_indptr, csc_indices, shape=(3, 4), include_perm=False)
+        self.assertIsNone(back_perm)
+
+    def test_numpy_preserves_int64_indptr_and_int32_indices(self):
+        from brainevent._misc import csr_to_csc_index
+        indptr = np.array([0, 2, 3, 5], dtype=np.int64)
+        indices = np.array([0, 2, 1, 0, 3], dtype=np.int32)
+        csc_indptr, csc_indices, perm = csr_to_csc_index(
+            indptr, indices, shape=(3, 4), method="numpy"
+        )
+        self.assertEqual(np.asarray(csc_indptr).dtype, np.int64)
+        self.assertEqual(np.asarray(csc_indices).dtype, np.int32)
+        self.assertEqual(np.asarray(perm).dtype, np.int64)
+
+    def test_unknown_method_raises(self):
+        from brainevent._misc import csr_to_csc_index
+        indptr = np.array([0, 1], dtype=np.int32)
+        indices = np.array([0], dtype=np.int32)
+        with self.assertRaisesRegex(ValueError, "Unknown csr_to_csc_index method"):
+            csr_to_csc_index(indptr, indices, shape=(1, 1), method="bogus")
+
+
 class TestCsrToCooIndex(unittest.TestCase):
     def test_expands_indptr_into_row_ids(self):
         from brainevent._misc import csr_to_coo_index
