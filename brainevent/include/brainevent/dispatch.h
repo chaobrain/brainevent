@@ -152,6 +152,68 @@ struct complex128_t {
         }                                                                \
     }()
 
+/// Dispatch over signed index dtypes used by sparse structure arrays.
+#define BE_DISPATCH_SIGNED_INDEX(DTYPE, SCALAR_VAR, ...)                 \
+    [&] {                                                                \
+        switch (DTYPE) {                                                 \
+            case BE::DType::Int32: {                                     \
+                using SCALAR_VAR = int32_t;                              \
+                __VA_ARGS__                                              \
+                break;                                                   \
+            }                                                            \
+            case BE::DType::Int64: {                                     \
+                using SCALAR_VAR = int64_t;                              \
+                __VA_ARGS__                                              \
+                break;                                                   \
+            }                                                            \
+            default:                                                     \
+                fprintf(stderr,                                          \
+                    "[be] BE_DISPATCH_SIGNED_INDEX: unsupported dtype %s\n", \
+                    BE::dtype_name(DTYPE));                              \
+                abort();                                                 \
+        }                                                                \
+    }()
+
+#define BE_DISPATCH_SIGNED_INDEX_PAIR(INDEX_DTYPE, OFFSET_DTYPE, INDEX_VAR, OFFSET_VAR, ...) \
+    BE_DISPATCH_SIGNED_INDEX(INDEX_DTYPE, INDEX_VAR, {                  \
+        BE_DISPATCH_SIGNED_INDEX(OFFSET_DTYPE, OFFSET_VAR, {            \
+            __VA_ARGS__                                                  \
+        });                                                              \
+    })
+
+/// Dispatch over CSR row-pointer dtypes supported by raw CUDA kernels.
+/// CSR column indices stay int32; indptr may be int32 or int64.
+#define BE_DISPATCH_CSR_INDPTR(DTYPE, INDPTR_VAR, ...)                   \
+    [&] {                                                                \
+        switch (DTYPE) {                                                 \
+            case BE::DType::Int32: {                                     \
+                using INDPTR_VAR = int32_t;                              \
+                __VA_ARGS__                                              \
+                break;                                                   \
+            }                                                            \
+            case BE::DType::Int64: {                                     \
+                using INDPTR_VAR = int64_t;                              \
+                __VA_ARGS__                                              \
+                break;                                                   \
+            }                                                            \
+            default:                                                     \
+                fprintf(stderr,                                          \
+                    "[be] BE_DISPATCH_CSR_INDPTR: unsupported dtype %s\n", \
+                    BE::dtype_name(DTYPE));                              \
+                abort();                                                 \
+        }                                                                \
+    }()
+
+#define BE_CHECK_CSR_INDICES_INT32(TENSOR)                               \
+    do {                                                                 \
+        if ((TENSOR).dtype() != BE::DType::Int32) {                      \
+            fprintf(stderr,                                              \
+                "[be] CSR CUDA kernels require int32 indices, got %s\n", \
+                BE::dtype_name((TENSOR).dtype()));                       \
+            abort();                                                     \
+        }                                                                \
+    } while (0)
+
 /// Dispatch over complex dtypes.
 #define BE_DISPATCH_COMPLEX(DTYPE, SCALAR_VAR, ...)                     \
     [&] {                                                                \

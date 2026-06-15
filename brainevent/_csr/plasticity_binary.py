@@ -24,7 +24,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._misc import namescope, csc_to_csr_index
+from brainevent._misc import _check_csr_cuda_structure_dtypes, namescope, csc_to_csr_index
 from brainevent._op import XLACustomKernel, numba_kernel
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
@@ -316,15 +316,9 @@ def _csr_on_pre_cuda_kernel(
     thread-per-row, warp-per-row, and block-per-row sub-kernels at runtime
     based on avg_nnz = nse / n_pre.
 
-    Only int32 index arrays are supported.  Callers with int64 indices should
-    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    CUDA uses int32 column indices and accepts int32/int64 row pointers.
     """
-    if indices_info.dtype == jnp.int64:
-        raise TypeError(
-            "update_csr_on_binary_pre: the 'cuda_raw' backend only supports "
-            "int32 index arrays (indices / indptr).  "
-            "Use backend='pallas' or backend='jax' for int64 indices."
-        )
+    _check_csr_cuda_structure_dtypes(indices_info, kwargs['indptr_info'])
 
     load_cuda_file(
         Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
@@ -783,14 +777,13 @@ def _csr2csc_on_post_cuda_kernel(
     weight_indices is injective by CSC construction, no actual race conditions
     occur; atomicAdd provides a safety guarantee against malformed inputs.
 
-    Only int32 index arrays are supported.  Callers with int64 indices should
-    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    CUDA uses int32 column/weight indices and accepts int32/int64 row pointers.
     """
-    if indices_info.dtype == jnp.int64:
+    _check_csr_cuda_structure_dtypes(indices_info, kwargs['indptr_info'])
+    if jnp.dtype(kwargs['weight_indices_info'].dtype) != jnp.dtype(jnp.int32):
         raise TypeError(
-            "update_csr_on_binary_post: the 'cuda_raw' backend only supports "
-            "int32 index arrays (indices / indptr / weight_indices).  "
-            "Use backend='pallas' or backend='jax' for int64 indices."
+            "update_csr_on_binary_post cuda_raw requires weight_indices with dtype int32; "
+            f"got {jnp.dtype(kwargs['weight_indices_info'].dtype)}."
         )
 
     load_cuda_file(

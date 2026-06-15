@@ -56,13 +56,14 @@
 
 #define DEFINE_CSR_ON_PRE_THREAD(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                   READ_W, WRITE_W)                            \
+template <typename IndptrT> \
 __global__ void __launch_bounds__(256)                                        \
 _csr_on_pre_thread_kern##SUFFIX(                                              \
     WEIGHT_T*        __restrict__ out_w,                                      \
     const SPIKE_T*   __restrict__ spike,                                      \
     const WEIGHT_T*  __restrict__ trace,                                      \
     const int32_t*   __restrict__ indices,                                    \
-    const int32_t*   __restrict__ indptr,                                     \
+    const IndptrT*   __restrict__ indptr,                                     \
     int n_pre                                                                 \
 ) {                                                                           \
     int row = (int)(blockIdx.x * (uint32_t)blockDim.x) + threadIdx.x;         \
@@ -71,9 +72,9 @@ _csr_on_pre_thread_kern##SUFFIX(                                              \
     unsigned int ballot = __ballot_sync(0xFFFFFFFF, my_active);               \
     if (ballot == 0) return;                                                  \
     if (!my_active) return;                                                   \
-    int start = __ldg(&indptr[row]);                                          \
-    int end   = __ldg(&indptr[row + 1]);                                      \
-    int pos = start;                                                          \
+    IndptrT start = __ldg(&indptr[row]);                                          \
+    IndptrT end   = __ldg(&indptr[row + 1]);                                      \
+    IndptrT pos = start;                                                          \
     if (pos + 4 <= end) {                                                     \
         int col0 = __ldg(&indices[pos]);                                      \
         int col1 = __ldg(&indices[pos + 1]);                                  \
@@ -118,13 +119,14 @@ _csr_on_pre_thread_kern##SUFFIX(                                              \
 
 #define DEFINE_CSR_ON_PRE_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                 READ_W, WRITE_W)                            \
+template <typename IndptrT> \
 __global__ void __launch_bounds__(256)                                      \
 _csr_on_pre_warp_kern##SUFFIX(                                              \
     WEIGHT_T*        __restrict__ out_w,                                    \
     const SPIKE_T*   __restrict__ spike,                                    \
     const WEIGHT_T*  __restrict__ trace,                                    \
     const int32_t*   __restrict__ indices,                                  \
-    const int32_t*   __restrict__ indptr,                                   \
+    const IndptrT*   __restrict__ indptr,                                   \
     int n_pre                                                               \
 ) {                                                                         \
     int warp_id = (int)(blockIdx.x * (blockDim.x / 32u))                    \
@@ -134,9 +136,9 @@ _csr_on_pre_warp_kern##SUFFIX(                                              \
     bool active = IS_ACTIVE(__ldg(&spike[warp_id]));                        \
     if (__ballot_sync(0xFFFFFFFF, active) == 0) return;                     \
     if (!active) return;                                                    \
-    int start = __ldg(&indptr[warp_id]);                                    \
-    int end   = __ldg(&indptr[warp_id + 1]);                                \
-    int pos = start + lane;                                                 \
+    IndptrT start = __ldg(&indptr[warp_id]);                                    \
+    IndptrT end   = __ldg(&indptr[warp_id + 1]);                                \
+    IndptrT pos = start + lane;                                                 \
     for (; pos + 128 <= end; pos += 128) {                                  \
         int col0 = __ldg(&indices[pos]);                                    \
         int col1 = __ldg(&indices[pos + 32]);                               \
@@ -160,22 +162,23 @@ _csr_on_pre_warp_kern##SUFFIX(                                              \
 
 #define DEFINE_CSR_ON_PRE_BLOCK(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                  READ_W, WRITE_W)                            \
+template <typename IndptrT> \
 __global__ void __launch_bounds__(256)                                       \
 _csr_on_pre_block_kern##SUFFIX(                                              \
     WEIGHT_T*        __restrict__ out_w,                                     \
     const SPIKE_T*   __restrict__ spike,                                     \
     const WEIGHT_T*  __restrict__ trace,                                     \
-    const int32_t*   __restrict__ indptr,                                    \
+    const IndptrT*   __restrict__ indptr,                                    \
     const int32_t*   __restrict__ indices,                                   \
     int n_pre                                                                \
 ) {                                                                          \
     int row = (int)blockIdx.x;                                               \
     if (row >= n_pre) return;                                                \
     if (!IS_ACTIVE(__ldg(&spike[row]))) return;                              \
-    int start = __ldg(&indptr[row]);                                         \
-    int end   = __ldg(&indptr[row + 1]);                                     \
+    IndptrT start = __ldg(&indptr[row]);                                         \
+    IndptrT end   = __ldg(&indptr[row + 1]);                                     \
     int tid   = (int)threadIdx.x;                                            \
-    int pos = start + tid;                                                   \
+    IndptrT pos = start + tid;                                                   \
     for (; pos + 1024 <= end; pos += 1024) {                                 \
         int col0 = __ldg(&indices[pos]);                                     \
         int col1 = __ldg(&indices[pos + 256]);                               \
@@ -237,6 +240,7 @@ void update_csr_on_pre##SUFFIX(                               \
     BE::Tensor out_weight,                              \
     int64_t stream                                            \
 ) {                                                           \
+    BE_CHECK_CSR_INDICES_INT32(indices);                      \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);  \
     int nse   = static_cast<int>(out_weight.size(0));         \
     int n_pre = static_cast<int>(indptr.size(0)) - 1;         \
@@ -249,21 +253,23 @@ void update_csr_on_pre##SUFFIX(                               \
                                   trace.data_ptr());          \
     const int32_t*    d_idx = static_cast<const int32_t*>(    \
                                   indices.data_ptr());        \
-    const int32_t*    d_ipt = static_cast<const int32_t*>(    \
-                                  indptr.data_ptr());         \
     int avg_nnz = nse / n_pre;                                \
-    if (avg_nnz < 32) {                                       \
-        int grid = (n_pre + 255) / 256;                       \
-        _csr_on_pre_thread_kern##SUFFIX<<<grid, 256, 0, s>>>( \
-            d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);           \
-    } else if (avg_nnz < 256) {                               \
-        int grid = (n_pre + 7) / 8;                           \
-        _csr_on_pre_warp_kern##SUFFIX<<<grid, 256, 0, s>>>(   \
-            d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);           \
-    } else {                                                  \
-        _csr_on_pre_block_kern##SUFFIX<<<n_pre, 256, 0, s>>>( \
-            d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);           \
-    }                                                         \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {         \
+        const IndptrT* d_ipt = static_cast<const IndptrT*>(   \
+                                      indptr.data_ptr());     \
+        if (avg_nnz < 32) {                                   \
+            int grid = (n_pre + 255) / 256;                   \
+            _csr_on_pre_thread_kern##SUFFIX<<<grid, 256, 0, s>>>( \
+                d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);       \
+        } else if (avg_nnz < 256) {                           \
+            int grid = (n_pre + 7) / 8;                       \
+            _csr_on_pre_warp_kern##SUFFIX<<<grid, 256, 0, s>>>( \
+                d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);       \
+        } else {                                              \
+            _csr_on_pre_block_kern##SUFFIX<<<n_pre, 256, 0, s>>>( \
+                d_w, d_spk, d_tr, d_ipt, d_idx, n_pre);       \
+        }                                                     \
+    });                                                       \
 }
 
 // @BE update_csr_on_pre_f32_bool

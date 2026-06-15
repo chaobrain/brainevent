@@ -22,7 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import namescope
+from brainevent._misc import _check_csr_cuda_structure_dtypes, namescope
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
@@ -180,6 +180,7 @@ def _csr_slice_rows_benchmark_data(*, platform):
 def _csr_slice_rows_cuda_kernel_generator(
     **kwargs,
 ):
+    _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
     load_cuda_file(
         Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
         name='csr_slice_rows',
@@ -393,6 +394,7 @@ def _csr_slice_rows_grad_benchmark_data(*, platform):
 def _csr_slice_rows_grad_cuda_kernel_generator(
     **kwargs,
 ):
+    _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
     load_cuda_file(
         Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
         name='csr_slice_rows',

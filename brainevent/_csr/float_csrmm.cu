@@ -67,10 +67,11 @@
 
 #define DEFINE_CSRMM_NT_WARP_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, \
                                    ACC_ZERO)                                \
+template <typename IndptrT> \
 __global__ void _csrmm_nt_warp_homo_kern##SUFFIX(                           \
     const WEIGHT_T* __restrict__ weights,                                   \
     const int32_t*  __restrict__ indices,                                   \
-    const int32_t*  __restrict__ indptr,                                    \
+    const IndptrT*  __restrict__ indptr,                                    \
     const WEIGHT_T* __restrict__ B,                                         \
     WEIGHT_T*       __restrict__ C,                                         \
     int m, int n                                                            \
@@ -79,10 +80,10 @@ __global__ void _csrmm_nt_warp_homo_kern##SUFFIX(                           \
     int col_start = blockIdx.y * 32;                                        \
     int c         = col_start + (int)threadIdx.x;                           \
     if (row >= m || c >= n) return;                                         \
-    int start = indptr[row], end = indptr[row + 1];                         \
+    IndptrT start = indptr[row], end = indptr[row + 1];                         \
     ACC_T w   = READ_W(weights[0]);                                         \
     ACC_T acc = ACC_ZERO;                                                   \
-    for (int j = start; j < end; j++) {                                     \
+    for (IndptrT j = start; j < end; j++) {                                     \
         acc += w * READ_W(B[indices[j] * n + c]);                           \
     }                                                                       \
     C[row * n + c] = WRITE_W(acc);                                          \
@@ -90,10 +91,11 @@ __global__ void _csrmm_nt_warp_homo_kern##SUFFIX(                           \
 
 #define DEFINE_CSRMM_NT_BLOCK_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, \
                                     ACC_ZERO)                                \
+template <typename IndptrT> \
 __global__ void _csrmm_nt_block_homo_kern##SUFFIX(                           \
     const WEIGHT_T* __restrict__ weights,                                    \
     const int32_t*  __restrict__ indices,                                    \
-    const int32_t*  __restrict__ indptr,                                     \
+    const IndptrT*  __restrict__ indptr,                                     \
     const WEIGHT_T* __restrict__ B,                                          \
     WEIGHT_T*       __restrict__ C,                                          \
     int m, int n                                                             \
@@ -106,11 +108,11 @@ __global__ void _csrmm_nt_block_homo_kern##SUFFIX(                           \
     int strip     = threadIdx.x >> 5;                                        \
     int c         = col_start + lane;                                        \
     if (row >= m) return;                                                    \
-    int start = indptr[row], end = indptr[row + 1];                          \
+    IndptrT start = indptr[row], end = indptr[row + 1];                          \
     ACC_T w   = READ_W(weights[0]);                                          \
     ACC_T acc = ACC_ZERO;                                                    \
     if (c < n) {                                                             \
-        for (int j = start + strip; j < end; j += 8) {                       \
+        for (IndptrT j = start + strip; j < end; j += 8) {                       \
             acc += w * READ_W(B[indices[j] * n + c]);                        \
         }                                                                    \
     }                                                                        \
@@ -125,10 +127,11 @@ __global__ void _csrmm_nt_block_homo_kern##SUFFIX(                           \
 
 #define DEFINE_CSRMM_T_WARP_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, \
                                   ATOMIC_ADD_W, ACC_ZERO)                  \
+template <typename IndptrT> \
 __global__ void _csrmm_t_warp_homo_kern##SUFFIX(                           \
     const WEIGHT_T* __restrict__ weights,                                  \
     const int32_t*  __restrict__ indices,                                  \
-    const int32_t*  __restrict__ indptr,                                   \
+    const IndptrT*  __restrict__ indptr,                                   \
     const WEIGHT_T* __restrict__ B,                                        \
     WEIGHT_T*       __restrict__ C,                                        \
     int m, int n                                                           \
@@ -140,8 +143,8 @@ __global__ void _csrmm_t_warp_homo_kern##SUFFIX(                           \
     ACC_T b_val   = READ_W(B[row * n + c]);                                \
     ACC_T w       = READ_W(weights[0]);                                    \
     ACC_T contrib = w * b_val;                                             \
-    int start = indptr[row], end = indptr[row + 1];                        \
-    for (int j = start; j < end; j++) {                                    \
+    IndptrT start = indptr[row], end = indptr[row + 1];                        \
+    for (IndptrT j = start; j < end; j++) {                                    \
         ATOMIC_ADD_W(&C[indices[j] * n + c], contrib);                     \
     }                                                                      \
 }
@@ -188,18 +191,21 @@ void csrmm_nt_warp_homo##SUFFIX(                              \
     const BE::Tensor indptr,  const BE::Tensor B,             \
     BE::Tensor C,       int64_t stream                  \
 ) {                                                           \
+    BE_CHECK_CSR_INDICES_INT32(indices);                      \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream); \
     int m           = static_cast<int>(indptr.size(0)) - 1;   \
     int n           = static_cast<int>(B.size(1));            \
     int c_blocks    = (n + 31) / 32;                          \
     dim3 grid(m, c_blocks);                                   \
-    _csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(     \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),   \
-        static_cast<const int32_t*>(indices.data_ptr()),      \
-        static_cast<const int32_t*>(indptr.data_ptr()),       \
-        static_cast<const WEIGHT_C_T*>(B.data_ptr()),         \
-        static_cast<WEIGHT_C_T*>(C.data_ptr()),               \
-        m, n);                                                \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {         \
+        _csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>( \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()), \
+            static_cast<const int32_t*>(indices.data_ptr()),  \
+            static_cast<const IndptrT*>(indptr.data_ptr()),   \
+            static_cast<const WEIGHT_C_T*>(B.data_ptr()),     \
+            static_cast<WEIGHT_C_T*>(C.data_ptr()),           \
+            m, n);                                            \
+    });                                                       \
 }
 
 #define FFI_CSRMM_NT_BLOCK_HOMO(SUFFIX, WEIGHT_C_T, SHM_SIZE)      \
@@ -208,18 +214,21 @@ void csrmm_nt_block_homo##SUFFIX(                                  \
     const BE::Tensor indptr,  const BE::Tensor B,                  \
     BE::Tensor C,       int64_t stream                       \
 ) {                                                                \
+    BE_CHECK_CSR_INDICES_INT32(indices);                           \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);      \
     int m           = static_cast<int>(indptr.size(0)) - 1;        \
     int n           = static_cast<int>(B.size(1));                 \
     int c_blocks    = (n + 31) / 32;                               \
     dim3 grid(m, c_blocks);                                        \
-    _csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),        \
-        static_cast<const int32_t*>(indices.data_ptr()),           \
-        static_cast<const int32_t*>(indptr.data_ptr()),            \
-        static_cast<const WEIGHT_C_T*>(B.data_ptr()),              \
-        static_cast<WEIGHT_C_T*>(C.data_ptr()),                    \
-        m, n);                                                     \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {              \
+        _csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),    \
+            static_cast<const int32_t*>(indices.data_ptr()),       \
+            static_cast<const IndptrT*>(indptr.data_ptr()),        \
+            static_cast<const WEIGHT_C_T*>(B.data_ptr()),          \
+            static_cast<WEIGHT_C_T*>(C.data_ptr()),                \
+            m, n);                                                 \
+    });                                                            \
 }
 
 #define FFI_CSRMM_NT_AUTO_HOMO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                    \
@@ -228,6 +237,7 @@ void csrmm_nt_auto_homo##SUFFIX(                                                
     const BE::Tensor indptr,  const BE::Tensor B,                               \
     BE::Tensor C,       int64_t stream                                    \
 ) {                                                                             \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                        \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                   \
     int m           = static_cast<int>(indptr.size(0)) - 1;                     \
     int nse         = static_cast<int>(indices.size(0));                        \
@@ -237,16 +247,18 @@ void csrmm_nt_auto_homo##SUFFIX(                                                
     dim3 grid(m, c_blocks);                                                     \
     const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
     const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr());    \
-    const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());     \
     const WEIGHT_C_T* d_b = static_cast<const WEIGHT_C_T*>(B.data_ptr());       \
     WEIGHT_C_T*       d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
-    if (avg_nnz <= 64) {                                                        \
-        _csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(                   \
-            d_w, d_i, d_p, d_b, d_c, m, n);                                     \
-    } else {                                                                    \
-        _csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(          \
-            d_w, d_i, d_p, d_b, d_c, m, n);                                     \
-    }                                                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                           \
+        const IndptrT* d_p = static_cast<const IndptrT*>(indptr.data_ptr());    \
+        if (avg_nnz <= 64) {                                                    \
+            _csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(               \
+                d_w, d_i, d_p, d_b, d_c, m, n);                                 \
+        } else {                                                                \
+            _csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(      \
+                d_w, d_i, d_p, d_b, d_c, m, n);                                 \
+        }                                                                       \
+    });                                                                         \
 }
 
 #define FFI_CSRMM_T_WARP_HOMO(SUFFIX, WEIGHT_C_T)                           \
@@ -255,6 +267,7 @@ void csrmm_t_warp_homo##SUFFIX(                                             \
     const BE::Tensor indptr,  const BE::Tensor B,                           \
     BE::Tensor C,       int64_t stream                                \
 ) {                                                                         \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);               \
     int m           = static_cast<int>(indptr.size(0)) - 1;                 \
     int n           = static_cast<int>(B.size(1));                          \
@@ -263,12 +276,14 @@ void csrmm_t_warp_homo##SUFFIX(                                             \
     cudaMemsetAsync(d_c, 0, (size_t)k * (size_t)n * sizeof(WEIGHT_C_T), s); \
     int c_blocks    = (n + 31) / 32;                                        \
     dim3 grid(m, c_blocks);                                                 \
-    _csrmm_t_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(                    \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                 \
-        static_cast<const int32_t*>(indices.data_ptr()),                    \
-        static_cast<const int32_t*>(indptr.data_ptr()),                     \
-        static_cast<const WEIGHT_C_T*>(B.data_ptr()),                       \
-        d_c, m, n);                                                         \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                       \
+        _csrmm_t_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(                \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),             \
+            static_cast<const int32_t*>(indices.data_ptr()),                \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
+            static_cast<const WEIGHT_C_T*>(B.data_ptr()),                   \
+            d_c, m, n);                                                     \
+    });                                                                     \
 }
 
 // =========================================================================

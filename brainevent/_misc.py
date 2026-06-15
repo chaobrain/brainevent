@@ -29,6 +29,23 @@ from ._compatible_import import Tracer
 
 # -*- coding: utf-8 -*-
 
+_INT32_MAX = np.iinfo(np.int32).max
+
+
+def _normalize_dtype(dtype):
+    return np.dtype(dtype)
+
+
+def _coordinate_index_dtype(dtype):
+    dtype = _normalize_dtype(dtype)
+    return np.int64 if dtype == np.dtype(np.int64) else np.int32
+
+
+def _offset_index_dtype(nse: int, preferred=None):
+    if preferred is not None and _normalize_dtype(preferred) == np.dtype(np.int64):
+        return np.int64
+    return np.int64 if int(nse) > _INT32_MAX else np.int32
+
 
 def is_known_type(x):
     """Check whether an object is a recognized array or event type.
@@ -179,6 +196,43 @@ def _csr_to_coo(
         Column indices in COO format (identical to *indices*).
     """
     return jnp.cumsum(jnp.zeros_like(indices).at[indptr].add(1)) - 1, indices
+
+
+_CSR_SIGNED_INDEX_DTYPES = (jnp.dtype(jnp.int32), jnp.dtype(jnp.int64))
+
+
+def _check_csr_structure_dtypes(indices, indptr) -> None:
+    """Validate public CSR structure dtypes.
+
+    CSR kernels support signed int32/int64 structure arrays.  Mixed precision is
+    allowed only as ``indices=int32, indptr=int64`` so CUDA kernels can keep
+    column indices compact while row offsets grow past int32.
+    """
+    indices_dtype = jnp.dtype(indices.dtype)
+    indptr_dtype = jnp.dtype(indptr.dtype)
+    assert indices_dtype in _CSR_SIGNED_INDEX_DTYPES, "Indices must be signed int32 or int64."
+    assert indptr_dtype in _CSR_SIGNED_INDEX_DTYPES, "Indptr must be signed int32 or int64."
+    same_dtype = indices_dtype == indptr_dtype
+    mixed_cuda_dtype = indices_dtype == jnp.dtype(jnp.int32) and indptr_dtype == jnp.dtype(jnp.int64)
+    assert same_dtype or mixed_cuda_dtype, (
+        "Indices and indptr must have the same dtype, or use indices=int32 with indptr=int64."
+    )
+
+
+def _check_csr_cuda_structure_dtypes(indices_info, indptr_info) -> None:
+    """Validate the raw CUDA CSR ABI: int32 indices and int32/int64 indptr."""
+    indices_dtype = jnp.dtype(indices_info.dtype)
+    indptr_dtype = jnp.dtype(indptr_info.dtype)
+    if indices_dtype != jnp.dtype(jnp.int32):
+        raise TypeError(
+            "CSR cuda_raw kernels require indices with dtype int32; "
+            f"got indices dtype {indices_dtype}."
+        )
+    if indptr_dtype not in _CSR_SIGNED_INDEX_DTYPES:
+        raise TypeError(
+            "CSR cuda_raw kernels require indptr with dtype int32 or int64; "
+            f"got indptr dtype {indptr_dtype}."
+        )
 
 
 def _csr_todense(
@@ -1301,18 +1355,219 @@ def fixed_conn_num_to_csc(
     return weights.reshape(-1)[perm], csc_indices, csc_indptr
 
 
+def _csr_to_csc_index_via_coo(
+    csr_indptr: Union[jax.Array, np.ndarray],
+    csr_indices: Union[jax.Array, np.ndarray],
+    *,
+    shape: Tuple[int, int],
+    include_perm: bool = True,
+):
+    """Convert CSR indices to CSC indices through the legacy COO path."""
+    pre_ids, post_ids = csr_to_coo_index(csr_indptr, csr_indices)
+    csc_indptr, csc_indices, post_positions = coo_to_csc_index(pre_ids, post_ids, shape=shape)
+    if not include_perm:
+        post_positions = None
+    return csc_indptr, csc_indices, post_positions
+
+
+def _csr_to_csc_index_numpy(
+    csr_indptr: Union[jax.Array, np.ndarray],
+    csr_indices: Union[jax.Array, np.ndarray],
+    *,
+    shape: Tuple[int, int],
+    include_perm: bool = True,
+):
+    """Convert CSR indices to CSC on CPU with NumPy, then restore array type."""
+    n_post = shape[1]
+    coord_dtype = _coordinate_index_dtype(getattr(csr_indices, 'dtype', np.int32))
+    nse = getattr(csr_indices, 'size', None)
+    if nse is None:
+        nse = len(csr_indices)
+    offset_dtype = _offset_index_dtype(nse, getattr(csr_indptr, 'dtype', None))
+
+    csr_indptr_np = np.asarray(csr_indptr)
+    csr_indices_np = np.asarray(csr_indices)
+
+    counts = np.bincount(csr_indices_np, minlength=n_post).astype(offset_dtype, copy=False)
+    csc_indptr_np = np.empty(n_post + 1, dtype=offset_dtype)
+    csc_indptr_np[0] = 0
+    np.cumsum(counts, dtype=offset_dtype, out=csc_indptr_np[1:])
+
+    order_np = np.argsort(csr_indices_np, kind='stable')
+    order_np = np.asarray(order_np, dtype=offset_dtype)
+    csc_indices_np = np.searchsorted(csr_indptr_np, order_np, side='right') - 1
+    csc_indices_np = np.asarray(csc_indices_np, dtype=coord_dtype)
+    perm_np = order_np if include_perm else None
+
+    if isinstance(csr_indptr, np.ndarray) and isinstance(csr_indices, np.ndarray):
+        return csc_indptr_np, csc_indices_np, perm_np
+
+    old_x64 = jax.config.jax_enable_x64
+    needs_x64 = _normalize_dtype(offset_dtype) == np.dtype(np.int64)
+    if needs_x64 and not old_x64:
+        jax.config.update('jax_enable_x64', True)
+    try:
+        csc_indptr = jnp.asarray(csc_indptr_np)
+        csc_indices = jnp.asarray(csc_indices_np)
+        perm = None if perm_np is None else jnp.asarray(perm_np)
+        return csc_indptr, csc_indices, perm
+    finally:
+        if needs_x64 and not old_x64:
+            jax.config.update('jax_enable_x64', False)
+
+
+_CSR_TO_CSC_CUDA_MODULE = None
+
+
+def _load_csr_to_csc_cuda_module():
+    global _CSR_TO_CSC_CUDA_MODULE
+    if _CSR_TO_CSC_CUDA_MODULE is None:
+        from pathlib import Path
+
+        from ._op import load_cuda_file
+
+        _CSR_TO_CSC_CUDA_MODULE = load_cuda_file(
+            Path(__file__).resolve().parent / "_csr" / "csr_to_csc.cu",
+            name="csr_to_csc",
+        )
+    return _CSR_TO_CSC_CUDA_MODULE
+
+
+def _csr_to_csc_index_gpu_column_block(
+    csr_indptr: Union[jax.Array, np.ndarray],
+    csr_indices: Union[jax.Array, np.ndarray],
+    *,
+    shape: Tuple[int, int],
+    include_perm: bool = True,
+    column_block_size: int = 4096,
+):
+    """Convert CSR indices to CSC using CUDA column blocks and CPU stitching."""
+    n_post = shape[1]
+    try:
+        column_block_size = int(column_block_size)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("column_block_size must be a positive integer") from exc
+    if column_block_size <= 0:
+        raise ValueError("column_block_size must be a positive integer")
+
+    coord_dtype = _coordinate_index_dtype(getattr(csr_indices, 'dtype', np.int32))
+    nse = getattr(csr_indices, 'size', None)
+    if nse is None:
+        nse = len(csr_indices)
+    nse = int(nse)
+    offset_dtype = _offset_index_dtype(nse, getattr(csr_indptr, 'dtype', None))
+
+    old_x64 = jax.config.jax_enable_x64
+    needs_x64 = (
+        _normalize_dtype(offset_dtype) == np.dtype(np.int64) or
+        _normalize_dtype(coord_dtype) == np.dtype(np.int64)
+    )
+    if needs_x64 and not old_x64:
+        jax.config.update('jax_enable_x64', True)
+
+    try:
+        try:
+            gpu_device = jax.devices("gpu")[0]
+            _load_csr_to_csc_cuda_module()
+        except Exception:
+            return _csr_to_csc_index_numpy(
+                csr_indptr,
+                csr_indices,
+                shape=shape,
+                include_perm=include_perm,
+            )
+
+        csr_indices_dev = jax.device_put(
+            jnp.asarray(csr_indices, dtype=coord_dtype),
+            gpu_device,
+        )
+        csr_indptr_dev = jax.device_put(
+            jnp.asarray(csr_indptr, dtype=offset_dtype),
+            gpu_device,
+        )
+
+        counts_dev = jax.ffi.ffi_call(
+            "csr_to_csc.csr_to_csc_count",
+            jax.ShapeDtypeStruct((n_post,), offset_dtype),
+        )(csr_indices_dev, csr_indptr_dev)
+        counts_np = np.asarray(counts_dev, dtype=offset_dtype)
+
+        csc_indptr_np = np.empty(n_post + 1, dtype=offset_dtype)
+        csc_indptr_np[0] = 0
+        np.cumsum(counts_np, dtype=offset_dtype, out=csc_indptr_np[1:])
+
+        if int(csc_indptr_np[-1]) != nse:
+            raise RuntimeError(
+                "CUDA CSR-to-CSC count produced an unexpected nnz total: "
+                f"{int(csc_indptr_np[-1])} != {nse}"
+            )
+
+        csc_indices_np = np.empty(nse, dtype=coord_dtype)
+        perm_np = np.empty(nse, dtype=offset_dtype) if include_perm else None
+
+        for col_start in range(0, n_post, column_block_size):
+            col_end = min(col_start + column_block_size, n_post)
+            base = int(csc_indptr_np[col_start])
+            end = int(csc_indptr_np[col_end])
+            block_nnz = end - base
+            block_ncols = col_end - col_start
+
+            if block_nnz == 0:
+                continue
+
+            local_indptr_np = (
+                csc_indptr_np[col_start:col_end + 1] -
+                csc_indptr_np[col_start]
+            ).astype(offset_dtype, copy=False)
+            initial_pos_dev = jax.device_put(
+                jnp.asarray(local_indptr_np[:-1], dtype=offset_dtype),
+                gpu_device,
+            )
+
+            scratch_info = jax.ShapeDtypeStruct((block_ncols,), offset_dtype)
+            rows_info = jax.ShapeDtypeStruct((block_nnz,), coord_dtype)
+            perm_info = jax.ShapeDtypeStruct((block_nnz,), offset_dtype)
+            _, local_rows_dev, local_perm_dev = jax.ffi.ffi_call(
+                "csr_to_csc.csr_to_csc_fill_block",
+                (scratch_info, rows_info, perm_info),
+            )(
+                csr_indices_dev,
+                csr_indptr_dev,
+                initial_pos_dev,
+                col_start=np.int64(col_start),
+                col_end=np.int64(col_end),
+            )
+
+            csc_indices_np[base:end] = np.asarray(local_rows_dev, dtype=coord_dtype)
+            if perm_np is not None:
+                perm_np[base:end] = np.asarray(local_perm_dev, dtype=offset_dtype)
+
+        if isinstance(csr_indptr, np.ndarray) and isinstance(csr_indices, np.ndarray):
+            return csc_indptr_np, csc_indices_np, perm_np
+
+        csc_indptr = jax.device_put(csc_indptr_np, gpu_device)
+        csc_indices = jax.device_put(csc_indices_np, gpu_device)
+        perm = None if perm_np is None else jax.device_put(perm_np, gpu_device)
+        return csc_indptr, csc_indices, perm
+    finally:
+        if needs_x64 and not old_x64:
+            jax.config.update('jax_enable_x64', False)
+
+
 def csr_to_csc_index(
     csr_indptr: Union[jax.Array, np.ndarray],
     csr_indices: Union[jax.Array, np.ndarray],
     *,
     shape: Tuple[int, int],
+    include_perm: bool = True,
+    method: str = "coo",
+    column_block_size: int = 4096,
 ):
     """Convert CSR format index arrays to CSC format.
 
     Transforms the sparse matrix representation from Compressed Sparse Row
-    (CSR) format to Compressed Sparse Column (CSC) format. Internally
-    converts to COO format as an intermediate step via :func:`csr_to_coo_index`,
-    then to CSC via :func:`coo_to_csc_index`.
+    (CSR) format to Compressed Sparse Column (CSC) format. The default
+    ``method="coo"`` preserves the legacy CSR -> COO -> CSC behavior.
 
     Parameters
     ----------
@@ -1325,6 +1580,18 @@ def csr_to_csc_index(
     shape : tuple of int
         A ``(n_rows, n_cols)`` tuple specifying the dimensions of the
         sparse matrix. Keyword-only argument.
+    include_perm : bool, optional
+        If ``True`` (default), return the permutation that maps CSC slots back
+        to CSR data positions. If ``False``, return ``None`` for the third
+        result while still constructing the CSC structure.
+    method : {"coo", "numpy", "gpu_column_block"}, optional
+        Conversion algorithm. ``"coo"`` expands CSR to COO first and then
+        converts COO to CSC; ``"numpy"`` computes the structure on CPU with
+        NumPy; ``"gpu_column_block"`` builds consecutive CSC column blocks
+        with CUDA kernels and falls back to ``"numpy"`` when CUDA is not
+        available.
+    column_block_size : int, optional
+        Number of CSC columns per CUDA block for ``method="gpu_column_block"``.
 
     Returns
     -------
@@ -1350,11 +1617,10 @@ def csr_to_csc_index(
 
     Notes
     -----
-    The conversion is performed in two steps: CSR is first expanded to
-    COO via :func:`csr_to_coo_index`, then the COO representation is
-    sorted by column via :func:`coo_to_csc_index`.  The returned
-    ``post_positions`` permutation array can be used to reorder a CSR
-    data array into CSC order.
+    The returned ``post_positions`` permutation array can be used to reorder a
+    CSR data array into CSC order. The ``"coo"`` method preserves the public
+    int32 index-helper contract, while ``"numpy"`` and ``"gpu_column_block"``
+    may return int64 offset arrays when the input row pointer requires them.
 
     Examples
     --------
@@ -1371,8 +1637,33 @@ def csr_to_csc_index(
     assert isinstance(shape, (tuple, list)), "Shape must be a tuple or list"
     assert len(shape) == 2, "Shape must have exactly two dimensions (rows, columns)"
     assert shape[0] > 0 and shape[1] > 0, "Shape dimensions must be positive integers"
-    pre_ids, post_ids = csr_to_coo_index(csr_indptr, csr_indices)
-    csc_indptr, csc_indices, post_positions = coo_to_csc_index(pre_ids, post_ids, shape=shape)
+    if method == "coo":
+        csc_indptr, csc_indices, post_positions = _csr_to_csc_index_via_coo(
+            csr_indptr,
+            csr_indices,
+            shape=shape,
+            include_perm=include_perm,
+        )
+    elif method == "numpy":
+        csc_indptr, csc_indices, post_positions = _csr_to_csc_index_numpy(
+            csr_indptr,
+            csr_indices,
+            shape=shape,
+            include_perm=include_perm,
+        )
+    elif method == "gpu_column_block":
+        csc_indptr, csc_indices, post_positions = _csr_to_csc_index_gpu_column_block(
+            csr_indptr,
+            csr_indices,
+            shape=shape,
+            include_perm=include_perm,
+            column_block_size=column_block_size,
+        )
+    else:
+        raise ValueError(
+            f"Unknown csr_to_csc_index method {method!r}; "
+            f"expected 'coo', 'numpy', or 'gpu_column_block'."
+        )
     return csc_indptr, csc_indices, post_positions
 
 
@@ -1381,6 +1672,7 @@ def csc_to_csr_index(
     csc_indices: Union[jax.Array, np.ndarray],
     *,
     shape: Tuple[int, int],
+    include_perm: bool = True,
 ):
     """Convert CSC format index arrays to CSR format.
 
@@ -1401,6 +1693,10 @@ def csc_to_csr_index(
     shape : tuple of int
         A ``(n_rows, n_cols)`` tuple giving the dimensions of the matrix the
         CSC arrays describe.  Keyword-only argument.
+    include_perm : bool, optional
+        If ``True`` (default), return the permutation that maps CSR slots back
+        to CSC data positions. If ``False``, return ``None`` for the third
+        result while still constructing the CSR structure.
 
     Returns
     -------
@@ -1445,7 +1741,12 @@ def csc_to_csr_index(
     assert isinstance(shape, (tuple, list)), "Shape must be a tuple or list"
     assert len(shape) == 2, "Shape must have exactly two dimensions (rows, columns)"
     assert shape[0] > 0 and shape[1] > 0, "Shape dimensions must be positive integers"
-    csr_indptr, csr_indices, perm = csr_to_csc_index(csc_indptr, csc_indices, shape=(shape[1], shape[0]))
+    csr_indptr, csr_indices, perm = csr_to_csc_index(
+        csc_indptr,
+        csc_indices,
+        shape=(shape[1], shape[0]),
+        include_perm=include_perm,
+    )
     return csr_indptr, csr_indices, perm
 
 

@@ -17,6 +17,8 @@ import os
 
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
+from contextlib import contextmanager
+
 import brainstate
 import braintools
 import jax
@@ -29,6 +31,16 @@ from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vecto
 platform = jax.default_backend()
 CSRMV_IMPLEMENTATIONS = tuple(csrmv_p.available_backends(platform))
 CSRMM_IMPLEMENTATIONS = tuple(csrmm_p.available_backends(platform))
+
+
+@contextmanager
+def _jax_x64_enabled():
+    old_x64 = jax.config.jax_enable_x64
+    jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", old_x64)
 
 
 def _make_data(homo_w, shape):
@@ -89,6 +101,52 @@ def _row_ids_from_indptr(indptr):
     indptr = jnp.asarray(indptr)
     counts = jnp.diff(indptr)
     return jnp.repeat(jnp.arange(counts.shape[0], dtype=indptr.dtype), counts)
+
+
+def test_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
+    with _jax_x64_enabled():
+        weights = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32)
+        indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        vector = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+
+        got = csrmv(weights, indices, indptr, vector, shape=(2, 3), backend='jax_raw')
+
+        assert jnp.allclose(got, jnp.array([7.0, 18.0], dtype=jnp.float32))
+
+
+def test_csrmv_rejects_int64_indices_with_int32_indptr():
+    with _jax_x64_enabled():
+        weights = jnp.ones(2, dtype=jnp.float32)
+        indices = jnp.array([0, 1], dtype=jnp.int64)
+        indptr = jnp.array([0, 2], dtype=jnp.int32)
+        vector = jnp.ones(2, dtype=jnp.float32)
+
+        with pytest.raises(AssertionError, match="same dtype"):
+            csrmv(weights, indices, indptr, vector, shape=(1, 2), backend='jax_raw')
+
+
+def test_csrmm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
+    with _jax_x64_enabled():
+        weights = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32)
+        indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        matrix = jnp.array([[1.0, 0.5], [2.0, 1.5], [3.0, 2.5]], dtype=jnp.float32)
+
+        got = csrmm(weights, indices, indptr, matrix, shape=(2, 3), backend='jax_raw')
+        expected = jnp.array([[7.0, 5.5], [18.0, 14.5]], dtype=jnp.float32)
+
+        assert jnp.allclose(got, expected)
+
+
+def test_csrmm_rejects_unsigned_structure_dtype():
+    weights = jnp.ones(2, dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.uint32)
+    indptr = jnp.array([0, 2], dtype=jnp.uint32)
+    matrix = jnp.ones((2, 1), dtype=jnp.float32)
+
+    with pytest.raises(AssertionError, match="signed int32 or int64"):
+        csrmm(weights, indices, indptr, matrix, shape=(1, 2), backend='jax_raw')
 
 
 @pytest.mark.skipif(

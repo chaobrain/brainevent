@@ -57,10 +57,11 @@
 
 #define DEFINE_CSRMM_NT_WARP_PERM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                           READ_W, WRITE_W, ACC_ZERO)                  \
+template <typename IndptrT> \
 __global__ void _csrmm_nt_warp_perm_hetero_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                            \
     const int32_t*  __restrict__ indices,                                            \
-    const int32_t*  __restrict__ indptr,                                             \
+    const IndptrT*  __restrict__ indptr,                                             \
     const int32_t*  __restrict__ perm,                                               \
     const SPIKE_T*  __restrict__ B,                                                  \
     WEIGHT_T*       __restrict__ C,                                                  \
@@ -75,9 +76,9 @@ __global__ void _csrmm_nt_warp_perm_hetero_kern##SUFFIX(                        
     for (int base = blockIdx.x * rpb; base < m; base += gridDim.x * rpb) {          \
         int row = base + warp_id;                                                    \
         if (row >= m) continue;                                                      \
-        int start = indptr[row], end = indptr[row + 1];                              \
+        IndptrT start = indptr[row], end = indptr[row + 1];                              \
         ACC_T acc0 = ACC_ZERO, acc1 = ACC_ZERO;                                      \
-        int j = start;                                                               \
+        IndptrT j = start;                                                               \
         _Pragma("unroll 4")                                                          \
         for (; j + 1 < end; j += 2) {                                                \
             ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);                 \
@@ -95,10 +96,11 @@ __global__ void _csrmm_nt_warp_perm_hetero_kern##SUFFIX(                        
 
 #define DEFINE_CSRMM_NT_BLOCK_PERM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                            READ_W, WRITE_W, ACC_ZERO)                  \
+template <typename IndptrT> \
 __global__ void _csrmm_nt_block_perm_hetero_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                             \
     const int32_t*  __restrict__ indices,                                             \
-    const int32_t*  __restrict__ indptr,                                              \
+    const IndptrT*  __restrict__ indptr,                                              \
     const int32_t*  __restrict__ perm,                                                \
     const SPIKE_T*  __restrict__ B,                                                   \
     WEIGHT_T*       __restrict__ C,                                                   \
@@ -111,10 +113,10 @@ __global__ void _csrmm_nt_block_perm_hetero_kern##SUFFIX(                       
     int strip     = threadIdx.x >> 5;                                                 \
     int c         = col_start + lane;                                                 \
     for (int row = blockIdx.x; row < m; row += gridDim.x) {                          \
-        int start = indptr[row], end = indptr[row + 1];                              \
+        IndptrT start = indptr[row], end = indptr[row + 1];                              \
         ACC_T acc0 = ACC_ZERO, acc1 = ACC_ZERO;                                      \
         if (c < n) {                                                                  \
-            int j = start + strip;                                                    \
+            IndptrT j = start + strip;                                                    \
             _Pragma("unroll 4")                                                      \
             for (; j + 8 < end; j += 16) {                                           \
                 ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);             \
@@ -141,10 +143,11 @@ __global__ void _csrmm_nt_block_perm_hetero_kern##SUFFIX(                       
 
 #define DEFINE_CSRMM_T_WARP_PERM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                          READ_W, WRITE_W, ACC_ZERO)                  \
+template <typename IndptrT> \
 __global__ void _csrmm_t_warp_perm_hetero_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                           \
     const int32_t*  __restrict__ indices,                                           \
-    const int32_t*  __restrict__ indptr,                                            \
+    const IndptrT*  __restrict__ indptr,                                            \
     const int32_t*  __restrict__ perm,                                              \
     const SPIKE_T*  __restrict__ B,                                                 \
     WEIGHT_T*       __restrict__ C,                                                 \
@@ -155,8 +158,8 @@ __global__ void _csrmm_t_warp_perm_hetero_kern##SUFFIX(                         
     int c         = col_start + (int)threadIdx.x;                                   \
     if (row >= m || c >= n) return;                                                 \
     if (!IS_ACTIVE(B[row * n + c])) return;                                        \
-    int start = indptr[row], end = indptr[row + 1];                                \
-    for (int j = start; j < end; j++) {                                             \
+    IndptrT start = indptr[row], end = indptr[row + 1];                                \
+    for (IndptrT j = start; j < end; j++) {                                             \
         atomicAdd(&C[indices[j] * n + c], weights[perm[j]]);                       \
     }                                                                               \
 }
@@ -231,6 +234,7 @@ void binary_csrmm_nt_warp_perm_hetero##SUFFIX(                             \
     const BE::Tensor indptr,  const BE::Tensor perm,                       \
     const BE::Tensor B,       BE::Tensor C,       int64_t stream           \
 ) {                                                                        \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
     cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);             \
     int m        = static_cast<int>(indptr.size(0)) - 1;                   \
     int n        = static_cast<int>(B.size(1));                            \
@@ -240,14 +244,16 @@ void binary_csrmm_nt_warp_perm_hetero##SUFFIX(                             \
     if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                    \
     if (gx < 1) gx = 1;                                                   \
     dim3 grid(gx, c_blocks);                                               \
-    _csrmm_nt_warp_perm_hetero_kern##SUFFIX<<<grid, rpb * 32, 0, s>>>(    \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                \
-        static_cast<const int32_t*>(indices.data_ptr()),                   \
-        static_cast<const int32_t*>(indptr.data_ptr()),                    \
-        static_cast<const int32_t*>(perm.data_ptr()),                      \
-        static_cast<const SPIKE_C_T*>(B.data_ptr()),                       \
-        static_cast<WEIGHT_C_T*>(C.data_ptr()),                            \
-        m, n);                                                             \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
+        _csrmm_nt_warp_perm_hetero_kern##SUFFIX<<<grid, rpb * 32, 0, s>>>( \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
+            static_cast<const int32_t*>(indices.data_ptr()),               \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                \
+            static_cast<const int32_t*>(perm.data_ptr()),                  \
+            static_cast<const SPIKE_C_T*>(B.data_ptr()),                   \
+            static_cast<WEIGHT_C_T*>(C.data_ptr()),                        \
+            m, n);                                                         \
+    });                                                                    \
 }
 
 #define FFI_CSRMM_NT_BLOCK_PERM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
@@ -256,6 +262,7 @@ void binary_csrmm_nt_block_perm_hetero##SUFFIX(                             \
     const BE::Tensor indptr,  const BE::Tensor perm,                        \
     const BE::Tensor B,       BE::Tensor C,       int64_t stream            \
 ) {                                                                         \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
     cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);              \
     int m        = static_cast<int>(indptr.size(0)) - 1;                    \
     int n        = static_cast<int>(B.size(1));                             \
@@ -264,14 +271,16 @@ void binary_csrmm_nt_block_perm_hetero##SUFFIX(                             \
     if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                     \
     if (gx < 1) gx = 1;                                                    \
     dim3 grid(gx, c_blocks);                                                \
-    _csrmm_nt_block_perm_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(  \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                 \
-        static_cast<const int32_t*>(indices.data_ptr()),                    \
-        static_cast<const int32_t*>(indptr.data_ptr()),                     \
-        static_cast<const int32_t*>(perm.data_ptr()),                       \
-        static_cast<const SPIKE_C_T*>(B.data_ptr()),                        \
-        static_cast<WEIGHT_C_T*>(C.data_ptr()),                             \
-        m, n);                                                              \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                      \
+        _csrmm_nt_block_perm_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),             \
+            static_cast<const int32_t*>(indices.data_ptr()),                \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
+            static_cast<const int32_t*>(perm.data_ptr()),                   \
+            static_cast<const SPIKE_C_T*>(B.data_ptr()),                    \
+            static_cast<WEIGHT_C_T*>(C.data_ptr()),                         \
+            m, n);                                                          \
+    });                                                                     \
 }
 
 #define FFI_CSRMM_NT_AUTO_PERM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
@@ -280,6 +289,7 @@ void binary_csrmm_nt_auto_perm_hetero##SUFFIX(                                  
     const BE::Tensor indptr,  const BE::Tensor perm,                            \
     const BE::Tensor B,       BE::Tensor C,       int64_t stream                \
 ) {                                                                             \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                        \
     cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                  \
     int m        = static_cast<int>(indptr.size(0)) - 1;                        \
     int n        = static_cast<int>(B.size(1));                                 \
@@ -288,26 +298,28 @@ void binary_csrmm_nt_auto_perm_hetero##SUFFIX(                                  
     int c_blocks = (n + 31) / 32;                                               \
     const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
     const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr());    \
-    const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());     \
     const int32_t*    d_perm = static_cast<const int32_t*>(perm.data_ptr());    \
     const SPIKE_C_T*  d_b = static_cast<const SPIKE_C_T*>(B.data_ptr());        \
     WEIGHT_C_T*       d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
-    if (avg_nnz <= 512) {                                                       \
-        int rpb = CSRMM_WARP_RPB;                                               \
-        int gx  = (m + rpb - 1) / rpb;                                          \
-        if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                      \
-        if (gx < 1) gx = 1;                                                     \
-        dim3 grid(gx, c_blocks);                                                \
-        _csrmm_nt_warp_perm_hetero_kern##SUFFIX<<<grid, rpb * 32, 0, s>>>(      \
-            d_w, d_i, d_p, d_perm, d_b, d_c, m, n);                             \
-    } else {                                                                    \
-        int gx = m;                                                             \
-        if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                      \
-        if (gx < 1) gx = 1;                                                     \
-        dim3 grid(gx, c_blocks);                                                \
-        _csrmm_nt_block_perm_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(   \
-            d_w, d_i, d_p, d_perm, d_b, d_c, m, n);                             \
-    }                                                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                           \
+        const IndptrT* d_p = static_cast<const IndptrT*>(indptr.data_ptr());    \
+        if (avg_nnz <= 512) {                                                   \
+            int rpb = CSRMM_WARP_RPB;                                           \
+            int gx  = (m + rpb - 1) / rpb;                                      \
+            if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                  \
+            if (gx < 1) gx = 1;                                                 \
+            dim3 grid(gx, c_blocks);                                            \
+            _csrmm_nt_warp_perm_hetero_kern##SUFFIX<<<grid, rpb * 32, 0, s>>>(  \
+                d_w, d_i, d_p, d_perm, d_b, d_c, m, n);                         \
+        } else {                                                                \
+            int gx = m;                                                         \
+            if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                  \
+            if (gx < 1) gx = 1;                                                 \
+            dim3 grid(gx, c_blocks);                                            \
+            _csrmm_nt_block_perm_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
+                d_w, d_i, d_p, d_perm, d_b, d_c, m, n);                         \
+        }                                                                       \
+    });                                                                         \
 }
 
 #define FFI_CSRMM_T_WARP_PERM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)       \
@@ -316,6 +328,7 @@ void binary_csrmm_t_warp_perm_hetero##SUFFIX(                              \
     const BE::Tensor indptr,  const BE::Tensor perm,                       \
     const BE::Tensor B,       BE::Tensor C,       int64_t stream           \
 ) {                                                                        \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
     cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);             \
     int m        = static_cast<int>(indptr.size(0)) - 1;                   \
     int n        = static_cast<int>(B.size(1));                            \
@@ -324,13 +337,15 @@ void binary_csrmm_t_warp_perm_hetero##SUFFIX(                              \
     dim3 grid(m, c_blocks);                                                \
     WEIGHT_C_T* d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
     cudaMemsetAsync(d_c, 0, (size_t)k * n * sizeof(WEIGHT_C_T), s);       \
-    _csrmm_t_warp_perm_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(           \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                \
-        static_cast<const int32_t*>(indices.data_ptr()),                   \
-        static_cast<const int32_t*>(indptr.data_ptr()),                    \
-        static_cast<const int32_t*>(perm.data_ptr()),                      \
-        static_cast<const SPIKE_C_T*>(B.data_ptr()),                       \
-        d_c, m, n);                                                        \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
+        _csrmm_t_warp_perm_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(       \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
+            static_cast<const int32_t*>(indices.data_ptr()),               \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                \
+            static_cast<const int32_t*>(perm.data_ptr()),                  \
+            static_cast<const SPIKE_C_T*>(B.data_ptr()),                   \
+            d_c, m, n);                                                    \
+    });                                                                    \
 }
 
 // =========================================================================

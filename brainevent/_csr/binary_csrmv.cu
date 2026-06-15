@@ -44,22 +44,23 @@
 
 #define DEFINE_CSRMV_NT_THREAD_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                      READ_W, WRITE_W, ACC_ZERO)                  \
+template <typename IndptrT> \
 __global__ void _csrmv_nt_thread_homo_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                        \
     const int32_t*  __restrict__ indices,                                        \
-    const int32_t*  __restrict__ indptr,                                         \
+    const IndptrT*  __restrict__ indptr,                                         \
     const SPIKE_T*  __restrict__ vector,                                         \
     WEIGHT_T*       __restrict__ output,                                         \
     int m                                                                        \
 ) {                                                                              \
     int row = blockIdx.x * blockDim.x + threadIdx.x;                             \
     if (row >= m) return;                                                        \
-    int start = indptr[row], end = indptr[row + 1];                              \
+    IndptrT start = indptr[row], end = indptr[row + 1];                              \
     if (start == end) { output[row] = WRITE_W(ACC_ZERO); return; }               \
     ACC_T acc = ACC_ZERO;                                                        \
     ACC_T w = READ_W(weights[0]);                                                \
     _Pragma("unroll 4")                                                          \
-    for (int j = start; j < end; j++) {                                          \
+    for (IndptrT j = start; j < end; j++) {                                          \
         ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                       \
         acc += w * mask;                                                         \
     }                                                                            \
@@ -68,17 +69,18 @@ __global__ void _csrmv_nt_thread_homo_kern##SUFFIX(                             
 
 #define DEFINE_CSRMV_NT_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                    READ_W, WRITE_W, WARP_RED, ACC_ZERO)        \
+template <typename IndptrT> \
 __global__ void _csrmv_nt_warp_homo_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                      \
     const int32_t*  __restrict__ indices,                                      \
-    const int32_t*  __restrict__ indptr,                                       \
+    const IndptrT*  __restrict__ indptr,                                       \
     const SPIKE_T*  __restrict__ vector,                                       \
     WEIGHT_T*       __restrict__ output,                                       \
     int m                                                                      \
 ) {                                                                            \
     int row = blockIdx.x;                                                      \
     if (row >= m) return;                                                      \
-    int start = indptr[row], end = indptr[row + 1];                            \
+    IndptrT start = indptr[row], end = indptr[row + 1];                            \
     if (start == end) {                                                        \
         if (threadIdx.x == 0) output[row] = WRITE_W(ACC_ZERO);                 \
         return;                                                                \
@@ -86,7 +88,7 @@ __global__ void _csrmv_nt_warp_homo_kern##SUFFIX(                              \
     ACC_T acc = ACC_ZERO;                                                      \
     ACC_T w = READ_W(weights[0]);                                              \
     _Pragma("unroll 2")                                                        \
-    for (int j = start + (int)threadIdx.x; j < end; j += 32) {                 \
+    for (IndptrT j = start + (int)threadIdx.x; j < end; j += 32) {                 \
         ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                     \
         acc += w * mask;                                                       \
     }                                                                          \
@@ -96,10 +98,11 @@ __global__ void _csrmv_nt_warp_homo_kern##SUFFIX(                              \
 
 #define DEFINE_CSRMV_NT_BLOCK_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                     READ_W, WRITE_W, WARP_RED, ACC_ZERO)        \
+template <typename IndptrT> \
 __global__ void _csrmv_nt_block_homo_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                       \
     const int32_t*  __restrict__ indices,                                       \
-    const int32_t*  __restrict__ indptr,                                        \
+    const IndptrT*  __restrict__ indptr,                                        \
     const SPIKE_T*  __restrict__ vector,                                        \
     WEIGHT_T*       __restrict__ output,                                        \
     int m                                                                       \
@@ -108,7 +111,7 @@ __global__ void _csrmv_nt_block_homo_kern##SUFFIX(                              
     ACC_T* smem_red = reinterpret_cast<ACC_T*>(_smem_bytes);                    \
     int row = blockIdx.x;                                                       \
     if (row >= m) return;                                                       \
-    int start = indptr[row], end = indptr[row + 1];                             \
+    IndptrT start = indptr[row], end = indptr[row + 1];                             \
     if (start == end) {                                                         \
         if (threadIdx.x == 0) output[row] = WRITE_W(ACC_ZERO);                  \
         return;                                                                 \
@@ -116,7 +119,7 @@ __global__ void _csrmv_nt_block_homo_kern##SUFFIX(                              
     ACC_T acc = ACC_ZERO;                                                       \
     ACC_T w = READ_W(weights[0]);                                               \
     _Pragma("unroll 2")                                                         \
-    for (int j = start + (int)threadIdx.x; j < end; j += blockDim.x) {          \
+    for (IndptrT j = start + (int)threadIdx.x; j < end; j += blockDim.x) {          \
         ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                      \
         acc += w * mask;                                                        \
     }                                                                           \
@@ -133,10 +136,11 @@ __global__ void _csrmv_nt_block_homo_kern##SUFFIX(                              
 
 #define DEFINE_CSRMV_T_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                   READ_W, WRITE_W, ACC_ZERO)                  \
+template <typename IndptrT> \
 __global__ void _csrmv_t_warp_homo_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                     \
     const int32_t*  __restrict__ indices,                                     \
-    const int32_t*  __restrict__ indptr,                                      \
+    const IndptrT*  __restrict__ indptr,                                      \
     const SPIKE_T*  __restrict__ vector,                                      \
     WEIGHT_T*       __restrict__ output,                                      \
     int m                                                                     \
@@ -144,11 +148,11 @@ __global__ void _csrmv_t_warp_homo_kern##SUFFIX(                              \
     int row = blockIdx.x * blockDim.x + threadIdx.x;                          \
     if (row >= m) return;                                                     \
     if (!IS_ACTIVE(vector[row])) return;                                      \
-    int start = indptr[row], end = indptr[row + 1];                           \
+    IndptrT start = indptr[row], end = indptr[row + 1];                           \
     if (start == end) return;                                                 \
     ACC_T w = READ_W(weights[0]);                                             \
     WEIGHT_T w_out = WRITE_W(w);                                              \
-    for (int j = start; j < end; j++) {                                       \
+    for (IndptrT j = start; j < end; j++) {                                       \
         atomicAdd(&output[indices[j]], w_out);                                \
     }                                                                         \
 }
@@ -159,21 +163,22 @@ __global__ void _csrmv_t_warp_homo_kern##SUFFIX(                              \
 
 #define DEFINE_CSRMV_NT_THREAD_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                        READ_W, WRITE_W, ACC_ZERO)                  \
+template <typename IndptrT> \
 __global__ void _csrmv_nt_thread_hetero_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                          \
     const int32_t*  __restrict__ indices,                                          \
-    const int32_t*  __restrict__ indptr,                                           \
+    const IndptrT*  __restrict__ indptr,                                           \
     const SPIKE_T*  __restrict__ vector,                                           \
     WEIGHT_T*       __restrict__ output,                                           \
     int m                                                                          \
 ) {                                                                                \
     int row = blockIdx.x * blockDim.x + threadIdx.x;                               \
     if (row >= m) return;                                                          \
-    int start = indptr[row], end = indptr[row + 1];                                \
+    IndptrT start = indptr[row], end = indptr[row + 1];                                \
     if (start == end) { output[row] = WRITE_W(ACC_ZERO); return; }                 \
     ACC_T acc = ACC_ZERO;                                                          \
     _Pragma("unroll 4")                                                            \
-    for (int j = start; j < end; j++) {                                            \
+    for (IndptrT j = start; j < end; j++) {                                            \
         ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                         \
         acc += READ_W(weights[j]) * mask;                                          \
     }                                                                              \
@@ -182,24 +187,25 @@ __global__ void _csrmv_nt_thread_hetero_kern##SUFFIX(                           
 
 #define DEFINE_CSRMV_NT_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                      READ_W, WRITE_W, WARP_RED, ACC_ZERO)        \
+template <typename IndptrT> \
 __global__ void _csrmv_nt_warp_hetero_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                        \
     const int32_t*  __restrict__ indices,                                        \
-    const int32_t*  __restrict__ indptr,                                         \
+    const IndptrT*  __restrict__ indptr,                                         \
     const SPIKE_T*  __restrict__ vector,                                         \
     WEIGHT_T*       __restrict__ output,                                         \
     int m                                                                        \
 ) {                                                                              \
     int row = blockIdx.x;                                                        \
     if (row >= m) return;                                                        \
-    int start = indptr[row], end = indptr[row + 1];                              \
+    IndptrT start = indptr[row], end = indptr[row + 1];                              \
     if (start == end) {                                                          \
         if (threadIdx.x == 0) output[row] = WRITE_W(ACC_ZERO);                   \
         return;                                                                  \
     }                                                                            \
     ACC_T acc = ACC_ZERO;                                                        \
     _Pragma("unroll 2")                                                          \
-    for (int j = start + (int)threadIdx.x; j < end; j += 32) {                   \
+    for (IndptrT j = start + (int)threadIdx.x; j < end; j += 32) {                   \
         ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                       \
         acc += READ_W(weights[j]) * mask;                                        \
     }                                                                            \
@@ -209,10 +215,11 @@ __global__ void _csrmv_nt_warp_hetero_kern##SUFFIX(                             
 
 #define DEFINE_CSRMV_NT_BLOCK_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                       READ_W, WRITE_W, WARP_RED, ACC_ZERO)        \
+template <typename IndptrT> \
 __global__ void _csrmv_nt_block_hetero_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                         \
     const int32_t*  __restrict__ indices,                                         \
-    const int32_t*  __restrict__ indptr,                                          \
+    const IndptrT*  __restrict__ indptr,                                          \
     const SPIKE_T*  __restrict__ vector,                                          \
     WEIGHT_T*       __restrict__ output,                                          \
     int m                                                                         \
@@ -221,14 +228,14 @@ __global__ void _csrmv_nt_block_hetero_kern##SUFFIX(                            
     ACC_T* smem_red = reinterpret_cast<ACC_T*>(_smem_bytes);                      \
     int row = blockIdx.x;                                                         \
     if (row >= m) return;                                                         \
-    int start = indptr[row], end = indptr[row + 1];                               \
+    IndptrT start = indptr[row], end = indptr[row + 1];                               \
     if (start == end) {                                                           \
         if (threadIdx.x == 0) output[row] = WRITE_W(ACC_ZERO);                    \
         return;                                                                   \
     }                                                                             \
     ACC_T acc = ACC_ZERO;                                                         \
     _Pragma("unroll 2")                                                           \
-    for (int j = start + (int)threadIdx.x; j < end; j += blockDim.x) {            \
+    for (IndptrT j = start + (int)threadIdx.x; j < end; j += blockDim.x) {            \
         ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                        \
         acc += READ_W(weights[j]) * mask;                                         \
     }                                                                             \
@@ -245,10 +252,11 @@ __global__ void _csrmv_nt_block_hetero_kern##SUFFIX(                            
 
 #define DEFINE_CSRMV_T_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                     READ_W, WRITE_W, ACC_ZERO)                  \
+template <typename IndptrT> \
 __global__ void _csrmv_t_warp_hetero_kern##SUFFIX(                              \
     const WEIGHT_T* __restrict__ weights,                                       \
     const int32_t*  __restrict__ indices,                                       \
-    const int32_t*  __restrict__ indptr,                                        \
+    const IndptrT*  __restrict__ indptr,                                        \
     const SPIKE_T*  __restrict__ vector,                                        \
     WEIGHT_T*       __restrict__ output,                                        \
     int m                                                                       \
@@ -256,9 +264,9 @@ __global__ void _csrmv_t_warp_hetero_kern##SUFFIX(                              
     int row = blockIdx.x * blockDim.x + threadIdx.x;                            \
     if (row >= m) return;                                                       \
     if (!IS_ACTIVE(vector[row])) return;                                        \
-    int start = indptr[row], end = indptr[row + 1];                             \
+    IndptrT start = indptr[row], end = indptr[row + 1];                             \
     if (start == end) return;                                                   \
-    for (int j = start; j < end; j++) {                                         \
+    for (IndptrT j = start; j < end; j++) {                                         \
         atomicAdd(&output[indices[j]], WRITE_W(READ_W(weights[j])));            \
     }                                                                           \
 }
@@ -425,15 +433,18 @@ void binary_csrmv_nt_thread_homo##SUFFIX(                       \
     const BE::Tensor indptr,  const BE::Tensor vector,          \
     BE::Tensor output,  int64_t stream                          \
 ) {                                                             \
+    BE_CHECK_CSR_INDICES_INT32(indices);                        \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
     int m          = static_cast<int>(indptr.size(0)) - 1;      \
     int blocks     = (m + 255) / 256;                           \
-    _csrmv_nt_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(  \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),     \
-        static_cast<const int32_t*>(indices.data_ptr()),        \
-        static_cast<const int32_t*>(indptr.data_ptr()),         \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),       \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);        \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {           \
+        _csrmv_nt_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()), \
+            static_cast<const int32_t*>(indices.data_ptr()),    \
+            static_cast<const IndptrT*>(indptr.data_ptr()),     \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()),   \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()), m);    \
+    });                                                         \
 }
 
 #define FFI_CSRMV_NT_WARP_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T) \
@@ -442,14 +453,17 @@ void binary_csrmv_nt_warp_homo##SUFFIX(                       \
     const BE::Tensor indptr,  const BE::Tensor vector,        \
     BE::Tensor output,  int64_t stream                        \
 ) {                                                           \
+    BE_CHECK_CSR_INDICES_INT32(indices);                      \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);  \
     int m          = static_cast<int>(indptr.size(0)) - 1;    \
-    _csrmv_nt_warp_homo_kern##SUFFIX<<<m, 32, 0, s>>>(        \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),   \
-        static_cast<const int32_t*>(indices.data_ptr()),      \
-        static_cast<const int32_t*>(indptr.data_ptr()),       \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),     \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);      \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {         \
+        _csrmv_nt_warp_homo_kern##SUFFIX<<<m, 32, 0, s>>>(    \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()), \
+            static_cast<const int32_t*>(indices.data_ptr()),  \
+            static_cast<const IndptrT*>(indptr.data_ptr()),   \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()), \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()), m);  \
+    });                                                       \
 }
 
 #define FFI_CSRMV_NT_BLOCK_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
@@ -458,14 +472,17 @@ void binary_csrmv_nt_block_homo##SUFFIX(                                 \
     const BE::Tensor indptr,  const BE::Tensor vector,                   \
     BE::Tensor output,  int64_t stream                                   \
 ) {                                                                      \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                 \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);             \
     int m          = static_cast<int>(indptr.size(0)) - 1;               \
-    _csrmv_nt_block_homo_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(          \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),              \
-        static_cast<const int32_t*>(indices.data_ptr()),                 \
-        static_cast<const int32_t*>(indptr.data_ptr()),                  \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),                \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);                 \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                   \
+        _csrmv_nt_block_homo_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(      \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),          \
+            static_cast<const int32_t*>(indices.data_ptr()),             \
+            static_cast<const IndptrT*>(indptr.data_ptr()),              \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()),            \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()), m);             \
+    });                                                                  \
 }
 
 #define FFI_CSRMV_NT_AUTO_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)         \
@@ -474,23 +491,26 @@ void binary_csrmv_nt_auto_homo##SUFFIX(                                         
     const BE::Tensor indptr,  const BE::Tensor vector,                          \
     BE::Tensor output,  int64_t stream                                          \
 ) {                                                                             \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                        \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                    \
     int m          = static_cast<int>(indptr.size(0)) - 1;                      \
     int nse        = static_cast<int>(indices.size(0));                         \
     int avg_nnz    = (m > 0) ? (nse / m) : 0;                                   \
     const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
     const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr());    \
-    const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());     \
     const SPIKE_C_T*  d_v = static_cast<const SPIKE_C_T*>(vector.data_ptr());   \
     WEIGHT_C_T*       d_o = static_cast<WEIGHT_C_T*>(output.data_ptr());        \
-    if (avg_nnz <= 512) {                                                       \
-        int blocks = (m + 255) / 256;                                           \
-        _csrmv_nt_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(              \
-            d_w, d_i, d_p, d_v, d_o, m);                                        \
-    } else {                                                                    \
-        _csrmv_nt_block_homo_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(             \
-            d_w, d_i, d_p, d_v, d_o, m);                                        \
-    }                                                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                           \
+        const IndptrT* d_p = static_cast<const IndptrT*>(indptr.data_ptr());    \
+        if (avg_nnz <= 512) {                                                   \
+            int blocks = (m + 255) / 256;                                       \
+            _csrmv_nt_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(          \
+                d_w, d_i, d_p, d_v, d_o, m);                                    \
+        } else {                                                                \
+            _csrmv_nt_block_homo_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(         \
+                d_w, d_i, d_p, d_v, d_o, m);                                    \
+        }                                                                       \
+    });                                                                         \
 }
 
 #define FFI_CSRMV_T_WARP_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)         \
@@ -499,18 +519,21 @@ void binary_csrmv_t_warp_homo##SUFFIX(                               \
     const BE::Tensor indptr,  const BE::Tensor vector,               \
     BE::Tensor output,  int64_t stream                               \
 ) {                                                                  \
+    BE_CHECK_CSR_INDICES_INT32(indices);                             \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);      \
     int m             = static_cast<int>(indptr.size(0)) - 1;        \
     int k             = static_cast<int>(output.size(0));            \
     WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr()); \
     cudaMemsetAsync(d_out, 0, (size_t)k * sizeof(WEIGHT_C_T), s);    \
     int blocks = (m + 255) / 256;                                    \
-    _csrmv_t_warp_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(          \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),          \
-        static_cast<const int32_t*>(indices.data_ptr()),             \
-        static_cast<const int32_t*>(indptr.data_ptr()),              \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),            \
-        d_out, m);                                                   \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                \
+        _csrmv_t_warp_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(      \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),      \
+            static_cast<const int32_t*>(indices.data_ptr()),         \
+            static_cast<const IndptrT*>(indptr.data_ptr()),          \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()),        \
+            d_out, m);                                               \
+    });                                                              \
 }
 
 // =========================================================================
@@ -523,15 +546,18 @@ void binary_csrmv_nt_thread_hetero##SUFFIX(                       \
     const BE::Tensor indptr,  const BE::Tensor vector,            \
     BE::Tensor output,  int64_t stream                            \
 ) {                                                               \
+    BE_CHECK_CSR_INDICES_INT32(indices);                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);      \
     int m          = static_cast<int>(indptr.size(0)) - 1;        \
     int blocks     = (m + 255) / 256;                             \
-    _csrmv_nt_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(  \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),       \
-        static_cast<const int32_t*>(indices.data_ptr()),          \
-        static_cast<const int32_t*>(indptr.data_ptr()),           \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),         \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);          \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {             \
+        _csrmv_nt_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),   \
+            static_cast<const int32_t*>(indices.data_ptr()),      \
+            static_cast<const IndptrT*>(indptr.data_ptr()),       \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()),     \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()), m);      \
+    });                                                           \
 }
 
 #define FFI_CSRMV_NT_WARP_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T) \
@@ -540,14 +566,17 @@ void binary_csrmv_nt_warp_hetero##SUFFIX(                       \
     const BE::Tensor indptr,  const BE::Tensor vector,          \
     BE::Tensor output,  int64_t stream                          \
 ) {                                                             \
+    BE_CHECK_CSR_INDICES_INT32(indices);                        \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
     int m          = static_cast<int>(indptr.size(0)) - 1;      \
-    _csrmv_nt_warp_hetero_kern##SUFFIX<<<m, 32, 0, s>>>(        \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),     \
-        static_cast<const int32_t*>(indices.data_ptr()),        \
-        static_cast<const int32_t*>(indptr.data_ptr()),         \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),       \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);        \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {           \
+        _csrmv_nt_warp_hetero_kern##SUFFIX<<<m, 32, 0, s>>>(    \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()), \
+            static_cast<const int32_t*>(indices.data_ptr()),    \
+            static_cast<const IndptrT*>(indptr.data_ptr()),     \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()),   \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()), m);    \
+    });                                                         \
 }
 
 #define FFI_CSRMV_NT_BLOCK_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
@@ -556,14 +585,17 @@ void binary_csrmv_nt_block_hetero##SUFFIX(                                 \
     const BE::Tensor indptr,  const BE::Tensor vector,                     \
     BE::Tensor output,  int64_t stream                                     \
 ) {                                                                        \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);               \
     int m          = static_cast<int>(indptr.size(0)) - 1;                 \
-    _csrmv_nt_block_hetero_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(          \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                \
-        static_cast<const int32_t*>(indices.data_ptr()),                   \
-        static_cast<const int32_t*>(indptr.data_ptr()),                    \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),                  \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);                   \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
+        _csrmv_nt_block_hetero_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(      \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
+            static_cast<const int32_t*>(indices.data_ptr()),               \
+            static_cast<const IndptrT*>(indptr.data_ptr()),                \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()),              \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()), m);               \
+    });                                                                    \
 }
 
 #define FFI_CSRMV_NT_AUTO_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)       \
@@ -572,23 +604,26 @@ void binary_csrmv_nt_auto_hetero##SUFFIX(                                       
     const BE::Tensor indptr,  const BE::Tensor vector,                          \
     BE::Tensor output,  int64_t stream                                          \
 ) {                                                                             \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                        \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                    \
     int m          = static_cast<int>(indptr.size(0)) - 1;                      \
     int nse        = static_cast<int>(indices.size(0));                         \
     int avg_nnz    = (m > 0) ? (nse / m) : 0;                                   \
     const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
     const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr());    \
-    const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());     \
     const SPIKE_C_T*  d_v = static_cast<const SPIKE_C_T*>(vector.data_ptr());   \
     WEIGHT_C_T*       d_o = static_cast<WEIGHT_C_T*>(output.data_ptr());        \
-    if (avg_nnz <= 512) {                                                       \
-        int blocks = (m + 255) / 256;                                           \
-        _csrmv_nt_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(            \
-            d_w, d_i, d_p, d_v, d_o, m);                                        \
-    } else {                                                                    \
-        _csrmv_nt_block_hetero_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(           \
-            d_w, d_i, d_p, d_v, d_o, m);                                        \
-    }                                                                           \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                           \
+        const IndptrT* d_p = static_cast<const IndptrT*>(indptr.data_ptr());    \
+        if (avg_nnz <= 512) {                                                   \
+            int blocks = (m + 255) / 256;                                       \
+            _csrmv_nt_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(        \
+                d_w, d_i, d_p, d_v, d_o, m);                                    \
+        } else {                                                                \
+            _csrmv_nt_block_hetero_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(       \
+                d_w, d_i, d_p, d_v, d_o, m);                                    \
+        }                                                                       \
+    });                                                                         \
 }
 
 #define FFI_CSRMV_T_WARP_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)       \
@@ -597,18 +632,21 @@ void binary_csrmv_t_warp_hetero##SUFFIX(                             \
     const BE::Tensor indptr,  const BE::Tensor vector,               \
     BE::Tensor output,  int64_t stream                               \
 ) {                                                                  \
+    BE_CHECK_CSR_INDICES_INT32(indices);                             \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);      \
     int m             = static_cast<int>(indptr.size(0)) - 1;        \
     int k             = static_cast<int>(output.size(0));            \
     WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr()); \
     cudaMemsetAsync(d_out, 0, (size_t)k * sizeof(WEIGHT_C_T), s);    \
     int blocks = (m + 255) / 256;                                    \
-    _csrmv_t_warp_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(        \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),          \
-        static_cast<const int32_t*>(indices.data_ptr()),             \
-        static_cast<const int32_t*>(indptr.data_ptr()),              \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),            \
-        d_out, m);                                                   \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                \
+        _csrmv_t_warp_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(    \
+            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),      \
+            static_cast<const int32_t*>(indices.data_ptr()),         \
+            static_cast<const IndptrT*>(indptr.data_ptr()),          \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()),        \
+            d_out, m);                                               \
+    });                                                              \
 }
 
 // =========================================================================
