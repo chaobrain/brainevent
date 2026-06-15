@@ -19,6 +19,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+import brainevent._csr.binary as binary_mod
+import brainevent._csr.binary_indexed as binary_indexed_mod
+import brainevent._csr.float as float_mod
+import brainevent._csr.plasticity_binary as plasticity_mod
+import brainevent._csr.slice as slice_mod
+import brainevent._csr.yw2y as yw2y_mod
 from brainevent._csr.binary import binary_csrmm, binary_csrmv
 from brainevent._csr.binary_indexed import binary_csrmm_indexed, binary_csrmv_indexed
 from brainevent._csr.float import csrmm, csrmv
@@ -38,6 +44,124 @@ def _structure(indptr_dtype):
     indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
     indptr = jnp.array([0, 2, 4], dtype=indptr_dtype)
     return weights, indices, indptr
+
+
+def _shape(dtype, shape=(2,)):
+    return jax.ShapeDtypeStruct(shape, dtype)
+
+
+def _cuda_kwargs(indices_dtype=jnp.int64, indptr_dtype=jnp.int64, nse=2):
+    return {
+        'outs': [_shape(jnp.float32)],
+        'shape': (1, 2),
+        'indices_info': _shape(indices_dtype, (nse,)),
+        'indptr_info': _shape(indptr_dtype, (2,)),
+    }
+
+
+@pytest.mark.parametrize(
+    'factory,args,kwargs',
+    [
+        (
+            float_mod._csrmv_cuda_kernel,
+            (_shape(jnp.float32), False),
+            {'outs': [_shape(jnp.float32)]},
+        ),
+        (
+            float_mod._csrmm_cuda_kernel,
+            (_shape(jnp.float32), False),
+            {'outs': [_shape(jnp.float32, (1, 1))]},
+        ),
+        (
+            binary_mod._binary_csrmv_cuda_kernel,
+            (_shape(jnp.float32), _shape(jnp.bool_), False),
+            {'outs': [_shape(jnp.float32)]},
+        ),
+        (
+            binary_mod._binary_csrmm_cuda_kernel,
+            (_shape(jnp.float32), _shape(jnp.bool_, (2, 1)), False),
+            {'outs': [_shape(jnp.float32, (1, 1))]},
+        ),
+        (
+            binary_indexed_mod._binary_csrmv_indexed_cuda_kernel,
+            (_shape(jnp.float32), _shape(jnp.bool_), False),
+            {'outs': [_shape(jnp.float32)], 'perm_info': _shape(jnp.int32)},
+        ),
+        (
+            binary_indexed_mod._binary_csrmm_indexed_cuda_kernel,
+            (_shape(jnp.float32), _shape(jnp.bool_, (2, 1)), False),
+            {'outs': [_shape(jnp.float32, (1, 1))], 'perm_info': _shape(jnp.int32)},
+        ),
+        (
+            slice_mod._csr_slice_rows_cuda_kernel_generator,
+            (),
+            {
+                'outs': [_shape(jnp.float32, (1, 2))],
+                'data_info': _shape(jnp.float32),
+                'row_indices_info': _shape(jnp.int32, (1,)),
+            },
+        ),
+        (
+            slice_mod._csr_slice_rows_grad_cuda_kernel_generator,
+            (),
+            {
+                'outs': [_shape(jnp.float32)],
+                'ct_info': _shape(jnp.float32, (1, 2)),
+                'row_indices_info': _shape(jnp.int32, (1,)),
+            },
+        ),
+        (
+            yw2y_mod._csrmv_yw2y_cuda_kernel,
+            (False, _shape(jnp.float32)),
+            {'outs': [_shape(jnp.float32)]},
+        ),
+    ],
+)
+def test_cuda_kernel_generators_reject_int64_indices_before_loading_cuda(factory, args, kwargs):
+    call_kwargs = _cuda_kwargs()
+    call_kwargs.update(kwargs)
+
+    with pytest.raises(TypeError, match="indices with dtype int32"):
+        factory(*args, **call_kwargs)
+
+
+def test_plasticity_pre_cuda_rejects_int64_indices_before_loading_cuda():
+    with pytest.raises(TypeError, match="indices with dtype int32"):
+        plasticity_mod._csr_on_pre_cuda_kernel(
+            _shape(jnp.float32),
+            _shape(jnp.bool_),
+            _shape(jnp.int64),
+            outs=[_shape(jnp.float32)],
+            indptr_info=_shape(jnp.int64),
+        )
+
+
+def test_plasticity_post_cuda_rejects_int64_indices_before_loading_cuda():
+    with pytest.raises(TypeError, match="indices with dtype int32"):
+        plasticity_mod._csr2csc_on_post_cuda_kernel(
+            _shape(jnp.float32),
+            _shape(jnp.bool_),
+            _shape(jnp.int64),
+            outs=[_shape(jnp.float32)],
+            indptr_info=_shape(jnp.int64),
+            weight_indices_info=_shape(jnp.int32),
+        )
+
+
+def test_plasticity_post_cuda_rejects_int64_weight_indices_before_loading_cuda():
+    kwargs = {
+        'outs': [_shape(jnp.float32)],
+        'indptr_info': _shape(jnp.int64),
+        'weight_indices_info': _shape(jnp.int64),
+    }
+
+    with pytest.raises(TypeError, match="weight_indices with dtype int32"):
+        plasticity_mod._csr2csc_on_post_cuda_kernel(
+            _shape(jnp.float32),
+            _shape(jnp.bool_),
+            _shape(jnp.int32),
+            **kwargs,
+        )
 
 
 @requires_gpu

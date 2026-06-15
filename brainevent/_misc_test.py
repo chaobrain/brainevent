@@ -18,7 +18,10 @@
 
 import unittest
 
+import jax
+import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from brainevent._misc import generate_block_dim, coo2csr
 
@@ -165,6 +168,40 @@ class TestCsrToCscIndexMethods(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown csr_to_csc_index method"):
             csr_to_csc_index(indptr, indices, shape=(1, 1), method="bogus")
 
+    def test_numpy_preserves_int64_coordinate_indices(self):
+        from brainevent._misc import csr_to_csc_index
+        indptr = np.array([0, 2, 3, 5], dtype=np.int32)
+        indices = np.array([0, 2, 1, 0, 3], dtype=np.int64)
+        csc_indptr, csc_indices, perm = csr_to_csc_index(
+            indptr, indices, shape=(3, 4), method="numpy"
+        )
+        self.assertEqual(np.asarray(csc_indptr).dtype, np.int32)
+        self.assertEqual(np.asarray(csc_indices).dtype, np.int64)
+        self.assertEqual(np.asarray(perm).dtype, np.int32)
+
+    def test_numpy_jax_output_temporarily_enables_int64_offsets(self):
+        from brainevent._misc import csr_to_csc_index
+        old_x64 = jax.config.jax_enable_x64
+        jax.config.update("jax_enable_x64", False)
+        try:
+            indptr = np.array([0, 2, 3, 5], dtype=np.int64)
+            indices = jnp.array([0, 2, 1, 0, 3], dtype=jnp.int32)
+            csc_indptr, csc_indices, perm = csr_to_csc_index(
+                indptr, indices, shape=(3, 4), method="numpy"
+            )
+            self.assertEqual(csc_indptr.dtype, jnp.int64)
+            self.assertEqual(csc_indices.dtype, jnp.int32)
+            self.assertEqual(perm.dtype, jnp.int64)
+            self.assertFalse(jax.config.jax_enable_x64)
+        finally:
+            jax.config.update("jax_enable_x64", old_x64)
+
+    def test_offset_index_dtype_promotes_large_nse(self):
+        from brainevent._misc import _offset_index_dtype
+        self.assertEqual(_offset_index_dtype(np.iinfo(np.int32).max), np.int32)
+        self.assertEqual(_offset_index_dtype(np.iinfo(np.int32).max + 1), np.int64)
+        self.assertEqual(_offset_index_dtype(3, preferred=np.int64), np.int64)
+
 
 class TestCsrToCooIndex(unittest.TestCase):
     def test_expands_indptr_into_row_ids(self):
@@ -193,6 +230,187 @@ class TestCsrToCooIndex(unittest.TestCase):
         new_indptr, new_indices, _ = coo2csr(row_ids, col_ids, shape=(3, 4))
         np.testing.assert_array_equal(np.asarray(new_indptr), indptr)
         np.testing.assert_array_equal(np.asarray(new_indices), indices)
+
+
+class TestCsrStructureDtypes(unittest.TestCase):
+    def test_public_structure_dtype_contract_accepts_signed_layouts(self):
+        from brainevent._misc import _check_csr_structure_dtypes
+        _check_csr_structure_dtypes(
+            np.array([0, 1], dtype=np.int32),
+            np.array([0, 2], dtype=np.int32),
+        )
+        _check_csr_structure_dtypes(
+            np.array([0, 1], dtype=np.int64),
+            np.array([0, 2], dtype=np.int64),
+        )
+        _check_csr_structure_dtypes(
+            np.array([0, 1], dtype=np.int32),
+            np.array([0, 2], dtype=np.int64),
+        )
+
+    def test_public_structure_dtype_contract_rejects_unsigned_indices(self):
+        from brainevent._misc import _check_csr_structure_dtypes
+        with self.assertRaisesRegex(AssertionError, "signed int32 or int64"):
+            _check_csr_structure_dtypes(
+                np.array([0, 1], dtype=np.uint32),
+                np.array([0, 2], dtype=np.int32),
+            )
+
+    def test_public_structure_dtype_contract_rejects_int64_indices_with_int32_indptr(self):
+        from brainevent._misc import _check_csr_structure_dtypes
+        with self.assertRaisesRegex(AssertionError, "same dtype"):
+            _check_csr_structure_dtypes(
+                np.array([0, 1], dtype=np.int64),
+                np.array([0, 2], dtype=np.int32),
+            )
+
+    def test_cuda_structure_dtype_contract_accepts_int32_indices_and_int64_indptr(self):
+        from brainevent._misc import _check_csr_cuda_structure_dtypes
+        _check_csr_cuda_structure_dtypes(
+            jax.ShapeDtypeStruct((2,), jnp.int32),
+            jax.ShapeDtypeStruct((2,), jnp.int64),
+        )
+
+    def test_cuda_structure_dtype_contract_rejects_int64_indices(self):
+        from brainevent._misc import _check_csr_cuda_structure_dtypes
+        with self.assertRaisesRegex(TypeError, "indices with dtype int32"):
+            _check_csr_cuda_structure_dtypes(
+                jax.ShapeDtypeStruct((2,), jnp.int64),
+                jax.ShapeDtypeStruct((2,), jnp.int64),
+            )
+
+    def test_cuda_structure_dtype_contract_rejects_unsigned_indptr(self):
+        from brainevent._misc import _check_csr_cuda_structure_dtypes
+        with self.assertRaisesRegex(TypeError, "indptr with dtype int32 or int64"):
+            _check_csr_cuda_structure_dtypes(
+                jax.ShapeDtypeStruct((2,), jnp.int32),
+                jax.ShapeDtypeStruct((2,), jnp.uint32),
+            )
+
+
+def test_gpu_column_block_method_rejects_non_positive_block_size():
+    from brainevent._misc import csr_to_csc_index
+    indptr = np.array([0, 1], dtype=np.int32)
+    indices = np.array([0], dtype=np.int32)
+    with pytest.raises(ValueError, match="positive integer"):
+        csr_to_csc_index(
+            indptr, indices, shape=(1, 1), method="gpu_column_block",
+            column_block_size=0,
+        )
+
+
+def test_gpu_column_block_method_falls_back_to_numpy(monkeypatch):
+    import brainevent._misc as misc
+
+    def fail_load():
+        raise RuntimeError("simulated CUDA loader failure")
+
+    monkeypatch.setattr(misc, "_load_csr_to_csc_cuda_module", fail_load)
+    indptr = np.array([0, 2, 3, 5], dtype=np.int32)
+    indices = np.array([0, 2, 1, 0, 3], dtype=np.int32)
+
+    got = misc.csr_to_csc_index(
+        indptr, indices, shape=(3, 4), method="gpu_column_block",
+        column_block_size=2,
+    )
+    expected = misc.csr_to_csc_index(
+        indptr, indices, shape=(3, 4), method="numpy",
+    )
+
+    for got_arr, expected_arr in zip(got, expected):
+        np.testing.assert_array_equal(np.asarray(got_arr), np.asarray(expected_arr))
+
+
+def test_gpu_column_block_method_stitches_column_blocks_correctly(monkeypatch):
+    import brainevent._misc as misc
+
+    shape = (64, 64)
+    n_rows, n_cols = shape
+    per_row = 8
+    indptr = np.arange(n_rows + 1, dtype=np.int32) * per_row
+    row_ids = np.repeat(np.arange(n_rows, dtype=np.int32), per_row)
+    offsets = np.tile(np.array([0, 1, 7, 13, 21, 34, 45, 63], dtype=np.int32), n_rows)
+    indices = ((row_ids * 17 + offsets) % n_cols).astype(np.int32)
+    column_block_size = 11
+    fill_blocks = []
+
+    monkeypatch.setattr(misc, "_load_csr_to_csc_cuda_module", lambda: object())
+    monkeypatch.setattr(misc.jax, "devices", lambda kind=None: [object()] if kind == "gpu" else [])
+    monkeypatch.setattr(misc.jax, "device_put", lambda x, device=None: x)
+
+    def fake_ffi_call(name, out_info):
+        if name == "csr_to_csc.csr_to_csc_count":
+            def count(csr_indices, csr_indptr):
+                return np.bincount(np.asarray(csr_indices), minlength=shape[1]).astype(out_info.dtype)
+            return count
+
+        if name == "csr_to_csc.csr_to_csc_fill_block":
+            _, rows_info, perm_info = out_info
+
+            def fill_block(csr_indices, csr_indptr, initial_pos, *, col_start, col_end):
+                col_start = int(col_start)
+                col_end = int(col_end)
+                fill_blocks.append((col_start, col_end, np.asarray(initial_pos).copy()))
+
+                csr_indices_np = np.asarray(csr_indices)
+                csr_indptr_np = np.asarray(csr_indptr)
+                positions = np.arange(csr_indices_np.size)
+                row_ids = np.searchsorted(csr_indptr_np, positions, side="right") - 1
+                in_block = (col_start <= csr_indices_np) & (csr_indices_np < col_end)
+                block_positions = positions[in_block]
+                order_chunks = []
+                for col in range(col_start, col_end):
+                    col_positions = block_positions[csr_indices_np[block_positions] == col]
+                    order_chunks.append(col_positions[::-1])
+                order = np.concatenate(order_chunks) if order_chunks else np.zeros(0, dtype=np.int64)
+                scratch = np.zeros(out_info[0].shape, dtype=out_info[0].dtype)
+                return (
+                    scratch,
+                    row_ids[order].astype(rows_info.dtype),
+                    order.astype(perm_info.dtype),
+                )
+            return fill_block
+
+        raise AssertionError(f"unexpected FFI call: {name}")
+
+    monkeypatch.setattr(misc.jax.ffi, "ffi_call", fake_ffi_call)
+
+    got = misc.csr_to_csc_index(
+        indptr, indices, shape=shape, method="gpu_column_block",
+        column_block_size=column_block_size,
+    )
+    expected = misc.csr_to_csc_index(indptr, indices, shape=shape, method="numpy")
+
+    got_indptr, got_rows, got_perm = [np.asarray(arr) for arr in got]
+    expected_indptr, expected_rows, expected_perm = [np.asarray(arr) for arr in expected]
+
+    np.testing.assert_array_equal(got_indptr, expected_indptr)
+    for col in range(n_cols):
+        got_start, got_end = int(got_indptr[col]), int(got_indptr[col + 1])
+        expected_start, expected_end = int(expected_indptr[col]), int(expected_indptr[col + 1])
+        got_pairs = sorted(zip(got_rows[got_start:got_end], got_perm[got_start:got_end]))
+        expected_pairs = sorted(zip(expected_rows[expected_start:expected_end], expected_perm[expected_start:expected_end]))
+        assert got_pairs == expected_pairs, col
+
+    expected_blocks = [
+        (start, min(start + column_block_size, n_cols))
+        for start in range(0, n_cols, column_block_size)
+    ]
+    assert [(start, end) for start, end, _ in fill_blocks] == expected_blocks
+
+    got_no_perm = misc.csr_to_csc_index(
+        indptr, indices, shape=shape, method="gpu_column_block",
+        include_perm=False, column_block_size=column_block_size,
+    )
+    np.testing.assert_array_equal(np.asarray(got_no_perm[0]), np.asarray(expected[0]))
+    got_no_perm_rows = np.asarray(got_no_perm[1])
+    for col in range(n_cols):
+        start, end = int(got_indptr[col]), int(got_indptr[col + 1])
+        np.testing.assert_array_equal(
+            np.sort(got_no_perm_rows[start:end]),
+            np.sort(expected_rows[start:end]),
+        )
+    assert got_no_perm[2] is None
 
 
 class TestCooToCscIndex(unittest.TestCase):

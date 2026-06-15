@@ -15,6 +15,8 @@
 # -*- coding: utf-8 -*-
 
 
+from contextlib import contextmanager
+
 import brainstate
 import braintools
 import jax
@@ -34,9 +36,65 @@ CSRMV_IMPLEMENTATIONS = tuple(binary_csrmv_p.available_backends(platform))
 CSRMM_IMPLEMENTATIONS = tuple(binary_csrmm_p.available_backends(platform))
 
 
+@contextmanager
+def _jax_x64_enabled():
+    old_x64 = jax.config.jax_enable_x64
+    jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", old_x64)
+
+
 def _require_implementations(implementations, op_name: str):
     if not implementations:
         pytest.skip(f'No {op_name} implementation on platform={platform}')
+
+
+def test_binary_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
+    with _jax_x64_enabled():
+        weights = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32)
+        indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        events = jnp.array([True, False, True])
+
+        got = binary_csrmv(weights, indices, indptr, events, shape=(2, 3), backend='jax_raw')
+
+        assert jnp.allclose(got, jnp.array([3.0, 4.0], dtype=jnp.float32))
+
+
+def test_binary_csrmv_rejects_int64_indices_with_int32_indptr():
+    with _jax_x64_enabled():
+        weights = jnp.ones(2, dtype=jnp.float32)
+        indices = jnp.array([0, 1], dtype=jnp.int64)
+        indptr = jnp.array([0, 2], dtype=jnp.int32)
+        events = jnp.ones(2, dtype=bool)
+
+        with pytest.raises(AssertionError, match="same dtype"):
+            binary_csrmv(weights, indices, indptr, events, shape=(1, 2), backend='jax_raw')
+
+
+def test_binary_csrmm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
+    with _jax_x64_enabled():
+        weights = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32)
+        indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        events = jnp.array([[True, False], [False, True], [True, True]])
+
+        got = binary_csrmm(weights, indices, indptr, events, shape=(2, 3), backend='jax_raw')
+        expected = jnp.array([[3.0, 2.0], [4.0, 7.0]], dtype=jnp.float32)
+
+        assert jnp.allclose(got, expected)
+
+
+def test_binary_csrmm_rejects_unsigned_structure_dtype():
+    weights = jnp.ones(2, dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.uint32)
+    indptr = jnp.array([0, 2], dtype=jnp.uint32)
+    events = jnp.ones((2, 1), dtype=bool)
+
+    with pytest.raises(AssertionError, match="signed int32 or int64"):
+        binary_csrmm(weights, indices, indptr, events, shape=(1, 2), backend='jax_raw')
 
 
 def _vector_csr_api(x, data, indices, indptr, shape, implementation):
