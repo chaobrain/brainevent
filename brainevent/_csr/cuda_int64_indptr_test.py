@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import jax
@@ -50,6 +51,16 @@ def _shape(dtype, shape=(2,)):
     return jax.ShapeDtypeStruct(shape, dtype)
 
 
+@contextmanager
+def _jax_x64_enabled():
+    old_x64 = jax.config.jax_enable_x64
+    jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", old_x64)
+
+
 def _cuda_kwargs(indices_dtype=jnp.int64, indptr_dtype=jnp.int64, nse=2):
     return {
         'outs': [_shape(jnp.float32)],
@@ -57,6 +68,19 @@ def _cuda_kwargs(indices_dtype=jnp.int64, indptr_dtype=jnp.int64, nse=2):
         'indices_info': _shape(indices_dtype, (nse,)),
         'indptr_info': _shape(indptr_dtype, (2,)),
     }
+
+
+def _recording_ffi_call(calls):
+    def ffi_call(name, out_info, **ffi_kwargs):
+        def call(*args, **kwargs):
+            calls.append((name, out_info, ffi_kwargs, args, kwargs))
+            if isinstance(out_info, (tuple, list)):
+                return tuple(jnp.zeros(info.shape, info.dtype) for info in out_info)
+            return jnp.zeros(out_info.shape, out_info.dtype)
+
+        return call
+
+    return ffi_call
 
 
 @pytest.mark.parametrize(
@@ -162,6 +186,242 @@ def test_plasticity_post_cuda_rejects_int64_weight_indices_before_loading_cuda()
             _shape(jnp.int32),
             **kwargs,
         )
+
+
+def test_float_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
+    ffi_calls = []
+    load_calls = []
+
+    monkeypatch.setattr(float_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(float_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
+
+    with _jax_x64_enabled():
+        indices = jnp.array([0, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2], dtype=jnp.int64)
+
+        mv_kernel = float_mod._csrmv_cuda_kernel(
+            _shape(jnp.float32, (1,)),
+            False,
+            **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+        )
+        mv_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([1.0, 3.0], dtype=jnp.float64),
+        )
+
+        mm_kernel = float_mod._csrmm_cuda_kernel(
+            _shape(jnp.float32, (1,)),
+            True,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': [_shape(jnp.float32, (2, 1))],
+            },
+        )
+        mm_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([[1.0], [3.0]], dtype=jnp.float32),
+        )
+
+    assert [name for _, name in load_calls] == ['csr_float_csrmv', 'csr_float_csrmm']
+    assert [call[0] for call in ffi_calls] == [
+        'csr_float_csrmv.csrmv_nt_auto_f32',
+        'csr_float_csrmm.csrmm_t_warp_homo_f32',
+    ]
+
+
+def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
+    ffi_calls = []
+    load_calls = []
+
+    monkeypatch.setattr(binary_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(binary_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
+
+    with _jax_x64_enabled():
+        indices = jnp.array([0, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2], dtype=jnp.int64)
+
+        mv_kernel = binary_mod._binary_csrmv_cuda_kernel(
+            _shape(jnp.float32, (1,)),
+            _shape(jnp.bool_, (2,)),
+            False,
+            **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+        )
+        mv_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([True, False]),
+        )
+
+        mm_kernel = binary_mod._binary_csrmm_cuda_kernel(
+            _shape(jnp.float32, (2,)),
+            _shape(jnp.float32, (2, 1)),
+            True,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': [_shape(jnp.float32, (2, 1))],
+            },
+        )
+        mm_kernel(
+            jnp.array([2.0, 3.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([[1.0], [0.0]], dtype=jnp.float32),
+        )
+
+    assert [name for _, name in load_calls] == ['csr_binary_csrmv', 'csr_binary_csrmm']
+    assert [call[0] for call in ffi_calls] == [
+        'csr_binary_csrmv.binary_csrmv_nt_auto_homo_f32_bool',
+        'csr_binary_csrmm.binary_csrmm_t_warp_hetero_f32_float',
+    ]
+
+
+def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
+    ffi_calls = []
+    load_calls = []
+
+    monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(binary_indexed_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
+
+    with _jax_x64_enabled():
+        indices = jnp.array([0, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2], dtype=jnp.int64)
+        perm = jnp.array([1, 0], dtype=jnp.int32)
+
+        mv_kernel = binary_indexed_mod._binary_csrmv_indexed_cuda_kernel(
+            _shape(jnp.float32, (2,)),
+            _shape(jnp.bool_, (2,)),
+            False,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'perm_info': _shape(jnp.int32, (2,)),
+            },
+        )
+        mv_kernel(
+            jnp.array([2.0, 3.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            perm,
+            jnp.array([True, False]),
+        )
+
+        mm_kernel = binary_indexed_mod._binary_csrmm_indexed_cuda_kernel(
+            _shape(jnp.float32, (1,)),
+            _shape(jnp.bool_, (2, 1)),
+            True,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': [_shape(jnp.float32, (2, 1))],
+                'perm_info': _shape(jnp.int32, (2,)),
+            },
+        )
+        mm_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            perm,
+            jnp.array([[True], [False]]),
+        )
+
+    assert [name for _, name in load_calls] == ['csr_binary_indexed_csrmv', 'csr_binary_csrmm']
+    assert [call[0] for call in ffi_calls] == [
+        'csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero_f32_bool',
+        'csr_binary_csrmm.binary_csrmm_t_warp_homo_f32_bool',
+    ]
+
+
+def test_slice_yw2y_and_plasticity_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
+    ffi_calls = []
+    load_calls = []
+
+    monkeypatch.setattr(slice_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(slice_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
+    monkeypatch.setattr(yw2y_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(yw2y_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
+    monkeypatch.setattr(plasticity_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(plasticity_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
+
+    with _jax_x64_enabled():
+        indices = jnp.array([0, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2], dtype=jnp.int64)
+
+        slice_kernel = slice_mod._csr_slice_rows_cuda_kernel_generator(
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': [_shape(jnp.float32, (1, 2))],
+                'data_info': _shape(jnp.float32, (2,)),
+                'row_indices_info': _shape(jnp.int32, (1,)),
+            }
+        )
+        slice_kernel(jnp.array([1.0, 2.0]), indices, indptr, jnp.array([0], dtype=jnp.int32))
+
+        slice_grad_kernel = slice_mod._csr_slice_rows_grad_cuda_kernel_generator(
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': [_shape(jnp.float32, (2,))],
+                'ct_info': _shape(jnp.float32, (1, 2)),
+                'row_indices_info': _shape(jnp.int32, (1,)),
+            }
+        )
+        slice_grad_kernel(jnp.array([[1.0, 2.0]]), indices, indptr, jnp.array([0], dtype=jnp.int32))
+
+        yw2y_kernel = yw2y_mod._csrmv_yw2y_cuda_kernel(
+            False,
+            _shape(jnp.float32, (2,)),
+            **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+        )
+        yw2y_kernel(jnp.array([1.0]), jnp.array([2.0, 3.0]), indices, indptr)
+
+        pre_kernel = plasticity_mod._csr_on_pre_cuda_kernel(
+            _shape(jnp.float32, (2,)),
+            _shape(jnp.bool_, (1,)),
+            _shape(jnp.int32, (2,)),
+            outs=[_shape(jnp.float32, (2,))],
+            indptr_info=_shape(jnp.int64, (2,)),
+        )
+        pre_kernel(
+            jnp.array([1.0, 2.0]),
+            indices,
+            indptr,
+            jnp.array([True]),
+            jnp.array([0.5, 1.5]),
+        )
+
+        post_kernel = plasticity_mod._csr2csc_on_post_cuda_kernel(
+            _shape(jnp.float32, (2,)),
+            _shape(jnp.float32, (2,)),
+            _shape(jnp.int32, (2,)),
+            outs=[_shape(jnp.float32, (2,))],
+            indptr_info=_shape(jnp.int64, (2,)),
+            weight_indices_info=_shape(jnp.int32, (2,)),
+        )
+        post_kernel(
+            jnp.array([1.0, 2.0]),
+            indices,
+            indptr,
+            jnp.array([0, 1], dtype=jnp.int32),
+            jnp.array([0.5]),
+            jnp.array([1.0, -1.0]),
+        )
+
+    assert [name for _, name in load_calls] == [
+        'csr_slice_rows',
+        'csr_slice_rows',
+        'csrmv_yw2y',
+        'csr_plasticity_binary_pre',
+        'csr_plasticity_binary_post',
+    ]
+    assert [call[0] for call in ffi_calls] == [
+        'csr_slice_rows.csr_slice_rows_fwd_hetero_auto_f32',
+        'csr_slice_rows.csr_slice_rows_grad_auto_f32',
+        'csrmv_yw2y.csrmv_yw2y_nt_auto_f32',
+        'csr_plasticity_binary_pre.update_csr_on_pre_f32_bool',
+        'csr_plasticity_binary_post.update_csr_on_post_f32_float',
+    ]
 
 
 @requires_gpu

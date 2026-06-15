@@ -299,6 +299,27 @@ def test_gpu_column_block_method_rejects_non_positive_block_size():
         )
 
 
+def test_load_csr_to_csc_cuda_module_is_lazy_and_cached(monkeypatch):
+    import brainevent._misc as misc
+    import brainevent._op as op
+
+    calls = []
+    fake_module = object()
+
+    def fake_load_cuda_file(path, *, name):
+        calls.append((path, name))
+        return fake_module
+
+    monkeypatch.setattr(misc, "_CSR_TO_CSC_CUDA_MODULE", None)
+    monkeypatch.setattr(op, "load_cuda_file", fake_load_cuda_file)
+
+    assert misc._load_csr_to_csc_cuda_module() is fake_module
+    assert misc._load_csr_to_csc_cuda_module() is fake_module
+    assert len(calls) == 1
+    assert calls[0][0].name == "csr_to_csc.cu"
+    assert calls[0][1] == "csr_to_csc"
+
+
 def test_gpu_column_block_method_falls_back_to_numpy(monkeypatch):
     import brainevent._misc as misc
 

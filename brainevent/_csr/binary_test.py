@@ -23,7 +23,13 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brainevent._csr.binary import binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p
+from brainevent._csr.binary import (
+    _binary_csrmv_jax_exp_csrmv_kernel,
+    binary_csrmv,
+    binary_csrmv_p,
+    binary_csrmm,
+    binary_csrmm_p,
+)
 from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 # Every test loops over all native backends (incl. ``numba``), which compile per test and
@@ -95,6 +101,48 @@ def test_binary_csrmm_rejects_unsigned_structure_dtype():
 
     with pytest.raises(AssertionError, match="signed int32 or int64"):
         binary_csrmm(weights, indices, indptr, events, shape=(1, 2), backend='jax_raw')
+
+
+def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
+    with _jax_x64_enabled():
+        kernel = _binary_csrmv_jax_exp_csrmv_kernel(
+            jax.ShapeDtypeStruct((1,), jnp.float32),
+            jax.ShapeDtypeStruct((3,), jnp.bool_),
+            (2, 3),
+            False,
+            indices_info=jax.ShapeDtypeStruct((4,), jnp.int32),
+            outs=[jax.ShapeDtypeStruct((2,), jnp.float32)],
+        )
+
+        got = kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            jnp.array([0, 2, 1, 2], dtype=jnp.int32),
+            jnp.array([0, 2, 4], dtype=jnp.int64),
+            jnp.array([True, False, True]),
+        )[0]
+
+        assert jnp.allclose(got, jnp.array([4.0, 2.0], dtype=jnp.float32))
+
+
+def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
+    with _jax_x64_enabled():
+        kernel = _binary_csrmv_jax_exp_csrmv_kernel(
+            jax.ShapeDtypeStruct((4,), jnp.float32),
+            jax.ShapeDtypeStruct((2,), jnp.float32),
+            (2, 3),
+            True,
+            indices_info=jax.ShapeDtypeStruct((4,), jnp.int32),
+            outs=[jax.ShapeDtypeStruct((3,), jnp.float32)],
+        )
+
+        got = kernel(
+            jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32),
+            jnp.array([0, 2, 1, 2], dtype=jnp.int32),
+            jnp.array([0, 2, 4], dtype=jnp.int64),
+            jnp.array([1.0, -1.0], dtype=jnp.float32),
+        )[0]
+
+        assert jnp.allclose(got, jnp.array([1.0, 0.0, 2.0], dtype=jnp.float32))
 
 
 def _vector_csr_api(x, data, indices, indptr, shape, implementation):
