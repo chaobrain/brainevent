@@ -1539,7 +1539,7 @@ def _csr_to_csc_index_gpu_column_block(
             )
 
             csc_indices_np[base:end] = np.asarray(local_rows_dev, dtype=coord_dtype)
-            if include_perm:
+            if perm_np is not None:
                 perm_np[base:end] = np.asarray(local_perm_dev, dtype=offset_dtype)
 
         if isinstance(csr_indptr, np.ndarray) and isinstance(csr_indices, np.ndarray):
