@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **numba FFI bridge now works on `jax`/`jaxlib` 0.7–0.9, not only 0.10+.** The
+  XLA FFI metadata handshake reported a hardcoded API version (`0.3`), which only
+  the jaxlib bundled with `jax` 0.10+ accepts. Older jaxlib builds advertise a
+  lower framework version (`0.1` for 0.7/0.8, `0.2` for 0.9) and rejected every
+  numba CPU/`numba_cuda` kernel registration with an
+  `INVALID_ARGUMENT … incompatible API version` error, failing ~180 tests on
+  those versions. The bridge now detects the installed jaxlib's FFI API version
+  from its bundled `xla/ffi/api/c_api.h` header and reports that, so registration
+  succeeds across the supported `jax >= 0.5` range.
 
 ## [0.1.0] - 2026-06-07
 
