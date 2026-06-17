@@ -279,13 +279,13 @@ class Test_JITC_Operator_Behavior:
         assert u.math.allclose(
             r1,
             r2,
-            rtol=1e-4 * u.get_unit(r2),
+            rtol=1e-4,
             atol=1e-4 * u.get_unit(r2),
         )
         assert u.math.allclose(
             r3,
             r4,
-            rtol=1e-4 * u.get_unit(r4),
+            rtol=1e-4,
             atol=1e-4 * u.get_unit(r4),
         )
         jax.block_until_ready((right_vec, left_vec))

@@ -16,6 +16,8 @@
 import ctypes
 import enum
 import importlib.util
+import os
+import re
 import threading
 import traceback
 from ctypes import c_void_p, c_int, c_int32, c_int64, c_uint32, c_size_t, c_char_p, POINTER, Structure, CFUNCTYPE
@@ -40,11 +42,59 @@ _FFI_CALLBACK_COUNTER = 0
 # Serializes target registration (trace/lowering time, distinct from execution).
 _REGISTRATION_LOCK = threading.Lock()
 
-# XLA FFI API version implemented by this bridge (jaxlib c_api.h
-# XLA_FFI_API_MAJOR / XLA_FFI_API_MINOR).  Reported back during the metadata
-# handshake so XLA does not reject the handler on a version mismatch.
-XLA_FFI_API_MAJOR = 0
-XLA_FFI_API_MINOR = 3
+def _detect_xla_ffi_api_version() -> Tuple[int, int]:
+    """Return the ``(major, minor)`` XLA FFI API version the installed jaxlib implements.
+
+    The metadata handshake (:meth:`NumbaCpuFfiHandler._ffi_callback`) must report
+    an API version the running XLA framework accepts; XLA validates
+    ``minimum <= reported <= framework``.  That framework version is
+    jaxlib-specific — jaxlib 0.7/0.8 ship ``0.1``, 0.9 ships ``0.2`` and 0.10
+    ships ``0.3`` — so a value hardcoded to the newest release is rejected by
+    every older jaxlib whose framework version is lower (the mismatch that broke
+    the entire numba FFI path on ``jax < 0.10``).  Minor-version bumps are
+    ABI-compatible (new struct fields are only appended and gated by
+    ``struct_size``), so reporting the installed build's own version is always
+    both accepted and safe.
+
+    jaxlib bundles the authoritative numbers in ``xla/ffi/api/c_api.h``
+    (``#define XLA_FFI_API_MAJOR`` / ``XLA_FFI_API_MINOR``); parse them so the
+    reported version tracks whatever jaxlib is actually loaded.
+
+    Returns
+    -------
+    tuple of int
+        ``(major, minor)`` read from the installed jaxlib header, or ``(0, 1)``
+        — the lowest version every jaxlib in the supported range accepts — when
+        the header cannot be located or parsed.
+    """
+    try:
+        import jaxlib
+        header = os.path.join(
+            os.path.dirname(jaxlib.__file__), 'include', 'xla', 'ffi', 'api', 'c_api.h'
+        )
+        major = minor = None
+        with open(header, 'r') as fh:
+            for line in fh:
+                m = re.match(r'\s*#\s*define\s+XLA_FFI_API_MAJOR\s+(\d+)', line)
+                if m:
+                    major = int(m.group(1))
+                    continue
+                m = re.match(r'\s*#\s*define\s+XLA_FFI_API_MINOR\s+(\d+)', line)
+                if m:
+                    minor = int(m.group(1))
+        if major is not None and minor is not None:
+            return major, minor
+    except Exception:
+        pass
+    # Universal floor: every jaxlib in the supported range (jax>=0.5) accepts 0.1.
+    return 0, 1
+
+
+# XLA FFI API version reported by this bridge during the metadata handshake.
+# Detected from the installed jaxlib (see :func:`_detect_xla_ffi_api_version`)
+# rather than hardcoded, so the bridge works across the supported jax range
+# (0.7 → 0.10+) instead of only the newest release.
+XLA_FFI_API_MAJOR, XLA_FFI_API_MINOR = _detect_xla_ffi_api_version()
 
 
 class XLA_FFI_Error_Code(enum.IntEnum):
