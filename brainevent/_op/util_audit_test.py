@@ -44,7 +44,7 @@ import numpy as np
 import pytest
 
 from jax.extend.core import Primitive
-from jax.interpreters import ad, batching, mlir
+from jax.interpreters import ad, mlir
 
 from brainevent._op import util
 from brainevent._op.util import (
@@ -110,7 +110,7 @@ def test_m1_general_batching_rule_all_unbatched():
     Pre-fix ``jax.lax.scan(f, 0, {})`` raised
     ``ValueError: scan got no values to scan over``.  Post-fix the rule
     binds the primitive once and reports every output as unbatched
-    (``batching.not_mapped``).
+    (a ``None`` batch dimension, JAX's ``not_mapped`` sentinel).
     """
     prim = Primitive('m1_unbatched_add')
     prim.multiple_results = False
@@ -126,14 +126,15 @@ def test_m1_general_batching_rule_all_unbatched():
     out, out_dim = general_batching_rule(prim, (a, b), (None, None))
 
     np.testing.assert_allclose(np.asarray(out), np.asarray(a + b))
-    # Every output dim must be flagged unbatched.  ``batching.not_mapped`` is
-    # ``None``, which the default pytree flattener treats as an empty node, so
-    # we flatten with ``is_leaf`` recognizing the sentinel as a real leaf
-    # (this mirrors how JAX inspects output batch dims).
-    is_not_mapped = lambda x: x is batching.not_mapped
+    # Every output dim must be flagged unbatched.  JAX's ``not_mapped``
+    # sentinel is ``None`` in every supported version, and the default pytree
+    # flattener treats ``None`` as an empty node, so we flatten with
+    # ``is_leaf`` recognizing the sentinel as a real leaf (this mirrors how
+    # JAX inspects output batch dims).
+    is_not_mapped = lambda x: x is None
     leaves = jax.tree.leaves(out_dim, is_leaf=is_not_mapped)
     assert leaves, 'expected at least one output-dim leaf'
-    assert all(leaf is batching.not_mapped for leaf in leaves)
+    assert all(leaf is None for leaf in leaves)
     # The out_dim pytree must mirror the output structure.
     assert (jax.tree.structure(out_dim, is_leaf=is_not_mapped)
             == jax.tree.structure(out))
