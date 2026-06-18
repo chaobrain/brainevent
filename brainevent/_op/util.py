@@ -22,7 +22,7 @@ from typing import Any, Callable, Optional, Protocol, Sequence, Tuple, TYPE_CHEC
 import jax
 import numpy as np
 from jax import tree_util
-from jax.interpreters import ad, batching
+from jax.interpreters import ad
 
 from brainevent._compatible_import import Primitive, init_zero
 
@@ -368,9 +368,9 @@ def general_batching_rule(
         A pytree with the same structure as *outs*.  When at least one
         operand is batched, every leaf is ``0`` (the batch dimension is
         the leading axis of each output).  When no operand is batched
-        (every entry of *axes* is ``None``), every leaf is
-        ``jax.interpreters.batching.not_mapped`` to signal that the
-        outputs carry no batch dimension.
+        (every entry of *axes* is ``None``), every leaf is ``None`` to
+        signal that the outputs carry no batch dimension (the value JAX
+        uses internally as the ``not_mapped`` sentinel).
 
     Notes
     -----
@@ -410,13 +410,16 @@ def general_batching_rule(
     # If no operand is actually batched (every axis is ``None``), there is
     # nothing to scan over -- ``jax.lax.scan(f, 0, {})`` would raise
     # "scan got no values to scan over".  Bind the primitive once and mark
-    # every output as unbatched.
+    # every output as unbatched.  ``None`` is the batch dimension JAX uses
+    # for an unmapped output (its ``not_mapped`` sentinel is ``None`` in
+    # every supported version), so we avoid the public ``batching.not_mapped``
+    # symbol, which newer jax has removed.
     if not batch_args:
         if isinstance(prim, Primitive):
             out = prim.bind(*args, **kwargs)
         else:
             out = prim(*args, **kwargs)
-        return out, tree_util.tree_map(lambda _: batching.not_mapped, out)
+        return out, tree_util.tree_map(lambda _: None, out)
 
     def f(_, x):
         """Apply the primitive to a single batch element for ``jax.lax.scan``.
