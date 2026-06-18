@@ -7,17 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-18
+
+A maintenance release focused on the correctness and cross-version compatibility
+of the JAX custom-operator / FFI layer. There are no public API changes and no
+new deprecations; code written against `0.1.0` runs unchanged.
+
+**Requirements:** unchanged from `0.1.0` — Python ≥ 3.11, `jax` ≥ 0.5.0,
+`brainunit` ≥ 0.0.8, `numpy`, `absl-py`.
+
 ### Fixed
 
-- **numba FFI bridge now works on `jax`/`jaxlib` 0.7–0.9, not only 0.10+.** The
-  XLA FFI metadata handshake reported a hardcoded API version (`0.3`), which only
-  the jaxlib bundled with `jax` 0.10+ accepts. Older jaxlib builds advertise a
-  lower framework version (`0.1` for 0.7/0.8, `0.2` for 0.9) and rejected every
+- **Hardened the JAX custom-op / FFI layer against silent wrong answers and
+  process crashes (#164).** An audit of `brainevent/_op` and the C++/CUDA FFI
+  headers (`brainevent/include`) fixed ~30 defects, most of which produced
+  silently-incorrect output or killed the host process instead of raising a
+  clean Python error. Notable fixes:
+  - numba CPU/CUDA callbacks no longer swallow exceptions and return a NULL
+    `OkStatus` (which left the output buffer uninitialized); they now build a
+    real `XLA_FFI_Error*` so JAX raises.
+  - `fp16` / `bf16` / `complex` dtypes are handled via raw byte-views and
+    `ml_dtypes.bfloat16` instead of indexing a `None` entry in the dtype map.
+  - The GPU callback binds the XLA-assigned device before allocating device
+    arrays and streams, closing a multi-GPU data race.
+  - `BE_CHECK` / `BE_CUDA_CHECK` raise C++ exceptions that propagate as
+    `xla::ffi::Error` rather than calling `abort()` and sending `SIGABRT` to the
+    host process.
+  - FFI targets are memoized per `(kernel, shapes, dtypes, platform, launch
+    config)` instead of being re-registered on every call, and the compile cache
+    key now incorporates header byte-contents, the jaxlib version, and the
+    include paths so any header edit triggers a rebuild.
+- **Corrected `indptr` and CSC construction (#166).** Fixes index-pointer and
+  CSC building along with related dtype handling, covered by new regression
+  tests.
+- **numba FFI bridge now works on `jax`/`jaxlib` 0.7–0.9, not only 0.10+ (#167).**
+  The XLA FFI metadata handshake reported a hardcoded API version (`0.3`), which
+  only the jaxlib bundled with `jax` 0.10+ accepts. Older jaxlib builds advertise
+  a lower framework version (`0.1` for 0.7/0.8, `0.2` for 0.9) and rejected every
   numba CPU/`numba_cuda` kernel registration with an
   `INVALID_ARGUMENT … incompatible API version` error, failing ~180 tests on
   those versions. The bridge now detects the installed jaxlib's FFI API version
   from its bundled `xla/ffi/api/c_api.h` header and reports that, so registration
   succeeds across the supported `jax >= 0.5` range.
+- **Restored compatibility with newer JAX (#168).** Recent JAX removed the
+  public `jax.interpreters.batching.not_mapped` symbol, breaking the
+  unpinned-JAX CI job with an `AttributeError`. The all-unbatched branch of
+  `general_batching_rule` now returns a bare `None` batch dimension, which every
+  supported JAX (0.7.2+) treats identically.
+- **Aligned the JITC test suite with the `saiunit` ≥ 0.4 unit contract (#165).**
+  `saiunit` ≥ 0.4 correctly rejects a unit-bearing relative tolerance; the
+  JIT-connectivity unit tests now pass `rtol` as a dimensionless value and keep
+  the physical unit only on `atol`, matching the documented `allclose` contract.
+
+### Internal
+
+- Bumped `codecov/codecov-action` from 6 to 7 (#163).
 
 ## [0.1.0] - 2026-06-07
 
@@ -345,6 +389,7 @@ replacement. Recommended updates:
 
 ## Version Comparison Links
 
+- [0.1.1](https://github.com/chaobrain/brainevent/compare/v0.1.0...v0.1.1)
 - [0.1.0](https://github.com/chaobrain/brainevent/compare/v0.0.7...v0.1.0)
 - [0.0.7](https://github.com/chaobrain/brainevent/compare/v0.0.6...v0.0.7)
 - [0.0.6](https://github.com/chaobrain/brainevent/compare/v0.0.5...v0.0.6)
