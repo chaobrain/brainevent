@@ -82,15 +82,15 @@ keywords = [
     'dynamic sparsity',
 ]
 dependencies = [
-    'numpy>=1.15',
+    'numpy>=2.0',
     'brainunit>=0.0.8',
-    'absl-py',
-    # Upper-bounded because the XLA FFI ABI (XLA_FFI_API_MINOR, ffi.h layout)
-    # used by the compiled kernels can change across minor releases; an
-    # incompatible jaxlib otherwise surfaces only as a runtime load/compile
-    # failure instead of at install time.  jax and jaxlib ship in lockstep, so
-    # bounding jax bounds jaxlib (L16).
-    'jax>=0.5.0,<0.11',
+    # No upper bound: the XLA FFI ABI (XLA_FFI_API_MINOR, ffi.h layout) used by
+    # the compiled kernels can change across minor releases, but the numba FFI
+    # bridge now detects the installed jaxlib's ABI version at runtime
+    # (``_detect_xla_ffi_api_version``) and warns when jax is newer than the
+    # validated range (``_warn_if_untested_jax`` in ``_op/numba_ffi.py``),
+    # instead of pinning a hard ceiling here.
+    'jax>=0.8.0',
 ]
 
 
@@ -107,12 +107,12 @@ brainevent = "brainevent._cli:main"
 
 
 [project.optional-dependencies]
-# Upper bound mirrors the core 'jax' pin above: the FFI ABI is only tested
-# through the 0.9.x/0.10.x line (L16).
-cpu = ['jax[cpu]>=0.7.2,<0.11', 'numba']
-cuda12 = ['jax[cuda12]>=0.7.2,<0.11']
-cuda13 = ['jax[cuda13]>=0.7.2,<0.11']
-tpu = ['jax[tpu]>=0.7.2,<0.11']
+# Lower bound mirrors the core 'jax' pin above; no upper bound — FFI ABI
+# compatibility is checked at runtime (see the core 'jax' dependency note).
+cpu = ['jax[cpu]>=0.8.0', 'numba']
+cuda12 = ['jax[cuda12]>=0.8.0']
+cuda13 = ['jax[cuda13]>=0.8.0']
+tpu = ['jax[tpu]>=0.8.0']
 testing = ['pytest', 'pytest-cov']
 
 

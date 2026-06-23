@@ -1,6 +1,5 @@
-numpy
-jax>=0.7.2
+numpy>=2.0
+jax>=0.8.0
 brainunit>=0.0.4
 brainstate
-absl-py
 braintools

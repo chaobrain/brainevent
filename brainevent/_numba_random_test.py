@@ -13,6 +13,11 @@
 # limitations under the License.
 # ==============================================================================
 
+import importlib.util
+import subprocess
+import sys
+import textwrap
+
 import numpy as np
 import pytest
 
@@ -24,6 +29,8 @@ from brainevent._numba_random import (
     lfsr128_seed, lfsr128_rand, lfsr128_randn,
     lfsr128_random_integers,
 )
+
+_NUMBA_AVAILABLE = importlib.util.find_spec('numba') is not None
 
 
 class TestLFSR88Seed:
@@ -368,6 +375,144 @@ class TestEdgeCases:
         state = lfsr88_seed(42)
         v = lfsr88_normal(state, 0.0, -1.0)
         assert isinstance(v, float)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Lazy Numba import / compilation
+# ──────────────────────────────────────────────────────────────────────
+
+def _run_snippet(snippet: str) -> str:
+    """Run ``snippet`` in a fresh interpreter and return its stdout.
+
+    A subprocess is used because importing the LFSR primitives and triggering
+    their lazy Numba compilation both mutate global process state that cannot be
+    reset within the running pytest session.
+    """
+    proc = subprocess.run(
+        [sys.executable, '-c', textwrap.dedent(snippet)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, f"subprocess failed:\n{proc.stdout}\n{proc.stderr}"
+    return proc.stdout.strip()
+
+
+class TestLazyNumbaImport:
+    """The module must not import Numba until a primitive is actually requested."""
+
+    def test_import_brainevent_does_not_import_numba(self):
+        out = _run_snippet(
+            """
+            import sys
+            import brainevent  # noqa: F401
+            print('numba' in sys.modules)
+            """
+        )
+        assert out == 'False', "importing brainevent must not import numba"
+
+    def test_import_numba_random_does_not_import_numba(self):
+        out = _run_snippet(
+            """
+            import sys
+            import brainevent._numba_random  # noqa: F401
+            print('numba' in sys.modules)
+            """
+        )
+        assert out == 'False', "importing _numba_random must not import numba"
+
+    def test_primitives_are_plain_python_before_compilation(self):
+        out = _run_snippet(
+            """
+            from brainevent import _numba_random as nr
+            print(nr._NUMBA_COMPILED)
+            print(type(nr.lfsr88_seed).__name__)
+            print(len(nr._NUMBA_LFSR_SEED))
+            """
+        )
+        compiled, kind, n_tables = out.splitlines()
+        assert compiled == 'False'
+        assert kind == 'function'          # plain Python, not a Numba dispatcher
+        assert n_tables == '0'             # dispatch tables empty until first use
+
+    @pytest.mark.skipif(not _NUMBA_AVAILABLE, reason="numba not installed")
+    def test_get_helper_triggers_numba_and_rebinds_globals(self):
+        out = _run_snippet(
+            """
+            import sys
+            from brainevent import _numba_random as nr
+            assert 'numba' not in sys.modules
+            fn = nr.get_numba_lfsr_seed()
+            print('numba' in sys.modules)
+            print(nr._NUMBA_COMPILED)
+            print(len(nr._NUMBA_LFSR_SEED))
+            print(type(fn).__module__.split('.')[0])
+            print(type(nr.lfsr88_seed).__module__.split('.')[0])
+            """
+        )
+        numba_imported, compiled, n_tables, fn_mod, global_mod = out.splitlines()
+        assert numba_imported == 'True'
+        assert compiled == 'True'
+        assert n_tables == '3'             # lfsr88 / lfsr113 / lfsr128
+        assert fn_mod == 'numba'           # getter returns a Numba dispatcher
+        assert global_mod == 'numba'       # module global rebound in place
+
+
+@pytest.mark.skipif(not _NUMBA_AVAILABLE, reason="numba not installed")
+class TestNumbaCompiledPrimitives:
+    """Behaviour of the primitives once Numba compilation has been triggered."""
+
+    def test_ensure_compiled_is_idempotent(self):
+        from brainevent import _numba_random as nr
+        nr._ensure_numba_compiled()
+        first = nr.get_numba_lfsr_seed()
+        nr._ensure_numba_compiled()        # second call must be a no-op
+        assert nr.get_numba_lfsr_seed() is first
+
+    def test_all_dispatch_tables_populated(self):
+        from brainevent import _numba_random as nr
+        funcs = nr.get_numba_lfsr_funcs()
+        assert set(funcs) == {
+            'seed', 'rand', 'randint', 'randn', 'uniform', 'normal', 'random_integers',
+        }
+        for table in (
+            nr._NUMBA_LFSR_SEED, nr._NUMBA_LFSR_RAND, nr._NUMBA_LFSR_RANDINT,
+            nr._NUMBA_LFSR_RANDN, nr._NUMBA_LFSR_UNIFORM, nr._NUMBA_LFSR_NORMAL,
+            nr._NUMBA_LFSR_RANDOM_INTEGERS,
+        ):
+            assert set(table) == {'lfsr88', 'lfsr113', 'lfsr128'}
+
+    def test_compiled_seed_matches_plain_python(self):
+        # The bare ``lfsr88_seed`` imported at module load is the plain-Python
+        # version; the getter returns the Numba dispatcher. They must agree.
+        from brainevent._numba_random import get_numba_lfsr_seed
+        compiled_seed = get_numba_lfsr_seed()
+        for s in (0, 1, 42, 2 ** 31 - 1):
+            np.testing.assert_array_equal(compiled_seed(s), lfsr88_seed(s))
+
+    def test_inline_inside_njit_kernel(self):
+        # Exercises the real usage: the primitives are inlined device functions
+        # inside another @numba.njit kernel. This only compiles if the rebound
+        # globals resolve the chained calls (normal -> randn -> rand -> next_key).
+        import numba
+        from brainevent._numba_random import (
+            get_numba_lfsr_seed, get_numba_lfsr_normal, get_numba_lfsr_uniform,
+        )
+        _seed = get_numba_lfsr_seed()
+        _normal = get_numba_lfsr_normal()
+        _uniform = get_numba_lfsr_uniform()
+
+        @numba.njit
+        def kernel(seed, n):
+            state = _seed(seed)
+            acc = 0.0
+            for _ in range(n):
+                acc += _normal(state, 0.0, 1.0)
+                acc += _uniform(state, -1.0, 1.0)
+            return acc
+
+        a = kernel(np.uint32(7), 128)
+        b = kernel(np.uint32(7), 128)
+        assert np.isfinite(a)
+        assert a == b                      # deterministic for a fixed seed
 
 
 if __name__ == '__main__':

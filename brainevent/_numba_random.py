@@ -26,29 +26,20 @@ Three algorithm families are provided:
 * **LFSR88** — Combined LFSR with period ~2^88 (3-component).
 * **LFSR113** — Combined LFSR with period ~2^113 (4-component).
 * **LFSR128** — Combined LFSR with period ~2^128 (4-component).
+
+Numba is **not** imported when this module is imported. The primitives are
+defined as plain-Python functions and are JIT-compiled lazily: the first call
+to any ``get_numba_lfsr_*`` helper imports Numba and swaps each primitive for
+its ``@numba.njit(inline='always')`` dispatcher (see ``_ensure_numba_compiled``).
+This keeps ``import brainevent`` free of Numba's import cost.
 """
 
-import importlib.util
 import math
+from typing import Callable, Dict
 
 import numpy as np
 
 from .config import get_lfsr_algorithm
-
-if importlib.util.find_spec('numba') is not None:
-    import numba
-else:
-    class _NumbaStub:
-        """Minimal stub so decorated functions remain plain Python callables."""
-
-        @staticmethod
-        def njit(func=None, **kwargs):
-            if func is not None:
-                return func
-            return lambda f: f
-
-
-    numba = _NumbaStub()
 
 __all__ = [
     # LFSR88
@@ -91,7 +82,6 @@ __all__ = [
 #  LFSR88
 # ──────────────────────────────────────────────────────────────────────
 
-@numba.njit(inline='always')
 def lfsr88_seed(seed):
     """Create an LFSR88 state array from an integer seed.
 
@@ -113,7 +103,6 @@ def lfsr88_seed(seed):
     return state
 
 
-@numba.njit(inline='always')
 def lfsr88_next_key(state):
     """Advance the LFSR88 state in-place by one step."""
     s1 = state[0]
@@ -135,7 +124,6 @@ def lfsr88_next_key(state):
     state[3] = b
 
 
-@numba.njit(inline='always')
 def lfsr88_randint(state):
     """Generate a random ``uint32`` value and advance the LFSR88 state.
 
@@ -147,7 +135,6 @@ def lfsr88_randint(state):
     return state[0] ^ state[1] ^ state[2]
 
 
-@numba.njit(inline='always')
 def lfsr88_rand(state):
     """Generate a uniform random float in [0, 1) and advance the LFSR88 state.
 
@@ -159,7 +146,6 @@ def lfsr88_rand(state):
     return np.float64(state[0] ^ state[1] ^ state[2]) * 2.3283064365386963e-10
 
 
-@numba.njit(inline='always')
 def lfsr88_randn(state, epsilon=1e-10):
     """Generate a standard-normal random value (Box-Muller) and advance the LFSR88 state.
 
@@ -176,19 +162,16 @@ def lfsr88_randn(state, epsilon=1e-10):
     return z
 
 
-@numba.njit(inline='always')
 def lfsr88_uniform(state, low, high):
     """Generate a uniform random float in [low, high) and advance the LFSR88 state."""
     return lfsr88_rand(state) * (high - low) + low
 
 
-@numba.njit(inline='always')
 def lfsr88_normal(state, mu, sigma, epsilon=1e-10):
     """Generate a normal random value N(mu, sigma) and advance the LFSR88 state."""
     return mu + sigma * lfsr88_randn(state, epsilon)
 
 
-@numba.njit(inline='always')
 def lfsr88_random_integers(state, low, high):
     """Generate a random integer in [low, high] (inclusive) and advance the LFSR88 state."""
     val = lfsr88_randint(state)
@@ -199,7 +182,6 @@ def lfsr88_random_integers(state, low, high):
 #  LFSR113
 # ──────────────────────────────────────────────────────────────────────
 
-@numba.njit(inline='always')
 def lfsr113_seed(seed):
     """Create an LFSR113 state array from an integer seed.
 
@@ -221,7 +203,6 @@ def lfsr113_seed(seed):
     return state
 
 
-@numba.njit(inline='always')
 def lfsr113_next_key(state):
     """Advance the LFSR113 state in-place by one step."""
     z1 = state[0]
@@ -247,21 +228,18 @@ def lfsr113_next_key(state):
     state[3] = z4
 
 
-@numba.njit(inline='always')
 def lfsr113_randint(state):
     """Generate a random ``uint32`` value and advance the LFSR113 state."""
     lfsr113_next_key(state)
     return state[0] ^ state[1] ^ state[2] ^ state[3]
 
 
-@numba.njit(inline='always')
 def lfsr113_rand(state):
     """Generate a uniform random float in [0, 1) and advance the LFSR113 state."""
     lfsr113_next_key(state)
     return np.float64(state[0] ^ state[1] ^ state[2] ^ state[3]) * 2.3283064365386963e-10
 
 
-@numba.njit(inline='always')
 def lfsr113_randn(state, epsilon=1e-10):
     """Generate a standard-normal random value (Box-Muller) and advance the LFSR113 state."""
     u1 = lfsr113_rand(state)
@@ -273,19 +251,16 @@ def lfsr113_randn(state, epsilon=1e-10):
     return z
 
 
-@numba.njit(inline='always')
 def lfsr113_uniform(state, low, high):
     """Generate a uniform random float in [low, high) and advance the LFSR113 state."""
     return lfsr113_rand(state) * (high - low) + low
 
 
-@numba.njit(inline='always')
 def lfsr113_normal(state, mu, sigma, epsilon=1e-10):
     """Generate a normal random value N(mu, sigma) and advance the LFSR113 state."""
     return mu + sigma * lfsr113_randn(state, epsilon)
 
 
-@numba.njit(inline='always')
 def lfsr113_random_integers(state, low, high):
     """Generate a random integer in [low, high] (inclusive) and advance the LFSR113 state."""
     val = lfsr113_randint(state)
@@ -296,7 +271,6 @@ def lfsr113_random_integers(state, low, high):
 #  LFSR128
 # ──────────────────────────────────────────────────────────────────────
 
-@numba.njit(inline='always')
 def lfsr128_seed(seed):
     """Create an LFSR128 state array from an integer seed.
 
@@ -319,7 +293,6 @@ def lfsr128_seed(seed):
     return state
 
 
-@numba.njit(inline='always')
 def lfsr128_next_key(state):
     """Advance the LFSR128 state in-place by one step."""
     z1 = state[0]
@@ -345,21 +318,18 @@ def lfsr128_next_key(state):
     state[3] = z4
 
 
-@numba.njit(inline='always')
 def lfsr128_randint(state):
     """Generate a random ``uint32`` value and advance the LFSR128 state."""
     lfsr128_next_key(state)
     return state[0] ^ state[1] ^ state[2] ^ state[3]
 
 
-@numba.njit(inline='always')
 def lfsr128_rand(state):
     """Generate a uniform random float in [0, 1) and advance the LFSR128 state."""
     lfsr128_next_key(state)
     return np.float64(state[0] ^ state[1] ^ state[2] ^ state[3]) * 2.3283064365386963e-10
 
 
-@numba.njit(inline='always')
 def lfsr128_randn(state, epsilon=1e-10):
     """Generate a standard-normal random value (Box-Muller) and advance the LFSR128 state."""
     u1 = lfsr128_rand(state)
@@ -371,19 +341,16 @@ def lfsr128_randn(state, epsilon=1e-10):
     return z
 
 
-@numba.njit(inline='always')
 def lfsr128_uniform(state, low, high):
     """Generate a uniform random float in [low, high) and advance the LFSR128 state."""
     return lfsr128_rand(state) * (high - low) + low
 
 
-@numba.njit(inline='always')
 def lfsr128_normal(state, mu, sigma, epsilon=1e-10):
     """Generate a normal random value N(mu, sigma) and advance the LFSR128 state."""
     return mu + sigma * lfsr128_randn(state, epsilon)
 
 
-@numba.njit(inline='always')
 def lfsr128_random_integers(state, low, high):
     """Generate a random integer in [low, high] (inclusive) and advance the LFSR128 state."""
     val = lfsr128_randint(state)
@@ -394,66 +361,118 @@ def lfsr128_random_integers(state, low, high):
 #  Dispatch tables and helpers
 # ──────────────────────────────────────────────────────────────────────
 
-_NUMBA_LFSR_SEED = {
-    'lfsr88': lfsr88_seed,
-    'lfsr113': lfsr113_seed,
-    'lfsr128': lfsr128_seed,
-}
+# Names of every LFSR primitive defined above, in definition order. Used by
+# ``_ensure_numba_compiled`` to swap each plain-Python function for its
+# ``numba.njit`` dispatcher exactly once, on first use.
+_LFSR_FUNC_NAMES = (
+    'lfsr88_seed', 'lfsr88_next_key', 'lfsr88_randint', 'lfsr88_rand',
+    'lfsr88_randn', 'lfsr88_uniform', 'lfsr88_normal', 'lfsr88_random_integers',
+    'lfsr113_seed', 'lfsr113_next_key', 'lfsr113_randint', 'lfsr113_rand',
+    'lfsr113_randn', 'lfsr113_uniform', 'lfsr113_normal', 'lfsr113_random_integers',
+    'lfsr128_seed', 'lfsr128_next_key', 'lfsr128_randint', 'lfsr128_rand',
+    'lfsr128_randn', 'lfsr128_uniform', 'lfsr128_normal', 'lfsr128_random_integers',
+)
 
-_NUMBA_LFSR_RANDOM_INTEGERS = {
-    'lfsr88': lfsr88_random_integers,
-    'lfsr113': lfsr113_random_integers,
-    'lfsr128': lfsr128_random_integers,
-}
+# Dispatch tables mapping an algorithm name to its primitive. They are populated
+# lazily by ``_ensure_numba_compiled`` so that importing this module never
+# triggers ``import numba``; they stay empty until the first ``get_numba_lfsr_*``
+# call.
+_NUMBA_LFSR_SEED: Dict[str, Callable] = {}
+_NUMBA_LFSR_RANDOM_INTEGERS: Dict[str, Callable] = {}
+_NUMBA_LFSR_RAND: Dict[str, Callable] = {}
+_NUMBA_LFSR_RANDINT: Dict[str, Callable] = {}
+_NUMBA_LFSR_RANDN: Dict[str, Callable] = {}
+_NUMBA_LFSR_UNIFORM: Dict[str, Callable] = {}
+_NUMBA_LFSR_NORMAL: Dict[str, Callable] = {}
 
-_NUMBA_LFSR_RAND = {
-    'lfsr88': lfsr88_rand,
-    'lfsr113': lfsr113_rand,
-    'lfsr128': lfsr128_rand,
-}
+_NUMBA_COMPILED = False
 
-_NUMBA_LFSR_RANDINT = {
-    'lfsr88': lfsr88_randint,
-    'lfsr113': lfsr113_randint,
-    'lfsr128': lfsr128_randint,
-}
 
-_NUMBA_LFSR_RANDN = {
-    'lfsr88': lfsr88_randn,
-    'lfsr113': lfsr113_randn,
-    'lfsr128': lfsr128_randn,
-}
+def _ensure_numba_compiled():
+    """Numba-compile the LFSR primitives on first use and build the dispatch tables.
 
-_NUMBA_LFSR_UNIFORM = {
-    'lfsr88': lfsr88_uniform,
-    'lfsr113': lfsr113_uniform,
-    'lfsr128': lfsr128_uniform,
-}
+    Importing this module leaves every LFSR primitive as a plain-Python callable
+    so that ``import brainevent`` does not pull in (and pay the import cost of)
+    Numba. The first time a kernel generator requests a primitive through one of
+    the ``get_numba_lfsr_*`` helpers, this function imports Numba, replaces each
+    module-level primitive with its ``@numba.njit(inline='always')`` dispatcher,
+    and fills in the dispatch tables. It is idempotent.
 
-_NUMBA_LFSR_NORMAL = {
-    'lfsr88': lfsr88_normal,
-    'lfsr113': lfsr113_normal,
-    'lfsr128': lfsr128_normal,
-}
+    The module globals are rebound in place -- rather than only storing compiled
+    copies in the dispatch tables -- because the primitives call one another by
+    global name (for example ``lfsr88_rand`` calls ``lfsr88_next_key``). Numba
+    resolves those references against the live module namespace when the
+    enclosing kernel is compiled, so every primitive must already be a dispatcher
+    by then.
+
+    Notes
+    -----
+    If Numba is not installed the primitives are left as plain-Python functions
+    and the dispatch tables are built from those, mirroring the behaviour of the
+    previous import-time Numba stub.
+    """
+    global _NUMBA_COMPILED
+    if _NUMBA_COMPILED:
+        return
+
+    g = globals()
+    try:
+        import numba
+    except ImportError:
+        numba = None
+
+    if numba is not None:
+        for name in _LFSR_FUNC_NAMES:
+            g[name] = numba.njit(inline='always')(g[name])
+
+    _NUMBA_LFSR_SEED.update(
+        lfsr88=g['lfsr88_seed'], lfsr113=g['lfsr113_seed'], lfsr128=g['lfsr128_seed'],
+    )
+    _NUMBA_LFSR_RANDOM_INTEGERS.update(
+        lfsr88=g['lfsr88_random_integers'],
+        lfsr113=g['lfsr113_random_integers'],
+        lfsr128=g['lfsr128_random_integers'],
+    )
+    _NUMBA_LFSR_RAND.update(
+        lfsr88=g['lfsr88_rand'], lfsr113=g['lfsr113_rand'], lfsr128=g['lfsr128_rand'],
+    )
+    _NUMBA_LFSR_RANDINT.update(
+        lfsr88=g['lfsr88_randint'], lfsr113=g['lfsr113_randint'], lfsr128=g['lfsr128_randint'],
+    )
+    _NUMBA_LFSR_RANDN.update(
+        lfsr88=g['lfsr88_randn'], lfsr113=g['lfsr113_randn'], lfsr128=g['lfsr128_randn'],
+    )
+    _NUMBA_LFSR_UNIFORM.update(
+        lfsr88=g['lfsr88_uniform'], lfsr113=g['lfsr113_uniform'], lfsr128=g['lfsr128_uniform'],
+    )
+    _NUMBA_LFSR_NORMAL.update(
+        lfsr88=g['lfsr88_normal'], lfsr113=g['lfsr113_normal'], lfsr128=g['lfsr128_normal'],
+    )
+
+    _NUMBA_COMPILED = True
 
 
 def get_numba_lfsr_seed():
     """Return the Numba LFSR seed function for the current global algorithm."""
+    _ensure_numba_compiled()
     return _NUMBA_LFSR_SEED[get_lfsr_algorithm()]
 
 
 def get_numba_lfsr_random_integers():
     """Return the Numba LFSR random_integers function for the current global algorithm."""
+    _ensure_numba_compiled()
     return _NUMBA_LFSR_RANDOM_INTEGERS[get_lfsr_algorithm()]
 
 
 def get_numba_lfsr_uniform():
     """Return the Numba LFSR uniform function for the current global algorithm."""
+    _ensure_numba_compiled()
     return _NUMBA_LFSR_UNIFORM[get_lfsr_algorithm()]
 
 
 def get_numba_lfsr_normal():
     """Return the Numba LFSR normal function for the current global algorithm."""
+    _ensure_numba_compiled()
     return _NUMBA_LFSR_NORMAL[get_lfsr_algorithm()]
 
 
@@ -466,7 +485,7 @@ def get_numba_lfsr_funcs():
         Keys: ``'seed'``, ``'rand'``, ``'randint'``, ``'randn'``,
         ``'uniform'``, ``'normal'``, ``'random_integers'``.
     """
-
+    _ensure_numba_compiled()
     alg = get_lfsr_algorithm()
     return {
         'seed': _NUMBA_LFSR_SEED[alg],
