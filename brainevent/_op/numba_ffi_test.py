@@ -18,6 +18,7 @@
 import importlib.util
 import os
 import unittest
+import warnings
 
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
@@ -32,10 +33,14 @@ cpu_platform = jax.default_backend() == 'cpu'
 if not cpu_platform or not numba_installed:
     pytest.skip(allow_module_level=True, reason='Numba CPU FFI tests only run on CPU platform with Numba installed')
 
+from brainevent._op import numba_ffi
 from brainevent._op.numba_ffi import (
     _ensure_sequence,
     _normalize_shapes_and_dtypes,
     _numpy_from_buffer,
+    _detect_xla_ffi_api_version,
+    _warn_if_untested_jax,
+    _MAX_VALIDATED_JAX,
     _XLA_FFI_DTYPE_TO_NUMPY,
     numba_kernel,
     NumbaCpuFfiHandler,
@@ -890,6 +895,56 @@ class TestNumbaKernelInputOutputAliases(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(result, expected))
         jax.block_until_ready((a, b, result, expected))
+
+
+class TestXlaFfiAbiVersionCheck:
+    """The hard ``jax<0.11`` install pin was replaced by a runtime ABI check."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_state(self):
+        # Save and restore the globals these tests mutate so ordering is safe.
+        saved_version = jax.__version__
+        saved_flag = numba_ffi._jax_ffi_compat_checked
+        yield
+        jax.__version__ = saved_version
+        numba_ffi._jax_ffi_compat_checked = saved_flag
+
+    def test_detect_returns_major_minor_tuple(self):
+        major, minor = _detect_xla_ffi_api_version()
+        assert isinstance(major, int) and isinstance(minor, int)
+        # Floor for every supported jaxlib is (0, 1); detected value is >= that.
+        assert (major, minor) >= (0, 1)
+
+    def test_no_warning_on_validated_version(self):
+        jax.__version__ = f"{_MAX_VALIDATED_JAX[0]}.{_MAX_VALIDATED_JAX[1]}.99"
+        numba_ffi._jax_ffi_compat_checked = False
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning becomes an error
+            _warn_if_untested_jax()
+
+    def test_warns_on_newer_version(self):
+        newer = f"{_MAX_VALIDATED_JAX[0]}.{_MAX_VALIDATED_JAX[1] + 1}.0"
+        jax.__version__ = newer
+        numba_ffi._jax_ffi_compat_checked = False
+        with pytest.warns(RuntimeWarning, match="XLA FFI ABI"):
+            _warn_if_untested_jax()
+
+    def test_warns_at_most_once(self):
+        jax.__version__ = f"{_MAX_VALIDATED_JAX[0]}.{_MAX_VALIDATED_JAX[1] + 1}.0"
+        numba_ffi._jax_ffi_compat_checked = False
+        with pytest.warns(RuntimeWarning):
+            _warn_if_untested_jax()
+        # Second call must be silent (warn-once guard).
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _warn_if_untested_jax()
+
+    def test_unparseable_version_is_silent(self):
+        jax.__version__ = "not-a-version"
+        numba_ffi._jax_ffi_compat_checked = False
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _warn_if_untested_jax()  # must not raise or warn
 
 
 if __name__ == '__main__':

@@ -97,6 +97,54 @@ def _detect_xla_ffi_api_version() -> Tuple[int, int]:
 XLA_FFI_API_MAJOR, XLA_FFI_API_MINOR = _detect_xla_ffi_api_version()
 
 
+# Highest ``(major, minor)`` jax release whose XLA FFI ABI — the
+# ``XLA_FFI_API_MINOR`` value and the ``ffi.h`` struct layout mirrored by the
+# ctypes definitions in this module — has been validated against this bridge.
+# This replaces the former hard ``jax<0.11`` install pin: newer jax is allowed,
+# but :func:`_warn_if_untested_jax` warns once if the ABI may have shifted.
+_MAX_VALIDATED_JAX = (0, 10)
+
+# Set the first time :func:`_warn_if_untested_jax` runs so the warning fires at
+# most once per process.
+_jax_ffi_compat_checked = False
+
+
+def _warn_if_untested_jax() -> None:
+    """Warn once if the installed jax is newer than the validated XLA FFI ABI.
+
+    Called when the bridge actually uses the XLA FFI ABI (i.e. when an FFI
+    target is registered with XLA). The numba FFI path mirrors the jaxlib
+    ``ffi.h`` struct layout and the ``XLA_FFI_API_MINOR`` handshake by hand, so a
+    jax/jaxlib release that changes that layout could silently break it. Rather
+    than pin a hard upper bound at install time, the bridge runs against any jax
+    and emits a single :class:`RuntimeWarning` when the installed version is
+    newer than :data:`_MAX_VALIDATED_JAX`, pointing the user at the issue
+    tracker. Parsing failures are ignored (no warning).
+    """
+    global _jax_ffi_compat_checked
+    if _jax_ffi_compat_checked:
+        return
+    _jax_ffi_compat_checked = True
+    try:
+        version = tuple(int(part) for part in jax.__version__.split('.')[:2])
+    except (AttributeError, ValueError):
+        return
+    if version > _MAX_VALIDATED_JAX:
+        import warnings
+
+        tested = f"{_MAX_VALIDATED_JAX[0]}.{_MAX_VALIDATED_JAX[1]}"
+        warnings.warn(
+            f"brainevent's numba XLA FFI bridge has been validated against "
+            f"jax <= {tested}.x, but jax {jax.__version__} is installed. The XLA "
+            f"FFI ABI (XLA_FFI_API_MINOR and the ffi.h struct layout) may have "
+            f"changed; if numba kernels fail to compile or return wrong results, "
+            f"please report it at "
+            f"https://github.com/chaobrain/brainevent/issues.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
 class XLA_FFI_Error_Code(enum.IntEnum):
     """Subset of XLA FFI error codes (mirrors ``absl::StatusCode``)."""
     OK = 0
@@ -558,6 +606,7 @@ class NumbaCpuFfiHandler:
         self._callback = _FFI_CALLBACK_TYPE(self._ffi_callback)
 
         # Register as an FFI target (typed FFI api_version=1 is the default in JAX 0.9+)
+        _warn_if_untested_jax()
         capsule = jax.ffi.pycapsule(ctypes.cast(self._callback, c_void_p).value)
         jax.ffi.register_ffi_target(name, capsule, platform="cpu")
 

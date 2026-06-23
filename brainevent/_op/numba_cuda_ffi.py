@@ -37,6 +37,7 @@ from .numba_ffi import (
     get_xla_stream,
     get_device_ordinal,
     _normalize_shapes_and_dtypes,
+    _warn_if_untested_jax,
 )
 from .util import OutType, abstract_arguments
 
@@ -363,6 +364,7 @@ class NumbaCudaFfiHandler:
         self._callback = _CUDA_FFI_CALLBACK_TYPE(self._ffi_callback)
 
         # Register as an FFI target for CUDA platform
+        _warn_if_untested_jax()
         capsule = jax.ffi.pycapsule(ctypes.cast(self._callback, c_void_p).value)
         jax.ffi.register_ffi_target(name, capsule, platform="CUDA")
 
@@ -841,6 +843,7 @@ class NumbaCudaCallableHandler:
         self._callback = _CUDA_CALLABLE_CALLBACK_TYPE(self._ffi_callback)
 
         # Register as an FFI target for CUDA platform
+        _warn_if_untested_jax()
         capsule = jax.ffi.pycapsule(ctypes.cast(self._callback, c_void_p).value)
         jax.ffi.register_ffi_target(name, capsule, platform="CUDA")
 
