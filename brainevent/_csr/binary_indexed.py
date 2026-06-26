@@ -882,9 +882,10 @@ def binary_csrmm_indexed_p_call(
 def _csrmm_idx_jvp_data(data_dot, data, indices, indptr, perm, B, task_begin, task_end, status, *, shape, transpose, **kw):
     # Linear in weights (events fixed): re-enter the indexed primitive.
     workspace = _workspace_from_task_operands(kw['task_capacity'], task_begin, task_end, status)
-    return binary_csrmm_indexed_p_call(
+    tangent = binary_csrmm_indexed_p_call(
         data_dot, indices, indptr, perm, B, workspace, shape=shape, transpose=transpose, backend=kw['backend']
-    )
+    )[0]
+    return tangent, jnp.zeros_like(task_begin), jnp.zeros_like(task_end), jnp.zeros_like(status)
 
 
 def _csrmm_idx_jvp_B(B_dot, data, indices, indptr, perm, B, task_begin, task_end, status, *, shape, transpose, **kw):

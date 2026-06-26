@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent._csr.binary import binary_csrmv, binary_csrmm
+from brainevent._csr.binary import binary_csrmv, binary_csrmm, _workspace_from_task_operands
 from brainevent._csr.binary_indexed import (
     binary_csrmv_indexed,
     binary_csrmv_indexed_p_call,
@@ -169,6 +169,41 @@ def test_binary_csrmm_indexed_p_call_always_returns_task_outputs():
     assert task_begin.shape == workspace.task_begin.shape
     assert task_end.shape == workspace.task_end.shape
     assert status.shape == workspace.status.shape
+
+
+def test_binary_csrmm_indexed_weight_jvp_zeroes_task_tangents():
+    weights = jnp.array([10.0, 20.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    perm = jnp.array([1, 0], dtype=jnp.int32)
+    matrix = jnp.array([[True, False], [False, True]])
+    workspace = _workspace_from_task_operands(
+        2,
+        jnp.array([3, 5], dtype=jnp.int32),
+        jnp.array([7, 11], dtype=jnp.int32),
+        jnp.array([13, 17], dtype=jnp.int32),
+    )
+
+    def call(w):
+        return binary_csrmm_indexed_p_call(
+            w,
+            indices,
+            indptr,
+            perm,
+            matrix,
+            shape=(1, 2),
+            transpose=False,
+            backend="jax_raw",
+            workspace=workspace,
+        )
+
+    _, tangents = jax.jvp(call, (weights,), (jnp.ones_like(weights),))
+    math_tangent, task_begin_tangent, task_end_tangent, status_tangent = tangents
+
+    assert jnp.allclose(math_tangent, jnp.array([[1.0, 1.0]], dtype=jnp.float32))
+    assert jnp.array_equal(task_begin_tangent, jnp.zeros_like(workspace.task_begin))
+    assert jnp.array_equal(task_end_tangent, jnp.zeros_like(workspace.task_end))
+    assert jnp.array_equal(status_tangent, jnp.zeros_like(workspace.status))
 
 
 def test_csr_unfavorable_binary_matvec_mounts_indexed_workspace():
