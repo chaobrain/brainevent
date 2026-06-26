@@ -129,9 +129,9 @@ def binary_csrmv(
     v: Data,
     *,
     shape: MatrixShape,
+    workspace,
     transpose: bool = False,
     backend: Optional[str] = None,
-    workspace=None,
 ) -> Data:
     """
     Product of a CSR sparse matrix and a dense vector using event-driven
@@ -169,6 +169,11 @@ def binary_csrmv(
     shape : tuple of int
         Two-element tuple ``(m, k)`` giving the logical shape of the
         sparse matrix ``A``.
+    workspace
+        Explicit binary task workspace with ``task_capacity``,
+        ``task_begin``, ``task_end``, and ``status`` attributes.  CSR/CSC
+        matrix routes are intended to prepare and pass this private
+        workspace for normal callers.
     transpose : bool, optional
         If ``True``, the sparse matrix is transposed before multiplication,
         i.e. compute ``A.T @ v``.  Default is ``False``.
@@ -229,12 +234,13 @@ def binary_csrmv(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.binary import binary_csrmv
+        >>> from brainevent._csr.binary import _make_binary_csrmv_benchmark_workspace, binary_csrmv
         >>> data = jnp.array([0.5])           # homogeneous weight
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
         >>> v = jnp.array([True, False, True])  # binary event vector
-        >>> binary_csrmv(data, indices, indptr, v, shape=(2, 3))
+        >>> workspace = _make_binary_csrmv_benchmark_workspace(indptr)
+        >>> binary_csrmv(data, indices, indptr, v, shape=(2, 3), workspace=workspace)
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
@@ -703,6 +709,35 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, task_begin, task_en
 
 
 def _csrmv_batching(args, axes, **kwargs):
+    axes = tuple(axes)
+    if axes == (None, None, None, 0, None, None, None):
+        assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
+        r = binary_csrmm_p_call(
+            args[0],
+            args[1],
+            args[2],
+            args[3].T,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
+        )
+        math_out = r[0]
+        return (math_out, args[4], args[5], args[6]), (1, None, None, None)
+
+    if axes == (None, None, None, 1, None, None, None):
+        assert args[3].ndim == 2, 'Batching axis 1 requires 2D input.'
+        r = binary_csrmm_p_call(
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
+        )
+        math_out = r[0]
+        return (math_out, args[4], args[5], args[6]), (1, None, None, None)
+
     return general_batching_rule(binary_csrmv_p, args, axes, **kwargs)
 
 
@@ -781,7 +816,7 @@ def binary_csrmv_p_call(
     indices,
     indptr,
     vector,
-    workspace=None,
+    workspace,
     *,
     shape: MatrixShape,
     transpose: bool,
@@ -812,6 +847,11 @@ def binary_csrmv_p_call(
         Dense event vector.  Shape ``(shape[0],)`` when
         ``transpose=True`` or ``(shape[1],)`` when ``transpose=False``.
         Dtype may be boolean or floating-point.
+    workspace
+        Explicit binary task workspace with ``task_capacity``,
+        ``task_begin``, ``task_end``, and ``status`` attributes.  This
+        low-level function requires the private workspace explicitly; CSR/CSC
+        wrappers are intended to hide construction from normal callers.
     shape : tuple of int
         Two-element tuple ``(m, k)`` giving the logical shape of the
         sparse matrix.
@@ -867,13 +907,14 @@ def binary_csrmv_p_call(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.binary import binary_csrmv_p_call
+        >>> from brainevent._csr.binary import _make_binary_csrmv_benchmark_workspace, binary_csrmv_p_call
         >>> weights = jnp.array([0.5])
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
         >>> vector = jnp.array([True, False, True])
+        >>> workspace = _make_binary_csrmv_benchmark_workspace(indptr)
         >>> result = binary_csrmv_p_call(
-        ...     weights, indices, indptr, vector,
+        ...     weights, indices, indptr, vector, workspace,
         ...     shape=(2, 3), transpose=False)
     """
     assert indptr.ndim == 1, "Indptr must be 1D."

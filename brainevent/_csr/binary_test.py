@@ -26,6 +26,7 @@ import pytest
 from brainevent._csr.binary import (
     _binary_csrmv_benchmark_data,
     _binary_csrmv_jax_exp_csrmv_kernel,
+    _csrmv_batching,
     binary_csrmv,
     binary_csrmv_p,
     binary_csrmv_p_call,
@@ -121,6 +122,69 @@ def test_binary_csrmv_benchmark_data_includes_workspace_for_p_call():
     assert task_begin.shape == workspace.task_begin.shape
     assert task_end.shape == workspace.task_end.shape
     assert status.shape == workspace.status.shape
+
+
+def test_binary_csrmv_batching_vector_axis_0_uses_csrmm_fast_path(monkeypatch):
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    vector = jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
+    workspace = _make_binary_task_workspace(indptr)
+    math_out = jnp.ones((1, 2), dtype=jnp.float32)
+    calls = []
+
+    def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend):
+        calls.append((w, idx, ptr, b, shape, transpose, backend))
+        return (math_out,)
+
+    monkeypatch.setattr(
+        "brainevent._csr.binary.binary_csrmm_p_call",
+        fake_csrmm_p_call,
+    )
+
+    out, out_axes = _csrmv_batching(
+        (weights, indices, indptr, vector, workspace.task_begin, workspace.task_end, workspace.status),
+        (None, None, None, 0, None, None, None),
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+    )
+
+    assert calls
+    assert out == (math_out, workspace.task_begin, workspace.task_end, workspace.status)
+    assert out_axes == (1, None, None, None)
+
+
+def test_binary_csrmv_batching_vector_axis_1_uses_csrmm_fast_path(monkeypatch):
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    vector = jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
+    workspace = _make_binary_task_workspace(indptr)
+    math_out = jnp.ones((1, 2), dtype=jnp.float32)
+    calls = []
+
+    def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend):
+        calls.append((w, idx, ptr, b, shape, transpose, backend))
+        return (math_out,)
+
+    monkeypatch.setattr(
+        "brainevent._csr.binary.binary_csrmm_p_call",
+        fake_csrmm_p_call,
+    )
+
+    out, out_axes = _csrmv_batching(
+        (weights, indices, indptr, vector, workspace.task_begin, workspace.task_end, workspace.status),
+        (None, None, None, 1, None, None, None),
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+    )
+
+    assert calls
+    assert calls[0][3] is vector
+    assert out == (math_out, workspace.task_begin, workspace.task_end, workspace.status)
+    assert out_axes == (1, None, None, None)
 
 
 def test_binary_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
