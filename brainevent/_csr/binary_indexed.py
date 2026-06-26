@@ -436,6 +436,8 @@ def binary_csrmv_indexed_p_call(
 # --------------------------------------------------------------------------- #
 def _idx_jvp_v(v_dot, weights, indices, indptr, perm, v, task_begin, task_end, status, *, shape, transpose, **kw):
     w = weights if weights.shape[0] == 1 else weights[perm]
+    # v_dot is a dense/float tangent, so this intentionally uses float csrmv;
+    # the binary task workspace is only needed for event-driven primal paths.
     return (
         csrmv(w, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kw['backend']),
         jnp.zeros_like(task_begin),
@@ -470,6 +472,7 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, task_begin, 
             ct_events = ad.Zero(events)
         else:
             w = weights if weights.shape[0] == 1 else weights[perm]
+            # ct_events is dense/float cotangent data, not binary events.
             ct_events = csrmv(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
         return weights, indices, indptr, perm, ct_events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
     else:

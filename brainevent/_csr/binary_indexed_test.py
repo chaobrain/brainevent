@@ -166,6 +166,13 @@ def test_fcn_unfavorable_binary_matvec_uses_indexed_workspace():
 
     assert got.shape == (2,)
     assert jnp.allclose(got, conn.todense() @ vector.astype(jnp.float32))
+    first = conn.buffers["binary_workspace"]
+
+    got_again = conn @ BinaryArray(vector)
+    second = conn.buffers["binary_workspace"]
+
+    assert jnp.allclose(got_again, got)
+    assert second.task_begin is first.task_begin
 
 
 def test_indexed_mv_rejects_int64_indices_with_int32_indptr():
