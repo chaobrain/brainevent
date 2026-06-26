@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from brainevent._csr.main import CSR
 
 from brainevent._compatible_import import Tracer
+from brainevent._csr.binary import _make_binary_csrmv_benchmark_workspace
 from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from brainevent._csr.plasticity_binary import update_csr_on_binary_post
 from brainevent._csr.slice import csr_slice_rows
@@ -91,6 +92,10 @@ def _align_binary_matmat_output(result, expected_shape, op_name: str):
         f'binary matmat output shape mismatch in {op_name}: '
         f'got {result.shape}, expected {expected_shape}.'
     )
+
+
+def _make_indexed_csrmv_workspace(indptr):
+    return _make_binary_csrmv_benchmark_workspace(indptr)
 
 
 def _ensure_fixed_conn_initialized_outside_jit(indices: Index, *, kind: str) -> None:
@@ -281,9 +286,10 @@ class FixedNumConn(DataRepresentation):
         # CSR kernel -- it reads ``data[perm[j]]`` so only active columns are
         # touched (no full-size weight gather). Same shape/transpose as CSR/CSC.
         csc_indptr, csc_indices, perm = self._weight_indices()
+        workspace = _make_indexed_csrmv_workspace(csc_indptr)
         return binary_csrmv_indexed(
             self.data.reshape(-1), csc_indices, csc_indptr, perm, s,
-            shape=a_shape[::-1], transpose=True, backend=self.backend,
+            shape=a_shape[::-1], transpose=True, backend=self.backend, workspace=workspace,
         )
 
     def _binary_matmat(self, matrix, transpose_W: bool):

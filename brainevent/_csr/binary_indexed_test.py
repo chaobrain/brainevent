@@ -27,6 +27,7 @@ from brainevent._csr.binary_indexed import (
     binary_csrmm_indexed,
 )
 from brainevent._csr.main import _make_binary_task_workspace
+from brainevent import BinaryArray, CSC, CSR, FixedNumPerPre
 
 
 @contextmanager
@@ -117,6 +118,40 @@ def test_binary_csrmv_indexed_p_call_always_returns_task_outputs():
     assert task_begin.shape == workspace.task_begin.shape
     assert task_end.shape == workspace.task_end.shape
     assert status.shape == workspace.status.shape
+
+
+def test_csr_unfavorable_binary_matvec_mounts_indexed_workspace():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    csr = CSR.fromdense(dense, backend="jax_raw").build_weight_indices()
+    vector = jnp.array([True, False])
+
+    got = csr @ BinaryArray(vector)
+
+    assert got.shape == (2,)
+    assert jnp.allclose(got, dense @ vector.astype(jnp.float32))
+
+
+def test_csc_unfavorable_binary_rmatvec_mounts_indexed_workspace():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    csc = CSC.fromdense(dense, backend="jax_raw").build_weight_indices()
+    vector = jnp.array([True, False])
+
+    got = BinaryArray(vector) @ csc
+
+    assert got.shape == (2,)
+    assert jnp.allclose(got, vector.astype(jnp.float32) @ dense)
+
+
+def test_fcn_unfavorable_binary_matvec_uses_indexed_workspace():
+    data = jnp.array([[1.0, 2.0], [3.0, 0.0]], dtype=jnp.float32)
+    indices = jnp.array([[0, 1], [1, 0]], dtype=jnp.int32)
+    conn = FixedNumPerPre((data, indices), shape=(2, 2), backend="jax_raw").build_weight_indices()
+    vector = jnp.array([False, True])
+
+    got = conn @ BinaryArray(vector)
+
+    assert got.shape == (2,)
+    assert jnp.allclose(got, conn.todense() @ vector.astype(jnp.float32))
 
 
 def test_indexed_mv_rejects_int64_indices_with_int32_indptr():

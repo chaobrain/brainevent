@@ -162,6 +162,11 @@ def _ensure_binary_workspace(matrix, key: str, indptr):
     return _with_binary_workspace(matrix, key, _make_binary_task_workspace(indptr))
 
 
+def _ensure_binary_workspace_and_get(matrix, key: str, indptr):
+    matrix = _ensure_binary_workspace(matrix, key, indptr)
+    return matrix, _binary_workspace(matrix, key)
+
+
 class CompressedSparseData(DataRepresentation):
     """
     Abstract base class for compressed sparse matrix formats.
@@ -1553,9 +1558,10 @@ class CSR(CompressedSparseData):
                 # view instead (column-major scatter), reading canonical weights
                 # through ``perm`` so only active columns are touched.
                 csc_indptr, csc_indices, perm = self._weight_indices()
+                matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", csc_indptr)
                 return binary_csrmv_indexed(
-                    self.data, csc_indices, csc_indptr, perm, other,
-                    shape=self.shape[::-1], transpose=True, backend=self.backend,
+                    matrix.data, csc_indices, csc_indptr, perm, other,
+                    shape=matrix.shape[::-1], transpose=True, backend=matrix.backend, workspace=workspace,
                 )
             elif other.ndim == 2:
                 # ``CSR @ M`` is the *unfavorable* matmat direction: a row-major
@@ -1636,8 +1642,9 @@ class CSR(CompressedSparseData):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csrmv(self.data, self.indices, self.indptr, other,
-                                    shape=self.shape, transpose=True, backend=self.backend)
+                matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", self.indptr)
+                return binary_csrmv(matrix.data, matrix.indices, matrix.indptr, other,
+                                    shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace)
             elif other.ndim == 2:
                 other = other.T
                 r = binary_csrmm(self.data, self.indices, self.indptr, other,
@@ -2423,11 +2430,13 @@ class CSC(CompressedSparseData):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
+                matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", self.indptr)
                 return binary_csrmv(
-                    data, self.indices, self.indptr, other,
-                    shape=self.shape[::-1],
+                    matrix.data, matrix.indices, matrix.indptr, other,
+                    shape=matrix.shape[::-1],
                     transpose=True,
-                    backend=self.backend,
+                    backend=matrix.backend,
+                    workspace=workspace,
                 )
             elif other.ndim == 2:
                 return binary_csrmm(
@@ -2511,9 +2520,10 @@ class CSC(CompressedSparseData):
                 # instead (row-major scatter), reading canonical weights through
                 # ``perm`` so only active rows are touched.
                 csr_indptr, csr_indices, perm = self._weight_indices()
+                matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", csr_indptr)
                 return binary_csrmv_indexed(
-                    self.data, csr_indices, csr_indptr, perm, other,
-                    shape=self.shape, transpose=True, backend=self.backend,
+                    matrix.data, csr_indices, csr_indptr, perm, other,
+                    shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace,
                 )
             elif other.ndim == 2:
                 # ``M @ CSC`` is the *unfavorable* matmat direction: a

@@ -29,6 +29,7 @@ import brainevent._csr.yw2y as yw2y_mod
 from brainevent._csr.binary import binary_csrmm, binary_csrmv
 from brainevent._csr.binary_indexed import binary_csrmm_indexed, binary_csrmv_indexed
 from brainevent._csr.float import csrmm, csrmv
+from brainevent._csr.main import _make_binary_task_workspace
 from brainevent._csr.plasticity_binary import update_csr_on_binary_post, update_csr_on_binary_pre
 from brainevent._csr.slice import csr_slice_rows, csr_slice_rows_grad
 from brainevent._csr.yw2y import csrmv_yw2y
@@ -466,9 +467,13 @@ def test_binary_csrmv_cuda_accepts_int64_indptr(transpose, homo):
     indptr64 = indptr32.astype(jnp.int64)
     data = weights if not homo else jnp.array([2.0], dtype=jnp.float32)
     vector = jnp.array([True, False], dtype=jnp.bool_) if transpose else jnp.array([True, False, True])
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
 
-    got = binary_csrmv(data, indices, indptr64, vector, shape=(2, 3), transpose=transpose, backend='cuda_raw')
-    expected = binary_csrmv(data, indices, indptr32, vector, shape=(2, 3), transpose=transpose, backend='jax_raw')
+    got = binary_csrmv(data, indices, indptr64, vector, shape=(2, 3), transpose=transpose,
+                       backend='cuda_raw', workspace=workspace64)
+    expected = binary_csrmv(data, indices, indptr32, vector, shape=(2, 3), transpose=transpose,
+                            backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -499,11 +504,13 @@ def test_binary_indexed_cuda_accepts_int64_indptr(transpose):
     indptr64 = indptr32.astype(jnp.int64)
     perm = jnp.array([2, 0, 3, 1], dtype=jnp.int32)
     vector = jnp.array([True, False], dtype=jnp.bool_) if transpose else jnp.array([True, False, True])
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
 
     got = binary_csrmv_indexed(weights, indices, indptr64, perm, vector, shape=(2, 3),
-                               transpose=transpose, backend='cuda_raw')
+                               transpose=transpose, backend='cuda_raw', workspace=workspace64)
     expected = binary_csrmv_indexed(weights, indices, indptr32, perm, vector, shape=(2, 3),
-                                    transpose=transpose, backend='jax_raw')
+                                    transpose=transpose, backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
