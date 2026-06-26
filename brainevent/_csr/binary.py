@@ -103,7 +103,7 @@ def _workspace_from_task_operands(task_capacity, task_begin, task_end, status):
     )
 
 
-def _make_binary_csrmv_benchmark_workspace(indptr):
+def _make_binary_csrmv_workspace(indptr):
     indptr_np = np.asarray(indptr, dtype=np.int64)
     row_lengths = np.diff(indptr_np)
     task_chunks = np.where(
@@ -119,6 +119,10 @@ def _make_binary_csrmv_benchmark_workspace(indptr):
         jnp.empty((task_capacity,), dtype=task_dtype),
         jnp.empty((2,), dtype=jnp.int32),
     )
+
+
+def _make_binary_csrmv_benchmark_workspace(indptr):
+    return _make_binary_csrmv_workspace(indptr)
 
 
 @namescope(static_argnames=("shape", "transpose"))

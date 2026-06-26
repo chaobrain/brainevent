@@ -159,7 +159,13 @@ def _ensure_binary_workspace(matrix, key: str, indptr):
     workspace_map = matrix.buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {}
     if key in workspace_map:
         return matrix
-    return _with_binary_workspace(matrix, key, _make_binary_task_workspace(indptr))
+    workspace_map = dict(workspace_map)
+    workspace_map[key] = _make_binary_task_workspace(indptr)
+    if _BINARY_WORKSPACE_BUFFER in matrix.buffers:
+        matrix.set_buffer(_BINARY_WORKSPACE_BUFFER, workspace_map)
+    else:
+        matrix.register_buffer(_BINARY_WORKSPACE_BUFFER, workspace_map)
+    return matrix
 
 
 def _ensure_binary_workspace_and_get(matrix, key: str, indptr):

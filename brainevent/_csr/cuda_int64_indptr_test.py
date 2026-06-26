@@ -244,6 +244,7 @@ def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatc
     with _jax_x64_enabled():
         indices = jnp.array([0, 1], dtype=jnp.int32)
         indptr = jnp.array([0, 2], dtype=jnp.int64)
+        workspace = _make_binary_task_workspace(indptr)
 
         mv_kernel = binary_mod._binary_csrmv_cuda_kernel(
             _shape(jnp.float32, (1,)),
@@ -256,6 +257,9 @@ def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatc
             indices,
             indptr,
             jnp.array([True, False]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )
 
         mm_kernel = binary_mod._binary_csrmm_cuda_kernel(
@@ -292,6 +296,7 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
         indices = jnp.array([0, 1], dtype=jnp.int32)
         indptr = jnp.array([0, 2], dtype=jnp.int64)
         perm = jnp.array([1, 0], dtype=jnp.int32)
+        workspace = _make_binary_task_workspace(indptr)
 
         mv_kernel = binary_indexed_mod._binary_csrmv_indexed_cuda_kernel(
             _shape(jnp.float32, (2,)),
@@ -308,6 +313,9 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
             indptr,
             perm,
             jnp.array([True, False]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )
 
         mm_kernel = binary_indexed_mod._binary_csrmm_indexed_cuda_kernel(

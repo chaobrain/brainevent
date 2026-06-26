@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from brainevent._csr.main import CSR
 
 from brainevent._compatible_import import Tracer
-from brainevent._csr.binary import _make_binary_csrmv_benchmark_workspace
+from brainevent._csr.binary import _make_binary_csrmv_workspace
 from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from brainevent._csr.plasticity_binary import update_csr_on_binary_post
 from brainevent._csr.slice import csr_slice_rows
@@ -95,7 +95,7 @@ def _align_binary_matmat_output(result, expected_shape, op_name: str):
 
 
 def _make_indexed_csrmv_workspace(indptr):
-    return _make_binary_csrmv_benchmark_workspace(indptr)
+    return _make_binary_csrmv_workspace(indptr)
 
 
 def _ensure_fixed_conn_initialized_outside_jit(indices: Index, *, kind: str) -> None:

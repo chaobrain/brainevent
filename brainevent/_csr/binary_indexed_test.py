@@ -26,7 +26,7 @@ from brainevent._csr.binary_indexed import (
     binary_csrmv_indexed_p_call,
     binary_csrmm_indexed,
 )
-from brainevent._csr.main import _make_binary_task_workspace
+from brainevent._csr.main import _binary_workspace, _make_binary_task_workspace
 from brainevent import BinaryArray, CSC, CSR, FixedNumPerPre
 
 
@@ -129,6 +129,13 @@ def test_csr_unfavorable_binary_matvec_mounts_indexed_workspace():
 
     assert got.shape == (2,)
     assert jnp.allclose(got, dense @ vector.astype(jnp.float32))
+    first = _binary_workspace(csr, "csc")
+
+    got_again = csr @ BinaryArray(vector)
+    second = _binary_workspace(csr, "csc")
+
+    assert jnp.allclose(got_again, got)
+    assert second.task_begin is first.task_begin
 
 
 def test_csc_unfavorable_binary_rmatvec_mounts_indexed_workspace():
@@ -140,6 +147,13 @@ def test_csc_unfavorable_binary_rmatvec_mounts_indexed_workspace():
 
     assert got.shape == (2,)
     assert jnp.allclose(got, vector.astype(jnp.float32) @ dense)
+    first = _binary_workspace(csc, "csr")
+
+    got_again = BinaryArray(vector) @ csc
+    second = _binary_workspace(csc, "csr")
+
+    assert jnp.allclose(got_again, got)
+    assert second.task_begin is first.task_begin
 
 
 def test_fcn_unfavorable_binary_matvec_uses_indexed_workspace():

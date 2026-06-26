@@ -112,6 +112,9 @@ def test_ensure_binary_workspace_reuses_existing_workspace():
     prepared = _ensure_binary_workspace(csr, "csr", csr.indptr)
     prepared_again = _ensure_binary_workspace(prepared, "csr", csr.indptr)
 
+    assert prepared is csr
+    assert prepared_again is csr
+    assert "binary_workspace" in csr.buffers
     first = _binary_workspace(prepared, "csr")
     second = _binary_workspace(prepared_again, "csr")
     assert first.task_capacity == 1
