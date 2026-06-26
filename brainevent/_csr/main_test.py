@@ -1265,8 +1265,8 @@ def _rand_dense(rng, m, n, p=0.4):
     return _jnp.asarray((rng.random((m, n)) < p) * rng.random((m, n)), _jnp.float32)
 
 
-def test_csr_at_event_matches_dense_and_caches():
-    # CSR @ event is the unfavorable direction -> indexed column-major scatter.
+def test_csr_at_event_matches_dense_without_mirror_cache_by_default():
+    # Default/JAX-style routing stays on the direct CSR binary path.
     rng = _np.random.default_rng(3)
     m, k = 5, 7
     csr = _be.CSR.fromdense(_rand_dense(rng, m, k))
@@ -1275,8 +1275,7 @@ def test_csr_at_event_matches_dense_and_caches():
     ref = csr.todense() @ ev.astype(_jnp.float32)
     assert got.shape == (m,)
     assert _jnp.allclose(got, ref, atol=1e-5)
-    # the indexed path must have built & cached the CSC-like weight indices
-    assert csr.buffers.get('csc') is not None
+    assert csr.buffers.get('csc') is None
 
 
 def test_event_at_csr_favorable_matches_dense():
@@ -1291,8 +1290,8 @@ def test_event_at_csr_favorable_matches_dense():
     assert _jnp.allclose(got, ref, atol=1e-5)
 
 
-def test_event_at_csc_matches_dense_and_caches():
-    # event @ CSC is the unfavorable direction -> indexed row-major scatter.
+def test_event_at_csc_matches_dense_without_mirror_cache_by_default():
+    # Default/JAX-style routing stays on the direct CSC-as-transposed-CSR path.
     rng = _np.random.default_rng(5)
     m, n = 6, 4
     csc = _be.CSC.fromdense(_rand_dense(rng, m, n))
@@ -1301,7 +1300,7 @@ def test_event_at_csc_matches_dense_and_caches():
     ref = ev.astype(_jnp.float32) @ csc.todense()
     assert got.shape == (n,)
     assert _jnp.allclose(got, ref, atol=1e-5)
-    assert csc.buffers.get('csr') is not None
+    assert csc.buffers.get('csr') is None
 
 
 def test_csc_at_event_favorable_matches_dense():

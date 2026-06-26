@@ -20,6 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import brainevent._csr.main as csr_main
 from brainevent._csr.binary import binary_csrmv, binary_csrmm, _workspace_from_task_operands
 from brainevent._csr.binary_indexed import (
     binary_csrmv_indexed,
@@ -206,37 +207,39 @@ def test_binary_csrmm_indexed_weight_jvp_zeroes_task_tangents():
     assert jnp.array_equal(status_tangent, jnp.zeros_like(workspace.status))
 
 
-def test_csr_unfavorable_binary_matvec_mounts_indexed_workspace():
+def test_csr_unfavorable_binary_matvec_mounts_direct_workspace_on_jax_raw():
     dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
-    csr = CSR.fromdense(dense, backend="jax_raw").build_weight_indices()
+    csr = CSR.fromdense(dense, backend="jax_raw")
     vector = jnp.array([True, False])
 
     got = csr @ BinaryArray(vector)
 
     assert got.shape == (2,)
     assert jnp.allclose(got, dense @ vector.astype(jnp.float32))
-    first = _binary_workspace(csr, "csc")
+    first = _binary_workspace(csr, "csr")
+    assert csr.buffers.get("csc") is None
 
     got_again = csr @ BinaryArray(vector)
-    second = _binary_workspace(csr, "csc")
+    second = _binary_workspace(csr, "csr")
 
     assert jnp.allclose(got_again, got)
     assert second.task_begin is first.task_begin
 
 
-def test_csr_unfavorable_binary_matmat_mounts_indexed_workspace():
+def test_csr_unfavorable_binary_matmat_mounts_direct_workspace_on_jax_raw():
     dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
-    csr = CSR.fromdense(dense, backend="jax_raw").build_weight_indices()
+    csr = CSR.fromdense(dense, backend="jax_raw")
     matrix = jnp.array([[True, False], [False, True]])
 
     got = csr @ BinaryArray(matrix)
 
     assert got.shape == (2, 2)
     assert jnp.allclose(got, dense @ matrix.astype(jnp.float32))
-    first = _binary_workspace(csr, "csc")
+    first = _binary_workspace(csr, "csr")
+    assert csr.buffers.get("csc") is None
 
     got_again = csr @ BinaryArray(matrix)
-    second = _binary_workspace(csr, "csc")
+    second = _binary_workspace(csr, "csr")
 
     assert jnp.allclose(got_again, got)
     assert second.task_begin is first.task_begin
@@ -260,19 +263,20 @@ def test_csr_direct_binary_rmatmat_mounts_workspace():
     assert second.task_begin is first.task_begin
 
 
-def test_csc_unfavorable_binary_rmatvec_mounts_indexed_workspace():
+def test_csc_unfavorable_binary_rmatvec_mounts_direct_workspace_on_jax_raw():
     dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
-    csc = CSC.fromdense(dense, backend="jax_raw").build_weight_indices()
+    csc = CSC.fromdense(dense, backend="jax_raw")
     vector = jnp.array([True, False])
 
     got = BinaryArray(vector) @ csc
 
     assert got.shape == (2,)
     assert jnp.allclose(got, vector.astype(jnp.float32) @ dense)
-    first = _binary_workspace(csc, "csr")
+    first = _binary_workspace(csc, "csc")
+    assert csc.buffers.get("csr") is None
 
     got_again = BinaryArray(vector) @ csc
-    second = _binary_workspace(csc, "csr")
+    second = _binary_workspace(csc, "csc")
 
     assert jnp.allclose(got_again, got)
     assert second.task_begin is first.task_begin
@@ -296,22 +300,78 @@ def test_csc_direct_binary_matmat_mounts_workspace():
     assert second.task_begin is first.task_begin
 
 
-def test_csc_unfavorable_binary_rmatmat_mounts_indexed_workspace():
+def test_csc_unfavorable_binary_rmatmat_mounts_direct_workspace_on_jax_raw():
     dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
-    csc = CSC.fromdense(dense, backend="jax_raw").build_weight_indices()
+    csc = CSC.fromdense(dense, backend="jax_raw")
     matrix = jnp.array([[True, False], [False, True]])
 
     got = BinaryArray(matrix) @ csc
 
     assert got.shape == (2, 2)
     assert jnp.allclose(got, matrix.astype(jnp.float32) @ dense)
-    first = _binary_workspace(csc, "csr")
+    first = _binary_workspace(csc, "csc")
+    assert csc.buffers.get("csr") is None
 
     got_again = BinaryArray(matrix) @ csc
-    second = _binary_workspace(csc, "csr")
+    second = _binary_workspace(csc, "csc")
 
     assert jnp.allclose(got_again, got)
     assert second.task_begin is first.task_begin
+
+
+def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror_workspaces(monkeypatch):
+    dense = jnp.array([[0.0, 2.0, 5.0], [3.0, 4.0, 0.0]], dtype=jnp.float32)
+    csr = CSR.fromdense(dense, backend="cuda_raw")
+    csc = CSC.fromdense(dense, backend="cuda_raw")
+    calls = []
+
+    def fail_direct(*args, **kwargs):
+        raise AssertionError("cuda_raw unfavorable BinaryArray route must use indexed primitive")
+
+    def fake_mv_indexed(data, indices, indptr, perm, vector, *, shape, transpose, backend=None, workspace=None):
+        calls.append({
+            "kind": "mv",
+            "shape": shape,
+            "transpose": transpose,
+            "backend": backend,
+            "workspace": workspace,
+        })
+        out_size = shape[1] if transpose else shape[0]
+        return jnp.zeros((out_size,), dtype=data.dtype)
+
+    def fake_mm_indexed(data, indices, indptr, perm, matrix, *, shape, transpose, backend=None, workspace=None):
+        calls.append({
+            "kind": "mm",
+            "shape": shape,
+            "transpose": transpose,
+            "backend": backend,
+            "workspace": workspace,
+        })
+        out_size = shape[1] if transpose else shape[0]
+        return jnp.zeros((out_size, matrix.shape[1]), dtype=data.dtype)
+
+    monkeypatch.setattr(csr_main, "binary_csrmv", fail_direct)
+    monkeypatch.setattr(csr_main, "binary_csrmm", fail_direct)
+    monkeypatch.setattr(csr_main, "binary_csrmv_indexed", fake_mv_indexed)
+    monkeypatch.setattr(csr_main, "binary_csrmm_indexed", fake_mm_indexed)
+
+    assert (csr @ BinaryArray(jnp.array([True, False, True]))).shape == (2,)
+    assert (csr @ BinaryArray(jnp.array([[True, False], [False, True], [True, True]]))).shape == (2, 2)
+    assert (BinaryArray(jnp.array([True, False])) @ csc).shape == (3,)
+    assert (BinaryArray(jnp.array([[True, False], [False, True]])) @ csc).shape == (2, 3)
+
+    csr_workspace = _binary_workspace(csr, "csc")
+    csc_workspace = _binary_workspace(csc, "csr")
+    assert [(call["kind"], call["shape"], call["transpose"], call["backend"]) for call in calls] == [
+        ("mv", (3, 2), True, "cuda_raw"),
+        ("mm", (3, 2), True, "cuda_raw"),
+        ("mv", (2, 3), True, "cuda_raw"),
+        ("mm", (2, 3), True, "cuda_raw"),
+    ]
+    assert calls[0]["workspace"] is csr_workspace
+    assert calls[1]["workspace"] is csr_workspace
+    assert calls[2]["workspace"] is csc_workspace
+    assert calls[3]["workspace"] is csc_workspace
 
 
 def test_fcn_unfavorable_binary_matvec_uses_indexed_workspace():
@@ -598,10 +658,10 @@ def test_indexed_mm_cuda_kernel_selects_perm_names():
     import inspect
     import brainevent._csr.binary_indexed as mod
     src = inspect.getsource(mod._binary_csrmm_indexed_cuda_kernel)
-    # hetero selects the perm kernels and passes perm; homo reuses plain kernels.
-    assert "binary_csrmm_t_warp_perm_hetero" in src
+    # Transpose routes use hybrid kernels; non-transpose keeps the old nt_auto path.
+    assert "binary_indexed_csrmm_sraw_hybrid_hetero" in src
+    assert "binary_csrmm_sraw_hybrid_homo" in src
     assert "binary_csrmm_nt_auto_perm_hetero" in src
-    assert "binary_csrmm_t_warp_homo" in src
     assert "binary_csrmm_nt_auto_homo" in src
 
     from pathlib import Path

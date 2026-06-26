@@ -42,8 +42,7 @@ __all__ = [
 ]
 
 
-_BINARY_TASK_TPR_THRESHOLD = 128
-_BINARY_TASK_NNZ = 4096
+
 
 
 def _binary_task_capacity_from_indptr(indptr) -> int:
@@ -55,6 +54,11 @@ def _binary_task_capacity_from_indptr(indptr) -> int:
     row_lengths = np.diff(indptr_np)
     if np.any(row_lengths < 0):
         raise ValueError("CSR row lengths must be non-negative.")
+    
+    _BINARY_TASK_TPR_THRESHOLD = 128
+
+    _BINARY_TASK_NNZ = 4096
+
     chunks = np.where(
         row_lengths > _BINARY_TASK_TPR_THRESHOLD,
         (row_lengths + _BINARY_TASK_NNZ - 1) // _BINARY_TASK_NNZ,
@@ -99,78 +103,95 @@ def _make_binary_task_workspace(indptr) -> _BinaryTaskWorkspace:
     )
 
 
-_BINARY_WORKSPACE_BUFFER = "binary_workspace"
 
 
-def _split_binary_workspace_buffers(buffers):
-    buffers = dict(buffers)
-    workspace_map = dict(buffers.pop(_BINARY_WORKSPACE_BUFFER, {}) or {})
-    workspace_items = tuple(sorted(workspace_map.items()))
-    workspace_keys = tuple(key for key, _ in workspace_items)
-    workspace_leaves = tuple(workspace for _, workspace in workspace_items)
-    return buffers, workspace_keys, workspace_leaves
+def _binary_workspace_helpers(buffer_name: str):
+    def workspace_map_from(buffers):
+        return dict(buffers.get(buffer_name, {}) or {})
 
+    def buffers_with_workspace(buffers, workspace_map):
+        buffers = dict(buffers)
+        if workspace_map:
+            buffers[buffer_name] = workspace_map
+        else:
+            buffers.pop(buffer_name, None)
+        return buffers
 
-def _restore_binary_workspace_buffers(static_buffers, workspace_keys, workspace_leaves):
-    buffers = dict(static_buffers)
-    if workspace_keys:
-        buffers[_BINARY_WORKSPACE_BUFFER] = {
+    def copy_matrix_with_buffers(matrix, buffers):
+        return type(matrix)(
+            (matrix.data, matrix.indices, matrix.indptr),
+            shape=matrix.shape,
+            buffers=buffers,
+            backend=matrix.backend,
+        )
+
+    def split(buffers):
+        buffers = dict(buffers)
+        workspace_map = workspace_map_from(buffers)
+        buffers.pop(buffer_name, None)
+        workspace_items = tuple(sorted(workspace_map.items()))
+        workspace_keys = tuple(key for key, _ in workspace_items)
+        workspace_leaves = tuple(workspace for _, workspace in workspace_items)
+        return buffers, workspace_keys, workspace_leaves
+
+    def restore(static_buffers, workspace_keys, workspace_leaves):
+        workspace_map = {
             key: workspace for key, workspace in zip(workspace_keys, workspace_leaves)
         }
-    return buffers
+        return buffers_with_workspace(static_buffers, workspace_map)
 
+    def get(matrix, key: str) -> _BinaryTaskWorkspace:
+        workspace_map = workspace_map_from(matrix.buffers)
+        try:
+            return workspace_map[key]
+        except KeyError as exc:
+            raise ValueError(f"binary task workspace {key!r} is not prepared") from exc
 
-def _binary_workspace(matrix, key: str) -> _BinaryTaskWorkspace:
-    workspace_map = matrix.buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {}
-    try:
-        return workspace_map[key]
-    except KeyError as exc:
-        raise ValueError(f"binary task workspace {key!r} is not prepared") from exc
+    def with_workspace(matrix, key: str, workspace: _BinaryTaskWorkspace):
+        workspace_map = workspace_map_from(matrix.buffers)
+        workspace_map[key] = workspace
+        buffers = buffers_with_workspace(matrix.buffers, workspace_map)
+        return copy_matrix_with_buffers(matrix, buffers)
 
+    def move_key(buffers, src: str, dst: str):
+        workspace_map = workspace_map_from(buffers)
+        workspace = workspace_map.pop(src, None)
+        if workspace is not None:
+            workspace_map[dst] = workspace
+        return buffers_with_workspace(buffers, workspace_map)
 
-def _with_binary_workspace(matrix, key: str, workspace: _BinaryTaskWorkspace):
-    buffers = dict(matrix.buffers)
-    workspace_map = dict(buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {})
-    workspace_map[key] = workspace
-    buffers[_BINARY_WORKSPACE_BUFFER] = workspace_map
-    return type(matrix)(
-        (matrix.data, matrix.indices, matrix.indptr),
-        shape=matrix.shape,
-        buffers=buffers,
-        backend=matrix.backend,
-    )
-
-
-def _move_binary_workspace_key(buffers, src: str, dst: str):
-    buffers = dict(buffers)
-    workspace_map = dict(buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {})
-    workspace = workspace_map.pop(src, None)
-    if workspace is not None:
-        workspace_map[dst] = workspace
-        buffers[_BINARY_WORKSPACE_BUFFER] = workspace_map
-    elif workspace_map:
-        buffers[_BINARY_WORKSPACE_BUFFER] = workspace_map
-    else:
-        buffers.pop(_BINARY_WORKSPACE_BUFFER, None)
-    return buffers
-
-
-def _ensure_binary_workspace(matrix, key: str, indptr):
-    workspace_map = matrix.buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {}
-    if key in workspace_map:
+    def ensure(matrix, key: str, indptr):
+        workspace_map = workspace_map_from(matrix.buffers)
+        if key in workspace_map:
+            return matrix
+        workspace_map[key] = _make_binary_task_workspace(indptr)
+        if buffer_name in matrix.buffers:
+            matrix.set_buffer(buffer_name, workspace_map)
+        else:
+            matrix.register_buffer(buffer_name, workspace_map)
         return matrix
-    workspace_map = dict(workspace_map)
-    workspace_map[key] = _make_binary_task_workspace(indptr)
-    if _BINARY_WORKSPACE_BUFFER in matrix.buffers:
-        matrix.set_buffer(_BINARY_WORKSPACE_BUFFER, workspace_map)
-    else:
-        matrix.register_buffer(_BINARY_WORKSPACE_BUFFER, workspace_map)
-    return matrix
+
+    def ensure_and_get(matrix, key: str, indptr):
+        matrix = ensure(matrix, key, indptr)
+        return matrix, get(matrix, key)
+
+    return split, restore, get, with_workspace, move_key, ensure, ensure_and_get
+
+_BINARY_WORKSPACE_BUFFER = "binary_workspace"
+
+(
+    _split_binary_workspace_buffers,
+    _restore_binary_workspace_buffers,
+    _binary_workspace,
+    _with_binary_workspace,
+    _move_binary_workspace_key,
+    _ensure_binary_workspace,
+    _ensure_binary_workspace_and_get,
+) = _binary_workspace_helpers(_BINARY_WORKSPACE_BUFFER)
 
 
-def _ensure_binary_workspace_and_get(matrix, key: str, indptr):
-    matrix = _ensure_binary_workspace(matrix, key, indptr)
-    return matrix, _binary_workspace(matrix, key)
+def _use_cuda_indexed_binary_route(backend: Optional[str]) -> bool:
+    return backend == "cuda_raw"
 
 
 class CompressedSparseData(DataRepresentation):
@@ -1559,10 +1580,14 @@ class CSR(CompressedSparseData):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                # ``CSR @ event`` is the *unfavorable* direction: a row-major
-                # gather cannot skip inactive columns.  Traverse the CSC-like
-                # view instead (column-major scatter), reading canonical weights
-                # through ``perm`` so only active columns are touched.
+                if not _use_cuda_indexed_binary_route(self.backend):
+                    matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", self.indptr)
+                    return binary_csrmv(
+                        matrix.data, matrix.indices, matrix.indptr, other,
+                        shape=matrix.shape, transpose=False, backend=matrix.backend, workspace=workspace,
+                    )
+                # Explicit CUDA raw uses the mirror route so the transpose
+                # hybrid kernels handle the unfavorable direction.
                 csc_indptr, csc_indices, perm = self._weight_indices()
                 matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", csc_indptr)
                 return binary_csrmv_indexed(
@@ -1570,11 +1595,14 @@ class CSR(CompressedSparseData):
                     shape=matrix.shape[::-1], transpose=True, backend=matrix.backend, workspace=workspace,
                 )
             elif other.ndim == 2:
-                # ``CSR @ M`` is the *unfavorable* matmat direction: a row-major
-                # gather cannot skip inactive columns.  Traverse the CSC-like
-                # view (column-major scatter), reading canonical weights through
-                # ``perm`` so only active columns are touched -- parity with the
-                # matvec ``CSR @ event`` path above.
+                if not _use_cuda_indexed_binary_route(self.backend):
+                    matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", self.indptr)
+                    return binary_csrmm(
+                        matrix.data, matrix.indices, matrix.indptr, other,
+                        shape=matrix.shape, transpose=False, backend=matrix.backend, workspace=workspace,
+                    )
+                # Explicit CUDA raw uses the mirror route so the transpose
+                # hybrid kernels handle the unfavorable direction.
                 csc_indptr, csc_indices, perm = self._weight_indices()
                 matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", csc_indptr)
                 return binary_csrmm_indexed(
@@ -2525,10 +2553,14 @@ class CSC(CompressedSparseData):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                # ``event @ CSC`` is the *unfavorable* direction: a column-major
-                # gather cannot skip inactive rows.  Traverse the CSR-like view
-                # instead (row-major scatter), reading canonical weights through
-                # ``perm`` so only active rows are touched.
+                if not _use_cuda_indexed_binary_route(self.backend):
+                    matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", self.indptr)
+                    return binary_csrmv(
+                        matrix.data, matrix.indices, matrix.indptr, other,
+                        shape=matrix.shape[::-1], transpose=False, backend=matrix.backend, workspace=workspace,
+                    )
+                # Explicit CUDA raw uses the mirror route so the transpose
+                # hybrid kernels handle the unfavorable direction.
                 csr_indptr, csr_indices, perm = self._weight_indices()
                 matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", csr_indptr)
                 return binary_csrmv_indexed(
@@ -2536,11 +2568,15 @@ class CSC(CompressedSparseData):
                     shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace,
                 )
             elif other.ndim == 2:
-                # ``M @ CSC`` is the *unfavorable* matmat direction: a
-                # column-major gather cannot skip inactive rows.  Traverse the
-                # CSR-like view (row-major scatter), reading canonical weights
-                # through ``perm`` so only active rows are touched -- parity with
-                # the matvec ``event @ CSC`` path above.
+                if not _use_cuda_indexed_binary_route(self.backend):
+                    matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", self.indptr)
+                    r = binary_csrmm(
+                        matrix.data, matrix.indices, matrix.indptr, other.T,
+                        shape=matrix.shape[::-1], transpose=False, backend=matrix.backend, workspace=workspace,
+                    )
+                    return r.T
+                # Explicit CUDA raw uses the mirror route so the transpose
+                # hybrid kernels handle the unfavorable direction.
                 csr_indptr, csr_indices, perm = self._weight_indices()
                 matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", csr_indptr)
                 r = binary_csrmm_indexed(

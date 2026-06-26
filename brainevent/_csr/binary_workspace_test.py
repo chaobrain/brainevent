@@ -7,6 +7,7 @@ from brainevent._csr.main import (
     CSR,
     _BinaryTaskWorkspace,
     _binary_workspace,
+    _binary_workspace_helpers,
     _binary_task_capacity_from_indptr,
     _ensure_binary_workspace,
     _make_binary_task_workspace,
@@ -97,6 +98,13 @@ def test_binary_workspace_buffer_is_pytree_leaf_and_hidden_buffer():
     ]
     assert restored_workspace.task_capacity == workspace.task_capacity
     assert restored_workspace.status.shape == (2,)
+
+
+def test_binary_workspace_helpers_are_closure_backed():
+    assert _binary_workspace.__closure__ is not None
+    assert _with_binary_workspace.__closure__ is not None
+    assert _ensure_binary_workspace.__closure__ is not None
+    assert _binary_workspace_helpers.__closure__ is None
 
 
 def test_ensure_binary_workspace_reuses_existing_workspace():

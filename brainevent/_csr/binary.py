@@ -617,12 +617,6 @@ def _binary_csrmv_cuda_kernel(
     **kwargs,
 ):
     _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
-    load_cuda_file(
-        Path(__file__).parent.joinpath('binary_csrmv.cu'),
-        name='csr_binary_csrmv',
-    )
-
-    out_info = kwargs['outs'][0]
 
     # Determine if weights are homogeneous or heterogeneous
     is_homo = (weight_info.size == 1)
@@ -641,13 +635,40 @@ def _binary_csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csr_binary_csrmv.binary_csrmv_t_warp{homo_suffix}{wt_sfx}{spk_suffix}'
+        load_cuda_file(
+            Path(__file__).parent.joinpath('binary_csrmv_hybrid.cu'),
+            name='csr_binary_csrmv_hybrid',
+            allow_cuda_graph=False,
+        )
+        kernel_name = f'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
+
+        def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
+            return jax.ffi.ffi_call(
+                kernel_name,
+                kwargs['outs'],
+                input_output_aliases={4: 1, 5: 2, 6: 3},
+            )(
+                weights,
+                indices,
+                indptr,
+                vector,
+                task_begin,
+                task_end,
+                status,
+                task_capacity=kwargs['task_capacity'],
+            )
+
     else:
+        load_cuda_file(
+            Path(__file__).parent.joinpath('binary_csrmv.cu'),
+            name='csr_binary_csrmv',
+        )
+        out_info = kwargs['outs'][0]
         kernel_name = f'csr_binary_csrmv.binary_csrmv_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
-    def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
-        math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
-        return math_out, task_begin, task_end, status
+        def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
+            math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
+            return math_out, task_begin, task_end, status
 
     return kernel
 
@@ -1256,12 +1277,6 @@ def _binary_csrmm_cuda_kernel(
     **kwargs,
 ):
     _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
-    load_cuda_file(
-        Path(__file__).parent.joinpath('binary_csrmm.cu'),
-        name='csr_binary_csrmm',
-    )
-
-    out_info = kwargs['outs'][0]
 
     # Spike type suffix
     spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
@@ -1280,13 +1295,47 @@ def _binary_csrmm_cuda_kernel(
     homo_suffix = '_homo' if is_homo else '_hetero'
 
     if transpose:
-        kernel_name = f'csr_binary_csrmm.binary_csrmm_t_warp{homo_suffix}{wt_sfx}{spk_suffix}'
+        load_cuda_file(
+            Path(__file__).parent.joinpath('binary_csrmm_hybrid.cu'),
+            name='csr_binary_csrmm_hybrid',
+            allow_cuda_graph=False,
+        )
+        logical_out_info = kwargs['outs'][0]
+        physical_out_info = jax.ShapeDtypeStruct(
+            (logical_out_info.shape[1], logical_out_info.shape[0]),
+            logical_out_info.dtype,
+        )
+        out_info = (physical_out_info, *kwargs['outs'][1:])
+        kernel_name = f'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
+
+        def kernel(weights, indices, indptr, B, task_begin, task_end, status):
+            output, task_begin_out, task_end_out, status_out = jax.ffi.ffi_call(
+                kernel_name,
+                out_info,
+                input_output_aliases={4: 1, 5: 2, 6: 3},
+            )(
+                weights,
+                indices,
+                indptr,
+                B,
+                task_begin,
+                task_end,
+                status,
+                task_capacity=kwargs['task_capacity'],
+            )
+            return jnp.transpose(output), task_begin_out, task_end_out, status_out
+
     else:
+        load_cuda_file(
+            Path(__file__).parent.joinpath('binary_csrmm.cu'),
+            name='csr_binary_csrmm',
+        )
+        out_info = kwargs['outs'][0]
         kernel_name = f'csr_binary_csrmm.binary_csrmm_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
-    def kernel(weights, indices, indptr, B, task_begin, task_end, status):
-        math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
-        return math_out, task_begin, task_end, status
+        def kernel(weights, indices, indptr, B, task_begin, task_end, status):
+            math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
+            return math_out, task_begin, task_end, status
 
     return kernel
 
