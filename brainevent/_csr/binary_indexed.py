@@ -46,7 +46,12 @@ from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule,
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
-from .binary import binary_csrmv, binary_csrmm
+from .binary import (
+    _workspace_from_task_operands,
+    _workspace_task_operands,
+    binary_csrmv,
+    binary_csrmm,
+)
 from .float import csrmv, csrmm
 
 __all__ = [
@@ -66,6 +71,7 @@ def binary_csrmv_indexed(
     v: Data,
     *,
     shape: MatrixShape,
+    workspace,
     transpose: bool = False,
     backend: Optional[str] = None,
 ) -> Data:
@@ -95,6 +101,9 @@ def binary_csrmv_indexed(
         ``(shape[1],)`` when ``transpose=False``.  Boolean or floating dtype.
     shape : tuple of int
         Logical shape ``(m, k)`` of the traversed structure.
+    workspace
+        Explicit binary task workspace with ``task_capacity``,
+        ``task_begin``, ``task_end``, and ``status`` attributes.
     transpose : bool, optional
         If ``True``, compute the transposed (scatter) product.  Default
         ``False``.
@@ -118,6 +127,7 @@ def binary_csrmv_indexed(
         indptr,
         perm,
         v,
+        workspace=workspace,
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -216,8 +226,10 @@ def _csrmv_indexed_numba_kernel(
                                 r += weights[perm[j]]
                         posts[i] = r
 
-    def kernel(weights, indices, indptr, perm, vector):
-        return numba_kernel(mv, outs=kwargs['outs'])(weights, indices, indptr, perm, vector)
+    def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+        output = numba_kernel(mv, outs=kwargs['outs'][0])(weights, indices, indptr, perm, vector)
+        math_out = output[0] if isinstance(output, (tuple, list)) else output
+        return math_out, task_begin, task_end, status
 
     return kernel
 
@@ -240,7 +252,7 @@ def _binary_csrmv_indexed_jax_kernel(
     out_dtype = kwargs['outs'][0].dtype
 
     if transpose:
-        def kernel(weights, indices, indptr, perm, vector):
+        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
             row_ids = jnp.repeat(
                 jnp.arange(m, dtype=indptr.dtype),
                 jnp.diff(indptr),
@@ -249,9 +261,10 @@ def _binary_csrmv_indexed_jax_kernel(
             v_row = vector[row_ids]
             events = v_row.astype(out_dtype) if is_bool else (v_row > 0.).astype(out_dtype)
             w = weights[0] if is_homo else weights[perm]
-            return (jnp.zeros(k, dtype=out_dtype).at[indices].add(w * events),)
+            math_out = jnp.zeros(k, dtype=out_dtype).at[indices].add(w * events)
+            return math_out, task_begin, task_end, status
     else:
-        def kernel(weights, indices, indptr, perm, vector):
+        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
             row_ids = jnp.repeat(
                 jnp.arange(m, dtype=indptr.dtype),
                 jnp.diff(indptr),
@@ -260,7 +273,8 @@ def _binary_csrmv_indexed_jax_kernel(
             v_col = vector[indices]
             events = v_col.astype(out_dtype) if is_bool else (v_col > 0.).astype(out_dtype)
             w = weights[0] if is_homo else weights[perm]
-            return (jnp.zeros(m, dtype=out_dtype).at[row_ids].add(w * events),)
+            math_out = jnp.zeros(m, dtype=out_dtype).at[row_ids].add(w * events)
+            return math_out, task_begin, task_end, status
 
     return kernel
 
@@ -284,7 +298,7 @@ def _binary_csrmv_indexed_cuda_kernel(
     (called without ``perm``).
     """
     _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
-    out_info = kwargs['outs']
+    out_info = kwargs['outs'][0]
     is_homo = (weight_info.size == 1)
 
     # Spike type suffix
@@ -309,8 +323,9 @@ def _binary_csrmv_indexed_cuda_kernel(
         base = 'binary_csrmv_t_warp_homo' if transpose else 'binary_csrmv_nt_auto_homo'
         kernel_name = f'csr_binary_csrmv.{base}{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, vector):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
+        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+            math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
+            return math_out, task_begin, task_end, status
     else:
         # Heterogeneous weights read through ``perm`` via the dedicated indexed
         # kernels in ``binary_indexed_csrmv.cu``.
@@ -321,8 +336,9 @@ def _binary_csrmv_indexed_cuda_kernel(
         base = 'binary_csrmv_t_warp_perm_hetero' if transpose else 'binary_csrmv_nt_auto_perm_hetero'
         kernel_name = f'csr_binary_indexed_csrmv.{base}{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, vector):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, perm, vector)
+        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+            math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, perm, vector)
+            return math_out, task_begin, task_end, status
 
     return kernel
 
@@ -333,6 +349,7 @@ def binary_csrmv_indexed_p_call(
     indptr,
     perm,
     vector,
+    workspace,
     *,
     shape: MatrixShape,
     transpose: bool,
@@ -348,6 +365,9 @@ def binary_csrmv_indexed_p_call(
     weights, indices, indptr, perm, vector : jax.Array
         See :func:`binary_csrmv_indexed`.  ``perm`` shares ``indices``'
         shape and integer dtype.
+    workspace
+        Explicit binary task workspace.  Expanded into task operands in the
+        primitive ABI and returned unchanged by math-only backends.
     shape : tuple of int
         Logical shape ``(m, k)`` of the traversed structure.
     transpose : bool
@@ -357,8 +377,9 @@ def binary_csrmv_indexed_p_call(
 
     Returns
     -------
-    list of jax.Array
-        Single-element list with the result vector.
+    tuple of jax.Array
+        The result vector followed by ``task_begin``, ``task_end``, and
+        ``status`` task workspace outputs.
     """
     assert perm.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "perm must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
@@ -380,13 +401,21 @@ def binary_csrmv_indexed_p_call(
         if transpose else
         jax.ShapeDtypeStruct([shape[0]], weights.dtype)
     )
+    task_capacity, task_begin, task_end, status = _workspace_task_operands(workspace, indptr)
+    task_begin_info = jax.ShapeDtypeStruct(task_begin.shape, task_begin.dtype)
+    task_end_info = jax.ShapeDtypeStruct(task_end.shape, task_end.dtype)
+    status_info = jax.ShapeDtypeStruct(status.shape, status.dtype)
+
     return binary_csrmv_indexed_p(
         weights,
         indices,
         indptr,
         perm,
         vector,
-        outs=[out_info],
+        task_begin,
+        task_end,
+        status,
+        outs=(out_info, task_begin_info, task_end_info, status_info),
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -395,41 +424,61 @@ def binary_csrmv_indexed_p_call(
         perm_info=jax.ShapeDtypeStruct(perm.shape, perm.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
+        task_begin_info=task_begin_info,
+        task_end_info=task_end_info,
+        status_info=status_info,
+        task_capacity=task_capacity,
     )
 
 
 # --------------------------------------------------------------------------- #
 # autodiff rules (registered in Phase 3 / below)
 # --------------------------------------------------------------------------- #
-def _idx_jvp_v(v_dot, weights, indices, indptr, perm, v, *, shape, transpose, **kw):
+def _idx_jvp_v(v_dot, weights, indices, indptr, perm, v, task_begin, task_end, status, *, shape, transpose, **kw):
     w = weights if weights.shape[0] == 1 else weights[perm]
-    return [csrmv(w, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kw['backend'])]
-
-
-def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, *, shape, transpose, **kw):
-    return binary_csrmv_indexed_p_call(
-        w_dot, indices, indptr, perm, v, shape=shape, transpose=transpose, backend=kw['backend']
+    return (
+        csrmv(w, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kw['backend']),
+        jnp.zeros_like(task_begin),
+        jnp.zeros_like(task_end),
+        jnp.zeros_like(status),
     )
 
 
-def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, *, shape, transpose, **kw):
+def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, task_begin, task_end, status, *, shape, transpose, **kw):
+    workspace = _workspace_from_task_operands(kw['task_capacity'], task_begin, task_end, status)
+    tangent = binary_csrmv_indexed_p_call(
+        w_dot,
+        indices,
+        indptr,
+        perm,
+        v,
+        workspace,
+        shape=shape,
+        transpose=transpose,
+        backend=kw['backend'],
+    )[0]
+    return tangent, jnp.zeros_like(task_begin), jnp.zeros_like(task_end), jnp.zeros_like(status)
+
+
+def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, task_begin, task_end, status, *, shape, transpose, **kw):
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr) or ad.is_undefined_primal(perm):
         raise ValueError("Cannot transpose with respect to sparse structure / perm.")
     ct = ct[0]
+    workspace = _workspace_from_task_operands(kw['task_capacity'], task_begin, task_end, status)
     if ad.is_undefined_primal(events):
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(events)
         else:
             w = weights if weights.shape[0] == 1 else weights[perm]
             ct_events = csrmv(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
-        return weights, indices, indptr, perm, ct_events
+        return weights, indices, indptr, perm, ct_events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
     else:
         if type(ct) is ad.Zero:
             ct_w = ad.Zero(weights)
         elif weights.aval.shape[0] == 1:
             base = binary_csrmv_indexed_p_call(
                 jnp.ones(1, dtype=weights.aval.dtype), indices, indptr, perm, events,
-                shape=shape, transpose=transpose, backend=kw['backend'],
+                workspace, shape=shape, transpose=transpose, backend=kw['backend'],
             )[0]
             ct_w = jnp.inner(ct, base).reshape(*weights.aval.shape)
         else:
@@ -438,7 +487,7 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, *, shape, tr
             row, col = _csr_to_coo(indices, indptr)
             per_slot = events[row] * ct[col] if transpose else events[col] * ct[row]
             ct_w = jnp.zeros(weights.aval.shape, weights.aval.dtype).at[perm].add(per_slot)
-        return ct_w, indices, indptr, perm, events
+        return ct_w, indices, indptr, perm, events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
 
 
 def _idx_batching(args, axes, **kwargs):
@@ -462,7 +511,7 @@ binary_csrmv_indexed_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_indexed_jax_ke
 binary_csrmv_indexed_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_indexed_jax_kernel)
 binary_csrmv_indexed_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_indexed_jax_kernel)
 binary_csrmv_indexed_p.def_cuda_raw_kernel(_binary_csrmv_indexed_cuda_kernel, asdefault=True)
-binary_csrmv_indexed_p.def_jvp_rule2(_idx_jvp_weights, None, None, None, _idx_jvp_v)
+binary_csrmv_indexed_p.def_jvp_rule2(_idx_jvp_weights, None, None, None, _idx_jvp_v, None, None, None)
 binary_csrmv_indexed_p.def_transpose_rule(_idx_transpose_rule)
 binary_csrmv_indexed_p.def_batching_rule(_idx_batching)
 binary_csrmv_indexed_p.def_call(binary_csrmv_indexed_p_call)
