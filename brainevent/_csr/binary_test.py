@@ -27,9 +27,11 @@ from brainevent._csr.binary import (
     _binary_csrmv_jax_exp_csrmv_kernel,
     binary_csrmv,
     binary_csrmv_p,
+    binary_csrmv_p_call,
     binary_csrmm,
     binary_csrmm_p,
 )
+from brainevent._csr.main import _make_binary_task_workspace
 from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 # Every test loops over all native backends (incl. ``numba``), which compile per test and
@@ -55,6 +57,53 @@ def _jax_x64_enabled():
 def _require_implementations(implementations, op_name: str):
     if not implementations:
         pytest.skip(f'No {op_name} implementation on platform={platform}')
+
+
+def test_binary_csrmv_jax_raw_accepts_workspace_and_preserves_result():
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    vector = jnp.array([True, False])
+    workspace = _make_binary_task_workspace(indptr)
+
+    got = binary_csrmv(
+        weights,
+        indices,
+        indptr,
+        vector,
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+        workspace=workspace,
+    )
+
+    assert got.shape == (1,)
+    assert got.dtype == weights.dtype
+    assert jnp.allclose(got, jnp.array([1.0], dtype=jnp.float32))
+
+
+def test_binary_csrmv_p_call_always_returns_task_outputs():
+    weights = jnp.array([1.0], dtype=jnp.float32)
+    indices = jnp.array([0], dtype=jnp.int32)
+    indptr = jnp.array([0, 1], dtype=jnp.int32)
+    vector = jnp.array([True])
+    workspace = _make_binary_task_workspace(indptr)
+
+    out, task_begin, task_end, status = binary_csrmv_p_call(
+        weights,
+        indices,
+        indptr,
+        vector,
+        shape=(1, 1),
+        transpose=False,
+        backend="jax_raw",
+        workspace=workspace,
+    )
+
+    assert out.shape == (1,)
+    assert task_begin.shape == workspace.task_begin.shape
+    assert task_end.shape == workspace.task_end.shape
+    assert status.shape == workspace.status.shape
 
 
 def test_binary_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
@@ -105,6 +154,8 @@ def test_binary_csrmm_rejects_unsigned_structure_dtype():
 
 def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
     with _jax_x64_enabled():
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        workspace = _make_binary_task_workspace(indptr)
         kernel = _binary_csrmv_jax_exp_csrmv_kernel(
             jax.ShapeDtypeStruct((1,), jnp.float32),
             jax.ShapeDtypeStruct((3,), jnp.bool_),
@@ -117,8 +168,11 @@ def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
         got = kernel(
             jnp.array([2.0], dtype=jnp.float32),
             jnp.array([0, 2, 1, 2], dtype=jnp.int32),
-            jnp.array([0, 2, 4], dtype=jnp.int64),
+            indptr,
             jnp.array([True, False, True]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )[0]
 
         assert jnp.allclose(got, jnp.array([4.0, 2.0], dtype=jnp.float32))
@@ -126,6 +180,8 @@ def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
 
 def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
     with _jax_x64_enabled():
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        workspace = _make_binary_task_workspace(indptr)
         kernel = _binary_csrmv_jax_exp_csrmv_kernel(
             jax.ShapeDtypeStruct((4,), jnp.float32),
             jax.ShapeDtypeStruct((2,), jnp.float32),
@@ -138,8 +194,11 @@ def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
         got = kernel(
             jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32),
             jnp.array([0, 2, 1, 2], dtype=jnp.int32),
-            jnp.array([0, 2, 4], dtype=jnp.int64),
+            indptr,
             jnp.array([1.0, -1.0], dtype=jnp.float32),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )[0]
 
         assert jnp.allclose(got, jnp.array([1.0, 0.0, 2.0], dtype=jnp.float32))
