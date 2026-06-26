@@ -141,6 +141,20 @@ def _with_binary_workspace(matrix, key: str, workspace: _BinaryTaskWorkspace):
     )
 
 
+def _move_binary_workspace_key(buffers, src: str, dst: str):
+    buffers = dict(buffers)
+    workspace_map = dict(buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {})
+    workspace = workspace_map.pop(src, None)
+    if workspace is not None:
+        workspace_map[dst] = workspace
+        buffers[_BINARY_WORKSPACE_BUFFER] = workspace_map
+    elif workspace_map:
+        buffers[_BINARY_WORKSPACE_BUFFER] = workspace_map
+    else:
+        buffers.pop(_BINARY_WORKSPACE_BUFFER, None)
+    return buffers
+
+
 def _ensure_binary_workspace(matrix, key: str, indptr):
     workspace_map = matrix.buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {}
     if key in workspace_map:
@@ -1179,6 +1193,7 @@ class CSR(CompressedSparseData):
         alt = buffers.pop('csc', None)
         if alt is not None:
             buffers['csr'] = alt
+        buffers = _move_binary_workspace_key(buffers, "csc", "csr")
         return CSC(
             self.data, self.indices, self.indptr,
             shape=self.shape[::-1],
@@ -2051,6 +2066,7 @@ class CSC(CompressedSparseData):
         alt = buffers.pop('csr', None)
         if alt is not None:
             buffers['csc'] = alt
+        buffers = _move_binary_workspace_key(buffers, "csr", "csc")
         return CSR((self.data, self.indices, self.indptr),
                    shape=self.shape[::-1],
                    buffers=buffers,

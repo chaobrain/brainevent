@@ -117,3 +117,37 @@ def test_ensure_binary_workspace_reuses_existing_workspace():
     assert first.task_capacity == 1
     assert second.task_capacity == first.task_capacity
     assert second.task_begin is first.task_begin
+
+
+def test_csr_transpose_rekeys_binary_workspace_csc_to_csr():
+    csr = CSR(
+        (
+            jnp.ones((129,), dtype=jnp.float32),
+            jnp.zeros((129,), dtype=jnp.int32),
+            jnp.array([0, 129], dtype=jnp.int32),
+        ),
+        shape=(1, 1),
+    )
+    csc_indptr = jnp.array([0, 129], dtype=jnp.int32)
+    csr = _with_binary_workspace(csr, "csc", _make_binary_task_workspace(csc_indptr))
+
+    csc = csr.T
+
+    assert _binary_workspace(csc, "csr").task_capacity == 1
+
+
+def test_csc_transpose_rekeys_binary_workspace_csr_to_csc():
+    csc = CSR(
+        (
+            jnp.ones((129,), dtype=jnp.float32),
+            jnp.zeros((129,), dtype=jnp.int32),
+            jnp.array([0, 129], dtype=jnp.int32),
+        ),
+        shape=(1, 1),
+    ).T
+    csr_indptr = jnp.array([0, 129], dtype=jnp.int32)
+    csc = _with_binary_workspace(csc, "csr", _make_binary_task_workspace(csr_indptr))
+
+    csr = csc.T
+
+    assert _binary_workspace(csr, "csc").task_capacity == 1
