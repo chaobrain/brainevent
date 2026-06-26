@@ -1576,9 +1576,10 @@ class CSR(CompressedSparseData):
                 # ``perm`` so only active columns are touched -- parity with the
                 # matvec ``CSR @ event`` path above.
                 csc_indptr, csc_indices, perm = self._weight_indices()
+                matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", csc_indptr)
                 return binary_csrmm_indexed(
-                    self.data, csc_indices, csc_indptr, perm, other,
-                    shape=self.shape[::-1], transpose=True, backend=self.backend,
+                    matrix.data, csc_indices, csc_indptr, perm, other,
+                    shape=matrix.shape[::-1], transpose=True, backend=matrix.backend, workspace=workspace,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1653,8 +1654,9 @@ class CSR(CompressedSparseData):
                                     shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace)
             elif other.ndim == 2:
                 other = other.T
-                r = binary_csrmm(self.data, self.indices, self.indptr, other,
-                                 shape=self.shape, transpose=True, backend=self.backend)
+                matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", self.indptr)
+                r = binary_csrmm(matrix.data, matrix.indices, matrix.indptr, other,
+                                 shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -2445,11 +2447,13 @@ class CSC(CompressedSparseData):
                     workspace=workspace,
                 )
             elif other.ndim == 2:
+                matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", self.indptr)
                 return binary_csrmm(
-                    data, self.indices, self.indptr, other,
-                    shape=self.shape[::-1],
+                    matrix.data, matrix.indices, matrix.indptr, other,
+                    shape=matrix.shape[::-1],
                     transpose=True,
-                    backend=self.backend,
+                    backend=matrix.backend,
+                    workspace=workspace,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -2538,9 +2542,10 @@ class CSC(CompressedSparseData):
                 # through ``perm`` so only active rows are touched -- parity with
                 # the matvec ``event @ CSC`` path above.
                 csr_indptr, csr_indices, perm = self._weight_indices()
+                matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", csr_indptr)
                 r = binary_csrmm_indexed(
-                    self.data, csr_indices, csr_indptr, perm, other.T,
-                    shape=self.shape, transpose=True, backend=self.backend,
+                    matrix.data, csr_indices, csr_indptr, perm, other.T,
+                    shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace,
                 )
                 return r.T
             else:

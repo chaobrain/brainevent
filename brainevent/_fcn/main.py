@@ -336,9 +336,11 @@ class FixedNumConn(DataRepresentation):
         # Unfavorable: perm-fused indexed matmat over the cached CSC mirror --
         # parity with the matvec unfavorable path.
         csc_indptr, csc_indices, perm = self._weight_indices()
+        _ensure_indexed_csrmv_workspace(self, csc_indptr)
+        workspace = _binary_workspace(self)
         return binary_csrmm_indexed(
             self.data.reshape(-1), csc_indices, csc_indptr, perm, matrix,
-            shape=a_shape[::-1], transpose=True, backend=self.backend,
+            shape=a_shape[::-1], transpose=True, backend=self.backend, workspace=workspace,
         )
 
     def _float_matvec(self, vector, transpose_W: bool, data):

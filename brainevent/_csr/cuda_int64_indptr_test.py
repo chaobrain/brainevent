@@ -276,6 +276,9 @@ def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatc
             indices,
             indptr,
             jnp.array([[1.0], [0.0]], dtype=jnp.float32),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )
 
     assert [name for _, name in load_calls] == ['csr_binary_csrmv', 'csr_binary_csrmm']
@@ -334,6 +337,9 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
             indptr,
             perm,
             jnp.array([[True], [False]]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )
 
     assert [name for _, name in load_calls] == ['csr_binary_indexed_csrmv', 'csr_binary_csrmm']
@@ -498,9 +504,13 @@ def test_binary_csrmm_cuda_accepts_int64_indptr(transpose, homo):
         if transpose else
         jnp.array([[True, False], [False, True], [True, True]], dtype=jnp.bool_)
     )
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
 
-    got = binary_csrmm(data, indices, indptr64, matrix, shape=(2, 3), transpose=transpose, backend='cuda_raw')
-    expected = binary_csrmm(data, indices, indptr32, matrix, shape=(2, 3), transpose=transpose, backend='jax_raw')
+    got = binary_csrmm(data, indices, indptr64, matrix, shape=(2, 3), transpose=transpose,
+                       backend='cuda_raw', workspace=workspace64)
+    expected = binary_csrmm(data, indices, indptr32, matrix, shape=(2, 3), transpose=transpose,
+                            backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -534,11 +544,13 @@ def test_binary_indexed_csrmm_cuda_accepts_int64_indptr(transpose):
         if transpose else
         jnp.array([[True, False], [False, True], [True, True]], dtype=jnp.bool_)
     )
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
 
     got = binary_csrmm_indexed(weights, indices, indptr64, perm, matrix, shape=(2, 3),
-                               transpose=transpose, backend='cuda_raw')
+                               transpose=transpose, backend='cuda_raw', workspace=workspace64)
     expected = binary_csrmm_indexed(weights, indices, indptr32, perm, matrix, shape=(2, 3),
-                                    transpose=transpose, backend='jax_raw')
+                                    transpose=transpose, backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 

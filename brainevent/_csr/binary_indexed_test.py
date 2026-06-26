@@ -25,6 +25,7 @@ from brainevent._csr.binary_indexed import (
     binary_csrmv_indexed,
     binary_csrmv_indexed_p_call,
     binary_csrmm_indexed,
+    binary_csrmm_indexed_p_call,
 )
 from brainevent._csr.main import _binary_workspace, _make_binary_task_workspace
 from brainevent import BinaryArray, CSC, CSR, FixedNumPerPre
@@ -120,6 +121,56 @@ def test_binary_csrmv_indexed_p_call_always_returns_task_outputs():
     assert status.shape == workspace.status.shape
 
 
+def test_binary_csrmm_indexed_jax_raw_accepts_workspace_and_preserves_result():
+    weights = jnp.array([10.0, 20.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    perm = jnp.array([1, 0], dtype=jnp.int32)
+    matrix = jnp.array([[True, False], [False, True]])
+    workspace = _make_binary_task_workspace(indptr)
+
+    got = binary_csrmm_indexed(
+        weights,
+        indices,
+        indptr,
+        perm,
+        matrix,
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+        workspace=workspace,
+    )
+
+    assert got.shape == (1, 2)
+    assert jnp.allclose(got, jnp.array([[20.0, 10.0]], dtype=jnp.float32))
+
+
+def test_binary_csrmm_indexed_p_call_always_returns_task_outputs():
+    weights = jnp.array([1.0], dtype=jnp.float32)
+    indices = jnp.array([0], dtype=jnp.int32)
+    indptr = jnp.array([0, 1], dtype=jnp.int32)
+    perm = jnp.array([0], dtype=jnp.int32)
+    matrix = jnp.array([[True]])
+    workspace = _make_binary_task_workspace(indptr)
+
+    out, task_begin, task_end, status = binary_csrmm_indexed_p_call(
+        weights,
+        indices,
+        indptr,
+        perm,
+        matrix,
+        shape=(1, 1),
+        transpose=False,
+        backend="jax_raw",
+        workspace=workspace,
+    )
+
+    assert out.shape == (1, 1)
+    assert task_begin.shape == workspace.task_begin.shape
+    assert task_end.shape == workspace.task_end.shape
+    assert status.shape == workspace.status.shape
+
+
 def test_csr_unfavorable_binary_matvec_mounts_indexed_workspace():
     dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
     csr = CSR.fromdense(dense, backend="jax_raw").build_weight_indices()
@@ -133,6 +184,42 @@ def test_csr_unfavorable_binary_matvec_mounts_indexed_workspace():
 
     got_again = csr @ BinaryArray(vector)
     second = _binary_workspace(csr, "csc")
+
+    assert jnp.allclose(got_again, got)
+    assert second.task_begin is first.task_begin
+
+
+def test_csr_unfavorable_binary_matmat_mounts_indexed_workspace():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    csr = CSR.fromdense(dense, backend="jax_raw").build_weight_indices()
+    matrix = jnp.array([[True, False], [False, True]])
+
+    got = csr @ BinaryArray(matrix)
+
+    assert got.shape == (2, 2)
+    assert jnp.allclose(got, dense @ matrix.astype(jnp.float32))
+    first = _binary_workspace(csr, "csc")
+
+    got_again = csr @ BinaryArray(matrix)
+    second = _binary_workspace(csr, "csc")
+
+    assert jnp.allclose(got_again, got)
+    assert second.task_begin is first.task_begin
+
+
+def test_csr_direct_binary_rmatmat_mounts_workspace():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    csr = CSR.fromdense(dense, backend="jax_raw")
+    matrix = jnp.array([[True, False], [False, True]])
+
+    got = BinaryArray(matrix) @ csr
+
+    assert got.shape == (2, 2)
+    assert jnp.allclose(got, matrix.astype(jnp.float32) @ dense)
+    first = _binary_workspace(csr, "csr")
+
+    got_again = BinaryArray(matrix) @ csr
+    second = _binary_workspace(csr, "csr")
 
     assert jnp.allclose(got_again, got)
     assert second.task_begin is first.task_begin
@@ -156,6 +243,42 @@ def test_csc_unfavorable_binary_rmatvec_mounts_indexed_workspace():
     assert second.task_begin is first.task_begin
 
 
+def test_csc_direct_binary_matmat_mounts_workspace():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    csc = CSC.fromdense(dense, backend="jax_raw")
+    matrix = jnp.array([[True, False], [False, True]])
+
+    got = csc @ BinaryArray(matrix)
+
+    assert got.shape == (2, 2)
+    assert jnp.allclose(got, dense @ matrix.astype(jnp.float32))
+    first = _binary_workspace(csc, "csc")
+
+    got_again = csc @ BinaryArray(matrix)
+    second = _binary_workspace(csc, "csc")
+
+    assert jnp.allclose(got_again, got)
+    assert second.task_begin is first.task_begin
+
+
+def test_csc_unfavorable_binary_rmatmat_mounts_indexed_workspace():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    csc = CSC.fromdense(dense, backend="jax_raw").build_weight_indices()
+    matrix = jnp.array([[True, False], [False, True]])
+
+    got = BinaryArray(matrix) @ csc
+
+    assert got.shape == (2, 2)
+    assert jnp.allclose(got, matrix.astype(jnp.float32) @ dense)
+    first = _binary_workspace(csc, "csr")
+
+    got_again = BinaryArray(matrix) @ csc
+    second = _binary_workspace(csc, "csr")
+
+    assert jnp.allclose(got_again, got)
+    assert second.task_begin is first.task_begin
+
+
 def test_fcn_unfavorable_binary_matvec_uses_indexed_workspace():
     data = jnp.array([[1.0, 2.0], [3.0, 0.0]], dtype=jnp.float32)
     indices = jnp.array([[0, 1], [1, 0]], dtype=jnp.int32)
@@ -169,6 +292,25 @@ def test_fcn_unfavorable_binary_matvec_uses_indexed_workspace():
     first = conn.buffers["binary_workspace"]
 
     got_again = conn @ BinaryArray(vector)
+    second = conn.buffers["binary_workspace"]
+
+    assert jnp.allclose(got_again, got)
+    assert second.task_begin is first.task_begin
+
+
+def test_fcn_unfavorable_binary_matmat_uses_indexed_workspace():
+    data = jnp.array([[1.0, 2.0], [3.0, 0.0]], dtype=jnp.float32)
+    indices = jnp.array([[0, 1], [1, 0]], dtype=jnp.int32)
+    conn = FixedNumPerPre((data, indices), shape=(2, 2), backend="jax_raw").build_weight_indices()
+    matrix = jnp.array([[False, True], [True, False]])
+
+    got = conn @ BinaryArray(matrix)
+
+    assert got.shape == (2, 2)
+    assert jnp.allclose(got, conn.todense() @ matrix.astype(jnp.float32))
+    first = conn.buffers["binary_workspace"]
+
+    got_again = conn @ BinaryArray(matrix)
     second = conn.buffers["binary_workspace"]
 
     assert jnp.allclose(got_again, got)
@@ -197,9 +339,10 @@ def test_indexed_mm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
         perm = jnp.array([2, 0, 3, 1], dtype=jnp.int32)
         events = jnp.array([[True, False], [False, True], [True, True]])
+        workspace = _make_binary_task_workspace(indptr)
 
         got = binary_csrmm_indexed(
-            weights, indices, indptr, perm, events, shape=(2, 3), backend='jax_raw'
+            weights, indices, indptr, perm, events, shape=(2, 3), backend='jax_raw', workspace=workspace
         )
         expected = jnp.array([[40.0, 10.0], [20.0, 60.0]], dtype=jnp.float32)
 
@@ -212,10 +355,11 @@ def test_indexed_mm_rejects_unsigned_structure_dtype():
     indptr = jnp.array([0, 2], dtype=jnp.uint32)
     perm = jnp.array([0, 1], dtype=jnp.int32)
     events = jnp.ones((2, 1), dtype=bool)
+    workspace = _make_binary_task_workspace(indptr)
 
     with pytest.raises(AssertionError, match="signed int32 or int64"):
         binary_csrmm_indexed(
-            weights, indices, indptr, perm, events, shape=(1, 2), backend='jax_raw'
+            weights, indices, indptr, perm, events, shape=(1, 2), backend='jax_raw', workspace=workspace
         )
 
 
@@ -323,9 +467,12 @@ def test_indexed_mm_matches_materialized(transpose, homo, ev, n):
     weights = jnp.ones(1, jnp.float32) if homo else jnp.asarray(rng.random(nse), jnp.float32)
     rows = m if transpose else k
     B = jnp.asarray(rng.random((rows, n)) > 0.5, dtype=ev)
-    got = binary_csrmm_indexed(weights, indices, indptr, perm, B, shape=(m, k), transpose=transpose)
+    workspace = _make_binary_task_workspace(indptr)
+    got = binary_csrmm_indexed(
+        weights, indices, indptr, perm, B, shape=(m, k), transpose=transpose, workspace=workspace
+    )
     ref_w = weights if homo else weights[perm]
-    ref = binary_csrmm(ref_w, indices, indptr, B, shape=(m, k), transpose=transpose)
+    ref = binary_csrmm(ref_w, indices, indptr, B, shape=(m, k), transpose=transpose, workspace=workspace)
     assert jnp.allclose(got, ref, atol=1e-5), (transpose, homo, ev, n)
 
 
@@ -335,8 +482,10 @@ def test_indexed_mm_single_column_equals_mv():
     indices, indptr, perm = _structure(rng, m, k, nse)
     weights = jnp.asarray(rng.random(nse), jnp.float32)
     v = jnp.asarray(rng.random(k) > 0.5, dtype=jnp.bool_)
-    got = binary_csrmm_indexed(weights, indices, indptr, perm, v[:, None], shape=(m, k), transpose=False)
     workspace = _make_binary_task_workspace(indptr)
+    got = binary_csrmm_indexed(
+        weights, indices, indptr, perm, v[:, None], shape=(m, k), transpose=False, workspace=workspace
+    )
     ref = binary_csrmv_indexed(
         weights, indices, indptr, perm, v, shape=(m, k), transpose=False, workspace=workspace
     )
@@ -351,9 +500,14 @@ def test_indexed_mm_grad_weights(transpose):
     weights = jnp.asarray(rng.random(nse), jnp.float32)
     rows = m if transpose else k
     B = jnp.asarray(rng.random((rows, n)) > 0.5, dtype=jnp.float32)
-    f = lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k), transpose=transpose).sum()
+    workspace = _make_binary_task_workspace(indptr)
+    f = lambda w: binary_csrmm_indexed(
+        w, indices, indptr, perm, B, shape=(m, k), transpose=transpose, workspace=workspace
+    ).sum()
     g = jax.grad(f)(weights)
-    fref = lambda w: binary_csrmm(w[perm], indices, indptr, B, shape=(m, k), transpose=transpose).sum()
+    fref = lambda w: binary_csrmm(
+        w[perm], indices, indptr, B, shape=(m, k), transpose=transpose, workspace=workspace
+    ).sum()
     gref = jax.grad(fref)(weights)
     assert jnp.allclose(g, gref, atol=1e-5), transpose
 
@@ -364,9 +518,14 @@ def test_indexed_mm_grad_weights_homo():
     indices, indptr, perm = _structure(rng, m, k, nse)
     weights = jnp.asarray([0.7], jnp.float32)
     B = jnp.asarray(rng.random((k, n)) > 0.5, dtype=jnp.float32)
-    f = lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k), transpose=False).sum()
+    workspace = _make_binary_task_workspace(indptr)
+    f = lambda w: binary_csrmm_indexed(
+        w, indices, indptr, perm, B, shape=(m, k), transpose=False, workspace=workspace
+    ).sum()
     g = jax.grad(f)(weights)
-    fref = lambda w: binary_csrmm(w, indices, indptr, B, shape=(m, k), transpose=False).sum()
+    fref = lambda w: binary_csrmm(
+        w, indices, indptr, B, shape=(m, k), transpose=False, workspace=workspace
+    ).sum()
     gref = jax.grad(fref)(weights)
     assert jnp.allclose(g, gref, atol=1e-5)
 
@@ -377,9 +536,10 @@ def test_indexed_mm_jit():
     indices, indptr, perm = _structure(rng, m, k, nse)
     weights = jnp.asarray(rng.random(nse), jnp.float32)
     B = jnp.asarray(rng.random((k, n)) > 0.5, dtype=jnp.bool_)
-    f = jax.jit(lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k)))
+    workspace = _make_binary_task_workspace(indptr)
+    f = jax.jit(lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k), workspace=workspace))
     got = f(weights)
-    ref = binary_csrmm(weights[perm], indices, indptr, B, shape=(m, k))
+    ref = binary_csrmm(weights[perm], indices, indptr, B, shape=(m, k), workspace=workspace)
     assert jnp.allclose(got, ref, atol=1e-5)
 
 
@@ -392,7 +552,8 @@ def test_indexed_mm_check_grads_weights():
         indices, indptr, perm = _structure(rng, m, k, nse)
         weights = jnp.asarray(rng.random(nse), jnp.float64)
         B = jnp.asarray(rng.random((k, n)) > 0.5, dtype=jnp.bool_)
-        f = lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k)).sum()
+        workspace = _make_binary_task_workspace(indptr)
+        f = lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k), workspace=workspace).sum()
         check_grads(f, (weights,), order=2, modes=['rev'])
     finally:
         jax.config.update("jax_enable_x64", False)
