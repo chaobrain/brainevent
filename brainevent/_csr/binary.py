@@ -66,10 +66,32 @@ def _workspace_task_operands(workspace, indptr):
     return task_capacity, task_begin, task_end, status
 
 
-_BinaryCsrmvTaskWorkspace = namedtuple(
-    "_BinaryCsrmvTaskWorkspace",
+@jax.tree_util.register_pytree_node_class
+class _BinaryCsrmvTaskWorkspace(namedtuple(
+    "_BinaryCsrmvTaskWorkspaceBase",
     ("task_capacity", "task_begin", "task_end", "status"),
-)
+)):
+    __slots__ = ()
+
+    def tree_flatten(self):
+        return (self.task_begin, self.task_end, self.status), {"task_capacity": self.task_capacity}
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        task_begin, task_end, status = children
+        return cls(
+            int(aux["task_capacity"]),
+            task_begin,
+            task_end,
+            status,
+        )
+
+    def block_until_ready(self):
+        jax.block_until_ready((self.task_begin, self.task_end, self.status))
+        return self
+
+_BINARY_TASK_TPR_THRESHOLD = 128
+_BINARY_TASK_NNZ = 4096
 
 
 def _workspace_from_task_operands(task_capacity, task_begin, task_end, status):
@@ -78,6 +100,24 @@ def _workspace_from_task_operands(task_capacity, task_begin, task_end, status):
         task_begin,
         task_end,
         status,
+    )
+
+
+def _make_binary_csrmv_benchmark_workspace(indptr):
+    indptr_np = np.asarray(indptr, dtype=np.int64)
+    row_lengths = np.diff(indptr_np)
+    task_chunks = np.where(
+        row_lengths > _BINARY_TASK_TPR_THRESHOLD,
+        (row_lengths + _BINARY_TASK_NNZ - 1) // _BINARY_TASK_NNZ,
+        0,
+    )
+    task_capacity = int(task_chunks.sum())
+    task_dtype = jnp.dtype(indptr.dtype)
+    return _workspace_from_task_operands(
+        task_capacity,
+        jnp.empty((task_capacity,), dtype=task_dtype),
+        jnp.empty((task_capacity,), dtype=task_dtype),
+        jnp.empty((2,), dtype=jnp.int32),
     )
 
 
@@ -639,7 +679,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, task_begin, task_en
         else:
             ct_events = csrmv(data, indices, indptr, ct,
                               shape=shape, transpose=not transpose, backend=kwargs['backend'])
-        return data, indices, indptr, ct_events, task_begin, task_end, status
+        return data, indices, indptr, ct_events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
     else:
         if type(ct) is ad.Zero:
             ct_values = ad.Zero(data)
@@ -659,7 +699,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, task_begin, task_en
             else:  # heterogeneous values
                 row, col = _csr_to_coo(indices, indptr)
                 ct_values = events[row] * ct[col] if transpose else events[col] * ct[row]
-        return ct_values, indices, indptr, events, task_begin, task_end, status
+        return ct_values, indices, indptr, events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
 
 
 def _csrmv_batching(args, axes, **kwargs):
@@ -687,6 +727,8 @@ def _binary_csrmv_benchmark_data(*, platform):
                             data = rng.random(v_size) > event_prob
                             event_dtype = jnp.float32 if event_type == 'float' else jnp.bool_
                             vector = jnp.asarray(data, dtype=event_dtype)
+                            indptr = jnp.asarray(indptr)
+                            workspace = _make_binary_csrmv_benchmark_workspace(indptr)
                             name = (f"{n}x{n},p={p_pct}%,"
                                     f"{'T' if transpose else 'NT'},"
                                     f"{'homo' if homo else 'hetero'},"
@@ -694,7 +736,7 @@ def _binary_csrmv_benchmark_data(*, platform):
                             yield BenchmarkConfig(
                                 name,
                                 jax.block_until_ready(
-                                    (weights, jnp.asarray(indices), jnp.asarray(indptr), vector)
+                                    (weights, jnp.asarray(indices), indptr, vector, workspace)
                                 ),
                                 {'shape': (n, n), 'transpose': transpose},
                                 {'n_pre': n, 'n_post': n, 'nnz': nnz, 'csr_sparsity': conn_prob,
@@ -717,6 +759,8 @@ def _binary_csrmv_benchmark_data(*, platform):
                         data = rng.random(v_size) > event_prob
                         event_dtype = jnp.float32 if event_type == 'float' else jnp.bool_
                         vector = jnp.asarray(data, dtype=event_dtype)
+                        indptr = jnp.asarray(indptr)
+                        workspace = _make_binary_csrmv_benchmark_workspace(indptr)
                         name = (f"{n_pre}x{n_post},p=10%,"
                                 f"{'T' if transpose else 'NT'},"
                                 f"{'homo' if homo else 'hetero'},"
@@ -724,7 +768,7 @@ def _binary_csrmv_benchmark_data(*, platform):
                         yield BenchmarkConfig(
                             name,
                             jax.block_until_ready(
-                                (weights, jnp.asarray(indices), jnp.asarray(indptr), vector)
+                                (weights, jnp.asarray(indices), indptr, vector, workspace)
                             ),
                             {'shape': (n_pre, n_post), 'transpose': transpose},
                             {'n_pre': n_pre, 'n_post': n_post, 'nnz': nnz, 'csr_sparsity': conn_prob,
@@ -737,11 +781,11 @@ def binary_csrmv_p_call(
     indices,
     indptr,
     vector,
+    workspace=None,
     *,
     shape: MatrixShape,
     transpose: bool,
     backend: Optional[str] = None,
-    workspace=None,
 ):
     """
     Low-level primitive call for event-driven CSR matrix--vector

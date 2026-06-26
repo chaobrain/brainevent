@@ -24,6 +24,7 @@ import jax.numpy as jnp
 import pytest
 
 from brainevent._csr.binary import (
+    _binary_csrmv_benchmark_data,
     _binary_csrmv_jax_exp_csrmv_kernel,
     binary_csrmv,
     binary_csrmv_p,
@@ -101,6 +102,22 @@ def test_binary_csrmv_p_call_always_returns_task_outputs():
     )
 
     assert out.shape == (1,)
+    assert task_begin.shape == workspace.task_begin.shape
+    assert task_end.shape == workspace.task_end.shape
+    assert status.shape == workspace.status.shape
+
+
+def test_binary_csrmv_benchmark_data_includes_workspace_for_p_call():
+    config = next(_binary_csrmv_benchmark_data(platform='cpu'))
+
+    out, task_begin, task_end, status = binary_csrmv_p_call(
+        *config.args,
+        **config.kernel_kwargs,
+        backend='jax_raw',
+    )
+
+    workspace = config.args[-1]
+    assert out.shape == (config.kernel_kwargs['shape'][0],)
     assert task_begin.shape == workspace.task_begin.shape
     assert task_end.shape == workspace.task_end.shape
     assert status.shape == workspace.status.shape
