@@ -15,6 +15,7 @@
 
 
 import operator
+from dataclasses import dataclass
 from typing import Optional, Union, Sequence, Dict, cast
 
 import brainunit as u
@@ -39,6 +40,63 @@ __all__ = [
     'CSR',
     'CSC',
 ]
+
+
+_BINARY_TASK_TPR_THRESHOLD = 128
+_BINARY_TASK_NNZ = 4096
+
+
+def _binary_task_capacity_from_indptr(indptr) -> int:
+    indptr_np = np.asarray(jax.device_get(indptr), dtype=np.int64)
+    if indptr_np.ndim != 1:
+        raise ValueError(f"indptr must be one-dimensional, got shape={indptr_np.shape}.")
+    if indptr_np.size == 0:
+        raise ValueError("indptr must contain at least one element.")
+    row_lengths = np.diff(indptr_np)
+    if np.any(row_lengths < 0):
+        raise ValueError("CSR row lengths must be non-negative.")
+    chunks = np.where(
+        row_lengths > _BINARY_TASK_TPR_THRESHOLD,
+        (row_lengths + _BINARY_TASK_NNZ - 1) // _BINARY_TASK_NNZ,
+        0,
+    )
+    task_capacity = int(chunks.sum())
+    if task_capacity > np.iinfo(np.int32).max:
+        raise ValueError("binary task capacity exceeds int32 range.")
+    return task_capacity
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class _BinaryTaskWorkspace:
+    task_capacity: int
+    task_begin: jax.Array
+    task_end: jax.Array
+    status: jax.Array
+
+    def tree_flatten(self):
+        return (self.task_begin, self.task_end, self.status), {"task_capacity": self.task_capacity}
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        task_begin, task_end, status = children
+        return cls(
+            task_capacity=int(aux["task_capacity"]),
+            task_begin=task_begin,
+            task_end=task_end,
+            status=status,
+        )
+
+
+def _make_binary_task_workspace(indptr) -> _BinaryTaskWorkspace:
+    task_capacity = _binary_task_capacity_from_indptr(indptr)
+    task_dtype = jnp.dtype(indptr.dtype)
+    return _BinaryTaskWorkspace(
+        task_capacity=task_capacity,
+        task_begin=jnp.empty((task_capacity,), dtype=task_dtype),
+        task_end=jnp.empty((task_capacity,), dtype=task_dtype),
+        status=jnp.empty((2,), dtype=jnp.int32),
+    )
 
 
 class CompressedSparseData(DataRepresentation):
