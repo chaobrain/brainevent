@@ -112,8 +112,17 @@ def test_binary_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
         indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
         events = jnp.array([True, False, True])
+        workspace = _make_binary_task_workspace(indptr)
 
-        got = binary_csrmv(weights, indices, indptr, events, shape=(2, 3), backend='jax_raw')
+        got = binary_csrmv(
+            weights,
+            indices,
+            indptr,
+            events,
+            shape=(2, 3),
+            backend='jax_raw',
+            workspace=workspace,
+        )
 
         assert jnp.allclose(got, jnp.array([3.0, 4.0], dtype=jnp.float32))
 
@@ -124,9 +133,18 @@ def test_binary_csrmv_rejects_int64_indices_with_int32_indptr():
         indices = jnp.array([0, 1], dtype=jnp.int64)
         indptr = jnp.array([0, 2], dtype=jnp.int32)
         events = jnp.ones(2, dtype=bool)
+        workspace = _make_binary_task_workspace(indptr)
 
         with pytest.raises(AssertionError, match="same dtype"):
-            binary_csrmv(weights, indices, indptr, events, shape=(1, 2), backend='jax_raw')
+            binary_csrmv(
+                weights,
+                indices,
+                indptr,
+                events,
+                shape=(1, 2),
+                backend='jax_raw',
+                workspace=workspace,
+            )
 
 
 def test_binary_csrmm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
@@ -205,6 +223,7 @@ def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
 
 
 def _vector_csr_api(x, data, indices, indptr, shape, implementation):
+    workspace = _make_binary_task_workspace(indptr)
     return binary_csrmv(
         data,
         indices,
@@ -213,10 +232,12 @@ def _vector_csr_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=True,
         backend=implementation,
+        workspace=workspace,
     )
 
 
 def _csr_vector_api(x, data, indices, indptr, shape, implementation):
+    workspace = _make_binary_task_workspace(indptr)
     return binary_csrmv(
         data,
         indices,
@@ -225,6 +246,7 @@ def _csr_vector_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=False,
         backend=implementation,
+        workspace=workspace,
     )
 
 
