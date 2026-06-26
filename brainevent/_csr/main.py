@@ -99,6 +99,55 @@ def _make_binary_task_workspace(indptr) -> _BinaryTaskWorkspace:
     )
 
 
+_BINARY_WORKSPACE_BUFFER = "binary_workspace"
+
+
+def _split_binary_workspace_buffers(buffers):
+    buffers = dict(buffers)
+    workspace_map = dict(buffers.pop(_BINARY_WORKSPACE_BUFFER, {}) or {})
+    workspace_items = tuple(sorted(workspace_map.items()))
+    workspace_keys = tuple(key for key, _ in workspace_items)
+    workspace_leaves = tuple(workspace for _, workspace in workspace_items)
+    return buffers, workspace_keys, workspace_leaves
+
+
+def _restore_binary_workspace_buffers(static_buffers, workspace_keys, workspace_leaves):
+    buffers = dict(static_buffers)
+    if workspace_keys:
+        buffers[_BINARY_WORKSPACE_BUFFER] = {
+            key: workspace for key, workspace in zip(workspace_keys, workspace_leaves)
+        }
+    return buffers
+
+
+def _binary_workspace(matrix, key: str) -> _BinaryTaskWorkspace:
+    workspace_map = matrix.buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {}
+    try:
+        return workspace_map[key]
+    except KeyError as exc:
+        raise ValueError(f"binary task workspace {key!r} is not prepared") from exc
+
+
+def _with_binary_workspace(matrix, key: str, workspace: _BinaryTaskWorkspace):
+    buffers = dict(matrix.buffers)
+    workspace_map = dict(buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {})
+    workspace_map[key] = workspace
+    buffers[_BINARY_WORKSPACE_BUFFER] = workspace_map
+    return type(matrix)(
+        (matrix.data, matrix.indices, matrix.indptr),
+        shape=matrix.shape,
+        buffers=buffers,
+        backend=matrix.backend,
+    )
+
+
+def _ensure_binary_workspace(matrix, key: str, indptr):
+    workspace_map = matrix.buffers.get(_BINARY_WORKSPACE_BUFFER, {}) or {}
+    if key in workspace_map:
+        return matrix
+    return _with_binary_workspace(matrix, key, _make_binary_task_workspace(indptr))
+
+
 class CompressedSparseData(DataRepresentation):
     """
     Abstract base class for compressed sparse matrix formats.
@@ -201,16 +250,17 @@ class CompressedSparseData(DataRepresentation):
         Flatten this sparse matrix into JAX pytree leaves and auxiliary data.
 
         This method is part of the JAX pytree protocol.  The ``data`` array
-        is the only leaf (traced by JAX); ``indices``, ``indptr``, ``shape``,
-        and ``diag_positions`` are stored as static auxiliary data.
+        is always a leaf. Hidden binary task workspace arrays, when present
+        in ``buffers``, are also leaves; structural arrays and ordinary
+        buffers are stored as auxiliary data.
 
         Returns
         -------
         children : tuple
-            A 1-tuple ``(data,)`` containing the traceable leaf array.
-        aux_data : dict
-            Dictionary with keys ``'indices'``, ``'indptr'``, ``'shape'``,
-            and ``'diag_positions'``.
+            Leaf arrays containing ``data`` followed by any hidden binary
+            workspace arrays.
+        aux_data : tuple
+            Auxiliary metadata and non-workspace buffers.
 
         See Also
         --------
@@ -222,7 +272,9 @@ class CompressedSparseData(DataRepresentation):
             'shape': self.shape,
             'backend': self.backend,
         }
-        return (self.data,), (aux, self.buffers)
+        static_buffers, workspace_keys, workspace_leaves = _split_binary_workspace_buffers(self.buffers)
+        aux["_binary_workspace_keys"] = workspace_keys
+        return (self.data, *workspace_leaves), (aux, static_buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -251,15 +303,19 @@ class CompressedSparseData(DataRepresentation):
         --------
         tree_flatten : Flatten a sparse matrix for JAX pytree handling.
         """
-        obj = object.__new__(cls)
-        obj.data, = children
-        aux_data, buffer = aux_data
-        obj._buffer_registry = set(buffer.keys())
-        for k, v in aux_data.items():
-            setattr(obj, k, v)
-        for k, v in buffer.items():
-            setattr(obj, k, v)
-        return obj
+        aux, static_buffers = aux_data
+        aux = dict(aux)
+        data, *workspace_leaves = children
+        workspace_keys = aux.pop("_binary_workspace_keys", ())
+        buffers = _restore_binary_workspace_buffers(static_buffers, workspace_keys, workspace_leaves)
+        return cls(
+            data,
+            aux["indices"],
+            aux["indptr"],
+            shape=aux["shape"],
+            backend=aux["backend"],
+            buffers=buffers,
+        )
 
     def apply(self, fn):
         """

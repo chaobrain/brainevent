@@ -4,9 +4,13 @@ import jax
 import jax.numpy as jnp
 
 from brainevent._csr.main import (
+    CSR,
     _BinaryTaskWorkspace,
+    _binary_workspace,
     _binary_task_capacity_from_indptr,
+    _ensure_binary_workspace,
     _make_binary_task_workspace,
+    _with_binary_workspace,
 )
 
 
@@ -66,3 +70,50 @@ def test_make_binary_task_workspace_shapes_dtypes_and_pytree():
         assert restored.task_begin.shape == workspace.task_begin.shape
         assert restored.task_end.shape == workspace.task_end.shape
         assert restored.status.shape == workspace.status.shape
+
+
+def test_binary_workspace_buffer_is_pytree_leaf_and_hidden_buffer():
+    csr = CSR(
+        (
+            jnp.array([1.0], dtype=jnp.float32),
+            jnp.array([0], dtype=jnp.int32),
+            jnp.array([0, 1], dtype=jnp.int32),
+        ),
+        shape=(1, 1),
+    )
+    workspace = _make_binary_task_workspace(csr.indptr)
+    csr = _with_binary_workspace(csr, "csr", workspace)
+
+    leaves, treedef = jax.tree_util.tree_flatten(csr)
+    restored = jax.tree_util.tree_unflatten(treedef, leaves)
+    restored_workspace = _binary_workspace(restored, "csr")
+
+    assert "binary_workspace" in csr.buffers
+    assert [getattr(leaf, "shape", None) for leaf in leaves] == [
+        csr.data.shape,
+        workspace.task_begin.shape,
+        workspace.task_end.shape,
+        workspace.status.shape,
+    ]
+    assert restored_workspace.task_capacity == workspace.task_capacity
+    assert restored_workspace.status.shape == (2,)
+
+
+def test_ensure_binary_workspace_reuses_existing_workspace():
+    csr = CSR(
+        (
+            jnp.ones((129,), dtype=jnp.float32),
+            jnp.zeros((129,), dtype=jnp.int32),
+            jnp.array([0, 129], dtype=jnp.int32),
+        ),
+        shape=(1, 1),
+    )
+
+    prepared = _ensure_binary_workspace(csr, "csr", csr.indptr)
+    prepared_again = _ensure_binary_workspace(prepared, "csr", csr.indptr)
+
+    first = _binary_workspace(prepared, "csr")
+    second = _binary_workspace(prepared_again, "csr")
+    assert first.task_capacity == 1
+    assert second.task_capacity == first.task_capacity
+    assert second.task_begin is first.task_begin
