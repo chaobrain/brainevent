@@ -360,14 +360,15 @@ def binary_csrmm(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.binary import binary_csrmm
+        >>> from brainevent._csr.binary import binary_csrmm, _make_binary_csrmv_workspace
         >>> data = jnp.array([1.0, 2.0, 3.0, 4.0])
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
         >>> B = jnp.array([[True, False],
         ...                [False, True],
         ...                [True, True]])
-        >>> binary_csrmm(data, indices, indptr, B, shape=(2, 3))
+        >>> workspace = _make_binary_csrmv_workspace(indptr)
+        >>> binary_csrmm(data, indices, indptr, B, shape=(2, 3), workspace=workspace)
     """
     data, unitd = u.split_mantissa_unit(data)
     B, unitb = u.split_mantissa_unit(B)
@@ -871,8 +872,9 @@ def binary_csrmv_p_call(
 
     Returns
     -------
-    list of jax.Array
-        A single-element list containing the result vector.  Shape
+    tuple of jax.Array
+        The result vector followed by ``task_begin``, ``task_end``, and
+        ``status`` task workspace outputs.  The result vector has shape
         ``(shape[1],)`` when ``transpose=True`` or ``(shape[0],)`` when
         ``transpose=False``.
 
@@ -1482,10 +1484,11 @@ def binary_csrmm_p_call(
 
     Returns
     -------
-    list of jax.Array
-        A single-element list containing the result matrix.  Shape
-        ``(shape[1], cols)`` when ``transpose=True`` or
-        ``(shape[0], cols)`` when ``transpose=False``.
+    tuple of jax.Array
+        The result matrix followed by ``task_begin``, ``task_end``, and
+        ``status`` task workspace outputs.  The result matrix has shape
+        ``(shape[1], cols)`` when ``transpose=True`` or ``(shape[0], cols)``
+        when ``transpose=False``.
 
     Raises
     ------
@@ -1527,15 +1530,16 @@ def binary_csrmm_p_call(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.binary import binary_csrmm_p_call
+        >>> from brainevent._csr.binary import binary_csrmm_p_call, _make_binary_csrmv_workspace
         >>> weights = jnp.array([1.0, 2.0, 3.0, 4.0])
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
         >>> B = jnp.array([[True, False],
         ...                [False, True],
         ...                [True, True]])
+        >>> workspace = _make_binary_csrmv_workspace(indptr)
         >>> result = binary_csrmm_p_call(
-        ...     weights, indices, indptr, B,
+        ...     weights, indices, indptr, B, workspace,
         ...     shape=(2, 3), transpose=False)
     """
     assert indptr.ndim == 1, "Indptr must be 1D."
