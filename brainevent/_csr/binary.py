@@ -580,7 +580,7 @@ def _binary_csrmv_bcoo_cusparse_kernel(
     return kernel
 
 
-def _binary_csrmv_jax_exp_csrmv_kernel(
+def _binary_csrmv_jax_cusparse_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
@@ -1036,7 +1036,7 @@ binary_csrmv_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('BCOO_cusparse', 'gpu', _binary_csrmv_bcoo_cusparse_kernel)
-binary_csrmv_p.def_kernel('JAX_cusparse', 'gpu', _binary_csrmv_jax_exp_csrmv_kernel)
+binary_csrmv_p.def_kernel('JAX_cusparse', 'gpu', _binary_csrmv_jax_cusparse_kernel)
 binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v, None, None, None)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
@@ -1267,6 +1267,35 @@ def _binary_csrmm_cusparse_kernel(
                 mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
                 math_out = mat @ events
                 return math_out, task_begin, task_end, status
+    return kernel
+
+def _binary_csrmm_jax_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """JAX experimental CSR-backed binary CSR SpMM reference kernel."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    def kernel(weights, indices, indptr, B, task_begin, task_end, status):
+        events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+        indices = indices.astype(indptr.dtype) if indices.dtype != indptr.dtype else indices
+        if is_homo:
+            data = jnp.ones(nse, dtype=out_dtype)
+            mat = jsparse.CSR((data, indices, indptr), shape=(m, k))
+            math_out = jsparse.csr_matmat(mat, events, transpose=transpose) * weights[0].astype(out_dtype)
+            return math_out, task_begin, task_end, status
+        mat = jsparse.CSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+        math_out = jsparse.csr_matmat(mat, events, transpose=transpose)
+        return math_out, task_begin, task_end, status
+
     return kernel
 
 
@@ -1675,7 +1704,8 @@ binary_csrmm_p.def_cuda_raw_kernel(_binary_csrmm_cuda_kernel, asdefault=True)
 binary_csrmm_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_jax_kernel)
 binary_csrmm_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_jax_kernel)
 binary_csrmm_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_jax_kernel)
-binary_csrmm_p.def_kernel('cusparse', 'gpu', _binary_csrmm_cusparse_kernel)
+binary_csrmm_p.def_kernel('BCOO_cusparse', 'gpu', _binary_csrmm_cusparse_kernel)
+binary_csrmm_p.def_kernel('JAX_cusparse', 'gpu', _binary_csrmm_jax_cusparse_kernel)
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B, None, None, None)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)

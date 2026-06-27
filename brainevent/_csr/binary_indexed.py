@@ -540,6 +540,41 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, task_begin, 
 
 
 def _idx_batching(args, axes, **kwargs):
+    axes = tuple(axes)
+    task_capacity = kwargs.get('task_capacity', args[5].shape[0])
+    workspace = _workspace_from_task_operands(task_capacity, args[5], args[6], args[7])
+    if axes == (None, None, None, None, 0, None, None, None):
+        assert args[4].ndim == 2, 'Batching axis 0 requires 2D input.'
+        r = binary_csrmm_indexed_p_call(
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+            args[4].T,
+            workspace,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
+        )
+        math_out = r[0]
+        return (math_out, args[5], args[6], args[7]), (1, None, None, None)
+
+    if axes == (None, None, None, None, 1, None, None, None):
+        assert args[4].ndim == 2, 'Batching axis 1 requires 2D input.'
+        r = binary_csrmm_indexed_p_call(
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+            args[4],
+            workspace,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
+        )
+        math_out = r[0]
+        return (math_out, args[5], args[6], args[7]), (1, None, None, None)
+
     return general_batching_rule(binary_csrmv_indexed_p, args, axes, **kwargs)
 
 
@@ -1038,6 +1073,62 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, task_begin, ta
 
 
 def _csrmm_idx_batching(args, axes, **kwargs):
+    axes = tuple(axes)
+    workspace = _workspace_from_task_operands(kwargs['task_capacity'], args[5], args[6], args[7])
+    if axes == (None, None, None, None, 0, None, None, None):
+        assert args[4].ndim == 3, 'Batching axis 0 requires 3D input.'
+        batch_size, m, n = args[4].shape
+        B = jnp.transpose(args[4], (1, 0, 2)).reshape(m, batch_size * n)
+        r = binary_csrmm_indexed_p_call(
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+            B,
+            workspace,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
+        )[0]
+        r = jnp.reshape(r, [r.shape[0], batch_size, n])
+        return (r, args[5], args[6], args[7]), (1, None, None, None)
+
+    if axes == (None, None, None, None, 1, None, None, None):
+        assert args[4].ndim == 3, 'Batching axis 1 requires 3D input.'
+        m, batch_size, n = args[4].shape
+        B = args[4].reshape(m, batch_size * n)
+        r = binary_csrmm_indexed_p_call(
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+            B,
+            workspace,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
+        )[0]
+        r = jnp.reshape(r, [r.shape[0], batch_size, n])
+        return (r, args[5], args[6], args[7]), (1, None, None, None)
+
+    if axes == (None, None, None, None, 2, None, None, None):
+        assert args[4].ndim == 3, 'Batching axis 2 requires 3D input.'
+        m, n, batch_size = args[4].shape
+        B = args[4].reshape(m, batch_size * n)
+        r = binary_csrmm_indexed_p_call(
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+            B,
+            workspace,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
+        )[0]
+        r = jnp.reshape(r, [r.shape[0], n, batch_size])
+        return (r, args[5], args[6], args[7]), (2, None, None, None)
+
     return general_batching_rule(binary_csrmm_indexed_p, args, axes, **kwargs)
 
 

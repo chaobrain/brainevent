@@ -23,6 +23,8 @@ import pytest
 import brainevent._csr.main as csr_main
 from brainevent._csr.binary import binary_csrmv, binary_csrmm, _workspace_from_task_operands
 from brainevent._csr.binary_indexed import (
+    _csrmm_idx_batching,
+    _idx_batching,
     binary_csrmv_indexed,
     binary_csrmv_indexed_p_call,
     binary_csrmm_indexed,
@@ -122,6 +124,82 @@ def test_binary_csrmv_indexed_p_call_always_returns_task_outputs():
     assert status.shape == workspace.status.shape
 
 
+def test_binary_csrmv_indexed_vmap_keeps_workspace_outputs_unbatched():
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    perm = jnp.array([1, 0], dtype=jnp.int32)
+    vectors = jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
+    workspace = _make_binary_task_workspace(indptr)
+
+    out_info = jax.ShapeDtypeStruct((1,), weights.dtype)
+    task_begin_info = jax.ShapeDtypeStruct(workspace.task_begin.shape, workspace.task_begin.dtype)
+    task_end_info = jax.ShapeDtypeStruct(workspace.task_end.shape, workspace.task_end.dtype)
+    status_info = jax.ShapeDtypeStruct(workspace.status.shape, workspace.status.dtype)
+
+    (out, task_begin, task_end, status), out_dims = _idx_batching(
+        (weights, indices, indptr, perm, vectors, workspace.task_begin, workspace.task_end, workspace.status),
+        (None, None, None, None, 0, None, None, None),
+        outs=(out_info, task_begin_info, task_end_info, status_info),
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        perm_info=jax.ShapeDtypeStruct(perm.shape, perm.dtype),
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        vector_info=jax.ShapeDtypeStruct(vectors.shape[1:], vectors.dtype),
+        task_begin_info=task_begin_info,
+        task_end_info=task_end_info,
+        status_info=status_info,
+        task_capacity=workspace.task_capacity,
+    )
+
+    assert out.shape == (1, 2)
+    assert task_begin.shape == workspace.task_begin.shape
+    assert task_end.shape == workspace.task_end.shape
+    assert status.shape == workspace.status.shape
+    assert out_dims == (1, None, None, None)
+
+
+def test_binary_csrmv_indexed_vmap_matches_materialized_weights():
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    perm = jnp.array([1, 0], dtype=jnp.int32)
+    vectors = jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
+    workspace = _make_binary_task_workspace(indptr)
+
+    got = jax.vmap(
+        lambda vector: binary_csrmv_indexed(
+            weights,
+            indices,
+            indptr,
+            perm,
+            vector,
+            workspace=workspace,
+            shape=(1, 2),
+            transpose=False,
+            backend="jax_raw",
+        )
+    )(vectors)
+    ref = jax.vmap(
+        lambda vector: binary_csrmv(
+            weights[perm],
+            indices,
+            indptr,
+            vector,
+            workspace=workspace,
+            shape=(1, 2),
+            transpose=False,
+            backend="jax_raw",
+        )
+    )(vectors)
+
+    assert got.shape == (2, 1)
+    assert jnp.allclose(got, ref)
+
+
 def test_binary_csrmm_indexed_jax_raw_accepts_workspace_and_preserves_result():
     weights = jnp.array([10.0, 20.0], dtype=jnp.float32)
     indices = jnp.array([0, 1], dtype=jnp.int32)
@@ -170,6 +248,101 @@ def test_binary_csrmm_indexed_p_call_always_returns_task_outputs():
     assert task_begin.shape == workspace.task_begin.shape
     assert task_end.shape == workspace.task_end.shape
     assert status.shape == workspace.status.shape
+
+
+@pytest.mark.parametrize(
+    ("batch_axis", "input_shape", "output_shape", "output_axis"),
+    [
+        (0, (2, 2, 2), (1, 2, 2), 1),
+        (1, (2, 2, 2), (1, 2, 2), 1),
+        (2, (2, 2, 2), (1, 2, 2), 2),
+    ],
+)
+def test_binary_csrmm_indexed_vmap_keeps_workspace_outputs_unbatched(
+    batch_axis,
+    input_shape,
+    output_shape,
+    output_axis,
+):
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    perm = jnp.array([1, 0], dtype=jnp.int32)
+    matrices = jnp.arange(np.prod(input_shape)).reshape(input_shape) % 2 == 0
+    workspace = _make_binary_task_workspace(indptr)
+
+    out_info = jax.ShapeDtypeStruct((1, 2), weights.dtype)
+    task_begin_info = jax.ShapeDtypeStruct(workspace.task_begin.shape, workspace.task_begin.dtype)
+    task_end_info = jax.ShapeDtypeStruct(workspace.task_end.shape, workspace.task_end.dtype)
+    status_info = jax.ShapeDtypeStruct(workspace.status.shape, workspace.status.dtype)
+
+    (out, task_begin, task_end, status), out_dims = _csrmm_idx_batching(
+        (weights, indices, indptr, perm, matrices, workspace.task_begin, workspace.task_end, workspace.status),
+        (None, None, None, None, batch_axis, None, None, None),
+        outs=(out_info, task_begin_info, task_end_info, status_info),
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        perm_info=jax.ShapeDtypeStruct(perm.shape, perm.dtype),
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        vector_info=jax.ShapeDtypeStruct(matrices.shape[1:], matrices.dtype),
+        task_begin_info=task_begin_info,
+        task_end_info=task_end_info,
+        status_info=status_info,
+        task_capacity=workspace.task_capacity,
+    )
+
+    assert out.shape == output_shape
+    assert task_begin.shape == workspace.task_begin.shape
+    assert task_end.shape == workspace.task_end.shape
+    assert status.shape == workspace.status.shape
+    assert out_dims == (output_axis, None, None, None)
+
+
+def test_binary_csrmm_indexed_vmap_matches_materialized_weights():
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    perm = jnp.array([1, 0], dtype=jnp.int32)
+    matrices = jnp.array(
+        [
+            [[True, False], [False, True]],
+            [[False, True], [True, False]],
+        ],
+        dtype=jnp.bool_,
+    )
+    workspace = _make_binary_task_workspace(indptr)
+
+    got = jax.vmap(
+        lambda matrix: binary_csrmm_indexed(
+            weights,
+            indices,
+            indptr,
+            perm,
+            matrix,
+            workspace=workspace,
+            shape=(1, 2),
+            transpose=False,
+            backend="jax_raw",
+        )
+    )(matrices)
+    ref = jax.vmap(
+        lambda matrix: binary_csrmm(
+            weights[perm],
+            indices,
+            indptr,
+            matrix,
+            workspace=workspace,
+            shape=(1, 2),
+            transpose=False,
+            backend="jax_raw",
+        )
+    )(matrices)
+
+    assert got.shape == (2, 1, 2)
+    assert jnp.allclose(got, ref)
 
 
 def test_binary_csrmm_indexed_weight_jvp_zeroes_task_tangents():
