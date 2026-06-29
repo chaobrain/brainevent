@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from brainevent._csr.main import CSR
 
 from brainevent._compatible_import import Tracer
+from brainevent._csr.binary import _make_binary_csrmv_workspace
 from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from brainevent._csr.plasticity_binary import update_csr_on_binary_post
 from brainevent._csr.slice import csr_slice_rows
@@ -91,6 +92,41 @@ def _align_binary_matmat_output(result, expected_shape, op_name: str):
         f'binary matmat output shape mismatch in {op_name}: '
         f'got {result.shape}, expected {expected_shape}.'
     )
+
+
+def _make_indexed_csrmv_workspace(indptr):
+    return _make_binary_csrmv_workspace(indptr)
+
+
+_BINARY_WORKSPACE_BUFFER = "binary_workspace"
+
+
+def _split_binary_workspace_buffers(buffers):
+    buffers = dict(buffers)
+    workspace = buffers.pop(_BINARY_WORKSPACE_BUFFER, None)
+    workspace_leaves = () if workspace is None else (workspace,)
+    return buffers, workspace_leaves
+
+
+def _restore_binary_workspace_buffers(static_buffers, workspace_leaves):
+    buffers = dict(static_buffers)
+    if workspace_leaves:
+        buffers[_BINARY_WORKSPACE_BUFFER] = workspace_leaves[0]
+    return buffers
+
+
+def _binary_workspace(matrix):
+    try:
+        return matrix.buffers[_BINARY_WORKSPACE_BUFFER]
+    except KeyError as exc:
+        raise ValueError("binary task workspace is not prepared") from exc
+
+
+def _ensure_indexed_csrmv_workspace(matrix, indptr):
+    if _BINARY_WORKSPACE_BUFFER in matrix.buffers:
+        return matrix
+    matrix.register_buffer(_BINARY_WORKSPACE_BUFFER, _make_indexed_csrmv_workspace(indptr))
+    return matrix
 
 
 def _ensure_fixed_conn_initialized_outside_jit(indices: Index, *, kind: str) -> None:
@@ -281,9 +317,11 @@ class FixedNumConn(DataRepresentation):
         # CSR kernel -- it reads ``data[perm[j]]`` so only active columns are
         # touched (no full-size weight gather). Same shape/transpose as CSR/CSC.
         csc_indptr, csc_indices, perm = self._weight_indices()
+        _ensure_indexed_csrmv_workspace(self, csc_indptr)
+        workspace = _binary_workspace(self)
         return binary_csrmv_indexed(
             self.data.reshape(-1), csc_indices, csc_indptr, perm, s,
-            shape=a_shape[::-1], transpose=True, backend=self.backend,
+            shape=a_shape[::-1], transpose=True, backend=self.backend, workspace=workspace,
         )
 
     def _binary_matmat(self, matrix, transpose_W: bool):
@@ -298,9 +336,11 @@ class FixedNumConn(DataRepresentation):
         # Unfavorable: perm-fused indexed matmat over the cached CSC mirror --
         # parity with the matvec unfavorable path.
         csc_indptr, csc_indices, perm = self._weight_indices()
+        _ensure_indexed_csrmv_workspace(self, csc_indptr)
+        workspace = _binary_workspace(self)
         return binary_csrmm_indexed(
             self.data.reshape(-1), csc_indices, csc_indptr, perm, matrix,
-            shape=a_shape[::-1], transpose=True, backend=self.backend,
+            shape=a_shape[::-1], transpose=True, backend=self.backend, workspace=workspace,
         )
 
     def _float_matvec(self, vector, transpose_W: bool, data):
@@ -640,17 +680,25 @@ class FixedNumConn(DataRepresentation):
     # ------------------------------------------------------------------ #
 
     def tree_flatten(self):
-        """Flatten: ``data`` is the only leaf; ``indices``/``shape``/``backend`` and
-        the rebuildable ``buffers`` mirror are static aux (mirrors CompressedSparseData)."""
+        """Flatten ``data`` plus any hidden binary workspace leaves."""
         aux = {'indices': self.indices, 'shape': self.shape, 'backend': self.backend}
-        return (self.data,), (aux, self.buffers)
+        static_buffers, workspace_leaves = _split_binary_workspace_buffers(self.buffers)
+        aux["_has_binary_workspace"] = bool(workspace_leaves)
+        return (self.data, *workspace_leaves), (aux, static_buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         """Reconstruct from pytree components, restoring the buffer registry."""
         obj = object.__new__(cls)
-        obj.data, = children
+        data, *workspace_leaves = children
+        obj.data = data
         aux, buffers = aux_data
+        aux = dict(aux)
+        if "_has_binary_workspace" in aux:
+            has_binary_workspace = aux.pop("_has_binary_workspace")
+            if not has_binary_workspace:
+                workspace_leaves = []
+            buffers = _restore_binary_workspace_buffers(buffers, workspace_leaves)
         obj._buffer_registry = set(buffers.keys())
         for k, v in aux.items():
             setattr(obj, k, v)

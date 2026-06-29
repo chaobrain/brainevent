@@ -1265,8 +1265,8 @@ def _rand_dense(rng, m, n, p=0.4):
     return _jnp.asarray((rng.random((m, n)) < p) * rng.random((m, n)), _jnp.float32)
 
 
-def test_csr_at_event_matches_dense_and_caches():
-    # CSR @ event is the unfavorable direction -> indexed column-major scatter.
+def test_csr_at_event_matches_dense_without_mirror_cache_by_default():
+    # Default/JAX-style routing stays on the direct CSR binary path.
     rng = _np.random.default_rng(3)
     m, k = 5, 7
     csr = _be.CSR.fromdense(_rand_dense(rng, m, k))
@@ -1275,8 +1275,7 @@ def test_csr_at_event_matches_dense_and_caches():
     ref = csr.todense() @ ev.astype(_jnp.float32)
     assert got.shape == (m,)
     assert _jnp.allclose(got, ref, atol=1e-5)
-    # the indexed path must have built & cached the CSC-like weight indices
-    assert csr.buffers.get('csc') is not None
+    assert csr.buffers.get('csc') is None
 
 
 def test_event_at_csr_favorable_matches_dense():
@@ -1291,8 +1290,8 @@ def test_event_at_csr_favorable_matches_dense():
     assert _jnp.allclose(got, ref, atol=1e-5)
 
 
-def test_event_at_csc_matches_dense_and_caches():
-    # event @ CSC is the unfavorable direction -> indexed row-major scatter.
+def test_event_at_csc_matches_dense_without_mirror_cache_by_default():
+    # Default/JAX-style routing stays on the direct CSC-as-transposed-CSR path.
     rng = _np.random.default_rng(5)
     m, n = 6, 4
     csc = _be.CSC.fromdense(_rand_dense(rng, m, n))
@@ -1301,7 +1300,7 @@ def test_event_at_csc_matches_dense_and_caches():
     ref = ev.astype(_jnp.float32) @ csc.todense()
     assert got.shape == (n,)
     assert _jnp.allclose(got, ref, atol=1e-5)
-    assert csc.buffers.get('csr') is not None
+    assert csc.buffers.get('csr') is None
 
 
 def test_csc_at_event_favorable_matches_dense():
@@ -1469,28 +1468,32 @@ def test_csc_matmat_golden():
                 assert jnp.allclose(got_l, ref_l, atol=1e-5), ('M@CSC', str(ev), n)
 
 
-def test_csr_matmat_unfavorable_builds_weight_indices():
-    # Routing to the indexed scatter primitive populates the cached transposed
-    # structure as a side effect (the gather path never builds it).
-    # CSR._weight_indices() caches the CSC view under the 'csc' buffer key.
+def test_csr_matmat_unfavorable_jax_raw_route_skips_weight_indices():
+    # jax_raw BinaryArray routing uses the direct CSR structure and workspace.
+    # Only explicit cuda_raw uses the mirror indexed route that builds 'csc'.
     rng = np.random.default_rng(2)
     csr = next(_csr_cases())
+    csr = CSR((csr.data, csr.indices, csr.indptr), shape=csr.shape, backend="jax_raw")
     k = csr.shape[1]
     right = jnp.asarray(rng.random((k, 4)) > 0.5, dtype=jnp.bool_)
     assert csr.buffers.get('csc') is None
     _ = csr @ BinaryArray(right)
-    assert csr.buffers.get('csc') is not None
+    assert csr.buffers.get('csc') is None
+    assert 'csr' in csr.buffers.get('binary_workspace', {})
 
 
-def test_csc_matmat_unfavorable_builds_weight_indices():
-    # CSC._weight_indices() caches the CSR view under the 'csr' buffer key.
+def test_csc_matmat_unfavorable_jax_raw_route_skips_weight_indices():
+    # jax_raw BinaryArray routing uses the direct CSC structure and workspace.
+    # Only explicit cuda_raw uses the mirror indexed route that builds 'csr'.
     rng = np.random.default_rng(3)
     csc = next(_csr_cases()).T
+    csc = CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape, backend="jax_raw")
     p = csc.shape[0]
     left = jnp.asarray(rng.random((4, p)) > 0.5, dtype=jnp.bool_)
     assert csc.buffers.get('csr') is None
     _ = BinaryArray(left) @ csc
-    assert csc.buffers.get('csr') is not None
+    assert csc.buffers.get('csr') is None
+    assert 'csc' in csc.buffers.get('binary_workspace', {})
 
 
 def test_csr_matmat_units_and_jit():

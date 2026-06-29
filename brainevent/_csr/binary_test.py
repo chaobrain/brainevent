@@ -24,12 +24,19 @@ import jax.numpy as jnp
 import pytest
 
 from brainevent._csr.binary import (
-    _binary_csrmv_jax_exp_csrmv_kernel,
+    _binary_csrmv_benchmark_data,
+    _binary_csrmm_benchmark_data,
+    _binary_csrmm_jax_cusparse_kernel,
+    _binary_csrmv_jax_cusparse_kernel,
+    _csrmv_batching,
     binary_csrmv,
     binary_csrmv_p,
+    binary_csrmv_p_call,
     binary_csrmm,
     binary_csrmm_p,
+    binary_csrmm_p_call,
 )
+from brainevent._csr.main import _make_binary_task_workspace
 from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 # Every test loops over all native backends (incl. ``numba``), which compile per test and
@@ -57,14 +64,212 @@ def _require_implementations(implementations, op_name: str):
         pytest.skip(f'No {op_name} implementation on platform={platform}')
 
 
+def test_binary_csrmv_jax_raw_accepts_workspace_and_preserves_result():
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    vector = jnp.array([True, False])
+    workspace = _make_binary_task_workspace(indptr)
+
+    got = binary_csrmv(
+        weights,
+        indices,
+        indptr,
+        vector,
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+        workspace=workspace,
+    )
+
+    assert got.shape == (1,)
+    assert got.dtype == weights.dtype
+    assert jnp.allclose(got, jnp.array([1.0], dtype=jnp.float32))
+
+
+def test_binary_csrmv_p_call_always_returns_task_outputs():
+    weights = jnp.array([1.0], dtype=jnp.float32)
+    indices = jnp.array([0], dtype=jnp.int32)
+    indptr = jnp.array([0, 1], dtype=jnp.int32)
+    vector = jnp.array([True])
+    workspace = _make_binary_task_workspace(indptr)
+
+    out, task_begin, task_end, status = binary_csrmv_p_call(
+        weights,
+        indices,
+        indptr,
+        vector,
+        shape=(1, 1),
+        transpose=False,
+        backend="jax_raw",
+        workspace=workspace,
+    )
+
+    assert out.shape == (1,)
+    assert task_begin.shape == workspace.task_begin.shape
+    assert task_end.shape == workspace.task_end.shape
+    assert status.shape == workspace.status.shape
+
+
+def test_binary_csrmm_jax_raw_accepts_workspace_and_preserves_result():
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    matrix = jnp.array([[True, False], [False, True]])
+    workspace = _make_binary_task_workspace(indptr)
+
+    got = binary_csrmm(
+        weights,
+        indices,
+        indptr,
+        matrix,
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+        workspace=workspace,
+    )
+
+    assert got.shape == (1, 2)
+    assert got.dtype == weights.dtype
+    assert jnp.allclose(got, jnp.array([[1.0, 2.0]], dtype=jnp.float32))
+
+
+def test_binary_csrmm_p_call_always_returns_task_outputs():
+    weights = jnp.array([1.0], dtype=jnp.float32)
+    indices = jnp.array([0], dtype=jnp.int32)
+    indptr = jnp.array([0, 1], dtype=jnp.int32)
+    matrix = jnp.array([[True]])
+    workspace = _make_binary_task_workspace(indptr)
+
+    out, task_begin, task_end, status = binary_csrmm_p_call(
+        weights,
+        indices,
+        indptr,
+        matrix,
+        shape=(1, 1),
+        transpose=False,
+        backend="jax_raw",
+        workspace=workspace,
+    )
+
+    assert out.shape == (1, 1)
+    assert task_begin.shape == workspace.task_begin.shape
+    assert task_end.shape == workspace.task_end.shape
+    assert status.shape == workspace.status.shape
+
+
+def test_binary_csrmv_benchmark_data_includes_workspace_for_p_call():
+    config = next(_binary_csrmv_benchmark_data(platform='cpu'))
+
+    out, task_begin, task_end, status = binary_csrmv_p_call(
+        *config.args,
+        **config.kernel_kwargs,
+        backend='jax_raw',
+    )
+
+    workspace = config.args[-1]
+    assert out.shape == (config.kernel_kwargs['shape'][0],)
+    assert task_begin.shape == workspace.task_begin.shape
+    assert task_end.shape == workspace.task_end.shape
+    assert status.shape == workspace.status.shape
+
+
+def test_binary_csrmm_benchmark_data_includes_workspace_for_p_call():
+    config = _binary_csrmm_benchmark_data(platform='cpu')[0]
+
+    out, task_begin, task_end, status = binary_csrmm_p_call(
+        *config.args,
+        **config.kernel_kwargs,
+        backend='jax_raw',
+    )
+
+    workspace = config.args[-1]
+    assert out.shape == (config.kernel_kwargs['shape'][0], config.args[-2].shape[1])
+    assert task_begin.shape == workspace.task_begin.shape
+    assert task_end.shape == workspace.task_end.shape
+    assert status.shape == workspace.status.shape
+
+
+def test_binary_csrmv_batching_vector_axis_0_uses_csrmm_fast_path(monkeypatch):
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    vector = jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
+    workspace = _make_binary_task_workspace(indptr)
+    math_out = jnp.ones((1, 2), dtype=jnp.float32)
+    calls = []
+
+    def fake_csrmm_p_call(w, idx, ptr, b, workspace, *, shape, transpose, backend):
+        calls.append((w, idx, ptr, b, shape, transpose, backend, workspace))
+        return (math_out, workspace.task_begin, workspace.task_end, workspace.status)
+
+    monkeypatch.setattr(
+        "brainevent._csr.binary.binary_csrmm_p_call",
+        fake_csrmm_p_call,
+    )
+
+    out, out_axes = _csrmv_batching(
+        (weights, indices, indptr, vector, workspace.task_begin, workspace.task_end, workspace.status),
+        (None, None, None, 0, None, None, None),
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+    )
+
+    assert calls
+    assert out == (math_out, workspace.task_begin, workspace.task_end, workspace.status)
+    assert out_axes == (1, None, None, None)
+
+
+def test_binary_csrmv_batching_vector_axis_1_uses_csrmm_fast_path(monkeypatch):
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    vector = jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
+    workspace = _make_binary_task_workspace(indptr)
+    math_out = jnp.ones((1, 2), dtype=jnp.float32)
+    calls = []
+
+    def fake_csrmm_p_call(w, idx, ptr, b, workspace, *, shape, transpose, backend):
+        calls.append((w, idx, ptr, b, shape, transpose, backend, workspace))
+        return (math_out, workspace.task_begin, workspace.task_end, workspace.status)
+
+    monkeypatch.setattr(
+        "brainevent._csr.binary.binary_csrmm_p_call",
+        fake_csrmm_p_call,
+    )
+
+    out, out_axes = _csrmv_batching(
+        (weights, indices, indptr, vector, workspace.task_begin, workspace.task_end, workspace.status),
+        (None, None, None, 1, None, None, None),
+        shape=(1, 2),
+        transpose=False,
+        backend="jax_raw",
+    )
+
+    assert calls
+    assert calls[0][3] is vector
+    assert out == (math_out, workspace.task_begin, workspace.task_end, workspace.status)
+    assert out_axes == (1, None, None, None)
+
+
 def test_binary_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
     with _jax_x64_enabled():
         weights = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32)
         indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
         events = jnp.array([True, False, True])
+        workspace = _make_binary_task_workspace(indptr)
 
-        got = binary_csrmv(weights, indices, indptr, events, shape=(2, 3), backend='jax_raw')
+        got = binary_csrmv(
+            weights,
+            indices,
+            indptr,
+            events,
+            shape=(2, 3),
+            backend='jax_raw',
+            workspace=workspace,
+        )
 
         assert jnp.allclose(got, jnp.array([3.0, 4.0], dtype=jnp.float32))
 
@@ -75,9 +280,18 @@ def test_binary_csrmv_rejects_int64_indices_with_int32_indptr():
         indices = jnp.array([0, 1], dtype=jnp.int64)
         indptr = jnp.array([0, 2], dtype=jnp.int32)
         events = jnp.ones(2, dtype=bool)
+        workspace = _make_binary_task_workspace(indptr)
 
         with pytest.raises(AssertionError, match="same dtype"):
-            binary_csrmv(weights, indices, indptr, events, shape=(1, 2), backend='jax_raw')
+            binary_csrmv(
+                weights,
+                indices,
+                indptr,
+                events,
+                shape=(1, 2),
+                backend='jax_raw',
+                workspace=workspace,
+            )
 
 
 def test_binary_csrmm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
@@ -86,8 +300,9 @@ def test_binary_csrmm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
         indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
         events = jnp.array([[True, False], [False, True], [True, True]])
+        workspace = _make_binary_task_workspace(indptr)
 
-        got = binary_csrmm(weights, indices, indptr, events, shape=(2, 3), backend='jax_raw')
+        got = binary_csrmm(weights, indices, indptr, events, shape=(2, 3), backend='jax_raw', workspace=workspace)
         expected = jnp.array([[3.0, 2.0], [4.0, 7.0]], dtype=jnp.float32)
 
         assert jnp.allclose(got, expected)
@@ -98,14 +313,17 @@ def test_binary_csrmm_rejects_unsigned_structure_dtype():
     indices = jnp.array([0, 1], dtype=jnp.uint32)
     indptr = jnp.array([0, 2], dtype=jnp.uint32)
     events = jnp.ones((2, 1), dtype=bool)
+    workspace = _make_binary_task_workspace(indptr)
 
     with pytest.raises(AssertionError, match="signed int32 or int64"):
-        binary_csrmm(weights, indices, indptr, events, shape=(1, 2), backend='jax_raw')
+        binary_csrmm(weights, indices, indptr, events, shape=(1, 2), backend='jax_raw', workspace=workspace)
 
 
 def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
     with _jax_x64_enabled():
-        kernel = _binary_csrmv_jax_exp_csrmv_kernel(
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        workspace = _make_binary_task_workspace(indptr)
+        kernel = _binary_csrmv_jax_cusparse_kernel(
             jax.ShapeDtypeStruct((1,), jnp.float32),
             jax.ShapeDtypeStruct((3,), jnp.bool_),
             (2, 3),
@@ -117,8 +335,11 @@ def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
         got = kernel(
             jnp.array([2.0], dtype=jnp.float32),
             jnp.array([0, 2, 1, 2], dtype=jnp.int32),
-            jnp.array([0, 2, 4], dtype=jnp.int64),
+            indptr,
             jnp.array([True, False, True]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )[0]
 
         assert jnp.allclose(got, jnp.array([4.0, 2.0], dtype=jnp.float32))
@@ -126,7 +347,9 @@ def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
 
 def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
     with _jax_x64_enabled():
-        kernel = _binary_csrmv_jax_exp_csrmv_kernel(
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        workspace = _make_binary_task_workspace(indptr)
+        kernel = _binary_csrmv_jax_cusparse_kernel(
             jax.ShapeDtypeStruct((4,), jnp.float32),
             jax.ShapeDtypeStruct((2,), jnp.float32),
             (2, 3),
@@ -138,14 +361,72 @@ def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
         got = kernel(
             jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32),
             jnp.array([0, 2, 1, 2], dtype=jnp.int32),
-            jnp.array([0, 2, 4], dtype=jnp.int64),
+            indptr,
             jnp.array([1.0, -1.0], dtype=jnp.float32),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )[0]
 
         assert jnp.allclose(got, jnp.array([1.0, 0.0, 2.0], dtype=jnp.float32))
 
 
+def test_binary_csrmm_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
+    with _jax_x64_enabled():
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        workspace = _make_binary_task_workspace(indptr)
+        kernel = _binary_csrmm_jax_cusparse_kernel(
+            jax.ShapeDtypeStruct((1,), jnp.float32),
+            jax.ShapeDtypeStruct((3, 2), jnp.bool_),
+            (2, 3),
+            False,
+            indices_info=jax.ShapeDtypeStruct((4,), jnp.int32),
+            outs=[jax.ShapeDtypeStruct((2, 2), jnp.float32)],
+        )
+
+        got = kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            jnp.array([0, 2, 1, 2], dtype=jnp.int32),
+            indptr,
+            jnp.array([[True, False], [False, True], [True, True]]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )[0]
+
+        expected = jnp.array([[4.0, 2.0], [2.0, 4.0]], dtype=jnp.float32)
+        assert jnp.allclose(got, expected)
+
+
+def test_binary_csrmm_jax_csr_kernel_hetero_float_transpose():
+    with _jax_x64_enabled():
+        indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+        workspace = _make_binary_task_workspace(indptr)
+        kernel = _binary_csrmm_jax_cusparse_kernel(
+            jax.ShapeDtypeStruct((4,), jnp.float32),
+            jax.ShapeDtypeStruct((2, 2), jnp.float32),
+            (2, 3),
+            True,
+            indices_info=jax.ShapeDtypeStruct((4,), jnp.int32),
+            outs=[jax.ShapeDtypeStruct((3, 2), jnp.float32)],
+        )
+
+        got = kernel(
+            jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32),
+            jnp.array([0, 2, 1, 2], dtype=jnp.int32),
+            indptr,
+            jnp.array([[1.0, -1.0], [-1.0, 1.0]], dtype=jnp.float32),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )[0]
+
+        expected = jnp.array([[1.0, 0.0], [0.0, 3.0], [2.0, 4.0]], dtype=jnp.float32)
+        assert jnp.allclose(got, expected)
+
+
 def _vector_csr_api(x, data, indices, indptr, shape, implementation):
+    workspace = _make_binary_task_workspace(indptr)
     return binary_csrmv(
         data,
         indices,
@@ -154,10 +435,12 @@ def _vector_csr_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=True,
         backend=implementation,
+        workspace=workspace,
     )
 
 
 def _csr_vector_api(x, data, indices, indptr, shape, implementation):
+    workspace = _make_binary_task_workspace(indptr)
     return binary_csrmv(
         data,
         indices,
@@ -166,11 +449,13 @@ def _csr_vector_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=False,
         backend=implementation,
+        workspace=workspace,
     )
 
 
 def _matrix_csr_api(x, data, indices, indptr, shape, implementation):
     # x @ csr: csrmm expects input as [shape[0], cols] for transpose=True.
+    workspace = _make_binary_task_workspace(indptr)
     return binary_csrmm(
         data,
         indices,
@@ -179,10 +464,12 @@ def _matrix_csr_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=True,
         backend=implementation,
+        workspace=workspace,
     ).T
 
 
 def _csr_matrix_api(x, data, indices, indptr, shape, implementation):
+    workspace = _make_binary_task_workspace(indptr)
     return binary_csrmm(
         data,
         indices,
@@ -191,6 +478,7 @@ def _csr_matrix_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=False,
         backend=implementation,
+        workspace=workspace,
     )
 
 

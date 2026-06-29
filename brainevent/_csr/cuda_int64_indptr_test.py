@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -29,6 +30,7 @@ import brainevent._csr.yw2y as yw2y_mod
 from brainevent._csr.binary import binary_csrmm, binary_csrmv
 from brainevent._csr.binary_indexed import binary_csrmm_indexed, binary_csrmv_indexed
 from brainevent._csr.float import csrmm, csrmv
+from brainevent._csr.main import _make_binary_task_workspace
 from brainevent._csr.plasticity_binary import update_csr_on_binary_post, update_csr_on_binary_pre
 from brainevent._csr.slice import csr_slice_rows, csr_slice_rows_grad
 from brainevent._csr.yw2y import csrmv_yw2y
@@ -237,46 +239,129 @@ def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatc
     ffi_calls = []
     load_calls = []
 
-    monkeypatch.setattr(binary_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(binary_mod, "load_cuda_file", lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
     monkeypatch.setattr(binary_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
 
     with _jax_x64_enabled():
         indices = jnp.array([0, 1], dtype=jnp.int32)
         indptr = jnp.array([0, 2], dtype=jnp.int64)
+        workspace = _make_binary_task_workspace(indptr)
+        task_kwargs = {
+            'task_begin_info': _shape(workspace.task_begin.dtype, workspace.task_begin.shape),
+            'task_end_info': _shape(workspace.task_end.dtype, workspace.task_end.shape),
+            'status_info': _shape(workspace.status.dtype, workspace.status.shape),
+            'task_capacity': workspace.task_capacity,
+        }
+        mv_task_outs = (
+            _shape(jnp.float32),
+            task_kwargs['task_begin_info'],
+            task_kwargs['task_end_info'],
+            task_kwargs['status_info'],
+        )
+        mm_nt_task_outs = (
+            _shape(jnp.float32, (1, 1)),
+            task_kwargs['task_begin_info'],
+            task_kwargs['task_end_info'],
+            task_kwargs['status_info'],
+        )
+        mm_t_task_outs = (
+            _shape(jnp.float32, (2, 1)),
+            task_kwargs['task_begin_info'],
+            task_kwargs['task_end_info'],
+            task_kwargs['status_info'],
+        )
 
         mv_kernel = binary_mod._binary_csrmv_cuda_kernel(
             _shape(jnp.float32, (1,)),
             _shape(jnp.bool_, (2,)),
             False,
-            **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mv_task_outs,
+                **task_kwargs,
+            },
         )
         mv_kernel(
             jnp.array([2.0], dtype=jnp.float32),
             indices,
             indptr,
             jnp.array([True, False]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )
 
-        mm_kernel = binary_mod._binary_csrmm_cuda_kernel(
+        mv_t_kernel = binary_mod._binary_csrmv_cuda_kernel(
+            _shape(jnp.float32, (1,)),
+            _shape(jnp.bool_, (1,)),
+            True,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mv_task_outs,
+                **task_kwargs,
+            },
+        )
+        mv_t_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([True]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+        mm_nt_kernel = binary_mod._binary_csrmm_cuda_kernel(
+            _shape(jnp.float32, (2,)),
+            _shape(jnp.bool_, (2, 1)),
+            False,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mm_nt_task_outs,
+                **task_kwargs,
+            },
+        )
+        mm_nt_kernel(
+            jnp.array([2.0, 3.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([[True], [False]]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+        mm_t_kernel = binary_mod._binary_csrmm_cuda_kernel(
             _shape(jnp.float32, (2,)),
             _shape(jnp.float32, (2, 1)),
             True,
             **{
                 **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
-                'outs': [_shape(jnp.float32, (2, 1))],
+                'outs': mm_t_task_outs,
+                **task_kwargs,
             },
         )
-        mm_kernel(
+        mm_t_kernel(
             jnp.array([2.0, 3.0], dtype=jnp.float32),
             indices,
             indptr,
             jnp.array([[1.0], [0.0]], dtype=jnp.float32),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )
 
-    assert [name for _, name in load_calls] == ['csr_binary_csrmv', 'csr_binary_csrmm']
+    assert [name for _, name, _ in load_calls] == [
+        'csr_binary_csrmv',
+        'csr_binary_csrmv_hybrid',
+        'csr_binary_csrmm',
+        'csr_binary_csrmm_hybrid',
+    ]
     assert [call[0] for call in ffi_calls] == [
         'csr_binary_csrmv.binary_csrmv_nt_auto_homo_f32_bool',
-        'csr_binary_csrmm.binary_csrmm_t_warp_hetero_f32_float',
+        'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid_homo_f32_bool',
+        'csr_binary_csrmm.binary_csrmm_nt_auto_hetero_f32_bool',
+        'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid_hetero_f32_float',
     ]
 
 
@@ -284,13 +369,38 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
     ffi_calls = []
     load_calls = []
 
-    monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
     monkeypatch.setattr(binary_indexed_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
 
     with _jax_x64_enabled():
         indices = jnp.array([0, 1], dtype=jnp.int32)
         indptr = jnp.array([0, 2], dtype=jnp.int64)
         perm = jnp.array([1, 0], dtype=jnp.int32)
+        workspace = _make_binary_task_workspace(indptr)
+        task_kwargs = {
+            'task_begin_info': _shape(workspace.task_begin.dtype, workspace.task_begin.shape),
+            'task_end_info': _shape(workspace.task_end.dtype, workspace.task_end.shape),
+            'status_info': _shape(workspace.status.dtype, workspace.status.shape),
+            'task_capacity': workspace.task_capacity,
+        }
+        mv_task_outs = (
+            _shape(jnp.float32),
+            task_kwargs['task_begin_info'],
+            task_kwargs['task_end_info'],
+            task_kwargs['status_info'],
+        )
+        mm_nt_task_outs = (
+            _shape(jnp.float32, (1, 1)),
+            task_kwargs['task_begin_info'],
+            task_kwargs['task_end_info'],
+            task_kwargs['status_info'],
+        )
+        mm_t_task_outs = (
+            _shape(jnp.float32, (2, 1)),
+            task_kwargs['task_begin_info'],
+            task_kwargs['task_end_info'],
+            task_kwargs['status_info'],
+        )
 
         mv_kernel = binary_indexed_mod._binary_csrmv_indexed_cuda_kernel(
             _shape(jnp.float32, (2,)),
@@ -299,6 +409,7 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
             **{
                 **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
                 'perm_info': _shape(jnp.int32, (2,)),
+                **task_kwargs,
             },
         )
         mv_kernel(
@@ -307,30 +418,136 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
             indptr,
             perm,
             jnp.array([True, False]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )
 
-        mm_kernel = binary_indexed_mod._binary_csrmm_indexed_cuda_kernel(
-            _shape(jnp.float32, (1,)),
-            _shape(jnp.bool_, (2, 1)),
+        mv_t_kernel = binary_indexed_mod._binary_csrmv_indexed_cuda_kernel(
+            _shape(jnp.float32, (2,)),
+            _shape(jnp.bool_, (1,)),
             True,
             **{
                 **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
-                'outs': [_shape(jnp.float32, (2, 1))],
-                'perm_info': _shape(jnp.int32, (2,)),
+                'perm_info': _shape(jnp.int64, (2,)),
+                'outs': mv_task_outs,
+                **task_kwargs,
             },
         )
-        mm_kernel(
+        mv_t_kernel(
+            jnp.array([2.0, 3.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            perm.astype(jnp.int64),
+            jnp.array([True]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+        mv_t_homo_kernel = binary_indexed_mod._binary_csrmv_indexed_cuda_kernel(
+            _shape(jnp.float32, (1,)),
+            _shape(jnp.bool_, (1,)),
+            True,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'perm_info': _shape(jnp.int64, (2,)),
+                'outs': mv_task_outs,
+                **task_kwargs,
+            },
+        )
+        mv_t_homo_kernel(
             jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            perm.astype(jnp.int64),
+            jnp.array([True]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+        mm_nt_kernel = binary_indexed_mod._binary_csrmm_indexed_cuda_kernel(
+            _shape(jnp.float32, (2,)),
+            _shape(jnp.bool_, (2, 1)),
+            False,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mm_nt_task_outs,
+                'perm_info': _shape(jnp.int32, (2,)),
+                **task_kwargs,
+            },
+        )
+        mm_nt_kernel(
+            jnp.array([2.0, 3.0], dtype=jnp.float32),
             indices,
             indptr,
             perm,
             jnp.array([[True], [False]]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
         )
 
-    assert [name for _, name in load_calls] == ['csr_binary_indexed_csrmv', 'csr_binary_csrmm']
+        mm_t_kernel = binary_indexed_mod._binary_csrmm_indexed_cuda_kernel(
+            _shape(jnp.float32, (2,)),
+            _shape(jnp.bool_, (1, 1)),
+            True,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mm_t_task_outs,
+                'perm_info': _shape(jnp.int64, (2,)),
+                **task_kwargs,
+            },
+        )
+        mm_t_kernel(
+            jnp.array([2.0, 3.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            perm.astype(jnp.int64),
+            jnp.array([[True]]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+        mm_t_homo_kernel = binary_indexed_mod._binary_csrmm_indexed_cuda_kernel(
+            _shape(jnp.float32, (1,)),
+            _shape(jnp.bool_, (1, 1)),
+            True,
+            **{
+                **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mm_t_task_outs,
+                'perm_info': _shape(jnp.int64, (2,)),
+                **task_kwargs,
+            },
+        )
+        mm_t_homo_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            perm.astype(jnp.int64),
+            jnp.array([[True]]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+    assert [name for _, name, _ in load_calls] == [
+        'csr_binary_indexed_csrmv',
+        'csr_binary_indexed_csrmv_hybrid',
+        'csr_binary_csrmv_hybrid',
+        'csr_binary_indexed_csrmm',
+        'csr_binary_indexed_csrmm_hybrid',
+        'csr_binary_csrmm_hybrid',
+    ]
     assert [call[0] for call in ffi_calls] == [
         'csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero_f32_bool',
-        'csr_binary_csrmm.binary_csrmm_t_warp_homo_f32_bool',
+        'csr_binary_indexed_csrmv_hybrid.binary_indexed_csrmv_wat_hybrid_hetero_f32_bool',
+        'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid_homo_f32_bool',
+        'csr_binary_indexed_csrmm.binary_csrmm_nt_auto_perm_hetero_f32_bool',
+        'csr_binary_indexed_csrmm_hybrid.binary_indexed_csrmm_sraw_hybrid_hetero_f32_bool',
+        'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid_homo_f32_bool',
     ]
 
 
@@ -466,9 +683,13 @@ def test_binary_csrmv_cuda_accepts_int64_indptr(transpose, homo):
     indptr64 = indptr32.astype(jnp.int64)
     data = weights if not homo else jnp.array([2.0], dtype=jnp.float32)
     vector = jnp.array([True, False], dtype=jnp.bool_) if transpose else jnp.array([True, False, True])
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
 
-    got = binary_csrmv(data, indices, indptr64, vector, shape=(2, 3), transpose=transpose, backend='cuda_raw')
-    expected = binary_csrmv(data, indices, indptr32, vector, shape=(2, 3), transpose=transpose, backend='jax_raw')
+    got = binary_csrmv(data, indices, indptr64, vector, shape=(2, 3), transpose=transpose,
+                       backend='cuda_raw', workspace=workspace64)
+    expected = binary_csrmv(data, indices, indptr32, vector, shape=(2, 3), transpose=transpose,
+                            backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -485,9 +706,13 @@ def test_binary_csrmm_cuda_accepts_int64_indptr(transpose, homo):
         if transpose else
         jnp.array([[True, False], [False, True], [True, True]], dtype=jnp.bool_)
     )
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
 
-    got = binary_csrmm(data, indices, indptr64, matrix, shape=(2, 3), transpose=transpose, backend='cuda_raw')
-    expected = binary_csrmm(data, indices, indptr32, matrix, shape=(2, 3), transpose=transpose, backend='jax_raw')
+    got = binary_csrmm(data, indices, indptr64, matrix, shape=(2, 3), transpose=transpose,
+                       backend='cuda_raw', workspace=workspace64)
+    expected = binary_csrmm(data, indices, indptr32, matrix, shape=(2, 3), transpose=transpose,
+                            backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -499,11 +724,13 @@ def test_binary_indexed_cuda_accepts_int64_indptr(transpose):
     indptr64 = indptr32.astype(jnp.int64)
     perm = jnp.array([2, 0, 3, 1], dtype=jnp.int32)
     vector = jnp.array([True, False], dtype=jnp.bool_) if transpose else jnp.array([True, False, True])
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
 
     got = binary_csrmv_indexed(weights, indices, indptr64, perm, vector, shape=(2, 3),
-                               transpose=transpose, backend='cuda_raw')
+                               transpose=transpose, backend='cuda_raw', workspace=workspace64)
     expected = binary_csrmv_indexed(weights, indices, indptr32, perm, vector, shape=(2, 3),
-                                    transpose=transpose, backend='jax_raw')
+                                    transpose=transpose, backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -519,11 +746,13 @@ def test_binary_indexed_csrmm_cuda_accepts_int64_indptr(transpose):
         if transpose else
         jnp.array([[True, False], [False, True], [True, True]], dtype=jnp.bool_)
     )
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
 
     got = binary_csrmm_indexed(weights, indices, indptr64, perm, matrix, shape=(2, 3),
-                               transpose=transpose, backend='cuda_raw')
+                               transpose=transpose, backend='cuda_raw', workspace=workspace64)
     expected = binary_csrmm_indexed(weights, indices, indptr32, perm, matrix, shape=(2, 3),
-                                    transpose=transpose, backend='jax_raw')
+                                    transpose=transpose, backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -606,3 +835,49 @@ def test_csr_cuda_sources_do_not_cast_indptr_to_int32():
         assert 'static_cast<const int32_t*>(indptr.data_ptr())' not in text, path.name
         assert 'const int32_t*  __restrict__ indptr' not in text, path.name
         assert 'const int32_t*   __restrict__ indptr' not in text, path.name
+
+
+def test_binary_hybrid_cuda_exports_use_csr_abi_names():
+    csr_dir = Path(__file__).parent
+    weight_suffixes = ('f32', 'f64', 'f16', 'bf16')
+    event_suffixes = ('bool', 'float')
+    expected_symbols = {
+        'binary_csrmv_hybrid.cu': [
+            f'binary_csrmv_wat_hybrid_{mode}_{weight}_{event}'
+            for mode in ('hetero', 'homo')
+            for weight in weight_suffixes
+            for event in event_suffixes
+        ],
+        'binary_csrmm_hybrid.cu': [
+            f'binary_csrmm_sraw_hybrid_{mode}_{weight}_{event}'
+            for mode in ('hetero', 'homo')
+            for weight in weight_suffixes
+            for event in event_suffixes
+        ],
+        'binary_indexed_csrmv_hybrid.cu': [
+            f'binary_indexed_csrmv_wat_hybrid_hetero_{weight}_{event}'
+            for weight in weight_suffixes
+            for event in event_suffixes
+        ],
+        'binary_indexed_csrmm_hybrid.cu': [
+            f'binary_indexed_csrmm_sraw_hybrid_hetero_{weight}_{event}'
+            for weight in weight_suffixes
+            for event in event_suffixes
+        ],
+    }
+
+    for filename, symbols in expected_symbols.items():
+        text = (csr_dir / filename).read_text()
+        exported = set(re.findall(r'^// @BE ([A-Za-z0-9_]+)$', text, re.MULTILINE))
+
+        for symbol in symbols:
+            assert symbol in exported
+            suffix = '_' + '_'.join(symbol.split('_')[-2:])
+            assert re.search(
+                rf'^// @BE {symbol}\nDEFINE_[A-Z0-9_]+\(\\?{suffix},',
+                text,
+                re.MULTILINE,
+            )
+
+        binary_names = {name for name in exported if name.startswith('binary')}
+        assert not {name for name in binary_names if 'fcnmm' in name or 'const_block' in name}
