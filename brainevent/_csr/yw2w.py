@@ -28,14 +28,14 @@ from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
 __all__ = [
-    'csrmv_yw2y',
-    'cscmv_yw2y',
-    'csrmv_yw2y_p',
+    'csrmv_yw2w',
+    'cscmv_yw2w',
+    'csrmv_yw2w_p',
 ]
 
 
 @namescope(static_argnames=['shape', 'transpose'])
-def csrmv_yw2y(
+def csrmv_yw2w(
     y: Data,
     w: Data,
     indices: Index,
@@ -119,20 +119,20 @@ def csrmv_yw2y(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent import csrmv_yw2y
+        >>> from brainevent import csrmv_yw2w
         >>> y = jnp.array([1.0, 2.0])
         >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
-        >>> csrmv_yw2y(y, w, indices, indptr, shape=(2, 3))
+        >>> csrmv_yw2w(y, w, indices, indptr, shape=(2, 3))
     """
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
-    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=backend)[0]
+    res = csrmv_yw2w_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=backend)[0]
     return u.maybe_decimal(res * w_unit)
 
 
-def cscmv_yw2y(
+def cscmv_yw2w(
     y: Data,
     w: Data,
     indices: Index,
@@ -152,10 +152,10 @@ def cscmv_yw2y(
     shape as ``w`` and ``indices`` (i.e., one value per structural
     non-zero).
 
-    This is the CSC counterpart of :func:`csrmv_yw2y`.  Because the CSC
+    This is the CSC counterpart of :func:`csrmv_yw2w`.  Because the CSC
     arrays of a matrix ``W`` of shape ``(m, k)`` are, array-for-array, the
     CSR arrays of ``W.T`` of shape ``(k, m)``, this function simply
-    forwards to :func:`csrmv_yw2y` with the shape reversed and the
+    forwards to :func:`csrmv_yw2w` with the shape reversed and the
     ``transpose`` flag flipped.  No data permutation is required, so it
     inherits the differentiability, unit handling, and backend dispatch of
     the underlying CSR primitive.
@@ -192,7 +192,7 @@ def cscmv_yw2y(
 
     See Also
     --------
-    csrmv_yw2y : The CSR primitive this wraps.
+    csrmv_yw2w : The CSR primitive this wraps.
 
     Notes
     -----
@@ -203,7 +203,7 @@ def cscmv_yw2y(
     *column* axis, and indexing by the CSC column (``transpose=True``)
     corresponds to the CSR *row* axis.  Hence the call delegates to::
 
-        csrmv_yw2y(y, w, indices, indptr,
+        csrmv_yw2w(y, w, indices, indptr,
                    shape=shape[::-1], transpose=not transpose)
 
     Examples
@@ -211,15 +211,15 @@ def cscmv_yw2y(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent import cscmv_yw2y
+        >>> from brainevent import cscmv_yw2w
         >>> # CSC of a (3, 2) matrix: indptr over the 2 columns.
         >>> y = jnp.array([1.0, 2.0, 3.0])
         >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
-        >>> cscmv_yw2y(y, w, indices, indptr, shape=(3, 2))
+        >>> cscmv_yw2w(y, w, indices, indptr, shape=(3, 2))
     """
-    return csrmv_yw2y(
+    return csrmv_yw2w(
         y,
         w,
         indices,
@@ -230,7 +230,7 @@ def cscmv_yw2y(
     )
 
 
-def _csrmv_yw2y_numba_kernels(
+def _csrmv_yw2w_numba_kernels(
     transpose: bool,
     **kwargs
 ):
@@ -263,7 +263,7 @@ def _csrmv_yw2y_numba_kernels(
     return kernel
 
 
-def _csrmv_yw2y_cuda_kernel(
+def _csrmv_yw2w_cuda_kernel(
     transpose: bool,
     w_info: jax.ShapeDtypeStruct,
     **kwargs,
@@ -277,11 +277,11 @@ def _csrmv_yw2y_cuda_kernel(
     # row-centric kernel reads ``y[row]`` once per row and reaches near-peak
     # memory bandwidth.
     if transpose:
-        return _csrmv_yw2y_jax_kernel(transpose=transpose, **kwargs)
+        return _csrmv_yw2w_jax_kernel(transpose=transpose, **kwargs)
 
     load_cuda_file(
-        Path(__file__).parent.joinpath('yw2y.cu'),
-        name='csrmv_yw2y',
+        Path(__file__).parent.joinpath('yw2w.cu'),
+        name='csrmv_yw2w',
     )
 
     out_info = kwargs['outs']
@@ -295,7 +295,7 @@ def _csrmv_yw2y_cuda_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
 
-    kernel_name = f'csrmv_yw2y.csrmv_yw2y_nt_auto{wt_sfx}'
+    kernel_name = f'csrmv_yw2w.csrmv_yw2w_nt_auto{wt_sfx}'
 
     def kernel(y, w, indices, indptr):
         return jax.ffi.ffi_call(kernel_name, out_info)(y, w, indices, indptr)
@@ -303,12 +303,12 @@ def _csrmv_yw2y_cuda_kernel(
     return kernel
 
 
-def _csrmv_yw2y_jax_kernel(
+def _csrmv_yw2w_jax_kernel(
     shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """Pure-JAX kernel for CSR yw2y (out[j] = w[j] * y[row/col]) (all platforms)."""
+    """Pure-JAX kernel for CSR yw2w (out[j] = w[j] * y[row/col]) (all platforms)."""
     m, k = shape
     nse = kwargs['indices_info'].size
 
@@ -327,21 +327,21 @@ def _csrmv_yw2y_jax_kernel(
     return kernel
 
 
-def _csrmv_yw2y_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
-    return csrmv_yw2y_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
+def _csrmv_yw2w_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    return csrmv_yw2w_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
-def _csrmv_yw2y_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
-    return csrmv_yw2y_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
+def _csrmv_yw2w_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    return csrmv_yw2w_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
-def _csrmv_yw2y_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, **kwargs):
+def _csrmv_yw2w_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, **kwargs):
     raise NotImplementedError
 
 
-def _csrmv_yw2y_benchmark_data(*, platform):
+def _csrmv_yw2w_benchmark_data(*, platform):
     """
-    Benchmark configurations for ``csrmv_yw2y``.
+    Benchmark configurations for ``csrmv_yw2w``.
 
     Covers a range of matrix sizes and connection densities representative
     of typical spiking neural network workloads:
@@ -388,7 +388,7 @@ def _csrmv_yw2y_benchmark_data(*, platform):
     return configs
 
 
-def csrmv_yw2y_p_call(
+def csrmv_yw2w_p_call(
     y: Data,
     w: Data,
     indices: Index,
@@ -402,7 +402,7 @@ def csrmv_yw2y_p_call(
     Low-level primitive call for the element-wise vector--weight product
     indexed by CSR structure.
 
-    Validates inputs and dispatches the ``csrmv_yw2y_p`` XLA custom kernel.
+    Validates inputs and dispatches the ``csrmv_yw2w_p`` XLA custom kernel.
     For each structural non-zero ``j`` at position ``(row, col)`` in the
     CSR matrix, the output is ``out[j] = w[j] * y[row]`` (non-transposed)
     or ``out[j] = w[j] * y[col]`` (transposed).
@@ -453,7 +453,7 @@ def csrmv_yw2y_p_call(
 
     See Also
     --------
-    csrmv_yw2y : High-level wrapper with unit support.
+    csrmv_yw2w : High-level wrapper with unit support.
 
     Notes
     -----
@@ -471,12 +471,12 @@ def csrmv_yw2y_p_call(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent import csrmv_yw2y
+        >>> from brainevent import csrmv_yw2w
         >>> y = jnp.array([1.0, 2.0])
         >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
-        >>> result = csrmv_yw2y(
+        >>> result = csrmv_yw2w(
         ...     y, w, indices, indptr,
         ...     shape=(2, 3), transpose=False)
     """
@@ -495,7 +495,7 @@ def csrmv_yw2y_p_call(
         # [h, w] @ [x] -> [h]
         assert shape[0] == y.shape[0], "Shape mismatch for non-transpose operation."
 
-    return csrmv_yw2y_p(
+    return csrmv_yw2w_p(
         y,
         w,
         indices,
@@ -511,13 +511,14 @@ def csrmv_yw2y_p_call(
     )
 
 
-csrmv_yw2y_p = XLACustomKernel(
-    'csrmv_yw2y',
+csrmv_yw2w_p = XLACustomKernel(
+    'csrmv_yw2w',
     doc="""
-Low-level XLA custom-kernel primitive for ``csrmv_yw2y``.
+Low-level XLA custom-kernel primitive for ``csrmv_yw2w``.
 
-This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-vector multiplication with element-wise product (y * W -> y)
-operation to registered backends (``numba``, ``pallas``),
+This ``XLACustomKernel`` instance dispatches the CSR per-synapse
+element-wise product (y * w -> w-shaped output) operation to registered
+backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 For each non-zero entry at position (row, col) in the CSR matrix, computes
@@ -528,20 +529,20 @@ Beyond backend dispatch, the primitive stores JAX transformation bindings
 (JVP, transpose, batching, and call registration) so the operation integrates
 correctly with ``jit``, ``vmap``, and autodiff.
 
-Available backends can be queried with ``csrmv_yw2y_p.available_backends(platform)``,
-and the default backend can be configured with ``csrmv_yw2y_p.set_default(platform, backend)``.
+Available backends can be queried with ``csrmv_yw2w_p.available_backends(platform)``,
+and the default backend can be configured with ``csrmv_yw2w_p.set_default(platform, backend)``.
 
 See Also
 --------
-csrmv_yw2y : High-level user-facing function wrapper.
+csrmv_yw2w : High-level user-facing function wrapper.
 """
 )
-csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
-csrmv_yw2y_p.def_cuda_raw_kernel(_csrmv_yw2y_cuda_kernel, asdefault=True)
-csrmv_yw2y_p.def_kernel('jax_raw', 'cpu', _csrmv_yw2y_jax_kernel)
-csrmv_yw2y_p.def_kernel('jax_raw', 'gpu', _csrmv_yw2y_jax_kernel)
-csrmv_yw2y_p.def_kernel('jax_raw', 'tpu', _csrmv_yw2y_jax_kernel)
-csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
-csrmv_yw2y_p.def_call(csrmv_yw2y_p_call)
-csrmv_yw2y_p.def_tags('csr', 'float')
-csrmv_yw2y_p.def_benchmark_data(_csrmv_yw2y_benchmark_data)
+csrmv_yw2w_p.def_numba_kernel(_csrmv_yw2w_numba_kernels)
+csrmv_yw2w_p.def_cuda_raw_kernel(_csrmv_yw2w_cuda_kernel, asdefault=True)
+csrmv_yw2w_p.def_kernel('jax_raw', 'cpu', _csrmv_yw2w_jax_kernel)
+csrmv_yw2w_p.def_kernel('jax_raw', 'gpu', _csrmv_yw2w_jax_kernel)
+csrmv_yw2w_p.def_kernel('jax_raw', 'tpu', _csrmv_yw2w_jax_kernel)
+csrmv_yw2w_p.def_jvp_rule2(_csrmv_yw2w_jvp_y, _csrmv_yw2w_jvp_w, None, None)
+csrmv_yw2w_p.def_call(csrmv_yw2w_p_call)
+csrmv_yw2w_p.def_tags('csr', 'float')
+csrmv_yw2w_p.def_benchmark_data(_csrmv_yw2w_benchmark_data)

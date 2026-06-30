@@ -793,7 +793,7 @@ class TestMatrix:
         jax.block_until_ready((indices, xs, y1, y2, y_true))
 
 
-class Test_Yw2y:
+class Test_Yw2w:
     def test_fixed_post(self):
         m, n, k = 5, 7, 3
         indices = generate_fixed_conn_num_indices(m, n, k, replace=True)

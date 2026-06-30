@@ -28,8 +28,8 @@ Float matrix-vector / matrix-matrix multiplication.
    csrmv_p
    csrmm
    csrmm_p
-   csrmv_yw2y
-   csrmv_yw2y_p
+   csrmv_yw2w
+   csrmv_yw2w_p
 
 Plasticity operations.
 

@@ -34,7 +34,7 @@ from .float import csrmv, csrmm
 from .plasticity_binary import update_csr_on_binary_pre, update_csr_on_binary_post
 from .slice import csr_slice_rows
 from .spsolve import csr_solve
-from .yw2y import csrmv_yw2y
+from .yw2w import csrmv_yw2w
 
 __all__ = [
     'CSR',
@@ -1787,9 +1787,9 @@ class CSR(CompressedSparseData):
 
         Notes
         -----
-        Internally calls ``csrmv_yw2y`` with ``transpose=False``.
+        Internally calls ``csrmv_yw2w`` with ``transpose=False``.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr,
+        return csrmv_yw2w(y_dim_arr, w_dim_arr, self.indices, self.indptr,
                           shape=self.shape, transpose=False, backend=self.backend)
 
     def yw_to_w_transposed(
@@ -1822,9 +1822,9 @@ class CSR(CompressedSparseData):
 
         Notes
         -----
-        Internally calls ``csrmv_yw2y`` with ``transpose=True``.
+        Internally calls ``csrmv_yw2w`` with ``transpose=True``.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr,
+        return csrmv_yw2w(y_dim_arr, w_dim_arr, self.indices, self.indptr,
                           shape=self.shape, transpose=True, backend=self.backend)
 
 
@@ -2683,10 +2683,10 @@ class CSC(CompressedSparseData):
 
         Notes
         -----
-        Internally calls ``csrmv_yw2y`` with ``transpose=True`` and reversed
+        Internally calls ``csrmv_yw2w`` with ``transpose=True`` and reversed
         shape to account for the column-oriented storage format.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=True,
+        return csrmv_yw2w(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=True,
                           backend=self.backend)
 
     def yw_to_w_transposed(
@@ -2721,8 +2721,8 @@ class CSC(CompressedSparseData):
 
         Notes
         -----
-        Internally calls ``csrmv_yw2y`` with ``transpose=False`` and reversed
+        Internally calls ``csrmv_yw2w`` with ``transpose=False`` and reversed
         shape.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=False,
+        return csrmv_yw2w(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=False,
                           backend=self.backend)

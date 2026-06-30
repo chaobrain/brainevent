@@ -24,12 +24,12 @@ import jax.numpy as jnp
 from brainevent._misc import namescope
 
 __all__ = [
-    'fcnmv_yw2y',
+    'fcnmv_yw2w',
 ]
 
 
 @namescope(static_argnames=['shape', 'transpose'])
-def fcnmv_yw2y(
+def fcnmv_yw2w(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
     y: Union[jax.Array, u.Quantity],
@@ -46,13 +46,13 @@ def fcnmv_yw2y(
     ``transpose=True``.  The result has the same shape as ``indices`` (one value
     per structural non-zero).
 
-    This is the fixed-connection-number analog of :func:`brainevent.csrmv_yw2y`
+    This is the fixed-connection-number analog of :func:`brainevent.csrmv_yw2w`
     and follows the **same** ``transpose`` convention as that operator: the flag
     selects whether ``y`` is indexed by the leading (row) axis or by the stored
     ``indices`` (column) axis.  Note this is the opposite sense of the
     ``transpose`` flag in :func:`brainevent.fcnmv` / :func:`brainevent.fcnmm`.
 
-    Unlike :func:`brainevent.csrmv_yw2y`, which returns a flat ``(nse,)`` vector
+    Unlike :func:`brainevent.csrmv_yw2w`, which returns a flat ``(nse,)`` vector
     because CSR stores its non-zeros in a 1-D array, this operator returns a 2-D
     array shaped like ``indices`` because the ELL layout stores non-zeros in a
     ``(rows, n_conn)`` grid.
@@ -103,13 +103,13 @@ def fcnmv_yw2y(
 
     See Also
     --------
-    csrmv_yw2y : CSR equivalent of this operator.
+    csrmv_yw2w : CSR equivalent of this operator.
     fcnmv : Fixed-connection sparse matrix--vector product.
     fcnmm : Fixed-connection sparse matrix--matrix product.
 
     Notes
     -----
-    Unlike :func:`brainevent.csrmv_yw2y` (which drops ``y``'s physical unit),
+    Unlike :func:`brainevent.csrmv_yw2w` (which drops ``y``'s physical unit),
     this operator keeps both units, consistent with the :func:`brainevent.fcnmv`
     sibling and with the mathematics of a product.
 
@@ -131,17 +131,17 @@ def fcnmv_yw2y(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent import fcnmv_yw2y
+        >>> from brainevent import fcnmv_yw2w
         >>> weights = jnp.array([[0.5, 1.0], [1.5, 2.0]])
         >>> indices = jnp.array([[0, 1], [1, 2]])
         >>> y = jnp.array([10.0, 20.0])
-        >>> fcnmv_yw2y(weights, indices, y, shape=(2, 3), transpose=False)
+        >>> fcnmv_yw2w(weights, indices, y, shape=(2, 3), transpose=False)
         Array([[ 5., 10.],
                [30., 40.]], dtype=float32)
 
         >>> # transpose=True gathers y by the stored column indices
         >>> y_post = jnp.array([1.0, 2.0, 3.0])
-        >>> fcnmv_yw2y(weights, indices, y_post, shape=(2, 3), transpose=True)
+        >>> fcnmv_yw2w(weights, indices, y_post, shape=(2, 3), transpose=True)
         Array([[0.5, 2. ],
                [3. , 6. ]], dtype=float32)
     """

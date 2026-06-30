@@ -14,11 +14,11 @@
 // ==============================================================================
 
 /*
- * yw2y.cu -- CSR Weighted-to-Nonzero CUDA Kernels
- * ================================================
+ * yw2w.cu -- CSR Y-Weight-to-Weight CUDA Kernels
+ * ===============================================
  *
  * Python API:
- *   brainevent.csrmv_yw2y(y, w, indices, indptr, shape=(m,k), transpose=False)
+ *   brainevent.csrmv_yw2w(y, w, indices, indptr, shape=(m,k), transpose=False)
  *
  * Operation:
  *   For each structural non-zero j at CSR position (row, col):
@@ -32,8 +32,8 @@
  *   This file implements ONLY the non-transpose (NT) path.  The transpose path
  *   (out[j] = w[j] * y[indices[j]]) is an embarrassingly parallel gather that is
  *   bottlenecked by the scattered read of y; XLA's gather matches a bespoke CUDA
- *   kernel there, so it is handled in pure JAX (see ``_csrmv_yw2y_jax_kernel`` in
- *   yw2y.py) rather than here.
+ *   kernel there, so it is handled in pure JAX (see ``_csrmv_yw2w_jax_kernel`` in
+ *   yw2w.py) rather than here.
  *
  * Use case:
  *   Computing per-synapse quantities in spiking neural network models.
@@ -126,9 +126,9 @@ __device__ __inline__ int find_row_bsearch(const IndptrT* __restrict__ indptr, i
 // Grid: (ceil(m/BLOCK), 1, 1)   Block: (BLOCK=256, 1, 1)
 // =========================================================================
 
-#define DEFINE_YW2Y_NT_ROW_THREAD(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W) \
+#define DEFINE_YW2W_NT_ROW_THREAD(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W) \
 template <typename IndptrT> \
-__global__ void _yw2y_nt_row_thread_kern##SUFFIX(                           \
+__global__ void _yw2w_nt_row_thread_kern##SUFFIX(                           \
     const WEIGHT_T* __restrict__ y,                                         \
     const WEIGHT_T* __restrict__ w,                                         \
     const IndptrT*  __restrict__ indptr,                                    \
@@ -157,9 +157,9 @@ __global__ void _yw2y_nt_row_thread_kern##SUFFIX(                           \
 // Grid: (m, 1, 1)   Block: (32, 1, 1)
 // =========================================================================
 
-#define DEFINE_YW2Y_NT_ROW_WARP(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W)        \
+#define DEFINE_YW2W_NT_ROW_WARP(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W)        \
 template <typename IndptrT> \
-__global__ void _yw2y_nt_row_warp_kern##SUFFIX(                                  \
+__global__ void _yw2w_nt_row_warp_kern##SUFFIX(                                  \
     const WEIGHT_T* __restrict__ y,                                              \
     const WEIGHT_T* __restrict__ w,                                              \
     const IndptrT*  __restrict__ indptr,                                         \
@@ -226,9 +226,9 @@ __global__ void _yw2y_nt_row_warp_kern##SUFFIX(                                 
 // Grid: (ceil(nse/BLOCK/VEC_SIZE), 1, 1)   Block: (BLOCK=256, 1, 1)
 // =========================================================================
 
-#define DEFINE_YW2Y_NT_NZ_THREAD(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W) \
+#define DEFINE_YW2W_NT_NZ_THREAD(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W) \
 template <typename IndptrT> \
-__global__ void _yw2y_nt_nz_thread_kern##SUFFIX(                           \
+__global__ void _yw2w_nt_nz_thread_kern##SUFFIX(                           \
     const WEIGHT_T* __restrict__ y,                                        \
     const WEIGHT_T* __restrict__ w,                                        \
     const IndptrT*  __restrict__ indptr,                                   \
@@ -266,24 +266,24 @@ __global__ void _yw2y_nt_nz_thread_kern##SUFFIX(                           \
 // =========================================================================
 
 // ---- Float32 ----
-DEFINE_YW2Y_NT_ROW_THREAD(_f32, float,          float,  READ_F32,  WRITE_F32)
-DEFINE_YW2Y_NT_ROW_WARP  (_f32, float,          float,  READ_F32,  WRITE_F32)
-DEFINE_YW2Y_NT_NZ_THREAD (_f32, float,          float,  READ_F32,  WRITE_F32)
+DEFINE_YW2W_NT_ROW_THREAD(_f32, float,          float,  READ_F32,  WRITE_F32)
+DEFINE_YW2W_NT_ROW_WARP  (_f32, float,          float,  READ_F32,  WRITE_F32)
+DEFINE_YW2W_NT_NZ_THREAD (_f32, float,          float,  READ_F32,  WRITE_F32)
 
 // ---- Float64 ----
-DEFINE_YW2Y_NT_ROW_THREAD(_f64, double,         double, READ_F64,  WRITE_F64)
-DEFINE_YW2Y_NT_ROW_WARP  (_f64, double,         double, READ_F64,  WRITE_F64)
-DEFINE_YW2Y_NT_NZ_THREAD (_f64, double,         double, READ_F64,  WRITE_F64)
+DEFINE_YW2W_NT_ROW_THREAD(_f64, double,         double, READ_F64,  WRITE_F64)
+DEFINE_YW2W_NT_ROW_WARP  (_f64, double,         double, READ_F64,  WRITE_F64)
+DEFINE_YW2W_NT_NZ_THREAD (_f64, double,         double, READ_F64,  WRITE_F64)
 
 // ---- Float16 (accumulate in float32) ----
-DEFINE_YW2Y_NT_ROW_THREAD(_f16, __half,         float,  READ_F16,  WRITE_F16)
-DEFINE_YW2Y_NT_ROW_WARP  (_f16, __half,         float,  READ_F16,  WRITE_F16)
-DEFINE_YW2Y_NT_NZ_THREAD (_f16, __half,         float,  READ_F16,  WRITE_F16)
+DEFINE_YW2W_NT_ROW_THREAD(_f16, __half,         float,  READ_F16,  WRITE_F16)
+DEFINE_YW2W_NT_ROW_WARP  (_f16, __half,         float,  READ_F16,  WRITE_F16)
+DEFINE_YW2W_NT_NZ_THREAD (_f16, __half,         float,  READ_F16,  WRITE_F16)
 
 // ---- BFloat16 (accumulate in float32) ----
-DEFINE_YW2Y_NT_ROW_THREAD(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
-DEFINE_YW2Y_NT_ROW_WARP  (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
-DEFINE_YW2Y_NT_NZ_THREAD (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
+DEFINE_YW2W_NT_ROW_THREAD(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
+DEFINE_YW2W_NT_ROW_WARP  (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
+DEFINE_YW2W_NT_NZ_THREAD (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
 // CUDA Entry Point Macros
@@ -303,8 +303,8 @@ DEFINE_YW2Y_NT_NZ_THREAD (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 // =========================================================================
 
 // ---- FFI macro: NT row-thread kernel ----
-#define FFI_YW2Y_NT_ROW_THREAD(SUFFIX, WEIGHT_C_T)           \
-void csrmv_yw2y_nt_row_thread##SUFFIX(                       \
+#define FFI_YW2W_NT_ROW_THREAD(SUFFIX, WEIGHT_C_T)           \
+void csrmv_yw2w_nt_row_thread##SUFFIX(                       \
     const BE::Tensor y,       const BE::Tensor w,            \
     const BE::Tensor indices, const BE::Tensor indptr,       \
     BE::Tensor output,  int64_t stream                       \
@@ -314,7 +314,7 @@ void csrmv_yw2y_nt_row_thread##SUFFIX(                       \
     int m     = static_cast<int>(indptr.size(0)) - 1;        \
     int blocks = (m + 255) / 256;                            \
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {        \
-        _yw2y_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
+        _yw2w_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
             static_cast<const WEIGHT_C_T*>(y.data_ptr()),    \
             static_cast<const WEIGHT_C_T*>(w.data_ptr()),    \
             static_cast<const IndptrT*>(indptr.data_ptr()),  \
@@ -323,8 +323,8 @@ void csrmv_yw2y_nt_row_thread##SUFFIX(                       \
 }
 
 // ---- FFI macro: NT row-warp kernel ----
-#define FFI_YW2Y_NT_ROW_WARP(SUFFIX, WEIGHT_C_T)             \
-void csrmv_yw2y_nt_row_warp##SUFFIX(                         \
+#define FFI_YW2W_NT_ROW_WARP(SUFFIX, WEIGHT_C_T)             \
+void csrmv_yw2w_nt_row_warp##SUFFIX(                         \
     const BE::Tensor y,       const BE::Tensor w,            \
     const BE::Tensor indices, const BE::Tensor indptr,       \
     BE::Tensor output,  int64_t stream                       \
@@ -333,7 +333,7 @@ void csrmv_yw2y_nt_row_warp##SUFFIX(                         \
     BE_CHECK_CSR_INDICES_INT32(indices);                     \
     int m = static_cast<int>(indptr.size(0)) - 1;            \
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {        \
-        _yw2y_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(     \
+        _yw2w_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(     \
             static_cast<const WEIGHT_C_T*>(y.data_ptr()),    \
             static_cast<const WEIGHT_C_T*>(w.data_ptr()),    \
             static_cast<const IndptrT*>(indptr.data_ptr()),  \
@@ -342,8 +342,8 @@ void csrmv_yw2y_nt_row_warp##SUFFIX(                         \
 }
 
 // ---- FFI macro: NT nz-thread kernel ----
-#define FFI_YW2Y_NT_NZ_THREAD(SUFFIX, WEIGHT_C_T)                  \
-void csrmv_yw2y_nt_nz_thread##SUFFIX(                              \
+#define FFI_YW2W_NT_NZ_THREAD(SUFFIX, WEIGHT_C_T)                  \
+void csrmv_yw2w_nt_nz_thread##SUFFIX(                              \
     const BE::Tensor y,       const BE::Tensor w,                  \
     const BE::Tensor indices, const BE::Tensor indptr,             \
     BE::Tensor output,  int64_t stream                             \
@@ -358,7 +358,7 @@ void csrmv_yw2y_nt_nz_thread##SUFFIX(                              \
     int total_threads = (nse + VEC_SIZE - 1) / VEC_SIZE;           \
     int blocks = (total_threads + BLOCK_SIZE - 1) / BLOCK_SIZE;    \
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {              \
-        _yw2y_nt_nz_thread_kern##SUFFIX<<<blocks, BLOCK_SIZE, 0, s>>>( \
+        _yw2w_nt_nz_thread_kern##SUFFIX<<<blocks, BLOCK_SIZE, 0, s>>>( \
             static_cast<const WEIGHT_C_T*>(y.data_ptr()),          \
             static_cast<const WEIGHT_C_T*>(w.data_ptr()),          \
             static_cast<const IndptrT*>(indptr.data_ptr()),        \
@@ -373,8 +373,8 @@ void csrmv_yw2y_nt_nz_thread##SUFFIX(                              \
 //   avg_nnz < 512 -> NT_row_warp:   1 warp/row; coalesced warp-stride writes
 //   else          -> NT_nz_thread:  VEC_SIZE=4 per thread; amortizes binary search
 //
-#define FFI_YW2Y_NT_AUTO(SUFFIX, WEIGHT_C_T)                                                    \
-void csrmv_yw2y_nt_auto##SUFFIX(                                                                \
+#define FFI_YW2W_NT_AUTO(SUFFIX, WEIGHT_C_T)                                                    \
+void csrmv_yw2w_nt_auto##SUFFIX(                                                                \
     const BE::Tensor y,       const BE::Tensor w,                                               \
     const BE::Tensor indices, const BE::Tensor indptr,                                          \
     BE::Tensor output,  int64_t stream                                                          \
@@ -391,14 +391,14 @@ void csrmv_yw2y_nt_auto##SUFFIX(                                                
         const IndptrT* d_ptr = static_cast<const IndptrT*>(indptr.data_ptr());                  \
         if (avg_nnz < 8) {                                                                      \
             int blocks = (m + 255) / 256;                                                       \
-            _yw2y_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m); \
+            _yw2w_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m); \
         } else if (avg_nnz < 512) {                                                             \
-            _yw2y_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(d_y, d_w, d_ptr, d_out, m);         \
+            _yw2w_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(d_y, d_w, d_ptr, d_out, m);         \
         } else {                                                                                \
             const int VEC_SIZE = 4;                                                             \
             int total_threads = (nse + VEC_SIZE - 1) / VEC_SIZE;                                \
             int blocks = (total_threads + 255) / 256;                                           \
-            _yw2y_nt_nz_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m, nse); \
+            _yw2w_nt_nz_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m, nse); \
         }                                                                                       \
     });                                                                                         \
 }
@@ -408,23 +408,23 @@ void csrmv_yw2y_nt_auto##SUFFIX(                                                
 // =========================================================================
 
 // ---- Float32 ----
-// @BE csrmv_yw2y_nt_row_thread_f32
-FFI_YW2Y_NT_ROW_THREAD(_f32,  float)
-// @BE csrmv_yw2y_nt_row_warp_f32
-FFI_YW2Y_NT_ROW_WARP(_f32,   float)
-// @BE csrmv_yw2y_nt_nz_thread_f32
-FFI_YW2Y_NT_NZ_THREAD(_f32,  float)
-// @BE csrmv_yw2y_nt_auto_f32
-FFI_YW2Y_NT_AUTO(_f32,       float)
+// @BE csrmv_yw2w_nt_row_thread_f32
+FFI_YW2W_NT_ROW_THREAD(_f32,  float)
+// @BE csrmv_yw2w_nt_row_warp_f32
+FFI_YW2W_NT_ROW_WARP(_f32,   float)
+// @BE csrmv_yw2w_nt_nz_thread_f32
+FFI_YW2W_NT_NZ_THREAD(_f32,  float)
+// @BE csrmv_yw2w_nt_auto_f32
+FFI_YW2W_NT_AUTO(_f32,       float)
 
 // ---- Float64 ----
-// @BE csrmv_yw2y_nt_auto_f64
-FFI_YW2Y_NT_AUTO(_f64,       double)
+// @BE csrmv_yw2w_nt_auto_f64
+FFI_YW2W_NT_AUTO(_f64,       double)
 
 // ---- Float16 (accumulates in float32) ----
-// @BE csrmv_yw2y_nt_auto_f16
-FFI_YW2Y_NT_AUTO(_f16,       __half)
+// @BE csrmv_yw2w_nt_auto_f16
+FFI_YW2W_NT_AUTO(_f16,       __half)
 
 // ---- BFloat16 (accumulates in float32) ----
-// @BE csrmv_yw2y_nt_auto_bf16
-FFI_YW2Y_NT_AUTO(_bf16,      __nv_bfloat16)
+// @BE csrmv_yw2w_nt_auto_bf16
+FFI_YW2W_NT_AUTO(_bf16,      __nv_bfloat16)

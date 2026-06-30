@@ -44,7 +44,7 @@ from .plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
 )
-from .yw2y import fcnmv_yw2y
+from .yw2w import fcnmv_yw2w
 
 __all__ = [
     'FixedNumConn',
@@ -352,7 +352,7 @@ class FixedNumConn(DataRepresentation):
         return fcnmm(data, self.indices, matrix, shape=a_shape, transpose=ell_transpose)
 
     # ------------------------------------------------------------------ #
-    # Per-synapse y * w product (yw2y), parity with CSR / CSC
+    # Per-synapse y * w product (yw2w), parity with CSR / CSC
     # ------------------------------------------------------------------ #
 
     def yw_to_w(self, y_dim_arr, w_dim_arr=None):
@@ -381,7 +381,7 @@ class FixedNumConn(DataRepresentation):
         yw_to_w_transposed : ``y`` indexed by the column (post) of ``W``.
         """
         w = self.data if w_dim_arr is None else w_dim_arr
-        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=self._a_shape,
+        return fcnmv_yw2w(w, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(False))
 
     def yw_to_w_transposed(self, y_dim_arr, w_dim_arr=None):
@@ -409,7 +409,7 @@ class FixedNumConn(DataRepresentation):
         yw_to_w : ``y`` indexed by the row (pre) of ``W``.
         """
         w = self.data if w_dim_arr is None else w_dim_arr
-        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=self._a_shape,
+        return fcnmv_yw2w(w, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(True))
 
     def _dispatch(self, other, transpose_W: bool):
