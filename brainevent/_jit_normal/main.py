@@ -28,6 +28,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitnmv, binary_jitnmm
 from .csr import jitn_to_csr
 from .float import jitn, jitnmv, jitnmm
+from .yw2w import jitn_yw2w
 
 __all__ = [
     'JITCNormalR',
@@ -356,6 +357,34 @@ class JITCNormalMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+        )
+
+    def yw_to_w(self, y_dim_arr, *, backend: Optional[str] = None, corder: Optional[bool] = None):
+        """Generate per-synapse ``sampled_weight * y[row]`` using the matrix parameters."""
+        return jitn_yw2w(
+            self.wloc,
+            self.wscale,
+            self.prob,
+            y_dim_arr,
+            self.seed,
+            shape=self.shape,
+            transpose=False,
+            corder=self.corder if corder is None else corder,
+            backend=self.backend if backend is None else backend,
+        )
+
+    def yw_to_w_transposed(self, y_dim_arr, *, backend: Optional[str] = None, corder: Optional[bool] = None):
+        """Generate per-synapse ``sampled_weight * y[col]`` using the matrix parameters."""
+        return jitn_yw2w(
+            self.wloc,
+            self.wscale,
+            self.prob,
+            y_dim_arr,
+            self.seed,
+            shape=self.shape,
+            transpose=True,
+            corder=self.corder if corder is None else corder,
+            backend=self.backend if backend is None else backend,
         )
 
     def tree_flatten(self):

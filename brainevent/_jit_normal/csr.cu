@@ -43,10 +43,9 @@
  * corder=true  (gather):  one thread per row, walks columns.  Each row writes
  *              its CSR slice ``[indptr[r], indptr[r+1])`` sequentially in
  *              increasing column order -> rows are column-sorted.
- * corder=false (scatter): one thread per column, walks rows.  A per-row write
- *              cursor (``wptr``, a device copy of ``indptr[:n_rows]``) is
- *              advanced with ``atomicAdd``; column order within a row is not
- *              guaranteed (each (row, col) is still written exactly once).
+ * corder=false (scatter): one thread per row scans columns in increasing
+ *              order while replaying each column's row walk, yielding
+ *              deterministic column-sorted CSR rows.
  *
  * Parameters
  * ----------
@@ -166,26 +165,32 @@ __global__ void _fill_n_cf##SUFFIX(                                             
     const WEIGHT_T* __restrict__ w1,                                                         \
     const float*    __restrict__ clen,                                                       \
     const int*      __restrict__ seed,                                                       \
-    int*            __restrict__ wptr,                                                       \
+    const int*      __restrict__ indptr,                                                     \
     int*            __restrict__ indices,                                                    \
     WEIGHT_T*       __restrict__ data,                                                       \
     int n_rows, int n_cols                                                                   \
 ) {                                                                                          \
-    int col = blockIdx.x * blockDim.x + threadIdx.x;                                         \
-    if (col >= n_cols) return;                                                               \
+    int row = blockIdx.x * blockDim.x + threadIdx.x;                                         \
+    if (row >= n_rows) return;                                                               \
     ACC_T loc = READ_W(__ldg(&w0[0]));                                                       \
     ACC_T scale = READ_W(__ldg(&w1[0]));                                                     \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                                         \
     if (cl < 2) cl = 2;                                                                      \
-    curandStatePhilox4_32_10_t state;                                                        \
-    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)col, 0ULL, &state); \
-    unsigned int row = curand(&state) % cl;                                                  \
-    while (row < (unsigned int)n_rows) {                                                     \
-        ACC_T nn = (ACC_T)RNG_FUNC(&state);                                                  \
-        int pos = atomicAdd(&wptr[row], 1);                                                  \
-        indices[pos] = (int)col;                                                             \
-        data[pos] = WRITE_W(loc + nn * scale);                                               \
-        row += 1 + (curand(&state) % (cl - 1));                                              \
+    int pos = indptr[row];                                                                   \
+    for (int col = 0; col < n_cols; ++col) {                                                 \
+        curandStatePhilox4_32_10_t state;                                                    \
+        curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)col, 0ULL, &state); \
+        unsigned int rr = curand(&state) % cl;                                               \
+        while (rr < (unsigned int)row) {                                                     \
+            (void)RNG_FUNC(&state);                                                          \
+            rr += 1 + (curand(&state) % (cl - 1));                                           \
+        }                                                                                    \
+        if (rr == (unsigned int)row) {                                                       \
+            ACC_T nn = (ACC_T)RNG_FUNC(&state);                                              \
+            indices[pos] = (int)col;                                                         \
+            data[pos] = WRITE_W(loc + nn * scale);                                           \
+            pos += 1;                                                                        \
+        }                                                                                    \
     }                                                                                        \
 }
 
@@ -268,7 +273,7 @@ void FNAME(                                                                     
     );                                                                                       \
 }
 
-// ---- FFI: fill, corder=false (launch over cols; atomic write-cursor per row) ----
+// ---- FFI: fill, corder=false (launch over rows; deterministic column scan) ----
 #define FFI_FILL_CF(FNAME, GLOBAL, WEIGHT_C_T)                                               \
 void FNAME(                                                                                  \
     const BE::Tensor w0, const BE::Tensor w1,                                                \
@@ -277,23 +282,18 @@ void FNAME(                                                                     
 ) {                                                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                 \
     int n_rows = static_cast<int>(indptr.size(0)) - 1;                                       \
-    int* wptr = nullptr;                                                                     \
-    cudaMalloc((void**)&wptr, (size_t)n_rows * sizeof(int));                                 \
-    cudaMemcpyAsync(wptr, indptr.data_ptr(), (size_t)n_rows * sizeof(int),                   \
-                    cudaMemcpyDeviceToDevice, s);                                            \
     int threads = 256;                                                                       \
-    int blocks = (n_cols + threads - 1) / threads;                                           \
+    int blocks = (n_rows + threads - 1) / threads;                                           \
     GLOBAL<<<blocks, threads, 0, s>>>(                                                       \
         static_cast<const WEIGHT_C_T*>(w0.data_ptr()),                                       \
         static_cast<const WEIGHT_C_T*>(w1.data_ptr()),                                       \
         static_cast<const float*>(clen.data_ptr()),                                          \
         static_cast<const int*>(seed.data_ptr()),                                            \
-        wptr,                                                                                \
+        static_cast<const int*>(indptr.data_ptr()),                                          \
         static_cast<int*>(indices.data_ptr()),                                               \
         static_cast<WEIGHT_C_T*>(data.data_ptr()),                                           \
         n_rows, n_cols                                                                       \
     );                                                                                       \
-    cudaFreeAsync(wptr, s);                                                                  \
 }
 
 // ====================== normal — count ======================

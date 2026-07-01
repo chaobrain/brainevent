@@ -84,6 +84,7 @@ from ._jit_normal import (
     jitn, jitn_p,
     jitnmv, jitnmv_p,
     jitnmm, jitnmm_p,
+    jitn_yw2w, jitn_yw2w_fill_p,
 )
 from ._jit_scalar import (
     JITCScalarMatrix, JITCScalarR, JITCScalarC,
@@ -92,6 +93,7 @@ from ._jit_scalar import (
     jits, jits_p,
     jitsmv, jitsmv_p,
     jitsmm, jitsmm_p,
+    jits_yw2w, jits_yw2w_fill_p,
 )
 from ._jit_uniform import (
     JITCUniformR, JITCUniformC,
@@ -100,6 +102,7 @@ from ._jit_uniform import (
     jitu, jitu_p,
     jitumv, jitumv_p,
     jitumm, jitumm_p,
+    jitu_yw2w, jitu_yw2w_fill_p,
 )
 from ._misc import (
     csr_to_coo_index, coo_to_csc_index, csr_to_csc_index, csc_to_csr_index, coo2csr,
@@ -177,18 +180,21 @@ __all__ = [
     'jits', 'jits_p',
     'jitsmv', 'jitsmv_p',
     'jitsmm', 'jitsmm_p',
+    'jits_yw2w', 'jits_yw2w_fill_p',
     'JITCNormalR', 'JITCNormalC',
     'binary_jitnmv', 'binary_jitnmv_p',
     'binary_jitnmm', 'binary_jitnmm_p',
     'jitn', 'jitn_p',
     'jitnmv', 'jitnmv_p',
     'jitnmm', 'jitnmm_p',
+    'jitn_yw2w', 'jitn_yw2w_fill_p',
     'JITCUniformR', 'JITCUniformC',
     'binary_jitumv', 'binary_jitumv_p',
     'binary_jitumm', 'binary_jitumm_p',
     'jitu', 'jitu_p',
     'jitumv', 'jitumv_p',
     'jitumm', 'jitumm_p',
+    'jitu_yw2w', 'jitu_yw2w_fill_p',
 
     # --- Fixed number connectivity --- #
     'FixedNumConn', 'FixedNumPerPost', 'FixedNumPerPre',
@@ -345,5 +351,4 @@ def __dir__():
         | set(_DEPRECATED_RENAMES)
         | set(_DEPRECATED_REMOVED)
     )
-
 

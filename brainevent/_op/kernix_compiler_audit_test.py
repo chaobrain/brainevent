@@ -24,8 +24,8 @@ def _fake_cuda_toolchain(nvcc="nvcc", cxx="g++") -> CudaToolchain:
     return CudaToolchain(
         nvcc=nvcc,
         cxx=cxx,
-        cuda_home="/usr/local/cuda",
-        cuda_include_dirs=("/usr/local/cuda/include",),
+        cuda_home="/__brainevent_missing_cuda_home__",
+        cuda_include_dirs=("/__brainevent_missing_cuda_home__/include",),
         xla_ffi_include_dir="/xla/ffi/include",
         brainevent_include_dir="/be/include",
     )
@@ -125,6 +125,30 @@ def test_m11_cuda_passes_each_ldflag_via_single_xlinker(monkeypatch, tmp_path):
     # Each element becomes exactly one ``-Xlinker <token>`` pair, in order.
     assert _linker_tokens_cuda(cmd) == ["-L/x", "-lfoo"]
     assert cmd.count("-Xlinker") == 2
+
+
+def test_cuda_adds_existing_cuda_home_lib_dir_to_linker(monkeypatch, tmp_path):
+    cuda_home = tmp_path / "cuda"
+    cuda_lib = cuda_home / "lib"
+    cuda_lib.mkdir(parents=True)
+    rec = _Recorder()
+    _patch_run(monkeypatch, rec)
+    backend = kc.CUDABackend(CudaToolchain(
+        nvcc="nvcc",
+        cxx="g++",
+        cuda_home=str(cuda_home),
+        cuda_include_dirs=(str(cuda_home / "include"),),
+        xla_ffi_include_dir="/xla/ffi/include",
+        brainevent_include_dir="/be/include",
+    ))
+
+    backend.compile_source("int main(){}", str(tmp_path / "out.so"), str(tmp_path / "build"))
+
+    tokens = _linker_tokens_cuda(rec.cmd)
+    assert f"-L{cuda_lib}" in tokens
+    if sys.platform.startswith("linux"):
+        assert "-rpath" in tokens
+        assert str(cuda_lib) in tokens
 
 
 def test_m11_backends_are_equivalent(monkeypatch, tmp_path):

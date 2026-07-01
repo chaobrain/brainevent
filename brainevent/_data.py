@@ -896,10 +896,11 @@ class JITCMatrix(DataRepresentation):
     # Common-API contract for just-in-time connectivity
     #
     # JITC matrices are generated procedurally from ``(prob, seed)`` and are
-    # non-plastic: the "weight" is a scalar / distribution parameter, not a
-    # per-synapse array. Several contract methods are therefore deliberately
-    # refused; the conversions that *are* meaningful materialise through
-    # :meth:`tocsr` (an eager, ``O(nnz)`` count+fill defined per distribution).
+    # non-plastic: the "weight" is usually a scalar / distribution parameter
+    # rather than a stored per-synapse array. Several contract methods are
+    # therefore deliberately refused at the base-class level. Distribution
+    # subclasses may override methods such as ``yw_to_w`` when they can generate
+    # the needed per-synapse values directly from their parameters.
     # ------------------------------------------------------------------ #
 
     @classmethod
@@ -919,33 +920,37 @@ class JITCMatrix(DataRepresentation):
         )
 
     def yw_to_w(self, *args, **kwargs):
-        """Unsupported: JITC weights are not per-synapse.
+        """Unsupported fallback for JITC subclasses without direct ``yw_to_w``.
 
         Raises
         ------
         UnsupportedOperationError
-            Always. Materialise first with ``mat.tocsr().yw_to_w(...)``.
+            If the subclass does not override this method. Materialise first
+            with ``mat.tocsr().yw_to_w(...)`` or use a subclass with a direct
+            ``yw_to_w`` implementation.
         """
         raise UnsupportedOperationError(
-            "JITC weights are a scalar / distribution parameter, not a "
-            "per-synapse array, so the yw_to_w eligibility protocol is undefined "
-            "for procedurally generated connectivity. Materialise first: "
-            "mat.tocsr().yw_to_w(y, w)."
+            f"{type(self).__name__} does not implement direct yw_to_w for "
+            "procedurally generated connectivity. Materialise first with "
+            "mat.tocsr().yw_to_w(y, w), or implement a distribution-specific "
+            "yw_to_w override."
         )
 
     def yw_to_w_transposed(self, *args, **kwargs):
-        """Unsupported: JITC weights are not per-synapse.
+        """Unsupported fallback for JITC subclasses without direct transposed ``yw_to_w``.
 
         Raises
         ------
         UnsupportedOperationError
-            Always. Materialise first with ``mat.tocsr().yw_to_w_transposed(...)``.
+            If the subclass does not override this method. Materialise first
+            with ``mat.tocsr().yw_to_w_transposed(...)`` or use a subclass with
+            a direct ``yw_to_w_transposed`` implementation.
         """
         raise UnsupportedOperationError(
-            "JITC weights are a scalar / distribution parameter, not a "
-            "per-synapse array, so the yw_to_w_transposed eligibility protocol is "
-            "undefined for procedurally generated connectivity. Materialise "
-            "first: mat.tocsr().yw_to_w_transposed(y, w)."
+            f"{type(self).__name__} does not implement direct "
+            "yw_to_w_transposed for procedurally generated connectivity. "
+            "Materialise first with mat.tocsr().yw_to_w_transposed(y, w), or "
+            "implement a distribution-specific yw_to_w_transposed override."
         )
 
     def update_on_pre(self, *args, **kwargs):

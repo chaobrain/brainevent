@@ -18,10 +18,12 @@ from .binary import binary_jitumv, binary_jitumv_p, binary_jitumm, binary_jitumm
 from .csr import jitu_to_csr, jitu_csr_count_p, jitu_csr_fill_p
 from .float import jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p
 from .main import JITCUniformR, JITCUniformC
+from .yw2w import jitu_yw2w, jitu_yw2w_fill_p
 
 __all__ = [
     'JITCUniformR', 'JITCUniformC',
     'binary_jitumv', 'binary_jitumv_p', 'binary_jitumm', 'binary_jitumm_p',
     'jitu', 'jitu_p', 'jitumv', 'jitumv_p', 'jitumm', 'jitumm_p',
     'jitu_to_csr', 'jitu_csr_count_p', 'jitu_csr_fill_p',
+    'jitu_yw2w', 'jitu_yw2w_fill_p',
 ]

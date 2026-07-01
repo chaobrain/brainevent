@@ -26,6 +26,7 @@ Adding a new backend
 import os
 import shlex
 import subprocess
+import sys
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -64,6 +65,22 @@ def _compile_timeout() -> int:
         return int(os.environ.get("BRAINEVENT_COMPILE_TIMEOUT", "600"))
     except ValueError:
         return 600
+
+
+def _cuda_home_linker_flags(cuda_home: str) -> list[str]:
+    """Return linker flags for CUDA runtime libs bundled with *cuda_home*."""
+    flags: list[str] = []
+    seen: set[str] = set()
+    if not sys.platform.startswith("linux"):
+        return flags
+    for dirname in ("lib", "lib64"):
+        lib_dir = os.path.join(cuda_home, dirname)
+        if not os.path.isdir(lib_dir) or lib_dir in seen:
+            continue
+        seen.add(lib_dir)
+        flags.append(f"-L{lib_dir}")
+        flags.extend(["-rpath", lib_dir])
+    return flags
 
 
 def _run(cmd, *, timeout, stage):
@@ -268,11 +285,12 @@ class CUDABackend(CompilerBackend):
 
         cmd.extend(extra_cuda_cflags or [])
 
-        # Each extra_ldflags element is one already-split token forwarded to the
+        # Each ldflag element is one already-split token forwarded to the
         # host linker via a single ``-Xlinker <token>`` pair (mirrors how
         # ``nvcc_host_pic_flags`` forwards host-compiler options one per flag,
         # and keeps multi-word values such as "-L/path with spaces" intact).
-        for token in (extra_ldflags or []):
+        linker_flags = _cuda_home_linker_flags(self.toolchain.cuda_home) + (extra_ldflags or [])
+        for token in linker_flags:
             cmd.extend(["-Xlinker", token])
 
         cmd_str = shlex.join(cmd)

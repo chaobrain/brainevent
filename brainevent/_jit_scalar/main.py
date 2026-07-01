@@ -29,6 +29,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitsmv, binary_jitsmm
 from .csr import jits_to_csr
 from .float import jits, jitsmv, jitsmm
+from .yw2w import jits_yw2w
 
 __all__ = [
     'JITCScalarR',
@@ -345,6 +346,32 @@ class JITCScalarMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+        )
+
+    def yw_to_w(self, y_dim_arr, *, backend: Optional[str] = None, corder: Optional[bool] = None):
+        """Generate per-synapse ``weight * y[row]`` using the matrix parameters."""
+        return jits_yw2w(
+            self.weight,
+            self.prob,
+            y_dim_arr,
+            self.seed,
+            shape=self.shape,
+            transpose=False,
+            corder=self.corder if corder is None else corder,
+            backend=self.backend if backend is None else backend,
+        )
+
+    def yw_to_w_transposed(self, y_dim_arr, *, backend: Optional[str] = None, corder: Optional[bool] = None):
+        """Generate per-synapse ``weight * y[col]`` using the matrix parameters."""
+        return jits_yw2w(
+            self.weight,
+            self.prob,
+            y_dim_arr,
+            self.seed,
+            shape=self.shape,
+            transpose=True,
+            corder=self.corder if corder is None else corder,
+            backend=self.backend if backend is None else backend,
         )
 
     def tree_flatten(self):
