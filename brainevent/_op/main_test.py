@@ -93,7 +93,3 @@ def test_m13_unregistered_global_backend_warns_and_falls_back():
         np.testing.assert_allclose(np.asarray(out[0]), np.arange(8) + 1.0)
     finally:
         clear_backends()
-
-
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
