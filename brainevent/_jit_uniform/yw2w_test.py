@@ -13,6 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 
+import inspect
+from typing import Union
+
+import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -148,10 +152,38 @@ def test_jitu_yw2w_fill_generates_y_times_weight_directly(implementation, corder
     jax.block_until_ready((out, expected))
 
 
+def test_jitu_matrix_yw_to_w_signatures_align_contracts():
+    expected_input = Union[jax.Array, np.ndarray, u.Quantity]
+    expected_output = Union[jax.Array, u.Quantity]
+    for cls in (brainevent.JITCUniformR, brainevent.JITCUniformC):
+        sig = inspect.signature(cls.yw_to_w)
+        assert list(sig.parameters) == ['self', 'y_dim_arr', 'w_dim_arr']
+        assert sig.parameters['y_dim_arr'].annotation == expected_input
+        assert sig.parameters['w_dim_arr'].annotation == expected_input
+        assert sig.parameters['w_dim_arr'].default is inspect._empty
+        assert sig.return_annotation == expected_output
+
+        sig_t = inspect.signature(cls.yw_to_w_transposed)
+        assert list(sig_t.parameters) == ['self', 'y_dim_arr', 'w_dim_arr']
+        assert sig_t.parameters['w_dim_arr'].default is inspect._empty
+
+
 @pytest.mark.skipif(
     not JITU_YW2W_IMPLEMENTATIONS,
     reason=f'No jitu_yw2w implementation on platform={platform}',
 )
+@pytest.mark.parametrize('implementation', JITU_YW2W_IMPLEMENTATIONS)
+def test_jitu_matrix_yw_to_w_requires_w_dim_arr(implementation):
+    with jax.default_device(CPU_DEVICE):
+        mat = brainevent.JITCUniformR((0.1, 0.5, 0.2, 42), shape=(20, 30), backend=implementation)
+        y_pre = jnp.linspace(-1.0, 2.0, 20, dtype=jnp.float32)
+        y_post = jnp.linspace(-1.0, 2.0, 30, dtype=jnp.float32)
+        with pytest.raises(TypeError):
+            mat.yw_to_w(y_pre)
+        with pytest.raises(TypeError):
+            mat.yw_to_w_transposed(y_post)
+
+
 @pytest.mark.parametrize('implementation', JITU_YW2W_IMPLEMENTATIONS)
 @pytest.mark.parametrize('transpose', [False, True])
 def test_jitu_matrix_yw_to_w_uses_init_parameters(implementation, transpose):
@@ -166,7 +198,8 @@ def test_jitu_matrix_yw_to_w_uses_init_parameters(implementation, transpose):
             backend=implementation,
         )
 
-        out = mat.yw_to_w_transposed(y) if transpose else mat.yw_to_w(y)
+        w_dim_arr = jnp.empty(0, dtype=jnp.float32)
+        out = mat.yw_to_w_transposed(y, w_dim_arr) if transpose else mat.yw_to_w(y, w_dim_arr)
         expected = jitu_yw2w(
             0.1,
             0.5,
@@ -187,18 +220,18 @@ def test_jitu_matrix_yw_to_w_uses_init_parameters(implementation, transpose):
     reason=f'No jitu_yw2w implementation on platform={platform}',
 )
 @pytest.mark.parametrize('implementation', JITU_YW2W_IMPLEMENTATIONS)
-def test_jitu_matrix_yw_to_w_accepts_backend_and_corder_overrides(implementation):
+def test_jitu_matrix_yw_to_w_uses_instance_backend_and_corder(implementation):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y = jnp.linspace(-1.0, 2.0, shape[0], dtype=jnp.float32)
         mat = brainevent.JITCUniformR(
             (0.1, 0.5, 0.2, 42),
             shape=shape,
-            corder=True,
-            backend=None,
+            corder=False,
+            backend=implementation,
         )
 
-        out = mat.yw_to_w(y, backend=implementation, corder=False)
+        out = mat.yw_to_w(y, jnp.empty(0, dtype=jnp.float32))
         expected = jitu_yw2w(
             0.1,
             0.5,

@@ -22,6 +22,7 @@ os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 import functools
 import inspect
 from pathlib import Path
+from typing import Union
 import numpy as np
 
 import brainstate
@@ -794,6 +795,25 @@ class TestMatrix:
 
 
 class Test_Yw2w:
+    def test_yw_to_w_signature_aligns_brainunit_contract(self):
+        expected_args = ['self', 'y_dim_arr', 'w_dim_arr']
+        expected_input = Union[jax.Array, np.ndarray, u.Quantity]
+        expected_output = Union[jax.Array, u.Quantity]
+        for cls in (FixedNumPerPre, FixedNumPerPost):
+            sig = inspect.signature(cls.yw_to_w)
+            assert list(sig.parameters) == expected_args
+            assert sig.parameters['y_dim_arr'].annotation == expected_input
+            assert sig.parameters['w_dim_arr'].annotation == expected_input
+            assert sig.parameters['w_dim_arr'].default is inspect._empty
+            assert sig.return_annotation == expected_output
+
+    def test_yw_to_w_transposed_signature_aligns_data_representation_contract(self):
+        expected_args = list(inspect.signature(fcn_main_mod.DataRepresentation.yw_to_w_transposed).parameters)
+        for cls in (FixedNumPerPre, FixedNumPerPost):
+            sig = inspect.signature(cls.yw_to_w_transposed)
+            assert list(sig.parameters) == expected_args
+            assert sig.parameters['w_dim_arr'].default is inspect._empty
+
     def test_fixed_post(self):
         m, n, k = 5, 7, 3
         indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
@@ -803,9 +823,9 @@ class Test_Yw2w:
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
 
         # yw_to_w: y indexed by row=pre -> broadcast
-        assert allclose(conn.yw_to_w(y_pre), data * y_pre[:, None])
+        assert allclose(conn.yw_to_w(y_pre, data), data * y_pre[:, None])
         # yw_to_w_transposed: y indexed by col=post -> gather
-        assert allclose(conn.yw_to_w_transposed(y_post), data * y_post[indices])
+        assert allclose(conn.yw_to_w_transposed(y_post, data), data * y_post[indices])
 
     def test_fixed_pre(self):
         num_pre, num_post, k = 7, 5, 3
@@ -817,20 +837,21 @@ class Test_Yw2w:
         y_post = jnp.arange(1, num_post + 1, dtype=jnp.float32)
 
         # yw_to_w: y indexed by row=pre -> gather (indices are pre ids)
-        assert allclose(conn.yw_to_w(y_pre), data * y_pre[indices])
+        assert allclose(conn.yw_to_w(y_pre, data), data * y_pre[indices])
         # yw_to_w_transposed: y indexed by col=post=leading -> broadcast
-        assert allclose(conn.yw_to_w_transposed(y_post), data * y_post[:, None])
+        assert allclose(conn.yw_to_w_transposed(y_post, data), data * y_post[:, None])
 
-    def test_default_w_uses_self_data(self):
+    def test_w_dim_arr_is_required(self):
         m, n, k = 5, 7, 3
         indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
         data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
         conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
-        assert allclose(conn.yw_to_w(y_pre), conn.yw_to_w(y_pre, data))
-        assert allclose(conn.yw_to_w_transposed(y_post),
-                        conn.yw_to_w_transposed(y_post, data))
+        with pytest.raises(TypeError):
+            conn.yw_to_w(y_pre)
+        with pytest.raises(TypeError):
+            conn.yw_to_w_transposed(y_post)
 
     def test_golden_parity_csr(self):
         m, n, k = 5, 7, 3
@@ -845,9 +866,9 @@ class Test_Yw2w:
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
 
-        assert allclose(conn.yw_to_w(y_pre).flatten(),
+        assert allclose(conn.yw_to_w(y_pre, data).flatten(),
                         csr.yw_to_w(y_pre, data.flatten()))
-        assert allclose(conn.yw_to_w_transposed(y_post).flatten(),
+        assert allclose(conn.yw_to_w_transposed(y_post, data).flatten(),
                         csr.yw_to_w_transposed(y_post, data.flatten()))
 
 

@@ -172,8 +172,7 @@ class DataRepresentation(u.sparse.SparseMatrix):
         y_dim_arr : jax.Array or brainunit.Quantity
             Post-synaptic (column) vector, sized ``shape[1]``.
         w_dim_arr : jax.Array or brainunit.Quantity
-            Per-synapse weights. Some formats (e.g. fixed-num connections)
-            accept ``None`` here, defaulting to the representation's own values.
+            Per-synapse weights.
 
         Returns
         -------
@@ -919,8 +918,24 @@ class JITCMatrix(DataRepresentation):
             "produced a dense matrix."
         )
 
-    def yw_to_w(self, *args, **kwargs):
+    def yw_to_w(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Unsupported fallback for JITC subclasses without direct ``yw_to_w``.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Values in the source vector dimension.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Per-synapse weight values.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Per-synapse result for subclasses that implement this protocol.
 
         Raises
         ------
@@ -936,8 +951,20 @@ class JITCMatrix(DataRepresentation):
             "yw_to_w override."
         )
 
-    def yw_to_w_transposed(self, *args, **kwargs):
+    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
         """Unsupported fallback for JITC subclasses without direct transposed ``yw_to_w``.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array or brainunit.Quantity
+            Values in the transposed vector dimension.
+        w_dim_arr : jax.Array or brainunit.Quantity
+            Per-synapse weight values.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Per-synapse result for subclasses that implement this protocol.
 
         Raises
         ------

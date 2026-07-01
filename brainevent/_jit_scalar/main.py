@@ -348,13 +348,17 @@ class JITCScalarMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def yw_to_w(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
+    def yw_to_w(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Generate per-synapse ``weight * y[row]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
-        and is not used. JITC scalar connectivity and weights are generated
-        from this matrix's own metadata, including ``weight``, ``prob``,
-        ``seed``, ``shape``, ``corder``, and ``backend``.
+        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        JITC scalar connectivity and weights are generated from this matrix's own
+        metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
+        ``corder``, and ``backend``.
         """
         return jits_yw2w(
             self.weight,
@@ -363,17 +367,17 @@ class JITCScalarMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=False,
-            corder=self.corder if corder is None else corder,
-            backend=self.backend if backend is None else backend,
+            corder=self.corder,
+            backend=self.backend,
         )
 
-    def yw_to_w_transposed(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
+    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
         """Generate per-synapse ``weight * y[col]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
-        and is not used. JITC scalar connectivity and weights are generated
-        from this matrix's own metadata, including ``weight``, ``prob``,
-        ``seed``, ``shape``, ``corder``, and ``backend``.
+        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        JITC scalar connectivity and weights are generated from this matrix's own
+        metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
+        ``corder``, and ``backend``.
         """
         return jits_yw2w(
             self.weight,
@@ -382,8 +386,8 @@ class JITCScalarMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=True,
-            corder=self.corder if corder is None else corder,
-            backend=self.backend if backend is None else backend,
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def tree_flatten(self):

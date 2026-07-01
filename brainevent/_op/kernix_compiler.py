@@ -67,19 +67,34 @@ def _compile_timeout() -> int:
         return 600
 
 
-def _cuda_home_linker_flags(cuda_home: str) -> list[str]:
-    """Return linker flags for CUDA runtime libs bundled with *cuda_home*."""
+def _cuda_runtime_lib_linker_search_flags(cuda_home: str) -> list[str]:
+    """Return linker search flags for CUDA runtime libraries.
+
+    ``cuda_home`` is the root inferred from the selected ``nvcc``.  Existing
+    ``lib``/``lib64`` directories under that root are added both for link-time
+    lookup (``-L``) and load-time lookup (``rpath``).  For pip split CUDA
+    packages, ``nvcc`` lives in ``nvidia/cuda_nvcc`` while the runtime library
+    can live in sibling ``nvidia/cuda_runtime``, so that sibling is searched
+    only when the selected toolkit root is ``cuda_nvcc``.
+    """
     flags: list[str] = []
     seen: set[str] = set()
     if not sys.platform.startswith("linux"):
         return flags
-    for dirname in ("lib", "lib64"):
-        lib_dir = os.path.join(cuda_home, dirname)
-        if not os.path.isdir(lib_dir) or lib_dir in seen:
-            continue
-        seen.add(lib_dir)
-        flags.append(f"-L{lib_dir}")
-        flags.extend(["-rpath", lib_dir])
+
+    def add_lib_dirs(root: str) -> None:
+        for dirname in ("lib", "lib64"):
+            lib_dir = os.path.join(root, dirname)
+            if not os.path.isdir(lib_dir) or lib_dir in seen:
+                continue
+            seen.add(lib_dir)
+            flags.append(f"-L{lib_dir}")
+            flags.extend(["-rpath", lib_dir])
+
+    add_lib_dirs(cuda_home)
+    norm_cuda_home = os.path.normpath(cuda_home)
+    if os.path.basename(norm_cuda_home) == "cuda_nvcc":
+        add_lib_dirs(os.path.join(os.path.dirname(norm_cuda_home), "cuda_runtime"))
     return flags
 
 
@@ -289,7 +304,7 @@ class CUDABackend(CompilerBackend):
         # host linker via a single ``-Xlinker <token>`` pair (mirrors how
         # ``nvcc_host_pic_flags`` forwards host-compiler options one per flag,
         # and keeps multi-word values such as "-L/path with spaces" intact).
-        linker_flags = _cuda_home_linker_flags(self.toolchain.cuda_home) + (extra_ldflags or [])
+        linker_flags = _cuda_runtime_lib_linker_search_flags(self.toolchain.cuda_home) + (extra_ldflags or [])
         for token in linker_flags:
             cmd.extend(["-Xlinker", token])
 

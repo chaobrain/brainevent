@@ -377,13 +377,17 @@ class JITCUniformMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def yw_to_w(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
+    def yw_to_w(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Generate per-synapse ``sampled_weight * y[row]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
-        and is not used. JITC uniform connectivity and weights are generated
-        from this matrix's own metadata, including ``wlow``, ``whigh``,
-        ``prob``, ``seed``, ``shape``, ``corder``, and ``backend``.
+        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        JITC uniform connectivity and weights are generated from this matrix's own
+        metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
+        ``corder``, and ``backend``.
         """
         return jitu_yw2w(
             self.wlow,
@@ -393,17 +397,17 @@ class JITCUniformMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=False,
-            corder=self.corder if corder is None else corder,
-            backend=self.backend if backend is None else backend,
+            corder=self.corder,
+            backend=self.backend,
         )
 
-    def yw_to_w_transposed(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
+    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
         """Generate per-synapse ``sampled_weight * y[col]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
-        and is not used. JITC uniform connectivity and weights are generated
-        from this matrix's own metadata, including ``wlow``, ``whigh``,
-        ``prob``, ``seed``, ``shape``, ``corder``, and ``backend``.
+        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        JITC uniform connectivity and weights are generated from this matrix's own
+        metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
+        ``corder``, and ``backend``.
         """
         return jitu_yw2w(
             self.wlow,
@@ -413,8 +417,8 @@ class JITCUniformMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=True,
-            corder=self.corder if corder is None else corder,
-            backend=self.backend if backend is None else backend,
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def tree_flatten(self):

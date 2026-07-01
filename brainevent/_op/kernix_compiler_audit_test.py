@@ -155,6 +155,34 @@ def test_cuda_adds_existing_cuda_home_lib_dir_to_linker(monkeypatch, tmp_path):
         assert str(cuda_lib) in tokens
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="CUDA home linker flags are Linux-only",
+)
+def test_cuda_adds_pip_split_cuda_runtime_lib_dir_to_linker(monkeypatch, tmp_path):
+    nvidia_root = tmp_path / "site-packages" / "nvidia"
+    cuda_home = nvidia_root / "cuda_nvcc"
+    cuda_runtime_lib = nvidia_root / "cuda_runtime" / "lib"
+    cuda_runtime_lib.mkdir(parents=True)
+    rec = _Recorder()
+    _patch_run(monkeypatch, rec)
+    backend = kc.CUDABackend(CudaToolchain(
+        nvcc=str(cuda_home / "bin" / "nvcc"),
+        cxx="g++",
+        cuda_home=str(cuda_home),
+        cuda_include_dirs=(str(cuda_home / "include"),),
+        xla_ffi_include_dir="/xla/ffi/include",
+        brainevent_include_dir="/be/include",
+    ))
+
+    backend.compile_source("int main(){}", str(tmp_path / "out.so"), str(tmp_path / "build"))
+
+    tokens = _linker_tokens_cuda(rec.cmd)
+    assert f"-L{cuda_runtime_lib}" in tokens
+    assert "-rpath" in tokens
+    assert str(cuda_runtime_lib) in tokens
+
+
 def test_m11_backends_are_equivalent(monkeypatch, tmp_path):
     """Both backends pass the *same* linker tokens, in the same order, once each."""
     cuda = _compile_cuda(monkeypatch, tmp_path, extra_ldflags=["-L/x", "-lfoo"])

@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from typing import Optional, TYPE_CHECKING, cast
+from typing import Optional, TYPE_CHECKING, Union, cast
 
 import brainunit as u
 import jax
@@ -355,7 +355,11 @@ class FixedNumConn(DataRepresentation):
     # Per-synapse y * w product (yw2w), parity with CSR / CSC
     # ------------------------------------------------------------------ #
 
-    def yw_to_w(self, y_dim_arr, w_dim_arr=None):
+    def yw_to_w(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Per-synapse ``w * y`` with ``y`` indexed by the row (pre) of ``W``.
 
         For every stored connection, returns ``w * y[row]`` where ``row`` is the
@@ -365,11 +369,10 @@ class FixedNumConn(DataRepresentation):
 
         Parameters
         ----------
-        y_dim_arr : jax.Array or brainunit.Quantity
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
             Pre-synaptic (row) vector, sized ``shape[0]``.
-        w_dim_arr : jax.Array or brainunit.Quantity, optional
-            Per-synapse weights of shape ``indices.shape`` (or size-1).  Defaults
-            to ``self.data``.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Per-synapse weights of shape ``indices.shape`` (or size-1).
 
         Returns
         -------
@@ -380,11 +383,10 @@ class FixedNumConn(DataRepresentation):
         --------
         yw_to_w_transposed : ``y`` indexed by the column (post) of ``W``.
         """
-        w = self.data if w_dim_arr is None else w_dim_arr
-        return fcnmv_yw2w(w, self.indices, y_dim_arr, shape=self._a_shape,
+        return fcnmv_yw2w(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(False))
 
-    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr=None):
+    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
         """Per-synapse ``w * y`` with ``y`` indexed by the column (post) of ``W``.
 
         Adjoint counterpart of :meth:`yw_to_w`: for every stored connection,
@@ -395,9 +397,8 @@ class FixedNumConn(DataRepresentation):
         ----------
         y_dim_arr : jax.Array or brainunit.Quantity
             Post-synaptic (column) vector, sized ``shape[1]``.
-        w_dim_arr : jax.Array or brainunit.Quantity, optional
-            Per-synapse weights of shape ``indices.shape`` (or size-1).  Defaults
-            to ``self.data``.
+        w_dim_arr : jax.Array or brainunit.Quantity
+            Per-synapse weights of shape ``indices.shape`` (or size-1).
 
         Returns
         -------
@@ -408,8 +409,7 @@ class FixedNumConn(DataRepresentation):
         --------
         yw_to_w : ``y`` indexed by the row (pre) of ``W``.
         """
-        w = self.data if w_dim_arr is None else w_dim_arr
-        return fcnmv_yw2w(w, self.indices, y_dim_arr, shape=self._a_shape,
+        return fcnmv_yw2w(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(True))
 
     def _dispatch(self, other, transpose_W: bool):
