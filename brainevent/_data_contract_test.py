@@ -104,13 +104,9 @@ def test_unsupported_operation_error_is_brainevent_error():
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize('cls,data', JITC_INSTANCES, ids=JITC_IDS)
-def test_jitc_refuses_per_synapse_protocols(cls, data):
+def test_jitc_refuses_plastic_update_protocols(cls, data):
     m = cls(data, shape=(16, 16))
     y = jnp.ones(16)
-    with pytest.raises(UnsupportedOperationError):
-        m.yw_to_w(y, y)
-    with pytest.raises(UnsupportedOperationError):
-        m.yw_to_w_transposed(y, y)
     with pytest.raises(UnsupportedOperationError):
         m.update_on_pre(y, y)
     with pytest.raises(UnsupportedOperationError):

@@ -244,8 +244,6 @@ def jitu_yw2w_fill_p_call(
     y = jnp.asarray(y)
     seed = jnp.atleast_1d(seed)
     indptr = jnp.asarray(indptr, dtype=jnp.int32)
-    shape = tuple(shape)
-
     assert len(shape) == 2, f"shape must be two-dimensional, but got {shape}."
     assert w0.ndim == w1.ndim == clen.ndim == seed.ndim == 1
     assert w0.size == w1.size == clen.size == seed.size == 1
