@@ -127,6 +127,10 @@ def test_m11_cuda_passes_each_ldflag_via_single_xlinker(monkeypatch, tmp_path):
     assert cmd.count("-Xlinker") == 2
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="CUDA home linker flags are Linux-only",
+)
 def test_cuda_adds_existing_cuda_home_lib_dir_to_linker(monkeypatch, tmp_path):
     cuda_home = tmp_path / "cuda"
     cuda_lib = cuda_home / "lib"
