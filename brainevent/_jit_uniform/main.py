@@ -380,8 +380,10 @@ class JITCUniformMatrix(JITCMatrix):
     def yw_to_w(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
         """Generate per-synapse ``sampled_weight * y[row]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted for DataRepresentation API compatibility;
-        JITC uniform weights are generated from this matrix's own parameters.
+        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
+        and is not used. JITC uniform connectivity and weights are generated
+        from this matrix's own metadata, including ``wlow``, ``whigh``,
+        ``prob``, ``seed``, ``shape``, ``corder``, and ``backend``.
         """
         return jitu_yw2w(
             self.wlow,
@@ -398,8 +400,10 @@ class JITCUniformMatrix(JITCMatrix):
     def yw_to_w_transposed(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
         """Generate per-synapse ``sampled_weight * y[col]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted for DataRepresentation API compatibility;
-        JITC uniform weights are generated from this matrix's own parameters.
+        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
+        and is not used. JITC uniform connectivity and weights are generated
+        from this matrix's own metadata, including ``wlow``, ``whigh``,
+        ``prob``, ``seed``, ``shape``, ``corder``, and ``backend``.
         """
         return jitu_yw2w(
             self.wlow,

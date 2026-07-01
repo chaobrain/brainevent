@@ -362,8 +362,10 @@ class JITCNormalMatrix(JITCMatrix):
     def yw_to_w(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
         """Generate per-synapse ``sampled_weight * y[row]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted for DataRepresentation API compatibility;
-        JITC normal weights are generated from this matrix's own parameters.
+        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
+        and is not used. JITC normal connectivity and weights are generated
+        from this matrix's own metadata, including ``wloc``, ``wscale``,
+        ``prob``, ``seed``, ``shape``, ``corder``, and ``backend``.
         """
         return jitn_yw2w(
             self.wloc,
@@ -380,8 +382,10 @@ class JITCNormalMatrix(JITCMatrix):
     def yw_to_w_transposed(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
         """Generate per-synapse ``sampled_weight * y[col]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted for DataRepresentation API compatibility;
-        JITC normal weights are generated from this matrix's own parameters.
+        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
+        and is not used. JITC normal connectivity and weights are generated
+        from this matrix's own metadata, including ``wloc``, ``wscale``,
+        ``prob``, ``seed``, ``shape``, ``corder``, and ``backend``.
         """
         return jitn_yw2w(
             self.wloc,

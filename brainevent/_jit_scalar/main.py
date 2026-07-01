@@ -351,8 +351,10 @@ class JITCScalarMatrix(JITCMatrix):
     def yw_to_w(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
         """Generate per-synapse ``weight * y[row]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted for DataRepresentation API compatibility;
-        JITC scalar weights are generated from this matrix's own parameters.
+        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
+        and is not used. JITC scalar connectivity and weights are generated
+        from this matrix's own metadata, including ``weight``, ``prob``,
+        ``seed``, ``shape``, ``corder``, and ``backend``.
         """
         return jits_yw2w(
             self.weight,
@@ -368,8 +370,10 @@ class JITCScalarMatrix(JITCMatrix):
     def yw_to_w_transposed(self, y_dim_arr, _w_dim_arr=None, *, backend: Optional[str] = None, corder: Optional[bool] = None):
         """Generate per-synapse ``weight * y[col]`` using the matrix parameters.
 
-        ``_w_dim_arr`` is accepted for DataRepresentation API compatibility;
-        JITC scalar weights are generated from this matrix's own parameters.
+        ``_w_dim_arr`` is accepted only for DataRepresentation API compatibility
+        and is not used. JITC scalar connectivity and weights are generated
+        from this matrix's own metadata, including ``weight``, ``prob``,
+        ``seed``, ``shape``, ``corder``, and ``backend``.
         """
         return jits_yw2w(
             self.weight,
