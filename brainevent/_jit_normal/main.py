@@ -362,7 +362,7 @@ class JITCNormalMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def DT2T(
+    def DT_to_T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -386,7 +386,7 @@ class JITCNormalMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def DT2T_transposed(
+    def DT_to_T_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],

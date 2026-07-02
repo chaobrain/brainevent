@@ -19,10 +19,10 @@
 Direct per-synapse ``y * w`` generation for uniform-weight just-in-time
 connectivity (JITC) matrices.
 
-The public :func:`jitu_DT2T` wrapper mirrors the CSR ``DT2T`` contract:
+The public :func:`jitu_DT2T` wrapper mirrors the CSR ``DT_to_T`` contract:
 it returns one value per generated structural non-zero, in the same flat CSR
 data order as :func:`brainevent._jit_uniform.csr.jitu_to_csr`. Unlike a wrapper
-around ``tocsr().DT2T(...)``, the fill pass draws each uniform weight and
+around ``tocsr().DT_to_T(...)``, the fill pass draws each uniform weight and
 multiplies by ``y[row]`` or ``y[col]`` directly.
 
 Because the number of structural non-zeros is data dependent, generation is
@@ -80,8 +80,8 @@ def jitu_DT2T(
     """Generate per-synapse ``y * w`` values for a uniform JITC matrix.
 
     The result is a flat vector of length ``nnz`` in the same order as
-    ``jitu_to_csr(...).data``. The output equals ``csr.DT2T(y, csr.data)``
-    when ``transpose=False`` and ``csr.DT2T_transposed(y, csr.data)`` when
+    ``jitu_to_csr(...).data``. The output equals ``csr.DT_to_T(y, csr.data)``
+    when ``transpose=False`` and ``csr.DT_to_T_transposed(y, csr.data)`` when
     ``transpose=True``, without first materialising the CSR weight data.
     """
     shape = (int(shape[0]), int(shape[1]))

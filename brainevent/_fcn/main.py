@@ -355,7 +355,7 @@ class FixedNumConn(DataRepresentation):
     # Per-synapse y * w product (DT2T), parity with CSR / CSC
     # ------------------------------------------------------------------ #
 
-    def DT2T(
+    def DT_to_T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -364,8 +364,8 @@ class FixedNumConn(DataRepresentation):
 
         For every stored connection, returns ``w * y[row]`` where ``row`` is the
         pre-synaptic index of that connection, regardless of storage axis.  This
-        is the fixed-connection analog of :meth:`brainevent.CSR.DT2T` and
-        implements the ``DT2T`` protocol of :class:`brainevent.DataRepresentation`.
+        is the fixed-connection analog of :meth:`brainevent.CSR.DT_to_T` and
+        implements the ``DT_to_T`` protocol of :class:`brainevent.DataRepresentation`.
 
         Parameters
         ----------
@@ -381,19 +381,19 @@ class FixedNumConn(DataRepresentation):
 
         See Also
         --------
-        DT2T_transposed : ``y`` indexed by the column (post) of ``W``.
+        DT_to_T_transposed : ``y`` indexed by the column (post) of ``W``.
         """
         return fcnmv_DT2T(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(False))
 
-    def DT2T_transposed(
+    def DT_to_T_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
         """Per-synapse ``w * y`` with ``y`` indexed by the column (post) of ``W``.
 
-        Adjoint counterpart of :meth:`DT2T`: for every stored connection,
+        Adjoint counterpart of :meth:`DT_to_T`: for every stored connection,
         returns ``w * y[col]`` where ``col`` is the post-synaptic index of that
         connection, regardless of storage axis.
 
@@ -411,7 +411,7 @@ class FixedNumConn(DataRepresentation):
 
         See Also
         --------
-        DT2T : ``y`` indexed by the row (pre) of ``W``.
+        DT_to_T : ``y`` indexed by the row (pre) of ``W``.
         """
         return fcnmv_DT2T(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(True))

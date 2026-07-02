@@ -785,7 +785,7 @@ def test_slice_grad_cuda_accepts_int64_indptr():
 
 
 @requires_gpu
-def test_DT2T_cuda_accepts_int64_indptr():
+def test_DT_to_T_cuda_accepts_int64_indptr():
     weights, indices, indptr32 = _structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)
     y = jnp.array([1.0, 2.0], dtype=jnp.float32)

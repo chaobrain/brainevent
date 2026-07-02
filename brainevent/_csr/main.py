@@ -205,7 +205,7 @@ class CompressedSparseData(DataRepresentation):
 
     Subclasses must implement :meth:`apply`, :meth:`_binary_op`,
     :meth:`_binary_rop`, :meth:`todense`, :meth:`with_data`,
-    :meth:`fromdense`, :meth:`DT2T`, and :meth:`DT2T_transposed`. Both
+    :meth:`fromdense`, :meth:`DT_to_T`, and :meth:`DT_to_T_transposed`. Both
     concrete subclasses (:class:`CSR`, :class:`CSC`) also provide the common
     conversion contract :meth:`tocsr`, :meth:`tocsc`, and :meth:`tocoo`.
 
@@ -724,7 +724,7 @@ class CompressedSparseData(DataRepresentation):
         """
         return self.apply2(other, operator.sub, reverse=True)
 
-    def DT2T(
+    def DT_to_T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity]
@@ -753,7 +753,7 @@ class CompressedSparseData(DataRepresentation):
         """
         raise NotImplementedError
 
-    def DT2T_transposed(
+    def DT_to_T_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity]
@@ -761,7 +761,7 @@ class CompressedSparseData(DataRepresentation):
         """
         Compute the transposed sparse matrix-vector product mapping y-w space to w space.
 
-        This is the adjoint of :meth:`DT2T`.  It is useful for
+        This is the adjoint of :meth:`DT_to_T`.  It is useful for
         back-propagation or adjoint computations in event-driven neural
         simulations.
 
@@ -780,7 +780,7 @@ class CompressedSparseData(DataRepresentation):
 
         See Also
         --------
-        DT2T : The forward (non-transposed) variant.
+        DT_to_T : The forward (non-transposed) variant.
         """
         raise NotImplementedError
 
@@ -1755,7 +1755,7 @@ class CSR(CompressedSparseData):
                                              "the size of the right-hand side vector b.")
         return csr_solve(self.data, self.indices, self.indptr, b)
 
-    def DT2T(
+    def DT_to_T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -1783,7 +1783,7 @@ class CSR(CompressedSparseData):
 
         See Also
         --------
-        DT2T_transposed : The transposed (adjoint) variant.
+        DT_to_T_transposed : The transposed (adjoint) variant.
 
         Notes
         -----
@@ -1792,7 +1792,7 @@ class CSR(CompressedSparseData):
         return csrmv_DT2T(y_dim_arr, w_dim_arr, self.indices, self.indptr,
                           shape=self.shape, transpose=False, backend=self.backend)
 
-    def DT2T_transposed(
+    def DT_to_T_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -1800,7 +1800,7 @@ class CSR(CompressedSparseData):
         """
         Compute the transposed sparse transformation from y-w space to w space.
 
-        This is the adjoint of :meth:`DT2T`, useful for back-propagation
+        This is the adjoint of :meth:`DT_to_T`, useful for back-propagation
         or adjoint computations in event-driven neural simulations.
 
         Parameters
@@ -1818,7 +1818,7 @@ class CSR(CompressedSparseData):
 
         See Also
         --------
-        DT2T : The forward (non-transposed) variant.
+        DT_to_T : The forward (non-transposed) variant.
 
         Notes
         -----
@@ -2652,7 +2652,7 @@ class CSC(CompressedSparseData):
                                              "the size of the right-hand side vector b.")
         return self.T.solve(b, tol=tol, reorder=reorder)
 
-    def DT2T(
+    def DT_to_T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -2679,7 +2679,7 @@ class CSC(CompressedSparseData):
 
         See Also
         --------
-        DT2T_transposed : The transposed (adjoint) variant.
+        DT_to_T_transposed : The transposed (adjoint) variant.
 
         Notes
         -----
@@ -2689,7 +2689,7 @@ class CSC(CompressedSparseData):
         return csrmv_DT2T(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=True,
                           backend=self.backend)
 
-    def DT2T_transposed(
+    def DT_to_T_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -2697,7 +2697,7 @@ class CSC(CompressedSparseData):
         """
         Compute the transposed sparse transformation from y-w space to w space.
 
-        This is the adjoint of :meth:`DT2T`, useful for back-propagation
+        This is the adjoint of :meth:`DT_to_T`, useful for back-propagation
         or adjoint computations in event-driven neural simulations.  Uses
         ``transpose=False`` with the reversed shape to compute the
         appropriate transposed operation for CSC storage.
@@ -2717,7 +2717,7 @@ class CSC(CompressedSparseData):
 
         See Also
         --------
-        DT2T : The forward (non-transposed) variant.
+        DT_to_T : The forward (non-transposed) variant.
 
         Notes
         -----

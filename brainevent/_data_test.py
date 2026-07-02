@@ -80,9 +80,9 @@ def test_binary_reflected_operator_dispatch():
     assert other % mat == ("binary_r", operator.mod, other)
 
 
-def test_jitc_DT2T_signature_aligns_data_representation_contract():
-    sig = inspect.signature(JITCMatrix.DT2T)
-    base_sig = inspect.signature(DataRepresentation.DT2T)
+def test_jitc_DT_to_T_signature_aligns_data_representation_contract():
+    sig = inspect.signature(JITCMatrix.DT_to_T)
+    base_sig = inspect.signature(DataRepresentation.DT_to_T)
     assert list(sig.parameters) == list(base_sig.parameters)
     assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
     assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
@@ -90,9 +90,9 @@ def test_jitc_DT2T_signature_aligns_data_representation_contract():
     assert sig.return_annotation == base_sig.return_annotation
 
 
-def test_jitc_DT2T_transposed_signature_aligns_data_representation_contract():
-    sig = inspect.signature(JITCMatrix.DT2T_transposed)
-    base_sig = inspect.signature(DataRepresentation.DT2T_transposed)
+def test_jitc_DT_to_T_transposed_signature_aligns_data_representation_contract():
+    sig = inspect.signature(JITCMatrix.DT_to_T_transposed)
+    base_sig = inspect.signature(DataRepresentation.DT_to_T_transposed)
     assert list(sig.parameters) == list(base_sig.parameters)
     assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
     assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
@@ -100,14 +100,14 @@ def test_jitc_DT2T_transposed_signature_aligns_data_representation_contract():
     assert sig.return_annotation == base_sig.return_annotation
 
 
-def test_jitc_DT2T_fallbacks_remain_unsupported():
+def test_jitc_DT_to_T_fallbacks_remain_unsupported():
     mat = _DummyJITCMatrix()
     y = jnp.ones(0)
     w = jnp.ones(0)
     with pytest.raises(brainevent.UnsupportedOperationError):
-        mat.DT2T(y, w)
+        mat.DT_to_T(y, w)
     with pytest.raises(brainevent.UnsupportedOperationError):
-        mat.DT2T_transposed(y, w)
+        mat.DT_to_T_transposed(y, w)
 
 
 def test_initialize_seed_explicit_and_array():

@@ -161,7 +161,7 @@ class DataRepresentation(u.sparse.SparseMatrix):
         """
         raise NotImplementedError(f"{type(self).__name__}.tocsc")
 
-    def DT2T(
+    def DT_to_T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -194,18 +194,18 @@ class DataRepresentation(u.sparse.SparseMatrix):
 
         See Also
         --------
-        DT2T_transposed : ``y`` indexed by the column (post) of ``W``.
+        DT_to_T_transposed : ``y`` indexed by the column (post) of ``W``.
         """
-        raise NotImplementedError(f"{type(self).__name__}.DT2T")
+        raise NotImplementedError(f"{type(self).__name__}.DT_to_T")
 
-    def DT2T_transposed(
+    def DT_to_T_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
         """Per-synapse ``w * y`` with ``y`` indexed by the column (post) of ``W``.
 
-        Adjoint counterpart of :meth:`DT2T`. Part of the per-synapse
+        Adjoint counterpart of :meth:`DT_to_T`. Part of the per-synapse
         eligibility protocol used by ``brainscale``.
 
         Parameters
@@ -230,9 +230,9 @@ class DataRepresentation(u.sparse.SparseMatrix):
 
         See Also
         --------
-        DT2T : ``y`` indexed by the row (pre) of ``W``.
+        DT_to_T : ``y`` indexed by the row (pre) of ``W``.
         """
-        raise NotImplementedError(f"{type(self).__name__}.DT2T_transposed")
+        raise NotImplementedError(f"{type(self).__name__}.DT_to_T_transposed")
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
         """Apply a pre-spike-triggered STDP update, returning a new matrix.
@@ -939,7 +939,7 @@ class JITCMatrix(DataRepresentation):
     # non-plastic: the "weight" is usually a scalar / distribution parameter
     # rather than a stored per-synapse array. Several contract methods are
     # therefore deliberately refused at the base-class level. Distribution
-    # subclasses may override methods such as ``DT2T`` when they can generate
+    # subclasses may override methods such as ``DT_to_T`` when they can generate
     # the needed per-synapse values directly from their parameters.
     # ------------------------------------------------------------------ #
 
@@ -959,12 +959,12 @@ class JITCMatrix(DataRepresentation):
             "produced a dense matrix."
         )
 
-    def DT2T(
+    def DT_to_T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
-        """Unsupported fallback for JITC subclasses without direct ``DT2T``.
+        """Unsupported fallback for JITC subclasses without direct ``DT_to_T``.
 
         Parameters
         ----------
@@ -982,22 +982,22 @@ class JITCMatrix(DataRepresentation):
         ------
         UnsupportedOperationError
             If the subclass does not override this method. Materialise first
-            with ``mat.tocsr().DT2T(...)`` or use a subclass with a direct
-            ``DT2T`` implementation.
+            with ``mat.tocsr().DT_to_T(...)`` or use a subclass with a direct
+            ``DT_to_T`` implementation.
         """
         raise UnsupportedOperationError(
-            f"{type(self).__name__} does not implement direct DT2T for "
+            f"{type(self).__name__} does not implement direct DT_to_T for "
             "procedurally generated connectivity. Materialise first with "
-            "mat.tocsr().DT2T(y, w), or implement a distribution-specific "
-            "DT2T override."
+            "mat.tocsr().DT_to_T(y, w), or implement a distribution-specific "
+            "DT_to_T override."
         )
 
-    def DT2T_transposed(
+    def DT_to_T_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
-        """Unsupported fallback for JITC subclasses without direct transposed ``DT2T``.
+        """Unsupported fallback for JITC subclasses without direct transposed ``DT_to_T``.
 
         Parameters
         ----------
@@ -1015,14 +1015,14 @@ class JITCMatrix(DataRepresentation):
         ------
         UnsupportedOperationError
             If the subclass does not override this method. Materialise first
-            with ``mat.tocsr().DT2T_transposed(...)`` or use a subclass with
-            a direct ``DT2T_transposed`` implementation.
+            with ``mat.tocsr().DT_to_T_transposed(...)`` or use a subclass with
+            a direct ``DT_to_T_transposed`` implementation.
         """
         raise UnsupportedOperationError(
             f"{type(self).__name__} does not implement direct "
-            "DT2T_transposed for procedurally generated connectivity. "
-            "Materialise first with mat.tocsr().DT2T_transposed(y, w), or "
-            "implement a distribution-specific DT2T_transposed override."
+            "DT_to_T_transposed for procedurally generated connectivity. "
+            "Materialise first with mat.tocsr().DT_to_T_transposed(y, w), or "
+            "implement a distribution-specific DT_to_T_transposed override."
         )
 
     def update_on_pre(self, *args, **kwargs):
@@ -1093,9 +1093,9 @@ class _RemovedSparseBaseName:
         raise AttributeError("removed sparse-base contract name")
 
 
-_REMOVED_DT2T_PREDECESSOR = ''.join(('y', 'w', '_to', '_w'))
-setattr(DataRepresentation, _REMOVED_DT2T_PREDECESSOR, _RemovedSparseBaseName())
-del _REMOVED_DT2T_PREDECESSOR
+_REMOVED_DT_TO_T_PREDECESSOR = ''.join(('y', 'w', '_to', '_w'))
+setattr(DataRepresentation, _REMOVED_DT_TO_T_PREDECESSOR, _RemovedSparseBaseName())
+del _REMOVED_DT_TO_T_PREDECESSOR
 
 
 def _initialize_seed(seed=None):

@@ -69,9 +69,9 @@ def test_jitu_DT2T_matches_csr_reference(implementation, shape, corder, transpos
         )
         csr = jitu_to_csr(0.1, 0.5, 0.2, 42, shape=shape, corder=corder, backend=implementation)
         expected = (
-            csr.DT2T_transposed(y, csr.data)
+            csr.DT_to_T_transposed(y, csr.data)
             if transpose
-            else csr.DT2T(y, csr.data)
+            else csr.DT_to_T(y, csr.data)
         )
 
     assert allclose(out, expected)
@@ -150,18 +150,18 @@ def test_jitu_DT2T_fill_generates_y_times_weight_directly(implementation, corder
     jax.block_until_ready((out, expected))
 
 
-def test_jitu_matrix_DT2T_signatures_align_contracts():
-    base_sig = inspect.signature(brainevent.DataRepresentation.DT2T)
-    base_sig_t = inspect.signature(brainevent.DataRepresentation.DT2T_transposed)
+def test_jitu_matrix_DT_to_T_signatures_align_contracts():
+    base_sig = inspect.signature(brainevent.DataRepresentation.DT_to_T)
+    base_sig_t = inspect.signature(brainevent.DataRepresentation.DT_to_T_transposed)
     for cls in (brainevent.JITCUniformR, brainevent.JITCUniformC):
-        sig = inspect.signature(cls.DT2T)
+        sig = inspect.signature(cls.DT_to_T)
         assert list(sig.parameters) == list(base_sig.parameters)
         assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
         assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
         assert sig.parameters['w_dim_arr'].default is inspect._empty
         assert sig.return_annotation == base_sig.return_annotation
 
-        sig_t = inspect.signature(cls.DT2T_transposed)
+        sig_t = inspect.signature(cls.DT_to_T_transposed)
         assert list(sig_t.parameters) == list(base_sig_t.parameters)
         assert sig_t.parameters['y_dim_arr'].annotation == base_sig_t.parameters['y_dim_arr'].annotation
         assert sig_t.parameters['w_dim_arr'].annotation == base_sig_t.parameters['w_dim_arr'].annotation
@@ -174,20 +174,20 @@ def test_jitu_matrix_DT2T_signatures_align_contracts():
     reason=f'No jitu_DT2T implementation on platform={platform}',
 )
 @pytest.mark.parametrize('implementation', JITU_DT2T_IMPLEMENTATIONS)
-def test_jitu_matrix_DT2T_requires_w_dim_arr(implementation):
+def test_jitu_matrix_DT_to_T_requires_w_dim_arr(implementation):
     with jax.default_device(CPU_DEVICE):
         mat = brainevent.JITCUniformR((0.1, 0.5, 0.2, 42), shape=(20, 30), backend=implementation)
         y_pre = jnp.linspace(-1.0, 2.0, 20, dtype=jnp.float32)
         y_post = jnp.linspace(-1.0, 2.0, 30, dtype=jnp.float32)
         with pytest.raises(TypeError):
-            mat.DT2T(y_pre)
+            mat.DT_to_T(y_pre)
         with pytest.raises(TypeError):
-            mat.DT2T_transposed(y_post)
+            mat.DT_to_T_transposed(y_post)
 
 
 @pytest.mark.parametrize('implementation', JITU_DT2T_IMPLEMENTATIONS)
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitu_matrix_DT2T_uses_init_parameters(implementation, transpose):
+def test_jitu_matrix_DT_to_T_uses_init_parameters(implementation, transpose):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y_size = shape[1] if transpose else shape[0]
@@ -200,7 +200,7 @@ def test_jitu_matrix_DT2T_uses_init_parameters(implementation, transpose):
         )
 
         w_dim_arr = jnp.empty(0, dtype=jnp.float32)
-        out = mat.DT2T_transposed(y, w_dim_arr) if transpose else mat.DT2T(y, w_dim_arr)
+        out = mat.DT_to_T_transposed(y, w_dim_arr) if transpose else mat.DT_to_T(y, w_dim_arr)
         expected = jitu_DT2T(
             0.1,
             0.5,
@@ -221,7 +221,7 @@ def test_jitu_matrix_DT2T_uses_init_parameters(implementation, transpose):
     reason=f'No jitu_DT2T implementation on platform={platform}',
 )
 @pytest.mark.parametrize('implementation', JITU_DT2T_IMPLEMENTATIONS)
-def test_jitu_matrix_DT2T_uses_instance_backend_and_corder(implementation):
+def test_jitu_matrix_DT_to_T_uses_instance_backend_and_corder(implementation):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y = jnp.linspace(-1.0, 2.0, shape[0], dtype=jnp.float32)
@@ -232,7 +232,7 @@ def test_jitu_matrix_DT2T_uses_instance_backend_and_corder(implementation):
             backend=implementation,
         )
 
-        out = mat.DT2T(y, jnp.empty(0, dtype=jnp.float32))
+        out = mat.DT_to_T(y, jnp.empty(0, dtype=jnp.float32))
         expected = jitu_DT2T(
             0.1,
             0.5,

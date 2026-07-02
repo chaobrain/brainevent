@@ -50,7 +50,7 @@ CONCRETE_CLASSES = [
 # are declared by the saiunit base; the rest by DataRepresentation.
 CONTRACT_METHODS = [
     'todense', 'fromdense', 'tocoo', 'tocsr', 'tocsc',
-    'DT2T', 'DT2T_transposed',
+    'DT_to_T', 'DT_to_T_transposed',
     'update_on_pre', 'update_on_post',
     'with_data', 'transpose',
 ]
@@ -97,8 +97,8 @@ def test_contract_method_is_overridden_or_refused(cls, method):
     )
 
 
-def test_data_representation_declares_DT2T_contract():
-    assert 'DT2T' in vars(DataRepresentation)
+def test_data_representation_declares_DT_to_T_contract():
+    assert 'DT_to_T' in vars(DataRepresentation)
 
 
 def test_data_representation_hides_removed_sparse_base_contract_name():
@@ -108,9 +108,9 @@ def test_data_representation_hides_removed_sparse_base_contract_name():
         assert not hasattr(cls, removed_name)
 
 
-@pytest.mark.parametrize('method', ['DT2T', 'DT2T_transposed'])
+@pytest.mark.parametrize('method', ['DT_to_T', 'DT_to_T_transposed'])
 @pytest.mark.parametrize('cls', CONCRETE_CLASSES, ids=[c.__name__ for c in CONCRETE_CLASSES])
-def test_DT2T_signatures_align_data_representation_contract(cls, method):
+def test_DT_to_T_signatures_align_data_representation_contract(cls, method):
     sig = inspect.signature(getattr(cls, method))
     base_sig = inspect.signature(getattr(DataRepresentation, method))
     assert list(sig.parameters) == list(base_sig.parameters)
