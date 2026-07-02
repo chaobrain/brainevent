@@ -44,7 +44,7 @@ from .plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
 )
-from .yw2w import fcnmv_yw2w
+from .DT2T import fcnmv_DT2T
 
 __all__ = [
     'FixedNumConn',
@@ -352,10 +352,10 @@ class FixedNumConn(DataRepresentation):
         return fcnmm(data, self.indices, matrix, shape=a_shape, transpose=ell_transpose)
 
     # ------------------------------------------------------------------ #
-    # Per-synapse y * w product (yw2w), parity with CSR / CSC
+    # Per-synapse y * w product (DT2T), parity with CSR / CSC
     # ------------------------------------------------------------------ #
 
-    def yw_to_w(
+    def DT2T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -364,8 +364,8 @@ class FixedNumConn(DataRepresentation):
 
         For every stored connection, returns ``w * y[row]`` where ``row`` is the
         pre-synaptic index of that connection, regardless of storage axis.  This
-        is the fixed-connection analog of :meth:`brainevent.CSR.yw_to_w` and
-        implements the ``yw_to_w`` protocol of :class:`brainunit.sparse.SparseMatrix`.
+        is the fixed-connection analog of :meth:`brainevent.CSR.DT2T` and
+        implements the ``DT2T`` protocol of :class:`brainevent.DataRepresentation`.
 
         Parameters
         ----------
@@ -381,23 +381,27 @@ class FixedNumConn(DataRepresentation):
 
         See Also
         --------
-        yw_to_w_transposed : ``y`` indexed by the column (post) of ``W``.
+        DT2T_transposed : ``y`` indexed by the column (post) of ``W``.
         """
-        return fcnmv_yw2w(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
+        return fcnmv_DT2T(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(False))
 
-    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
+    def DT2T_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Per-synapse ``w * y`` with ``y`` indexed by the column (post) of ``W``.
 
-        Adjoint counterpart of :meth:`yw_to_w`: for every stored connection,
+        Adjoint counterpart of :meth:`DT2T`: for every stored connection,
         returns ``w * y[col]`` where ``col`` is the post-synaptic index of that
         connection, regardless of storage axis.
 
         Parameters
         ----------
-        y_dim_arr : jax.Array or brainunit.Quantity
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
             Post-synaptic (column) vector, sized ``shape[1]``.
-        w_dim_arr : jax.Array or brainunit.Quantity
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
             Per-synapse weights of shape ``indices.shape`` (or size-1).
 
         Returns
@@ -407,9 +411,9 @@ class FixedNumConn(DataRepresentation):
 
         See Also
         --------
-        yw_to_w : ``y`` indexed by the row (pre) of ``W``.
+        DT2T : ``y`` indexed by the row (pre) of ``W``.
         """
-        return fcnmv_yw2w(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
+        return fcnmv_DT2T(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(True))
 
     def _dispatch(self, other, transpose_W: bool):

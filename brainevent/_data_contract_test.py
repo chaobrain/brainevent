@@ -24,6 +24,8 @@ round-trips (``tocsr`` / ``tocsc`` / ``tocoo`` / ``fromdense``) across the
 compressed-sparse, fixed-num-connection, and JIT-connectivity families.
 """
 
+import inspect
+
 import jax.numpy as jnp
 import pytest
 
@@ -44,11 +46,11 @@ CONCRETE_CLASSES = [
     be.JITCUniformR, be.JITCUniformC,
 ]
 
-# The common-API contract surface. ``yw_to_w`` / ``with_data`` / ``transpose`` /
-# ``todense`` are declared by the saiunit base; the rest by DataRepresentation.
+# The common-API contract surface. ``with_data`` / ``transpose`` / ``todense``
+# are declared by the saiunit base; the rest by DataRepresentation.
 CONTRACT_METHODS = [
     'todense', 'fromdense', 'tocoo', 'tocsr', 'tocsc',
-    'yw_to_w', 'yw_to_w_transposed',
+    'DT2T', 'DT2T_transposed',
     'update_on_pre', 'update_on_post',
     'with_data', 'transpose',
 ]
@@ -93,6 +95,29 @@ def test_contract_method_is_overridden_or_refused(cls, method):
     assert defn is not DataRepresentation, (
         f'{cls.__name__}.{method} silently inherits the DataRepresentation stub'
     )
+
+
+def test_data_representation_declares_DT2T_contract():
+    assert 'DT2T' in vars(DataRepresentation)
+
+
+def test_data_representation_hides_removed_sparse_base_contract_name():
+    removed_name = ''.join(('y', 'w', '_to', '_w'))
+    assert not hasattr(DataRepresentation, removed_name)
+    for cls in CONCRETE_CLASSES:
+        assert not hasattr(cls, removed_name)
+
+
+@pytest.mark.parametrize('method', ['DT2T', 'DT2T_transposed'])
+@pytest.mark.parametrize('cls', CONCRETE_CLASSES, ids=[c.__name__ for c in CONCRETE_CLASSES])
+def test_DT2T_signatures_align_data_representation_contract(cls, method):
+    sig = inspect.signature(getattr(cls, method))
+    base_sig = inspect.signature(getattr(DataRepresentation, method))
+    assert list(sig.parameters) == list(base_sig.parameters)
+    assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
+    assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
+    assert sig.parameters['w_dim_arr'].default is inspect._empty
+    assert sig.return_annotation == base_sig.return_annotation
 
 
 def test_unsupported_operation_error_is_brainevent_error():

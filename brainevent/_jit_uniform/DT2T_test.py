@@ -14,9 +14,7 @@
 # ==============================================================================
 
 import inspect
-from typing import Union
 
-import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -29,10 +27,10 @@ from brainevent._jit_uniform.csr import (
     jitu_csr_fill_p_call,
     jitu_to_csr,
 )
-from brainevent._jit_uniform.yw2w import (
-    jitu_yw2w,
-    jitu_yw2w_fill_p,
-    jitu_yw2w_fill_p_call,
+from brainevent._jit_uniform.DT2T import (
+    jitu_DT2T,
+    jitu_DT2T_fill_p,
+    jitu_DT2T_fill_p_call,
 )
 from brainevent._test_util import allclose, requires_gpu
 
@@ -40,25 +38,25 @@ pytestmark = pytest.mark.slow
 
 platform = 'cpu'
 CPU_DEVICE = jax.devices('cpu')[0]
-JITU_YW2W_IMPLEMENTATIONS = tuple(jitu_yw2w_fill_p.available_backends(platform))
+JITU_DT2T_IMPLEMENTATIONS = tuple(jitu_DT2T_fill_p.available_backends(platform))
 GPU_DEVICE = jax.devices('gpu')[0] if jax.default_backend() == 'gpu' else None
-JITU_YW2W_GPU_IMPLEMENTATIONS = tuple(jitu_yw2w_fill_p.available_backends('gpu'))
+JITU_DT2T_GPU_IMPLEMENTATIONS = tuple(jitu_DT2T_fill_p.available_backends('gpu'))
 
 
 @pytest.mark.skipif(
-    not JITU_YW2W_IMPLEMENTATIONS,
-    reason=f'No jitu_yw2w implementation on platform={platform}',
+    not JITU_DT2T_IMPLEMENTATIONS,
+    reason=f'No jitu_DT2T implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_YW2W_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', JITU_DT2T_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(20, 30)])
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitu_yw2w_matches_csr_reference(implementation, shape, corder, transpose):
+def test_jitu_DT2T_matches_csr_reference(implementation, shape, corder, transpose):
     with jax.default_device(CPU_DEVICE):
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
 
-        out = jitu_yw2w(
+        out = jitu_DT2T(
             0.1,
             0.5,
             0.2,
@@ -71,18 +69,18 @@ def test_jitu_yw2w_matches_csr_reference(implementation, shape, corder, transpos
         )
         csr = jitu_to_csr(0.1, 0.5, 0.2, 42, shape=shape, corder=corder, backend=implementation)
         expected = (
-            csr.yw_to_w_transposed(y, csr.data)
+            csr.DT2T_transposed(y, csr.data)
             if transpose
-            else csr.yw_to_w(y, csr.data)
+            else csr.DT2T(y, csr.data)
         )
 
     assert allclose(out, expected)
     jax.block_until_ready((out, expected))
 
 
-def test_jitu_yw2w_prob_zero_empty():
+def test_jitu_DT2T_prob_zero_empty():
     with jax.default_device(CPU_DEVICE):
-        out = jitu_yw2w(
+        out = jitu_DT2T(
             0.1,
             0.5,
             0.0,
@@ -95,19 +93,19 @@ def test_jitu_yw2w_prob_zero_empty():
     assert np.asarray(out).shape == (0,)
 
 
-def test_jitu_yw2w_exports_from_package():
-    assert brainevent.jitu_yw2w is jitu_yw2w
-    assert brainevent.jitu_yw2w_fill_p is jitu_yw2w_fill_p
+def test_jitu_DT2T_exports_from_package():
+    assert brainevent.jitu_DT2T is jitu_DT2T
+    assert brainevent.jitu_DT2T_fill_p is jitu_DT2T_fill_p
 
 
 @pytest.mark.skipif(
-    not JITU_YW2W_IMPLEMENTATIONS,
-    reason=f'No jitu_yw2w implementation on platform={platform}',
+    not JITU_DT2T_IMPLEMENTATIONS,
+    reason=f'No jitu_DT2T implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_YW2W_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', JITU_DT2T_IMPLEMENTATIONS)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitu_yw2w_fill_generates_y_times_weight_directly(implementation, corder, transpose):
+def test_jitu_DT2T_fill_generates_y_times_weight_directly(implementation, corder, transpose):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y_size = shape[1] if transpose else shape[0]
@@ -128,7 +126,7 @@ def test_jitu_yw2w_fill_generates_y_times_weight_directly(implementation, corder
         indices, weights = jitu_csr_fill_p_call(
             w0, w1, clen, seed, indptr, nnz, shape=shape, corder=corder, backend=implementation,
         )
-        out = jitu_yw2w_fill_p_call(
+        out = jitu_DT2T_fill_p_call(
             w0,
             w1,
             clen,
@@ -152,41 +150,44 @@ def test_jitu_yw2w_fill_generates_y_times_weight_directly(implementation, corder
     jax.block_until_ready((out, expected))
 
 
-def test_jitu_matrix_yw_to_w_signatures_align_contracts():
-    expected_input = Union[jax.Array, np.ndarray, u.Quantity]
-    expected_output = Union[jax.Array, u.Quantity]
+def test_jitu_matrix_DT2T_signatures_align_contracts():
+    base_sig = inspect.signature(brainevent.DataRepresentation.DT2T)
+    base_sig_t = inspect.signature(brainevent.DataRepresentation.DT2T_transposed)
     for cls in (brainevent.JITCUniformR, brainevent.JITCUniformC):
-        sig = inspect.signature(cls.yw_to_w)
-        assert list(sig.parameters) == ['self', 'y_dim_arr', 'w_dim_arr']
-        assert sig.parameters['y_dim_arr'].annotation == expected_input
-        assert sig.parameters['w_dim_arr'].annotation == expected_input
+        sig = inspect.signature(cls.DT2T)
+        assert list(sig.parameters) == list(base_sig.parameters)
+        assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
+        assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
         assert sig.parameters['w_dim_arr'].default is inspect._empty
-        assert sig.return_annotation == expected_output
+        assert sig.return_annotation == base_sig.return_annotation
 
-        sig_t = inspect.signature(cls.yw_to_w_transposed)
-        assert list(sig_t.parameters) == ['self', 'y_dim_arr', 'w_dim_arr']
+        sig_t = inspect.signature(cls.DT2T_transposed)
+        assert list(sig_t.parameters) == list(base_sig_t.parameters)
+        assert sig_t.parameters['y_dim_arr'].annotation == base_sig_t.parameters['y_dim_arr'].annotation
+        assert sig_t.parameters['w_dim_arr'].annotation == base_sig_t.parameters['w_dim_arr'].annotation
         assert sig_t.parameters['w_dim_arr'].default is inspect._empty
+        assert sig_t.return_annotation == base_sig_t.return_annotation
 
 
 @pytest.mark.skipif(
-    not JITU_YW2W_IMPLEMENTATIONS,
-    reason=f'No jitu_yw2w implementation on platform={platform}',
+    not JITU_DT2T_IMPLEMENTATIONS,
+    reason=f'No jitu_DT2T implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_YW2W_IMPLEMENTATIONS)
-def test_jitu_matrix_yw_to_w_requires_w_dim_arr(implementation):
+@pytest.mark.parametrize('implementation', JITU_DT2T_IMPLEMENTATIONS)
+def test_jitu_matrix_DT2T_requires_w_dim_arr(implementation):
     with jax.default_device(CPU_DEVICE):
         mat = brainevent.JITCUniformR((0.1, 0.5, 0.2, 42), shape=(20, 30), backend=implementation)
         y_pre = jnp.linspace(-1.0, 2.0, 20, dtype=jnp.float32)
         y_post = jnp.linspace(-1.0, 2.0, 30, dtype=jnp.float32)
         with pytest.raises(TypeError):
-            mat.yw_to_w(y_pre)
+            mat.DT2T(y_pre)
         with pytest.raises(TypeError):
-            mat.yw_to_w_transposed(y_post)
+            mat.DT2T_transposed(y_post)
 
 
-@pytest.mark.parametrize('implementation', JITU_YW2W_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', JITU_DT2T_IMPLEMENTATIONS)
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitu_matrix_yw_to_w_uses_init_parameters(implementation, transpose):
+def test_jitu_matrix_DT2T_uses_init_parameters(implementation, transpose):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y_size = shape[1] if transpose else shape[0]
@@ -199,8 +200,8 @@ def test_jitu_matrix_yw_to_w_uses_init_parameters(implementation, transpose):
         )
 
         w_dim_arr = jnp.empty(0, dtype=jnp.float32)
-        out = mat.yw_to_w_transposed(y, w_dim_arr) if transpose else mat.yw_to_w(y, w_dim_arr)
-        expected = jitu_yw2w(
+        out = mat.DT2T_transposed(y, w_dim_arr) if transpose else mat.DT2T(y, w_dim_arr)
+        expected = jitu_DT2T(
             0.1,
             0.5,
             0.2,
@@ -216,11 +217,11 @@ def test_jitu_matrix_yw_to_w_uses_init_parameters(implementation, transpose):
 
 
 @pytest.mark.skipif(
-    not JITU_YW2W_IMPLEMENTATIONS,
-    reason=f'No jitu_yw2w implementation on platform={platform}',
+    not JITU_DT2T_IMPLEMENTATIONS,
+    reason=f'No jitu_DT2T implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_YW2W_IMPLEMENTATIONS)
-def test_jitu_matrix_yw_to_w_uses_instance_backend_and_corder(implementation):
+@pytest.mark.parametrize('implementation', JITU_DT2T_IMPLEMENTATIONS)
+def test_jitu_matrix_DT2T_uses_instance_backend_and_corder(implementation):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y = jnp.linspace(-1.0, 2.0, shape[0], dtype=jnp.float32)
@@ -231,8 +232,8 @@ def test_jitu_matrix_yw_to_w_uses_instance_backend_and_corder(implementation):
             backend=implementation,
         )
 
-        out = mat.yw_to_w(y, jnp.empty(0, dtype=jnp.float32))
-        expected = jitu_yw2w(
+        out = mat.DT2T(y, jnp.empty(0, dtype=jnp.float32))
+        expected = jitu_DT2T(
             0.1,
             0.5,
             0.2,
@@ -248,18 +249,18 @@ def test_jitu_matrix_yw_to_w_uses_instance_backend_and_corder(implementation):
 
 @requires_gpu
 @pytest.mark.skipif(
-    'cuda_raw' not in JITU_YW2W_GPU_IMPLEMENTATIONS,
-    reason='No jitu_yw2w cuda_raw implementation registered on GPU.',
+    'cuda_raw' not in JITU_DT2T_GPU_IMPLEMENTATIONS,
+    reason='No jitu_DT2T cuda_raw implementation registered on GPU.',
 )
 @pytest.mark.parametrize('shape', [(20, 30), (64, 33)])
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitu_yw2w_cuda_matches_cuda_csr_reference(shape, corder, transpose):
+def test_jitu_DT2T_cuda_matches_cuda_csr_reference(shape, corder, transpose):
     with jax.default_device(jax.devices('gpu')[0]):
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
 
-        out = jitu_yw2w(
+        out = jitu_DT2T(
             0.1,
             0.5,
             0.2,

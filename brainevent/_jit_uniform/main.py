@@ -29,7 +29,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitumv, binary_jitumm
 from .csr import jitu_to_csr
 from .float import jitu, jitumv, jitumm
-from .yw2w import jitu_yw2w
+from .DT2T import jitu_DT2T
 
 __all__ = [
     'JITCUniformR',
@@ -382,19 +382,19 @@ class JITCUniformMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def yw_to_w(
+    def DT2T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
         """Generate per-synapse ``sampled_weight * y[row]`` using the matrix parameters.
 
-        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC uniform connectivity and weights are generated from this matrix's own
         metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jitu_yw2w(
+        return jitu_DT2T(
             self.wlow,
             self.whigh,
             self.prob,
@@ -406,15 +406,19 @@ class JITCUniformMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
+    def DT2T_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Generate per-synapse ``sampled_weight * y[col]`` using the matrix parameters.
 
-        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC uniform connectivity and weights are generated from this matrix's own
         metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jitu_yw2w(
+        return jitu_DT2T(
             self.wlow,
             self.whigh,
             self.prob,

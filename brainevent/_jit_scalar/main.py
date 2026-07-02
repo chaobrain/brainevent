@@ -29,7 +29,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitsmv, binary_jitsmm
 from .csr import jits_to_csr
 from .float import jits, jitsmv, jitsmm
-from .yw2w import jits_yw2w
+from .DT2T import jits_DT2T
 
 __all__ = [
     'JITCScalarR',
@@ -355,19 +355,19 @@ class JITCScalarMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def yw_to_w(
+    def DT2T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
         """Generate per-synapse ``weight * y[row]`` using the matrix parameters.
 
-        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC scalar connectivity and weights are generated from this matrix's own
         metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jits_yw2w(
+        return jits_DT2T(
             self.weight,
             self.prob,
             y_dim_arr,
@@ -378,15 +378,19 @@ class JITCScalarMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
+    def DT2T_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Generate per-synapse ``weight * y[col]`` using the matrix parameters.
 
-        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC scalar connectivity and weights are generated from this matrix's own
         metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jits_yw2w(
+        return jits_DT2T(
             self.weight,
             self.prob,
             y_dim_arr,

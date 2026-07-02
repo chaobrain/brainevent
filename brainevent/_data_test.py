@@ -15,7 +15,6 @@
 
 import operator
 import inspect
-from typing import Union
 
 import brainunit as u
 import jax
@@ -81,32 +80,34 @@ def test_binary_reflected_operator_dispatch():
     assert other % mat == ("binary_r", operator.mod, other)
 
 
-def test_jitc_yw_to_w_signature_aligns_brainunit_contract():
-    sig = inspect.signature(JITCMatrix.yw_to_w)
-    expected_input = Union[jax.Array, np.ndarray, u.Quantity]
-    expected_output = Union[jax.Array, u.Quantity]
-    assert list(sig.parameters) == ['self', 'y_dim_arr', 'w_dim_arr']
-    assert sig.parameters['y_dim_arr'].annotation == expected_input
-    assert sig.parameters['w_dim_arr'].annotation == expected_input
-    assert sig.parameters['w_dim_arr'].default is inspect._empty
-    assert sig.return_annotation == expected_output
-
-
-def test_jitc_yw_to_w_transposed_signature_aligns_data_representation_contract():
-    sig = inspect.signature(JITCMatrix.yw_to_w_transposed)
-    base_sig = inspect.signature(DataRepresentation.yw_to_w_transposed)
+def test_jitc_DT2T_signature_aligns_data_representation_contract():
+    sig = inspect.signature(JITCMatrix.DT2T)
+    base_sig = inspect.signature(DataRepresentation.DT2T)
     assert list(sig.parameters) == list(base_sig.parameters)
+    assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
+    assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
     assert sig.parameters['w_dim_arr'].default is inspect._empty
+    assert sig.return_annotation == base_sig.return_annotation
 
 
-def test_jitc_yw_to_w_fallbacks_remain_unsupported():
+def test_jitc_DT2T_transposed_signature_aligns_data_representation_contract():
+    sig = inspect.signature(JITCMatrix.DT2T_transposed)
+    base_sig = inspect.signature(DataRepresentation.DT2T_transposed)
+    assert list(sig.parameters) == list(base_sig.parameters)
+    assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
+    assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
+    assert sig.parameters['w_dim_arr'].default is inspect._empty
+    assert sig.return_annotation == base_sig.return_annotation
+
+
+def test_jitc_DT2T_fallbacks_remain_unsupported():
     mat = _DummyJITCMatrix()
     y = jnp.ones(0)
     w = jnp.ones(0)
     with pytest.raises(brainevent.UnsupportedOperationError):
-        mat.yw_to_w(y, w)
+        mat.DT2T(y, w)
     with pytest.raises(brainevent.UnsupportedOperationError):
-        mat.yw_to_w_transposed(y, w)
+        mat.DT2T_transposed(y, w)
 
 
 def test_initialize_seed_explicit_and_array():

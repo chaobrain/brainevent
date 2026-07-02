@@ -29,7 +29,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitnmv, binary_jitnmm
 from .csr import jitn_to_csr
 from .float import jitn, jitnmv, jitnmm
-from .yw2w import jitn_yw2w
+from .DT2T import jitn_DT2T
 
 __all__ = [
     'JITCNormalR',
@@ -362,19 +362,19 @@ class JITCNormalMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def yw_to_w(
+    def DT2T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
         """Generate per-synapse ``sampled_weight * y[row]`` using the matrix parameters.
 
-        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC normal connectivity and weights are generated from this matrix's own
         metadata, including ``wloc``, ``wscale``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jitn_yw2w(
+        return jitn_DT2T(
             self.wloc,
             self.wscale,
             self.prob,
@@ -386,15 +386,19 @@ class JITCNormalMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
+    def DT2T_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Generate per-synapse ``sampled_weight * y[col]`` using the matrix parameters.
 
-        ``w_dim_arr`` is required by the sparse-matrix protocol and is not used.
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC normal connectivity and weights are generated from this matrix's own
         metadata, including ``wloc``, ``wscale``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jitn_yw2w(
+        return jitn_DT2T(
             self.wloc,
             self.wscale,
             self.prob,

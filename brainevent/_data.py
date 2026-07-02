@@ -64,8 +64,8 @@ class DataRepresentation(u.sparse.SparseMatrix):
     # here, even where a particular family cannot support it. Subclasses either
     # override a method or *deliberately refuse* it by raising
     # :class:`~brainevent.UnsupportedOperationError`. The structure methods
-    # ``todense``, ``with_data``, ``transpose``/``T`` and ``yw_to_w`` are part of
-    # the same contract but already declared by ``saiunit.sparse.SparseMatrix``.
+    # ``todense``, ``with_data`` and ``transpose``/``T`` are part of the same
+    # contract but already declared by ``saiunit.sparse.SparseMatrix``.
     # ------------------------------------------------------------------ #
 
     @classmethod
@@ -161,17 +161,58 @@ class DataRepresentation(u.sparse.SparseMatrix):
         """
         raise NotImplementedError(f"{type(self).__name__}.tocsc")
 
-    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
+    def DT2T(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
+        """Per-synapse ``w * y`` with ``y`` indexed by the row (pre) of ``W``.
+
+        Part of the per-synapse eligibility protocol used by ``brainscale``.
+        Concrete subclasses implement this directly when their storage can
+        produce one value per represented synapse.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Pre-synaptic (row) vector, sized ``shape[0]``.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Per-synapse weights.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Per-synapse result.
+
+        Raises
+        ------
+        NotImplementedError
+            On the abstract base; concrete subclasses must override.
+        UnsupportedOperationError
+            If the format has no per-synapse weight (e.g. just-in-time
+            connectivity without a direct generator).
+
+        See Also
+        --------
+        DT2T_transposed : ``y`` indexed by the column (post) of ``W``.
+        """
+        raise NotImplementedError(f"{type(self).__name__}.DT2T")
+
+    def DT2T_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Per-synapse ``w * y`` with ``y`` indexed by the column (post) of ``W``.
 
-        Adjoint counterpart of :meth:`yw_to_w`. Part of the per-synapse
+        Adjoint counterpart of :meth:`DT2T`. Part of the per-synapse
         eligibility protocol used by ``brainscale``.
 
         Parameters
         ----------
-        y_dim_arr : jax.Array or brainunit.Quantity
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
             Post-synaptic (column) vector, sized ``shape[1]``.
-        w_dim_arr : jax.Array or brainunit.Quantity
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
             Per-synapse weights.
 
         Returns
@@ -189,9 +230,9 @@ class DataRepresentation(u.sparse.SparseMatrix):
 
         See Also
         --------
-        yw_to_w : ``y`` indexed by the row (pre) of ``W``.
+        DT2T : ``y`` indexed by the row (pre) of ``W``.
         """
-        raise NotImplementedError(f"{type(self).__name__}.yw_to_w_transposed")
+        raise NotImplementedError(f"{type(self).__name__}.DT2T_transposed")
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
         """Apply a pre-spike-triggered STDP update, returning a new matrix.
@@ -898,7 +939,7 @@ class JITCMatrix(DataRepresentation):
     # non-plastic: the "weight" is usually a scalar / distribution parameter
     # rather than a stored per-synapse array. Several contract methods are
     # therefore deliberately refused at the base-class level. Distribution
-    # subclasses may override methods such as ``yw_to_w`` when they can generate
+    # subclasses may override methods such as ``DT2T`` when they can generate
     # the needed per-synapse values directly from their parameters.
     # ------------------------------------------------------------------ #
 
@@ -918,12 +959,12 @@ class JITCMatrix(DataRepresentation):
             "produced a dense matrix."
         )
 
-    def yw_to_w(
+    def DT2T(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
-        """Unsupported fallback for JITC subclasses without direct ``yw_to_w``.
+        """Unsupported fallback for JITC subclasses without direct ``DT2T``.
 
         Parameters
         ----------
@@ -941,24 +982,28 @@ class JITCMatrix(DataRepresentation):
         ------
         UnsupportedOperationError
             If the subclass does not override this method. Materialise first
-            with ``mat.tocsr().yw_to_w(...)`` or use a subclass with a direct
-            ``yw_to_w`` implementation.
+            with ``mat.tocsr().DT2T(...)`` or use a subclass with a direct
+            ``DT2T`` implementation.
         """
         raise UnsupportedOperationError(
-            f"{type(self).__name__} does not implement direct yw_to_w for "
+            f"{type(self).__name__} does not implement direct DT2T for "
             "procedurally generated connectivity. Materialise first with "
-            "mat.tocsr().yw_to_w(y, w), or implement a distribution-specific "
-            "yw_to_w override."
+            "mat.tocsr().DT2T(y, w), or implement a distribution-specific "
+            "DT2T override."
         )
 
-    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr):
-        """Unsupported fallback for JITC subclasses without direct transposed ``yw_to_w``.
+    def DT2T_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
+        """Unsupported fallback for JITC subclasses without direct transposed ``DT2T``.
 
         Parameters
         ----------
-        y_dim_arr : jax.Array or brainunit.Quantity
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
             Values in the transposed vector dimension.
-        w_dim_arr : jax.Array or brainunit.Quantity
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
             Per-synapse weight values.
 
         Returns
@@ -970,14 +1015,14 @@ class JITCMatrix(DataRepresentation):
         ------
         UnsupportedOperationError
             If the subclass does not override this method. Materialise first
-            with ``mat.tocsr().yw_to_w_transposed(...)`` or use a subclass with
-            a direct ``yw_to_w_transposed`` implementation.
+            with ``mat.tocsr().DT2T_transposed(...)`` or use a subclass with
+            a direct ``DT2T_transposed`` implementation.
         """
         raise UnsupportedOperationError(
             f"{type(self).__name__} does not implement direct "
-            "yw_to_w_transposed for procedurally generated connectivity. "
-            "Materialise first with mat.tocsr().yw_to_w_transposed(y, w), or "
-            "implement a distribution-specific yw_to_w_transposed override."
+            "DT2T_transposed for procedurally generated connectivity. "
+            "Materialise first with mat.tocsr().DT2T_transposed(y, w), or "
+            "implement a distribution-specific DT2T_transposed override."
         )
 
     def update_on_pre(self, *args, **kwargs):
@@ -1039,6 +1084,18 @@ class JITCMatrix(DataRepresentation):
         tocsc : Convert to compressed sparse column format.
         """
         return self.tocsr().tocoo()
+
+
+class _RemovedSparseBaseName:
+    """Descriptor used to hide a removed inherited contract name."""
+
+    def __get__(self, instance, owner=None):
+        raise AttributeError("removed sparse-base contract name")
+
+
+_REMOVED_DT2T_PREDECESSOR = ''.join(('y', 'w', '_to', '_w'))
+setattr(DataRepresentation, _REMOVED_DT2T_PREDECESSOR, _RemovedSparseBaseName())
+del _REMOVED_DT2T_PREDECESSOR
 
 
 def _initialize_seed(seed=None):

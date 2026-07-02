@@ -20,8 +20,8 @@ import jax.numpy as jnp
 import pytest
 
 import brainunit as u
-from brainevent import fcnmv_yw2w  # top-level export
-from brainevent._fcn.yw2w import fcnmv_yw2w as fcnmv_yw2w_module  # module-level export
+from brainevent import fcnmv_DT2T  # top-level export
+from brainevent._fcn.DT2T import fcnmv_DT2T as fcnmv_DT2T_module  # module-level export
 from brainevent._test_util import (
     generate_fixed_conn_num_indices,
     allclose,
@@ -41,12 +41,12 @@ def _reference(w, indices, y, transpose):
 def test_module_and_toplevel_are_same_object():
     # The dedicated module is the single source of truth; the top-level export
     # must be the very same function object.
-    assert fcnmv_yw2w is fcnmv_yw2w_module
+    assert fcnmv_DT2T is fcnmv_DT2T_module
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
-def test_fcnmv_yw2w(homo_w, transpose):
+def test_fcnmv_DT2T(homo_w, transpose):
     m, n = shape  # (20, 40)
     indices = generate_fixed_conn_num_indices(m, n, n_conn, replace=True)
     if homo_w:
@@ -55,7 +55,7 @@ def test_fcnmv_yw2w(homo_w, transpose):
         w = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
     y = jnp.arange(1, (m if not transpose else n) + 1, dtype=jnp.float32)
 
-    out = fcnmv_yw2w(w, indices, y, shape=shape, transpose=transpose)
+    out = fcnmv_DT2T(w, indices, y, shape=shape, transpose=transpose)
 
     assert out.shape == indices.shape
     expected = _reference(w, indices, y, transpose)
@@ -63,15 +63,15 @@ def test_fcnmv_yw2w(homo_w, transpose):
 
 
 @pytest.mark.parametrize('homo_w', [True, False])
-def test_fcnmv_yw2w_homo_size1_array_equiv_scalar(homo_w):
+def test_fcnmv_DT2T_homo_size1_array_equiv_scalar(homo_w):
     # A size-1 array weight must behave identically to a 0-d scalar weight.
     m, n = shape
     indices = generate_fixed_conn_num_indices(m, n, n_conn, replace=True)
     y = jnp.arange(1, m + 1, dtype=jnp.float32)
     scalar = jnp.asarray(1.5, dtype=jnp.float32)
     size1 = jnp.asarray([1.5], dtype=jnp.float32)
-    out_scalar = fcnmv_yw2w(scalar, indices, y, shape=shape, transpose=False)
-    out_size1 = fcnmv_yw2w(size1, indices, y, shape=shape, transpose=False)
+    out_scalar = fcnmv_DT2T(scalar, indices, y, shape=shape, transpose=False)
+    out_size1 = fcnmv_DT2T(size1, indices, y, shape=shape, transpose=False)
     assert out_scalar.shape == out_size1.shape == indices.shape
     assert allclose(out_scalar, out_size1, rtol=1e-6, atol=1e-6)
 
@@ -88,30 +88,30 @@ def _setup_unit_case():
     return indices, w_mant, y_mant
 
 
-def test_fcnmv_yw2w_units_both():
+def test_fcnmv_DT2T_units_both():
     indices, w_mant, y_mant = _setup_unit_case()
-    out = fcnmv_yw2w(w_mant * u.siemens, indices, y_mant * u.mV, shape=shape, transpose=False)
+    out = fcnmv_DT2T(w_mant * u.siemens, indices, y_mant * u.mV, shape=shape, transpose=False)
     expected = (w_mant * y_mant[:, None]) * (u.siemens * u.mV)
     assert u.math.allclose(out, expected)
 
 
-def test_fcnmv_yw2w_units_weight_only():
+def test_fcnmv_DT2T_units_weight_only():
     indices, w_mant, y_mant = _setup_unit_case()
-    out = fcnmv_yw2w(w_mant * u.siemens, indices, y_mant, shape=shape, transpose=False)
+    out = fcnmv_DT2T(w_mant * u.siemens, indices, y_mant, shape=shape, transpose=False)
     expected = (w_mant * y_mant[:, None]) * u.siemens
     assert u.math.allclose(out, expected)
 
 
-def test_fcnmv_yw2w_units_y_only():
+def test_fcnmv_DT2T_units_y_only():
     indices, w_mant, y_mant = _setup_unit_case()
-    out = fcnmv_yw2w(w_mant, indices, y_mant * u.mV, shape=shape, transpose=False)
+    out = fcnmv_DT2T(w_mant, indices, y_mant * u.mV, shape=shape, transpose=False)
     expected = (w_mant * y_mant[:, None]) * u.mV
     assert u.math.allclose(out, expected)
 
 
-def test_fcnmv_yw2w_units_none_is_plain_array():
+def test_fcnmv_DT2T_units_none_is_plain_array():
     indices, w_mant, y_mant = _setup_unit_case()
-    out = fcnmv_yw2w(w_mant, indices, y_mant, shape=shape, transpose=False)
+    out = fcnmv_DT2T(w_mant, indices, y_mant, shape=shape, transpose=False)
     assert not isinstance(out, u.Quantity)
     assert allclose(out, w_mant * y_mant[:, None], rtol=1e-5, atol=1e-5)
 
@@ -122,7 +122,7 @@ def test_fcnmv_yw2w_units_none_is_plain_array():
 
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
-def test_fcnmv_yw2w_grad(homo_w, transpose):
+def test_fcnmv_DT2T_grad(homo_w, transpose):
     m, n = shape
     indices = generate_fixed_conn_num_indices(m, n, n_conn, replace=True)
     if homo_w:
@@ -132,7 +132,7 @@ def test_fcnmv_yw2w_grad(homo_w, transpose):
     y = jnp.arange(1, (m if not transpose else n) + 1, dtype=jnp.float32)
 
     def loss(w_, y_):
-        return jnp.sum(fcnmv_yw2w(w_, indices, y_, shape=shape, transpose=transpose) ** 2)
+        return jnp.sum(fcnmv_DT2T(w_, indices, y_, shape=shape, transpose=transpose) ** 2)
 
     def ref(w_, y_):
         return jnp.sum(_reference(w_, indices, y_, transpose) ** 2)
@@ -144,7 +144,7 @@ def test_fcnmv_yw2w_grad(homo_w, transpose):
 
 
 @pytest.mark.parametrize('transpose', [True, False])
-def test_fcnmv_yw2w_jvp(transpose):
+def test_fcnmv_DT2T_jvp(transpose):
     m, n = shape
     indices = generate_fixed_conn_num_indices(m, n, n_conn, replace=True)
     w = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
@@ -152,7 +152,7 @@ def test_fcnmv_yw2w_jvp(transpose):
     dw = jnp.ones_like(w)
     dy = jnp.ones_like(y)
 
-    f = lambda w_, y_: fcnmv_yw2w(w_, indices, y_, shape=shape, transpose=transpose)
+    f = lambda w_, y_: fcnmv_DT2T(w_, indices, y_, shape=shape, transpose=transpose)
     out, out_dot = jax.jvp(f, (w, y), (dw, dy))
 
     # d(w * yv) = dw * yv + w * dyv
@@ -164,13 +164,13 @@ def test_fcnmv_yw2w_jvp(transpose):
 
 
 @pytest.mark.parametrize('transpose', [True, False])
-def test_fcnmv_yw2w_vjp(transpose):
+def test_fcnmv_DT2T_vjp(transpose):
     m, n = shape
     indices = generate_fixed_conn_num_indices(m, n, n_conn, replace=True)
     w = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
     y = jnp.arange(1, (m if not transpose else n) + 1, dtype=jnp.float32)
 
-    f = lambda w_, y_: fcnmv_yw2w(w_, indices, y_, shape=shape, transpose=transpose)
+    f = lambda w_, y_: fcnmv_DT2T(w_, indices, y_, shape=shape, transpose=transpose)
     out, vjp_fn = jax.vjp(f, w, y)
     cot = jnp.ones_like(out)
     gw, gy = vjp_fn(cot)
@@ -189,24 +189,24 @@ def test_fcnmv_yw2w_vjp(transpose):
 # jit / vmap.
 # ---------------------------------------------------------------------------- #
 
-def test_fcnmv_yw2w_jit():
+def test_fcnmv_DT2T_jit():
     m, n = shape
     indices = generate_fixed_conn_num_indices(m, n, n_conn, replace=True)
     w = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
     y = jnp.arange(1, m + 1, dtype=jnp.float32)
 
-    fn = jax.jit(lambda w_, y_: fcnmv_yw2w(w_, indices, y_, shape=shape, transpose=False))
+    fn = jax.jit(lambda w_, y_: fcnmv_DT2T(w_, indices, y_, shape=shape, transpose=False))
     out = fn(w, y)
     assert allclose(out, w * y[:, None], rtol=1e-5, atol=1e-5)
 
 
-def test_fcnmv_yw2w_vmap():
+def test_fcnmv_DT2T_vmap():
     m, n = shape
     indices = generate_fixed_conn_num_indices(m, n, n_conn, replace=True)
     w = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
     Y = jnp.arange(1, 3 * m + 1, dtype=jnp.float32).reshape(3, m)  # batch of 3
 
-    out = jax.vmap(lambda y_: fcnmv_yw2w(w, indices, y_, shape=shape, transpose=False))(Y)
+    out = jax.vmap(lambda y_: fcnmv_DT2T(w, indices, y_, shape=shape, transpose=False))(Y)
     assert out.shape == (3, *indices.shape)
     expected = w[None] * Y[:, :, None]
     assert allclose(out, expected, rtol=1e-5, atol=1e-5)
@@ -216,13 +216,13 @@ def test_fcnmv_yw2w_vmap():
 # Dtype promotion (no equal-dtype constraint).
 # ---------------------------------------------------------------------------- #
 
-def test_fcnmv_yw2w_dtype_promotion():
+def test_fcnmv_DT2T_dtype_promotion():
     # float16 weights * float32 y -> float32, robust regardless of x64 config.
     m, n = shape
     indices = generate_fixed_conn_num_indices(m, n, n_conn, replace=True)
     w = jnp.ones(indices.shape, dtype=jnp.float16)
     y = jnp.arange(1, m + 1, dtype=jnp.float32)
-    out = fcnmv_yw2w(w, indices, y, shape=shape, transpose=False)
+    out = fcnmv_DT2T(w, indices, y, shape=shape, transpose=False)
     assert out.dtype == jnp.float32
     assert allclose(out, y[:, None].astype(jnp.float32), rtol=1e-3, atol=1e-3)
 
@@ -233,26 +233,26 @@ def test_fcnmv_yw2w_dtype_promotion():
 
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('homo_w', [True, False])
-def test_fcnmv_yw2w_empty_rows(homo_w, transpose):
+def test_fcnmv_DT2T_empty_rows(homo_w, transpose):
     # rows == 0: indices (0, n_conn).
     n = 40
     indices = jnp.zeros((0, n_conn), dtype=jnp.int32)
     shp = (0, n)
     w = jnp.asarray(1.5, dtype=jnp.float32) if homo_w else jnp.zeros((0, n_conn), dtype=jnp.float32)
     y = jnp.zeros(n if transpose else 0, dtype=jnp.float32)
-    out = fcnmv_yw2w(w, indices, y, shape=shp, transpose=transpose)
+    out = fcnmv_DT2T(w, indices, y, shape=shp, transpose=transpose)
     assert out.shape == (0, n_conn)
 
 
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('homo_w', [True, False])
-def test_fcnmv_yw2w_empty_conn(homo_w, transpose):
+def test_fcnmv_DT2T_empty_conn(homo_w, transpose):
     # n_conn == 0: indices (rows, 0).
     m, n = shape
     indices = jnp.zeros((m, 0), dtype=jnp.int32)
     w = jnp.asarray(1.5, dtype=jnp.float32) if homo_w else jnp.zeros((m, 0), dtype=jnp.float32)
     y = jnp.arange(1, (m if not transpose else n) + 1, dtype=jnp.float32)
-    out = fcnmv_yw2w(w, indices, y, shape=shape, transpose=transpose)
+    out = fcnmv_DT2T(w, indices, y, shape=shape, transpose=transpose)
     assert out.shape == (m, 0)
 
 
@@ -260,32 +260,32 @@ def test_fcnmv_yw2w_empty_conn(homo_w, transpose):
 # Validation.
 # ---------------------------------------------------------------------------- #
 
-def test_fcnmv_yw2w_validation():
+def test_fcnmv_DT2T_validation():
     m, n = shape
     indices = generate_fixed_conn_num_indices(m, n, n_conn, replace=True)
     w = jnp.ones(indices.shape, dtype=jnp.float32)
 
     # indices not 2D
     with pytest.raises(ValueError):
-        fcnmv_yw2w(jnp.ones(n_conn, dtype=jnp.float32), jnp.arange(n_conn, dtype=jnp.int32),
+        fcnmv_DT2T(jnp.ones(n_conn, dtype=jnp.float32), jnp.arange(n_conn, dtype=jnp.int32),
                    jnp.ones(m, dtype=jnp.float32), shape=shape, transpose=False)
     # shape not length-2
     with pytest.raises(ValueError):
-        fcnmv_yw2w(w, indices, jnp.ones(m, dtype=jnp.float32), shape=(m, n, 1), transpose=False)
+        fcnmv_DT2T(w, indices, jnp.ones(m, dtype=jnp.float32), shape=(m, n, 1), transpose=False)
     # non-floating weights
     with pytest.raises(ValueError):
-        fcnmv_yw2w(jnp.ones(indices.shape, dtype=jnp.int32), indices,
+        fcnmv_DT2T(jnp.ones(indices.shape, dtype=jnp.int32), indices,
                    jnp.ones(m, dtype=jnp.float32), shape=shape, transpose=False)
     # weight shape mismatch (and not size-1)
     with pytest.raises(ValueError):
-        fcnmv_yw2w(jnp.ones((m, n_conn + 1), dtype=jnp.float32), indices,
+        fcnmv_DT2T(jnp.ones((m, n_conn + 1), dtype=jnp.float32), indices,
                    jnp.ones(m, dtype=jnp.float32), shape=shape, transpose=False)
     # y not 1D
     with pytest.raises(ValueError):
-        fcnmv_yw2w(w, indices, jnp.ones((m, 1), dtype=jnp.float32), shape=shape, transpose=False)
+        fcnmv_DT2T(w, indices, jnp.ones((m, 1), dtype=jnp.float32), shape=shape, transpose=False)
     # wrong y length for transpose=False (expects shape[0]=m)
     with pytest.raises(ValueError):
-        fcnmv_yw2w(w, indices, jnp.ones(m + 3, dtype=jnp.float32), shape=shape, transpose=False)
+        fcnmv_DT2T(w, indices, jnp.ones(m + 3, dtype=jnp.float32), shape=shape, transpose=False)
     # wrong y length for transpose=True (expects shape[1]=n)
     with pytest.raises(ValueError):
-        fcnmv_yw2w(w, indices, jnp.ones(n + 3, dtype=jnp.float32), shape=shape, transpose=True)
+        fcnmv_DT2T(w, indices, jnp.ones(n + 3, dtype=jnp.float32), shape=shape, transpose=True)
