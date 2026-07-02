@@ -42,6 +42,7 @@ from brainevent._op.numba_ffi import (
     _warn_if_untested_jax,
     _MAX_VALIDATED_JAX,
     _XLA_FFI_DTYPE_TO_NUMPY,
+    XLA_FFI_Metadata,
     numba_kernel,
     NumbaCpuFfiHandler,
 )
@@ -948,51 +949,8 @@ class TestXlaFfiAbiVersionCheck:
 
 
 # ---------------------------------------------------------------------------
-# Merged audit regression tests
+# Audit regression tests
 # ---------------------------------------------------------------------------
-
-# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Regression tests for the 2026-06-13 ``_op`` audit (CPU / Numba bridge).
-
-Covers: C1 (kernel exceptions must propagate, not silently report success),
-C2 (fp16/bf16/complex buffer views must be byte-accurate), M7 (metadata struct
-shape), and H1 (FFI-target registration must be cached, not leaked per call).
-"""
-
-import importlib.util
-import os
-
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
-
-import jax
-import jax.numpy as jnp
-import numpy as np
-import pytest
-
-numba_installed = importlib.util.find_spec('numba') is not None
-cpu_platform = jax.default_backend() == 'cpu'
-
-import numba
-
-from brainevent._op import numba_ffi as _m
-from brainevent._op.numba_ffi import (
-    _numpy_from_buffer,
-    XLA_FFI_Metadata,
-    numba_kernel,
-)
 
 
 # --- C2: byte-accurate buffer views for dtypes ctypes cannot represent ---------
@@ -1035,6 +993,8 @@ def test_metadata_struct_has_state_type_id():
 
 class TestErrorPropagation:
     def test_raising_kernel_surfaces_exception(self):
+        import numba
+
         @numba.njit
         def boom(x, out):
             raise ValueError('intentional kernel failure')
@@ -1048,6 +1008,8 @@ class TestErrorPropagation:
 
 class TestRegistrationCaching:
     def test_eager_calls_do_not_leak_targets(self):
+        import numba
+
         @numba.njit
         def add1(x, out):
             for i in range(out.size):
@@ -1056,8 +1018,8 @@ class TestRegistrationCaching:
         kernel = numba_kernel(add1, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
         x = jnp.arange(4, dtype=jnp.float32)
         jax.block_until_ready(kernel(x))  # warm up / first registration
-        before = len(_m._NUMBA_CPU_FFI_HANDLES)
+        before = len(numba_ffi._NUMBA_CPU_FFI_HANDLES)
         for _ in range(8):
             jax.block_until_ready(kernel(x))
-        after = len(_m._NUMBA_CPU_FFI_HANDLES)
+        after = len(numba_ffi._NUMBA_CPU_FFI_HANDLES)
         assert after == before, f'leaked {after - before} FFI targets across 8 eager calls'

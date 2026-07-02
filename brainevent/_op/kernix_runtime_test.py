@@ -2,10 +2,12 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 """Tests for CompiledModule load-time error wrapping."""
 
+import threading
+
 import pytest
 
 from brainevent._op import kernix_runtime as kr
-from brainevent._error import KernelLoadError
+from brainevent._error import KernelLoadError, KernelRegistrationError
 
 
 def test_dlopen_failure_wrapped(monkeypatch):
@@ -21,43 +23,8 @@ def test_dlopen_failure_wrapped(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Merged audit regression tests
+# Audit regression tests
 # ---------------------------------------------------------------------------
-
-# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
-"""Audit reproduction tests for ``kernix_runtime``.
-
-These tests are hermetic: they never load a real native module.  The JAX FFI
-surface (``jax.ffi.register_ffi_target`` and ``jax.ffi.pycapsule``) is
-monkeypatched so the registration bridge can be exercised without a compiled
-``.so``.
-
-Covered findings (see ``dev/2026-06-13-op-issues.md``):
-
-* **M5** -- FFI-target registration race + silent overwrite; no unload.
-* **L6** -- ``_format_load_error`` only recognises POSIX dlopen wording.
-"""
-
-import threading
-
-import pytest
-
-from brainevent._error import KernelRegistrationError
-from brainevent._op import kernix_runtime as kr
 
 
 # ---------------------------------------------------------------------------

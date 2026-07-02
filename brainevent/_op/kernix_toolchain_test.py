@@ -3,6 +3,7 @@
 """Tests for kernix_toolchain discovery and diagnostics."""
 
 import sys
+import threading
 
 import pytest
 
@@ -285,6 +286,121 @@ def test_detect_cuda_arch_env_override(monkeypatch):
     assert kt.detect_cuda_arch() == ["sm_86", "sm_80"]
 
 
+# --- compute capability helpers ------------------------------------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ("8.6", "sm_86"), ("86", "sm_86"), ("sm_86", "sm_86"),
+    ("compute_86", "sm_86"), (" 8.6 ", "sm_86"), ("9.0a", "sm_90a"),
+    ("90a", "sm_90a"), ("12.0", "sm_120"), ("120", "sm_120"),
+])
+def test_normalize_arch_ok(raw, expected):
+    assert kt.normalize_arch(raw) == expected
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "abc", "x", "8", "sm_", ".."])
+def test_normalize_arch_bad(bad):
+    with pytest.raises(ValueError):
+        kt.normalize_arch(bad)
+
+
+def test_resolve_explicit_wins(monkeypatch):
+    monkeypatch.setattr(kt, "_arch_from_jax", lambda: ["sm_99"])
+    assert kt.resolve_compute_capabilities("8.6") == ["sm_86"]
+    assert kt.resolve_compute_capabilities(["8.6", "9.0"]) == ["sm_86", "sm_90"]
+
+
+def test_resolve_explicit_comma_string(monkeypatch):
+    monkeypatch.setattr(kt, "_arch_from_jax", lambda: ["sm_99"])
+    assert kt.resolve_compute_capabilities("8.0,8.6") == ["sm_80", "sm_86"]
+    assert kt.resolve_compute_capabilities(" 8.0 , , 8.6 ") == ["sm_80", "sm_86"]
+    assert kt.resolve_compute_capabilities(["8.0,8.6", "9.0"]) == [
+        "sm_80", "sm_86", "sm_90"]
+
+
+def test_resolve_precedence_config_over_env(monkeypatch):
+    monkeypatch.setenv("BRAINEVENT_COMPUTE_CAPABILITIES", "8.0")
+    monkeypatch.setattr(kt, "_arch_from_jax", lambda: ["sm_99"])
+    kt.set_compute_capabilities("8.6")
+    try:
+        assert kt.resolve_compute_capabilities() == ["sm_86"]
+    finally:
+        kt.set_compute_capabilities(None)
+
+
+def test_resolve_env_over_jax(monkeypatch):
+    monkeypatch.setenv("BRAINEVENT_COMPUTE_CAPABILITIES", " 8.0 , , 8.6 ")
+    monkeypatch.setattr(kt, "_arch_from_jax", lambda: ["sm_99"])
+    assert kt.resolve_compute_capabilities() == ["sm_80", "sm_86"]
+
+
+def test_resolve_jax_over_smi(monkeypatch):
+    monkeypatch.delenv("BRAINEVENT_COMPUTE_CAPABILITIES", raising=False)
+    monkeypatch.setattr(kt, "_arch_from_jax", lambda: ["sm_86"])
+    monkeypatch.setattr(kt, "_arch_from_nvidia_smi", lambda: ["sm_70"])
+    assert kt.resolve_compute_capabilities() == ["sm_86"]
+
+
+def test_resolve_raises_when_all_absent(monkeypatch):
+    from brainevent._error import GpuArchDetectionError
+
+    monkeypatch.delenv("BRAINEVENT_COMPUTE_CAPABILITIES", raising=False)
+    monkeypatch.setattr(kt, "_arch_from_jax", lambda: None)
+    monkeypatch.setattr(kt, "_arch_from_nvidia_smi", lambda: None)
+    with pytest.raises(GpuArchDetectionError):
+        kt.resolve_compute_capabilities()
+
+
+def test_gencode_single():
+    assert kt.gencode_flags(["sm_86"]) == [
+        "-gencode", "arch=compute_86,code=sm_86",
+        "-gencode", "arch=compute_86,code=compute_86",
+    ]
+
+
+def test_gencode_multi_ptx_for_highest():
+    out = kt.gencode_flags(["sm_80", "sm_90", "8.6"])
+    assert "arch=compute_80,code=sm_80" in out
+    assert "arch=compute_86,code=sm_86" in out
+    assert "arch=compute_90,code=sm_90" in out
+    assert out[-1] == "arch=compute_90,code=compute_90"
+
+
+def test_gencode_empty_raises():
+    with pytest.raises(ValueError):
+        kt.gencode_flags([])
+
+
+def test_config_set_compute_capability():
+    import brainevent
+
+    brainevent.config.set_compute_capability("8.6")
+    try:
+        assert brainevent.config.get_compute_capability() == ["sm_86"]
+        assert kt.resolve_compute_capabilities() == ["sm_86"]
+    finally:
+        brainevent.config.set_compute_capability(None)
+    assert brainevent.config.get_compute_capability() is None
+
+
+def test_set_compute_capabilities_comma_string():
+    kt.set_compute_capabilities("8.6,8.0")
+    try:
+        assert kt.get_compute_capabilities() == ["sm_86", "sm_80"]
+    finally:
+        kt.set_compute_capabilities(None)
+    assert kt.get_compute_capabilities() is None
+
+
+def test_config_set_compute_capability_comma():
+    import brainevent
+
+    brainevent.config.set_compute_capability("8.6, 8.0")
+    try:
+        assert brainevent.config.get_compute_capability() == ["sm_86", "sm_80"]
+    finally:
+        brainevent.config.set_compute_capability(None)
+
+
 def test_find_host_cxx_msvc_on_windows(monkeypatch):
     monkeypatch.setattr(kt.sys, "platform", "win32")
     monkeypatch.delenv("CXX", raising=False)
@@ -317,39 +433,8 @@ def test_render_appends_snapshot_when_debug(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Merged audit regression tests
+# Audit regression tests
 # ---------------------------------------------------------------------------
-
-# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0 (the "License").
-"""Audit-driven reproduction tests for ``kernix_toolchain``.
-
-Each test pins a defect from the 2026-06-13 ``dev/`` audit (H5, H6, M8, M9,
-M10, L12).  Every test is hermetic: ``subprocess.run`` and environment
-variables are monkeypatched so no real ``nvcc``/host compiler/GPU is needed.
-
-Run with ``pytest -m ""`` (the markerless invocation the working agreement
-prescribes).
-"""
-
-import sys
-import threading
-
-import pytest
-
-from brainevent._op import kernix_toolchain as kt
-from brainevent._op.kernix_toolchain import CandidateProbe
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="kernix toolchain tests are not supported on Windows",
-)
-
-
-def _touch_exec(p):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("")
-    p.chmod(0o755)
 
 
 def _fake_proc(*, returncode=0, stdout="", stderr=""):

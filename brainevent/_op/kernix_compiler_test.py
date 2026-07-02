@@ -2,7 +2,13 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 """Tests for kernix_compiler flag/error helpers (hermetic, no nvcc needed)."""
 
+import subprocess
+import sys
+
+import pytest
+
 from brainevent._op import kernix_compiler as kc
+from brainevent._op.kernix_toolchain import CppToolchain, CudaToolchain
 
 
 def test_is_host_incompat_true():
@@ -26,14 +32,14 @@ def test_allow_unsupported_compiler(monkeypatch):
 
 def test_raise_compile_error_incompat():
     from brainevent._error import HostCompilerIncompatibleError
-    import pytest
+
     with pytest.raises(HostCompilerIncompatibleError):
         kc._raise_compile_error("unsupported GNU version", "nvcc x.cu", stage="compile")
 
 
 def test_raise_compile_error_generic():
     from brainevent._error import CompilationError, HostCompilerIncompatibleError
-    import pytest
+
     with pytest.raises(CompilationError) as ei:
         kc._raise_compile_error("syntax error near ';'", "nvcc x.cu", stage="link")
     assert not isinstance(ei.value, HostCompilerIncompatibleError)
@@ -42,7 +48,7 @@ def test_raise_compile_error_generic():
 
 def test_unsupported_arch_error():
     from brainevent._error import UnsupportedArchError
-    import pytest
+
     with pytest.raises(UnsupportedArchError) as ei:
         kc._raise_compile_error(
             "nvcc fatal : Unsupported gpu architecture 'compute_120'",
@@ -51,25 +57,8 @@ def test_unsupported_arch_error():
 
 
 # ---------------------------------------------------------------------------
-# Merged audit regression tests
+# Audit regression tests
 # ---------------------------------------------------------------------------
-
-# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0 (the "License").
-"""Reproduction tests for the kernix_compiler audit findings M11, M12, L13.
-
-These tests are hermetic: they never invoke a real ``nvcc`` / ``cl`` / ``g++``.
-``subprocess.run`` is monkeypatched to capture the argv (and kwargs) that the
-backend assembled, and the built command list is asserted on directly.
-"""
-
-import subprocess
-import sys
-
-import pytest
-
-from brainevent._op import kernix_compiler as kc
-from brainevent._op.kernix_toolchain import CppToolchain, CudaToolchain
 
 
 # ---------------------------------------------------------------------------

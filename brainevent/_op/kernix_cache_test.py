@@ -203,6 +203,39 @@ def test_m6c_store_may_move_internal_tmp_build(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Platform-specific cache publishing
+# ---------------------------------------------------------------------------
+
+def test_cache_uses_platform_ext(tmp_path, monkeypatch):
+    from brainevent._op import kernix_toolchain as ktool
+
+    monkeypatch.setattr(ktool.sys, "platform", "win32")
+    cache = CompilationCache(base_dir=str(tmp_path))
+    assert cache.lookup("m", "deadbeef") is None
+
+    src = tmp_path / "src.dll"
+    src.write_bytes(b"x")
+
+    dest = cache.store("m", "deadbeef", str(src))
+
+    assert dest.name == "m.dll"
+    assert cache.lookup("m", "deadbeef") == dest
+
+
+def test_cache_store_atomic_move(tmp_path):
+    cache = CompilationCache(base_dir=str(tmp_path))
+    build = tmp_path / "build"
+    build.mkdir()
+    so = build / "m.so"
+    so.write_bytes(b"hello")
+
+    dest = cache.store("m", "k", str(so))
+
+    assert dest.read_bytes() == b"hello"
+    assert not so.exists()
+
+
+# ---------------------------------------------------------------------------
 # L5 — docstring / truncation documentation (smoke checks).
 # ---------------------------------------------------------------------------
 
