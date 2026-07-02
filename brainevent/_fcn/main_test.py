@@ -793,21 +793,21 @@ class TestMatrix:
         jax.block_until_ready((indices, xs, y1, y2, y_true))
 
 
-class Test_DT_to_T:
-    def test_DT_to_T_signature_aligns_data_representation_contract(self):
-        base_sig = inspect.signature(fcn_main_mod.DataRepresentation.DT_to_T)
+class Test_dt2t:
+    def test_dt2t_signature_aligns_data_representation_contract(self):
+        base_sig = inspect.signature(fcn_main_mod.DataRepresentation.dt2t)
         for cls in (FixedNumPerPre, FixedNumPerPost):
-            sig = inspect.signature(cls.DT_to_T)
+            sig = inspect.signature(cls.dt2t)
             assert list(sig.parameters) == list(base_sig.parameters)
             assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
             assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
             assert sig.parameters['w_dim_arr'].default is inspect._empty
             assert sig.return_annotation == base_sig.return_annotation
 
-    def test_DT_to_T_transposed_signature_aligns_data_representation_contract(self):
-        base_sig = inspect.signature(fcn_main_mod.DataRepresentation.DT_to_T_transposed)
+    def test_dt2t_transposed_signature_aligns_data_representation_contract(self):
+        base_sig = inspect.signature(fcn_main_mod.DataRepresentation.dt2t_transposed)
         for cls in (FixedNumPerPre, FixedNumPerPost):
-            sig = inspect.signature(cls.DT_to_T_transposed)
+            sig = inspect.signature(cls.dt2t_transposed)
             assert list(sig.parameters) == list(base_sig.parameters)
             assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
             assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
@@ -822,10 +822,10 @@ class Test_DT_to_T:
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
 
-        # DT_to_T: y indexed by row=pre -> broadcast
-        assert allclose(conn.DT_to_T(y_pre, data), data * y_pre[:, None])
-        # DT_to_T_transposed: y indexed by col=post -> gather
-        assert allclose(conn.DT_to_T_transposed(y_post, data), data * y_post[indices])
+        # dt2t: y indexed by row=pre -> broadcast
+        assert allclose(conn.dt2t(y_pre, data), data * y_pre[:, None])
+        # dt2t_transposed: y indexed by col=post -> gather
+        assert allclose(conn.dt2t_transposed(y_post, data), data * y_post[indices])
 
     def test_fixed_pre(self):
         num_pre, num_post, k = 7, 5, 3
@@ -836,10 +836,10 @@ class Test_DT_to_T:
         y_pre = jnp.arange(1, num_pre + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, num_post + 1, dtype=jnp.float32)
 
-        # DT_to_T: y indexed by row=pre -> gather (indices are pre ids)
-        assert allclose(conn.DT_to_T(y_pre, data), data * y_pre[indices])
-        # DT_to_T_transposed: y indexed by col=post=leading -> broadcast
-        assert allclose(conn.DT_to_T_transposed(y_post, data), data * y_post[:, None])
+        # dt2t: y indexed by row=pre -> gather (indices are pre ids)
+        assert allclose(conn.dt2t(y_pre, data), data * y_pre[indices])
+        # dt2t_transposed: y indexed by col=post=leading -> broadcast
+        assert allclose(conn.dt2t_transposed(y_post, data), data * y_post[:, None])
 
     def test_w_dim_arr_is_required(self):
         m, n, k = 5, 7, 3
@@ -849,9 +849,9 @@ class Test_DT_to_T:
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
         with pytest.raises(TypeError):
-            conn.DT_to_T(y_pre)
+            conn.dt2t(y_pre)
         with pytest.raises(TypeError):
-            conn.DT_to_T_transposed(y_post)
+            conn.dt2t_transposed(y_post)
 
     def test_golden_parity_csr(self):
         m, n, k = 5, 7, 3
@@ -866,10 +866,10 @@ class Test_DT_to_T:
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
 
-        assert allclose(conn.DT_to_T(y_pre, data).flatten(),
-                        csr.DT_to_T(y_pre, data.flatten()))
-        assert allclose(conn.DT_to_T_transposed(y_post, data).flatten(),
-                        csr.DT_to_T_transposed(y_post, data.flatten()))
+        assert allclose(conn.dt2t(y_pre, data).flatten(),
+                        csr.dt2t(y_pre, data.flatten()))
+        assert allclose(conn.dt2t_transposed(y_post, data).flatten(),
+                        csr.dt2t_transposed(y_post, data.flatten()))
 
 
 # --------------------------------------------------------------------------- #

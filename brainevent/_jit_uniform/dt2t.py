@@ -19,17 +19,17 @@
 Direct per-synapse ``y * w`` generation for uniform-weight just-in-time
 connectivity (JITC) matrices.
 
-The public :func:`jitu_DT2T` wrapper mirrors the CSR ``DT_to_T`` contract:
+The public :func:`jitumv_dt2t` wrapper mirrors the CSR ``dt2t`` contract:
 it returns one value per generated structural non-zero, in the same flat CSR
 data order as :func:`brainevent._jit_uniform.csr.jitu_to_csr`. Unlike a wrapper
-around ``tocsr().DT_to_T(...)``, the fill pass draws each uniform weight and
+around ``tocsr().dt2t(...)``, the fill pass draws each uniform weight and
 multiplies by ``y[row]`` or ``y[col]`` directly.
 
 Because the number of structural non-zeros is data dependent, generation is
 eager-only and split into:
 
 1. the existing JIT-uniform CSR count pass, which determines ``indptr``; and
-2. a dedicated ``DT2T`` fill pass, which writes ``sampled_weight * y[...]``.
+2. a dedicated ``dt2t`` fill pass, which writes ``sampled_weight * y[...]``.
 """
 
 from pathlib import Path
@@ -52,9 +52,9 @@ from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
 
 __all__ = [
-    'jitu_DT2T',
-    'jitu_DT2T_fill_p',
-    'jitu_DT2T_fill_p_call',
+    'jitumv_dt2t',
+    'jitumv_dt2t_p',
+    'jitumv_dt2t_p_call',
 ]
 
 _dtype_sfx = {
@@ -65,7 +65,7 @@ _dtype_sfx = {
 }
 
 
-def jitu_DT2T(
+def jitumv_dt2t(
     w_low,
     w_high,
     prob,
@@ -80,8 +80,8 @@ def jitu_DT2T(
     """Generate per-synapse ``y * w`` values for a uniform JITC matrix.
 
     The result is a flat vector of length ``nnz`` in the same order as
-    ``jitu_to_csr(...).data``. The output equals ``csr.DT_to_T(y, csr.data)``
-    when ``transpose=False`` and ``csr.DT_to_T_transposed(y, csr.data)`` when
+    ``jitu_to_csr(...).data``. The output equals ``csr.dt2t(y, csr.data)``
+    when ``transpose=False`` and ``csr.dt2t_transposed(y, csr.data)`` when
     ``transpose=True``, without first materialising the CSR weight data.
     """
     shape = (int(shape[0]), int(shape[1]))
@@ -115,7 +115,7 @@ def jitu_DT2T(
     )
     nnz = int(indptr[-1])
 
-    data = jitu_DT2T_fill_p_call(
+    data = jitumv_dt2t_p_call(
         w_low,
         w_high,
         clen,
@@ -135,22 +135,22 @@ def jitu_DT2T(
 #  Count pass - per-row non-zero counts
 # ---------------------------------------------------------------------- #
 #
-# The DT2T path deliberately reuses the JIT-uniform CSR count pass instead of
+# The dt2t path deliberately reuses the JIT-uniform CSR count pass instead of
 # duplicating it here. This keeps the data-dependent ``nnz``/``indptr`` logic
-# aligned with ``jitu_to_csr``; the dedicated DT2T work starts at the fill pass.
+# aligned with ``jitu_to_csr``; the dedicated dt2t work starts at the fill pass.
 
 
 # ---------------------------------------------------------------------- #
 #  Fill pass - per-synapse y * w values
 # ---------------------------------------------------------------------- #
 
-def _jitu_DT2T_fill_numba_kernel_generator(
+def _jitumv_dt2t_fill_numba_kernel_generator(
     corder: bool,
     shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """Build the Numba CPU kernel for the uniform JITC ``DT2T`` fill pass."""
+    """Build the Numba CPU kernel for the uniform JITC ``dt2t`` fill pass."""
     import numba  # pylint: disable=import-outside-toplevel
 
     _lfsr_seed = get_numba_lfsr_seed()
@@ -198,21 +198,21 @@ def _jitu_DT2T_fill_numba_kernel_generator(
     return kernel
 
 
-def _jitu_DT2T_fill_cuda_kernel(
+def _jitumv_dt2t_fill_cuda_kernel(
     corder: bool,
     shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """Build the CUDA kernel callable for the uniform JITC ``DT2T`` fill pass."""
+    """Build the CUDA kernel callable for the uniform JITC ``dt2t`` fill pass."""
     load_cuda_file(
-        Path(__file__).parent.joinpath('DT2T.cu'),
-        name='jit_uniform_DT2T',
+        Path(__file__).parent.joinpath('dt2t.cu'),
+        name='jit_uniform_dt2t',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w0_info'].dtype), '_f32')
     order = 'corder_true' if corder else 'corder_false'
     direction = 't' if transpose else 'nt'
-    kernel_name = f'jit_uniform_DT2T.fill_{order}_{direction}{sfx}'
+    kernel_name = f'jit_uniform_dt2t.fill_{order}_{direction}{sfx}'
     n_cols = np.int32(shape[1])
 
     def kernel(w0, w1, clen, y, seed, indptr):
@@ -223,7 +223,7 @@ def _jitu_DT2T_fill_cuda_kernel(
     return kernel
 
 
-def jitu_DT2T_fill_p_call(
+def jitumv_dt2t_p_call(
     w0,
     w1,
     clen,
@@ -237,7 +237,7 @@ def jitu_DT2T_fill_p_call(
     corder: bool,
     backend: Optional[str] = None,
 ):
-    """Invoke the uniform JITC ``DT2T`` fill primitive."""
+    """Invoke the uniform JITC ``dt2t`` fill primitive."""
     w0 = jnp.atleast_1d(w0)
     w1 = jnp.atleast_1d(w1)
     clen = jnp.atleast_1d(clen)
@@ -264,7 +264,7 @@ def jitu_DT2T_fill_p_call(
     else:
         assert shape[0] == y.shape[0], "Shape mismatch for non-transpose operation."
 
-    return jitu_DT2T_fill_p(
+    return jitumv_dt2t_p(
         w0,
         w1,
         clen,
@@ -285,8 +285,8 @@ def jitu_DT2T_fill_p_call(
     )
 
 
-jitu_DT2T_fill_p = XLACustomKernel(
-    'jitu_DT2T_fill',
+jitumv_dt2t_p = XLACustomKernel(
+    'jitumv_dt2t_fill',
     doc="""
 Low-level XLA custom-kernel primitive filling per-synapse ``y * w`` values for a
 uniform JITC matrix.
@@ -298,7 +298,7 @@ generated connection it draws the uniform weight and writes either
 (``transpose=True``), preserving the same flat CSR data order.
 """
 )
-jitu_DT2T_fill_p.def_numba_kernel(_jitu_DT2T_fill_numba_kernel_generator)
-jitu_DT2T_fill_p.def_cuda_raw_kernel(_jitu_DT2T_fill_cuda_kernel)
-jitu_DT2T_fill_p.def_call(jitu_DT2T_fill_p_call)
-jitu_DT2T_fill_p.def_tags('jit_uniform', 'DT2T')
+jitumv_dt2t_p.def_numba_kernel(_jitumv_dt2t_fill_numba_kernel_generator)
+jitumv_dt2t_p.def_cuda_raw_kernel(_jitumv_dt2t_fill_cuda_kernel)
+jitumv_dt2t_p.def_call(jitumv_dt2t_p_call)
+jitumv_dt2t_p.def_tags('jit_uniform', 'dt2t')

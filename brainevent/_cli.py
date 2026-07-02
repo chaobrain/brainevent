@@ -132,7 +132,7 @@ def _run_benchmark(args) -> int:
                 backend_wins[fastest.backend] = backend_wins.get(fastest.backend, 0) + 1
 
         if backend_wins:
-            best_backend = max(backend_wins, key=backend_wins.get)
+            best_backend = max(backend_wins, key=lambda b: backend_wins[b])
             optimal_defaults.setdefault(name, {})[args.platform] = best_backend
 
     # Write JSON output if requested

@@ -29,7 +29,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitumv, binary_jitumm
 from .csr import jitu_to_csr
 from .float import jitu, jitumv, jitumm
-from .DT2T import jitu_DT2T
+from .dt2t import jitumv_dt2t
 
 __all__ = [
     'JITCUniformR',
@@ -382,7 +382,7 @@ class JITCUniformMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def DT_to_T(
+    def dt2t(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -394,7 +394,7 @@ class JITCUniformMatrix(JITCMatrix):
         metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jitu_DT2T(
+        return jitumv_dt2t(
             self.wlow,
             self.whigh,
             self.prob,
@@ -406,7 +406,7 @@ class JITCUniformMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def DT_to_T_transposed(
+    def dt2t_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -418,7 +418,7 @@ class JITCUniformMatrix(JITCMatrix):
         metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jitu_DT2T(
+        return jitumv_dt2t(
             self.wlow,
             self.whigh,
             self.prob,

@@ -28,10 +28,10 @@ from brainevent._jit_normal.csr import (
     jitn_csr_fill_p_call,
     jitn_to_csr,
 )
-from brainevent._jit_normal.DT2T import (
-    jitn_DT2T,
-    jitn_DT2T_fill_p,
-    jitn_DT2T_fill_p_call,
+from brainevent._jit_normal.dt2t import (
+    jitnmv_dt2t,
+    jitnmv_dt2t_p,
+    jitnmv_dt2t_p_call,
 )
 from brainevent._test_util import allclose, requires_gpu
 
@@ -39,8 +39,8 @@ pytestmark = pytest.mark.slow
 
 platform = 'cpu'
 CPU_DEVICE = jax.devices('cpu')[0]
-JITN_DT2T_IMPLEMENTATIONS = tuple(jitn_DT2T_fill_p.available_backends(platform))
-JITN_DT2T_GPU_IMPLEMENTATIONS = tuple(jitn_DT2T_fill_p.available_backends('gpu'))
+JITN_dt2t_IMPLEMENTATIONS = tuple(jitnmv_dt2t_p.available_backends(platform))
+JITN_dt2t_GPU_IMPLEMENTATIONS = tuple(jitnmv_dt2t_p.available_backends('gpu'))
 X64_ENABLED = bool(jax.config.read('jax_enable_x64'))
 
 
@@ -54,19 +54,19 @@ def _csr_yw_reference(csr, y, transpose):
 
 
 @pytest.mark.skipif(
-    not JITN_DT2T_IMPLEMENTATIONS,
-    reason=f'No jitn_DT2T implementation on platform={platform}',
+    not JITN_dt2t_IMPLEMENTATIONS,
+    reason=f'No jitnmv_dt2t implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITN_DT2T_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', JITN_dt2t_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(20, 30)])
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitn_DT2T_matches_csr_reference(implementation, shape, corder, transpose):
+def test_jitnmv_dt2t_matches_csr_reference(implementation, shape, corder, transpose):
     with jax.default_device(CPU_DEVICE):
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
 
-        out = jitn_DT2T(
+        out = jitnmv_dt2t(
             1.5,
             0.2,
             0.2,
@@ -86,17 +86,17 @@ def test_jitn_DT2T_matches_csr_reference(implementation, shape, corder, transpos
 
 @pytest.mark.skipif(not X64_ENABLED, reason='JAX x64 is disabled.')
 @pytest.mark.skipif(
-    not JITN_DT2T_IMPLEMENTATIONS,
-    reason=f'No jitn_DT2T implementation on platform={platform}',
+    not JITN_dt2t_IMPLEMENTATIONS,
+    reason=f'No jitnmv_dt2t implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITN_DT2T_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', JITN_dt2t_IMPLEMENTATIONS)
 @pytest.mark.parametrize('corder', [True, False])
-def test_jitn_DT2T_float64_matches_csr_reference(implementation, corder):
+def test_jitnmv_dt2t_float64_matches_csr_reference(implementation, corder):
     with jax.default_device(CPU_DEVICE):
         shape = (13, 17)
         y = jnp.linspace(-1.0, 2.0, shape[0], dtype=jnp.float64)
 
-        out = jitn_DT2T(
+        out = jitnmv_dt2t(
             jnp.asarray(1.5, dtype=jnp.float64),
             jnp.asarray(0.2, dtype=jnp.float64),
             0.2,
@@ -121,9 +121,9 @@ def test_jitn_DT2T_float64_matches_csr_reference(implementation, corder):
     assert allclose(out, expected)
 
 
-def test_jitn_DT2T_prob_zero_empty():
+def test_jitnmv_dt2t_prob_zero_empty():
     with jax.default_device(CPU_DEVICE):
-        out = jitn_DT2T(
+        out = jitnmv_dt2t(
             1.5,
             0.2,
             0.0,
@@ -137,18 +137,18 @@ def test_jitn_DT2T_prob_zero_empty():
 
 
 @pytest.mark.skipif(
-    not JITN_DT2T_IMPLEMENTATIONS,
-    reason=f'No jitn_DT2T implementation on platform={platform}',
+    not JITN_dt2t_IMPLEMENTATIONS,
+    reason=f'No jitnmv_dt2t implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITN_DT2T_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', JITN_dt2t_IMPLEMENTATIONS)
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitn_DT2T_corder_false_is_repeatable(implementation, transpose):
+def test_jitnmv_dt2t_corder_false_is_repeatable(implementation, transpose):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(0.2, 1.7, y_size, dtype=jnp.float32)
 
-        out1 = jitn_DT2T(
+        out1 = jitnmv_dt2t(
             1.5,
             0.2,
             0.2,
@@ -159,7 +159,7 @@ def test_jitn_DT2T_corder_false_is_repeatable(implementation, transpose):
             corder=False,
             backend=implementation,
         )
-        out2 = jitn_DT2T(
+        out2 = jitnmv_dt2t(
             1.5,
             0.2,
             0.2,
@@ -175,13 +175,13 @@ def test_jitn_DT2T_corder_false_is_repeatable(implementation, transpose):
 
 
 @pytest.mark.skipif(
-    not JITN_DT2T_IMPLEMENTATIONS,
-    reason=f'No jitn_DT2T implementation on platform={platform}',
+    not JITN_dt2t_IMPLEMENTATIONS,
+    reason=f'No jitnmv_dt2t implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITN_DT2T_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', JITN_dt2t_IMPLEMENTATIONS)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitn_DT2T_fill_generates_y_times_weight_directly(implementation, corder, transpose):
+def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, corder, transpose):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y_size = shape[1] if transpose else shape[0]
@@ -202,7 +202,7 @@ def test_jitn_DT2T_fill_generates_y_times_weight_directly(implementation, corder
         indices, weights = jitn_csr_fill_p_call(
             w0, w1, clen, seed, indptr, nnz, shape=shape, corder=corder, backend=implementation,
         )
-        out = jitn_DT2T_fill_p_call(
+        out = jitnmv_dt2t_p_call(
             w0,
             w1,
             clen,
@@ -226,9 +226,9 @@ def test_jitn_DT2T_fill_generates_y_times_weight_directly(implementation, corder
     jax.block_until_ready((out, expected))
 
 
-def test_jitn_DT2T_units_are_weight_times_y():
+def test_jitnmv_dt2t_units_are_weight_times_y():
     with jax.default_device(CPU_DEVICE):
-        out = jitn_DT2T(
+        out = jitnmv_dt2t(
             1.5 * u.siemens,
             0.2 * u.siemens,
             0.2,
@@ -241,23 +241,22 @@ def test_jitn_DT2T_units_are_weight_times_y():
     assert u.get_unit(out) == u.mA
 
 
-def test_jitn_DT2T_exports_from_package():
-    assert brainevent.jitn_DT2T is jitn_DT2T
-    assert brainevent.jitn_DT2T_fill_p is jitn_DT2T_fill_p
+def test_jitnmv_dt2t_exports_from_package():
+    assert brainevent.jitnmv_dt2t is jitnmv_dt2t
 
 
-def test_jitn_matrix_DT_to_T_signatures_align_contracts():
-    base_sig = inspect.signature(brainevent.DataRepresentation.DT_to_T)
-    base_sig_t = inspect.signature(brainevent.DataRepresentation.DT_to_T_transposed)
+def test_jitn_matrix_dt2t_signatures_align_contracts():
+    base_sig = inspect.signature(brainevent.DataRepresentation.dt2t)
+    base_sig_t = inspect.signature(brainevent.DataRepresentation.dt2t_transposed)
     for cls in (brainevent.JITCNormalR, brainevent.JITCNormalC):
-        sig = inspect.signature(cls.DT_to_T)
+        sig = inspect.signature(cls.dt2t)
         assert list(sig.parameters) == list(base_sig.parameters)
         assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
         assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
         assert sig.parameters['w_dim_arr'].default is inspect._empty
         assert sig.return_annotation == base_sig.return_annotation
 
-        sig_t = inspect.signature(cls.DT_to_T_transposed)
+        sig_t = inspect.signature(cls.dt2t_transposed)
         assert list(sig_t.parameters) == list(base_sig_t.parameters)
         assert sig_t.parameters['y_dim_arr'].annotation == base_sig_t.parameters['y_dim_arr'].annotation
         assert sig_t.parameters['w_dim_arr'].annotation == base_sig_t.parameters['w_dim_arr'].annotation
@@ -266,24 +265,24 @@ def test_jitn_matrix_DT_to_T_signatures_align_contracts():
 
 
 @pytest.mark.skipif(
-    not JITN_DT2T_IMPLEMENTATIONS,
-    reason=f'No jitn_DT2T implementation on platform={platform}',
+    not JITN_dt2t_IMPLEMENTATIONS,
+    reason=f'No jitnmv_dt2t implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITN_DT2T_IMPLEMENTATIONS)
-def test_jitn_matrix_DT_to_T_requires_w_dim_arr(implementation):
+@pytest.mark.parametrize('implementation', JITN_dt2t_IMPLEMENTATIONS)
+def test_jitn_matrix_dt2t_requires_w_dim_arr(implementation):
     with jax.default_device(CPU_DEVICE):
         mat = brainevent.JITCNormalR((1.5, 0.2, 0.2, 42), shape=(20, 30), backend=implementation)
         y_pre = jnp.linspace(-1.0, 2.0, 20, dtype=jnp.float32)
         y_post = jnp.linspace(-1.0, 2.0, 30, dtype=jnp.float32)
         with pytest.raises(TypeError):
-            mat.DT_to_T(y_pre)
+            mat.dt2t(y_pre)
         with pytest.raises(TypeError):
-            mat.DT_to_T_transposed(y_post)
+            mat.dt2t_transposed(y_post)
 
 
-@pytest.mark.parametrize('implementation', JITN_DT2T_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', JITN_dt2t_IMPLEMENTATIONS)
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitn_matrix_DT_to_T_uses_init_parameters(implementation, transpose):
+def test_jitn_matrix_dt2t_uses_init_parameters(implementation, transpose):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y_size = shape[1] if transpose else shape[0]
@@ -296,8 +295,8 @@ def test_jitn_matrix_DT_to_T_uses_init_parameters(implementation, transpose):
         )
 
         w_dim_arr = jnp.empty(0, dtype=jnp.float32)
-        out = mat.DT_to_T_transposed(y, w_dim_arr) if transpose else mat.DT_to_T(y, w_dim_arr)
-        expected = jitn_DT2T(
+        out = mat.dt2t_transposed(y, w_dim_arr) if transpose else mat.dt2t(y, w_dim_arr)
+        expected = jitnmv_dt2t(
             1.5,
             0.2,
             0.2,
@@ -313,11 +312,11 @@ def test_jitn_matrix_DT_to_T_uses_init_parameters(implementation, transpose):
 
 
 @pytest.mark.skipif(
-    not JITN_DT2T_IMPLEMENTATIONS,
-    reason=f'No jitn_DT2T implementation on platform={platform}',
+    not JITN_dt2t_IMPLEMENTATIONS,
+    reason=f'No jitnmv_dt2t implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITN_DT2T_IMPLEMENTATIONS)
-def test_jitn_matrix_DT_to_T_uses_instance_backend_and_corder(implementation):
+@pytest.mark.parametrize('implementation', JITN_dt2t_IMPLEMENTATIONS)
+def test_jitn_matrix_dt2t_uses_instance_backend_and_corder(implementation):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y = jnp.linspace(-1.0, 2.0, shape[0], dtype=jnp.float32)
@@ -328,8 +327,8 @@ def test_jitn_matrix_DT_to_T_uses_instance_backend_and_corder(implementation):
             backend=implementation,
         )
 
-        out = mat.DT_to_T(y, jnp.empty(0, dtype=jnp.float32))
-        expected = jitn_DT2T(
+        out = mat.dt2t(y, jnp.empty(0, dtype=jnp.float32))
+        expected = jitnmv_dt2t(
             1.5,
             0.2,
             0.2,
@@ -345,18 +344,18 @@ def test_jitn_matrix_DT_to_T_uses_instance_backend_and_corder(implementation):
 
 @requires_gpu
 @pytest.mark.skipif(
-    'cuda_raw' not in JITN_DT2T_GPU_IMPLEMENTATIONS,
-    reason='No jitn_DT2T cuda_raw implementation registered on GPU.',
+    'cuda_raw' not in JITN_dt2t_GPU_IMPLEMENTATIONS,
+    reason='No jitnmv_dt2t cuda_raw implementation registered on GPU.',
 )
 @pytest.mark.parametrize('shape', [(20, 30), (64, 33)])
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitn_DT2T_cuda_matches_cuda_csr_reference(shape, corder, transpose):
+def test_jitnmv_dt2t_cuda_matches_cuda_csr_reference(shape, corder, transpose):
     with jax.default_device(jax.devices('gpu')[0]):
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
 
-        out = jitn_DT2T(
+        out = jitnmv_dt2t(
             1.5,
             0.2,
             0.2,

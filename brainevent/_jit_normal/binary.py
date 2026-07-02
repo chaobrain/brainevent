@@ -28,7 +28,7 @@ from brainevent._misc import namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
-from brainevent._typing import Data, MatrixShape
+from brainevent._typing import ArrayData, Data, MatrixShape
 from .float import jitnmv_p_call, jitnmm_p_call
 
 __all__ = [
@@ -51,7 +51,7 @@ def binary_jitnmv(
     transpose: bool = False,
     corder: bool = True,
     backend: Optional[str] = None,
-) -> Data:
+) -> ArrayData:
     """
     Event-driven matrix-vector multiplication with a JIT normal-distributed connectivity matrix.
 
@@ -184,7 +184,7 @@ def binary_jitnmm(
     transpose: bool = False,
     corder: bool = True,
     backend: Optional[str] = None,
-) -> Data:
+) -> ArrayData:
     """
     Event-driven matrix-matrix multiplication with a JIT normal-distributed connectivity matrix.
 

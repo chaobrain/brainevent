@@ -15,15 +15,15 @@
 
 
 from .binary import binary_jitnmv, binary_jitnmv_p, binary_jitnmm, binary_jitnmm_p
-from .csr import jitn_to_csr, jitn_csr_count_p, jitn_csr_fill_p
+from .csr import jitn_to_csr, jitn_csr_count_p
 from .float import jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p
 from .main import JITCNormalR, JITCNormalC
-from .DT2T import jitn_DT2T, jitn_DT2T_fill_p
+from .dt2t import jitnmv_dt2t
 
 __all__ = [
     'JITCNormalR', 'JITCNormalC',
     'binary_jitnmv', 'binary_jitnmv_p', 'binary_jitnmm', 'binary_jitnmm_p',
     'jitn', 'jitn_p', 'jitnmv', 'jitnmv_p', 'jitnmm', 'jitnmm_p',
-    'jitn_to_csr', 'jitn_csr_count_p', 'jitn_csr_fill_p',
-    'jitn_DT2T', 'jitn_DT2T_fill_p',
+    'jitn_to_csr', 'jitn_csr_count_p',
+    'jitnmv_dt2t',
 ]

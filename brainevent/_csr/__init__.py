@@ -29,7 +29,7 @@ from .plasticity_binary import (
 )
 from .slice import csr_slice_rows, csr_slice_rows_p
 from .spsolve import csr_solve
-from .DT2T import csrmv_DT2T, cscmv_DT2T, csrmv_DT2T_p
+from .dt2t import csrmv_dt2t, cscmv_dt2t, csrmv_dt2t_p, csrmm_dt2t, cscmm_dt2t, csrmm_dt2t_p
 
 __all__ = [
     'CSR', 'CSC',
@@ -39,7 +39,8 @@ __all__ = [
     'binary_csrmm_indexed', 'binary_csrmm_indexed_p',
     'csrmv', 'csrmv_p',
     'csrmm', 'csrmm_p',
-    'csrmv_DT2T', 'cscmv_DT2T', 'csrmv_DT2T_p',
+    'csrmv_dt2t', 'cscmv_dt2t', 'csrmv_dt2t_p',
+    'csrmm_dt2t', 'cscmm_dt2t', 'csrmm_dt2t_p',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',

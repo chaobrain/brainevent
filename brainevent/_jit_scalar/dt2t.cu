@@ -14,13 +14,13 @@
 // ==============================================================================
 
 /*
- * DT2T.cu — Direct JIT-uniform y*w materialization (CUDA)
- * =======================================================
+ * dt2t.cu — Direct JIT-scalar y*w materialization (CUDA)
+ * ======================================================
  *
- * Fills one flat value per structural non-zero of a uniform just-in-time
- * connectivity matrix. The random connectivity and uniform weight stream match
- * csr.cu; this kernel writes sampled_weight * y[row] for non-transpose mode and
- * sampled_weight * y[col] for transpose mode directly into CSR flat data order.
+ * Fills one flat value per structural non-zero of a scalar just-in-time
+ * connectivity matrix. The connectivity stream matches csr.cu; this kernel
+ * writes weight * y[row] for non-transpose mode and weight * y[col] for
+ * transpose mode directly into CSR flat data order.
  */
 
 #include "cuda_common.h"
@@ -32,9 +32,9 @@
 // ##  Fill pass — per-synapse y * w values                               ##
 // #########################################################################
 
-// ---- fill, uniform, corder=true ----
-#define DEFINE_DT2T_U_CT(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, TRANSPOSE)                \
-__global__ void _DT2T_u_ct##SUFFIX(                                                          \
+// ---- fill, scalar, corder=true ----
+#define DEFINE_DT2T_S_CT(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, TRANSPOSE)                \
+__global__ void _dt2t_s_ct##SUFFIX(                                                          \
     const WEIGHT_T* __restrict__ w0,                                                         \
     const WEIGHT_T* __restrict__ w1,                                                         \
     const float*    __restrict__ clen,                                                       \
@@ -46,8 +46,8 @@ __global__ void _DT2T_u_ct##SUFFIX(                                             
 ) {                                                                                          \
     int row = blockIdx.x * blockDim.x + threadIdx.x;                                         \
     if (row >= n_rows) return;                                                               \
-    ACC_T wlo = READ_W(__ldg(&w0[0]));                                                       \
-    ACC_T range = READ_W(__ldg(&w1[0])) - wlo;                                               \
+    (void)w1;                                                                                \
+    ACC_T w = READ_W(__ldg(&w0[0]));                                                         \
     ACC_T y_row = TRANSPOSE ? (ACC_T)0 : READ_W(__ldg(&y[row]));                             \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                                         \
     if (cl < 2) cl = 2;                                                                      \
@@ -57,16 +57,15 @@ __global__ void _DT2T_u_ct##SUFFIX(                                             
     int pos = indptr[row];                                                                   \
     while (col < (unsigned int)n_cols) {                                                     \
         ACC_T y_value = TRANSPOSE ? READ_W(__ldg(&y[col])) : y_row;                          \
-        float uu = curand_uniform(&state);                                                   \
-        data[pos] = WRITE_W((wlo + (ACC_T)uu * range) * y_value);                            \
+        data[pos] = WRITE_W(w * y_value);                                                    \
         pos += 1;                                                                            \
         col += 1 + (curand(&state) % (cl - 1));                                              \
     }                                                                                        \
 }
 
-// ---- fill, uniform, corder=false ----
-#define DEFINE_DT2T_U_CF(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, TRANSPOSE)                \
-__global__ void _DT2T_u_cf##SUFFIX(                                                          \
+// ---- fill, scalar, corder=false ----
+#define DEFINE_DT2T_S_CF(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, TRANSPOSE)                \
+__global__ void _dt2t_s_cf##SUFFIX(                                                          \
     const WEIGHT_T* __restrict__ w0,                                                         \
     const WEIGHT_T* __restrict__ w1,                                                         \
     const float*    __restrict__ clen,                                                       \
@@ -78,8 +77,8 @@ __global__ void _DT2T_u_cf##SUFFIX(                                             
 ) {                                                                                          \
     int row = blockIdx.x * blockDim.x + threadIdx.x;                                         \
     if (row >= n_rows) return;                                                               \
-    ACC_T wlo = READ_W(__ldg(&w0[0]));                                                       \
-    ACC_T range = READ_W(__ldg(&w1[0])) - wlo;                                               \
+    (void)w1;                                                                                \
+    ACC_T w = READ_W(__ldg(&w0[0]));                                                         \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                                         \
     if (cl < 2) cl = 2;                                                                      \
     int pos = indptr[row];                                                                   \
@@ -89,42 +88,39 @@ __global__ void _DT2T_u_cf##SUFFIX(                                             
         curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)col, 0ULL, &state); \
         unsigned int rr = curand(&state) % cl;                                               \
         while (rr < (unsigned int)row) {                                                     \
-            (void)curand_uniform(&state);                                                    \
             rr += 1 + (curand(&state) % (cl - 1));                                           \
         }                                                                                    \
         if (rr == (unsigned int)row) {                                                       \
             ACC_T y_value = TRANSPOSE ? READ_W(__ldg(&y[col])) : y_row;                      \
-            float uu = curand_uniform(&state);                                               \
-            data[pos] = WRITE_W((wlo + (ACC_T)uu * range) * y_value);                        \
+            data[pos] = WRITE_W(w * y_value);                                                \
             pos += 1;                                                                        \
         }                                                                                    \
     }                                                                                        \
 }
 
-DEFINE_DT2T_U_CT(_nt_f32,  float,         float,  READ_F32,  WRITE_F32,  false)
-DEFINE_DT2T_U_CT(_t_f32,   float,         float,  READ_F32,  WRITE_F32,  true)
-DEFINE_DT2T_U_CT(_nt_f64,  double,        double, READ_F64,  WRITE_F64,  false)
-DEFINE_DT2T_U_CT(_t_f64,   double,        double, READ_F64,  WRITE_F64,  true)
-DEFINE_DT2T_U_CT(_nt_f16,  __half,        float,  READ_F16,  WRITE_F16,  false)
-DEFINE_DT2T_U_CT(_t_f16,   __half,        float,  READ_F16,  WRITE_F16,  true)
-DEFINE_DT2T_U_CT(_nt_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, false)
-DEFINE_DT2T_U_CT(_t_bf16,  __nv_bfloat16, float,  READ_BF16, WRITE_BF16, true)
+DEFINE_DT2T_S_CT(_nt_f32,  float,         float,  READ_F32,  WRITE_F32,  false)
+DEFINE_DT2T_S_CT(_t_f32,   float,         float,  READ_F32,  WRITE_F32,  true)
+DEFINE_DT2T_S_CT(_nt_f64,  double,        double, READ_F64,  WRITE_F64,  false)
+DEFINE_DT2T_S_CT(_t_f64,   double,        double, READ_F64,  WRITE_F64,  true)
+DEFINE_DT2T_S_CT(_nt_f16,  __half,        float,  READ_F16,  WRITE_F16,  false)
+DEFINE_DT2T_S_CT(_t_f16,   __half,        float,  READ_F16,  WRITE_F16,  true)
+DEFINE_DT2T_S_CT(_nt_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, false)
+DEFINE_DT2T_S_CT(_t_bf16,  __nv_bfloat16, float,  READ_BF16, WRITE_BF16, true)
 
-DEFINE_DT2T_U_CF(_nt_f32,  float,         float,  READ_F32,  WRITE_F32,  false)
-DEFINE_DT2T_U_CF(_t_f32,   float,         float,  READ_F32,  WRITE_F32,  true)
-DEFINE_DT2T_U_CF(_nt_f64,  double,        double, READ_F64,  WRITE_F64,  false)
-DEFINE_DT2T_U_CF(_t_f64,   double,        double, READ_F64,  WRITE_F64,  true)
-DEFINE_DT2T_U_CF(_nt_f16,  __half,        float,  READ_F16,  WRITE_F16,  false)
-DEFINE_DT2T_U_CF(_t_f16,   __half,        float,  READ_F16,  WRITE_F16,  true)
-DEFINE_DT2T_U_CF(_nt_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, false)
-DEFINE_DT2T_U_CF(_t_bf16,  __nv_bfloat16, float,  READ_BF16, WRITE_BF16, true)
+DEFINE_DT2T_S_CF(_nt_f32,  float,         float,  READ_F32,  WRITE_F32,  false)
+DEFINE_DT2T_S_CF(_t_f32,   float,         float,  READ_F32,  WRITE_F32,  true)
+DEFINE_DT2T_S_CF(_nt_f64,  double,        double, READ_F64,  WRITE_F64,  false)
+DEFINE_DT2T_S_CF(_t_f64,   double,        double, READ_F64,  WRITE_F64,  true)
+DEFINE_DT2T_S_CF(_nt_f16,  __half,        float,  READ_F16,  WRITE_F16,  false)
+DEFINE_DT2T_S_CF(_t_f16,   __half,        float,  READ_F16,  WRITE_F16,  true)
+DEFINE_DT2T_S_CF(_nt_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, false)
+DEFINE_DT2T_S_CF(_t_bf16,  __nv_bfloat16, float,  READ_BF16, WRITE_BF16, true)
 
 
 // #########################################################################
 // ##  FFI entry points                                                    ##
 // #########################################################################
 
-// ---- FFI: fill, corder=true (launch over rows; sequential CSR row slices) ----
 #define FFI_DT2T_FILL_CT(FNAME, GLOBAL, WEIGHT_C_T)                                         \
 void FNAME(                                                                                 \
     const BE::Tensor w0, const BE::Tensor w1,                                                \
@@ -147,7 +143,6 @@ void FNAME(                                                                     
     );                                                                                      \
 }
 
-// ---- FFI: fill, corder=false (launch over rows; deterministic column scan) ----
 #define FFI_DT2T_FILL_CF(FNAME, GLOBAL, WEIGHT_C_T)                                         \
 void FNAME(                                                                                 \
     const BE::Tensor w0, const BE::Tensor w1,                                                \
@@ -170,38 +165,38 @@ void FNAME(                                                                     
     );                                                                                      \
 }
 
-// ====================== uniform — fill, corder=true ======================
+// ====================== scalar — fill, corder=true ======================
 // @BE fill_corder_true_nt_f32
-FFI_DT2T_FILL_CT(fill_corder_true_nt_f32,  _DT2T_u_ct_nt_f32,  float)
+FFI_DT2T_FILL_CT(fill_corder_true_nt_f32,  _dt2t_s_ct_nt_f32,  float)
 // @BE fill_corder_true_t_f32
-FFI_DT2T_FILL_CT(fill_corder_true_t_f32,   _DT2T_u_ct_t_f32,   float)
+FFI_DT2T_FILL_CT(fill_corder_true_t_f32,   _dt2t_s_ct_t_f32,   float)
 // @BE fill_corder_true_nt_f64
-FFI_DT2T_FILL_CT(fill_corder_true_nt_f64,  _DT2T_u_ct_nt_f64,  double)
+FFI_DT2T_FILL_CT(fill_corder_true_nt_f64,  _dt2t_s_ct_nt_f64,  double)
 // @BE fill_corder_true_t_f64
-FFI_DT2T_FILL_CT(fill_corder_true_t_f64,   _DT2T_u_ct_t_f64,   double)
+FFI_DT2T_FILL_CT(fill_corder_true_t_f64,   _dt2t_s_ct_t_f64,   double)
 // @BE fill_corder_true_nt_f16
-FFI_DT2T_FILL_CT(fill_corder_true_nt_f16,  _DT2T_u_ct_nt_f16,  __half)
+FFI_DT2T_FILL_CT(fill_corder_true_nt_f16,  _dt2t_s_ct_nt_f16,  __half)
 // @BE fill_corder_true_t_f16
-FFI_DT2T_FILL_CT(fill_corder_true_t_f16,   _DT2T_u_ct_t_f16,   __half)
+FFI_DT2T_FILL_CT(fill_corder_true_t_f16,   _dt2t_s_ct_t_f16,   __half)
 // @BE fill_corder_true_nt_bf16
-FFI_DT2T_FILL_CT(fill_corder_true_nt_bf16, _DT2T_u_ct_nt_bf16, __nv_bfloat16)
+FFI_DT2T_FILL_CT(fill_corder_true_nt_bf16, _dt2t_s_ct_nt_bf16, __nv_bfloat16)
 // @BE fill_corder_true_t_bf16
-FFI_DT2T_FILL_CT(fill_corder_true_t_bf16,  _DT2T_u_ct_t_bf16,  __nv_bfloat16)
+FFI_DT2T_FILL_CT(fill_corder_true_t_bf16,  _dt2t_s_ct_t_bf16,  __nv_bfloat16)
 
-// ====================== uniform — fill, corder=false ======================
+// ====================== scalar — fill, corder=false ======================
 // @BE fill_corder_false_nt_f32
-FFI_DT2T_FILL_CF(fill_corder_false_nt_f32,  _DT2T_u_cf_nt_f32,  float)
+FFI_DT2T_FILL_CF(fill_corder_false_nt_f32,  _dt2t_s_cf_nt_f32,  float)
 // @BE fill_corder_false_t_f32
-FFI_DT2T_FILL_CF(fill_corder_false_t_f32,   _DT2T_u_cf_t_f32,   float)
+FFI_DT2T_FILL_CF(fill_corder_false_t_f32,   _dt2t_s_cf_t_f32,   float)
 // @BE fill_corder_false_nt_f64
-FFI_DT2T_FILL_CF(fill_corder_false_nt_f64,  _DT2T_u_cf_nt_f64,  double)
+FFI_DT2T_FILL_CF(fill_corder_false_nt_f64,  _dt2t_s_cf_nt_f64,  double)
 // @BE fill_corder_false_t_f64
-FFI_DT2T_FILL_CF(fill_corder_false_t_f64,   _DT2T_u_cf_t_f64,   double)
+FFI_DT2T_FILL_CF(fill_corder_false_t_f64,   _dt2t_s_cf_t_f64,   double)
 // @BE fill_corder_false_nt_f16
-FFI_DT2T_FILL_CF(fill_corder_false_nt_f16,  _DT2T_u_cf_nt_f16,  __half)
+FFI_DT2T_FILL_CF(fill_corder_false_nt_f16,  _dt2t_s_cf_nt_f16,  __half)
 // @BE fill_corder_false_t_f16
-FFI_DT2T_FILL_CF(fill_corder_false_t_f16,   _DT2T_u_cf_t_f16,   __half)
+FFI_DT2T_FILL_CF(fill_corder_false_t_f16,   _dt2t_s_cf_t_f16,   __half)
 // @BE fill_corder_false_nt_bf16
-FFI_DT2T_FILL_CF(fill_corder_false_nt_bf16, _DT2T_u_cf_nt_bf16, __nv_bfloat16)
+FFI_DT2T_FILL_CF(fill_corder_false_nt_bf16, _dt2t_s_cf_nt_bf16, __nv_bfloat16)
 // @BE fill_corder_false_t_bf16
-FFI_DT2T_FILL_CF(fill_corder_false_t_bf16,  _DT2T_u_cf_t_bf16,  __nv_bfloat16)
+FFI_DT2T_FILL_CF(fill_corder_false_t_bf16,  _dt2t_s_cf_t_bf16,  __nv_bfloat16)

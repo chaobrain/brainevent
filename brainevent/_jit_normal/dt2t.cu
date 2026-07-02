@@ -14,7 +14,7 @@
 // ==============================================================================
 
 /*
- * DT2T.cu — Direct JIT-normal y*w materialization (CUDA)
+ * dt2t.cu — Direct JIT-normal y*w materialization (CUDA)
  * ======================================================
  *
  * Fills one flat value per structural non-zero of a normal just-in-time
@@ -35,7 +35,7 @@
 
 // ---- fill, normal, corder=true ----
 #define DEFINE_DT2T_N_CT(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, RNG_FUNC, TRANSPOSE)      \
-__global__ void _DT2T_n_ct##SUFFIX(                                                          \
+__global__ void _dt2t_n_ct##SUFFIX(                                                          \
     const WEIGHT_T* __restrict__ w0,                                                         \
     const WEIGHT_T* __restrict__ w1,                                                         \
     const float*    __restrict__ clen,                                                       \
@@ -67,7 +67,7 @@ __global__ void _DT2T_n_ct##SUFFIX(                                             
 
 // ---- fill, normal, corder=false ----
 #define DEFINE_DT2T_N_CF(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, RNG_FUNC, TRANSPOSE)      \
-__global__ void _DT2T_n_cf##SUFFIX(                                                          \
+__global__ void _dt2t_n_cf##SUFFIX(                                                          \
     const WEIGHT_T* __restrict__ w0,                                                         \
     const WEIGHT_T* __restrict__ w1,                                                         \
     const float*    __restrict__ clen,                                                       \
@@ -171,36 +171,36 @@ void FNAME(                                                                     
 
 // ====================== normal — fill, corder=true ======================
 // @BE fill_corder_true_nt_f32
-FFI_DT2T_FILL_CT(fill_corder_true_nt_f32,  _DT2T_n_ct_nt_f32,  float)
+FFI_DT2T_FILL_CT(fill_corder_true_nt_f32,  _dt2t_n_ct_nt_f32,  float)
 // @BE fill_corder_true_t_f32
-FFI_DT2T_FILL_CT(fill_corder_true_t_f32,   _DT2T_n_ct_t_f32,   float)
+FFI_DT2T_FILL_CT(fill_corder_true_t_f32,   _dt2t_n_ct_t_f32,   float)
 // @BE fill_corder_true_nt_f64
-FFI_DT2T_FILL_CT(fill_corder_true_nt_f64,  _DT2T_n_ct_nt_f64,  double)
+FFI_DT2T_FILL_CT(fill_corder_true_nt_f64,  _dt2t_n_ct_nt_f64,  double)
 // @BE fill_corder_true_t_f64
-FFI_DT2T_FILL_CT(fill_corder_true_t_f64,   _DT2T_n_ct_t_f64,   double)
+FFI_DT2T_FILL_CT(fill_corder_true_t_f64,   _dt2t_n_ct_t_f64,   double)
 // @BE fill_corder_true_nt_f16
-FFI_DT2T_FILL_CT(fill_corder_true_nt_f16,  _DT2T_n_ct_nt_f16,  __half)
+FFI_DT2T_FILL_CT(fill_corder_true_nt_f16,  _dt2t_n_ct_nt_f16,  __half)
 // @BE fill_corder_true_t_f16
-FFI_DT2T_FILL_CT(fill_corder_true_t_f16,   _DT2T_n_ct_t_f16,   __half)
+FFI_DT2T_FILL_CT(fill_corder_true_t_f16,   _dt2t_n_ct_t_f16,   __half)
 // @BE fill_corder_true_nt_bf16
-FFI_DT2T_FILL_CT(fill_corder_true_nt_bf16, _DT2T_n_ct_nt_bf16, __nv_bfloat16)
+FFI_DT2T_FILL_CT(fill_corder_true_nt_bf16, _dt2t_n_ct_nt_bf16, __nv_bfloat16)
 // @BE fill_corder_true_t_bf16
-FFI_DT2T_FILL_CT(fill_corder_true_t_bf16,  _DT2T_n_ct_t_bf16,  __nv_bfloat16)
+FFI_DT2T_FILL_CT(fill_corder_true_t_bf16,  _dt2t_n_ct_t_bf16,  __nv_bfloat16)
 
 // ====================== normal — fill, corder=false ======================
 // @BE fill_corder_false_nt_f32
-FFI_DT2T_FILL_CF(fill_corder_false_nt_f32,  _DT2T_n_cf_nt_f32,  float)
+FFI_DT2T_FILL_CF(fill_corder_false_nt_f32,  _dt2t_n_cf_nt_f32,  float)
 // @BE fill_corder_false_t_f32
-FFI_DT2T_FILL_CF(fill_corder_false_t_f32,   _DT2T_n_cf_t_f32,   float)
+FFI_DT2T_FILL_CF(fill_corder_false_t_f32,   _dt2t_n_cf_t_f32,   float)
 // @BE fill_corder_false_nt_f64
-FFI_DT2T_FILL_CF(fill_corder_false_nt_f64,  _DT2T_n_cf_nt_f64,  double)
+FFI_DT2T_FILL_CF(fill_corder_false_nt_f64,  _dt2t_n_cf_nt_f64,  double)
 // @BE fill_corder_false_t_f64
-FFI_DT2T_FILL_CF(fill_corder_false_t_f64,   _DT2T_n_cf_t_f64,   double)
+FFI_DT2T_FILL_CF(fill_corder_false_t_f64,   _dt2t_n_cf_t_f64,   double)
 // @BE fill_corder_false_nt_f16
-FFI_DT2T_FILL_CF(fill_corder_false_nt_f16,  _DT2T_n_cf_nt_f16,  __half)
+FFI_DT2T_FILL_CF(fill_corder_false_nt_f16,  _dt2t_n_cf_nt_f16,  __half)
 // @BE fill_corder_false_t_f16
-FFI_DT2T_FILL_CF(fill_corder_false_t_f16,   _DT2T_n_cf_t_f16,   __half)
+FFI_DT2T_FILL_CF(fill_corder_false_t_f16,   _dt2t_n_cf_t_f16,   __half)
 // @BE fill_corder_false_nt_bf16
-FFI_DT2T_FILL_CF(fill_corder_false_nt_bf16, _DT2T_n_cf_nt_bf16, __nv_bfloat16)
+FFI_DT2T_FILL_CF(fill_corder_false_nt_bf16, _dt2t_n_cf_nt_bf16, __nv_bfloat16)
 // @BE fill_corder_false_t_bf16
-FFI_DT2T_FILL_CF(fill_corder_false_t_bf16,  _DT2T_n_cf_t_bf16,  __nv_bfloat16)
+FFI_DT2T_FILL_CF(fill_corder_false_t_bf16,  _dt2t_n_cf_t_bf16,  __nv_bfloat16)

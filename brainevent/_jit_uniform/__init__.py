@@ -15,15 +15,15 @@
 
 
 from .binary import binary_jitumv, binary_jitumv_p, binary_jitumm, binary_jitumm_p
-from .csr import jitu_to_csr, jitu_csr_count_p, jitu_csr_fill_p
+from .csr import jitu_to_csr, jitu_csr_count_p
 from .float import jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p
 from .main import JITCUniformR, JITCUniformC
-from .DT2T import jitu_DT2T, jitu_DT2T_fill_p
+from .dt2t import jitumv_dt2t
 
 __all__ = [
     'JITCUniformR', 'JITCUniformC',
     'binary_jitumv', 'binary_jitumv_p', 'binary_jitumm', 'binary_jitumm_p',
     'jitu', 'jitu_p', 'jitumv', 'jitumv_p', 'jitumm', 'jitumm_p',
-    'jitu_to_csr', 'jitu_csr_count_p', 'jitu_csr_fill_p',
-    'jitu_DT2T', 'jitu_DT2T_fill_p',
+    'jitu_to_csr', 'jitu_csr_count_p',
+    'jitumv_dt2t',
 ]

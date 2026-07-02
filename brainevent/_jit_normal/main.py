@@ -29,7 +29,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitnmv, binary_jitnmm
 from .csr import jitn_to_csr
 from .float import jitn, jitnmv, jitnmm
-from .DT2T import jitn_DT2T
+from .dt2t import jitnmv_dt2t
 
 __all__ = [
     'JITCNormalR',
@@ -362,7 +362,7 @@ class JITCNormalMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def DT_to_T(
+    def dt2t(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -374,7 +374,7 @@ class JITCNormalMatrix(JITCMatrix):
         metadata, including ``wloc``, ``wscale``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jitn_DT2T(
+        return jitnmv_dt2t(
             self.wloc,
             self.wscale,
             self.prob,
@@ -386,7 +386,7 @@ class JITCNormalMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def DT_to_T_transposed(
+    def dt2t_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -398,7 +398,7 @@ class JITCNormalMatrix(JITCMatrix):
         metadata, including ``wloc``, ``wscale``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jitn_DT2T(
+        return jitnmv_dt2t(
             self.wloc,
             self.wscale,
             self.prob,

@@ -50,7 +50,7 @@ CONCRETE_CLASSES = [
 # are declared by the saiunit base; the rest by DataRepresentation.
 CONTRACT_METHODS = [
     'todense', 'fromdense', 'tocoo', 'tocsr', 'tocsc',
-    'DT_to_T', 'DT_to_T_transposed',
+    'dt2t', 'dt2t_transposed',
     'update_on_pre', 'update_on_post',
     'with_data', 'transpose',
 ]
@@ -97,20 +97,44 @@ def test_contract_method_is_overridden_or_refused(cls, method):
     )
 
 
-def test_data_representation_declares_DT_to_T_contract():
-    assert 'DT_to_T' in vars(DataRepresentation)
+def test_data_representation_declares_dt2t_contract():
+    assert 'dt2t' in vars(DataRepresentation)
 
 
-def test_data_representation_hides_removed_sparse_base_contract_name():
-    removed_name = ''.join(('y', 'w', '_to', '_w'))
-    assert not hasattr(DataRepresentation, removed_name)
-    for cls in CONCRETE_CLASSES:
-        assert not hasattr(cls, removed_name)
+def test_data_representation_declares_yw_to_w_deprecated_aliases():
+    assert 'yw_to_w' in vars(DataRepresentation)
+    assert 'yw_to_w_transposed' in vars(DataRepresentation)
 
 
-@pytest.mark.parametrize('method', ['DT_to_T', 'DT_to_T_transposed'])
 @pytest.mark.parametrize('cls', CONCRETE_CLASSES, ids=[c.__name__ for c in CONCRETE_CLASSES])
-def test_DT_to_T_signatures_align_data_representation_contract(cls, method):
+def test_yw_to_w_signatures_align_dt2t_contract(cls):
+    for alias, canonical in (('yw_to_w', 'dt2t'), ('yw_to_w_transposed', 'dt2t_transposed')):
+        sig = inspect.signature(getattr(cls, alias))
+        canonical_sig = inspect.signature(getattr(cls, canonical))
+        assert list(sig.parameters) == list(canonical_sig.parameters)
+
+
+def test_yw_to_w_warns_and_delegates_to_dt2t():
+    csr = be.CSR.fromdense(_DENSE)
+    y = jnp.ones(csr.shape[0])
+    w = csr.data
+    with pytest.warns(DeprecationWarning, match='yw_to_w is deprecated'):
+        out = csr.yw_to_w(y, w)
+    assert jnp.allclose(out, csr.dt2t(y, w))
+
+
+def test_yw_to_w_transposed_warns_and_delegates_to_dt2t_transposed():
+    csr = be.CSR.fromdense(_DENSE)
+    y = jnp.ones(csr.shape[1])
+    w = csr.data
+    with pytest.warns(DeprecationWarning, match='yw_to_w_transposed is deprecated'):
+        out = csr.yw_to_w_transposed(y, w)
+    assert jnp.allclose(out, csr.dt2t_transposed(y, w))
+
+
+@pytest.mark.parametrize('method', ['dt2t', 'dt2t_transposed'])
+@pytest.mark.parametrize('cls', CONCRETE_CLASSES, ids=[c.__name__ for c in CONCRETE_CLASSES])
+def test_dt2t_signatures_align_data_representation_contract(cls, method):
     sig = inspect.signature(getattr(cls, method))
     base_sig = inspect.signature(getattr(DataRepresentation, method))
     assert list(sig.parameters) == list(base_sig.parameters)

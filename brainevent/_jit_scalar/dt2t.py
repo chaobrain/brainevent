@@ -16,10 +16,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Direct per-synapse ``y * w`` generation for normal-weight just-in-time
+Direct per-synapse ``y * w`` generation for scalar-weight just-in-time
 connectivity (JITC) matrices.
 
-The public :func:`jitn_DT2T` wrapper returns one value per generated structural
+The public :func:`jitsmv_dt2t` wrapper returns one value per generated structural
 non-zero in canonical CSR flat order. It does not return ``indices`` or
 ``indptr``; callers that need structure should materialize CSR explicitly.
 """
@@ -33,20 +33,19 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
-from brainevent._data import _initialize_conn_length, _initialize_seed
-from brainevent._jit_normal.csr import jitn_csr_count_p_call
+from brainevent._data import _initialize_conn_length
+from brainevent._jit_scalar.csr import jits_csr_count_p_call
 from brainevent._numba_random import (
     get_numba_lfsr_seed,
     get_numba_lfsr_random_integers,
-    get_numba_lfsr_normal,
 )
 from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
 
 __all__ = [
-    'jitn_DT2T',
-    'jitn_DT2T_fill_p',
-    'jitn_DT2T_fill_p_call',
+    'jitsmv_dt2t',
+    'jitsmv_dt2t_p',
+    'jitsmv_dt2t_p_call',
 ]
 
 _dtype_sfx = {
@@ -57,9 +56,8 @@ _dtype_sfx = {
 }
 
 
-def jitn_DT2T(
-    w_loc,
-    w_scale,
+def jitsmv_dt2t(
+    weight,
     prob,
     y,
     seed,
@@ -69,18 +67,15 @@ def jitn_DT2T(
     corder: bool = True,
     backend: Optional[str] = None,
 ):
-    """Generate per-synapse ``y * w`` values for a normal JITC matrix."""
+    """Generate per-synapse ``y * w`` values for a scalar JITC matrix."""
     shape = (int(shape[0]), int(shape[1]))
 
-    w_loc, unitd = u.split_mantissa_unit(w_loc)
-    w_scale = u.Quantity(w_scale).to(unitd).mantissa
+    weight, unitd = u.split_mantissa_unit(weight)
     y, unity = u.split_mantissa_unit(y)
 
-    common_dtype = jnp.result_type(w_loc, w_scale, y)
-    w_loc = jnp.atleast_1d(jnp.asarray(w_loc, dtype=common_dtype))
-    w_scale = jnp.atleast_1d(jnp.asarray(w_scale, dtype=common_dtype))
+    common_dtype = jnp.result_type(weight, y)
+    weight = jnp.atleast_1d(jnp.asarray(weight, dtype=common_dtype))
     y = jnp.asarray(y, dtype=common_dtype)
-    seed = _initialize_seed(seed)
 
     if y.ndim != 1:
         raise AssertionError("y must be 1D.")
@@ -94,17 +89,17 @@ def jitn_DT2T(
         return u.maybe_decimal(data * unitd * unity)
 
     clen = _initialize_conn_length(prob)
-    row_counts = jitn_csr_count_p_call(
-        w_loc, w_scale, clen, seed, shape=shape, corder=corder, backend=backend,
+    row_counts = jits_csr_count_p_call(
+        weight, weight, clen, seed, shape=shape, corder=corder, backend=backend,
     )[0]
     indptr = jnp.concatenate(
         [jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
     )
     nnz = int(indptr[-1])
 
-    data = jitn_DT2T_fill_p_call(
-        w_loc,
-        w_scale,
+    data = jitsmv_dt2t_p_call(
+        weight,
+        weight,
         clen,
         y,
         seed,
@@ -122,25 +117,23 @@ def jitn_DT2T(
 #  Fill pass - per-synapse y * w values
 # ---------------------------------------------------------------------- #
 
-def _jitn_DT2T_fill_numba_kernel_generator(
+def _jitsmv_dt2t_fill_numba_kernel_generator(
     corder: bool,
     shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """Build the Numba CPU kernel for the normal JITC ``DT2T`` fill pass."""
+    """Build the Numba CPU kernel for the scalar JITC ``dt2t`` fill pass."""
     import numba  # pylint: disable=import-outside-toplevel
 
     _lfsr_seed = get_numba_lfsr_seed()
     _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _draw = get_numba_lfsr_normal()
     n_rows, n_cols = int(shape[0]), int(shape[1])
 
     if corder:
         @numba.njit(fastmath=True)
         def kernel_impl(w0, w1, clen, y, seed, indptr, out):
-            loc = w0[0]
-            scale = w1[0]
+            w = w0[0]
             cl = clen[0]
             s = seed[0]
             for r in range(n_rows):
@@ -149,14 +142,14 @@ def _jitn_DT2T_fill_numba_kernel_generator(
                 pos = indptr[r]
                 while c < n_cols:
                     y_value = y[c] if transpose else y[r]
-                    out[pos] = _draw(state, loc, scale) * y_value
+                    out[pos] = w * y_value
                     pos += 1
                     c += _lfsr_random_integers(state, 1, cl - 1)
+            w1[0]  # keep signature aligned with other JIT fill primitives
     else:
         @numba.njit(fastmath=True)
         def kernel_impl(w0, w1, clen, y, seed, indptr, out):
-            loc = w0[0]
-            scale = w1[0]
+            w = w0[0]
             cl = clen[0]
             s = seed[0]
             wptr = indptr[:n_rows].copy()
@@ -166,9 +159,10 @@ def _jitn_DT2T_fill_numba_kernel_generator(
                 while rr < n_rows:
                     pos = wptr[rr]
                     y_value = y[c] if transpose else y[rr]
-                    out[pos] = _draw(state, loc, scale) * y_value
+                    out[pos] = w * y_value
                     wptr[rr] += 1
                     rr += _lfsr_random_integers(state, 1, cl - 1)
+            w1[0]  # keep signature aligned with other JIT fill primitives
 
     def kernel(w0, w1, clen, y, seed, indptr):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w0, w1, clen, y, seed, indptr)
@@ -176,21 +170,21 @@ def _jitn_DT2T_fill_numba_kernel_generator(
     return kernel
 
 
-def _jitn_DT2T_fill_cuda_kernel(
+def _jitsmv_dt2t_fill_cuda_kernel(
     corder: bool,
     shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """Build the CUDA kernel callable for the normal JITC ``DT2T`` fill pass."""
+    """Build the CUDA kernel callable for the scalar JITC ``dt2t`` fill pass."""
     load_cuda_file(
-        Path(__file__).parent.joinpath('DT2T.cu'),
-        name='jit_normal_DT2T',
+        Path(__file__).parent.joinpath('dt2t.cu'),
+        name='jit_scalar_dt2t',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w0_info'].dtype), '_f32')
     order = 'corder_true' if corder else 'corder_false'
     direction = 't' if transpose else 'nt'
-    kernel_name = f'jit_normal_DT2T.fill_{order}_{direction}{sfx}'
+    kernel_name = f'jit_scalar_dt2t.fill_{order}_{direction}{sfx}'
     n_cols = np.int32(shape[1])
 
     def kernel(w0, w1, clen, y, seed, indptr):
@@ -201,7 +195,7 @@ def _jitn_DT2T_fill_cuda_kernel(
     return kernel
 
 
-def jitn_DT2T_fill_p_call(
+def jitsmv_dt2t_p_call(
     w0,
     w1,
     clen,
@@ -215,7 +209,7 @@ def jitn_DT2T_fill_p_call(
     corder: bool,
     backend: Optional[str] = None,
 ):
-    """Invoke the normal JITC ``DT2T`` fill primitive."""
+    """Invoke the scalar JITC ``dt2t`` fill primitive."""
     w0 = jnp.atleast_1d(w0)
     w1 = jnp.atleast_1d(w1)
     clen = jnp.atleast_1d(clen)
@@ -242,7 +236,7 @@ def jitn_DT2T_fill_p_call(
     else:
         assert shape[0] == y.shape[0], "Shape mismatch for non-transpose operation."
 
-    return jitn_DT2T_fill_p(
+    return jitsmv_dt2t_p(
         w0,
         w1,
         clen,
@@ -263,19 +257,18 @@ def jitn_DT2T_fill_p_call(
     )
 
 
-jitn_DT2T_fill_p = XLACustomKernel(
-    'jitn_DT2T_fill',
+jitsmv_dt2t_p = XLACustomKernel(
+    'jitsmv_dt2t_fill',
     doc="""
 Low-level XLA custom-kernel primitive filling per-synapse ``y * w`` values for a
-normal JITC matrix.
+scalar JITC matrix.
 
-Given the ``indptr`` produced by the JIT-normal CSR count pass, this primitive
-walks the same deterministic random connectivity and normal weight stream as
-``jitn_to_csr`` and writes either ``weight * y[row]`` or ``weight * y[col]``
-into flat CSR order.
+Given the ``indptr`` produced by the JIT-scalar CSR count pass, this primitive
+walks the same deterministic random connectivity stream as ``jits_to_csr`` and
+writes either ``weight * y[row]`` or ``weight * y[col]`` into flat CSR order.
 """
 )
-jitn_DT2T_fill_p.def_numba_kernel(_jitn_DT2T_fill_numba_kernel_generator)
-jitn_DT2T_fill_p.def_cuda_raw_kernel(_jitn_DT2T_fill_cuda_kernel)
-jitn_DT2T_fill_p.def_call(jitn_DT2T_fill_p_call)
-jitn_DT2T_fill_p.def_tags('jit_normal', 'DT2T')
+jitsmv_dt2t_p.def_numba_kernel(_jitsmv_dt2t_fill_numba_kernel_generator)
+jitsmv_dt2t_p.def_cuda_raw_kernel(_jitsmv_dt2t_fill_cuda_kernel)
+jitsmv_dt2t_p.def_call(jitsmv_dt2t_p_call)
+jitsmv_dt2t_p.def_tags('jit_scalar', 'dt2t')

@@ -132,11 +132,11 @@ markers = [
 
 
 [tool.mypy]
-# Configuration for the mypy CI ratchet (see .github/workflows/CI.yml `type_check`).
+# Configuration for the mypy CI gate (see .github/workflows/CI.yml `type_check`).
 #
-# The ratchet runs with ONLY mypy + mypy-baseline installed (no runtime deps), so every
-# third-party import must resolve to `Any` via ignore_missing_imports. python_version and
-# platform are pinned so the committed mypy-baseline.txt reproduces exactly on CI.
+# The gate runs with ONLY mypy installed (no runtime deps), so every third-party
+# import must resolve to `Any` via ignore_missing_imports. python_version and
+# platform are pinned so the mypy verdict reproduces exactly on CI.
 files = ["brainevent"]
 exclude = ['_test\.py$']
 python_version = "3.13"

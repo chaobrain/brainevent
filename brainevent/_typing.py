@@ -18,7 +18,8 @@ This module defines several type aliases using the `typing` module.
 
 Type Aliases:
     MatrixShape: A tuple representing the shape of a matrix, with two integers.
-    Data: A union type that can be a `jax.Array`, `numpy.ndarray`, or `brainunit.Quantity`.
+    Data: A union type that can be a `jax.Array`, `numpy.ndarray`, `brainunit.Quantity`, or scalar `numbers.Number`.
+    ArrayData: Like `Data` but restricted to array-like values (no bare Python scalars).
     Index: A union type that can be either a `jax.Array` or `numpy.ndarray`.
     Row: Alias for Index, representing a row index.
     Col: Alias for Index, representing a column index.
@@ -37,8 +38,13 @@ import numpy as np
 # A tuple representing the shape of a matrix, with two integers.
 MatrixShape = Tuple[int, int]
 
-# A union type that can be a jax.Array, numpy.ndarray, or brainunit.Quantity.
+# A union type that can be a jax.Array, numpy.ndarray, brainunit.Quantity, or scalar number.
 Data = Union[jax.Array, np.ndarray, u.Quantity, numbers.Number]
+
+# Array-like data only (stored matrix values after ``asarray`` coercion): unlike
+# ``Data``, bare Python scalars are excluded, so attribute access such as
+# ``.shape`` / ``.dtype`` / ``.reshape`` is always valid.
+ArrayData = Union[jax.Array, np.ndarray, u.Quantity]
 
 # A union type that can be either a jax.Array or numpy.ndarray.
 Index = Union[jax.Array, np.ndarray]

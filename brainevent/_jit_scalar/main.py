@@ -29,7 +29,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitsmv, binary_jitsmm
 from .csr import jits_to_csr
 from .float import jits, jitsmv, jitsmm
-from .DT2T import jits_DT2T
+from .dt2t import jitsmv_dt2t
 
 __all__ = [
     'JITCScalarR',
@@ -355,7 +355,7 @@ class JITCScalarMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def DT_to_T(
+    def dt2t(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -367,7 +367,7 @@ class JITCScalarMatrix(JITCMatrix):
         metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jits_DT2T(
+        return jitsmv_dt2t(
             self.weight,
             self.prob,
             y_dim_arr,
@@ -378,7 +378,7 @@ class JITCScalarMatrix(JITCMatrix):
             backend=self.backend,
         )
 
-    def DT_to_T_transposed(
+    def dt2t_transposed(
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
@@ -390,7 +390,7 @@ class JITCScalarMatrix(JITCMatrix):
         metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
-        return jits_DT2T(
+        return jitsmv_dt2t(
             self.weight,
             self.prob,
             y_dim_arr,

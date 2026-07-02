@@ -26,14 +26,14 @@ import brainevent._csr.binary_indexed as binary_indexed_mod
 import brainevent._csr.float as float_mod
 import brainevent._csr.plasticity_binary as plasticity_mod
 import brainevent._csr.slice as slice_mod
-import brainevent._csr.DT2T as DT2T_mod
+import brainevent._csr.dt2t as dt2t_mod
 from brainevent._csr.binary import binary_csrmm, binary_csrmv
 from brainevent._csr.binary_indexed import binary_csrmm_indexed, binary_csrmv_indexed
 from brainevent._csr.float import csrmm, csrmv
 from brainevent._csr.main import _make_binary_task_workspace
 from brainevent._csr.plasticity_binary import update_csr_on_binary_post, update_csr_on_binary_pre
 from brainevent._csr.slice import csr_slice_rows, csr_slice_rows_grad
-from brainevent._csr.DT2T import csrmv_DT2T
+from brainevent._csr.dt2t import csrmv_dt2t
 
 
 requires_gpu = pytest.mark.skipif(
@@ -137,7 +137,7 @@ def _recording_ffi_call(calls):
             },
         ),
         (
-            DT2T_mod._csrmv_DT2T_cuda_kernel,
+            dt2t_mod._csrmv_dt2t_cuda_kernel,
             (False, _shape(jnp.float32)),
             {'outs': [_shape(jnp.float32)]},
         ),
@@ -551,14 +551,14 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
     ]
 
 
-def test_slice_DT2T_and_plasticity_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
+def test_slice_dt2t_and_plasticity_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
     ffi_calls = []
     load_calls = []
 
     monkeypatch.setattr(slice_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
     monkeypatch.setattr(slice_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
-    monkeypatch.setattr(DT2T_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
-    monkeypatch.setattr(DT2T_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
+    monkeypatch.setattr(dt2t_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(dt2t_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
     monkeypatch.setattr(plasticity_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
     monkeypatch.setattr(plasticity_mod.jax.ffi, "ffi_call", _recording_ffi_call(ffi_calls))
 
@@ -586,12 +586,12 @@ def test_slice_DT2T_and_plasticity_cuda_generators_accept_int64_indptr_without_r
         )
         slice_grad_kernel(jnp.array([[1.0, 2.0]]), indices, indptr, jnp.array([0], dtype=jnp.int32))
 
-        DT2T_kernel = DT2T_mod._csrmv_DT2T_cuda_kernel(
+        dt2t_kernel = dt2t_mod._csrmv_dt2t_cuda_kernel(
             False,
             _shape(jnp.float32, (2,)),
             **_cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
         )
-        DT2T_kernel(jnp.array([1.0]), jnp.array([2.0, 3.0]), indices, indptr)
+        dt2t_kernel(jnp.array([1.0]), jnp.array([2.0, 3.0]), indices, indptr)
 
         pre_kernel = plasticity_mod._csr_on_pre_cuda_kernel(
             _shape(jnp.float32, (2,)),
@@ -628,14 +628,14 @@ def test_slice_DT2T_and_plasticity_cuda_generators_accept_int64_indptr_without_r
     assert [name for _, name in load_calls] == [
         'csr_slice_rows',
         'csr_slice_rows',
-        'csrmv_DT2T',
+        'csrmv_dt2t',
         'csr_plasticity_binary_pre',
         'csr_plasticity_binary_post',
     ]
     assert [call[0] for call in ffi_calls] == [
         'csr_slice_rows.csr_slice_rows_fwd_hetero_auto_f32',
         'csr_slice_rows.csr_slice_rows_grad_auto_f32',
-        'csrmv_DT2T.csrmv_DT2T_nt_auto_f32',
+        'csrmv_dt2t.csrmv_dt2t_nt_auto_f32',
         'csr_plasticity_binary_pre.update_csr_on_pre_f32_bool',
         'csr_plasticity_binary_post.update_csr_on_post_f32_float',
     ]
@@ -785,13 +785,13 @@ def test_slice_grad_cuda_accepts_int64_indptr():
 
 
 @requires_gpu
-def test_DT_to_T_cuda_accepts_int64_indptr():
+def test_dt2t_cuda_accepts_int64_indptr():
     weights, indices, indptr32 = _structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)
     y = jnp.array([1.0, 2.0], dtype=jnp.float32)
 
-    got = csrmv_DT2T(y, weights, indices, indptr64, shape=(2, 3), backend='cuda_raw')
-    expected = csrmv_DT2T(y, weights, indices, indptr32, shape=(2, 3), backend='jax_raw')
+    got = csrmv_dt2t(y, weights, indices, indptr64, shape=(2, 3), backend='cuda_raw')
+    expected = csrmv_dt2t(y, weights, indices, indptr32, shape=(2, 3), backend='jax_raw')
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 

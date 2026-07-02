@@ -28,9 +28,12 @@ Float matrix-vector / matrix-matrix multiplication.
    csrmv_p
    csrmm
    csrmm_p
-   csrmv_DT2T
-   cscmv_DT2T
-   csrmv_DT2T_p
+   csrmv_dt2t
+   cscmv_dt2t
+   csrmv_dt2t_p
+   csrmm_dt2t
+   cscmm_dt2t
+   csrmm_dt2t_p
 
 Plasticity operations.
 
@@ -116,8 +119,7 @@ Float matrix-vector / matrix-matrix multiplication.
    jitsmv_p
    jitsmm
    jitsmm_p
-   jits_DT2T
-   jits_DT2T_fill_p
+   jitsmv_dt2t
 
 
 JITC Normal Operations
@@ -144,8 +146,7 @@ Float matrix-vector / matrix-matrix multiplication.
    jitnmv_p
    jitnmm
    jitnmm_p
-   jitn_DT2T
-   jitn_DT2T_fill_p
+   jitnmv_dt2t
 
 
 JITC Uniform Operations
@@ -172,8 +173,7 @@ Float matrix-vector / matrix-matrix multiplication.
    jitumv_p
    jitumm
    jitumm_p
-   jitu_DT2T
-   jitu_DT2T_fill_p
+   jitumv_dt2t
 
 
 Fixed Connectivity Operations
@@ -196,4 +196,5 @@ Float matrix-vector / matrix-matrix multiplication.
 
    fcnmv
    fcnmm
-   fcnmv_DT2T
+   fcnmv_dt2t
+   fcnmm_dt2t

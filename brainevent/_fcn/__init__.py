@@ -20,7 +20,7 @@ from .binary import (
     binary_fcnmm_p,
 )
 from .float import fcnmv, fcnmm
-from .DT2T import fcnmv_DT2T
+from .dt2t import fcnmv_dt2t, fcnmm_dt2t
 from .main import FixedNumConn, FixedNumPerPost, FixedNumPerPre
 from .plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
@@ -32,7 +32,7 @@ __all__ = [
     'FixedNumConn', 'FixedNumPerPost', 'FixedNumPerPre',
     'binary_fcnmv', 'binary_fcnmv_p',
     'binary_fcnmm', 'binary_fcnmm_p',
-    'fcnmv', 'fcnmm', 'fcnmv_DT2T',
+    'fcnmv', 'fcnmm', 'fcnmv_dt2t', 'fcnmm_dt2t',
     'update_fixed_post_conn_on_binary_pre',
     'update_fixed_pre_conn_on_binary_post',
     'fcn_plasticity_row_p',
