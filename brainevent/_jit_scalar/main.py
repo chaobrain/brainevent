@@ -247,37 +247,40 @@ class JITCScalarMatrix(JITCMatrix):
         return self.weight.dtype
 
     @property
-    def data(self) -> Tuple[WeightScalar, Prob, Seed]:
+    def data(self) -> WeightScalar:
         """
-        Returns the core data components of the homogeneous matrix.
+        Return the trainable weight of the matrix.
 
-        This property provides access to the three fundamental components that define
-        the sparse matrix: weight values, connection probabilities, and the random seed.
-        It's used by the tree_flatten method to make the class compatible with JAX
-        transformations.
+        Only the trainable value parameter is exposed here. The structural
+        parameters ``prob`` and ``seed`` are non-trainable and are therefore
+        excluded. This property mirrors :meth:`with_data`, which accepts exactly
+        the value returned here, so ``mat.with_data(mat.data)`` round-trips.
 
         Returns
         -------
-        Tuple[Weight, Prob, Seed]
-            A tuple containing:
-            - weight: The homogeneous weight value for non-zero elements
-            - prob: Connection probability for the sparse structure
-            - seed: Random seed used for generating the sparse connectivity pattern
-        """
-        return self.weight, self.prob, self.seed
+        WeightScalar
+            The homogeneous weight value for the non-zero elements.
 
-    def with_data(self, weight: WeightScalar):
+        See Also
+        --------
+        with_data : Rebuild the matrix from the value returned here.
         """
-        Create a new matrix instance with updated weight data but preserving other properties.
+        return self.weight
 
-        This method returns a new instance of the same class with the provided weight value,
-        while keeping the same probability, seed, shape, and other configuration parameters.
-        It's useful for updating weights without changing the connectivity pattern.
+    def with_data(self, data: WeightScalar):
+        """
+        Create a new matrix instance with updated weight, preserving all other structure.
+
+        Accepts exactly the value returned by :attr:`data` (the trainable
+        weight), while keeping the same ``prob``, ``seed``, ``shape``, ``corder``,
+        ``backend``, and buffers. It is useful for updating the weight without
+        changing the connectivity pattern.
 
         Parameters
         ----------
-        weight : Weight
-            The new weight value to use. Must have the same shape and unit as the current weight.
+        data : WeightScalar
+            The new weight value to use. Must have the same shape and unit as the
+            current weight.
 
         Returns
         -------
@@ -288,8 +291,12 @@ class JITCScalarMatrix(JITCMatrix):
         ------
         AssertionError
             If the provided weight has a different shape or unit than the current weight.
+
+        See Also
+        --------
+        data : Property returning the value accepted here.
         """
-        weight = u.math.asarray(weight)
+        weight = u.math.asarray(data)
         assert weight.shape == self.weight.shape
         assert u.get_unit(weight) == u.get_unit(self.weight)
         return type(self)(
