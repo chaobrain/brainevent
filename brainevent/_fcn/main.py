@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from typing import Optional, TYPE_CHECKING, cast
+from typing import Optional, TYPE_CHECKING, Union, cast
 
 import brainunit as u
 import jax
@@ -37,14 +37,14 @@ from brainevent._misc import (
     _coo_todense, COOInfo, fixed_conn_num_csc_structure,
     fixed_conn_num_csr_indptr, normalize_row_index, build_sub_csr,
 )
-from brainevent._typing import Data, MatrixShape, Index
+from brainevent._typing import ArrayData, Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm
 from .float import fcnmv, fcnmm
 from .plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
 )
-from .yw2y import fcnmv_yw2y
+from .dt2t import fcnmv_dt2t
 
 __all__ = [
     'FixedNumConn',
@@ -70,7 +70,7 @@ def _validate_fixed_conn_indices(
         raise ValueError(f'{kind} indices must be integer type, got {indices.dtype}.')
 
 
-def _contains_invalid_indices(indices: Index, *, upper_bound: int) -> bool:
+def _contains_invalid_indices(indices: Index, *, upper_bound: int) -> None:
     import numpy as np
     with jax.ensure_compile_time_eval():
         indices_np = np.asarray(indices)
@@ -237,7 +237,7 @@ class FixedNumConn(DataRepresentation):
     FixedNumPerPre : Concrete subclass for fixed post-synaptic connections.
     FixedNumPerPost : Concrete subclass for fixed pre-synaptic connections.
     """
-    data: Data
+    data: ArrayData
     indices: Index
     shape: MatrixShape
     backend: Optional[str]
@@ -352,24 +352,27 @@ class FixedNumConn(DataRepresentation):
         return fcnmm(data, self.indices, matrix, shape=a_shape, transpose=ell_transpose)
 
     # ------------------------------------------------------------------ #
-    # Per-synapse y * w product (yw2y), parity with CSR / CSC
+    # Per-synapse y * w product (dt2t), parity with CSR / CSC
     # ------------------------------------------------------------------ #
 
-    def yw_to_w(self, y_dim_arr, w_dim_arr=None):
+    def dt2t(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Per-synapse ``w * y`` with ``y`` indexed by the row (pre) of ``W``.
 
         For every stored connection, returns ``w * y[row]`` where ``row`` is the
         pre-synaptic index of that connection, regardless of storage axis.  This
-        is the fixed-connection analog of :meth:`brainevent.CSR.yw_to_w` and
-        implements the ``yw_to_w`` protocol of :class:`brainunit.sparse.SparseMatrix`.
+        is the fixed-connection analog of :meth:`brainevent.CSR.dt2t` and
+        implements the ``dt2t`` protocol of :class:`brainevent.DataRepresentation`.
 
         Parameters
         ----------
-        y_dim_arr : jax.Array or brainunit.Quantity
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
             Pre-synaptic (row) vector, sized ``shape[0]``.
-        w_dim_arr : jax.Array or brainunit.Quantity, optional
-            Per-synapse weights of shape ``indices.shape`` (or size-1).  Defaults
-            to ``self.data``.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Per-synapse weights of shape ``indices.shape`` (or size-1).
 
         Returns
         -------
@@ -378,26 +381,28 @@ class FixedNumConn(DataRepresentation):
 
         See Also
         --------
-        yw_to_w_transposed : ``y`` indexed by the column (post) of ``W``.
+        dt2t_transposed : ``y`` indexed by the column (post) of ``W``.
         """
-        w = self.data if w_dim_arr is None else w_dim_arr
-        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=self._a_shape,
+        return fcnmv_dt2t(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(False))
 
-    def yw_to_w_transposed(self, y_dim_arr, w_dim_arr=None):
+    def dt2t_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
         """Per-synapse ``w * y`` with ``y`` indexed by the column (post) of ``W``.
 
-        Adjoint counterpart of :meth:`yw_to_w`: for every stored connection,
+        Adjoint counterpart of :meth:`dt2t`: for every stored connection,
         returns ``w * y[col]`` where ``col`` is the post-synaptic index of that
         connection, regardless of storage axis.
 
         Parameters
         ----------
-        y_dim_arr : jax.Array or brainunit.Quantity
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
             Post-synaptic (column) vector, sized ``shape[1]``.
-        w_dim_arr : jax.Array or brainunit.Quantity, optional
-            Per-synapse weights of shape ``indices.shape`` (or size-1).  Defaults
-            to ``self.data``.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Per-synapse weights of shape ``indices.shape`` (or size-1).
 
         Returns
         -------
@@ -406,10 +411,9 @@ class FixedNumConn(DataRepresentation):
 
         See Also
         --------
-        yw_to_w : ``y`` indexed by the row (pre) of ``W``.
+        dt2t : ``y`` indexed by the row (pre) of ``W``.
         """
-        w = self.data if w_dim_arr is None else w_dim_arr
-        return fcnmv_yw2y(w, self.indices, y_dim_arr, shape=self._a_shape,
+        return fcnmv_dt2t(w_dim_arr, self.indices, y_dim_arr, shape=self._a_shape,
                           transpose=self._ell_transpose(True))
 
     def _dispatch(self, other, transpose_W: bool):
@@ -798,7 +802,7 @@ class FixedNumPerPre(FixedNumConn):
     """
     __module__ = 'brainevent'
 
-    data: Data
+    data: ArrayData
     indices: Index
     shape: MatrixShape
     num_pre = property(lambda self: self.indices.shape[0])
@@ -896,7 +900,7 @@ class FixedNumPerPre(FixedNumConn):
         indices = self.indices.reshape(-1)
         return indptr, indices, None
 
-    def with_data(self, data: Data) -> 'FixedNumPerPre':
+    def with_data(self, data: ArrayData) -> 'FixedNumPerPre':
         """Return a new matrix with the same connectivity and replaced values."""
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
@@ -1053,7 +1057,7 @@ class FixedNumPerPost(FixedNumConn):
     """
     __module__ = 'brainevent'
 
-    data: Data
+    data: ArrayData
     indices: Index
     shape: MatrixShape
     num_conn = property(lambda self: self.indices.shape[1])
@@ -1154,7 +1158,7 @@ class FixedNumPerPost(FixedNumConn):
         csr_indptr, csr_indices, perm = self._weight_indices()
         return csr_indptr, csr_indices, perm
 
-    def with_data(self, data: Data) -> 'FixedNumPerPost':
+    def with_data(self, data: ArrayData) -> 'FixedNumPerPost':
         """Return a new matrix with the same connectivity and replaced values."""
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype

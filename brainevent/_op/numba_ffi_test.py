@@ -42,6 +42,7 @@ from brainevent._op.numba_ffi import (
     _warn_if_untested_jax,
     _MAX_VALIDATED_JAX,
     _XLA_FFI_DTYPE_TO_NUMPY,
+    XLA_FFI_Metadata,
     numba_kernel,
     NumbaCpuFfiHandler,
 )
@@ -947,5 +948,78 @@ class TestXlaFfiAbiVersionCheck:
             _warn_if_untested_jax()  # must not raise or warn
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+# ---------------------------------------------------------------------------
+# Audit regression tests
+# ---------------------------------------------------------------------------
+
+
+# --- C2: byte-accurate buffer views for dtypes ctypes cannot represent ---------
+
+class TestBufferViewDtypes:
+    """``_numpy_from_buffer`` must reconstruct every fixed-width dtype exactly."""
+
+    def _roundtrip(self, arr):
+        view = _numpy_from_buffer(arr.ctypes.data, arr.shape, arr.dtype)
+        np.testing.assert_array_equal(view, arr)
+
+    def test_float16(self):
+        self._roundtrip(np.arange(6, dtype=np.float16).reshape(2, 3))
+
+    def test_bfloat16(self):
+        import ml_dtypes
+        bf16 = np.dtype(ml_dtypes.bfloat16)
+        self._roundtrip(np.arange(6, dtype=bf16).reshape(2, 3))
+
+    def test_complex64(self):
+        arr = (np.arange(4) + 1j * np.arange(4)).astype(np.complex64)
+        self._roundtrip(arr)
+
+    def test_complex128(self):
+        arr = (np.arange(4) + 1j * np.arange(4)).astype(np.complex128)
+        self._roundtrip(arr)
+
+    def test_float32_still_correct(self):
+        self._roundtrip(np.arange(12, dtype=np.float32).reshape(3, 4))
+
+
+# --- M7: metadata struct must expose state_type_id -----------------------------
+
+def test_metadata_struct_has_state_type_id():
+    names = {name for name, _ in XLA_FFI_Metadata._fields_}
+    assert 'state_type_id' in names
+
+
+# --- C1: kernel exceptions must propagate, not be reported as success ----------
+
+class TestErrorPropagation:
+    def test_raising_kernel_surfaces_exception(self):
+        import numba
+
+        @numba.njit
+        def boom(x, out):
+            raise ValueError('intentional kernel failure')
+
+        kernel = numba_kernel(boom, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+        with pytest.raises(Exception):
+            jax.block_until_ready(kernel(jnp.arange(4, dtype=jnp.float32)))
+
+
+# --- H1: registration must be cached, not leaked once per call -----------------
+
+class TestRegistrationCaching:
+    def test_eager_calls_do_not_leak_targets(self):
+        import numba
+
+        @numba.njit
+        def add1(x, out):
+            for i in range(out.size):
+                out[i] = x[i] + 1.0
+
+        kernel = numba_kernel(add1, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+        x = jnp.arange(4, dtype=jnp.float32)
+        jax.block_until_ready(kernel(x))  # warm up / first registration
+        before = len(numba_ffi._NUMBA_CPU_FFI_HANDLES)
+        for _ in range(8):
+            jax.block_until_ready(kernel(x))
+        after = len(numba_ffi._NUMBA_CPU_FFI_HANDLES)
+        assert after == before, f'leaked {after - before} FFI targets across 8 eager calls'

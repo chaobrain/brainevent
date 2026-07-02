@@ -499,6 +499,50 @@ class Test_JITC_Uniform_Validation:
         with pytest.raises(ValueError, match='wlow'):
             cls((1.0, -1.0, 0.1, 123), shape=(8, 6))
 
+
+class Test_JITC_Uniform_Data_API:
+    @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+    def test_data_returns_only_weights(self, cls):
+        # .data exposes only the trainable (wlow, whigh) pair, excluding prob/seed.
+        mat = cls((0.1, 0.5, 0.2, 123), shape=(8, 6))
+        assert isinstance(mat.data, tuple)
+        assert len(mat.data) == 2
+        wlow, whigh = mat.data
+        assert allclose(wlow, mat.wlow)
+        assert allclose(whigh, mat.whigh)
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+    def test_with_data_roundtrips_from_data(self, cls):
+        # with_data accepts exactly what .data returns and preserves structure.
+        mat = cls((0.1, 0.5, 0.2, 123), shape=(8, 6), corder=True)
+        rebuilt = mat.with_data(mat.data)
+        assert type(rebuilt) is cls
+        assert allclose(rebuilt.wlow, mat.wlow)
+        assert allclose(rebuilt.whigh, mat.whigh)
+        assert rebuilt.prob == mat.prob
+        assert rebuilt.seed == mat.seed
+        assert rebuilt.shape == mat.shape
+        assert rebuilt.corder == mat.corder
+
+    def test_with_data_updates_both_bounds(self):
+        mat = brainevent.JITCUniformR((0.1, 0.5, 0.2, 123), shape=(8, 6))
+        updated = mat.with_data((0.2, 0.8))
+        assert allclose(updated.wlow, 0.2)
+        assert allclose(updated.whigh, 0.8)
+
+    def test_with_data_preserves_unit(self):
+        import brainunit as u
+        mat = brainevent.JITCUniformR((0.1 * u.mV, 0.5 * u.mV, 0.2, 123), shape=(8, 6))
+        updated = mat.with_data((0.2 * u.mV, 0.8 * u.mV))
+        assert u.get_unit(updated.wlow) == u.get_unit(u.mV)
+        assert allclose(u.get_mantissa(updated.whigh), 0.8)
+
+    def test_with_data_unit_mismatch_raises(self):
+        import brainunit as u
+        mat = brainevent.JITCUniformR((0.1 * u.mV, 0.5 * u.mV, 0.2, 123), shape=(8, 6))
+        with pytest.raises(AssertionError):
+            mat.with_data((0.2, 0.8))  # dimensionless where mV is expected
+
     # @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
     # @pytest.mark.parametrize('corder', [True, False])
     # def test_zero_prob_dense_matvec_matmat(self, cls, corder):

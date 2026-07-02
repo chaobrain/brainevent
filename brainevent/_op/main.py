@@ -17,7 +17,7 @@
 import functools
 import warnings
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import jax
 from jax.interpreters import batching, ad, mlir
@@ -29,7 +29,7 @@ from brainevent._typing import KernelGenerator
 from brainevent.config import get_backend
 from .benchmark import BenchmarkRecord, BenchmarkResult, benchmark_function
 from .util import (
-    general_batching_rule, defjvp, OutType,
+    general_batching_rule, defjvp, OutType, ShapeDtype,
     abstract_arguments, check_pallas_jax_version,
     check_warp_installed
 )
@@ -160,7 +160,7 @@ class XLACustomKernel:
 
     __module__ = 'brainevent'
 
-    def __init__(self, name: str, doc: str = None):
+    def __init__(self, name: str, doc: Optional[str] = None):
         # primitive
         self.name = name
         self.primitive = Primitive(name)
@@ -212,7 +212,7 @@ class XLACustomKernel:
         self._warned_backends.add(message)
         warnings.warn(message, stacklevel=3)
 
-    def _abstract_eval(self, *ins, outs: OutType, **kwargs):
+    def _abstract_eval(self, *ins, outs: Sequence[ShapeDtype], **kwargs):
         """Compute the abstract output types for the primitive.
 
         This method defines how JAX determines the shape and dtype of the
@@ -296,9 +296,9 @@ class XLACustomKernel:
             >>> # After registering kernels...
             >>> out = kernel(x, outs=[jax.ShapeDtypeStruct((10,), jnp.float32)])  # doctest: +SKIP
         """
-        outs, tree_def = abstract_arguments(outs)
-        r = self.primitive.bind(*ins, **kwargs, outs=tuple(outs))
-        assert len(r) == len(outs), 'The number of outputs does not match the expected.'
+        flat_outs, tree_def = abstract_arguments(outs)
+        r = self.primitive.bind(*ins, **kwargs, outs=tuple(flat_outs))
+        assert len(r) == len(flat_outs), 'The number of outputs does not match the expected.'
         return tree_def.unflatten(r)
 
     def def_kernel(

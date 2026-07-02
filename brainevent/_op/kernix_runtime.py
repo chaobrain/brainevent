@@ -16,6 +16,7 @@
 """Runtime layer: CompiledModule and JAX FFI registration."""
 
 import ctypes
+from typing import Any
 import re
 import threading
 
@@ -139,7 +140,9 @@ class CompiledModule:
             self._lib = ctypes.CDLL(self._so_path)
         except OSError as e:
             raise KernelLoadError(_format_load_error(self._so_path, e)) from e
-        self._functions: dict[str, ctypes._CFuncPtr] = {}
+        # Values are ctypes function pointers (``ctypes._CFuncPtr`` is not a
+        # public/typeshed name, so ``Any`` stands in for it).
+        self._functions: dict[str, Any] = {}
 
         for fname in function_names:
             symbol = f"be_{fname}"

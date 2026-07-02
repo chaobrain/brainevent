@@ -84,6 +84,33 @@ else:
     ]
 
 
+def _skip_batching_if_gpu_too_small(shape, batch_size):
+    """Skip batched matrix tests on GPUs too small to hold the dense reference.
+
+    The batched dense-reference paths materialise several ``(batch_size, m, n)``
+    float32 temporaries (the dense weight matrix, the matmul output and transpose
+    fusions).  For the largest ``operator_shapes`` entry this peaks at well over
+    10 GB and exceeds small (e.g. 16 GB) GPUs.  The computation is correct — it
+    merely does not fit — so skip on memory-constrained GPUs rather than fail with
+    a ``RESOURCE_EXHAUSTED`` error.  CPU (CI) and larger GPUs run the case normally.
+    """
+    device = jax.local_devices()[0]
+    if device.platform != 'gpu':
+        return
+    try:
+        limit = device.memory_stats().get('bytes_limit') or 0
+    except Exception:
+        return
+    m, n = shape
+    # Empirically the peak is ~6x the batched dense buffer for these fusions.
+    est_bytes = 6 * batch_size * m * n * 4
+    if limit and est_bytes > 0.8 * limit:
+        pytest.skip(
+            f'batched shape {shape} (batch {batch_size}) needs ~{est_bytes / 1e9:.1f} GB; '
+            f'GPU memory limit is {limit / 1e9:.1f} GB'
+        )
+
+
 def _binary_mask(x, dtype):
     return jnp.asarray(jnp.asarray(x) > 0, dtype=dtype)
 
@@ -702,6 +729,7 @@ class TestMatrix:
     @pytest.mark.parametrize('batch_size', [32])
     @pytest.mark.parametrize('k', [32])
     def test_batching_weight(self, homo_w, shape, batch_size, k):
+        _skip_batching_if_gpu_too_small(shape, batch_size)
         m, n = shape
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
 
@@ -746,6 +774,7 @@ class TestMatrix:
     @pytest.mark.parametrize('k', [32])
     @pytest.mark.parametrize('batch_axis', [0, 1, 2])
     def test_batching_vector(self, homo_w, shape, batch_size, k, batch_axis):
+        _skip_batching_if_gpu_too_small(shape, batch_size)
         m, n = shape
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
 
@@ -793,7 +822,27 @@ class TestMatrix:
         jax.block_until_ready((indices, xs, y1, y2, y_true))
 
 
-class Test_Yw2y:
+class Test_dt2t:
+    def test_dt2t_signature_aligns_data_representation_contract(self):
+        base_sig = inspect.signature(fcn_main_mod.DataRepresentation.dt2t)
+        for cls in (FixedNumPerPre, FixedNumPerPost):
+            sig = inspect.signature(cls.dt2t)
+            assert list(sig.parameters) == list(base_sig.parameters)
+            assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
+            assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
+            assert sig.parameters['w_dim_arr'].default is inspect._empty
+            assert sig.return_annotation == base_sig.return_annotation
+
+    def test_dt2t_transposed_signature_aligns_data_representation_contract(self):
+        base_sig = inspect.signature(fcn_main_mod.DataRepresentation.dt2t_transposed)
+        for cls in (FixedNumPerPre, FixedNumPerPost):
+            sig = inspect.signature(cls.dt2t_transposed)
+            assert list(sig.parameters) == list(base_sig.parameters)
+            assert sig.parameters['y_dim_arr'].annotation == base_sig.parameters['y_dim_arr'].annotation
+            assert sig.parameters['w_dim_arr'].annotation == base_sig.parameters['w_dim_arr'].annotation
+            assert sig.parameters['w_dim_arr'].default is inspect._empty
+            assert sig.return_annotation == base_sig.return_annotation
+
     def test_fixed_post(self):
         m, n, k = 5, 7, 3
         indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
@@ -802,10 +851,10 @@ class Test_Yw2y:
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
 
-        # yw_to_w: y indexed by row=pre -> broadcast
-        assert allclose(conn.yw_to_w(y_pre), data * y_pre[:, None])
-        # yw_to_w_transposed: y indexed by col=post -> gather
-        assert allclose(conn.yw_to_w_transposed(y_post), data * y_post[indices])
+        # dt2t: y indexed by row=pre -> broadcast
+        assert allclose(conn.dt2t(y_pre, data), data * y_pre[:, None])
+        # dt2t_transposed: y indexed by col=post -> gather
+        assert allclose(conn.dt2t_transposed(y_post, data), data * y_post[indices])
 
     def test_fixed_pre(self):
         num_pre, num_post, k = 7, 5, 3
@@ -816,21 +865,22 @@ class Test_Yw2y:
         y_pre = jnp.arange(1, num_pre + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, num_post + 1, dtype=jnp.float32)
 
-        # yw_to_w: y indexed by row=pre -> gather (indices are pre ids)
-        assert allclose(conn.yw_to_w(y_pre), data * y_pre[indices])
-        # yw_to_w_transposed: y indexed by col=post=leading -> broadcast
-        assert allclose(conn.yw_to_w_transposed(y_post), data * y_post[:, None])
+        # dt2t: y indexed by row=pre -> gather (indices are pre ids)
+        assert allclose(conn.dt2t(y_pre, data), data * y_pre[indices])
+        # dt2t_transposed: y indexed by col=post=leading -> broadcast
+        assert allclose(conn.dt2t_transposed(y_post, data), data * y_post[:, None])
 
-    def test_default_w_uses_self_data(self):
+    def test_w_dim_arr_is_required(self):
         m, n, k = 5, 7, 3
         indices = generate_fixed_conn_num_indices(m, n, k, replace=True)
         data = jnp.arange(1, indices.size + 1, dtype=jnp.float32).reshape(indices.shape)
         conn = brainevent.FixedNumPerPre((data, indices), shape=(m, n))
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
-        assert allclose(conn.yw_to_w(y_pre), conn.yw_to_w(y_pre, data))
-        assert allclose(conn.yw_to_w_transposed(y_post),
-                        conn.yw_to_w_transposed(y_post, data))
+        with pytest.raises(TypeError):
+            conn.dt2t(y_pre)
+        with pytest.raises(TypeError):
+            conn.dt2t_transposed(y_post)
 
     def test_golden_parity_csr(self):
         m, n, k = 5, 7, 3
@@ -845,10 +895,10 @@ class Test_Yw2y:
         y_pre = jnp.arange(1, m + 1, dtype=jnp.float32)
         y_post = jnp.arange(1, n + 1, dtype=jnp.float32)
 
-        assert allclose(conn.yw_to_w(y_pre).flatten(),
-                        csr.yw_to_w(y_pre, data.flatten()))
-        assert allclose(conn.yw_to_w_transposed(y_post).flatten(),
-                        csr.yw_to_w_transposed(y_post, data.flatten()))
+        assert allclose(conn.dt2t(y_pre, data).flatten(),
+                        csr.dt2t(y_pre, data.flatten()))
+        assert allclose(conn.dt2t_transposed(y_post, data).flatten(),
+                        csr.dt2t_transposed(y_post, data.flatten()))
 
 
 # --------------------------------------------------------------------------- #

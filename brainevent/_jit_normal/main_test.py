@@ -499,3 +499,47 @@ class Test_JITC_To_CSR:
         assert u.get_unit(csr.data) == u.get_unit(dense)
         assert u.math.allclose(csr.todense(), dense)
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
+
+
+class Test_JITC_Normal_Data_API:
+    @pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
+    def test_data_returns_only_weights(self, cls):
+        # .data exposes only the trainable (wloc, wscale) pair, excluding prob/seed.
+        mat = cls((1.5, 0.3, 0.2, 123), shape=(8, 6))
+        assert isinstance(mat.data, tuple)
+        assert len(mat.data) == 2
+        wloc, wscale = mat.data
+        assert allclose(wloc, mat.wloc)
+        assert allclose(wscale, mat.wscale)
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
+    def test_with_data_roundtrips_from_data(self, cls):
+        # with_data accepts exactly what .data returns and preserves structure.
+        mat = cls((1.5, 0.3, 0.2, 123), shape=(8, 6), corder=True)
+        rebuilt = mat.with_data(mat.data)
+        assert type(rebuilt) is cls
+        assert allclose(rebuilt.wloc, mat.wloc)
+        assert allclose(rebuilt.wscale, mat.wscale)
+        assert rebuilt.prob == mat.prob
+        assert rebuilt.seed == mat.seed
+        assert rebuilt.shape == mat.shape
+        assert rebuilt.corder == mat.corder
+
+    def test_with_data_updates_both_params(self):
+        mat = brainevent.JITCNormalR((1.5, 0.3, 0.2, 123), shape=(8, 6))
+        updated = mat.with_data((2.5, 0.7))
+        assert allclose(updated.wloc, 2.5)
+        assert allclose(updated.wscale, 0.7)
+
+    def test_with_data_preserves_unit(self):
+        import brainunit as u
+        mat = brainevent.JITCNormalR((1.5 * u.mV, 0.3 * u.mV, 0.2, 123), shape=(8, 6))
+        updated = mat.with_data((2.5 * u.mV, 0.7 * u.mV))
+        assert u.get_unit(updated.wloc) == u.get_unit(u.mV)
+        assert allclose(u.get_mantissa(updated.wloc), 2.5)
+
+    def test_with_data_unit_mismatch_raises(self):
+        import brainunit as u
+        mat = brainevent.JITCNormalR((1.5 * u.mV, 0.3 * u.mV, 0.2, 123), shape=(8, 6))
+        with pytest.raises(AssertionError):
+            mat.with_data((2.5, 0.7))  # dimensionless where mV is expected

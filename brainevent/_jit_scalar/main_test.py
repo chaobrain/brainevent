@@ -389,6 +389,39 @@ class Test_JITC_Scalar_Validation:
         assert updated.seed == mat.seed
         assert updated.shape == mat.shape
 
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    def test_data_returns_only_weight(self, cls):
+        # .data exposes only the trainable weight, excluding prob/seed.
+        mat = cls((1.5, 0.1, 123), shape=(8, 6))
+        assert allclose(mat.data, mat.weight)
+        # A scalar family has a single trainable weight, not a (weight, prob, seed) tuple.
+        assert not isinstance(mat.data, tuple)
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    def test_with_data_roundtrips_from_data(self, cls):
+        # with_data accepts exactly what .data returns and preserves structure.
+        mat = cls((1.5, 0.1, 123), shape=(8, 6), corder=True)
+        rebuilt = mat.with_data(mat.data)
+        assert type(rebuilt) is cls
+        assert allclose(rebuilt.weight, mat.weight)
+        assert rebuilt.prob == mat.prob
+        assert rebuilt.seed == mat.seed
+        assert rebuilt.shape == mat.shape
+        assert rebuilt.corder == mat.corder
+
+    def test_with_data_preserves_unit(self):
+        import brainunit as u
+        mat = brainevent.JITCScalarR((1.5 * u.mV, 0.1, 123), shape=(8, 6))
+        updated = mat.with_data(2.0 * u.mV)
+        assert u.get_unit(updated.weight) == u.get_unit(u.mV)
+        assert allclose(u.get_mantissa(updated.weight), 2.0)
+
+    def test_with_data_unit_mismatch_raises(self):
+        import brainunit as u
+        mat = brainevent.JITCScalarR((1.5 * u.mV, 0.1, 123), shape=(8, 6))
+        with pytest.raises(AssertionError):
+            mat.with_data(2.0)  # dimensionless where mV is expected
+
 
 class Test_JITC_To_CSR:
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])

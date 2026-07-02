@@ -20,6 +20,7 @@ from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
 import jax
+import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
@@ -28,6 +29,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitnmv, binary_jitnmm
 from .csr import jitn_to_csr
 from .float import jitn, jitnmv, jitnmm
+from .dt2t import jitnmv_dt2t
 
 __all__ = [
     'JITCNormalR',
@@ -244,42 +246,43 @@ class JITCNormalMatrix(JITCMatrix):
         return self.wloc.dtype
 
     @property
-    def data(self) -> Tuple[WeightScalar, WeightScalar, Prob, Seed]:
+    def data(self) -> Tuple[WeightScalar, WeightScalar]:
         """
-        Returns the core data components of the homogeneous matrix.
+        Return the trainable weights of the matrix.
 
-        This property provides access to the three fundamental components that define
-        the sparse matrix: weight values, connection probabilities, and the random seed.
-        It's used by the tree_flatten method to make the class compatible with JAX
-        transformations.
+        Only the trainable value parameters ``(wloc, wscale)`` are exposed here.
+        The structural parameters ``prob`` and ``seed`` are non-trainable and are
+        therefore excluded. This property mirrors :meth:`with_data`, which accepts
+        exactly the tuple returned here, so ``mat.with_data(mat.data)``
+        round-trips.
 
         Returns
         -------
-        Tuple[Weight, Weight, Prob, Seed]
-            A tuple containing:
-            - loc:
-            - scale:
-            - prob: Connection probability for the sparse structure
-            - seed: Random seed used for generating the sparse connectivity pattern
-        """
-        return self.wloc, self.wscale, self.prob, self.seed
+        Tuple[WeightScalar, WeightScalar]
+            The ``(wloc, wscale)`` pair: the location (mean) and scale (standard
+            deviation) parameters of the normal distribution.
 
-    def with_data(self, loc: WeightScalar, scale: WeightScalar):
+        See Also
+        --------
+        with_data : Rebuild the matrix from the tuple returned here.
         """
-        Create a new matrix instance with updated weight data but preserving other properties.
+        return self.wloc, self.wscale
 
-        This method returns a new instance of the same class with the provided weight value,
-        while keeping the same probability, seed, shape, and other configuration parameters.
-        It's useful for updating weights without changing the connectivity pattern.
+    def with_data(self, data: Tuple[WeightScalar, WeightScalar]):
+        """
+        Create a new matrix instance with updated weights, preserving all other structure.
+
+        Accepts exactly the tuple returned by :attr:`data`, i.e. the
+        ``(loc, scale)`` pair, while keeping the same ``prob``, ``seed``,
+        ``shape``, ``corder``, ``backend``, and buffers. It is useful for updating
+        weights without changing the connectivity pattern.
 
         Parameters
         ----------
-        loc : WeightScalar
-            The new location (mean) parameter for the normal distribution.
-            Must have the same shape and unit as the current ``wloc``.
-        scale : WeightScalar
-            The new scale (standard deviation) parameter for the normal distribution.
-            Must have the same shape and unit as the current ``wscale``.
+        data : Tuple[WeightScalar, WeightScalar]
+            The new ``(loc, scale)`` parameters of the normal distribution. Each
+            must have the same shape and unit as the corresponding current
+            parameter (``wloc`` and ``wscale``).
 
         Returns
         -------
@@ -289,12 +292,13 @@ class JITCNormalMatrix(JITCMatrix):
         Raises
         ------
         AssertionError
-            If the shape or unit of the new parameters does not match the originals.
+            If the shape or unit of a new parameter does not match the original.
 
         See Also
         --------
-        data : Property returning the current (wloc, wscale, prob, seed) tuple.
+        data : Property returning the tuple accepted here.
         """
+        loc, scale = data
         loc = u.math.asarray(loc)
         scale = u.math.asarray(scale)
         assert loc.shape == self.wloc.shape
@@ -354,6 +358,54 @@ class JITCNormalMatrix(JITCMatrix):
             self.prob,
             self.seed,
             shape=self.shape,
+            corder=self.corder,
+            backend=self.backend,
+        )
+
+    def dt2t(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
+        """Generate per-synapse ``sampled_weight * y[row]`` using the matrix parameters.
+
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
+        JITC normal connectivity and weights are generated from this matrix's own
+        metadata, including ``wloc``, ``wscale``, ``prob``, ``seed``, ``shape``,
+        ``corder``, and ``backend``.
+        """
+        return jitnmv_dt2t(
+            self.wloc,
+            self.wscale,
+            self.prob,
+            y_dim_arr,
+            self.seed,
+            shape=self.shape,
+            transpose=False,
+            corder=self.corder,
+            backend=self.backend,
+        )
+
+    def dt2t_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
+        """Generate per-synapse ``sampled_weight * y[col]`` using the matrix parameters.
+
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
+        JITC normal connectivity and weights are generated from this matrix's own
+        metadata, including ``wloc``, ``wscale``, ``prob``, ``seed``, ``shape``,
+        ``corder``, and ``backend``.
+        """
+        return jitnmv_dt2t(
+            self.wloc,
+            self.wscale,
+            self.prob,
+            y_dim_arr,
+            self.seed,
+            shape=self.shape,
+            transpose=True,
             corder=self.corder,
             backend=self.backend,
         )

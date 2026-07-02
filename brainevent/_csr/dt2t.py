@@ -1,0 +1,1085 @@
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+from pathlib import Path
+from typing import Optional
+
+import brainunit as u
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from brainevent._misc import _check_csr_cuda_structure_dtypes, namescope
+from brainevent._op import load_cuda_file
+from brainevent._op import numba_kernel, XLACustomKernel
+from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._typing import Data, Indptr, Index, MatrixShape
+
+__all__ = [
+    'csrmv_dt2t',
+    'cscmv_dt2t',
+    'csrmv_dt2t_p',
+    'csrmm_dt2t',
+    'cscmm_dt2t',
+    'csrmm_dt2t_p',
+]
+
+
+@namescope(static_argnames=['shape', 'transpose'])
+def csrmv_dt2t(
+    y: Data,
+    w: Data,
+    indices: Index,
+    indptr: Indptr,
+    *,
+    shape,
+    transpose: bool = False,
+    backend: Optional[str] = None,
+) -> Data:
+    """
+    Element-wise product of a vector and CSR weights, indexed by CSR
+    structure.
+
+    For each non-zero entry ``j`` in the CSR matrix at position
+    ``(row, col)``, computes ``out[j] = w[j] * y[row]`` (non-transposed)
+    or ``out[j] = w[j] * y[col]`` (transposed).  The result has the same
+    shape as ``w`` and ``indices`` (i.e., one value per structural
+    non-zero).
+
+    This operation is useful for computing per-synapse quantities in
+    neural network models where ``y`` is a neuron-level vector and ``w``
+    contains per-synapse weights stored in CSR form.
+
+    The function supports physical units via :mod:`brainunit`.
+
+    Parameters
+    ----------
+    y : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Dense vector indexed by the CSR structure.  Shape
+        ``(shape[0],)`` when ``transpose=False`` or ``(shape[1],)`` when
+        ``transpose=True``.
+    w : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Per-synapse weight values.  Shape ``(nse,)``, must match the
+        shape of ``indices``.
+    indices : jax.Array or numpy.ndarray
+        Column indices of the CSR matrix.  Shape ``(nse,)`` with integer
+        dtype.
+    indptr : jax.Array or numpy.ndarray
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with integer
+        dtype.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        CSR matrix.
+    transpose : bool, optional
+        If ``True``, index ``y`` by column indices instead of row indices.
+        Default is ``False``.
+    backend : str or None, optional
+        Compute backend.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    out : jax.Array or brainunit.Quantity
+        Per-synapse result vector.  Shape ``(nse,)``, same as ``w``.
+
+    See Also
+    --------
+    csrmv : Standard CSR matrix--vector multiplication.
+
+    Notes
+    -----
+    This operation is differentiable with respect to both ``y`` and ``w``
+    via custom JVP rules.  The transpose rule is not yet implemented.
+
+    Mathematically, for each structural non-zero entry ``j`` of the CSR
+    matrix at position ``(row, col)``, the output is computed as:
+
+    ``out[j] = w[j] * y[row]``  (non-transposed, ``transpose=False``)
+
+    ``out[j] = w[j] * y[col]``  (transposed, ``transpose=True``)
+
+    where ``row`` is determined by the ``indptr`` array (the row to
+    which the ``j``-th non-zero belongs) and ``col = indices[j]``.
+
+    This operation is distinct from standard sparse matrix--vector
+    multiplication: it produces one output element per structural
+    non-zero rather than one per matrix row.  It is commonly used to
+    compute per-synapse quantities in spiking neural network models.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import csrmv_dt2t
+        >>> y = jnp.array([1.0, 2.0])
+        >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> csrmv_dt2t(y, w, indices, indptr, shape=(2, 3))
+    """
+    w, w_unit = u.split_mantissa_unit(w)
+    y, _ = u.split_mantissa_unit(y)
+    res = csrmv_dt2t_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=backend)[0]
+    return u.maybe_decimal(res * w_unit)
+
+
+def cscmv_dt2t(
+    y: Data,
+    w: Data,
+    indices: Index,
+    indptr: Indptr,
+    *,
+    shape,
+    transpose: bool = False,
+    backend: Optional[str] = None,
+) -> Data:
+    """
+    Element-wise product of a vector and CSC weights, indexed by CSC
+    structure.
+
+    For each non-zero entry ``j`` in the CSC matrix at position
+    ``(row, col)``, computes ``out[j] = w[j] * y[row]`` (non-transposed)
+    or ``out[j] = w[j] * y[col]`` (transposed).  The result has the same
+    shape as ``w`` and ``indices`` (i.e., one value per structural
+    non-zero).
+
+    This is the CSC counterpart of :func:`csrmv_dt2t`.  Because the CSC
+    arrays of a matrix ``W`` of shape ``(m, k)`` are, array-for-array, the
+    CSR arrays of ``W.T`` of shape ``(k, m)``, this function simply
+    forwards to :func:`csrmv_dt2t` with the shape reversed and the
+    ``transpose`` flag flipped.  No data permutation is required, so it
+    inherits the differentiability, unit handling, and backend dispatch of
+    the underlying CSR primitive.
+
+    The function supports physical units via :mod:`brainunit`.
+
+    Parameters
+    ----------
+    y : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Dense vector indexed by the CSC structure.  Shape ``(shape[0],)``
+        when ``transpose=False`` or ``(shape[1],)`` when ``transpose=True``.
+    w : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Per-synapse weight values in CSC data order.  Shape ``(nse,)``,
+        must match the shape of ``indices``.
+    indices : jax.Array or numpy.ndarray
+        Row indices of the CSC matrix.  Shape ``(nse,)`` with integer
+        dtype.
+    indptr : jax.Array or numpy.ndarray
+        Column index pointer array.  Shape ``(shape[1] + 1,)`` with integer
+        dtype.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        CSC matrix.
+    transpose : bool, optional
+        If ``True``, index ``y`` by column indices instead of row indices.
+        Default is ``False``.
+    backend : str or None, optional
+        Compute backend.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    out : jax.Array or brainunit.Quantity
+        Per-synapse result vector.  Shape ``(nse,)``, same as ``w``.
+
+    See Also
+    --------
+    csrmv_dt2t : The CSR primitive this wraps.
+
+    Notes
+    -----
+    A matrix ``W`` of shape ``(m, k)`` stored in CSC order has the same
+    ``data`` / ``indices`` / ``indptr`` arrays as ``W.T`` stored in CSR
+    order with shape ``(k, m)``.  Under that view, indexing ``y`` by the
+    CSC row (``transpose=False``) corresponds to indexing the CSR
+    *column* axis, and indexing by the CSC column (``transpose=True``)
+    corresponds to the CSR *row* axis.  Hence the call delegates to::
+
+        csrmv_dt2t(y, w, indices, indptr,
+                   shape=shape[::-1], transpose=not transpose)
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import cscmv_dt2t
+        >>> # CSC of a (3, 2) matrix: indptr over the 2 columns.
+        >>> y = jnp.array([1.0, 2.0, 3.0])
+        >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> cscmv_dt2t(y, w, indices, indptr, shape=(3, 2))
+    """
+    return csrmv_dt2t(
+        y,
+        w,
+        indices,
+        indptr,
+        shape=tuple(shape)[::-1],
+        transpose=not transpose,
+        backend=backend,
+    )
+
+
+def _csrmv_dt2t_numba_kernels(
+    transpose: bool,
+    **kwargs
+):
+    import numba  # pylint: disable=import-outside-toplevel
+
+    if transpose:
+        @numba.njit
+        def mm(y, w, indices, indptr, posts):
+            for i_col in range(indptr.shape[0] - 1):
+                i_row_start = indptr[i_col]
+                i_row_end = indptr[i_col + 1]
+                for j in range(i_row_start, i_row_end):
+                    posts[j] = w[j] * y[indices[j]]
+
+        def kernel(y, w, indices, indptr):
+            return numba_kernel(mm, outs=kwargs['outs'])(y, w, indices, indptr)
+
+    else:
+        @numba.njit
+        def mm(y, w, indptr, posts):
+            for i_row in range(indptr.shape[0] - 1):
+                i_col_start = indptr[i_row]
+                i_col_end = indptr[i_row + 1]
+                for j in range(i_col_start, i_col_end):
+                    posts[j] = w[j] * y[i_row]
+
+        def kernel(y, w, indices, indptr):
+            return numba_kernel(mm, outs=kwargs['outs'])(y, w, indptr)
+
+    return kernel
+
+
+def _csrmv_dt2t_cuda_kernel(
+    transpose: bool,
+    w_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
+    # Transpose path: ``out[j] = w[j] * y[indices[j]]`` is an embarrassingly
+    # parallel gather-multiply whose cost is dominated by the irreducible
+    # scattered read of ``y[indices]``.  XLA's gather matches the hand-written
+    # CUDA transpose kernel, so reuse the pure-JAX implementation here and keep
+    # the bespoke CUDA kernel only for the non-transpose path, where a
+    # row-centric kernel reads ``y[row]`` once per row and reaches near-peak
+    # memory bandwidth.
+    if transpose:
+        return _csrmv_dt2t_jax_kernel(transpose=transpose, **kwargs)
+
+    load_cuda_file(
+        Path(__file__).parent.joinpath('dt2t.cu'),
+        name='csrmv_dt2t',
+    )
+
+    out_info = kwargs['outs']
+
+    # Weight dtype suffix
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
+
+    kernel_name = f'csrmv_dt2t.csrmv_dt2t_nt_auto{wt_sfx}'
+
+    def kernel(y, w, indices, indptr):
+        return jax.ffi.ffi_call(kernel_name, out_info)(y, w, indices, indptr)
+
+    return kernel
+
+
+def _csrmv_dt2t_jax_kernel(
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for CSR dt2t (out[j] = w[j] * y[row/col]) (all platforms)."""
+    m, k = shape
+    nse = kwargs['indices_info'].size
+
+    if transpose:
+        # col index is directly in `indices`
+        def kernel(y, w, indices, indptr):
+            return (w * y[indices],)
+    else:
+        def kernel(y, w, indices, indptr):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            return (w * y[row_ids],)
+    return kernel
+
+
+def _csrmv_dt2t_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    return csrmv_dt2t_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
+
+
+def _csrmv_dt2t_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    return csrmv_dt2t_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
+
+
+def _csrmv_dt2t_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    raise NotImplementedError
+
+
+def _csrmv_dt2t_benchmark_data(*, platform):
+    """
+    Benchmark configurations for ``csrmv_dt2t``.
+
+    Covers a range of matrix sizes and connection densities representative
+    of typical spiking neural network workloads:
+
+    * Small (1K×1K):   fast iteration; useful for overhead measurement.
+    * Medium (5K×5K):  common SNN scale; balances rows vs. non-zeros.
+    * Large (20K×20K): large-scale simulation benchmark.
+
+    Each size is tested at three structural densities:
+    * Low   (0.1%): avg_nnz ≈ 1–20;  favours NT_row_thread.
+    * Medium (1%): avg_nnz ≈ 10–200; favours NT_row_warp.
+    * High  (10%): avg_nnz ≈ 100–2000; favours NT_nz_thread.
+
+    Both transpose=False and transpose=True are included.
+    """
+    dtype = jnp.float32
+    configs = []
+    sizes = [
+        (1_000, 1_000),
+        (5_000, 5_000),
+        (20_000, 20_000),
+    ]
+    probs = [0.001, 0.01, 0.1]
+
+    for (n_pre, n_post), prob in zip(sizes, probs):
+        n_conn = max(1, int(n_post * prob))
+        indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+        indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
+        w = jnp.asarray(np.random.randn(n_pre * n_conn), dtype=dtype)
+        indptr_jax = jnp.asarray(indptr)
+
+        for transpose in (False, True):
+            y_size = n_post if transpose else n_pre
+            y = jnp.asarray(np.random.randn(y_size), dtype=dtype)
+            tag = 'T' if transpose else 'NT'
+            name = f"{tag},n={n_pre},nnz={n_conn}"
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (y, w, jnp.asarray(indices), indptr_jax),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
+    return configs
+
+
+def csrmv_dt2t_p_call(
+    y,
+    w,
+    indices,
+    indptr,
+    *,
+    shape: MatrixShape,
+    transpose: bool = False,
+    backend: Optional[str] = None,
+):
+    """
+    Low-level primitive call for the element-wise vector--weight product
+    indexed by CSR structure.
+
+    Validates inputs and dispatches the ``csrmv_dt2t_p`` XLA custom kernel.
+    For each structural non-zero ``j`` at position ``(row, col)`` in the
+    CSR matrix, the output is ``out[j] = w[j] * y[row]`` (non-transposed)
+    or ``out[j] = w[j] * y[col]`` (transposed).
+
+    Parameters
+    ----------
+    y : jax.Array
+        Dense vector.  Shape ``(shape[0],)`` when ``transpose=False`` or
+        ``(shape[1],)`` when ``transpose=True``.
+    w : jax.Array
+        Per-synapse weight values.  Shape ``(nse,)``, must match the shape
+        of ``indices``.
+    indices : jax.Array
+        Column indices of the CSR matrix.  Shape ``(nse,)`` with integer
+        dtype.
+    indptr : jax.Array
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with integer
+        dtype.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the CSR
+        matrix.
+    transpose : bool, optional
+        If ``True``, index ``y`` by column indices.  Default is ``False``.
+    backend : str or None, optional
+        Compute backend to use.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    list of jax.Array
+        A single-element list containing the per-synapse result.  Shape
+        ``(nse,)``, same as ``w``.
+
+    Raises
+    ------
+    AssertionError
+        If ``y`` and ``w`` have different dtypes.
+    AssertionError
+        If ``y`` or ``w`` is not 1-D.
+    AssertionError
+        If ``indices`` or ``indptr`` does not have an integer dtype.
+    AssertionError
+        If ``w`` does not have a floating-point dtype.
+    AssertionError
+        If ``w`` and ``indices`` do not have the same shape.
+    AssertionError
+        If there is a shape mismatch between ``y`` and the sparse
+        matrix ``shape`` (considering the ``transpose`` flag).
+
+    See Also
+    --------
+    csrmv_dt2t : High-level wrapper with unit support.
+
+    Notes
+    -----
+    The computation performed is, for each structural non-zero entry
+    ``j`` at CSR position ``(row, col)``:
+
+    ``out[j] = w[j] * y[row]``  (non-transposed)
+
+    ``out[j] = w[j] * y[col]``  (transposed)
+
+    where ``row`` is determined by ``indptr`` and ``col = indices[j]``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import csrmv_dt2t
+        >>> y = jnp.array([1.0, 2.0])
+        >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> result = csrmv_dt2t(
+        ...     y, w, indices, indptr,
+        ...     shape=(2, 3), transpose=False)
+    """
+    assert y.dtype == w.dtype, f"y and w must have the same dtype, but got {y.dtype} and {w.dtype}."
+    assert indptr.ndim == 1, "Indptr must be 1D."
+    assert indices.ndim == 1, "Indices must be 1D."
+    assert y.ndim == w.ndim == 1, "y and w must have the same shape."
+    assert jnp.issubdtype(indices.dtype, jnp.integer), "Indices must be an integer type."
+    assert jnp.issubdtype(indptr.dtype, jnp.integer), "indptr must be an integer type."
+    assert jnp.issubdtype(w.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    assert w.shape == indices.shape, f"Weights shape mismatch, expected {indices.shape}, got {w.shape}."
+    if transpose:
+        # [x] @ [h, w] -> [w]
+        assert shape[1] == y.shape[0], "Shape mismatch for transpose operation."
+    else:
+        # [h, w] @ [x] -> [h]
+        assert shape[0] == y.shape[0], "Shape mismatch for non-transpose operation."
+
+    return csrmv_dt2t_p(
+        y,
+        w,
+        indices,
+        indptr,
+        outs=[jax.ShapeDtypeStruct(w.shape, w.dtype)],
+        shape=tuple(shape),
+        transpose=transpose,
+        backend=backend,
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        y_info=jax.ShapeDtypeStruct(y.shape, y.dtype),
+        w_info=jax.ShapeDtypeStruct(w.shape, w.dtype),
+    )
+
+
+csrmv_dt2t_p = XLACustomKernel(
+    'csrmv_dt2t',
+    doc="""
+Low-level XLA custom-kernel primitive for ``csrmv_dt2t``.
+
+This ``XLACustomKernel`` instance dispatches the CSR per-synapse
+element-wise product (y * w -> w-shaped output) operation to registered
+backends (``numba``, ``cuda_raw``, ``jax_raw``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+For each non-zero entry at position (row, col) in the CSR matrix, computes
+out[j] = w[j] * y[row] (non-transposed) or out[j] = w[j] * y[col] (transposed),
+producing one output element per structural non-zero.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``csrmv_dt2t_p.available_backends(platform)``,
+and the default backend can be configured with ``csrmv_dt2t_p.set_default(platform, backend)``.
+
+See Also
+--------
+csrmv_dt2t : High-level user-facing function wrapper.
+"""
+)
+csrmv_dt2t_p.def_numba_kernel(_csrmv_dt2t_numba_kernels)
+csrmv_dt2t_p.def_cuda_raw_kernel(_csrmv_dt2t_cuda_kernel, asdefault=True)
+csrmv_dt2t_p.def_kernel('jax_raw', 'cpu', _csrmv_dt2t_jax_kernel)
+csrmv_dt2t_p.def_kernel('jax_raw', 'gpu', _csrmv_dt2t_jax_kernel)
+csrmv_dt2t_p.def_kernel('jax_raw', 'tpu', _csrmv_dt2t_jax_kernel)
+csrmv_dt2t_p.def_jvp_rule2(_csrmv_dt2t_jvp_y, _csrmv_dt2t_jvp_w, None, None)
+csrmv_dt2t_p.def_call(csrmv_dt2t_p_call)
+csrmv_dt2t_p.def_tags('csr', 'float')
+csrmv_dt2t_p.def_benchmark_data(_csrmv_dt2t_benchmark_data)
+
+
+@namescope(static_argnames=['shape', 'transpose'])
+def csrmm_dt2t(
+    y: Data,
+    w: Data,
+    indices: Index,
+    indptr: Indptr,
+    *,
+    shape,
+    transpose: bool = False,
+    backend: Optional[str] = None,
+) -> Data:
+    """
+    Batched element-wise product of dense vectors and CSR weights, indexed
+    by CSR structure.
+
+    Batched generalization of :func:`csrmv_dt2t`: for each batch element
+    ``b`` and non-zero entry ``j`` in the CSR matrix at position
+    ``(row, col)``, computes ``out[b, j] = w[b, j] * y[b, row]``
+    (non-transposed) or ``out[b, j] = w[b, j] * y[b, col]`` (transposed).
+    Both ``w`` and ``y`` carry a shared leading batch axis, and the result
+    has the same shape as ``w`` (one value per batch element and per
+    structural non-zero).
+
+    This operation implements the :math:`D^t \\epsilon^{t-1}` term of the
+    D-RTRL eligibility-trace update
+    :math:`\\epsilon^t \\approx D^t \\epsilon^{t-1} +
+    \\mathrm{diag}(D_f^t) \\otimes x^t`
+    for a batch of samples: ``y`` holds the batched per-neuron factor
+    :math:`D^t` and ``w`` holds the batched per-synapse trace
+    :math:`\\epsilon^{t-1}` stored in CSR data order.
+
+    The function supports physical units via :mod:`brainunit`.
+
+    Parameters
+    ----------
+    y : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Batch of dense vectors indexed by the CSR structure.  Shape
+        ``(n_batch, shape[0])`` when ``transpose=False`` or
+        ``(n_batch, shape[1])`` when ``transpose=True``.
+    w : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Batch of per-synapse values.  Shape ``(n_batch, nse)``; the
+        trailing axis must match the shape of ``indices``.
+    indices : jax.Array or numpy.ndarray
+        Column indices of the CSR matrix.  Shape ``(nse,)`` with integer
+        dtype.
+    indptr : jax.Array or numpy.ndarray
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with integer
+        dtype.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        CSR matrix.
+    transpose : bool, optional
+        If ``True``, index ``y`` by column indices instead of row indices.
+        Default is ``False``.
+    backend : str or None, optional
+        Compute backend.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    out : jax.Array or brainunit.Quantity
+        Batched per-synapse result.  Shape ``(n_batch, nse)``, same as
+        ``w``.
+
+    See Also
+    --------
+    csrmv_dt2t : Unbatched (single-vector) variant of this operator.
+    csrmm : Standard CSR matrix--matrix multiplication.
+
+    Notes
+    -----
+    This operation is differentiable with respect to both ``y`` and ``w``
+    via custom JVP rules.  The transpose rule is not yet implemented.
+
+    Mathematically, for each batch element ``b`` and structural non-zero
+    entry ``j`` of the CSR matrix at position ``(row, col)``, the output
+    is computed as:
+
+    ``out[b, j] = w[b, j] * y[b, row]``  (non-transposed, ``transpose=False``)
+
+    ``out[b, j] = w[b, j] * y[b, col]``  (transposed, ``transpose=True``)
+
+    where ``row`` is determined by the ``indptr`` array (the row to
+    which the ``j``-th non-zero belongs) and ``col = indices[j]``.
+
+    Like :func:`csrmv_dt2t`, the output keeps the unit of ``w`` and drops
+    the unit of ``y``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import csrmm_dt2t
+        >>> y = jnp.array([[1.0, 2.0], [10.0, 20.0]])           # (n_batch=2, m=2)
+        >>> w = jnp.array([[0.5, 0.3, 0.7, 0.1],
+        ...                [1.0, 2.0, 3.0, 4.0]])               # (n_batch=2, nse=4)
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> csrmm_dt2t(y, w, indices, indptr, shape=(2, 3))
+    """
+    w, w_unit = u.split_mantissa_unit(w)
+    y, _ = u.split_mantissa_unit(y)
+    res = csrmm_dt2t_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=backend)[0]
+    return u.maybe_decimal(res * w_unit)
+
+
+def cscmm_dt2t(
+    y: Data,
+    w: Data,
+    indices: Index,
+    indptr: Indptr,
+    *,
+    shape,
+    transpose: bool = False,
+    backend: Optional[str] = None,
+) -> Data:
+    """
+    Batched element-wise product of dense vectors and CSC weights, indexed
+    by CSC structure.
+
+    Batched generalization of :func:`cscmv_dt2t`: for each batch element
+    ``b`` and non-zero entry ``j`` in the CSC matrix at position
+    ``(row, col)``, computes ``out[b, j] = w[b, j] * y[b, row]``
+    (non-transposed) or ``out[b, j] = w[b, j] * y[b, col]`` (transposed).
+    Both ``w`` and ``y`` carry a shared leading batch axis, and the result
+    has the same shape as ``w`` (one value per batch element and per
+    structural non-zero).
+
+    This is the CSC counterpart of :func:`csrmm_dt2t`.  Because the CSC
+    arrays of a matrix ``W`` of shape ``(m, k)`` are, array-for-array, the
+    CSR arrays of ``W.T`` of shape ``(k, m)``, this function simply
+    forwards to :func:`csrmm_dt2t` with the shape reversed and the
+    ``transpose`` flag flipped.  No data permutation is required, so it
+    inherits the differentiability, unit handling, and backend dispatch of
+    the underlying CSR primitive.
+
+    The function supports physical units via :mod:`brainunit`.
+
+    Parameters
+    ----------
+    y : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Batch of dense vectors indexed by the CSC structure.  Shape
+        ``(n_batch, shape[0])`` when ``transpose=False`` or
+        ``(n_batch, shape[1])`` when ``transpose=True``.
+    w : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Batch of per-synapse values in CSC data order.  Shape
+        ``(n_batch, nse)``; the trailing axis must match the shape of
+        ``indices``.
+    indices : jax.Array or numpy.ndarray
+        Row indices of the CSC matrix.  Shape ``(nse,)`` with integer
+        dtype.
+    indptr : jax.Array or numpy.ndarray
+        Column index pointer array.  Shape ``(shape[1] + 1,)`` with integer
+        dtype.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        CSC matrix.
+    transpose : bool, optional
+        If ``True``, index ``y`` by column indices instead of row indices.
+        Default is ``False``.
+    backend : str or None, optional
+        Compute backend.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    out : jax.Array or brainunit.Quantity
+        Batched per-synapse result.  Shape ``(n_batch, nse)``, same as
+        ``w``.
+
+    See Also
+    --------
+    csrmm_dt2t : The CSR primitive this wraps.
+    cscmv_dt2t : Unbatched (single-vector) variant of this operator.
+
+    Notes
+    -----
+    A matrix ``W`` of shape ``(m, k)`` stored in CSC order has the same
+    ``data`` / ``indices`` / ``indptr`` arrays as ``W.T`` stored in CSR
+    order with shape ``(k, m)``.  Under that view, indexing ``y`` by the
+    CSC row (``transpose=False``) corresponds to indexing the CSR
+    *column* axis, and indexing by the CSC column (``transpose=True``)
+    corresponds to the CSR *row* axis.  Hence the call delegates to::
+
+        csrmm_dt2t(y, w, indices, indptr,
+                   shape=shape[::-1], transpose=not transpose)
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import cscmm_dt2t
+        >>> # CSC of a (3, 2) matrix: indptr over the 2 columns.
+        >>> y = jnp.array([[1.0, 2.0, 3.0], [10.0, 20.0, 30.0]])  # (n_batch=2, m=3)
+        >>> w = jnp.array([[0.5, 0.3, 0.7, 0.1],
+        ...                [1.0, 2.0, 3.0, 4.0]])                 # (n_batch=2, nse=4)
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> cscmm_dt2t(y, w, indices, indptr, shape=(3, 2))
+    """
+    return csrmm_dt2t(
+        y,
+        w,
+        indices,
+        indptr,
+        shape=tuple(shape)[::-1],
+        transpose=not transpose,
+        backend=backend,
+    )
+
+
+def _csrmm_dt2t_numba_kernels(
+    transpose: bool,
+    **kwargs
+):
+    import numba  # pylint: disable=import-outside-toplevel
+
+    if transpose:
+        @numba.njit
+        def mm(y, w, indices, indptr, posts):
+            for b in range(w.shape[0]):
+                for i_col in range(indptr.shape[0] - 1):
+                    i_row_start = indptr[i_col]
+                    i_row_end = indptr[i_col + 1]
+                    for j in range(i_row_start, i_row_end):
+                        posts[b, j] = w[b, j] * y[b, indices[j]]
+
+        def kernel(y, w, indices, indptr):
+            return numba_kernel(mm, outs=kwargs['outs'])(y, w, indices, indptr)
+
+    else:
+        @numba.njit
+        def mm(y, w, indptr, posts):
+            for b in range(w.shape[0]):
+                for i_row in range(indptr.shape[0] - 1):
+                    i_col_start = indptr[i_row]
+                    i_col_end = indptr[i_row + 1]
+                    for j in range(i_col_start, i_col_end):
+                        posts[b, j] = w[b, j] * y[b, i_row]
+
+        def kernel(y, w, indices, indptr):
+            return numba_kernel(mm, outs=kwargs['outs'])(y, w, indptr)
+
+    return kernel
+
+
+def _csrmm_dt2t_cuda_kernel(
+    transpose: bool,
+    w_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
+    # Transpose path: same reasoning as ``_csrmv_dt2t_cuda_kernel`` — the
+    # batched gather-multiply ``out[b, j] = w[b, j] * y[b, indices[j]]`` is
+    # bandwidth-bound on the scattered ``y`` read and XLA's fused gather
+    # already reaches it, so reuse the pure-JAX implementation.
+    if transpose:
+        return _csrmm_dt2t_jax_kernel(transpose=transpose, **kwargs)
+
+    # Same module as the csrmv kernels: both live in dt2t.cu.
+    load_cuda_file(
+        Path(__file__).parent.joinpath('dt2t.cu'),
+        name='csrmv_dt2t',
+    )
+
+    out_info = kwargs['outs']
+
+    # Weight dtype suffix
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
+
+    kernel_name = f'csrmv_dt2t.csrmm_dt2t_nt_auto{wt_sfx}'
+
+    def kernel(y, w, indices, indptr):
+        return jax.ffi.ffi_call(kernel_name, out_info)(y, w, indices, indptr)
+
+    return kernel
+
+
+def _csrmm_dt2t_jax_kernel(
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for batched CSR dt2t (out[b, j] = w[b, j] * y[b, row/col]) (all platforms).
+
+    On GPU the non-transpose path is served by a bespoke CUDA kernel
+    (``_csrmm_dt2t_cuda_kernel``); this JAX implementation covers every
+    other platform and the transpose path, whose scattered ``y`` gather
+    XLA already fuses at full bandwidth.
+    """
+    m, k = shape
+    nse = kwargs['indices_info'].size
+
+    if transpose:
+        # col index is directly in `indices`
+        def kernel(y, w, indices, indptr):
+            return (w * y[:, indices],)
+    else:
+        def kernel(y, w, indices, indptr):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            return (w * y[:, row_ids],)
+    return kernel
+
+
+def _csrmm_dt2t_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    return csrmm_dt2t_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
+
+
+def _csrmm_dt2t_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    return csrmm_dt2t_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
+
+
+def _csrmm_dt2t_benchmark_data(*, platform):
+    """
+    Benchmark configurations for ``csrmm_dt2t``.
+
+    Reuses the ``csrmv_dt2t`` size/density grid (see
+    :func:`_csrmv_dt2t_benchmark_data`) with a batch of 4 samples, a
+    typical batch size for D-RTRL eligibility-trace workloads (kept small
+    because ``w`` and the output scale with ``n_batch * nse``).
+    """
+    dtype = jnp.float32
+    n_batch = 4
+    configs = []
+    sizes = [
+        (1_000, 1_000),
+        (5_000, 5_000),
+        (20_000, 20_000),
+    ]
+    probs = [0.001, 0.01, 0.1]
+
+    for (n_pre, n_post), prob in zip(sizes, probs):
+        n_conn = max(1, int(n_post * prob))
+        indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+        indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
+        w = jnp.asarray(np.random.randn(n_batch, n_pre * n_conn), dtype=dtype)
+        indptr_jax = jnp.asarray(indptr)
+
+        for transpose in (False, True):
+            y_size = n_post if transpose else n_pre
+            y = jnp.asarray(np.random.randn(n_batch, y_size), dtype=dtype)
+            tag = 'T' if transpose else 'NT'
+            name = f"{tag},n={n_pre},nnz={n_conn}"
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (y, w, jnp.asarray(indices), indptr_jax),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
+    return configs
+
+
+def csrmm_dt2t_p_call(
+    y,
+    w,
+    indices,
+    indptr,
+    *,
+    shape: MatrixShape,
+    transpose: bool = False,
+    backend: Optional[str] = None,
+):
+    """
+    Low-level primitive call for the batched element-wise vector--weight
+    product indexed by CSR structure.
+
+    Validates inputs and dispatches the ``csrmm_dt2t_p`` XLA custom kernel.
+    For each batch element ``b`` and structural non-zero ``j`` at position
+    ``(row, col)`` in the CSR matrix, the output is
+    ``out[b, j] = w[b, j] * y[b, row]`` (non-transposed) or
+    ``out[b, j] = w[b, j] * y[b, col]`` (transposed).
+
+    Parameters
+    ----------
+    y : jax.Array
+        Batch of dense vectors.  Shape ``(n_batch, shape[0])`` when
+        ``transpose=False`` or ``(n_batch, shape[1])`` when
+        ``transpose=True``.
+    w : jax.Array
+        Batch of per-synapse values.  Shape ``(n_batch, nse)``; the
+        trailing axis must match the shape of ``indices``.
+    indices : jax.Array
+        Column indices of the CSR matrix.  Shape ``(nse,)`` with integer
+        dtype.
+    indptr : jax.Array
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with integer
+        dtype.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the CSR
+        matrix.
+    transpose : bool, optional
+        If ``True``, index ``y`` by column indices.  Default is ``False``.
+    backend : str or None, optional
+        Compute backend to use.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    list of jax.Array
+        A single-element list containing the batched per-synapse result.
+        Shape ``(n_batch, nse)``, same as ``w``.
+
+    Raises
+    ------
+    AssertionError
+        If ``y`` and ``w`` have different dtypes.
+    AssertionError
+        If ``y`` or ``w`` is not 2-D.
+    AssertionError
+        If ``y`` and ``w`` have different batch (leading) dimensions.
+    AssertionError
+        If ``indices`` or ``indptr`` does not have an integer dtype.
+    AssertionError
+        If ``w`` does not have a floating-point dtype.
+    AssertionError
+        If the trailing axis of ``w`` does not match the shape of
+        ``indices``.
+    AssertionError
+        If there is a shape mismatch between ``y`` and the sparse
+        matrix ``shape`` (considering the ``transpose`` flag).
+
+    See Also
+    --------
+    csrmm_dt2t : High-level wrapper with unit support.
+
+    Notes
+    -----
+    The computation performed is, for each batch element ``b`` and
+    structural non-zero entry ``j`` at CSR position ``(row, col)``:
+
+    ``out[b, j] = w[b, j] * y[b, row]``  (non-transposed)
+
+    ``out[b, j] = w[b, j] * y[b, col]``  (transposed)
+
+    where ``row`` is determined by ``indptr`` and ``col = indices[j]``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import csrmm_dt2t
+        >>> y = jnp.array([[1.0, 2.0], [10.0, 20.0]])           # (n_batch=2, m=2)
+        >>> w = jnp.array([[0.5, 0.3, 0.7, 0.1],
+        ...                [1.0, 2.0, 3.0, 4.0]])               # (n_batch=2, nse=4)
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> result = csrmm_dt2t(
+        ...     y, w, indices, indptr,
+        ...     shape=(2, 3), transpose=False)
+    """
+    assert y.dtype == w.dtype, f"y and w must have the same dtype, but got {y.dtype} and {w.dtype}."
+    assert indptr.ndim == 1, "Indptr must be 1D."
+    assert indices.ndim == 1, "Indices must be 1D."
+    assert y.ndim == 2, "y must be 2D (batch, vector)."
+    assert w.ndim == 2, "w must be 2D (batch, nse)."
+    assert jnp.issubdtype(indices.dtype, jnp.integer), "Indices must be an integer type."
+    assert jnp.issubdtype(indptr.dtype, jnp.integer), "indptr must be an integer type."
+    assert jnp.issubdtype(w.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    assert w.shape[0] == y.shape[0], (
+        f"Batch mismatch, y has batch {y.shape[0]} but w has batch {w.shape[0]}."
+    )
+    assert w.shape[1:] == indices.shape, f"Weights shape mismatch, expected {indices.shape}, got {w.shape[1:]}."
+    if transpose:
+        # y indexed by the column axis of the CSR matrix
+        assert shape[1] == y.shape[1], "Shape mismatch for transpose operation."
+    else:
+        # y indexed by the row axis of the CSR matrix
+        assert shape[0] == y.shape[1], "Shape mismatch for non-transpose operation."
+
+    return csrmm_dt2t_p(
+        y,
+        w,
+        indices,
+        indptr,
+        outs=[jax.ShapeDtypeStruct(w.shape, w.dtype)],
+        shape=tuple(shape),
+        transpose=transpose,
+        backend=backend,
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        y_info=jax.ShapeDtypeStruct(y.shape, y.dtype),
+        w_info=jax.ShapeDtypeStruct(w.shape, w.dtype),
+    )
+
+
+csrmm_dt2t_p = XLACustomKernel(
+    'csrmm_dt2t',
+    doc="""
+Low-level XLA custom-kernel primitive for ``csrmm_dt2t``.
+
+This ``XLACustomKernel`` instance dispatches the batched CSR per-synapse
+element-wise product (y * w -> w-shaped output) operation to registered
+backends (``numba``, ``cuda_raw``, ``jax_raw``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+For each batch element b and non-zero entry at position (row, col) in the
+CSR matrix, computes out[b, j] = w[b, j] * y[b, row] (non-transposed) or
+out[b, j] = w[b, j] * y[b, col] (transposed), producing one output element
+per batch element and per structural non-zero.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``csrmm_dt2t_p.available_backends(platform)``,
+and the default backend can be configured with ``csrmm_dt2t_p.set_default(platform, backend)``.
+
+See Also
+--------
+csrmm_dt2t : High-level user-facing function wrapper.
+"""
+)
+csrmm_dt2t_p.def_numba_kernel(_csrmm_dt2t_numba_kernels)
+csrmm_dt2t_p.def_cuda_raw_kernel(_csrmm_dt2t_cuda_kernel, asdefault=True)
+csrmm_dt2t_p.def_kernel('jax_raw', 'cpu', _csrmm_dt2t_jax_kernel)
+csrmm_dt2t_p.def_kernel('jax_raw', 'gpu', _csrmm_dt2t_jax_kernel)
+csrmm_dt2t_p.def_kernel('jax_raw', 'tpu', _csrmm_dt2t_jax_kernel)
+csrmm_dt2t_p.def_jvp_rule2(_csrmm_dt2t_jvp_y, _csrmm_dt2t_jvp_w, None, None)
+csrmm_dt2t_p.def_call(csrmm_dt2t_p_call)
+csrmm_dt2t_p.def_tags('csr', 'float')
+csrmm_dt2t_p.def_benchmark_data(_csrmm_dt2t_benchmark_data)

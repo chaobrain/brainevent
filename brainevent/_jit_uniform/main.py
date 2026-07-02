@@ -29,6 +29,7 @@ from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitumv, binary_jitumm
 from .csr import jitu_to_csr
 from .float import jitu, jitumv, jitumm
+from .dt2t import jitumv_dt2t
 
 __all__ = [
     'JITCUniformR',
@@ -244,43 +245,43 @@ class JITCUniformMatrix(JITCMatrix):
         return self.wlow.dtype
 
     @property
-    def data(self) -> Tuple[WeightScalar, WeightScalar, Prob, Seed]:
+    def data(self) -> Tuple[WeightScalar, WeightScalar]:
         """
-        Returns the core data components of the homogeneous matrix.
+        Return the trainable weights of the matrix.
 
-        This property provides access to the three fundamental components that define
-        the sparse matrix: weight values, connection probabilities, and the random seed.
-        It's used by the tree_flatten method to make the class compatible with JAX
-        transformations.
+        Only the trainable value parameters ``(wlow, whigh)`` are exposed here.
+        The structural parameters ``prob`` and ``seed`` are non-trainable and are
+        therefore excluded. This property mirrors :meth:`with_data`, which accepts
+        exactly the tuple returned here, so ``mat.with_data(mat.data)``
+        round-trips.
 
         Returns
         -------
-        Tuple[Weight, Weight, Prob, Seed]
-            A tuple containing:
-            - loc:
-            - scale:
-            - prob: Connection probability for the sparse structure
-            - seed: Random seed used for generating the sparse connectivity pattern
-        """
-        return self.wlow, self.whigh, self.prob, self.seed
+        Tuple[WeightScalar, WeightScalar]
+            The ``(wlow, whigh)`` pair: the lower and upper bounds of the uniform
+            distribution.
 
-    def with_data(self, low: WeightScalar, high: WeightScalar):
+        See Also
+        --------
+        with_data : Rebuild the matrix from the tuple returned here.
         """
-        Create a new matrix instance with updated weight data but preserving other properties.
+        return self.wlow, self.whigh
 
-        This method returns a new instance of the same class with the provided lower and
-        upper bound values, while keeping the same probability, seed, shape, and other
-        configuration parameters. It's useful for updating weight bounds without changing
-        the connectivity pattern.
+    def with_data(self, data: Tuple[WeightScalar, WeightScalar]):
+        """
+        Create a new matrix instance with updated bounds, preserving all other structure.
+
+        Accepts exactly the tuple returned by :attr:`data`, i.e. the
+        ``(low, high)`` pair, while keeping the same ``prob``, ``seed``,
+        ``shape``, ``corder``, ``backend``, and buffers. It is useful for updating
+        weight bounds without changing the connectivity pattern.
 
         Parameters
         ----------
-        low : WeightScalar
-            New lower bound value for the uniform distribution. Must have the same shape
-            and units as the original lower bound.
-        high : WeightScalar
-            New upper bound value for the uniform distribution. Must have the same shape
-            and units as the original upper bound.
+        data : Tuple[WeightScalar, WeightScalar]
+            The new ``(low, high)`` bounds of the uniform distribution. Each must
+            have the same shape and unit as the corresponding current bound
+            (``wlow`` and ``whigh``).
 
         Returns
         -------
@@ -294,6 +295,10 @@ class JITCUniformMatrix(JITCMatrix):
             If the shapes of the provided bounds don't match the shapes of the original bounds,
             or if the units of the provided bounds don't match the units of the original bounds.
 
+        See Also
+        --------
+        data : Property returning the tuple accepted here.
+
         Examples
         --------
         >>> import jax
@@ -304,13 +309,14 @@ class JITCUniformMatrix(JITCMatrix):
         >>> original = JITCUniformR((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>>
         >>> # Create new matrix with updated bounds
-        >>> updated = original.with_data(0.2, 0.8)
+        >>> updated = original.with_data((0.2, 0.8))
         >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
         >>>
         >>> # With units
         >>> original_units = JITCUniformR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
-        >>> updated_units = original_units.with_data(0.2 * u.mV, 0.8 * u.mV)
+        >>> updated_units = original_units.with_data((0.2 * u.mV, 0.8 * u.mV))
         """
+        low, high = data
         low = u.math.asarray(low)
         high = u.math.asarray(high)
         assert low.shape == self.wlow.shape
@@ -372,6 +378,54 @@ class JITCUniformMatrix(JITCMatrix):
             self.prob,
             self.seed,
             shape=self.shape,
+            corder=self.corder,
+            backend=self.backend,
+        )
+
+    def dt2t(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
+        """Generate per-synapse ``sampled_weight * y[row]`` using the matrix parameters.
+
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
+        JITC uniform connectivity and weights are generated from this matrix's own
+        metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
+        ``corder``, and ``backend``.
+        """
+        return jitumv_dt2t(
+            self.wlow,
+            self.whigh,
+            self.prob,
+            y_dim_arr,
+            self.seed,
+            shape=self.shape,
+            transpose=False,
+            corder=self.corder,
+            backend=self.backend,
+        )
+
+    def dt2t_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
+        """Generate per-synapse ``sampled_weight * y[col]`` using the matrix parameters.
+
+        ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
+        JITC uniform connectivity and weights are generated from this matrix's own
+        metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
+        ``corder``, and ``backend``.
+        """
+        return jitumv_dt2t(
+            self.wlow,
+            self.whigh,
+            self.prob,
+            y_dim_arr,
+            self.seed,
+            shape=self.shape,
+            transpose=True,
             corder=self.corder,
             backend=self.backend,
         )
@@ -539,7 +593,7 @@ class JITCUniformR(JITCUniformMatrix):
         >>> isinstance(col_matrix, JITCUniformC)  # True
 
         # Update bounds while preserving connectivity pattern
-        >>> updated = uniform_matrix.with_data(0.2, 0.8)
+        >>> updated = uniform_matrix.with_data((0.2, 0.8))
         >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
 
         # Use with JAX transformations
@@ -1109,7 +1163,7 @@ class JITCUniformC(JITCUniformMatrix):
         >>> isinstance(row_matrix, JITCUniformR)  # True
 
         # Update bounds while preserving connectivity pattern
-        >>> updated = uniform_matrix.with_data(0.2, 0.8)
+        >>> updated = uniform_matrix.with_data((0.2, 0.8))
         >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
 
         # Use with JAX transformations

@@ -13,16 +13,14 @@
 # limitations under the License.
 # ==============================================================================
 
-"""End-to-end test: compile a vector_add CUDA kernel and call it via JAX FFI."""
+"""Kernix CUDA end-to-end tests."""
 
 import pytest
 import numpy as np
 
 from brainevent._test_util import requires_gpu
 
-pytestmark = requires_gpu
-
-CUDA_SRC = r"""
+VADD_CUDA_SRC = r"""
 #include <cuda_runtime.h>
 #include "brainevent/common.h"
 
@@ -53,30 +51,14 @@ def vadd_module():
     import brainevent
     return brainevent.load_cuda_inline(
         name="test_vadd",
-        cuda_sources=CUDA_SRC,
+        cuda_sources=VADD_CUDA_SRC,
         functions={"vector_add": ["arg", "arg", "ret", "stream"]},
         force_rebuild=True,
         verbose=True,
     )
 
 
-def test_basic_vector_add(vadd_module):
-    """Basic correctness: a + b == expected."""
-    import jax
-    import jax.numpy as jnp
-
-    a = jnp.arange(1024, dtype=jnp.float32)
-    b = jnp.full(1024, 2.0, dtype=jnp.float32)
-
-    result = jax.ffi.ffi_call(
-        "test_vadd.vector_add",
-        jax.ShapeDtypeStruct((1024,), jnp.float32),
-    )(a, b)
-
-    expected = np.arange(1024, dtype=np.float32) + 2.0
-    np.testing.assert_allclose(np.asarray(result), expected, rtol=1e-5)
-
-
+@requires_gpu
 def test_jit_vector_add(vadd_module):
     """Works under @jax.jit."""
     import jax
@@ -95,6 +77,7 @@ def test_jit_vector_add(vadd_module):
     np.testing.assert_allclose(np.asarray(result), np.full(512, 4.0), rtol=1e-5)
 
 
+@requires_gpu
 def test_large_array(vadd_module):
     """Works with large arrays (1M elements)."""
     import jax
@@ -112,6 +95,7 @@ def test_large_array(vadd_module):
     np.testing.assert_allclose(np.asarray(result), np.full(n, 8.0), rtol=1e-5)
 
 
+@requires_gpu
 def test_module_attributes(vadd_module):
     """CompiledModule exposes expected attributes."""
     import sys
@@ -120,8 +104,76 @@ def test_module_attributes(vadd_module):
     assert vadd_module.path.endswith(ext)
 
 
+@requires_gpu
 def test_list_registered_targets(vadd_module):
     """Targets appear in the global registry."""
     import brainevent
     targets = brainevent.list_registered_targets()
     assert "test_vadd.vector_add" in targets
+
+
+# ---------------------------------------------------------------------------
+# Multiple output CUDA FFI tests
+# ---------------------------------------------------------------------------
+
+MULTI_OUT_CUDA_SRC = r"""
+#include <cuda_runtime.h>
+#include "brainevent/common.h"
+
+__global__ void split_kernel(const float* x, float* lo, float* hi,
+                             int n, int split) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < split) lo[idx] = x[idx];
+    if (idx < n - split) hi[idx] = x[split + idx];
+}
+
+void min_max(BE::Tensor x, BE::Tensor out_min,
+             BE::Tensor out_max, int64_t stream) {
+    // Simple test: copy first half to out_min, second half to out_max
+    int n = x.numel();
+    int half = n / 2;
+    split_kernel<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
+        static_cast<const float*>(x.data_ptr()),
+        static_cast<float*>(out_min.data_ptr()),
+        static_cast<float*>(out_max.data_ptr()),
+        n, half);
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def multi_out_module():
+    import brainevent
+    return brainevent.load_cuda_inline(
+        name="test_multi_out",
+        cuda_sources=MULTI_OUT_CUDA_SRC,
+        functions={
+            "min_max": ["arg", "ret", "ret", "stream"],
+        },
+        force_rebuild=True,
+    )
+
+
+@requires_gpu
+def test_two_outputs(multi_out_module):
+    """Function with two output buffers."""
+    import jax
+    import jax.numpy as jnp
+
+    n = 256
+    x = jnp.arange(n, dtype=jnp.float32)
+
+    lo, hi = jax.ffi.ffi_call(
+        "test_multi_out.min_max",
+        (
+            jax.ShapeDtypeStruct((n // 2,), jnp.float32),
+            jax.ShapeDtypeStruct((n // 2,), jnp.float32),
+        ),
+    )(x)
+
+    np.testing.assert_allclose(
+        np.asarray(lo), np.arange(n // 2, dtype=np.float32)
+    )
+    np.testing.assert_allclose(
+        np.asarray(hi), np.arange(n // 2, n, dtype=np.float32)
+    )

@@ -19,14 +19,16 @@ from brainevent._csr.binary import binary_csrmm_p, binary_csrmv_p
 def test_binary_csrmv_gpu_cusparse_backend_names():
     backends = binary_csrmv_p.available_backends('gpu')
 
-    assert 'BCOO_cusparse' in backends
-    assert 'JAX_cusparse' in backends
-    assert 'cusparse' not in backends
+    assert 'cusparse' in backends
+    # Legacy names were removed / renamed.
+    assert 'BCOO_cusparse' not in backends
+    assert 'JAX_cusparse' not in backends
 
 
 def test_binary_csrmm_gpu_cusparse_backend_names():
     backends = binary_csrmm_p.available_backends('gpu')
 
-    assert 'BCOO_cusparse' in backends
-    assert 'JAX_cusparse' in backends
-    assert 'cusparse' not in backends
+    assert 'cusparse' in backends
+    # Legacy names were removed / renamed.
+    assert 'BCOO_cusparse' not in backends
+    assert 'JAX_cusparse' not in backends

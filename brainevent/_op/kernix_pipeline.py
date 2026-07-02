@@ -38,7 +38,7 @@ from .kernix_codegen import (
     FunctionSpec, infer_arg_spec_from_source, normalize_tokens,
     parse_arg_spec, parse_annotations, preprocess_source, resolve_bare_attr_types,
 )
-from .kernix_compiler import CPPBackend, CUDABackend
+from .kernix_compiler import CPPBackend, CUDABackend, _cuda_runtime_lib_linker_search_flags
 from .kernix_runtime import CompiledModule, _REGISTERED_TARGETS, register_ffi_target
 from .kernix_toolchain import (
     collect_toolchain_diagnostics, detect_cpp_toolchain, detect_cuda_arch,
@@ -249,6 +249,7 @@ def load_cuda_inline(
     # Compute cache key (includes optimization settings so changing them
     # rebuilds; also the include search path, injected-header bytes, and the
     # jaxlib FFI ABI version — see CompilationCache.cache_key).
+    cuda_ldflags = _cuda_runtime_lib_linker_search_flags(toolchain.cuda_home)
     cache_key = _cache.cache_key(
         source=user_source,
         arch=arch_key,
@@ -259,7 +260,7 @@ def load_cuda_inline(
             + (["--use_fast_math"] if use_fast_math else [])
             + [f"--be-allow-cuda-graph={int(allow_cuda_graph)}"]
         ),
-        extra_ldflags=extra_ldflags,
+        extra_ldflags=cuda_ldflags + (extra_ldflags or []),
         extra_include_paths=extra_include_paths,
         header_paths=_cache_header_paths(toolchain),
     )

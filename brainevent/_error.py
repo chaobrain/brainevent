@@ -104,7 +104,7 @@ class UnsupportedOperationError(BrainEventError):
     -----
     A just-in-time-connectivity matrix, for instance, refuses :meth:`fromdense`
     (it cannot recover the generating ``(prob, seed)``) and the per-synapse
-    ``yw_to_w`` / ``update_on_*`` protocols (its weight is a distribution
+    ``dt2t`` / ``update_on_*`` protocols (its weight is a distribution
     parameter, not a per-synapse array).
 
     Examples

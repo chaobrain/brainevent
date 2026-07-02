@@ -26,6 +26,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from brainevent._op import numba_cuda_ffi
+from brainevent._op.numba_cuda_ffi import _compute_launch_config
+
 # Check if Numba CUDA is available
 numba_installed = importlib.util.find_spec('numba') is not None
 numba_cuda_available = False
@@ -39,8 +42,10 @@ if numba_installed:
 
 gpu_platform = jax.default_backend() == 'gpu'
 numba_cuda_available = numba_cuda_available and gpu_platform
-if not gpu_platform:
-    pytest.skip('GPU platform not detected, skipping Numba CUDA tests', allow_module_level=True)
+
+requires_gpu = pytest.mark.skipif(
+    not numba_cuda_available, reason="Numba CUDA not available"
+)
 
 
 @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
@@ -575,14 +580,14 @@ class TestNumbaCudaKernelXLAStream(unittest.TestCase):
 
 
 # ===========================================================================
-# 1. Validation / Error Handling (no GPU needed)
+# 1. Validation / Error Handling
 # ===========================================================================
 
 
 class TestNumbaCudaCallableValidation(unittest.TestCase):
-    """Validation tests that do not require a GPU."""
+    """Validation tests for the callable wrapper."""
 
-    @pytest.mark.skipif(not numba_cuda_available, reason="Numba not installed")
+    @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
     def test_non_callable_raises_typeerror(self):
         from brainevent import numba_cuda_callable
 
@@ -592,7 +597,7 @@ class TestNumbaCudaCallableValidation(unittest.TestCase):
                 outs=jax.ShapeDtypeStruct((10,), jnp.float32),
             )
 
-    @pytest.mark.skipif(not numba_cuda_available, reason="Numba not installed")
+    @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
     def test_returns_callable(self):
         from brainevent import numba_cuda_callable
 
@@ -1548,5 +1553,183 @@ class TestNumbaCudaCallableDtypes(unittest.TestCase):
         jax.block_until_ready((a, b, result, expected))
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+# ---------------------------------------------------------------------------
+# Audit regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestComputeLaunchConfig(unittest.TestCase):
+    """``_compute_launch_config`` guards (M3) - pure, no GPU required."""
+
+    def test_basic_1d_2d_3d(self):
+        self.assertEqual(_compute_launch_config(1024), ((4,), (256,)))
+        self.assertEqual(_compute_launch_config((64, 64)), ((4, 4), (16, 16)))
+        grid, block = _compute_launch_config((16, 16, 8))
+        self.assertEqual(block, (8, 8, 4))
+        self.assertEqual(grid, (2, 2, 2))
+
+    def test_zero_extent_no_zero_division(self):
+        # Previously: block=(min(256,0),)=(0,) -> grid = -1 // 0 -> ZeroDivisionError.
+        grid, block = _compute_launch_config(0)
+        self.assertEqual(grid, (0,))
+        self.assertEqual(block, (1,))  # clamped to >= 1
+        # A zero extent on one axis of a multi-D launch is also safe.
+        grid, block = _compute_launch_config((0, 32))
+        self.assertEqual(grid[0], 0)
+        self.assertTrue(all(b >= 1 for b in block))
+
+    def test_negative_extent_raises(self):
+        with self.assertRaises(ValueError):
+            _compute_launch_config(-1)
+        with self.assertRaises(ValueError):
+            _compute_launch_config((8, -2))
+
+    def test_bad_dimensionality_raises(self):
+        with self.assertRaises(ValueError):
+            _compute_launch_config(())  # zero dims
+        with self.assertRaises(ValueError):
+            _compute_launch_config((1, 2, 3, 4))  # > 3 dims
+
+    def test_nonpositive_threads_per_block_raises(self):
+        with self.assertRaises(ValueError):
+            _compute_launch_config(1024, threads_per_block=0)
+
+
+@requires_gpu
+class TestKernelCorrectness(unittest.TestCase):
+    """End-to-end correctness with the device-context binding in place (C3)."""
+
+    def test_elementwise_add(self):
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def add_kernel(x, y, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] + y[i]
+
+        fn = numba_cuda_kernel(
+            add_kernel,
+            outs=jax.ShapeDtypeStruct((1024,), jnp.float32),
+            launch_dims=1024,
+        )
+        x = jnp.arange(1024, dtype=jnp.float32)
+        y = jnp.ones(1024, dtype=jnp.float32)
+        out = np.asarray(jax.jit(fn)(x, y))
+        np.testing.assert_allclose(out, np.arange(1024) + 1.0, rtol=1e-6)
+
+    def test_float16_roundtrip(self):
+        # float16 is supported by numba CUDA; it must round-trip (C2).
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def copy_kernel(x, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i]
+
+        fn = numba_cuda_kernel(
+            copy_kernel,
+            outs=jax.ShapeDtypeStruct((256,), jnp.float16),
+            launch_dims=256,
+        )
+        x = jnp.arange(256, dtype=jnp.float16)
+        out = np.asarray(jax.jit(fn)(x))
+        np.testing.assert_array_equal(out, np.arange(256, dtype=np.float16))
+
+
+@requires_gpu
+class TestErrorPropagation(unittest.TestCase):
+    """A raising callback must surface as a JAX error, never silent success (C1)."""
+
+    def test_callable_exception_propagates(self):
+        from brainevent import numba_cuda_callable
+
+        def boom(x, out, stream):
+            raise RuntimeError('intentional-kernel-failure')
+
+        fn = numba_cuda_callable(
+            boom, outs=jax.ShapeDtypeStruct((4,), jnp.float32)
+        )
+        x = jnp.ones(4, dtype=jnp.float32)
+        with self.assertRaises(Exception):
+            # Force execution so the FFI error is materialised, not deferred.
+            jax.block_until_ready(jax.jit(fn)(x))
+
+    def test_bfloat16_rejected(self):
+        # numba CUDA cannot launch bfloat16 kernels; the bridge must reject the
+        # call (an error) rather than silently mis-decode the bytes (C2).
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def copy_kernel(x, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i]
+
+        fn = numba_cuda_kernel(
+            copy_kernel,
+            outs=jax.ShapeDtypeStruct((128,), jnp.bfloat16),
+            launch_dims=128,
+        )
+        x = jnp.arange(128, dtype=jnp.bfloat16)
+        with self.assertRaises(Exception):
+            jax.block_until_ready(jax.jit(fn)(x))
+
+
+@requires_gpu
+class TestEmptyLaunch(unittest.TestCase):
+    """An empty problem must not crash the launch (M3)."""
+
+    def test_zero_size_output(self):
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def add_kernel(x, y, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] + y[i]
+
+        fn = numba_cuda_kernel(
+            add_kernel,
+            outs=jax.ShapeDtypeStruct((0,), jnp.float32),
+            launch_dims=0,
+        )
+        x = jnp.zeros((0,), dtype=jnp.float32)
+        y = jnp.zeros((0,), dtype=jnp.float32)
+        out = np.asarray(jax.jit(fn)(x, y))
+        self.assertEqual(out.shape, (0,))
+
+
+@requires_gpu
+class TestRegistrationCaching(unittest.TestCase):
+    """Repeated identical calls reuse a single FFI registration (H1)."""
+
+    def test_kernel_registration_cached(self):
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def add_kernel(x, y, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] + y[i]
+
+        fn = numba_cuda_kernel(
+            add_kernel,
+            outs=jax.ShapeDtypeStruct((512,), jnp.float32),
+            launch_dims=512,
+        )
+        x = jnp.arange(512, dtype=jnp.float32)
+        y = jnp.ones(512, dtype=jnp.float32)
+
+        before = len(numba_cuda_ffi._NUMBA_CUDA_FFI_TARGETS)
+        for _ in range(5):
+            jax.block_until_ready(fn(x, y))
+        after = len(numba_cuda_ffi._NUMBA_CUDA_FFI_TARGETS)
+        # Five identical-signature calls add exactly one registration.
+        self.assertEqual(after - before, 1)

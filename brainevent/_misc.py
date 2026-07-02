@@ -1805,7 +1805,7 @@ class NameScope:
         self._static_argnums = static_argnums
         self._static_argnames = static_argnames
         fn.__name__ = name if name is not None else f"{prefix}.{fn.__name__}"
-        self._cache = {}  # backend -> jit_compiled_fn
+        self._cache: dict[Optional[str], Callable] = {}  # backend -> jit_compiled_fn
         # Check whether the wrapped function accepts a 'backend' keyword.
         # True when the function either has an explicit backend parameter or accepts **kwargs.
         sig = inspect.signature(fn)
@@ -1840,8 +1840,8 @@ class NameScope:
 
 
 def namescope(
-    fn: Callable = None,
-    name: str = None,
+    fn: Optional[Callable] = None,
+    name: Optional[str] = None,
     prefix: str = "brainevent",
     module: str = 'brainevent',
     static_argnums: Sequence[int] = (),

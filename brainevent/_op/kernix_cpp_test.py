@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Test CPU/C++ compilation and FFI registration."""
+"""Kernix C++/CPU FFI end-to-end tests."""
 
 import platform
 
@@ -77,22 +77,6 @@ def cpu_add_one_module():
         functions=["add_one_cpu"],
         force_rebuild=True,
     )
-
-
-def test_add_one_cpu(cpu_add_one_module):
-    """CPU kernel: add 1 to each element."""
-
-    cpu = jax.devices("cpu")[0]
-    x = jax.device_put(jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32), cpu)
-
-    result = jax.ffi.ffi_call(
-        "test_cpu_add_one.add_one_cpu",
-        jax.ShapeDtypeStruct(x.shape, x.dtype),
-        vmap_method="broadcast_all",
-    )(x)
-
-    expected = np.array([2.0, 3.0, 4.0], dtype=np.float32)
-    np.testing.assert_allclose(np.asarray(result), expected)
 
 
 def test_add_one_cpu_jit(cpu_add_one_module):
@@ -164,3 +148,70 @@ def test_multi_output_cpu():
     np.testing.assert_allclose(
         np.asarray(hi), np.arange(n // 2, n, dtype=np.float32)
     )
+
+
+# ---------------------------------------------------------------------------
+# Host-side check propagation tests
+# ---------------------------------------------------------------------------
+
+# A CPU kernel that fails a host-side invariant.  ``x.numel()`` is always
+# non-negative, so ``x.numel() < 0`` is always false and the check fires at
+# runtime (the compiler cannot prove it away from the source alone).
+CHECK_FAIL_SRC = r"""
+#include "brainevent/common.h"
+
+void check_fail_cpu(const BE::Tensor x, BE::Tensor y) {
+    BE_CHECK(x.numel() < 0) << "intentional failure: numel=" << x.numel();
+    float* out_ptr = static_cast<float*>(y.data_ptr());
+    out_ptr[0] = 1.0f;  // unreachable
+}
+"""
+
+
+def test_host_check_failure_raises_not_aborts():
+    """A failing BE_CHECK surfaces as a Python exception (no SIGABRT)."""
+    mod = brainevent.load_cpp_inline(
+        name="test_cpu_check_fail",
+        cpp_sources=CHECK_FAIL_SRC,
+        functions=["check_fail_cpu"],
+        force_rebuild=True,
+    )
+
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32), cpu)
+
+    with pytest.raises(Exception) as excinfo:
+        result = jax.ffi.ffi_call(
+            "test_cpu_check_fail.check_fail_cpu",
+            jax.ShapeDtypeStruct(x.shape, x.dtype),
+            vmap_method="broadcast_all",
+        )(x)
+        jax.block_until_ready(result)
+
+    # The diagnostic from check.h propagates through the FFI error.
+    message = str(excinfo.value)
+    assert "CHECK FAILED" in message or "intentional failure" in message, message
+
+
+def test_process_survives_after_check_failure():
+    """After a check failure, the interpreter is still usable (not aborted)."""
+    mod = brainevent.load_cpp_inline(
+        name="test_cpu_check_fail2",
+        cpp_sources=CHECK_FAIL_SRC.replace("check_fail_cpu", "check_fail_cpu2"),
+        functions=["check_fail_cpu2"],
+        force_rebuild=True,
+    )
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32), cpu)
+
+    with pytest.raises(Exception):
+        jax.block_until_ready(
+            jax.ffi.ffi_call(
+                "test_cpu_check_fail2.check_fail_cpu2",
+                jax.ShapeDtypeStruct(x.shape, x.dtype),
+                vmap_method="broadcast_all",
+            )(x)
+        )
+
+    # Still alive: a normal JAX computation completes after the failure.
+    assert float(jnp.sum(jnp.arange(5.0))) == 10.0
