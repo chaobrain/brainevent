@@ -669,6 +669,13 @@ def binary_fcnmm(
         shape=shape,
         backend=backend,
     )[0]
+    if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=backend):
+        # The cuda_raw scatter kernel emits a raw "batch-first" ``(n, num_post)``
+        # layout for efficiency; normalise it to the logical ``(num_post, n)``
+        # shape promised by this function (and produced by the other backends).
+        r = _maybe_transpose_to_expected(
+            r, (shape[1], matrix.shape[1]), op_name='binary_fcnmm'
+        )
     return u.maybe_decimal(r * m_unit * w_unit)
 
 

@@ -35,7 +35,7 @@ from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
-from .float import csrmv, csrmm
+from .float import csrmv, csrmm, csrmv_p, csrmm_p
 
 __all__ = [
     'binary_csrmv',
@@ -532,62 +532,14 @@ def _binary_csrmv_jax_kernel(
     return kernel
 
 
-def _binary_csrmv_bcoo_cusparse_kernel(
+def _binary_csrmv_cusparse_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """cuSPARSE-backed kernel for binary CSR SpMV via BCOO/BCSR sparse arrays."""
-    import jax.experimental.sparse as jsparse
-    m, k = shape
-    is_homo = (weight_info.size == 1)
-    is_bool = (vector_info.dtype == jnp.bool_)
-    nse = kwargs['indices_info'].size
-    out_dtype = kwargs['outs'][0].dtype
-
-    if transpose:
-        if is_homo:
-            def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
-                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
-                ones = jnp.ones(nse, dtype=out_dtype)
-                row, col = _csr_to_coo(indices, indptr)
-                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
-                math_out = (mat.T @ events) * weights[0].astype(out_dtype)
-                return math_out, task_begin, task_end, status
-        else:
-            def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
-                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
-                row, col = _csr_to_coo(indices, indptr)
-                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
-                math_out = mat.T @ events
-                return math_out, task_begin, task_end, status
-    else:
-        if is_homo:
-            def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
-                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
-                ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
-                math_out = (mat @ events) * weights[0].astype(out_dtype)
-                return math_out, task_begin, task_end, status
-        else:
-            def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
-                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
-                math_out = mat @ events
-                return math_out, task_begin, task_end, status
-    return kernel
-
-
-def _binary_csrmv_jax_cusparse_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
-    transpose: bool,
-    **kwargs,
-):
-    """JAX experimental CSR-backed binary CSR SpMV reference kernel."""
+    """cuSPARSE-backed binary CSR SpMV kernel via ``jax.experimental.sparse`` (GPU only)."""
     import jax.experimental.sparse as jsparse
     m, k = shape
     is_homo = (weight_info.size == 1)
@@ -673,9 +625,42 @@ def _binary_csrmv_cuda_kernel(
     return kernel
 
 
+def _grad_backend(backend, primitive):
+    """Backend to use when an autodiff rule defers to a *float* CSR primitive.
+
+    The binary primitives expose GPU-only backends (e.g. ``cusparse``) that the
+    plain float :func:`csrmv` / :func:`csrmm` used to form tangents and cotangents
+    do not register.  Forwarding such a name would raise
+    :class:`~brainevent.KernelFallbackExhaustedError` during the backward pass, so
+    fall back to automatic backend selection (``None``) whenever the float
+    ``primitive`` cannot service the requested ``backend``.  Backends the float
+    primitive *does* register (``cuda_raw``, ``jax_raw``, ``numba``) are forwarded
+    unchanged, preserving the existing behaviour.
+
+    Parameters
+    ----------
+    backend : str or None
+        The backend requested for the forward (binary) primitive.
+    primitive : XLACustomKernel
+        The float primitive the autodiff rule dispatches to.
+
+    Returns
+    -------
+    str or None
+        ``backend`` if it is registered for *primitive* on any platform, else
+        ``None`` for automatic selection.
+    """
+    if backend is None:
+        return None
+    if any(backend in kernels for kernels in primitive._kernels.values()):
+        return backend
+    return None
+
+
 def _csrmv_jvp_v(v_dot, data, indices, indptr, v, task_begin, task_end, status, *, shape, transpose, **kwargs):
     return (
-        csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend']),
+        csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose,
+              backend=_grad_backend(kwargs['backend'], csrmv_p)),
         jnp.zeros_like(task_begin),
         jnp.zeros_like(task_end),
         jnp.zeros_like(status),
@@ -712,7 +697,8 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, task_begin, task_en
             ct_events = ad.Zero(events)
         else:
             ct_events = csrmv(data, indices, indptr, ct,
-                              shape=shape, transpose=not transpose, backend=kwargs['backend'])
+                              shape=shape, transpose=not transpose,
+                              backend=_grad_backend(kwargs['backend'], csrmv_p))
         return data, indices, indptr, ct_events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
     else:
         if type(ct) is ad.Zero:
@@ -1035,8 +1021,7 @@ binary_csrmv_p.def_cuda_raw_kernel(_binary_csrmv_cuda_kernel, asdefault=True)
 binary_csrmv_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_jax_kernel)
 binary_csrmv_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_jax_kernel)
-binary_csrmv_p.def_kernel('BCOO_cusparse', 'gpu', _binary_csrmv_bcoo_cusparse_kernel)
-binary_csrmv_p.def_kernel('JAX_cusparse', 'gpu', _binary_csrmv_jax_cusparse_kernel)
+binary_csrmv_p.def_kernel('cusparse', 'gpu', _binary_csrmv_cusparse_kernel)
 binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v, None, None, None)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
@@ -1229,54 +1214,7 @@ def _binary_csrmm_cusparse_kernel(
     transpose: bool,
     **kwargs,
 ):
-    """cuSPARSE-backed kernel for binary CSR SpMM via jax.experimental.sparse (GPU only)."""
-    import jax.experimental.sparse as jsparse
-    m, k = shape
-    is_homo = (weight_info.size == 1)
-    is_bool = (vector_info.dtype == jnp.bool_)
-    nse = kwargs['indices_info'].size
-    out_dtype = kwargs['outs'][0].dtype
-
-    if transpose:
-        if is_homo:
-            def kernel(weights, indices, indptr, B, task_begin, task_end, status):
-                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
-                ones = jnp.ones(nse, dtype=out_dtype)
-                row, col = _csr_to_coo(indices, indptr)
-                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
-                math_out = (mat.T @ events) * weights[0].astype(out_dtype)
-                return math_out, task_begin, task_end, status
-        else:
-            def kernel(weights, indices, indptr, B, task_begin, task_end, status):
-                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
-                row, col = _csr_to_coo(indices, indptr)
-                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
-                math_out = mat.T @ events
-                return math_out, task_begin, task_end, status
-    else:
-        if is_homo:
-            def kernel(weights, indices, indptr, B, task_begin, task_end, status):
-                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
-                ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
-                math_out = (mat @ events) * weights[0].astype(out_dtype)
-                return math_out, task_begin, task_end, status
-        else:
-            def kernel(weights, indices, indptr, B, task_begin, task_end, status):
-                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
-                math_out = mat @ events
-                return math_out, task_begin, task_end, status
-    return kernel
-
-def _binary_csrmm_jax_cusparse_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
-    transpose: bool,
-    **kwargs,
-):
-    """JAX experimental CSR-backed binary CSR SpMM reference kernel."""
+    """cuSPARSE-backed binary CSR SpMM kernel via ``jax.experimental.sparse`` (GPU only)."""
     import jax.experimental.sparse as jsparse
     m, k = shape
     is_homo = (weight_info.size == 1)
@@ -1387,7 +1325,8 @@ def _csrmm_jvp_data(data_dot, data, indices, indptr, B, task_begin, task_end, st
 def _csrmm_jvp_B(B_dot, data, indices, indptr, B, task_begin, task_end, status, *, shape, transpose, **kwargs):
     # B_dot is dense/float tangent data, so the float CSRMM path needs no binary workspace.
     return (
-        csrmm(data, indices, indptr, B_dot, shape=shape, transpose=transpose, backend=kwargs['backend']),
+        csrmm(data, indices, indptr, B_dot, shape=shape, transpose=transpose,
+              backend=_grad_backend(kwargs['backend'], csrmm_p)),
         jnp.zeros_like(task_begin),
         jnp.zeros_like(task_end),
         jnp.zeros_like(status),
@@ -1402,7 +1341,8 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, task_begin, task_end, st
     workspace = _workspace_from_task_operands(kwargs['task_capacity'], task_begin, task_end, status)
     if ad.is_undefined_primal(B):
         # dB is dense/float cotangent data, so the float CSRMM path needs no binary workspace.
-        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kwargs['backend'])
+        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose,
+                   backend=_grad_backend(kwargs['backend'], csrmm_p))
         return data, indices, indptr, dB, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
     else:
         B = jnp.asarray(B)
@@ -1704,8 +1644,7 @@ binary_csrmm_p.def_cuda_raw_kernel(_binary_csrmm_cuda_kernel, asdefault=True)
 binary_csrmm_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_jax_kernel)
 binary_csrmm_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_jax_kernel)
 binary_csrmm_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_jax_kernel)
-binary_csrmm_p.def_kernel('BCOO_cusparse', 'gpu', _binary_csrmm_cusparse_kernel)
-binary_csrmm_p.def_kernel('JAX_cusparse', 'gpu', _binary_csrmm_jax_cusparse_kernel)
+binary_csrmm_p.def_kernel('cusparse', 'gpu', _binary_csrmm_cusparse_kernel)
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B, None, None, None)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)

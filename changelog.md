@@ -5,7 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2] - 2026-07-03
+
+A consolidation release. Three threads land together: the `DT2T` / `DT_to_T`
+naming convention is folded into a single, consistently-cased `dt2t` name;
+batched (`mm`) variants of the `dt2t` operators are added for D-RTRL
+eligibility traces; and the GPU cuSPARSE SpMV/SpMM backends are consolidated
+under one `cusparse` name. Alongside these, several GPU-only autodiff and
+output-shape defects in the event-driven CSR and fixed-connection-number
+kernels are fixed.
+
+**Requirements:** unchanged from `0.1.1` — Python ≥ 3.11, `jax` ≥ 0.5.0,
+`brainunit` ≥ 0.0.8, `numpy`, `absl-py`.
+
+### ⚠️ Breaking changes & migration
+
+No compatibility aliases are kept for this release — update call sites
+directly:
+
+| Old name | New name |
+| --- | --- |
+| `csrmv_DT2T` / `cscmv_DT2T` / `csrmv_DT2T_p` | `csrmv_dt2t` / `cscmv_dt2t` / `csrmv_dt2t_p` |
+| `jitn_DT2T` / `jits_DT2T` / `jitu_DT2T` | `jitnmv_dt2t` / `jitsmv_dt2t` / `jitumv_dt2t` |
+| `fcnmv_DT2T` | `fcnmv_dt2t` |
+| `DataRepresentation.DT_to_T` / `DT_to_T_transposed` (and every backend override on `CSR`, `CSC`, `FixedNumPerPost`, `JITCScalar*`, `JITCNormal*`, `JITCUniform*`) | `.dt2t` / `.dt2t_transposed` |
+| `jitn_DT2T_fill_p` / `jits_DT2T_fill_p` / `jitu_DT2T_fill_p` / `jitn_csr_fill_p` / `jits_csr_fill_p` / `jitu_csr_fill_p` | removed from the public API (see _Removed_ below) |
+| `binary_csrmv` / `binary_csrmm` GPU backend `'JAX_cusparse'` | `'cusparse'` |
+| `binary_csrmv` / `binary_csrmm` GPU backend `'BCOO_cusparse'` | removed — use `'cusparse'` or the default `'cuda_raw'` |
 
 ### Added
 
@@ -24,29 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `(n_batch, rows, n_conn)` (or a size-1 homogeneous value) and the
     output is `(n_batch, rows, n_conn)`. Pure JAX, fully differentiable.
 
-## [0.1.2] - 2026-07-02
-
-A naming-consistency release: the `DT2T` / `DT_to_T` naming convention used
-across the float matmul kernels and the per-synapse conversion protocol is
-folded into a single, consistently-cased `dt2t` name, and a handful of
-internal fill primitives are no longer part of the public API.
-
-**Requirements:** unchanged from `0.1.1` — Python ≥ 3.11, `jax` ≥ 0.5.0,
-`brainunit` ≥ 0.0.8, `numpy`, `absl-py`.
-
-### ⚠️ Breaking changes & migration
-
-No compatibility aliases are kept for this release — update call sites
-directly:
-
-| Old name | New name |
-| --- | --- |
-| `csrmv_DT2T` / `cscmv_DT2T` / `csrmv_DT2T_p` | `csrmv_dt2t` / `cscmv_dt2t` / `csrmv_dt2t_p` |
-| `jitn_DT2T` / `jits_DT2T` / `jitu_DT2T` | `jitnmv_dt2t` / `jitsmv_dt2t` / `jitumv_dt2t` |
-| `fcnmv_DT2T` | `fcnmv_dt2t` |
-| `DataRepresentation.DT_to_T` / `DT_to_T_transposed` (and every backend override on `CSR`, `CSC`, `FixedNumPerPost`, `JITCScalar*`, `JITCNormal*`, `JITCUniform*`) | `.dt2t` / `.dt2t_transposed` |
-| `jitn_DT2T_fill_p` / `jits_DT2T_fill_p` / `jitu_DT2T_fill_p` / `jitn_csr_fill_p` / `jits_csr_fill_p` / `jitu_csr_fill_p` | removed from the public API (see _Removed_ below) |
-
 ### Changed
 
 - **`DT2T` renamed to `dt2t` across the public API**, and the JIT-connectivity
@@ -64,6 +67,11 @@ directly:
   `JITCNormalR`/`C`, `JITCUniformR`/`C`); the `JITCMatrix` base class's
   `UnsupportedOperationError` fallback is renamed identically. Purely a
   rename; behavior and signatures are unchanged.
+- **GPU cuSPARSE backend for `binary_csrmv` / `binary_csrmm` renamed
+  `'JAX_cusparse'` → `'cusparse'`.** The `jax.experimental.sparse`-backed
+  SpMV/SpMM kernels are now selected with `backend='cusparse'`. The default
+  GPU backend remains `'cuda_raw'`, so code that does not pin a backend is
+  unaffected.
 
 ### Removed
 
@@ -75,6 +83,26 @@ directly:
   `XLACustomKernel` primitives backing `jitnmv_dt2t`/`jitsmv_dt2t`/
   `jitumv_dt2t` and `.tocsr()`, never meant to be called directly; they
   remain defined in their respective submodules.
+- **`'BCOO_cusparse'` GPU backend for `binary_csrmv` / `binary_csrmm`.** The
+  redundant BCOO/BCSR-based cuSPARSE kernel path is removed; the equivalent
+  `jax.experimental.sparse` path remains available as `backend='cusparse'`.
+
+### Fixed
+
+- **Gradients of `binary_csrmv` / `binary_csrmm` no longer fail on GPU-only
+  backends.** The autodiff (JVP / transpose) rules form tangents and
+  cotangents with the *float* `csrmv` / `csrmm` primitive while forwarding the
+  binary primitive's backend name; a GPU-only backend such as `'cusparse'` is
+  not registered on the float primitive, so the backward pass raised
+  `KernelFallbackExhaustedError`. The rules now fall back to automatic backend
+  selection whenever the float primitive cannot service the requested backend,
+  leaving `'cuda_raw'` / `'jax_raw'` / `'numba'` behaviour unchanged.
+- **`binary_fcnmm` returns its documented logical shape on `cuda_raw`.** With
+  `transpose=True` on the `cuda_raw` backend the high-level wrapper leaked the
+  kernel's internal "batch-first" `(n, num_post)` layout instead of the
+  documented `(num_post, n)` shape that every other backend already returns.
+  The wrapper now normalises the output, matching the dense reference and the
+  `jax_raw` path.
 
 ## [0.1.1] - 2026-06-18
 

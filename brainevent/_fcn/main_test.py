@@ -84,6 +84,33 @@ else:
     ]
 
 
+def _skip_batching_if_gpu_too_small(shape, batch_size):
+    """Skip batched matrix tests on GPUs too small to hold the dense reference.
+
+    The batched dense-reference paths materialise several ``(batch_size, m, n)``
+    float32 temporaries (the dense weight matrix, the matmul output and transpose
+    fusions).  For the largest ``operator_shapes`` entry this peaks at well over
+    10 GB and exceeds small (e.g. 16 GB) GPUs.  The computation is correct — it
+    merely does not fit — so skip on memory-constrained GPUs rather than fail with
+    a ``RESOURCE_EXHAUSTED`` error.  CPU (CI) and larger GPUs run the case normally.
+    """
+    device = jax.local_devices()[0]
+    if device.platform != 'gpu':
+        return
+    try:
+        limit = device.memory_stats().get('bytes_limit') or 0
+    except Exception:
+        return
+    m, n = shape
+    # Empirically the peak is ~6x the batched dense buffer for these fusions.
+    est_bytes = 6 * batch_size * m * n * 4
+    if limit and est_bytes > 0.8 * limit:
+        pytest.skip(
+            f'batched shape {shape} (batch {batch_size}) needs ~{est_bytes / 1e9:.1f} GB; '
+            f'GPU memory limit is {limit / 1e9:.1f} GB'
+        )
+
+
 def _binary_mask(x, dtype):
     return jnp.asarray(jnp.asarray(x) > 0, dtype=dtype)
 
@@ -702,6 +729,7 @@ class TestMatrix:
     @pytest.mark.parametrize('batch_size', [32])
     @pytest.mark.parametrize('k', [32])
     def test_batching_weight(self, homo_w, shape, batch_size, k):
+        _skip_batching_if_gpu_too_small(shape, batch_size)
         m, n = shape
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
 
@@ -746,6 +774,7 @@ class TestMatrix:
     @pytest.mark.parametrize('k', [32])
     @pytest.mark.parametrize('batch_axis', [0, 1, 2])
     def test_batching_vector(self, homo_w, shape, batch_size, k, batch_axis):
+        _skip_batching_if_gpu_too_small(shape, batch_size)
         m, n = shape
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
 

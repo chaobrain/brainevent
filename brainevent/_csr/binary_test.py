@@ -26,8 +26,8 @@ import pytest
 from brainevent._csr.binary import (
     _binary_csrmv_benchmark_data,
     _binary_csrmm_benchmark_data,
-    _binary_csrmm_jax_cusparse_kernel,
-    _binary_csrmv_jax_cusparse_kernel,
+    _binary_csrmm_cusparse_kernel,
+    _binary_csrmv_cusparse_kernel,
     _csrmv_batching,
     binary_csrmv,
     binary_csrmv_p,
@@ -323,7 +323,7 @@ def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
     with _jax_x64_enabled():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
         workspace = _make_binary_task_workspace(indptr)
-        kernel = _binary_csrmv_jax_cusparse_kernel(
+        kernel = _binary_csrmv_cusparse_kernel(
             jax.ShapeDtypeStruct((1,), jnp.float32),
             jax.ShapeDtypeStruct((3,), jnp.bool_),
             (2, 3),
@@ -349,7 +349,7 @@ def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
     with _jax_x64_enabled():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
         workspace = _make_binary_task_workspace(indptr)
-        kernel = _binary_csrmv_jax_cusparse_kernel(
+        kernel = _binary_csrmv_cusparse_kernel(
             jax.ShapeDtypeStruct((4,), jnp.float32),
             jax.ShapeDtypeStruct((2,), jnp.float32),
             (2, 3),
@@ -375,7 +375,7 @@ def test_binary_csrmm_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
     with _jax_x64_enabled():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
         workspace = _make_binary_task_workspace(indptr)
-        kernel = _binary_csrmm_jax_cusparse_kernel(
+        kernel = _binary_csrmm_cusparse_kernel(
             jax.ShapeDtypeStruct((1,), jnp.float32),
             jax.ShapeDtypeStruct((3, 2), jnp.bool_),
             (2, 3),
@@ -402,7 +402,7 @@ def test_binary_csrmm_jax_csr_kernel_hetero_float_transpose():
     with _jax_x64_enabled():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
         workspace = _make_binary_task_workspace(indptr)
-        kernel = _binary_csrmm_jax_cusparse_kernel(
+        kernel = _binary_csrmm_cusparse_kernel(
             jax.ShapeDtypeStruct((4,), jnp.float32),
             jax.ShapeDtypeStruct((2, 2), jnp.float32),
             (2, 3),
