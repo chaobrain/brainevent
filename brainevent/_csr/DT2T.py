@@ -389,10 +389,10 @@ def _csrmv_DT2T_benchmark_data(*, platform):
 
 
 def csrmv_DT2T_p_call(
-    y: Data,
-    w: Data,
-    indices: Index,
-    indptr: Indptr,
+    y,
+    w,
+    indices,
+    indptr,
     *,
     shape: MatrixShape,
     transpose: bool = False,
