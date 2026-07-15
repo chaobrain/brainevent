@@ -66,10 +66,7 @@ def test_jitsmv_dt2t_matches_csr_reference(implementation, shape, corder, transp
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
 
         out = jitsmv_dt2t(
-            1.5,
-            0.2,
-            y,
-            123,
+            1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
             corder=corder,
@@ -85,10 +82,7 @@ def test_jitsmv_dt2t_matches_csr_reference(implementation, shape, corder, transp
 def test_jitsmv_dt2t_prob_zero_empty():
     with jax.default_device(CPU_DEVICE):
         out = jitsmv_dt2t(
-            1.5,
-            0.0,
-            jnp.ones(20, dtype=jnp.float32),
-            123,
+            1.5, 0.0, jnp.ones(20, dtype=jnp.float32), 123,
             shape=(20, 30),
             corder=True,
         )
@@ -109,20 +103,14 @@ def test_jitsmv_dt2t_corder_false_is_repeatable(implementation, transpose):
         y = jnp.linspace(0.2, 1.7, y_size, dtype=jnp.float32)
 
         out1 = jitsmv_dt2t(
-            1.5,
-            0.2,
-            y,
-            123,
+            1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
             corder=False,
             backend=implementation,
         )
         out2 = jitsmv_dt2t(
-            1.5,
-            0.2,
-            y,
-            123,
+            1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
             corder=False,
@@ -148,24 +136,25 @@ def test_jitsmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
         clen = _initialize_conn_length(0.2)
         seed = jnp.asarray([123], dtype=jnp.int32)
 
-        row_counts = jits_csr_count_p_call(
-            w, w, clen, seed, shape=shape, corder=corder, backend=implementation,
+        chunk_counts = jits_csr_count_p_call(
+            w, clen, seed, shape=shape, corder=corder, backend=implementation,
         )[0]
+        row_counts = chunk_counts.sum(axis=1)
         indptr = jnp.concatenate(
             [jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
         )
+        chunk_offsets = indptr[:-1, None] + jnp.cumsum(chunk_counts, axis=1) - chunk_counts
         nnz = int(indptr[-1])
 
         indices, weights = jits_csr_fill_p_call(
-            w, w, clen, seed, indptr, nnz, shape=shape, corder=corder, backend=implementation,
+            w, clen, seed, chunk_offsets, nnz, shape=shape, corder=corder, backend=implementation,
         )
         out = jitsmv_dt2t_p_call(
-            w,
             w,
             clen,
             y,
             seed,
-            indptr,
+            chunk_offsets,
             nnz,
             shape=shape,
             transpose=transpose,
@@ -183,13 +172,15 @@ def test_jitsmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
     jax.block_until_ready((out, expected))
 
 
+@pytest.mark.skipif(
+    not JITS_dt2t_IMPLEMENTATIONS,
+    reason=f'No jitsmv_dt2t implementation on platform={platform}',
+)
 def test_jitsmv_dt2t_units_are_weight_times_y():
     with jax.default_device(CPU_DEVICE):
         out = jitsmv_dt2t(
-            1.5 * u.siemens,
-            0.2,
-            jnp.ones(20, dtype=jnp.float32) * u.mV,
-            123,
+            1.5 * u.siemens, 0.2,
+            jnp.ones(20, dtype=jnp.float32) * u.mV, 123,
             shape=(20, 30),
             corder=True,
         )
@@ -253,10 +244,7 @@ def test_jits_matrix_dt2t_uses_init_parameters(implementation, transpose):
         w_dim_arr = jnp.empty(0, dtype=jnp.float32)
         out = mat.dt2t_transposed(y, w_dim_arr) if transpose else mat.dt2t(y, w_dim_arr)
         expected = jitsmv_dt2t(
-            1.5,
-            0.2,
-            y,
-            123,
+            1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
             corder=True,
@@ -284,10 +272,7 @@ def test_jits_matrix_dt2t_uses_instance_backend_and_corder(implementation):
 
         out = mat.dt2t(y, jnp.empty(0, dtype=jnp.float32))
         expected = jitsmv_dt2t(
-            1.5,
-            0.2,
-            y,
-            123,
+            1.5, 0.2, y, 123,
             shape=shape,
             corder=False,
             backend=implementation,
@@ -310,19 +295,14 @@ def test_jitsmv_dt2t_cuda_matches_cuda_csr_reference(shape, corder, transpose):
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
 
         out = jitsmv_dt2t(
-            1.5,
-            0.2,
-            y,
-            123,
+            1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
             corder=corder,
             backend='cuda_raw',
         )
         csr = jits_to_csr(
-            1.5,
-            0.2,
-            123,
+            1.5, 0.2, 123,
             shape=shape,
             corder=corder,
             backend='cuda_raw',

@@ -331,7 +331,6 @@ __global__ void _count_chunks_mm_aw_t4_f32_kern(
 
 __global__ void _fill_f32_kern(
     const float* __restrict__ weight,
-        const float* __restrict__ _w2,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
     const int*   __restrict__ chunk_offsets,
@@ -384,7 +383,6 @@ __global__ void _fill_f32_kern(
 
 __global__ void _fill_mm_aw_t4_f32_kern(
     const float* __restrict__ weight,
-        const float* __restrict__ _w2,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
     const int*   __restrict__ chunk_offsets,
@@ -440,7 +438,6 @@ __global__ void _fill_mm_aw_t4_f32_kern(
 // @BE count_chunks_f32
 void count_chunks_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor chunk_counts,
@@ -449,7 +446,6 @@ void count_chunks_f32(
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    (void)weight;
     (void)weight;
     int m = static_cast<int>(chunk_counts.size(0));
     int n_chunks = static_cast<int>(chunk_counts.size(1));
@@ -479,7 +475,6 @@ void count_chunks_f32(
 // @BE count_chunks_mm_aw_t4_f32
 void count_chunks_mm_aw_t4_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor chunk_counts,
@@ -488,7 +483,6 @@ void count_chunks_mm_aw_t4_f32(
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    (void)weight;
     (void)weight;
     int m = static_cast<int>(chunk_counts.size(0));
     int n_chunks = static_cast<int>(chunk_counts.size(1));
@@ -519,7 +513,6 @@ void count_chunks_mm_aw_t4_f32(
 // @BE fill_f32
 void fill_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor chunk_offsets,
@@ -550,7 +543,6 @@ void fill_f32(
 
     _fill_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(weight.data_ptr()),
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
         static_cast<const int*>(chunk_offsets.data_ptr()),
@@ -564,7 +556,6 @@ void fill_f32(
 // @BE fill_mm_aw_t4_f32
 void fill_mm_aw_t4_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor chunk_offsets,
@@ -595,7 +586,6 @@ void fill_mm_aw_t4_f32(
     dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, 1U);
 
     _fill_mm_aw_t4_f32_kern<<<blocks, threads, 0, s>>>(
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),

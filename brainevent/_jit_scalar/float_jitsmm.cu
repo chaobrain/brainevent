@@ -163,7 +163,6 @@ __device__ __forceinline__ float group4_reduce_sum_f32(float value, int group) {
 
 __global__ void _mv_gather_f32_kern(
     const float* __restrict__ weight,
-        const float* __restrict__ _w2,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
     const float* __restrict__ B,
@@ -212,7 +211,6 @@ __global__ void _mv_gather_f32_kern(
 
 __global__ void _mv_scatter_f32_kern(
     const float* __restrict__ weight,
-        const float* __restrict__ _w2,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
     const float* __restrict__ B,
@@ -258,7 +256,6 @@ __global__ void _mv_scatter_f32_kern(
 
 __global__ void _mm_gather_f32_kern(
     const float* __restrict__ weight,
-        const float* __restrict__ _w2,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
     const float* __restrict__ B,
@@ -309,7 +306,6 @@ __global__ void _mm_gather_f32_kern(
 
 __global__ void _mm_scatter_f32_kern(
     const float* __restrict__ weight,
-        const float* __restrict__ _w2,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
     const float* __restrict__ B,
@@ -357,7 +353,6 @@ __global__ void _mm_scatter_f32_kern(
 
 static void launch_mv_gather_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor B,
@@ -386,7 +381,6 @@ static void launch_mv_gather_f32(
 
     _mv_gather_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(weight.data_ptr()),
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
         static_cast<const float*>(B.data_ptr()),
@@ -398,7 +392,6 @@ static void launch_mv_gather_f32(
 
 static void launch_mv_scatter_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor B,
@@ -427,7 +420,6 @@ static void launch_mv_scatter_f32(
 
     _mv_scatter_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(weight.data_ptr()),
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
         static_cast<const float*>(B.data_ptr()),
@@ -439,7 +431,6 @@ static void launch_mv_scatter_f32(
 
 static void launch_mm_gather_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor B,
@@ -469,7 +460,6 @@ static void launch_mm_gather_f32(
 
     _mm_gather_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(weight.data_ptr()),
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
         static_cast<const float*>(B.data_ptr()),
@@ -481,7 +471,6 @@ static void launch_mm_gather_f32(
 
 static void launch_mm_scatter_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor B,
@@ -511,7 +500,6 @@ static void launch_mm_scatter_f32(
 
     _mm_scatter_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(weight.data_ptr()),
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
         static_cast<const float*>(B.data_ptr()),
@@ -524,7 +512,6 @@ static void launch_mm_scatter_f32(
 // @BE jitsmm_mv_gather_f32
 void jitsmm_mv_gather_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor B,
@@ -532,13 +519,12 @@ void jitsmm_mv_gather_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mv_gather_f32(weight, weight, clen, seed, B, output, m, k, n, chunk_size, stream);
+    launch_mv_gather_f32(weight, clen, seed, B, output, m, k, n, chunk_size, stream);
 }
 
 // @BE jitsmm_mv_scatter_f32
 void jitsmm_mv_scatter_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor B,
@@ -546,13 +532,12 @@ void jitsmm_mv_scatter_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mv_scatter_f32(weight, weight, clen, seed, B, output, m, k, n, chunk_size, stream);
+    launch_mv_scatter_f32(weight, clen, seed, B, output, m, k, n, chunk_size, stream);
 }
 
 // @BE jitsmm_gather_f32
 void jitsmm_gather_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor B,
@@ -560,13 +545,12 @@ void jitsmm_gather_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mm_gather_f32(weight, weight, clen, seed, B, output, m, k, n, chunk_size, stream);
+    launch_mm_gather_f32(weight, clen, seed, B, output, m, k, n, chunk_size, stream);
 }
 
 // @BE jitsmm_scatter_f32
 void jitsmm_scatter_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor B,
@@ -574,5 +558,5 @@ void jitsmm_scatter_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mm_scatter_f32(weight, weight, clen, seed, B, output, m, k, n, chunk_size, stream);
+    launch_mm_scatter_f32(weight, clen, seed, B, output, m, k, n, chunk_size, stream);
 }

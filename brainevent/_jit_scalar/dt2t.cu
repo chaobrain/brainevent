@@ -161,7 +161,6 @@ __device__ __forceinline__ unsigned int count_lane_connections(
 template <bool TRANSPOSE>
 __global__ void _fill_dt2t_f32_kern(
     const float* __restrict__ weight,
-        const float* __restrict__ _w2,
     const int*   __restrict__ clen,
     const float* __restrict__ y,
     const int*   __restrict__ seed,
@@ -195,8 +194,7 @@ __global__ void _fill_dt2t_f32_kern(
     unsigned int lane_offset = warp_exclusive_prefix_u32(lane_count, lane);
     int base = __ldg(&chunk_offsets[row * n_chunks + chunk_id]) + (int)lane_offset;
 
-    float wlo = __ldg(&weight[0]);
-    float range = __ldg(&weight[0]) - wlo;
+    float w = READ_F32(__ldg(&weight[0]));
     float y_row = TRANSPOSE ? 0.0f : __ldg(&y[row]);
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
     unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
@@ -206,7 +204,7 @@ __global__ void _fill_dt2t_f32_kern(
         int j = chunk_start + (int)local_j;
         int pos = base + write;
         float y_value = TRANSPOSE ? __ldg(&y[j]) : y_row;
-                data[pos] = (w) * y_value;
+        data[pos] = w * y_value;
         write += 1;
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
         local_j = (unsigned int)lane + 32U * q;
@@ -216,7 +214,6 @@ __global__ void _fill_dt2t_f32_kern(
 template <bool TRANSPOSE>
 void launch_fill_dt2t_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor y,
     const BE::Tensor seed,
@@ -247,7 +244,6 @@ void launch_fill_dt2t_f32(
 
     _fill_dt2t_f32_kern<TRANSPOSE><<<blocks, threads, 0, s>>>(
         static_cast<const float*>(weight.data_ptr()),
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const float*>(y.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
@@ -261,7 +257,6 @@ void launch_fill_dt2t_f32(
 // @BE fill_f32
 void fill_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor y,
     const BE::Tensor seed,
@@ -272,7 +267,7 @@ void fill_f32(
     int64_t stream
 ) {
     launch_fill_dt2t_f32<false>(
-        weight, weight, clen, y, seed, chunk_offsets, data,
+        weight, clen, y, seed, chunk_offsets, data,
         n_cols, chunk_size, stream
     );
 }
@@ -280,7 +275,6 @@ void fill_f32(
 // @BE fill_transpose_f32
 void fill_transpose_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor y,
     const BE::Tensor seed,
@@ -291,7 +285,7 @@ void fill_transpose_f32(
     int64_t stream
 ) {
     launch_fill_dt2t_f32<true>(
-        weight, weight, clen, y, seed, chunk_offsets, data,
+        weight, clen, y, seed, chunk_offsets, data,
         n_cols, chunk_size, stream
     );
 }

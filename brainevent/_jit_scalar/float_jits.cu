@@ -161,7 +161,6 @@ static int default_light_chunk_size(int k) {
 
 __global__ void _jits_mv_f32_kern(
     const float* __restrict__ weight,
-        const float* __restrict__ _w2,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
     float*       __restrict__ output,
@@ -205,7 +204,6 @@ __global__ void _jits_mv_f32_kern(
 
 __global__ void _jits_mm_aw_t4_f32_kern(
     const float* __restrict__ weight,
-        const float* __restrict__ _w2,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
     float*       __restrict__ output,
@@ -251,7 +249,6 @@ __global__ void _jits_mm_aw_t4_f32_kern(
 
 static void launch_jits_mv_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
@@ -283,7 +280,6 @@ static void launch_jits_mv_f32(
 
     _jits_mv_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(weight.data_ptr()),
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
         static_cast<float*>(output.data_ptr()),
@@ -294,7 +290,6 @@ static void launch_jits_mv_f32(
 
 static void launch_jits_mm_aw_t4_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
@@ -327,7 +322,6 @@ static void launch_jits_mm_aw_t4_f32(
 
     _jits_mm_aw_t4_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(weight.data_ptr()),
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
         static_cast<float*>(output.data_ptr()),
@@ -339,7 +333,6 @@ static void launch_jits_mm_aw_t4_f32(
 // @BE jits_mv_f32
 void jits_mv_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
@@ -349,13 +342,12 @@ void jits_mv_f32(
     int chunk_size,
     int64_t stream
 ) {
-    launch_jits_mv_f32(weight, weight, clen, seed, output, n_rows, n_cols, transpose, chunk_size, stream);
+    launch_jits_mv_f32(weight, clen, seed, output, n_rows, n_cols, transpose, chunk_size, stream);
 }
 
 // @BE jits_mm_aw_t4_f32
 void jits_mm_aw_t4_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
@@ -365,13 +357,12 @@ void jits_mm_aw_t4_f32(
     int chunk_size,
     int64_t stream
 ) {
-    launch_jits_mm_aw_t4_f32(weight, weight, clen, seed, output, n_rows, n_cols, transpose, chunk_size, stream);
+    launch_jits_mm_aw_t4_f32(weight, clen, seed, output, n_rows, n_cols, transpose, chunk_size, stream);
 }
 
 // @BE jits_corder_true_f32
 void jits_corder_true_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
@@ -380,14 +371,13 @@ void jits_corder_true_f32(
     int n_rows = static_cast<int>(output.size(0));
     int n_cols = static_cast<int>(output.size(1));
     launch_jits_mv_f32(
-        weight, weight, clen, seed, output,
+        weight, clen, seed, output,
         n_rows, n_cols, 0, default_light_chunk_size(n_cols), stream);
 }
 
 // @BE jits_corder_false_f32
 void jits_corder_false_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
@@ -396,6 +386,6 @@ void jits_corder_false_f32(
     int n_rows = static_cast<int>(output.size(0));
     int n_cols = static_cast<int>(output.size(1));
     launch_jits_mv_f32(
-        weight, weight, clen, seed, output,
+        weight, clen, seed, output,
         n_rows, n_cols, 0, default_light_chunk_size(n_cols), stream);
 }

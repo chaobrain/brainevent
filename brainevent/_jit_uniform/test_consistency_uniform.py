@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""JIT 五路矩阵一致性 pytest 测试 — uniform 分布.
-
-验证五种方式访问 JIT uniform 逻辑矩阵产生完全一致的结果
-(all-ones event vector, row-major):
-
+"""
   1. gather   — binary_jitumv(transpose=False)  [reference]
   2. scatter  — binary_jitumv(transpose=True)   [dot identity]
   3. tocsr    — jitu_to_csr → CSR @ ones
@@ -49,7 +45,6 @@ SEED = 123
 RTOL = 1e-4
 ATOL = 1e-2
 
-# Uniform 分布参数
 W_LOW = 0.1
 W_HIGH = 0.9
 
@@ -73,7 +68,7 @@ def _check_backend():
 @pytest.mark.parametrize('scale', [1, 2, 5, 10])
 @pytest.mark.parametrize('conn', [10, 50, 200])
 def test_5way_consistency(scale, conn):
-    """五路一致性：gather / scatter / tocsr / todense / tofloat."""
+    """gather / scatter / tocsr / todense / tofloat."""
     _check_backend()
 
     n = scale * BASE_SIZE

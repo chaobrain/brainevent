@@ -59,9 +59,10 @@ class Test_Scalar_To_CSR:
 
         clen = _initialize_conn_length(mat.prob)
         w = jnp.atleast_1d(jnp.asarray(mat.weight))
-        row_counts = jits_csr_count_p_call(
-            w, w, clen, mat.seed, shape=shape, corder=corder, backend=mat.backend,
+        chunk_counts = jits_csr_count_p_call(
+            w, clen, mat.seed, shape=shape, corder=corder, backend=mat.backend,
         )[0]
+        row_counts = chunk_counts.sum(axis=1)
         expected = (np.asarray(mat.todense()) != 0).sum(axis=1)
         assert np.array_equal(np.asarray(row_counts), expected)
 
@@ -74,15 +75,17 @@ class Test_Scalar_To_CSR:
 
         clen = _initialize_conn_length(mat.prob)
         w = jnp.atleast_1d(jnp.asarray(mat.weight))
-        row_counts = jits_csr_count_p_call(
-            w, w, clen, mat.seed, shape=shape, corder=corder, backend=mat.backend,
+        chunk_counts = jits_csr_count_p_call(
+            w, clen, mat.seed, shape=shape, corder=corder, backend=mat.backend,
         )[0]
+        row_counts = chunk_counts.sum(axis=1)
         indptr = jnp.concatenate(
             [jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
         )
+        chunk_offsets = indptr[:-1, None] + jnp.cumsum(chunk_counts, axis=1) - chunk_counts
         nnz = int(indptr[-1])
         indices, data = jits_csr_fill_p_call(
-            w, w, clen, mat.seed, indptr, nnz, shape=shape, corder=corder, backend=mat.backend,
+            w, clen, mat.seed, chunk_offsets, nnz, shape=shape, corder=corder, backend=mat.backend,
         )
         csr = brainevent.CSR((data, indices, indptr), shape=shape)
         assert allclose(csr.todense(), mat.todense())

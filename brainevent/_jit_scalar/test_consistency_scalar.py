@@ -12,16 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""JIT 五路矩阵一致性 pytest 测试 — scalar 分布.
-
-验证五种方式访问 JIT scalar 逻辑矩阵产生完全一致的结果
-(all-ones event vector, row-major):
-
-  1. gather   — binary_jitsmv(transpose=False)  [reference]
-  2. scatter  — binary_jitsmv(transpose=True)   [dot identity]
-  3. tocsr    — jits_to_csr → CSR @ ones
-  4. todense  — jits → dense @ ones             [n ≤ 5000]
-  5. tofloat  — jitsmv(ones)                    [float kernel]
+"""
+  1. gather   — mat @ BinaryArray(ones)          [reference]
+  2. scatter  — BinaryArray(ones) @ mat_T        [dot identity]
+  3. tocsr    — mat.tocsr() → CSR @ ones
+  4. todense  — mat.todense() → dense @ ones     [n ≤ 5000]
+  5. tofloat  — mat @ ones_f32                   [float kernel]
 """
 
 import warnings
@@ -31,9 +27,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent._jit_scalar.binary import binary_jitsmv, binary_jitsmv_p
-from brainevent._jit_scalar.csr import jits_to_csr
-from brainevent._jit_scalar.float import jits, jitsmv
+import brainevent
+from brainevent._event.binary import BinaryArray
 
 # ── GPU-only ───────────────────────────────────────────────────────────
 pytestmark = pytest.mark.skipif(
@@ -49,7 +44,7 @@ SEED = 123
 RTOL = 1e-4
 ATOL = 1e-2
 
-# Scalar 分布参数: 所有非零连接使用同一个权重值
+# Scalar
 WEIGHT = 0.5
 
 
@@ -63,8 +58,10 @@ def _max_abs_diff(a, b):
 
 
 def _check_backend():
+    """Skip if the required backend is not available on this platform."""
+    import brainevent._jit_scalar.binary as _bin
     platform = jax.default_backend()
-    available = tuple(binary_jitsmv_p.available_backends(platform))
+    available = tuple(_bin.binary_jitsmv_p.available_backends(platform))
     if BACKEND not in available:
         pytest.skip(f'{BACKEND!r} not available for {platform!r}. available={available!r}')
 
@@ -72,7 +69,7 @@ def _check_backend():
 @pytest.mark.parametrize('scale', [1, 2, 5, 10])
 @pytest.mark.parametrize('conn', [10, 50, 200])
 def test_5way_consistency(scale, conn):
-    """五路一致性：gather / scatter / tocsr / todense / tofloat."""
+    """gather / scatter / tocsr / todense / tofloat."""
     _check_backend()
 
     n = scale * BASE_SIZE
@@ -80,47 +77,48 @@ def test_5way_consistency(scale, conn):
     shape = (n, n)
     ones = jnp.ones(n, dtype=jnp.bool_)
     ones_f64 = ones.astype(_dot_dtype())
-    weight = jnp.asarray(WEIGHT, dtype=jnp.float32)
     tolerance = float(ATOL) + float(RTOL) * float(n) * abs(WEIGHT)
+
+    weight = jnp.asarray(WEIGHT, dtype=jnp.float32)
+    mat = brainevent.JITCScalarR(
+        (weight, prob, SEED),
+        shape=shape, corder=True, backend=BACKEND,
+    )
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
 
-        # ---- 1. gather (reference) ----
+        # ---- 1. gather (reference): mat @ BinaryArray(ones) ----
         @jax.jit
         def _gather(ev):
-            return binary_jitsmv(weight, prob, ev, SEED,
-                                 shape=shape, transpose=False, corder=True, backend=BACKEND)
+            return mat @ BinaryArray(ev)
         gather = jax.block_until_ready(_gather(ones))
         gather_f64 = gather.astype(_dot_dtype())
 
-        # ---- 2. scatter (dot identity) ----
+        # ---- 2. scatter (dot identity): BinaryArray(ones) @ mat.T ----
+    
         @jax.jit
         def _scatter(ev):
-            return binary_jitsmv(weight, prob, ev, SEED,
-                                 shape=shape, transpose=True, corder=True, backend=BACKEND)
+            return BinaryArray(ev) @ mat
         scatter = jax.block_until_ready(_scatter(ones))
         lhs = jnp.dot(gather_f64, ones_f64)
         rhs = jnp.dot(ones_f64, scatter.astype(_dot_dtype()))
         assert float(jnp.abs(lhs - rhs)) <= tolerance, \
             f'scatter dot-identity mismatch: |{lhs} - {rhs}| = {float(jnp.abs(lhs - rhs))} > {tolerance}'
 
-        # ---- 3. tocsr — CSR @ ones ----
-        csr = jits_to_csr(weight, prob, SEED,
-                          shape=shape, corder=True, backend=BACKEND, matrix_mode='mv')
+        # ---- 3. tocsr: mat.tocsr() → CSR @ ones ----
+        csr = mat.tocsr(matrix_mode='mv')
         diff = _max_abs_diff(csr @ ones_f64, gather_f64)
         assert diff <= tolerance, f'tocsr mismatch: diff={diff} > {tolerance}'
 
-        # ---- 4. todense (skip for large n) ----
+        # ---- 4. todense: mat.todense() → dense @ ones (skip for large n) ----
         if n <= DENSE_MAX_N:
-            dense = jits(weight, prob, SEED,
-                         shape=shape, transpose=False, corder=True, backend=BACKEND)
+            dense = mat.todense()
             diff = _max_abs_diff(dense @ ones_f64, gather_f64)
             assert diff <= tolerance, f'todense mismatch: diff={diff} > {tolerance}'
 
-        # ---- 5. tofloat — float kernel matvec ----
+        # ---- 5. tofloat: mat @ float vector ----
         ones_f32 = ones.astype(jnp.float32)
-        fresult = jitsmv(weight, prob, ones_f32, SEED,
-                         shape=shape, transpose=False, corder=True, backend=BACKEND)
+        fresult = mat @ ones_f32
         diff = _max_abs_diff(fresult, gather_f64)
         assert diff <= tolerance, f'tofloat mismatch: diff={diff} > {tolerance}'

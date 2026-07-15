@@ -43,7 +43,7 @@ __all__ = [
 ]
 
 
-def _normalize_matrix_mode(matrix_mode: str) -> MatrixMode:
+def _normalize_matrix_mode(matrix_mode: MatrixMode) -> MatrixMode:
     if matrix_mode not in ('mv', 'mm'):
         raise ValueError(f"matrix_mode must be 'mv' or 'mm', got {matrix_mode!r}.")
     return matrix_mode

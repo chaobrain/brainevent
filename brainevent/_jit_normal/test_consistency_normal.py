@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""JIT 五路矩阵一致性 pytest 测试 — normal 分布.
-
-验证五种方式访问 JIT normal 逻辑矩阵产生完全一致的结果
+"""
 (all-ones event vector, row-major):
 
   1. gather   — binary_jitnmv(transpose=False)  [reference]
@@ -49,7 +47,6 @@ SEED = 123
 RTOL = 1e-4
 ATOL = 1e-2
 
-# Normal 分布参数: W ~ N(w_loc, w_scale)
 W_LOC = 1.0
 W_SCALE = 0.1
 
@@ -73,7 +70,7 @@ def _check_backend():
 @pytest.mark.parametrize('scale', [1, 2, 5, 10])
 @pytest.mark.parametrize('conn', [10, 50, 200])
 def test_5way_consistency(scale, conn):
-    """五路一致性：gather / scatter / tocsr / todense / tofloat."""
+    """gather / scatter / tocsr / todense / tofloat."""
     _check_backend()
 
     n = scale * BASE_SIZE
@@ -83,7 +80,7 @@ def test_5way_consistency(scale, conn):
     ones_f64 = ones.astype(_dot_dtype())
     w_loc = jnp.asarray(W_LOC, dtype=jnp.float32)
     w_scale = jnp.asarray(W_SCALE, dtype=jnp.float32)
-    # 容差 = atol + rtol * n * (|loc| + 4*|scale|)
+    # atol + rtol * n * (|loc| + 4*|scale|)
     tolerance = float(ATOL) + float(RTOL) * float(n) * (abs(W_LOC) + 4.0 * abs(W_SCALE))
 
     with warnings.catch_warnings():

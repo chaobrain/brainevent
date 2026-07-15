@@ -82,7 +82,7 @@ def _n_chunks(n_cols: int, chunk_size: int) -> int:
     return 0 if n_cols <= 0 else (n_cols + chunk_size - 1) // chunk_size
 
 
-def _normalize_matrix_mode(matrix_mode: str) -> MatrixMode:
+def _normalize_matrix_mode(matrix_mode: MatrixMode) -> MatrixMode:
     if matrix_mode not in ('mv', 'mm'):
         raise ValueError(f"matrix_mode must be 'mv' or 'mm', got {matrix_mode!r}.")
     return matrix_mode
@@ -96,17 +96,15 @@ def _warn_corder_ignored(corder: bool) -> None:
     )
 
 
-def _as_f32_weights(w0, w1):
-    w0, unitd = u.split_mantissa_unit(w0)
-    w1 = u.Quantity(w1).to(unitd).mantissa
-    common_dtype = jnp.result_type(w0, w1)
+def _as_f32_weight(weight):
+    weight, unitd = u.split_mantissa_unit(weight)
+    common_dtype = jnp.result_type(weight)
     if np.dtype(common_dtype) != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
-    w0 = jnp.atleast_1d(jnp.asarray(w0, dtype=jnp.float32))
-    w1 = jnp.atleast_1d(jnp.asarray(w1, dtype=jnp.float32))
-    if w0.shape != (1,) or w1.shape != (1,):
-        raise ValueError("w0 and w1 must be scalar values.")
-    return w0, w1, unitd
+    weight = jnp.atleast_1d(jnp.asarray(weight, dtype=jnp.float32))
+    if weight.shape != (1,):
+        raise ValueError("weight must be a scalar value.")
+    return weight, unitd
 
 
 def _jits_csr_count_cuda_kernel(
@@ -118,8 +116,8 @@ def _jits_csr_count_cuda_kernel(
     **kwargs,
 ):
     del corder
-    w0_dtype = np.dtype(kwargs['w0_info'].dtype)
-    if w0_dtype != np.dtype('float32'):
+    weight_dtype = np.dtype(kwargs['weight_info'].dtype)
+    if weight_dtype != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
 
     n_rows, n_cols = _normalize_shape(shape)
@@ -138,13 +136,12 @@ def _jits_csr_count_cuda_kernel(
         else 'jit_scalar_csr.count_chunks_mm_aw_t4_f32'
     )
 
-    def kernel(w0, w1, clen, seed):
+    def kernel(weight, clen, seed):
         return jax.ffi.ffi_call(
             kernel_name,
             kwargs['outs'],
         )(
-            w0,
-            w1,
+            weight,
             clen,
             seed,
             n_cols=n_cols_attr,
@@ -155,8 +152,7 @@ def _jits_csr_count_cuda_kernel(
 
 
 def jits_csr_count_p_call(
-    w0,
-    w1,
+    weight,
     clen,
     seed,
     *,
@@ -174,18 +170,16 @@ def jits_csr_count_p_call(
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
 
-    w0 = jnp.atleast_1d(w0)
-    w1 = jnp.atleast_1d(w1)
+    weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
-    if np.dtype(w0.dtype) != np.dtype('float32') or np.dtype(w1.dtype) != np.dtype('float32'):
+    if np.dtype(weight.dtype) != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
     if n_rows == 0 or n_chunks == 0:
         return (jnp.zeros((n_rows, n_chunks), dtype=jnp.int32),)
 
     return jits_csr_count_p(
-        w0,
-        w1,
+        weight,
         clen,
         seed,
         outs=[jax.ShapeDtypeStruct((n_rows, n_chunks), jnp.int32)],
@@ -195,8 +189,7 @@ def jits_csr_count_p_call(
         matrix_mode=matrix_mode,
         corder=corder,
         backend=backend,
-        w0_info=jax.ShapeDtypeStruct(w0.shape, w0.dtype),
-        w1_info=jax.ShapeDtypeStruct(w1.shape, w1.dtype),
+        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
     )
@@ -225,8 +218,8 @@ def _jits_csr_fill_cuda_kernel(
     **kwargs,
 ):
     del corder
-    w0_dtype = np.dtype(kwargs['w0_info'].dtype)
-    if w0_dtype != np.dtype('float32'):
+    weight_dtype = np.dtype(kwargs['weight_info'].dtype)
+    if weight_dtype != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
 
     n_rows, n_cols = _normalize_shape(shape)
@@ -245,13 +238,12 @@ def _jits_csr_fill_cuda_kernel(
         else 'jit_scalar_csr.fill_mm_aw_t4_f32'
     )
 
-    def kernel(w0, w1, clen, seed, chunk_offsets):
+    def kernel(weight, clen, seed, chunk_offsets):
         return jax.ffi.ffi_call(
             kernel_name,
             kwargs['outs'],
         )(
-            w0,
-            w1,
+            weight,
             clen,
             seed,
             chunk_offsets,
@@ -263,8 +255,7 @@ def _jits_csr_fill_cuda_kernel(
 
 
 def jits_csr_fill_p_call(
-    w0,
-    w1,
+    weight,
     clen,
     seed,
     chunk_offsets,
@@ -284,13 +275,12 @@ def jits_csr_fill_p_call(
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
 
-    w0 = jnp.atleast_1d(w0)
-    w1 = jnp.atleast_1d(w1)
+    weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
     chunk_offsets = jnp.asarray(chunk_offsets, dtype=jnp.int32)
     nnz = int(nnz)
-    if np.dtype(w0.dtype) != np.dtype('float32') or np.dtype(w1.dtype) != np.dtype('float32'):
+    if np.dtype(weight.dtype) != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
     if chunk_offsets.shape != (n_rows, n_chunks):
         raise ValueError(
@@ -301,18 +291,17 @@ def jits_csr_fill_p_call(
     if nnz == 0:
         return (
             jnp.zeros((0,), dtype=jnp.int32),
-            jnp.zeros((0,), dtype=w0.dtype),
+            jnp.zeros((0,), dtype=weight.dtype),
         )
 
     return jits_csr_fill_p(
-        w0,
-        w1,
+        weight,
         clen,
         seed,
         chunk_offsets,
         outs=[
             jax.ShapeDtypeStruct((nnz,), jnp.int32),
-            jax.ShapeDtypeStruct((nnz,), w0.dtype),
+            jax.ShapeDtypeStruct((nnz,), weight.dtype),
         ],
         shape=(n_rows, n_cols),
         chunk_size=chunk_size_value,
@@ -320,8 +309,7 @@ def jits_csr_fill_p_call(
         matrix_mode=matrix_mode,
         corder=corder,
         backend=backend,
-        w0_info=jax.ShapeDtypeStruct(w0.shape, w0.dtype),
-        w1_info=jax.ShapeDtypeStruct(w1.shape, w1.dtype),
+        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         chunk_offsets_info=jax.ShapeDtypeStruct(chunk_offsets.shape, chunk_offsets.dtype),
@@ -363,26 +351,23 @@ def jits_to_csr(
     """
     from brainevent._csr import CSR
 
-    w0 = weight
-    w1 = weight
     n_rows, n_cols = _normalize_shape(shape)
     matrix_mode = _normalize_matrix_mode(matrix_mode)
     _warn_corder_ignored(corder)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
-    w0, w1, unitd = _as_f32_weights(w0, w1)
+    weight, unitd = _as_f32_weight(weight)
     seed = _initialize_seed(seed)
 
     if n_rows == 0 or n_cols == 0 or _is_static_zero(prob):
         indptr = jnp.zeros((n_rows + 1,), dtype=jnp.int32)
         indices = jnp.zeros((0,), dtype=jnp.int32)
-        data = u.maybe_decimal(jnp.zeros((0,), dtype=w0.dtype) * unitd)
+        data = u.maybe_decimal(jnp.zeros((0,), dtype=weight.dtype) * unitd)
         return CSR((data, indices, indptr), shape=(n_rows, n_cols))
 
     clen = _initialize_conn_length(prob)
     chunk_counts = jits_csr_count_p_call(
-        w0,
-        w1,
+        weight,
         clen,
         seed,
         shape=(n_rows, n_cols),
@@ -399,7 +384,7 @@ def jits_to_csr(
     nnz = int(indptr[-1])
     if nnz == 0:
         indices = jnp.zeros((0,), dtype=jnp.int32)
-        data = u.maybe_decimal(jnp.zeros((0,), dtype=w0.dtype) * unitd)
+        data = u.maybe_decimal(jnp.zeros((0,), dtype=weight.dtype) * unitd)
         return CSR((data, indices, indptr), shape=(n_rows, n_cols))
 
     chunk_offsets = (
@@ -408,8 +393,7 @@ def jits_to_csr(
         - chunk_counts
     )
     indices, data = jits_csr_fill_p_call(
-        w0,
-        w1,
+        weight,
         clen,
         seed,
         chunk_offsets,

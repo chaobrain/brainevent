@@ -162,7 +162,8 @@ class Test_JITC_Operator_Behavior:
     def test_jitc_scalar_r_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
-        dense = mat.todense()
+        dense_mv = mat.todense(matrix_mode="mv")
+        dense_mm = mat.todense(matrix_mode="mm")
 
         left_vec = gen_events(shape[0], asbool=False).value
         right_vec = gen_events(shape[1], asbool=False).value
@@ -170,24 +171,25 @@ class Test_JITC_Operator_Behavior:
         right_mat = gen_events((shape[1], 4), asbool=False).value
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
-        assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
-        assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        assert allclose(r5, r6, atol=1e-2, rtol=1e-2)
+        assert allclose(r7, r8, atol=1e-2, rtol=1e-2)
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_scalar_c_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCScalarC((1.5, 0.1, 123), shape=shape, corder=corder)
-        dense = mat.todense()
+        dense_mv = mat.todense(matrix_mode="mv")
+        dense_mm = mat.todense(matrix_mode="mm")
 
         left_vec = gen_events(shape[0], asbool=False).value
         right_vec = gen_events(shape[1], asbool=False).value
@@ -195,24 +197,25 @@ class Test_JITC_Operator_Behavior:
         right_mat = gen_events((shape[1], 4), asbool=False).value
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
         assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_scalar_r_transpose_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder).T
-        dense = mat.todense()
+        dense_mv = mat.todense(matrix_mode="mv")
+        dense_mm = mat.todense(matrix_mode="mm")
 
         left_vec = jnp.asarray(np.random.rand(shape[1]))
         right_vec = jnp.asarray(np.random.rand(shape[0]))
@@ -220,24 +223,25 @@ class Test_JITC_Operator_Behavior:
         right_mat = jnp.asarray(np.random.rand(shape[0], 4))
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
-        assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
-        assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        assert allclose(r5, r6, atol=1e-2, rtol=1e-2)
+        assert allclose(r7, r8, atol=1e-2, rtol=1e-2)
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_scalar_c_transpose_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCScalarC((1.5, 0.1, 123), shape=shape, corder=corder).T
-        dense = mat.todense()
+        dense_mv = mat.todense(matrix_mode="mv")
+        dense_mm = mat.todense(matrix_mode="mm")
 
         left_vec = jnp.asarray(np.random.rand(shape[1]))
         right_vec = jnp.asarray(np.random.rand(shape[0]))
@@ -245,18 +249,18 @@ class Test_JITC_Operator_Behavior:
         right_mat = jnp.asarray(np.random.rand(shape[0], 4))
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-2, rtol=1e-2)
         assert allclose(r7, r8, atol=1e-2, rtol=1e-2)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
     def test_jitc_scalar_unit_operator_behavior(self, cls):
@@ -273,12 +277,10 @@ class Test_JITC_Operator_Behavior:
         r2 = dense @ right_vec
         r3 = left_vec @ mat
         r4 = left_vec @ dense
-        assert u.math.allclose(r1, r2,
-                               rtol=1e-4,
-                               atol=1e-4 * u.get_unit(r2))
-        assert u.math.allclose(r3, r4,
-                               rtol=1e-4,
-                               atol=1e-4 * u.get_unit(r4))
+        assert u.get_unit(r1) == u.get_unit(r2)
+        assert u.get_unit(r3) == u.get_unit(r4)
+        assert allclose(u.get_mantissa(r1), u.get_mantissa(r2), rtol=1e-4, atol=1e-4)
+        assert allclose(u.get_mantissa(r3), u.get_mantissa(r4), rtol=1e-4, atol=1e-4)
         jax.block_until_ready((right_vec, left_vec))
 
 

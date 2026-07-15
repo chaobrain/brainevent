@@ -79,21 +79,17 @@ def jitsmv_dt2t(
     ``csr.dt2t_transposed(y, csr.data)`` when ``transpose=True``, without first
     materialising the CSR weight data.
     """
-    w0 = weight
-    w1 = weight
     n_rows, n_cols = _normalize_shape(shape)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
 
-    w0, unitd = u.split_mantissa_unit(w0)
-    w1 = u.Quantity(w1).to(unitd).mantissa
+    weight, unitd = u.split_mantissa_unit(weight)
     y, unity = u.split_mantissa_unit(y)
 
-    common_dtype = jnp.result_type(w0, w1, y)
+    common_dtype = jnp.result_type(weight, y)
     if np.dtype(common_dtype) != np.dtype('float32'):
         raise NotImplementedError("light dt2t currently supports float32 values only")
-    w0 = jnp.atleast_1d(jnp.asarray(w0, dtype=common_dtype))
-    w1 = jnp.atleast_1d(jnp.asarray(w1, dtype=common_dtype))
+    weight = jnp.atleast_1d(jnp.asarray(weight, dtype=common_dtype))
     y = jnp.asarray(y, dtype=common_dtype)
 
     if y.ndim != 1:
@@ -110,8 +106,7 @@ def jitsmv_dt2t(
     clen = _initialize_conn_length(prob)
     seed = _initialize_seed(seed)
     chunk_counts = jits_csr_count_p_call(
-        w0,
-        w1,
+        weight,
         clen,
         seed,
         shape=(n_rows, n_cols),
@@ -137,8 +132,7 @@ def jitsmv_dt2t(
     )
 
     data = jitsmv_dt2t_p_call(
-        w0,
-        w1,
+        weight,
         clen,
         y,
         seed,
@@ -178,8 +172,8 @@ def _jitsmv_dt2t_fill_cuda_kernel(
 ):
     """Build the CUDA kernel callable for the scalar JITC ``dt2t`` fill pass."""
     del corder
-    w0_dtype = np.dtype(kwargs['w0_info'].dtype)
-    if w0_dtype != np.dtype('float32'):
+    weight_dtype = np.dtype(kwargs['weight_info'].dtype)
+    if weight_dtype != np.dtype('float32'):
         raise NotImplementedError("light dt2t currently supports float32 values only")
 
     _, n_cols = _normalize_shape(shape)
@@ -196,10 +190,9 @@ def _jitsmv_dt2t_fill_cuda_kernel(
         else 'jit_scalar_dt2t.fill_f32'
     )
 
-    def kernel(w0, w1, clen, y, seed, chunk_offsets):
+    def kernel(weight, clen, y, seed, chunk_offsets):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
-            w0,
-            w1,
+            weight,
             clen,
             y,
             seed,
@@ -212,8 +205,7 @@ def _jitsmv_dt2t_fill_cuda_kernel(
 
 
 def jitsmv_dt2t_p_call(
-    w0,
-    w1,
+    weight,
     clen,
     y,
     seed,
@@ -233,14 +225,13 @@ def jitsmv_dt2t_p_call(
     n_chunks = _n_chunks(n_cols, chunk_size_value)
     _warn_corder_ignored(corder)
 
-    w0 = jnp.atleast_1d(w0)
-    w1 = jnp.atleast_1d(w1)
+    weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
     y = jnp.asarray(y)
     seed = jnp.atleast_1d(seed)
     chunk_offsets = jnp.asarray(chunk_offsets, dtype=jnp.int32)
-    assert w0.ndim == w1.ndim == clen.ndim == seed.ndim == 1
-    assert w0.size == w1.size == clen.size == seed.size == 1
+    assert weight.ndim == clen.ndim == seed.ndim == 1
+    assert weight.size == clen.size == seed.size == 1
     assert y.ndim == 1, "y must be 1D."
     assert chunk_offsets.ndim == 2, "chunk_offsets must be 2D."
     assert chunk_offsets.shape == (n_rows, n_chunks), (
@@ -248,13 +239,12 @@ def jitsmv_dt2t_p_call(
         f"got {chunk_offsets.shape}."
     )
     assert jnp.issubdtype(chunk_offsets.dtype, jnp.integer), "chunk_offsets must be an integer type."
-    assert jnp.issubdtype(w0.dtype, jnp.floating), "w0 must be a floating-point type."
-    assert jnp.issubdtype(w1.dtype, jnp.floating), "w1 must be a floating-point type."
+    assert jnp.issubdtype(weight.dtype, jnp.floating), "weight must be a floating-point type."
     assert jnp.issubdtype(y.dtype, jnp.floating), "y must be a floating-point type."
-    assert w0.dtype == w1.dtype == y.dtype, (
-        f"w0, w1 and y must have the same dtype, got {w0.dtype}, {w1.dtype}, {y.dtype}."
+    assert weight.dtype == y.dtype, (
+        f"weight and y must have the same dtype, got {weight.dtype}, {y.dtype}."
     )
-    if np.dtype(w0.dtype) != np.dtype('float32'):
+    if np.dtype(weight.dtype) != np.dtype('float32'):
         raise NotImplementedError("light dt2t currently supports float32 values only")
     if transpose:
         assert n_cols == y.shape[0], "Shape mismatch for transpose operation."
@@ -268,8 +258,7 @@ def jitsmv_dt2t_p_call(
         return (jnp.zeros((0,), dtype=y.dtype),)
 
     return jitsmv_dt2t_p(
-        w0,
-        w1,
+        weight,
         clen,
         y,
         seed,
@@ -281,8 +270,7 @@ def jitsmv_dt2t_p_call(
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         backend=backend,
-        w0_info=jax.ShapeDtypeStruct(w0.shape, w0.dtype),
-        w1_info=jax.ShapeDtypeStruct(w1.shape, w1.dtype),
+        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         y_info=jax.ShapeDtypeStruct(y.shape, y.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),

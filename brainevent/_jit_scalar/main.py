@@ -42,20 +42,18 @@ class JITCScalarMatrix(JITCMatrix):
     Base class for Just-In-Time Connectivity Scalar Distribution matrices.
 
     This abstract class serves as the foundation for sparse matrix representations
-    that use scalarly distributed weights with stochastic connectivity patterns.
-    It stores lower and upper bounds for the scalar distribution, along with
-    connectivity probability and a random seed that determines the sparse structure.
+    that use a single scalar weight with stochastic connectivity patterns.
+    It stores the non-zero weight value, connectivity probability, and a random
+    seed that determines the sparse structure.
 
     Designed for efficient representation of neural connectivity matrices where
-    connections follow a scalar distribution but are sparsely distributed.
+    all present connections share one scalar weight value.
 
     Parameters
     ----------
-    low : WeightScalar or Tuple[WeightScalar, WeightScalar, Prob, Seed]
-        Either the lower bound of the scalar distribution,
-        or a tuple containing (low, high, prob, seed).
-    high : WeightScalar, optional
-        Upper bound of the scalar distribution.
+    weight : WeightScalar or Tuple[WeightScalar, Prob, Seed]
+        Either the scalar value used for non-zero entries,
+        or a tuple containing (weight, prob, seed).
     prob : Prob, optional
         Connection probability determining matrix sparsity.
     seed : Seed, optional
@@ -69,12 +67,9 @@ class JITCScalarMatrix(JITCMatrix):
 
     Attributes
     ----------
-    wlow : Union[jax.Array, u.Quantity]
-        The lower bound of the scalar distribution for non-zero elements.
-        Can be a plain JAX array or a quantity with units.
-    whigh : Union[jax.Array, u.Quantity]
-        The upper bound of the scalar distribution for non-zero elements.
-        Can be a plain JAX array or a quantity with units.
+    weight : Union[jax.Array, u.Quantity]
+        The scalar value for non-zero elements. Can be a plain JAX array or a
+        quantity with units.
     prob : Union[float, jax.Array]
         Connection probability determining the sparsity of the matrix.
         Values range from 0 (no connections) to 1 (fully connected).
@@ -90,8 +85,7 @@ class JITCScalarMatrix(JITCMatrix):
     Raises
     ------
     ValueError
-        If ``prob`` is not a finite scalar in [0, 1], or if ``wlow > whigh``
-        element-wise.
+        If ``prob`` is not a finite scalar in [0, 1].
 
     See Also
     --------
@@ -102,18 +96,16 @@ class JITCScalarMatrix(JITCMatrix):
     -----
     The mathematical model for this matrix is:
 
-        ``W[i, j] = Scalar(w0, w1) * Bernoulli(prob)``
+        ``W[i, j] = weight * Bernoulli(prob)``
 
-    That is, each entry ``W[i, j]`` is independently set to a value drawn from the
-    continuous scalar distribution on ``[w0, w1]`` with probability ``prob``,
-    and set to zero with probability ``1 - prob``. More precisely:
+    That is, each entry ``W[i, j]`` is set to the scalar ``weight`` with
+    probability ``prob`` and set to zero with probability ``1 - prob``. More
+    precisely:
 
-        ``W[i, j] = U[i, j] * B[i, j]``
+        ``W[i, j] = weight * B[i, j]``
 
-    where ``U[i, j] ~ Scalar(w0, w1)`` and ``B[i, j] ~ Bernoulli(prob)``
-    are independent random variables. The connectivity pattern ``B`` and scalar
-    variates ``U`` are determined by the ``seed`` parameter, so using the same seed
-    always produces the same matrix.
+    where ``B[i, j] ~ Bernoulli(prob)`` is determined by the ``seed`` parameter,
+    so using the same seed always produces the same matrix.
 
     The matrix is never materialized in memory; instead, weights and connectivity
     are generated on-the-fly during matrix operations using a PRNG seeded by
@@ -121,8 +113,7 @@ class JITCScalarMatrix(JITCMatrix):
     """
     __module__ = 'brainevent'
 
-    wlow: Union[jax.Array, u.Quantity]
-    whigh: Union[jax.Array, u.Quantity]
+    weight: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
     seed: Union[int, jax.Array]
     shape: MatrixShape
@@ -130,8 +121,7 @@ class JITCScalarMatrix(JITCMatrix):
 
     def __init__(
         self,
-        low,
-        high=None,
+        weight,
         prob=None,
         seed=None,
         *,
@@ -145,12 +135,9 @@ class JITCScalarMatrix(JITCMatrix):
 
         Parameters
         ----------
-        low : WeightScalar or Tuple[WeightScalar, WeightScalar, Prob, Seed]
-            Either the lower bound of the scalar distribution,
-            or a tuple containing (low, high, prob, seed).
-        high : WeightScalar, optional
-            Upper bound of the scalar distribution.
-            If None, ``low`` is treated as a tuple of (low, high, prob, seed).
+        weight : WeightScalar or Tuple[WeightScalar, Prob, Seed]
+            Either the scalar value used for non-zero entries,
+            or a tuple containing (weight, prob, seed).
         prob : Prob, optional
             Connection probability determining matrix sparsity.
         seed : Seed, optional
@@ -165,15 +152,14 @@ class JITCScalarMatrix(JITCMatrix):
         Notes
         -----
         The constructor extracts the components from the data tuple and sets them
-        as instance attributes. The weight parameters are promoted to have compatible
-        dtypes and are verified to have matching dimensions before being converted
-        to JAX arrays, preserving any attached units.
+        as instance attributes. The weight is converted to a JAX array while
+        preserving any attached units.
         """
-        if high is None and prob is None and seed is None:
-            data = low
+        if prob is None and seed is None:
+            data = weight
         else:
-            data = (low, high, prob, seed)
-        low, high, self.prob, self.seed = data
+            data = (weight, prob, seed)
+        weight, self.prob, self.seed = data
         if not isinstance(self.prob, Tracer):
             prob = np.asarray(self.prob)
             if prob.size != 1:
@@ -184,17 +170,7 @@ class JITCScalarMatrix(JITCMatrix):
             if not (0. <= prob <= 1.):
                 raise ValueError(f"prob must be in [0, 1], but got {prob}.")
 
-        low, high = u.math.promote_dtypes(low, high)
-        u.fail_for_dimension_mismatch(low, high, "wlow and whigh must have the same dimension.")
-        low_m = u.get_mantissa(low)
-        high_m = u.get_mantissa(high)
-        if not (isinstance(low_m, Tracer) or isinstance(high_m, Tracer)):
-            low_arr = np.asarray(low_m)
-            high_arr = np.asarray(high_m)
-            if np.any(low_arr > high_arr):
-                raise ValueError("wlow must be <= whigh element-wise.")
-        self.wlow = u.math.asarray(low)
-        self.whigh = u.math.asarray(high)
+        self.weight = u.math.asarray(weight)
         self.corder = corder
         self.backend = backend
         super().__init__(data, shape=shape, buffers=buffers)
@@ -206,20 +182,19 @@ class JITCScalarMatrix(JITCMatrix):
         Returns
         -------
         str
-            A string showing the class name, shape, lower bound, upper bound,
-            probability, seed, and corder flag of the matrix instance.
+            A string showing the class name, shape, scalar weight, probability,
+            seed, and corder flag of the matrix instance.
 
         Examples
         --------
-        >>> matrix = JITCScalarMatrix((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        >>> matrix = JITCScalarMatrix((0.5, 0.2, 42), shape=(10, 10))
         >>> repr(matrix)
-        'JITScalarMatrix(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)'
+        'JITScalarMatrix(shape=(10, 10), weight=0.5, prob=0.2, seed=42, corder=False)'
         """
         return (
             f"{self.__class__.__name__}("
             f"shape={self.shape}, "
-            f"wlow={self.wlow}, "
-            f"whigh={self.whigh}, "
+            f"weight={self.weight}, "
             f"prob={self.prob}, "
             f"seed={self.seed}, "
             f"corder={self.corder},"
@@ -235,21 +210,21 @@ class JITCScalarMatrix(JITCMatrix):
         Returns
         -------
         dtype
-            The data type of the lower bound values in the matrix.
+            The data type of the scalar weight value in the matrix.
 
         Notes
         -----
-        This property inherits the dtype directly from the wlow attribute,
+        This property inherits the dtype directly from the weight attribute,
         ensuring consistent data typing throughout operations involving this matrix.
         """
-        return self.wlow.dtype
+        return self.weight.dtype
 
     @property
-    def data(self) -> Tuple[WeightScalar, WeightScalar]:
+    def data(self) -> WeightScalar:
         """
         Return the trainable weights of the matrix.
 
-        Only the trainable value parameters ``(wlow, whigh)`` are exposed here.
+        Only the trainable value parameter ``weight`` is exposed here.
         The structural parameters ``prob`` and ``seed`` are non-trainable and are
         therefore excluded. This property mirrors :meth:`with_data`, which accepts
         exactly the tuple returned here, so ``mat.with_data(mat.data)``
@@ -257,43 +232,39 @@ class JITCScalarMatrix(JITCMatrix):
 
         Returns
         -------
-        Tuple[WeightScalar, WeightScalar]
-            The ``(wlow, whigh)`` pair: the lower and upper bounds of the scalar
-            distribution.
+        WeightScalar
+            The scalar weight value.
 
         See Also
         --------
         with_data : Rebuild the matrix from the tuple returned here.
         """
-        return self.wlow, self.whigh
+        return self.weight
 
-    def with_data(self, data: Tuple[WeightScalar, WeightScalar]):
+    def with_data(self, data: WeightScalar):
         """
-        Create a new matrix instance with updated bounds, preserving all other structure.
+        Create a new matrix instance with an updated weight, preserving all other structure.
 
-        Accepts exactly the tuple returned by :attr:`data`, i.e. the
-        ``(low, high)`` pair, while keeping the same ``prob``, ``seed``,
-        ``shape``, ``corder``, ``backend``, and buffers. It is useful for updating
-        weight bounds without changing the connectivity pattern.
+        Accepts exactly the value returned by :attr:`data`, while keeping the same
+        ``prob``, ``seed``, ``shape``, ``corder``, ``backend``, and buffers. It is
+        useful for updating the scalar weight without changing the connectivity pattern.
 
         Parameters
         ----------
-        data : Tuple[WeightScalar, WeightScalar]
-            The new ``(low, high)`` bounds of the scalar distribution. Each must
-            have the same shape and unit as the corresponding current bound
-            (``wlow`` and ``whigh``).
+        data : WeightScalar
+            The new scalar weight. It must have the same shape and unit as the
+            current weight.
 
         Returns
         -------
         JITCScalarMatrix
             A new matrix instance of the same type as the original, with updated
-            lower and upper bounds but identical connectivity structure.
+            scalar weight but identical connectivity structure.
 
         Raises
         ------
         AssertionError
-            If the shapes of the provided bounds don't match the shapes of the original bounds,
-            or if the units of the provided bounds don't match the units of the original bounds.
+            If the shape or unit of the provided weight does not match the original weight.
 
         See Also
         --------
@@ -306,25 +277,21 @@ class JITCScalarMatrix(JITCMatrix):
         >>> from brainevent import JITCScalarR
         >>>
         >>> # Create original matrix
-        >>> original = JITCScalarR((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        >>> original = JITCScalarR((0.5, 0.2, 42), shape=(10, 10))
         >>>
-        >>> # Create new matrix with updated bounds
-        >>> updated = original.with_data((0.2, 0.8))
-        >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
+        >>> # Create new matrix with an updated weight
+        >>> updated = original.with_data(0.8)
+        >>> print(updated.weight)  # 0.8
         >>>
         >>> # With units
-        >>> original_units = JITCScalarR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
-        >>> updated_units = original_units.with_data((0.2 * u.mV, 0.8 * u.mV))
+        >>> original_units = JITCScalarR((0.5 * u.mV, 0.2, 42), shape=(10, 10))
+        >>> updated_units = original_units.with_data(0.8 * u.mV)
         """
-        low, high = data
-        low = u.math.asarray(low)
-        high = u.math.asarray(high)
-        assert low.shape == self.wlow.shape
-        assert high.shape == self.whigh.shape
-        assert u.get_unit(low) == u.get_unit(self.wlow)
-        assert u.get_unit(high) == u.get_unit(self.whigh)
+        weight = u.math.asarray(data)
+        assert weight.shape == self.weight.shape
+        assert u.get_unit(weight) == u.get_unit(self.weight)
         return type(self)(
-            (low, high, self.prob, self.seed),
+            (weight, self.prob, self.seed),
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
@@ -379,8 +346,7 @@ class JITCScalarMatrix(JITCMatrix):
             (10, 10)
         """
         return jits_to_csr(
-            self.wlow,
-            self.whigh,
+            self.weight,
             self.prob,
             self.seed,
             shape=self.shape,
@@ -400,12 +366,11 @@ class JITCScalarMatrix(JITCMatrix):
 
         ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC scalar connectivity and weights are generated from this matrix's own
-        metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
+        metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
         return jitsmv_dt2t(
-            self.wlow,
-            self.whigh,
+            self.weight,
             self.prob,
             y_dim_arr,
             self.seed,
@@ -424,12 +389,11 @@ class JITCScalarMatrix(JITCMatrix):
 
         ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC scalar connectivity and weights are generated from this matrix's own
-        metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
+        metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
         ``corder``, and ``backend``.
         """
         return jitsmv_dt2t(
-            self.wlow,
-            self.whigh,
+            self.weight,
             self.prob,
             y_dim_arr,
             self.seed,
@@ -447,7 +411,7 @@ class JITCScalarMatrix(JITCMatrix):
         -------
         tuple
             A pair of (children, aux_data) where children is a tuple of
-            (wlow, whigh, prob, seed) and aux_data is a dict containing
+            (weight, prob, seed) and aux_data is a dict containing
             shape, corder, and backend.
 
         Notes
@@ -456,7 +420,7 @@ class JITCScalarMatrix(JITCMatrix):
         for transformations such as ``jax.jit``, ``jax.grad``, and ``jax.vmap``.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
-        return (self.wlow, self.whigh, self.prob, self.seed), (aux, self.buffers)
+        return (self.weight, self.prob, self.seed), (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -468,7 +432,7 @@ class JITCScalarMatrix(JITCMatrix):
         aux_data : dict
             Auxiliary data containing shape, corder, and backend.
         children : tuple
-            A tuple of (wlow, whigh, prob, seed) leaf values.
+            A tuple of (weight, prob, seed) leaf values.
 
         Returns
         -------
@@ -482,7 +446,7 @@ class JITCScalarMatrix(JITCMatrix):
         ``object.__new__`` and directly setting attributes.
         """
         obj = object.__new__(cls)
-        obj.wlow, obj.whigh, obj.prob, obj.seed = children
+        obj.weight, obj.prob, obj.seed = children
         aux_data, buffer = aux_data
         obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
@@ -536,22 +500,19 @@ class JITCScalarR(JITCScalarMatrix):
 
     This class implements a row-oriented sparse matrix optimized for JAX-based transformations,
     following the Compressed Sparse Row (CSR) format conceptually. Instead of storing all non-zero
-    elements explicitly, it uses a scalar distribution with lower and upper bounds (wlow, whigh)
-    to generate weights for connections, along with probability and seed information to
+    elements explicitly, it uses one scalar weight for present connections,
+    along with probability and seed information to
     determine the sparse structure.
 
     The class is designed for efficient neural network connectivity patterns where weights
-    follow a scalar distribution but connectivity is sparse and stochastic. The actual sparse
-    structure and scalar weight values are generated just-in-time during operations.
+    share one scalar weight while connectivity is sparse and stochastic. The actual sparse
+    structure is generated just-in-time during operations.
 
     Attributes
     ----------
-    wlow : Union[jax.Array, u.Quantity]
-        The lower bound of the scalar distribution for non-zero elements.
-        Can be a plain JAX array or a quantity with units.
-    whigh : Union[jax.Array, u.Quantity]
-        The upper bound of the scalar distribution for non-zero elements.
-        Can be a plain JAX array or a quantity with units.
+    weight : Union[jax.Array, u.Quantity]
+        The scalar value for non-zero elements. Can be a plain JAX array or a
+        quantity with units.
     prob : Union[float, jax.Array]
         Connection probability determining the sparsity of the matrix.
         Values range from 0 (no connections) to 1 (fully connected).
@@ -575,35 +536,35 @@ class JITCScalarR(JITCScalarMatrix):
         >>> import brainunit as u
         >>> from brainevent import JITCScalarR
 
-        # Create a scalar matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
-        >>> scalar_matrix = JITCScalarR((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        # Create a scalar matrix with weight 0.5, probability 0.2, and seed 42
+        >>> scalar_matrix = JITCScalarR((0.5, 0.2, 42), shape=(10, 10))
         >>> scalar_matrix
-        JITCScalarR(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
+        JITCScalarR(shape=(10, 10), weight=0.5, prob=0.2, seed=42, corder=False)
 
         # Create a scalar matrix with units
-        >>> scalar_matrix_mv = JITCScalarR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
+        >>> scalar_matrix_mv = JITCScalarR((0.5 * u.mV, 0.2, 42), shape=(10, 10))
 
         # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
         >>> result = scalar_matrix @ vec
-        >>> # Each element in result is a weighted sum using scalarly distributed weights
+        >>> # Each element in result is a weighted sum using the scalar weight
 
-        # Apply scalar operation (scales both lower and upper bounds)
+        # Apply scalar operation (scales the weight)
         >>> scaled = scalar_matrix * 2.0
-        >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
+        >>> print(scaled.weight)  # 1.0
 
         # Convert to dense representation
         >>> dense_matrix = scalar_matrix.todense()
         >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
-        >>> # each non-zero element is scalarly distributed between 0.1 and 0.5
+        >>> # each non-zero element is equal to the scalar weight
 
         # Transpose operation returns a JITCScalarC instance
         >>> col_matrix = scalar_matrix.transpose()
         >>> isinstance(col_matrix, JITCScalarC)  # True
 
-        # Update bounds while preserving connectivity pattern
-        >>> updated = scalar_matrix.with_data((0.2, 0.8))
-        >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
+        # Update the weight while preserving connectivity pattern
+        >>> updated = scalar_matrix.with_data(0.8)
+        >>> print(updated.weight)  # 0.8
 
         # Use with JAX transformations
         >>> @jax.jit
@@ -615,16 +576,14 @@ class JITCScalarR(JITCScalarMatrix):
     -----
     The mathematical model for ``JITCScalarR`` is:
 
-        ``W[i, j] = Scalar(w0, w1) * Bernoulli(prob)``
+        ``W[i, j] = weight * Bernoulli(prob)``
 
-    Each entry ``W[i, j]`` is independently drawn from the continuous scalar
-    distribution on ``[w0, w1]`` with probability ``prob``, and zero
-    otherwise. More precisely, the entry is computed as:
+    Each entry ``W[i, j]`` is equal to ``weight`` with probability ``prob``
+    and zero otherwise. More precisely, the entry is computed as:
 
-        ``W[i, j] = U[i, j] * B[i, j]``
+        ``W[i, j] = weight * B[i, j]``
 
-    where ``U[i, j] ~ Scalar(w0, w1)`` and ``B[i, j] ~ Bernoulli(prob)``
-    are independent random variables, both determined by ``seed``.
+    where ``B[i, j] ~ Bernoulli(prob)`` is determined by ``seed``.
 
     The row-oriented representation means that the random number generator state is
     seeded per-row (or per-column, depending on ``corder``), making row-based
@@ -694,9 +653,9 @@ class JITCScalarR(JITCScalarMatrix):
             >>> dense.shape
             (4, 6)
         """
-        return jits(
-            self.wlow,
-            self.whigh,
+        one = u.math.ones_like(u.get_mantissa(self.weight))
+        mask = jits(
+            one,
             self.prob,
             self.seed,
             shape=self.shape,
@@ -707,6 +666,7 @@ class JITCScalarR(JITCScalarMatrix):
             target_chunks=target_chunks,
             backend=self.backend,
         )
+        return u.maybe_decimal(mask * self.weight)
 
     def transpose(self, axes=None) -> 'JITCScalarC':
         """
@@ -765,23 +725,21 @@ class JITCScalarR(JITCScalarMatrix):
         """
         assert axes is None, "transpose does not support axes argument."
         return JITCScalarC(
-            (self.wlow, self.whigh, self.prob, self.seed),
+            (self.weight, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
 
-    def _new_mat(self, wlow, whigh, prob=None, seed=None):
+    def _new_mat(self, weight, prob=None, seed=None):
         """
-        Create a new ``JITCScalarR`` with the given weight bounds, reusing other attributes.
+        Create a new ``JITCScalarR`` with the given weight, reusing other attributes.
 
         Parameters
         ----------
-        wlow : WeightScalar
-            New lower bound for the scalar distribution.
-        whigh : WeightScalar
-            New upper bound for the scalar distribution.
+        weight : WeightScalar
+            New scalar weight.
         prob : Prob, optional
             New connection probability. If None, the current probability is reused.
         seed : Seed, optional
@@ -790,12 +748,11 @@ class JITCScalarR(JITCScalarMatrix):
         Returns
         -------
         JITCScalarR
-            A new row-oriented matrix with the specified weight bounds.
+            A new row-oriented matrix with the specified scalar weight.
         """
         return JITCScalarR(
             (
-                wlow,
-                whigh,
+                weight,
                 self.prob if prob is None else prob,
                 self.seed if seed is None else seed
             ),
@@ -807,23 +764,23 @@ class JITCScalarR(JITCScalarMatrix):
 
     def _unitary_op(self, op) -> 'JITCScalarR':
         """
-        Apply a unary operation to both weight bounds.
+        Apply a unary operation to the scalar weight.
 
         Parameters
         ----------
         op : callable
-            A unary function to apply element-wise to ``wlow`` and ``whigh``.
+            A unary function to apply element-wise to ``weight``.
 
         Returns
         -------
         JITCScalarR
             A new matrix with the operation applied to both bounds.
         """
-        return self._new_mat(op(self.wlow), op(self.whigh))
+        return self._new_mat(op(self.weight))
 
     def _binary_op(self, other, op) -> 'JITCScalarR':
         """
-        Apply a binary operation between the weight bounds and a scalar operand.
+        Apply a binary operation between the scalar weight and a scalar operand.
 
         Parameters
         ----------
@@ -847,7 +804,7 @@ class JITCScalarR(JITCScalarMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(self.wlow, other), op(self.whigh, other))
+            return self._new_mat(op(self.weight, other))
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -878,7 +835,7 @@ class JITCScalarR(JITCScalarMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(other, self.wlow), op(other, self.whigh))
+            return self._new_mat(op(other, self.weight))
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -924,8 +881,7 @@ class JITCScalarR(JITCScalarMatrix):
             if other.ndim == 1:
                 # JIT matrix @ events
                 return binary_jitsmv(
-                    self.wlow,
-                    self.whigh,
+                    self.weight,
                     self.prob,
                     other,
                     self.seed,
@@ -937,8 +893,7 @@ class JITCScalarR(JITCScalarMatrix):
             elif other.ndim == 2:
                 # JIT matrix @ events
                 return binary_jitsmm(
-                    self.wlow,
-                    self.whigh,
+                    self.weight,
                     self.prob,
                     other,
                     self.seed,
@@ -952,13 +907,11 @@ class JITCScalarR(JITCScalarMatrix):
 
         else:
             other = u.math.asarray(other)
-            loc, other = u.math.promote_dtypes(self.wlow, other)
-            scale, other = u.math.promote_dtypes(self.whigh, other)
+            weight, other = u.math.promote_dtypes(self.weight, other)
             if other.ndim == 1:
                 # JIT matrix @ vector
                 return jitsmv(
-                    loc,
-                    scale,
+                    weight,
                     self.prob,
                     other,
                     self.seed,
@@ -970,8 +923,7 @@ class JITCScalarR(JITCScalarMatrix):
             elif other.ndim == 2:
                 # JIT matrix @ matrix
                 return jitsmm(
-                    loc,
-                    scale,
+                    weight,
                     self.prob,
                     other,
                     self.seed,
@@ -1033,8 +985,7 @@ class JITCScalarR(JITCScalarMatrix):
                 # JIT matrix.T @ vector
                 #
                 return binary_jitsmv(
-                    self.wlow,
-                    self.whigh,
+                    self.weight,
                     self.prob,
                     other,
                     self.seed,
@@ -1050,8 +1001,7 @@ class JITCScalarR(JITCScalarMatrix):
                 # (JIT matrix.T @ matrix.T).T
                 #
                 r = binary_jitsmm(
-                    self.wlow,
-                    self.whigh,
+                    self.weight,
                     self.prob,
                     other.T,
                     self.seed,
@@ -1066,8 +1016,7 @@ class JITCScalarR(JITCScalarMatrix):
 
         else:
             other = u.math.asarray(other)
-            loc, other = u.math.promote_dtypes(self.wlow, other)
-            scale, other = u.math.promote_dtypes(self.whigh, other)
+            weight, other = u.math.promote_dtypes(self.weight, other)
             if other.ndim == 1:
                 #
                 # vector @ JIT matrix
@@ -1075,8 +1024,7 @@ class JITCScalarR(JITCScalarMatrix):
                 # JIT matrix.T @ vector
                 #
                 return jitsmv(
-                    loc,
-                    scale,
+                    weight,
                     self.prob,
                     other,
                     self.seed,
@@ -1092,8 +1040,7 @@ class JITCScalarR(JITCScalarMatrix):
                 # (JIT matrix.T @ matrix.T).T
                 #
                 r = jitsmm(
-                    loc,
-                    scale,
+                    weight,
                     self.prob,
                     other.T,
                     self.seed,
@@ -1114,8 +1061,8 @@ class JITCScalarC(JITCScalarMatrix):
 
     This class implements a column-oriented sparse matrix optimized for JAX-based transformations,
     following the Compressed Sparse Column (CSC) format conceptually. Instead of storing all non-zero
-    elements explicitly, it uses a scalar distribution with lower and upper bounds (wlow, whigh)
-    to generate weights for connections, along with probability and seed information to
+    elements explicitly, it uses one scalar weight for present connections,
+    along with probability and seed information to
     determine the sparse structure.
 
     The class is designed for efficient neural network connectivity patterns where weights
@@ -1125,12 +1072,9 @@ class JITCScalarC(JITCScalarMatrix):
 
     Attributes
     ----------
-    wlow : Union[jax.Array, u.Quantity]
-        The lower bound of the scalar distribution for non-zero elements.
-        Can be a plain JAX array or a quantity with units.
-    whigh : Union[jax.Array, u.Quantity]
-        The upper bound of the scalar distribution for non-zero elements.
-        Can be a plain JAX array or a quantity with units.
+    weight : Union[jax.Array, u.Quantity]
+        The scalar value for non-zero elements. Can be a plain JAX array or a
+        quantity with units.
     prob : Union[float, jax.Array]
         Connection probability determining the sparsity of the matrix.
         Values range from 0 (no connections) to 1 (fully connected).
@@ -1154,35 +1098,35 @@ class JITCScalarC(JITCScalarMatrix):
         >>> import brainunit as u
         >>> from brainevent import JITCScalarC
 
-        # Create a scalar matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
-        >>> scalar_matrix = JITCScalarC((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        # Create a scalar matrix with weight 0.5, probability 0.2, and seed 42
+        >>> scalar_matrix = JITCScalarC((0.5, 0.2, 42), shape=(10, 10))
         >>> scalar_matrix
-        JITCScalarC(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
+        JITCScalarC(shape=(10, 10), weight=0.5, prob=0.2, seed=42, corder=False)
 
         # Create a scalar matrix with units
-        >>> scalar_matrix_mv = JITCScalarC((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
+        >>> scalar_matrix_mv = JITCScalarC((0.5 * u.mV, 0.2, 42), shape=(10, 10))
 
         # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
         >>> result = scalar_matrix @ vec
-        >>> # Each element in result is a weighted sum using scalarly distributed weights
+        >>> # Each element in result is a weighted sum using the scalar weight
 
-        # Apply scalar operation (scales both lower and upper bounds)
+        # Apply scalar operation (scales the weight)
         >>> scaled = scalar_matrix * 2.0
-        >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
+        >>> print(scaled.weight)  # 1.0
 
         # Convert to dense representation
         >>> dense_matrix = scalar_matrix.todense()
         >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
-        >>> # each non-zero element is scalarly distributed between 0.1 and 0.5
+        >>> # each non-zero element is equal to the scalar weight
 
         # Transpose operation returns a JITCScalarR instance
         >>> row_matrix = scalar_matrix.transpose()
         >>> isinstance(row_matrix, JITCScalarR)  # True
 
-        # Update bounds while preserving connectivity pattern
-        >>> updated = scalar_matrix.with_data((0.2, 0.8))
-        >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
+        # Update the weight while preserving connectivity pattern
+        >>> updated = scalar_matrix.with_data(0.8)
+        >>> print(updated.weight)  # 0.8
 
         # Use with JAX transformations
         >>> @jax.jit
@@ -1282,9 +1226,9 @@ class JITCScalarC(JITCScalarMatrix):
             >>> dense.shape
             (3, 10)
         """
-        return jits(
-            self.wlow,
-            self.whigh,
+        one = u.math.ones_like(u.get_mantissa(self.weight))
+        mask = jits(
+            one,
             self.prob,
             self.seed,
             shape=self.shape[::-1],
@@ -1295,6 +1239,7 @@ class JITCScalarC(JITCScalarMatrix):
             target_chunks=target_chunks,
             backend=self.backend,
         )
+        return u.maybe_decimal(mask * self.weight)
 
     def tocsr(
         self,
@@ -1304,8 +1249,7 @@ class JITCScalarC(JITCScalarMatrix):
         target_chunks: int = 4,
     ):
         csr = jits_to_csr(
-            self.wlow,
-            self.whigh,
+            self.weight,
             self.prob,
             self.seed,
             shape=self.shape[::-1],
@@ -1368,23 +1312,21 @@ class JITCScalarC(JITCScalarMatrix):
         """
         assert axes is None, "transpose does not support axes argument."
         return JITCScalarR(
-            (self.wlow, self.whigh, self.prob, self.seed),
+            (self.weight, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
 
-    def _new_mat(self, wlow, whigh, prob=None, seed=None):
+    def _new_mat(self, weight, prob=None, seed=None):
         """
-        Create a new ``JITCScalarC`` with the given weight bounds, reusing other attributes.
+        Create a new ``JITCScalarC`` with the given weight, reusing other attributes.
 
         Parameters
         ----------
-        wlow : WeightScalar
-            New lower bound for the scalar distribution.
-        whigh : WeightScalar
-            New upper bound for the scalar distribution.
+        weight : WeightScalar
+            New scalar weight.
         prob : Prob, optional
             New connection probability. If None, the current probability is reused.
         seed : Seed, optional
@@ -1393,12 +1335,11 @@ class JITCScalarC(JITCScalarMatrix):
         Returns
         -------
         JITCScalarC
-            A new column-oriented matrix with the specified weight bounds.
+            A new column-oriented matrix with the specified scalar weight.
         """
         return JITCScalarC(
             (
-                wlow,
-                whigh,
+                weight,
                 self.prob if prob is None else prob,
                 self.seed if seed is None else seed
             ),
@@ -1410,23 +1351,23 @@ class JITCScalarC(JITCScalarMatrix):
 
     def _unitary_op(self, op) -> 'JITCScalarC':
         """
-        Apply a unary operation to both weight bounds.
+        Apply a unary operation to the scalar weight.
 
         Parameters
         ----------
         op : callable
-            A unary function to apply element-wise to ``wlow`` and ``whigh``.
+            A unary function to apply element-wise to ``weight``.
 
         Returns
         -------
         JITCScalarC
             A new matrix with the operation applied to both bounds.
         """
-        return self._new_mat(op(self.wlow), op(self.whigh))
+        return self._new_mat(op(self.weight))
 
     def _binary_op(self, other, op) -> 'JITCScalarC':
         """
-        Apply a binary operation between the weight bounds and a scalar operand.
+        Apply a binary operation between the scalar weight and a scalar operand.
 
         Parameters
         ----------
@@ -1450,7 +1391,7 @@ class JITCScalarC(JITCScalarMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(self.wlow, other), op(self.whigh, other))
+            return self._new_mat(op(self.weight, other))
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -1481,7 +1422,7 @@ class JITCScalarC(JITCScalarMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(other, self.wlow), op(other, self.whigh))
+            return self._new_mat(op(other, self.weight))
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -1530,8 +1471,7 @@ class JITCScalarC(JITCScalarMatrix):
                 # ==
                 # vector @ JITC_R matrix
                 return binary_jitsmv(
-                    self.wlow,
-                    self.whigh,
+                    self.weight,
                     self.prob,
                     other,
                     self.seed,
@@ -1545,8 +1485,7 @@ class JITCScalarC(JITCScalarMatrix):
                 # ==
                 # (matrix.T @ JITC_R matrix).T
                 return binary_jitsmm(
-                    self.wlow,
-                    self.whigh,
+                    self.weight,
                     self.prob,
                     other,
                     self.seed,
@@ -1560,15 +1499,13 @@ class JITCScalarC(JITCScalarMatrix):
 
         else:
             other = u.math.asarray(other)
-            loc, other = u.math.promote_dtypes(self.wlow, other)
-            scale, other = u.math.promote_dtypes(self.whigh, other)
+            weight, other = u.math.promote_dtypes(self.weight, other)
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
                 # vector @ JITC_R matrix
                 return jitsmv(
-                    loc,
-                    scale,
+                    weight,
                     self.prob,
                     other,
                     self.seed,
@@ -1582,8 +1519,7 @@ class JITCScalarC(JITCScalarMatrix):
                 # ==
                 # (matrix.T @ JITC_R matrix).T
                 return jitsmm(
-                    loc,
-                    scale,
+                    weight,
                     self.prob,
                     other,
                     self.seed,
@@ -1642,8 +1578,7 @@ class JITCScalarC(JITCScalarMatrix):
                 # JITC_R matrix @ vector
                 #
                 return binary_jitsmv(
-                    self.wlow,
-                    self.whigh,
+                    self.weight,
                     self.prob,
                     other,
                     self.seed,
@@ -1659,8 +1594,7 @@ class JITCScalarC(JITCScalarMatrix):
                 # (JITC_R matrix @ matrix.T).T
                 #
                 r = binary_jitsmm(
-                    self.wlow,
-                    self.whigh,
+                    self.weight,
                     self.prob,
                     other.T,
                     self.seed,
@@ -1675,8 +1609,7 @@ class JITCScalarC(JITCScalarMatrix):
 
         else:
             other = u.math.asarray(other)
-            loc, other = u.math.promote_dtypes(self.wlow, other)
-            scale, other = u.math.promote_dtypes(self.whigh, other)
+            weight, other = u.math.promote_dtypes(self.weight, other)
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T
@@ -1684,8 +1617,7 @@ class JITCScalarC(JITCScalarMatrix):
                 # JITC_R matrix @ vector
                 #
                 return jitsmv(
-                    loc,
-                    scale,
+                    weight,
                     self.prob,
                     other,
                     self.seed,
@@ -1701,8 +1633,7 @@ class JITCScalarC(JITCScalarMatrix):
                 # (JITC_R matrix @ matrix.T).T
                 #
                 r = jitsmm(
-                    loc,
-                    scale,
+                    weight,
                     self.prob,
                     other.T,
                     self.seed,

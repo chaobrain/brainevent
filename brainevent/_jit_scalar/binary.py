@@ -69,8 +69,7 @@ def _light_options(kwargs):
 
 @namescope(name="brainevent.binary_jitsmv", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
 def _binary_jitsmv_impl(
-    w0: Data,
-    w1: Data,
+    weight: Data,
     prob: float,
     vector: Data,
     seed: Optional[int] = None,
@@ -172,15 +171,12 @@ def _binary_jitsmv_impl(
         >>> result.shape
         (3,)
     """
-    u.fail_for_dimension_mismatch(w0, w1, "w0 and w1 must have the same dimension.")
     seed = _initialize_seed(seed)
-    w0, unitd = u.split_mantissa_unit(w0)
-    w1 = u.Quantity(w1).to(unitd).mantissa
+    weight, unitd = u.split_mantissa_unit(weight)
     vector, unitv = u.split_mantissa_unit(vector)
     clen = _initialize_conn_length(prob)
     res = binary_jitsmv_p_call(
-        w0,
-        w1,
+        weight,
         clen,
         vector,
         seed,
@@ -208,11 +204,8 @@ def binary_jitsmv(
     backend: Optional[str] = None,
 ) -> Data:
     _warn_corder_ignored(corder)
-    w0 = weight
-    w1 = weight
     return _binary_jitsmv_impl(
-        w0,
-        w1,
+        weight,
         prob,
         vector,
         seed,
@@ -230,8 +223,7 @@ binary_jitsmv.__doc__ = _binary_jitsmv_impl.__doc__
 
 @namescope(name="brainevent.binary_jitsmm", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
 def _binary_jitsmm_impl(
-    w0: Data,
-    w1: Data,
+    weight: Data,
     prob: float,
     B: Data,
     seed: Optional[int] = None,
@@ -334,15 +326,12 @@ def _binary_jitsmm_impl(
         >>> result.shape
         (3, 2)
     """
-    u.fail_for_dimension_mismatch(w0, w1, "w0 and w1 must have the same dimension.")
     seed = _initialize_seed(seed)
-    w0, unitd = u.split_mantissa_unit(w0)
-    w1 = u.Quantity(w1).to(unitd).mantissa
+    weight, unitd = u.split_mantissa_unit(weight)
     B, unitB = u.split_mantissa_unit(B)
     clen = _initialize_conn_length(prob)
     res = binary_jitsmm_p_call(
-        w0,
-        w1,
+        weight,
         clen,
         B,
         seed,
@@ -370,11 +359,8 @@ def binary_jitsmm(
     backend: Optional[str] = None,
 ) -> Data:
     _warn_corder_ignored(corder)
-    w0 = weight
-    w1 = weight
     return _binary_jitsmm_impl(
-        w0,
-        w1,
+        weight,
         prob,
         B,
         seed,
@@ -427,11 +413,10 @@ def _jitsmv_numba_kernel_generator(
     if corder:
         if vector_info.dtype == jnp.bool_:
             @numba.njit(fastmath=True)
-            def kernel_impl(w0, w1, clen, vector, seed, posts):
+            def kernel_impl(weight, clen, vector, seed, posts):
                 n_col = posts.shape[0]
                 n_row = vector.shape[0]
-                w00 = w0[0]
-                w10 = w1[0]
+                w = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 for i_col in range(n_col):
@@ -439,18 +424,16 @@ def _jitsmv_numba_kernel_generator(
                     i_row = _lfsr_random_integers(state, 0, clen0 - 1)
                     out = np.asarray(0., dtype=posts.dtype)
                     while i_row < n_row:
-                        w = _lfsr_uniform(state, w00, w10)
                         if vector[i_row]:
                             out += w
                         i_row += _lfsr_random_integers(state, 1, clen0 - 1)
                     posts[i_col] = out
         else:
             @numba.njit(fastmath=True)
-            def kernel_impl(w0, w1, clen, vector, seed, posts):
+            def kernel_impl(weight, clen, vector, seed, posts):
                 n_col = posts.shape[0]
                 n_row = vector.shape[0]
-                w00 = w0[0]
-                w10 = w1[0]
+                w = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 for i_col in range(n_col):
@@ -458,7 +441,6 @@ def _jitsmv_numba_kernel_generator(
                     i_row = _lfsr_random_integers(state, 0, clen0 - 1)
                     out = np.asarray(0., dtype=posts.dtype)
                     while i_row < n_row:
-                        w = _lfsr_uniform(state, w00, w10)
                         if vector[i_row] > 0.:
                             out += w
                         i_row += _lfsr_random_integers(state, 1, clen0 - 1)
@@ -468,12 +450,11 @@ def _jitsmv_numba_kernel_generator(
     else:
         if vector_info.dtype == jnp.bool_:
             @numba.njit(fastmath=True)
-            def kernel_impl(w0, w1, clen, vector, seed, posts):
+            def kernel_impl(weight, clen, vector, seed, posts):
                 posts[:] = 0.
                 num_col = posts.shape[0]
                 num_row = vector.shape[0]
-                w00 = w0[0]
-                w10 = w1[0]
+                w = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 for i_row in range(num_row):
@@ -481,17 +462,15 @@ def _jitsmv_numba_kernel_generator(
                         state = _lfsr_seed(seed0 + i_row * num_col)
                         i_col = _lfsr_random_integers(state, 0, clen0 - 1)
                         while i_col < num_col:
-                            w = _lfsr_uniform(state, w00, w10)
                             posts[i_col] += w
                             i_col += _lfsr_random_integers(state, 1, clen0 - 1)
         else:
             @numba.njit(fastmath=True)
-            def kernel_impl(w0, w1, clen, vector, seed, posts):
+            def kernel_impl(weight, clen, vector, seed, posts):
                 posts[:] = 0.
                 num_col = posts.shape[0]
                 num_row = vector.shape[0]
-                w00 = w0[0]
-                w10 = w1[0]
+                w = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 for i_row in range(num_row):
@@ -499,12 +478,11 @@ def _jitsmv_numba_kernel_generator(
                         state = _lfsr_seed(seed0 + i_row * num_col)
                         i_col = _lfsr_random_integers(state, 0, clen0 - 1)
                         while i_col < num_col:
-                            w = _lfsr_uniform(state, w00, w10)
                             posts[i_col] += w
                             i_col += _lfsr_random_integers(state, 1, clen0 - 1)
 
-    def kernel(w0, w1, clen, vector, seed):
-        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w0, w1, clen, vector, seed)
+    def kernel(weight, clen, vector, seed):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, vector, seed)
 
     return kernel
 
@@ -529,7 +507,7 @@ def _binary_jitsmv_cuda_kernel(
     **kwargs
 ):
     del corder
-    if np.dtype(kwargs['w0_info'].dtype) != np.dtype('float32'):
+    if np.dtype(kwargs['weight_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light binary_jitsmv currently supports float32 weights only")
 
     load_cuda_file(
@@ -542,7 +520,7 @@ def _binary_jitsmv_cuda_kernel(
     chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
     compute_name = 'binary_jitsmv.scatter_f32' if transpose else 'binary_jitsmv.gather_f32'
 
-    def kernel(w0, w1, clen, vector, seed):
+    def kernel(weight, clen, vector, seed):
         active = vector if vector.dtype == jnp.bool_ else (vector > 0).astype(jnp.int8)
         packed = jax.ffi.ffi_call(
             'binary_jitsmv.pack_bool',
@@ -552,8 +530,7 @@ def _binary_jitsmv_cuda_kernel(
             compute_name,
             kwargs['outs'],
         )(
-            w0,
-            w1,
+            weight,
             clen,
             seed,
             packed,
@@ -564,7 +541,7 @@ def _binary_jitsmv_cuda_kernel(
     return kernel
 
 
-def _jitsmv_jvp_v(v_dot, w0, w1, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+def _jitsmv_jvp_v(v_dot, weight, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     """
     JVP rule for the vector argument of the binary JIT-scalar matrix-vector product.
 
@@ -589,11 +566,11 @@ def _jitsmv_jvp_v(v_dot, w0, w1, clen, vector, seed, *, shape, transpose, corder
         Single-element list containing the JVP result.
     """
     return jitsmv_p_call(
-        w0, w1, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        weight, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
-def _jitsmv_jvp_wloc(w_dot, w0, w1, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+def _jitsmv_jvp_weight(w_dot, weight, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     """
     JVP rule for the ``w0`` argument of the binary JIT-scalar matrix-vector product.
 
@@ -618,42 +595,12 @@ def _jitsmv_jvp_wloc(w_dot, w0, w1, clen, vector, seed, *, shape, transpose, cor
         Single-element list containing the JVP result.
     """
     return binary_jitsmv_p_call(
-        w_dot, w1, clen, vector, seed, shape=shape, transpose=transpose, corder=corder,
+        w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder,
         **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
-def _jitsmv_jvp_wscale(w_dot, w0, w1, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    """
-    JVP rule for the ``w1`` argument of the binary JIT-scalar matrix-vector product.
-
-    Parameters
-    ----------
-    w_dot : jax.Array
-        Tangent vector for the ``w1`` argument.
-    w0, w1, clen, vector, seed : jax.Array
-        Primal values of the primitive's arguments.
-    shape : MatrixShape
-        Shape of the connectivity matrix.
-    transpose : bool
-        Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
-    **kwargs
-        Additional keyword arguments including ``backend``.
-
-    Returns
-    -------
-    list
-        Single-element list containing the JVP result.
-    """
-    return binary_jitsmv_p_call(
-        w0, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder,
-        **_light_options(kwargs), backend=kwargs['backend'],
-    )
-
-
-def _jitsmv_transpose_rules(ct, w0, w1, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     """
     Transpose (adjoint) rule for the binary JIT-scalar matrix-vector product.
 
@@ -701,8 +648,7 @@ def _jitsmv_transpose_rules(ct, w0, w1, clen, vector, seed, *, shape, transpose,
     ct = ct[0]
     if ad.is_undefined_primal(vector):
         r = jitsmv_p_call(
-            w0,
-            w1,
+            weight,
             clen,
             ct,
             seed,
@@ -711,22 +657,10 @@ def _jitsmv_transpose_rules(ct, w0, w1, clen, vector, seed, *, shape, transpose,
             corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        return w0, w1, clen, r, seed
-    elif ad.is_undefined_primal(w0):
-        # With fixed connectivity/event masks for this primitive call:
-        #   w_ij = w0 + (w1 - w0) * u_ij
-        # so the output is affine in (w0, w1):
-        #   y = w0 * C + (w1 - w0) * U
-        # where:
-        #   U = y(w0=0, w1=1)
-        #   C = y(w0=1, w1=1)  (active connection counts)
-        # For cotangent ct:
-        #   dL/dw1 = <ct, U>
-        #   dL/dw0  = <ct, C - U>
+        return weight, clen, r, seed
+    elif ad.is_undefined_primal(weight):
         ones = jnp.ones((1,), dtype=ct.dtype)
-        zeros = jnp.zeros((1,), dtype=ct.dtype)
-        high_basis = binary_jitsmv_p_call(
-            zeros,
+        basis = binary_jitsmv_p_call(
             ones,
             clen,
             vector,
@@ -737,37 +671,8 @@ def _jitsmv_transpose_rules(ct, w0, w1, clen, vector, seed, *, shape, transpose,
             **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
-        count_basis = binary_jitsmv_p_call(
-            ones,
-            ones,
-            clen,
-            vector,
-            seed,
-            shape=shape,
-            transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
-            backend=kwargs['backend'],
-        )[0]
-        dw0 = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
-        return dw0, w1, clen, vector, seed
-    elif ad.is_undefined_primal(w1):
-        zeros = jnp.zeros((1,), dtype=ct.dtype)
-        ones = jnp.ones((1,), dtype=ct.dtype)
-        high_basis = binary_jitsmv_p_call(
-            zeros,
-            ones,
-            clen,
-            vector,
-            seed,
-            shape=shape,
-            transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
-            backend=kwargs['backend'],
-        )[0]
-        dw1 = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
-        return w0, dw1, clen, vector, seed
+        dweight = jnp.expand_dims(jnp.sum(ct * basis), axis=0)
+        return dweight, clen, vector, seed
     else:
         raise NotImplementedError(
             f"Transpose rule for {ct} not implemented "
@@ -802,14 +707,13 @@ def _jitsmv_batching(
         A pair ``(results, out_axes)`` where ``results`` is the batched output
         and ``out_axes`` indicates the batch dimension of each output.
     """
-    if tuple(axes) == (None, None, None, 0, None):
-        assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
+    if tuple(axes) == (None, None, 0, None):
+        assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_jitsmm_p_call(
             args[0],
             args[1],
-            args[2],
-            args[3].T,
-            args[4],
+            args[2].T,
+            args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
@@ -817,14 +721,13 @@ def _jitsmv_batching(
             backend=kwargs['backend'],
         )
         return r, [1]
-    elif tuple(axes) == (None, None, None, 1, None):
-        assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
+    elif tuple(axes) == (None, None, 1, None):
+        assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_jitsmm_p_call(
             args[0],
             args[1],
             args[2],
             args[3],
-            args[4],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
@@ -856,8 +759,7 @@ def _binary_jitsmv_benchmark_data(*, platform):
     for transpose in (False, True):
         for corder in (True, False):
             for bool_event in (True, False):
-                w0 = jnp.zeros(1, dtype=dtype)
-                w1 = jnp.ones(1, dtype=dtype)
+                weight = jnp.ones(1, dtype=dtype)
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 v_size = n_post if not transpose else n_pre
                 if bool_event:
@@ -866,15 +768,14 @@ def _binary_jitsmv_benchmark_data(*, platform):
                     vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (w0, w1, clen, vector, seed), {
+                configs.append(BenchmarkConfig(name, (weight, clen, vector, seed), {
                     'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
                 }))
     return configs
 
 
 def binary_jitsmv_p_call(
-    w0,
-    w1,
+    weight,
     clen,
     vector,
     seed,
@@ -933,18 +834,16 @@ def binary_jitsmv_p_call(
     --------
     binary_jitsmv : High-level wrapper with unit handling and seed initialization.
     """
-    w0 = jnp.atleast_1d(w0)
-    w1 = jnp.atleast_1d(w1)
+    weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
+    seed = jnp.atleast_1d(seed)
     _warn_corder_ignored(corder)
-    assert jnp.issubdtype(w0.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    assert w0.dtype == w1.dtype, "w0 and w1 must have the same dtype."
-    if np.dtype(w0.dtype) != np.dtype('float32') or np.dtype(w1.dtype) != np.dtype('float32'):
+    assert jnp.issubdtype(weight.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    if np.dtype(weight.dtype) != np.dtype('float32'):
         raise NotImplementedError("light binary_jitsmv currently supports float32 weights only")
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
-    assert w0.shape == (1,), f"The weight shape should be (1,), but got {w0.shape}."
-    assert w1.shape == (1,), f"The weight shape should be (1,), but got {w1.shape}."
+    assert weight.shape == (1,), f"The weight shape should be (1,), but got {weight.shape}."
     assert clen.shape == (1,), f"The clen shape should be (1,), but got {clen.shape}."
     assert vector.ndim == 1, f"The vector should be a 1D array, but got {vector.ndim}D."
     assert seed.shape == (1,), f"The seed shape should be (1,), but got {seed.shape}."
@@ -955,20 +854,18 @@ def binary_jitsmv_p_call(
         assert shape[1] == len(vector), f"The matrix shape and vector length do not match. {shape} @ {vector.shape}"
 
     out_info = (
-        jax.ShapeDtypeStruct([shape[1]], w0.dtype)
+        jax.ShapeDtypeStruct([shape[1]], weight.dtype)
         if transpose else
-        jax.ShapeDtypeStruct([shape[0]], w0.dtype)
+        jax.ShapeDtypeStruct([shape[0]], weight.dtype)
     )
 
     return binary_jitsmv_p(
-        w0,
-        w1,
+        weight,
         clen,
         vector,
         seed,
         outs=[out_info],
-        w0_info=jax.ShapeDtypeStruct(w0.shape, w0.dtype),
-        w1_info=jax.ShapeDtypeStruct(w1.shape, w1.dtype),
+        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
@@ -1008,7 +905,7 @@ binary_jitsmv : High-level user-facing function wrapper.
 """
 )
 binary_jitsmv_p.def_cuda_raw_kernel(_binary_jitsmv_cuda_kernel, asdefault=True)
-binary_jitsmv_p.def_jvp_rule2(_jitsmv_jvp_wloc, _jitsmv_jvp_wscale, None, _jitsmv_jvp_v, None)
+binary_jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weight, None, _jitsmv_jvp_v, None)
 binary_jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 binary_jitsmv_p.def_batching_rule(_jitsmv_batching)
 binary_jitsmv_p.def_call(binary_jitsmv_p_call)
@@ -1050,12 +947,11 @@ def _jitsmm_numba_kernel_generator(
     if corder:
         if B_info.dtype == jnp.bool_:
             @numba.njit(fastmath=True)
-            def kernel_impl(w0, w1, clen, B, seed, posts):
+            def kernel_impl(weight, clen, B, seed, posts):
                 m = posts.shape[0]
                 n = posts.shape[1]
                 k = B.shape[0]
-                w00 = w0[0]
-                w10 = w1[0]
+                w = weight[0]
                 seed0 = seed[0]
                 clen0 = clen[0]
                 for i_m in range(m):
@@ -1063,7 +959,6 @@ def _jitsmm_numba_kernel_generator(
                     i_k = _lfsr_random_integers(state, 0, clen0 - 1)
                     out = np.zeros(n, dtype=posts.dtype)
                     while i_k < k:
-                        w = _lfsr_uniform(state, w00, w10)
                         for j in range(B.shape[1]):
                             if B[i_k, j]:
                                 out[j] += w
@@ -1071,12 +966,11 @@ def _jitsmm_numba_kernel_generator(
                     posts[i_m] = out
         else:
             @numba.njit(fastmath=True)
-            def kernel_impl(w0, w1, clen, B, seed, posts):
+            def kernel_impl(weight, clen, B, seed, posts):
                 m = posts.shape[0]
                 n = posts.shape[1]
                 k = B.shape[0]
-                w00 = w0[0]
-                w10 = w1[0]
+                w = weight[0]
                 seed0 = seed[0]
                 clen0 = clen[0]
                 for i_m in range(m):
@@ -1084,7 +978,6 @@ def _jitsmm_numba_kernel_generator(
                     i_k = _lfsr_random_integers(state, 0, clen0 - 1)
                     out = np.zeros(n, dtype=posts.dtype)
                     while i_k < k:
-                        w = _lfsr_uniform(state, w00, w10)
                         for j in range(B.shape[1]):
                             if B[i_k, j] > 0.:
                                 out[j] += w
@@ -1095,12 +988,11 @@ def _jitsmm_numba_kernel_generator(
     else:
         if B_info.dtype == jnp.bool_:
             @numba.njit(fastmath=True)
-            def kernel_impl(w0, w1, clen, B, seed, posts):
+            def kernel_impl(weight, clen, B, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]
                 k = B.shape[0]
-                w00 = w0[0]
-                w10 = w1[0]
+                w = weight[0]
                 seed0 = seed[0]
                 clen0 = clen[0]
                 for i_k in range(k):
@@ -1108,17 +1000,15 @@ def _jitsmm_numba_kernel_generator(
                     indices = np.where(B[i_k])[0]
                     i_m = _lfsr_random_integers(state, 0, clen0 - 1)
                     while i_m < m:
-                        w = _lfsr_uniform(state, w00, w10)
                         posts[i_m, indices] += w
                         i_m += _lfsr_random_integers(state, 1, clen0 - 1)
         else:
             @numba.njit(fastmath=True)
-            def kernel_impl(w0, w1, clen, B, seed, posts):
+            def kernel_impl(weight, clen, B, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]
                 k = B.shape[0]
-                w00 = w0[0]
-                w10 = w1[0]
+                w = weight[0]
                 seed0 = seed[0]
                 clen0 = clen[0]
                 for i_k in range(k):
@@ -1126,12 +1016,11 @@ def _jitsmm_numba_kernel_generator(
                     indices = np.where(B[i_k] > 0.)[0]
                     i_m = _lfsr_random_integers(state, 0, clen0 - 1)
                     while i_m < m:
-                        w = _lfsr_uniform(state, w00, w10)
                         posts[i_m, indices] += w
                         i_m += _lfsr_random_integers(state, 1, clen0 - 1)
 
-    def kernel(w0, w1, clen, B, seed):
-        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w0, w1, clen, B, seed)
+    def kernel(weight, clen, B, seed):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, B, seed)
 
     return kernel
 
@@ -1146,7 +1035,7 @@ def _binary_jitsmm_cuda_kernel(
     **kwargs
 ):
     del corder
-    if np.dtype(kwargs['w0_info'].dtype) != np.dtype('float32'):
+    if np.dtype(kwargs['weight_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light binary_jitsmm currently supports float32 weights only")
     if int(B_info.shape[1]) > 32:
         raise NotImplementedError("light binary_jitsmm currently supports at most 32 columns")
@@ -1162,7 +1051,7 @@ def _binary_jitsmm_cuda_kernel(
     chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
     compute_name = 'binary_jitsmm.scatter_f32' if transpose else 'binary_jitsmm.gather_f32'
 
-    def kernel(w0, w1, clen, B, seed):
+    def kernel(weight, clen, B, seed):
         active = B if B.dtype == jnp.bool_ else (B > 0).astype(jnp.int8)
         packed = jax.ffi.ffi_call(
             'binary_jitsmm.pack',
@@ -1177,8 +1066,7 @@ def _binary_jitsmm_cuda_kernel(
             compute_name,
             kwargs['outs'],
         )(
-            w0,
-            w1,
+            weight,
             clen,
             seed,
             packed,
@@ -1192,7 +1080,7 @@ def _binary_jitsmm_cuda_kernel(
     return kernel
 
 
-def _jitsmm_jvp_wloc(w_dot, w0, w1, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitsmm_jvp_weight(w_dot, weight, clen, B, seed, *, shape, transpose, corder, **kwargs):
     """
     JVP rule for the ``w0`` argument of the binary JIT-scalar matrix-matrix product.
 
@@ -1217,42 +1105,12 @@ def _jitsmm_jvp_wloc(w_dot, w0, w1, clen, B, seed, *, shape, transpose, corder, 
         Single-element list containing the JVP result.
     """
     return binary_jitsmm_p_call(
-        w_dot, w1, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
         **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
-def _jitsmm_jvp_wscale(w_dot, w0, w1, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    """
-    JVP rule for the ``w1`` argument of the binary JIT-scalar matrix-matrix product.
-
-    Parameters
-    ----------
-    w_dot : jax.Array
-        Tangent vector for the ``w1`` argument.
-    w0, w1, clen, B, seed : jax.Array
-        Primal values of the primitive's arguments.
-    shape : MatrixShape
-        Shape of the connectivity matrix.
-    transpose : bool
-        Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
-    **kwargs
-        Additional keyword arguments including ``backend``.
-
-    Returns
-    -------
-    list
-        Single-element list containing the JVP result.
-    """
-    return binary_jitsmm_p_call(
-        w0, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
-        **_light_options(kwargs), backend=kwargs['backend'],
-    )
-
-
-def _jitsmm_jvp_B(B_dot, w0, w1, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitsmm_jvp_B(B_dot, weight, clen, B, seed, *, shape, transpose, corder, **kwargs):
     """
     JVP rule for the ``B`` argument of the binary JIT-scalar matrix-matrix product.
 
@@ -1277,11 +1135,11 @@ def _jitsmm_jvp_B(B_dot, w0, w1, clen, B, seed, *, shape, transpose, corder, **k
         Single-element list containing the JVP result.
     """
     return jitsmm_p_call(
-        w0, w1, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
-def _jitsmm_transpose_rules(ct, w0, w1, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitsmm_transpose_rules(ct, weight, clen, B, seed, *, shape, transpose, corder, **kwargs):
     """
     Transpose (adjoint) rule for the binary JIT-scalar matrix-matrix product.
 
@@ -1328,8 +1186,7 @@ def _jitsmm_transpose_rules(ct, w0, w1, clen, B, seed, *, shape, transpose, cord
     ct = ct[0]
     if ad.is_undefined_primal(B):
         r = jitsmm_p_call(
-            w0,
-            w1,
+            weight,
             clen,
             ct,
             seed,
@@ -1338,14 +1195,10 @@ def _jitsmm_transpose_rules(ct, w0, w1, clen, B, seed, *, shape, transpose, cord
             corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        return w0, w1, clen, r, seed
-    elif ad.is_undefined_primal(w0):
-        # Same affine decomposition as in _jitsmv_transpose_rules:
-        # y = w0 * C + (w1 - w0) * U.
+        return weight, clen, r, seed
+    elif ad.is_undefined_primal(weight):
         ones = jnp.ones((1,), dtype=ct.dtype)
-        zeros = jnp.zeros((1,), dtype=ct.dtype)
-        high_basis = binary_jitsmm_p_call(
-            zeros,
+        basis = binary_jitsmm_p_call(
             ones,
             clen,
             B,
@@ -1356,37 +1209,8 @@ def _jitsmm_transpose_rules(ct, w0, w1, clen, B, seed, *, shape, transpose, cord
             **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
-        count_basis = binary_jitsmm_p_call(
-            ones,
-            ones,
-            clen,
-            B,
-            seed,
-            shape=shape,
-            transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
-            backend=kwargs['backend'],
-        )[0]
-        dw0 = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
-        return dw0, w1, clen, B, seed
-    elif ad.is_undefined_primal(w1):
-        zeros = jnp.zeros((1,), dtype=ct.dtype)
-        ones = jnp.ones((1,), dtype=ct.dtype)
-        high_basis = binary_jitsmm_p_call(
-            zeros,
-            ones,
-            clen,
-            B,
-            seed,
-            shape=shape,
-            transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
-            backend=kwargs['backend'],
-        )[0]
-        dw1 = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
-        return w0, dw1, clen, B, seed
+        dweight = jnp.expand_dims(jnp.sum(ct * basis), axis=0)
+        return dweight, clen, B, seed
     else:
         raise NotImplementedError(
             'Transpose rules for jitc_matmat_scalar not implemented for '
@@ -1417,15 +1241,14 @@ def _batching_axis1(args, axis=1, **kwargs):
         A pair ``(results, out_axes)`` where ``results`` is the batched output
         and ``out_axes`` indicates the batch dimension of each output.
     """
-    assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
-    m, maybe_batch1, maybe_batch2 = args[3].shape
-    B = args[3].reshape(m, maybe_batch1 * maybe_batch2)
+    assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
+    m, maybe_batch1, maybe_batch2 = args[2].shape
+    B = args[2].reshape(m, maybe_batch1 * maybe_batch2)
     r = binary_jitsmm_p_call(
         args[0],
         args[1],
-        args[2],
         B,
-        args[4],
+        args[3],
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
@@ -1459,16 +1282,16 @@ def _jitsmm_batching(args, axes, **kwargs):
         A pair ``(results, out_axes)`` where ``results`` is the batched output
         and ``out_axes`` indicates the batch dimension of each output.
     """
-    if tuple(axes) == (None, None, None, 0, None):
-        assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
+    if tuple(axes) == (None, None, 0, None):
+        assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
-        args[3] = jnp.transpose(args[3], (1, 0, 2))
+        args[2] = jnp.transpose(args[2], (1, 0, 2))
         return _batching_axis1(args, **kwargs)
 
-    elif tuple(axes) == (None, None, None, 1, None):
+    elif tuple(axes) == (None, None, 1, None):
         return _batching_axis1(args, **kwargs)
 
-    elif tuple(axes) == (None, None, None, 2, None):
+    elif tuple(axes) == (None, None, 2, None):
         return _batching_axis1(args, axis=2, **kwargs)
 
     else:
@@ -1495,8 +1318,7 @@ def _binary_jitsmm_benchmark_data(*, platform):
     for transpose in (False, True):
         for corder in (True, False):
             for bool_event in (True, False):
-                w0 = jnp.zeros(1, dtype=dtype)
-                w1 = jnp.ones(1, dtype=dtype)
+                weight = jnp.ones(1, dtype=dtype)
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 b_rows = n_post if not transpose else n_pre
                 if bool_event:
@@ -1505,15 +1327,14 @@ def _binary_jitsmm_benchmark_data(*, platform):
                     B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (w0, w1, clen, B, seed), {
+                configs.append(BenchmarkConfig(name, (weight, clen, B, seed), {
                     'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
                 }))
     return configs
 
 
 def binary_jitsmm_p_call(
-    w0,
-    w1,
+    weight,
     clen,
     B,
     seed,
@@ -1572,19 +1393,17 @@ def binary_jitsmm_p_call(
     --------
     binary_jitsmm : High-level wrapper with unit handling and seed initialization.
     """
-    w0 = jnp.atleast_1d(w0)
-    w1 = jnp.atleast_1d(w1)
+    weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
+    seed = jnp.atleast_1d(seed)
     _warn_corder_ignored(corder)
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert B.ndim == 2, "The input matrix B should be a 2D array."
     assert seed.ndim == 1, "The seed should be a 1D array."
-    assert w0.ndim == 1, "The weight should be a 1D array."
-    assert w1.ndim == 1, "The weight should be a 1D array."
+    assert weight.ndim == 1, "The weight should be a 1D array."
     assert clen.ndim == 1, "The clen should be a 1D array."
-    assert w0.shape == (1,), "The weight should be a scalar."
-    assert w1.shape == (1,), "The weight should be a scalar."
+    assert weight.shape == (1,), "The weight should be a scalar."
     assert clen.shape == (1,), "The clen should be a scalar."
     assert seed.shape == (1,), "The seed should be a scalar."
     if B.shape[1] > 32:
@@ -1593,26 +1412,23 @@ def binary_jitsmm_p_call(
         assert shape[0] == B.shape[0], f"The matrix shape and B shape do not match. {B.shape} @ {shape}"
     else:
         assert shape[1] == B.shape[0], f"The matrix shape and B shape do not match. {shape} @ {B.shape}"
-    assert jnp.issubdtype(w0.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    assert w0.dtype == w1.dtype, "w0 and w1 must have the same dtype."
-    if np.dtype(w0.dtype) != np.dtype('float32') or np.dtype(w1.dtype) != np.dtype('float32'):
+    assert jnp.issubdtype(weight.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    if np.dtype(weight.dtype) != np.dtype('float32'):
         raise NotImplementedError("light binary_jitsmm currently supports float32 weights only")
 
     out_info = (
-        jax.ShapeDtypeStruct([shape[1], B.shape[1]], w0.dtype)
+        jax.ShapeDtypeStruct([shape[1], B.shape[1]], weight.dtype)
         if transpose else
-        jax.ShapeDtypeStruct([shape[0], B.shape[1]], w0.dtype)
+        jax.ShapeDtypeStruct([shape[0], B.shape[1]], weight.dtype)
     )
 
     return binary_jitsmm_p(
-        w0,
-        w1,
+        weight,
         clen,
         B,
         seed,
         outs=[out_info],
-        w0_info=jax.ShapeDtypeStruct(w0.shape, w0.dtype),
-        w1_info=jax.ShapeDtypeStruct(w1.shape, w1.dtype),
+        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         B_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
@@ -1652,7 +1468,7 @@ binary_jitsmm : High-level user-facing function wrapper.
 """
 )
 binary_jitsmm_p.def_cuda_raw_kernel(_binary_jitsmm_cuda_kernel, asdefault=True)
-binary_jitsmm_p.def_jvp_rule2(_jitsmm_jvp_wloc, _jitsmm_jvp_wscale, None, _jitsmm_jvp_B, None)
+binary_jitsmm_p.def_jvp_rule2(_jitsmm_jvp_weight, None, _jitsmm_jvp_B, None)
 binary_jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 binary_jitsmm_p.def_batching_rule(_jitsmm_batching)
 binary_jitsmm_p.def_call(binary_jitsmm_p_call)

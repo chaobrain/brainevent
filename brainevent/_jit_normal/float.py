@@ -43,7 +43,7 @@ __all__ = [
 ]
 
 
-def _normalize_matrix_mode(matrix_mode: str) -> MatrixMode:
+def _normalize_matrix_mode(matrix_mode: MatrixMode) -> MatrixMode:
     if matrix_mode not in ('mv', 'mm'):
         raise ValueError(f"matrix_mode must be 'mv' or 'mm', got {matrix_mode!r}.")
     return matrix_mode
@@ -682,19 +682,18 @@ def _jitn_jvp_wlow(
 
     Notes
     -----
-    The derivative with respect to ``w_loc`` is ``w_loc_dot - jitn(0, w_loc_dot)``,
-    reflecting the affine structure ``A = w_loc + (w_scale - w_loc) * U``.
+    The derivative with respect to ``w_loc`` is the connectivity mask times
+    ``w_loc_dot`` because disconnected entries remain zero.
     """
-    res = jitn_p_call(
-        0., w_loc_dot, clen, seed,
+    return jitn_p_call(
+        w_loc_dot, 0., clen, seed,
         shape=shape,
         transpose=transpose,
         corder=corder,
         matrix_mode=matrix_mode,
         **_light_options(kwargs),
         backend=kwargs['backend'],
-    )[0]
-    return [w_loc_dot - res]
+    )
 
 
 def _jitn_jvp_whigh(
@@ -754,17 +753,16 @@ def _wloc_transpose(ct, seed, clen, **kwargs):
     Returns
     -------
     jax.Array
-        Scalar cotangent for ``w_loc``, computed as ``sum(ct * (1 - U))``
-        where ``U = jitn(0, 1)``.
+        Scalar cotangent for ``w_loc``, computed as ``sum(ct * mask)`` where
+        ``mask = jitn(1, 0)``.
 
     Notes
     -----
-    Uses the affine decomposition ``A = (1 - U) * w_loc + U * w_scale``
-    where ``U = jitn(0, 1)`` represents the normal random fractions.
+    Uses the sparse normal decomposition ``A = mask * w_loc + Z * w_scale``
+    where ``Z = jitn(0, 1)`` already includes the connectivity mask.
     """
-    # JITC * (high - low) + low
-    forward = jitn_p_call(0., 1., clen, seed, **kwargs)[0]
-    return jnp.expand_dims((ct * (-forward + 1.)).sum(), axis=0)
+    mask = jitn_p_call(1., 0., clen, seed, **kwargs)[0]
+    return jnp.expand_dims((ct * mask).sum(), axis=0)
 
 
 def _wscale_transpose(ct, seed, clen, **kwargs):
@@ -786,15 +784,14 @@ def _wscale_transpose(ct, seed, clen, **kwargs):
     Returns
     -------
     jax.Array
-        Scalar cotangent for ``w_scale``, computed as ``sum(ct * U)``
-        where ``U = jitn(0, 1)``.
+        Scalar cotangent for ``w_scale``, computed as ``sum(ct * Z)``
+        where ``Z = jitn(0, 1)``.
 
     Notes
     -----
-    Uses the affine decomposition ``A = (1 - U) * w_loc + U * w_scale``
-    where ``U = jitn(0, 1)`` represents the normal random fractions.
+    Uses the sparse normal decomposition ``A = mask * w_loc + Z * w_scale``
+    where ``Z = jitn(0, 1)`` already includes the connectivity mask.
     """
-    # JITC * (high - low) + low
     forward = jitn_p_call(0., 1., clen, seed, **kwargs)[0]
     return jnp.expand_dims((ct * forward).sum(), axis=0)
 

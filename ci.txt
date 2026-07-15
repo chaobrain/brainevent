@@ -1,0 +1,136 @@
+brainevent/_op/kernix_toolchain.py:359: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+brainevent/_op/kernix_toolchain.py:528: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+brainevent/_jit_uniform/float.py:49: error: Incompatible return value type (got "str", expected "Literal['mv', 'mm']")  [return-value]
+brainevent/_jit_uniform/float.py:617: error: Incompatible default for parameter "shape" (default has type "None", parameter has type "tuple[int, int]")  [assignment]
+brainevent/_jit_uniform/float.py:617: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_jit_uniform/float.py:617: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_uniform/float.py:1125: error: Incompatible default for parameter "shape" (default has type "None", parameter has type "tuple[int, int]")  [assignment]
+brainevent/_jit_uniform/float.py:1125: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_jit_uniform/float.py:1125: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_uniform/float.py:1702: error: Incompatible default for parameter "shape" (default has type "None", parameter has type "tuple[int, int]")  [assignment]
+brainevent/_jit_uniform/float.py:1702: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_jit_uniform/float.py:1702: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_scalar/float.py:49: error: Incompatible return value type (got "str", expected "Literal['mv', 'mm']")  [return-value]
+brainevent/_jit_scalar/float.py:620: error: Incompatible default for parameter "shape" (default has type "None", parameter has type "tuple[int, int]")  [assignment]
+brainevent/_jit_scalar/float.py:620: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_jit_scalar/float.py:620: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_scalar/float.py:1128: error: Incompatible default for parameter "shape" (default has type "None", parameter has type "tuple[int, int]")  [assignment]
+brainevent/_jit_scalar/float.py:1128: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_jit_scalar/float.py:1128: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_scalar/float.py:1705: error: Incompatible default for parameter "shape" (default has type "None", parameter has type "tuple[int, int]")  [assignment]
+brainevent/_jit_scalar/float.py:1705: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_jit_scalar/float.py:1705: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_normal/float.py:49: error: Incompatible return value type (got "str", expected "Literal['mv', 'mm']")  [return-value]
+brainevent/_jit_normal/float.py:617: error: Incompatible default for parameter "shape" (default has type "None", parameter has type "tuple[int, int]")  [assignment]
+brainevent/_jit_normal/float.py:617: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_jit_normal/float.py:617: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_normal/float.py:1125: error: Incompatible default for parameter "shape" (default has type "None", parameter has type "tuple[int, int]")  [assignment]
+brainevent/_jit_normal/float.py:1125: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_jit_normal/float.py:1125: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_normal/float.py:1702: error: Incompatible default for parameter "shape" (default has type "None", parameter has type "tuple[int, int]")  [assignment]
+brainevent/_jit_normal/float.py:1702: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+brainevent/_jit_normal/float.py:1702: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+brainevent/_jit_uniform/csr.py:88: error: Incompatible return value type (got "str", expected "Literal['mv', 'mm']")  [return-value]
+brainevent/_jit_scalar/csr.py:88: error: Incompatible return value type (got "str", expected "Literal['mv', 'mm']")  [return-value]
+brainevent/_jit_normal/csr.py:88: error: Incompatible return value type (got "str", expected "Literal['mv', 'mm']")  [return-value]
+brainevent/_jit_uniform/main.py:1063: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_uniform/main.py:1105: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_uniform/main.py:1672: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_uniform/main.py:1714: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_scalar/main.py:381: error: "jits_to_csr" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:385: error: Argument 4 to "jits_to_csr" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:406: error: "jitsmv_dt2t" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:411: error: Argument 5 to "jitsmv_dt2t" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:430: error: "jitsmv_dt2t" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:435: error: Argument 5 to "jitsmv_dt2t" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:697: error: "jits" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:700: error: Argument 3 to "jits" has incompatible type "float | Any"; expected "int"  [arg-type]
+brainevent/_jit_scalar/main.py:701: error: Argument 4 to "jits" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:926: error: "binary_jitsmv" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:931: error: Argument 5 to "binary_jitsmv" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:939: error: "binary_jitsmm" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:944: error: Argument 5 to "binary_jitsmm" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:959: error: "jitsmv" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:964: error: Argument 5 to "jitsmv" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:972: error: "jitsmm" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:977: error: Argument 5 to "jitsmm" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1035: error: "binary_jitsmv" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1040: error: Argument 5 to "binary_jitsmv" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1052: error: "binary_jitsmm" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1057: error: Argument 5 to "binary_jitsmm" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1063: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_scalar/main.py:1077: error: "jitsmv" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1082: error: Argument 5 to "jitsmv" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1094: error: "jitsmm" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1099: error: Argument 5 to "jitsmm" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1105: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_scalar/main.py:1285: error: "jits" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1288: error: Argument 3 to "jits" has incompatible type "float | Any"; expected "int"  [arg-type]
+brainevent/_jit_scalar/main.py:1289: error: Argument 4 to "jits" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1306: error: "jits_to_csr" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1310: error: Argument 4 to "jits_to_csr" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1532: error: "binary_jitsmv" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1537: error: Argument 5 to "binary_jitsmv" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1547: error: "binary_jitsmm" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1552: error: Argument 5 to "binary_jitsmm" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1569: error: "jitsmv" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1574: error: Argument 5 to "jitsmv" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1584: error: "jitsmm" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1589: error: Argument 5 to "jitsmm" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1644: error: "binary_jitsmv" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1649: error: Argument 5 to "binary_jitsmv" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1661: error: "binary_jitsmm" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1666: error: Argument 5 to "binary_jitsmm" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1672: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_scalar/main.py:1686: error: "jitsmv" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1691: error: Argument 5 to "jitsmv" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1703: error: "jitsmm" gets multiple values for keyword argument "shape"  [misc]
+brainevent/_jit_scalar/main.py:1708: error: Argument 5 to "jitsmm" has incompatible type "int | Any"; expected "tuple[int, int]"  [arg-type]
+brainevent/_jit_scalar/main.py:1714: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_normal/main.py:1040: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_normal/main.py:1082: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_normal/main.py:1649: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+brainevent/_jit_normal/main.py:1691: error: Item "Number" of "Any | Number" has no attribute "T"  [union-attr]
+Found 73 errors in 9 files (checked 84 source files)
+
+
+
+
+
+
+
+
+
+
+brainevent/_jit_normal/binary_test.py ssssssssssssssssssssssssssssssssss [ 44%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 46%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 48%]
+ssssssssssssss                                                           [ 48%]
+brainevent/_jit_normal/csr_test.py FFFFFF.F                              [ 48%]
+brainevent/_jit_normal/dt2t_test.py ssssss.ssssssF..ssssssssssss         [ 49%]
+brainevent/_jit_normal/float_test.py ........FFFFFFFF................FFF [ 50%]
+FFFFFFFFFFFFF........................................................... [ 52%]
+................................                                         [ 53%]
+brainevent/_jit_normal/main_test.py ................FFFFFFFFFFFFFFFFFFFF [ 54%]
+FFFFFFFFFFFF..FFFF...FFFFFFFFF....FFFFFFFF....FFFFFFFFFFFFFF.......      [ 56%]
+brainevent/_jit_normal/test_consistency_normal.py ssssssssssss           [ 56%]
+brainevent/_jit_scalar/binary_test.py ssssssssssssssssssssssssssssssssss [ 57%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 59%]
+ssssssssssssssssssssss                                                   [ 60%]
+brainevent/_jit_scalar/csr_test.py FFFFFF.F                              [ 60%]
+brainevent/_jit_scalar/dt2t_test.py ssss.ssssssF..ssssssssssss           [ 61%]
+brainevent/_jit_scalar/float_test.py ................FFFFFFFFFFFFFFFF... [ 62%]
+.....FFFFFFFFFFFFFFFF...........................                         [ 63%]
+brainevent/_jit_scalar/main_test.py FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF [ 65%]
+FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF        [ 66%]
+brainevent/_jit_scalar/test_consistency_scalar.py ssssssssssss           [ 67%]
+brainevent/_jit_uniform/binary_test.py ......sssssssssssssssssssssssssss [ 68%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 70%]
+sssssssssssssssssssssssssssssssssssssssssssss                            [ 71%]
+brainevent/_jit_uniform/csr_test.py .....ssssssssssss..                  [ 72%]
+brainevent/_jit_uniform/dt2t_test.py sssssssssssssssssssssssss           [ 72%]
+brainevent/_jit_uniform/float_test.py ssssssssssssssssssssssssssssssssss [ 73%]
+sssssssssssssssssssssssssssssssssssssssssssssssssssssssssss              [ 75%]
+brainevent/_jit_uniform/main_test.py ................FFFFFFFFFFFFFFFFFFF [ 76%]
+FFFFF..FFFF...FFFFFFFFF................FFFF............................. [ 78%]
+....                                                                     [ 78%]

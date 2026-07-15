@@ -153,7 +153,6 @@ __global__ void _pack_bool_kern(
 
 __global__ void _gather_f32_kern(
     const float*    __restrict__ weight,
-        const float*    __restrict__ _w2,
     const int*      __restrict__ clen,
     const int*      __restrict__ seed,
     const uint32_t* __restrict__ packed,
@@ -203,7 +202,6 @@ __global__ void _gather_f32_kern(
 
 __global__ void _scatter_f32_kern(
     const float*    __restrict__ weight,
-        const float*    __restrict__ _w2,
     const int*      __restrict__ clen,
     const int*      __restrict__ seed,
     const uint32_t* __restrict__ packed,
@@ -268,7 +266,6 @@ void pack_bool(
 // @BE gather_f32
 void gather_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor packed,
@@ -300,7 +297,6 @@ void gather_f32(
 
     _gather_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(weight.data_ptr()),
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
         static_cast<const uint32_t*>(packed.data_ptr()),
@@ -313,7 +309,6 @@ void gather_f32(
 // @BE scatter_f32
 void scatter_f32(
     const BE::Tensor weight,
-    const BE::Tensor _w2,
     const BE::Tensor clen,
     const BE::Tensor seed,
     const BE::Tensor packed,
@@ -344,7 +339,6 @@ void scatter_f32(
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
     _scatter_f32_kern<<<blocks, threads, 0, s>>>(
-        static_cast<const float*>(weight.data_ptr()),
         static_cast<const float*>(weight.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
         static_cast<const int*>(seed.data_ptr()),
