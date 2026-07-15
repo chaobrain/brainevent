@@ -19,9 +19,17 @@
 Direct per-synapse ``y * w`` generation for scalar-weight just-in-time
 connectivity (JITC) matrices.
 
-The public :func:`jitsmv_dt2t` wrapper returns one value per generated structural
-non-zero in canonical CSR flat order. It does not return ``indices`` or
-``indptr``; callers that need structure should materialize CSR explicitly.
+The public :func:`jitsmv_dt2t` wrapper mirrors the CSR ``dt2t`` contract:
+it returns one value per generated structural non-zero, in the same flat CSR
+data order as ``jits_to_csr(..., matrix_mode="mv")``. Unlike a wrapper around
+``tocsr().dt2t(...)``, the fill pass draws each scalar weight and multiplies by
+``y[row]`` or ``y[col]`` directly.
+
+Because the number of structural non-zeros is data dependent, generation is
+eager-only and split into:
+
+1. the light JIT-scalar CSR count pass, which determines row/chunk offsets; and
+2. a dedicated CUDA ``dt2t`` fill pass, which writes ``sampled_weight * y[...]``.
 """
 
 from pathlib import Path
@@ -32,14 +40,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._compatible_import import Tracer
-from brainevent._data import _initialize_conn_length
-from brainevent._jit_scalar.csr import jits_csr_count_p_call
-from brainevent._numba_random import (
-    get_numba_lfsr_seed,
-    get_numba_lfsr_random_integers,
+from brainevent._data import _initialize_conn_length, _initialize_seed
+from brainevent._jit_scalar.csr import (
+    _is_static_zero,
+    _n_chunks,
+    _normalize_chunk_size,
+    _normalize_shape,
+    _warn_corder_ignored,
+    jits_csr_count_p_call,
 )
-from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
+from brainevent._op import XLACustomKernel, load_cuda_file
 from brainevent._typing import MatrixShape
 
 __all__ = [
@@ -47,14 +57,6 @@ __all__ = [
     'jitsmv_dt2t_p',
     'jitsmv_dt2t_p_call',
 ]
-
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
-
 
 def jitsmv_dt2t(
     weight,
@@ -66,130 +68,144 @@ def jitsmv_dt2t(
     transpose: bool = False,
     corder: bool = True,
     backend: Optional[str] = None,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
 ):
-    """Generate per-synapse ``y * w`` values for a scalar JITC matrix."""
-    shape = (int(shape[0]), int(shape[1]))
+    """Generate per-synapse ``y * w`` values for a scalar JITC matrix.
 
-    weight, unitd = u.split_mantissa_unit(weight)
+    The result is a flat vector of length ``nnz`` in the same order as
+    ``jits_to_csr(..., matrix_mode="mv").data``. The output equals
+    ``csr.dt2t(y, csr.data)`` when ``transpose=False`` and
+    ``csr.dt2t_transposed(y, csr.data)`` when ``transpose=True``, without first
+    materialising the CSR weight data.
+    """
+    w0 = weight
+    w1 = weight
+    n_rows, n_cols = _normalize_shape(shape)
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
+    n_chunks = _n_chunks(n_cols, chunk_size_value)
+
+    w0, unitd = u.split_mantissa_unit(w0)
+    w1 = u.Quantity(w1).to(unitd).mantissa
     y, unity = u.split_mantissa_unit(y)
 
-    common_dtype = jnp.result_type(weight, y)
-    weight = jnp.atleast_1d(jnp.asarray(weight, dtype=common_dtype))
+    common_dtype = jnp.result_type(w0, w1, y)
+    if np.dtype(common_dtype) != np.dtype('float32'):
+        raise NotImplementedError("light dt2t currently supports float32 values only")
+    w0 = jnp.atleast_1d(jnp.asarray(w0, dtype=common_dtype))
+    w1 = jnp.atleast_1d(jnp.asarray(w1, dtype=common_dtype))
     y = jnp.asarray(y, dtype=common_dtype)
 
     if y.ndim != 1:
         raise AssertionError("y must be 1D.")
     if transpose:
-        assert shape[1] == y.shape[0], "Shape mismatch for transpose operation."
+        assert n_cols == y.shape[0], "Shape mismatch for transpose operation."
     else:
-        assert shape[0] == y.shape[0], "Shape mismatch for non-transpose operation."
+        assert n_rows == y.shape[0], "Shape mismatch for non-transpose operation."
 
-    if not isinstance(prob, Tracer) and float(np.asarray(prob)) == 0.0:
+    if n_rows == 0 or n_cols == 0 or _is_static_zero(prob):
         data = jnp.zeros(0, dtype=common_dtype)
         return u.maybe_decimal(data * unitd * unity)
 
     clen = _initialize_conn_length(prob)
-    row_counts = jits_csr_count_p_call(
-        weight, weight, clen, seed, shape=shape, corder=corder, backend=backend,
+    seed = _initialize_seed(seed)
+    chunk_counts = jits_csr_count_p_call(
+        w0,
+        w1,
+        clen,
+        seed,
+        shape=(n_rows, n_cols),
+        corder=corder,
+        chunk_size=chunk_size_value,
+        target_chunks=target_chunks,
+        matrix_mode='mv',
+        backend=backend,
     )[0]
+    row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32)
     indptr = jnp.concatenate(
-        [jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
+        [jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
     )
     nnz = int(indptr[-1])
+    if nnz == 0:
+        data = jnp.zeros(0, dtype=common_dtype)
+        return u.maybe_decimal(data * unitd * unity)
+
+    chunk_offsets = (
+        indptr[:-1, None]
+        + jnp.cumsum(chunk_counts, axis=1, dtype=jnp.int32)
+        - chunk_counts
+    )
 
     data = jitsmv_dt2t_p_call(
-        weight,
-        weight,
+        w0,
+        w1,
         clen,
         y,
         seed,
-        indptr,
+        chunk_offsets,
         nnz,
-        shape=shape,
+        shape=(n_rows, n_cols),
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size_value,
+        target_chunks=target_chunks,
         backend=backend,
     )[0]
     return u.maybe_decimal(data * unitd * unity)
 
 
 # ---------------------------------------------------------------------- #
+#  Count pass - per-row/per-chunk non-zero counts
+# ---------------------------------------------------------------------- #
+#
+# The dt2t path deliberately reuses the light JIT-scalar CSR count pass instead
+# of duplicating it here. This keeps the data-dependent ``nnz``/chunk-offset
+# logic aligned with ``jits_to_csr(..., matrix_mode="mv")``; the dedicated dt2t
+# work starts at the fill pass.
+
+
+# ---------------------------------------------------------------------- #
 #  Fill pass - per-synapse y * w values
 # ---------------------------------------------------------------------- #
-
-def _jitsmv_dt2t_fill_numba_kernel_generator(
-    corder: bool,
-    shape: MatrixShape,
-    transpose: bool,
-    **kwargs,
-):
-    """Build the Numba CPU kernel for the scalar JITC ``dt2t`` fill pass."""
-    import numba  # pylint: disable=import-outside-toplevel
-
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    n_rows, n_cols = int(shape[0]), int(shape[1])
-
-    if corder:
-        @numba.njit(fastmath=True)
-        def kernel_impl(w0, w1, clen, y, seed, indptr, out):
-            w = w0[0]
-            cl = clen[0]
-            s = seed[0]
-            for r in range(n_rows):
-                state = _lfsr_seed(s + r * n_cols)
-                c = _lfsr_random_integers(state, 0, cl - 1)
-                pos = indptr[r]
-                while c < n_cols:
-                    y_value = y[c] if transpose else y[r]
-                    out[pos] = w * y_value
-                    pos += 1
-                    c += _lfsr_random_integers(state, 1, cl - 1)
-            w1[0]  # keep signature aligned with other JIT fill primitives
-    else:
-        @numba.njit(fastmath=True)
-        def kernel_impl(w0, w1, clen, y, seed, indptr, out):
-            w = w0[0]
-            cl = clen[0]
-            s = seed[0]
-            wptr = indptr[:n_rows].copy()
-            for c in range(n_cols):
-                state = _lfsr_seed(s + c * n_rows)
-                rr = _lfsr_random_integers(state, 0, cl - 1)
-                while rr < n_rows:
-                    pos = wptr[rr]
-                    y_value = y[c] if transpose else y[rr]
-                    out[pos] = w * y_value
-                    wptr[rr] += 1
-                    rr += _lfsr_random_integers(state, 1, cl - 1)
-            w1[0]  # keep signature aligned with other JIT fill primitives
-
-    def kernel(w0, w1, clen, y, seed, indptr):
-        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w0, w1, clen, y, seed, indptr)
-
-    return kernel
-
 
 def _jitsmv_dt2t_fill_cuda_kernel(
     corder: bool,
     shape: MatrixShape,
     transpose: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     **kwargs,
 ):
     """Build the CUDA kernel callable for the scalar JITC ``dt2t`` fill pass."""
+    del corder
+    w0_dtype = np.dtype(kwargs['w0_info'].dtype)
+    if w0_dtype != np.dtype('float32'):
+        raise NotImplementedError("light dt2t currently supports float32 values only")
+
+    _, n_cols = _normalize_shape(shape)
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     load_cuda_file(
         Path(__file__).parent.joinpath('dt2t.cu'),
         name='jit_scalar_dt2t',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w0_info'].dtype), '_f32')
-    order = 'corder_true' if corder else 'corder_false'
-    direction = 't' if transpose else 'nt'
-    kernel_name = f'jit_scalar_dt2t.fill_{order}_{direction}{sfx}'
     n_cols = np.int32(shape[1])
+    chunk_size_attr = np.int32(chunk_size_value)
+    kernel_name = (
+        'jit_scalar_dt2t.fill_transpose_f32'
+        if transpose
+        else 'jit_scalar_dt2t.fill_f32'
+    )
 
-    def kernel(w0, w1, clen, y, seed, indptr):
+    def kernel(w0, w1, clen, y, seed, chunk_offsets):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
-            w0, w1, clen, y, seed, indptr, n_cols=n_cols,
+            w0,
+            w1,
+            clen,
+            y,
+            seed,
+            chunk_offsets,
+            n_cols=n_cols,
+            chunk_size=chunk_size_attr,
         )
 
     return kernel
@@ -201,40 +217,55 @@ def jitsmv_dt2t_p_call(
     clen,
     y,
     seed,
-    indptr,
+    chunk_offsets,
     nnz: int,
     *,
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ):
     """Invoke the scalar JITC ``dt2t`` fill primitive."""
+    n_rows, n_cols = _normalize_shape(shape)
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
+    n_chunks = _n_chunks(n_cols, chunk_size_value)
+    _warn_corder_ignored(corder)
+
     w0 = jnp.atleast_1d(w0)
     w1 = jnp.atleast_1d(w1)
     clen = jnp.atleast_1d(clen)
     y = jnp.asarray(y)
     seed = jnp.atleast_1d(seed)
-    indptr = jnp.asarray(indptr, dtype=jnp.int32)
-    assert len(shape) == 2, f"shape must be two-dimensional, but got {shape}."
+    chunk_offsets = jnp.asarray(chunk_offsets, dtype=jnp.int32)
     assert w0.ndim == w1.ndim == clen.ndim == seed.ndim == 1
     assert w0.size == w1.size == clen.size == seed.size == 1
     assert y.ndim == 1, "y must be 1D."
-    assert indptr.ndim == 1, "indptr must be 1D."
-    assert indptr.shape[0] == shape[0] + 1, (
-        f"indptr shape mismatch, expected {(shape[0] + 1,)}, got {indptr.shape}."
+    assert chunk_offsets.ndim == 2, "chunk_offsets must be 2D."
+    assert chunk_offsets.shape == (n_rows, n_chunks), (
+        f"chunk_offsets shape mismatch, expected {(n_rows, n_chunks)}, "
+        f"got {chunk_offsets.shape}."
     )
-    assert jnp.issubdtype(indptr.dtype, jnp.integer), "indptr must be an integer type."
+    assert jnp.issubdtype(chunk_offsets.dtype, jnp.integer), "chunk_offsets must be an integer type."
     assert jnp.issubdtype(w0.dtype, jnp.floating), "w0 must be a floating-point type."
     assert jnp.issubdtype(w1.dtype, jnp.floating), "w1 must be a floating-point type."
     assert jnp.issubdtype(y.dtype, jnp.floating), "y must be a floating-point type."
     assert w0.dtype == w1.dtype == y.dtype, (
         f"w0, w1 and y must have the same dtype, got {w0.dtype}, {w1.dtype}, {y.dtype}."
     )
+    if np.dtype(w0.dtype) != np.dtype('float32'):
+        raise NotImplementedError("light dt2t currently supports float32 values only")
     if transpose:
-        assert shape[1] == y.shape[0], "Shape mismatch for transpose operation."
+        assert n_cols == y.shape[0], "Shape mismatch for transpose operation."
     else:
-        assert shape[0] == y.shape[0], "Shape mismatch for non-transpose operation."
+        assert n_rows == y.shape[0], "Shape mismatch for non-transpose operation."
+
+    nnz = int(nnz)
+    if nnz < 0:
+        raise ValueError("nnz must be non-negative")
+    if nnz == 0:
+        return (jnp.zeros((0,), dtype=y.dtype),)
 
     return jitsmv_dt2t_p(
         w0,
@@ -242,18 +273,20 @@ def jitsmv_dt2t_p_call(
         clen,
         y,
         seed,
-        indptr,
+        chunk_offsets,
         outs=[jax.ShapeDtypeStruct((nnz,), y.dtype)],
-        shape=shape,
+        shape=(n_rows, n_cols),
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size_value,
+        target_chunks=target_chunks,
         backend=backend,
         w0_info=jax.ShapeDtypeStruct(w0.shape, w0.dtype),
         w1_info=jax.ShapeDtypeStruct(w1.shape, w1.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         y_info=jax.ShapeDtypeStruct(y.shape, y.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
-        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        chunk_offsets_info=jax.ShapeDtypeStruct(chunk_offsets.shape, chunk_offsets.dtype),
     )
 
 
@@ -263,12 +296,13 @@ jitsmv_dt2t_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive filling per-synapse ``y * w`` values for a
 scalar JITC matrix.
 
-Given the ``indptr`` produced by the JIT-scalar CSR count pass, this primitive
-walks the same deterministic random connectivity stream as ``jits_to_csr`` and
-writes either ``weight * y[row]`` or ``weight * y[col]`` into flat CSR order.
+Given the ``chunk_offsets`` produced from the light JIT-scalar CSR count pass,
+this primitive walks the same deterministic random stream as
+``jits_to_csr(..., matrix_mode="mv")``. For every generated connection it writes
+``weight * y[row]`` (``transpose=False``) or ``weight * y[col]``
+(``transpose=True``), preserving the same flat CSR data order.
 """
 )
-jitsmv_dt2t_p.def_numba_kernel(_jitsmv_dt2t_fill_numba_kernel_generator)
 jitsmv_dt2t_p.def_cuda_raw_kernel(_jitsmv_dt2t_fill_cuda_kernel)
 jitsmv_dt2t_p.def_call(jitsmv_dt2t_p_call)
 jitsmv_dt2t_p.def_tags('jit_scalar', 'dt2t')

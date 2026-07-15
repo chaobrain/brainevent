@@ -34,13 +34,14 @@ from brainevent._jit_uniform.dt2t import (
 )
 from brainevent._test_util import allclose, requires_gpu
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, requires_gpu]
 
-platform = 'cpu'
-CPU_DEVICE = jax.devices('cpu')[0]
+platform = 'gpu'
+try:
+    GPU_DEVICE = jax.devices('gpu')[0]
+except RuntimeError:
+    GPU_DEVICE = None
 JITU_dt2t_IMPLEMENTATIONS = tuple(jitumv_dt2t_p.available_backends(platform))
-GPU_DEVICE = jax.devices('gpu')[0] if jax.default_backend() == 'gpu' else None
-JITU_dt2t_GPU_IMPLEMENTATIONS = tuple(jitumv_dt2t_p.available_backends('gpu'))
 
 
 @pytest.mark.skipif(
@@ -52,22 +53,34 @@ JITU_dt2t_GPU_IMPLEMENTATIONS = tuple(jitumv_dt2t_p.available_backends('gpu'))
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
 def test_jitumv_dt2t_matches_csr_reference(implementation, shape, corder, transpose):
-    with jax.default_device(CPU_DEVICE):
+    with jax.default_device(GPU_DEVICE):
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
 
-        out = jitumv_dt2t(
+        with pytest.warns(UserWarning, match='corder is ignored'):
+            out = jitumv_dt2t(
+                0.1,
+                0.5,
+                0.2,
+                y,
+                42,
+                shape=shape,
+                transpose=transpose,
+                corder=corder,
+                backend=implementation,
+                chunk_size=7,
+            )
+        csr = jitu_to_csr(
             0.1,
             0.5,
             0.2,
-            y,
             42,
             shape=shape,
-            transpose=transpose,
             corder=corder,
             backend=implementation,
+            matrix_mode='mv',
+            chunk_size=7,
         )
-        csr = jitu_to_csr(0.1, 0.5, 0.2, 42, shape=shape, corder=corder, backend=implementation)
         expected = (
             csr.dt2t_transposed(y, csr.data)
             if transpose
@@ -79,7 +92,7 @@ def test_jitumv_dt2t_matches_csr_reference(implementation, shape, corder, transp
 
 
 def test_jitumv_dt2t_prob_zero_empty():
-    with jax.default_device(CPU_DEVICE):
+    with jax.default_device(GPU_DEVICE):
         out = jitumv_dt2t(
             0.1,
             0.5,
@@ -105,8 +118,9 @@ def test_jitumv_dt2t_exports_from_package():
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
 def test_jitumv_dt2t_fill_generates_y_times_weight_directly(implementation, corder, transpose):
-    with jax.default_device(CPU_DEVICE):
+    with jax.default_device(GPU_DEVICE):
         shape = (20, 30)
+        chunk_size = 7
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(0.2, 1.7, y_size, dtype=jnp.float32)
         w0 = jnp.asarray([0.1], dtype=jnp.float32)
@@ -114,16 +128,40 @@ def test_jitumv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
         clen = _initialize_conn_length(0.2)
         seed = jnp.asarray([42], dtype=jnp.int32)
 
-        row_counts = jitu_csr_count_p_call(
-            w0, w1, clen, seed, shape=shape, corder=corder, backend=implementation,
+        chunk_counts = jitu_csr_count_p_call(
+            w0,
+            w1,
+            clen,
+            seed,
+            shape=shape,
+            corder=corder,
+            backend=implementation,
+            matrix_mode='mv',
+            chunk_size=chunk_size,
         )[0]
+        row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32)
         indptr = jnp.concatenate(
             [jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
         )
         nnz = int(indptr[-1])
+        chunk_offsets = (
+            indptr[:-1, None]
+            + jnp.cumsum(chunk_counts, axis=1, dtype=jnp.int32)
+            - chunk_counts
+        )
 
         indices, weights = jitu_csr_fill_p_call(
-            w0, w1, clen, seed, indptr, nnz, shape=shape, corder=corder, backend=implementation,
+            w0,
+            w1,
+            clen,
+            seed,
+            chunk_offsets,
+            nnz,
+            shape=shape,
+            corder=corder,
+            backend=implementation,
+            matrix_mode='mv',
+            chunk_size=chunk_size,
         )
         out = jitumv_dt2t_p_call(
             w0,
@@ -131,12 +169,13 @@ def test_jitumv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
             clen,
             y,
             seed,
-            indptr,
+            chunk_offsets,
             nnz,
             shape=shape,
             transpose=transpose,
             corder=corder,
             backend=implementation,
+            chunk_size=chunk_size,
         )[0]
         row_ids = jnp.repeat(
             jnp.arange(shape[0], dtype=indptr.dtype),
@@ -174,7 +213,7 @@ def test_jitu_matrix_dt2t_signatures_align_contracts():
 )
 @pytest.mark.parametrize('implementation', JITU_dt2t_IMPLEMENTATIONS)
 def test_jitu_matrix_dt2t_requires_w_dim_arr(implementation):
-    with jax.default_device(CPU_DEVICE):
+    with jax.default_device(GPU_DEVICE):
         mat = brainevent.JITCUniformR((0.1, 0.5, 0.2, 42), shape=(20, 30), backend=implementation)
         y_pre = jnp.linspace(-1.0, 2.0, 20, dtype=jnp.float32)
         y_post = jnp.linspace(-1.0, 2.0, 30, dtype=jnp.float32)
@@ -187,7 +226,7 @@ def test_jitu_matrix_dt2t_requires_w_dim_arr(implementation):
 @pytest.mark.parametrize('implementation', JITU_dt2t_IMPLEMENTATIONS)
 @pytest.mark.parametrize('transpose', [False, True])
 def test_jitu_matrix_dt2t_uses_init_parameters(implementation, transpose):
-    with jax.default_device(CPU_DEVICE):
+    with jax.default_device(GPU_DEVICE):
         shape = (20, 30)
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
@@ -221,7 +260,7 @@ def test_jitu_matrix_dt2t_uses_init_parameters(implementation, transpose):
 )
 @pytest.mark.parametrize('implementation', JITU_dt2t_IMPLEMENTATIONS)
 def test_jitu_matrix_dt2t_uses_instance_backend_and_corder(implementation):
-    with jax.default_device(CPU_DEVICE):
+    with jax.default_device(GPU_DEVICE):
         shape = (20, 30)
         y = jnp.linspace(-1.0, 2.0, shape[0], dtype=jnp.float32)
         mat = brainevent.JITCUniformR(
@@ -246,16 +285,15 @@ def test_jitu_matrix_dt2t_uses_instance_backend_and_corder(implementation):
     assert allclose(out, expected)
 
 
-@requires_gpu
 @pytest.mark.skipif(
-    'cuda_raw' not in JITU_dt2t_GPU_IMPLEMENTATIONS,
+    'cuda_raw' not in JITU_dt2t_IMPLEMENTATIONS,
     reason='No jitumv_dt2t cuda_raw implementation registered on GPU.',
 )
 @pytest.mark.parametrize('shape', [(20, 30), (64, 33)])
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
 def test_jitumv_dt2t_cuda_matches_cuda_csr_reference(shape, corder, transpose):
-    with jax.default_device(jax.devices('gpu')[0]):
+    with jax.default_device(GPU_DEVICE):
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
 
@@ -288,3 +326,57 @@ def test_jitumv_dt2t_cuda_matches_cuda_csr_reference(shape, corder, transpose):
 
     assert allclose(out, expected)
     jax.block_until_ready((out, expected))
+
+
+@pytest.mark.skipif(
+    'cuda_raw' not in JITU_dt2t_IMPLEMENTATIONS,
+    reason='No jitumv_dt2t cuda_raw implementation registered on GPU.',
+)
+def test_jitumv_dt2t_corder_warns_and_is_ignored():
+    with jax.default_device(GPU_DEVICE):
+        shape = (20, 30)
+        y = jnp.linspace(-1.0, 2.0, shape[0], dtype=jnp.float32)
+        with pytest.warns(UserWarning, match='corder is ignored'):
+            out_true = jitumv_dt2t(
+                0.1,
+                0.5,
+                0.2,
+                y,
+                42,
+                shape=shape,
+                corder=True,
+                backend='cuda_raw',
+            )
+        with pytest.warns(UserWarning, match='corder is ignored'):
+            out_false = jitumv_dt2t(
+                0.1,
+                0.5,
+                0.2,
+                y,
+                42,
+                shape=shape,
+                corder=False,
+                backend='cuda_raw',
+            )
+
+    assert allclose(out_true, out_false)
+    jax.block_until_ready((out_true, out_false))
+
+
+@pytest.mark.skipif(
+    'cuda_raw' not in JITU_dt2t_IMPLEMENTATIONS,
+    reason='No jitumv_dt2t cuda_raw implementation registered on GPU.',
+)
+def test_jitumv_dt2t_cuda_non_f32_weights_raise():
+    with jax.default_device(GPU_DEVICE):
+        y = jnp.ones(20, dtype=jnp.float16)
+        with pytest.raises(NotImplementedError):
+            jitumv_dt2t(
+                jnp.asarray(0.1, dtype=jnp.float16),
+                jnp.asarray(0.5, dtype=jnp.float16),
+                0.2,
+                y,
+                42,
+                shape=(20, 30),
+                backend='cuda_raw',
+            )

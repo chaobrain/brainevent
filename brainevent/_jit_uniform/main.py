@@ -27,7 +27,7 @@ from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitumv, binary_jitumm
-from .csr import jitu_to_csr
+from .csr import MatrixMode, jitu_to_csr
 from .float import jitu, jitumv, jitumm
 from .dt2t import jitumv_dt2t
 
@@ -331,7 +331,13 @@ class JITCUniformMatrix(JITCMatrix):
             buffers=self.buffers,
         )
 
-    def tocsr(self):
+    def tocsr(
+        self,
+        *,
+        matrix_mode: MatrixMode = "mv",
+        chunk_size: Optional[int] = None,
+        target_chunks: int = 4,
+    ):
         """
         Convert the sparse uniform matrix to Compressed Sparse Row (CSR) format.
 
@@ -380,6 +386,9 @@ class JITCUniformMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            matrix_mode=matrix_mode,
+            chunk_size=chunk_size,
+            target_chunks=target_chunks,
         )
 
     def dt2t(
@@ -632,7 +641,13 @@ class JITCUniformR(JITCUniformMatrix):
     """
     __module__ = 'brainevent'
 
-    def todense(self) -> Union[jax.Array, u.Quantity]:
+    def todense(
+        self,
+        *,
+        matrix_mode: MatrixMode = "mv",
+        chunk_size: Optional[int] = None,
+        target_chunks: int = 4,
+    ) -> Union[jax.Array, u.Quantity]:
         """
         Convert the sparse uniform matrix to a dense array.
 
@@ -687,6 +702,9 @@ class JITCUniformR(JITCUniformMatrix):
             shape=self.shape,
             transpose=False,
             corder=self.corder,
+            matrix_mode=matrix_mode,
+            chunk_size=chunk_size,
+            target_chunks=target_chunks,
             backend=self.backend,
         )
 
@@ -1213,7 +1231,13 @@ class JITCUniformC(JITCUniformMatrix):
     """
     __module__ = 'brainevent'
 
-    def todense(self) -> Union[jax.Array, u.Quantity]:
+    def todense(
+        self,
+        *,
+        matrix_mode: MatrixMode = "mv",
+        chunk_size: Optional[int] = None,
+        target_chunks: int = 4,
+    ) -> Union[jax.Array, u.Quantity]:
         """
         Convert the sparse column-oriented uniform matrix to a dense array.
 
@@ -1263,11 +1287,35 @@ class JITCUniformC(JITCUniformMatrix):
             self.whigh,
             self.prob,
             self.seed,
-            shape=self.shape,
-            transpose=False,
-            corder=self.corder,
+            shape=self.shape[::-1],
+            transpose=True,
+            corder=not self.corder,
+            matrix_mode=matrix_mode,
+            chunk_size=chunk_size,
+            target_chunks=target_chunks,
             backend=self.backend,
         )
+
+    def tocsr(
+        self,
+        *,
+        matrix_mode: MatrixMode = "mv",
+        chunk_size: Optional[int] = None,
+        target_chunks: int = 4,
+    ):
+        csr = jitu_to_csr(
+            self.wlow,
+            self.whigh,
+            self.prob,
+            self.seed,
+            shape=self.shape[::-1],
+            corder=not self.corder,
+            backend=self.backend,
+            matrix_mode=matrix_mode,
+            chunk_size=chunk_size,
+            target_chunks=target_chunks,
+        )
+        return csr.transpose().tocsr()
 
     def transpose(self, axes=None) -> 'JITCUniformR':
         """

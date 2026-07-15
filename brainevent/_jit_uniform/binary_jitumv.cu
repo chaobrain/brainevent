@@ -14,307 +14,346 @@
 // ==============================================================================
 
 /*
- * binary_jitumv.cu — JIT Uniform Event-Driven Matrix-Vector Product (binary_jitumv operator)
- * ============================================================================================
+ * light_rng-chunk-wpr.cu -- bit-packed light-RNG WPR chunk backend.
  *
- * Computes y[i] = sum_{j in C(i) : spike[j] active} Uniform(w_low, w_high)
- * where C(i) is the JIT-generated uniform random connectivity set for row i.
- * Each active spike contributes a fresh weight sample drawn from Uniform(w_low, w_high).
+ * Gather and scatter share one row-major matrix.  One warp owns one
+ * (row, chunk_id) task, and each lane owns one residue class:
  *
- * Operations
- * ----------
- * binary_jitumv_gather_{wt}_{sp}  — corder=True  (gather, one thread per output)
- * binary_jitumv_scatter_{wt}_{sp} — corder=False (scatter, one thread per input)
+ *   local_j = lane + 32 * q
  *
- * Weight dtypes (wt): f32, f64, f16, bf16
- * Spike dtypes  (sp): bool (int8_t), float
- *
- * Parameters
- * ----------
- * w_low   : shape (1,), lower bound of uniform weight distribution
- * w_high  : shape (1,), upper bound of uniform weight distribution
- * clen    : shape (1,), connection length = ceil(2/prob) (float32)
- * seed    : shape (1,), int32 random seed
- * vector  : shape (k,), spike vector (bool or float)
- * output  : shape (m,), output accumulator
- *
- * Gather kernels write each output element exactly once — no memset needed.
- * Scatter kernels use atomicAdd — output is zeroed via cudaMemsetAsync first.
- * Scatter kernels skip inactive spikes entirely (early return optimization).
- *
- * IMPORTANT: All data_ptr() returns are GPU device pointers — NEVER dereference on host.
+ * The connection stream is keyed by (seed, row, chunk_id, lane), while weights
+ * are stateless hashes of (seed, row, col).  Inactive spikes do not change the
+ * generated matrix.
  */
+
+#include <cstdio>
+#include <cstdlib>
 
 #include "cuda_common.h"
 #include "brainevent/common.h"
-#include "curand_common.h"
 
-// #########################################################################
-// ##  binary_jitumv — Event-Driven Matrix-Vector Product                ##
-// #########################################################################
+#define IS_ACTIVE_PACKED(packed, idx) \
+    ((__ldg(&(packed)[(idx) >> 5]) >> ((idx) & 31)) & 1U)
 
-// =========================================================================
-// Gather kernel (corder=true): one thread per output element
-// y[i] = sum_{j in C(i) : spike[j] active} Uniform(w_low, w_high)
-// The weight is still sampled from the RNG even if the spike is inactive
-// (to preserve the correct RNG stream for subsequent connections).
-// No memset needed: every output[i] is written exactly once (direct store).
-// =========================================================================
-
-#define DEFINE_BINARY_JITUMV_GATHER(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, SPIKE_T, IS_ACTIVE, ACC_ZERO) \
-__global__ void _binary_jitumv_gather_kern##SUFFIX(                                                         \
-    const WEIGHT_T* __restrict__ w_low,                                                                     \
-    const WEIGHT_T* __restrict__ w_high,                                                                    \
-    const float*    __restrict__ clen,                                                                      \
-    const int*      __restrict__ seed,                                                                      \
-    const SPIKE_T*  __restrict__ vector,                                                                    \
-    WEIGHT_T*       __restrict__ output,                                                                    \
-    int m, int k                                                                                            \
-) {                                                                                                         \
-    int i = blockIdx.x * blockDim.x + threadIdx.x;                                                          \
-    if (i >= m) return;                                                                                     \
-    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                                                   \
-    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                                                          \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                                        \
-    if (cl < 2) cl = 2;                                                                                     \
-    curandStatePhilox4_32_10_t state;                                                                       \
-    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)i, 0ULL, &state);                  \
-    unsigned int j = curand(&state) % cl;                                                                   \
-    ACC_T acc = ACC_ZERO;                                                                                   \
-    while (j < (unsigned int)k) {                                                                           \
-        float u = curand_uniform(&state);                                                                   \
-        if (IS_ACTIVE(vector[j])) {                                                                         \
-            ACC_T w = wlo + (ACC_T)u * range;                                                               \
-            acc += w;                                                                                       \
-        }                                                                                                   \
-        j += 1 + (curand(&state) % (cl - 1));                                                               \
-    }                                                                                                       \
-    output[i] = WRITE_W(acc);                                                                               \
+__device__ __forceinline__ unsigned int fast_bounded_u32(
+    unsigned int r,
+    unsigned int bound
+) {
+    return __umulhi(r, bound);
 }
 
-// f32 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_GATHER(_f32_bool,  float,         float,  READ_F32,  WRITE_F32,  int8_t, IS_ACTIVE_BOOL,  0.0f)
-DEFINE_BINARY_JITUMV_GATHER(_f32_float, float,         float,  READ_F32,  WRITE_F32,  float,  IS_ACTIVE_FLOAT, 0.0f)
-// f64 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_GATHER(_f64_bool,  double,        double, READ_F64,  WRITE_F64,  int8_t, IS_ACTIVE_BOOL,  0.0)
-DEFINE_BINARY_JITUMV_GATHER(_f64_float, double,        double, READ_F64,  WRITE_F64,  float,  IS_ACTIVE_FLOAT, 0.0)
-// f16 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_GATHER(_f16_bool,  __half,        float,  READ_F16,  WRITE_F16,  int8_t, IS_ACTIVE_BOOL,  0.0f)
-DEFINE_BINARY_JITUMV_GATHER(_f16_float, __half,        float,  READ_F16,  WRITE_F16,  float,  IS_ACTIVE_FLOAT, 0.0f)
-// bf16 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_GATHER(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  0.0f)
-DEFINE_BINARY_JITUMV_GATHER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, 0.0f)
-
-// =========================================================================
-// Gather kernel with shared memory spike caching (corder=true)
-// Cooperatively loads the spike vector into shared memory.
-// Used when k * sizeof(SPIKE_T) fits in device shared memory.
-// =========================================================================
-
-#define DEFINE_BINARY_JITUMV_GATHER_SMEM(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, SPIKE_T, IS_ACTIVE, ACC_ZERO) \
-__global__ void _binary_jitumv_gather_smem_kern##SUFFIX(                                                         \
-    const WEIGHT_T* __restrict__ w_low,                                                                          \
-    const WEIGHT_T* __restrict__ w_high,                                                                         \
-    const float*    __restrict__ clen,                                                                           \
-    const int*      __restrict__ seed,                                                                           \
-    const SPIKE_T*  __restrict__ vector,                                                                         \
-    WEIGHT_T*       __restrict__ output,                                                                         \
-    int m, int k                                                                                                 \
-) {                                                                                                              \
-    extern __shared__ char _smem_bytes[];                                                                        \
-    SPIKE_T* sv = reinterpret_cast<SPIKE_T*>(_smem_bytes);                                                       \
-    for (int idx = threadIdx.x; idx < k; idx += blockDim.x) {                                                    \
-        sv[idx] = __ldg(&vector[idx]);                                                                           \
-    }                                                                                                            \
-    __syncthreads();                                                                                             \
-    int i = blockIdx.x * blockDim.x + threadIdx.x;                                                               \
-    if (i >= m) return;                                                                                          \
-    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                                                        \
-    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                                                               \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                                             \
-    if (cl < 2) cl = 2;                                                                                          \
-    curandStatePhilox4_32_10_t state;                                                                            \
-    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)i, 0ULL, &state);                       \
-    unsigned int j = curand(&state) % cl;                                                                        \
-    ACC_T acc = ACC_ZERO;                                                                                        \
-    while (j < (unsigned int)k) {                                                                                \
-        float u = curand_uniform(&state);                                                                        \
-        if (IS_ACTIVE(sv[j])) {                                                                                  \
-            ACC_T w = wlo + (ACC_T)u * range;                                                                    \
-            acc += w;                                                                                            \
-        }                                                                                                        \
-        j += 1 + (curand(&state) % (cl - 1));                                                                    \
-    }                                                                                                            \
-    output[i] = WRITE_W(acc);                                                                                    \
+__device__ __forceinline__ unsigned int mix32(unsigned int x) {
+    x ^= x >> 16;
+    x *= 0x7feb352dU;
+    x ^= x >> 15;
+    x *= 0x846ca68bU;
+    x ^= x >> 16;
+    return x;
 }
 
-// f32 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_GATHER_SMEM(_f32_bool,  float,         float,  READ_F32,  WRITE_F32,  int8_t, IS_ACTIVE_BOOL,  0.0f)
-DEFINE_BINARY_JITUMV_GATHER_SMEM(_f32_float, float,         float,  READ_F32,  WRITE_F32,  float,  IS_ACTIVE_FLOAT, 0.0f)
-// f64 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_GATHER_SMEM(_f64_bool,  double,        double, READ_F64,  WRITE_F64,  int8_t, IS_ACTIVE_BOOL,  0.0)
-DEFINE_BINARY_JITUMV_GATHER_SMEM(_f64_float, double,        double, READ_F64,  WRITE_F64,  float,  IS_ACTIVE_FLOAT, 0.0)
-// f16 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_GATHER_SMEM(_f16_bool,  __half,        float,  READ_F16,  WRITE_F16,  int8_t, IS_ACTIVE_BOOL,  0.0f)
-DEFINE_BINARY_JITUMV_GATHER_SMEM(_f16_float, __half,        float,  READ_F16,  WRITE_F16,  float,  IS_ACTIVE_FLOAT, 0.0f)
-// bf16 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_GATHER_SMEM(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  0.0f)
-DEFINE_BINARY_JITUMV_GATHER_SMEM(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, 0.0f)
-
-// =========================================================================
-// Scatter kernel (corder=false): one thread per input element
-// Skip inactive spikes entirely (zero-work optimization).
-// For active spikes: scatter Uniform(w_low, w_high) to each connected output.
-// =========================================================================
-
-#define DEFINE_BINARY_JITUMV_SCATTER(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, SPIKE_T, IS_ACTIVE, ATOMIC_ADD) \
-__global__ void _binary_jitumv_scatter_kern##SUFFIX(                                                           \
-    const WEIGHT_T* __restrict__ w_low,                                                                        \
-    const WEIGHT_T* __restrict__ w_high,                                                                       \
-    const float*    __restrict__ clen,                                                                         \
-    const int*      __restrict__ seed,                                                                         \
-    const SPIKE_T*  __restrict__ vector,                                                                       \
-    WEIGHT_T*       __restrict__ output,                                                                       \
-    int m, int k                                                                                               \
-) {                                                                                                            \
-    int j = blockIdx.x * blockDim.x + threadIdx.x;                                                             \
-    if (j >= k) return;                                                                                        \
-    if (!IS_ACTIVE(vector[j])) return;                                                                         \
-    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                                                      \
-    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                                                             \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                                           \
-    if (cl < 2) cl = 2;                                                                                        \
-    curandStatePhilox4_32_10_t state;                                                                          \
-    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)j, 0ULL, &state);                     \
-    unsigned int i = curand(&state) % cl;                                                                      \
-    while (i < (unsigned int)m) {                                                                              \
-        float u = curand_uniform(&state);                                                                      \
-        ACC_T w = wlo + (ACC_T)u * range;                                                                      \
-        ATOMIC_ADD(&output[i], w);                                                                             \
-        i += 1 + (curand(&state) % (cl - 1));                                                                  \
-    }                                                                                                          \
+__device__ __forceinline__ unsigned int light_rng_init_wpr(
+    unsigned int seed,
+    int row,
+    int chunk_id,
+    int lane
+) {
+    unsigned int x = seed ^ 0xd1b54a35U;
+    x ^= (unsigned int)row * 0x85ebca6bU;
+    x ^= (unsigned int)chunk_id * 0xc2b2ae35U;
+    x ^= (unsigned int)lane * 0x27d4eb2dU;
+    x = mix32(x);
+    return x == 0U ? 0x6d2b79f5U : x;
 }
 
-// f32 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_SCATTER(_f32_bool,  float,         float,  READ_F32,  WRITE_F32,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f32)
-DEFINE_BINARY_JITUMV_SCATTER(_f32_float, float,         float,  READ_F32,  WRITE_F32,  float,  IS_ACTIVE_FLOAT, atomic_add_f32)
-// f64 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_SCATTER(_f64_bool,  double,        double, READ_F64,  WRITE_F64,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f64)
-DEFINE_BINARY_JITUMV_SCATTER(_f64_float, double,        double, READ_F64,  WRITE_F64,  float,  IS_ACTIVE_FLOAT, atomic_add_f64)
-// f16 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_SCATTER(_f16_bool,  __half,        float,  READ_F16,  WRITE_F16,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f16)
-DEFINE_BINARY_JITUMV_SCATTER(_f16_float, __half,        float,  READ_F16,  WRITE_F16,  float,  IS_ACTIVE_FLOAT, atomic_add_f16)
-// bf16 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_SCATTER(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  atomic_add_bf16)
-DEFINE_BINARY_JITUMV_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, atomic_add_bf16)
-
-// ---- CUDA: binary_jitumv gather ----
-// Dispatches to shared-memory kernel when spike vector fits in device smem.
-// No memset needed: gather kernels write every output element exactly once.
-
-#define FFI_BINARY_JITUMV_GATHER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                      \
-void binary_jitumv_gather##SUFFIX(                                                   \
-    const BE::Tensor w_low,                                                          \
-    const BE::Tensor w_high,                                                         \
-    const BE::Tensor clen,                                                           \
-    const BE::Tensor seed,                                                           \
-    const BE::Tensor vector,                                                         \
-    BE::Tensor output,                                                               \
-    int64_t stream                                                                   \
-) {                                                                                  \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                         \
-    int m = static_cast<int>(output.size(0));                                        \
-    int k = static_cast<int>(vector.size(0));                                        \
-    int threads = 256;                                                               \
-    int blocks = (m + threads - 1) / threads;                                        \
-    size_t smem_bytes = (size_t)k * sizeof(SPIKE_C_T);                               \
-    int _dev = 0; cudaGetDevice(&_dev);                                              \
-    int _max_smem = 0;                                                               \
-    cudaDeviceGetAttribute(&_max_smem,                                               \
-        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                                   \
-    if (smem_bytes <= (size_t)_max_smem) {                                           \
-        _binary_jitumv_gather_smem_kern##SUFFIX<<<blocks, threads, smem_bytes, s>>>( \
-            static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                        \
-            static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),                       \
-            static_cast<const float*>(clen.data_ptr()),                              \
-            static_cast<const int*>(seed.data_ptr()),                                \
-            static_cast<const SPIKE_C_T*>(vector.data_ptr()),                        \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()),                             \
-            m, k                                                                     \
-        );                                                                           \
-    } else {                                                                         \
-        _binary_jitumv_gather_kern##SUFFIX<<<blocks, threads, 0, s>>>(               \
-            static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                        \
-            static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),                       \
-            static_cast<const float*>(clen.data_ptr()),                              \
-            static_cast<const int*>(seed.data_ptr()),                                \
-            static_cast<const SPIKE_C_T*>(vector.data_ptr()),                        \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()),                             \
-            m, k                                                                     \
-        );                                                                           \
-    }                                                                                \
+__device__ __forceinline__ unsigned int light_rng_next(unsigned int* state) {
+    unsigned int x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x == 0U ? 0x6d2b79f5U : x;
+    return *state;
 }
 
-// @BE binary_jitumv_gather_f32_bool
-FFI_BINARY_JITUMV_GATHER(_f32_bool,  float,         int8_t)
-// @BE binary_jitumv_gather_f32_float
-FFI_BINARY_JITUMV_GATHER(_f32_float, float,         float)
-// @BE binary_jitumv_gather_f64_bool
-FFI_BINARY_JITUMV_GATHER(_f64_bool,  double,        int8_t)
-// @BE binary_jitumv_gather_f64_float
-FFI_BINARY_JITUMV_GATHER(_f64_float, double,        float)
-// @BE binary_jitumv_gather_f16_bool
-FFI_BINARY_JITUMV_GATHER(_f16_bool,  __half,        int8_t)
-// @BE binary_jitumv_gather_f16_float
-FFI_BINARY_JITUMV_GATHER(_f16_float, __half,        float)
-// @BE binary_jitumv_gather_bf16_bool
-FFI_BINARY_JITUMV_GATHER(_bf16_bool, __nv_bfloat16, int8_t)
-// @BE binary_jitumv_gather_bf16_float
-FFI_BINARY_JITUMV_GATHER(_bf16_float,__nv_bfloat16, float)
-
-// ---- CUDA: binary_jitumv scatter ----
-
-#define FFI_BINARY_JITUMV_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
-void binary_jitumv_scatter##SUFFIX(                                 \
-    const BE::Tensor w_low,                                         \
-    const BE::Tensor w_high,                                        \
-    const BE::Tensor clen,                                          \
-    const BE::Tensor seed,                                          \
-    const BE::Tensor vector,                                        \
-    BE::Tensor output,                                              \
-    int64_t stream                                                  \
-) {                                                                 \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);        \
-    int m = static_cast<int>(output.size(0));                       \
-    int k = static_cast<int>(vector.size(0));                       \
-    cudaMemsetAsync(output.data_ptr(), 0,                           \
-        (size_t)m * sizeof(WEIGHT_C_T), s);                         \
-    int threads = 256;                                              \
-    int blocks = (k + threads - 1) / threads;                       \
-    _binary_jitumv_scatter_kern##SUFFIX<<<blocks, threads, 0, s>>>( \
-        static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),           \
-        static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),          \
-        static_cast<const float*>(clen.data_ptr()),                 \
-        static_cast<const int*>(seed.data_ptr()),                   \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),           \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),                \
-        m, k                                                        \
-    );                                                              \
+__device__ __forceinline__ float hash_uniform01(
+    unsigned int seed,
+    int row,
+    int col
+) {
+    unsigned int h = seed ^ 0xa0761d65U;
+    h ^= (unsigned int)row * 0xe7037ed1U;
+    h ^= (unsigned int)col * 0x8ebc6af1U;
+    h = mix32(h);
+    return (float)(h & 0x00ffffffU) * (1.0f / 16777216.0f);
 }
 
-// @BE binary_jitumv_scatter_f32_bool
-FFI_BINARY_JITUMV_SCATTER(_f32_bool,  float,         int8_t)
-// @BE binary_jitumv_scatter_f32_float
-FFI_BINARY_JITUMV_SCATTER(_f32_float, float,         float)
-// @BE binary_jitumv_scatter_f64_bool
-FFI_BINARY_JITUMV_SCATTER(_f64_bool,  double,        int8_t)
-// @BE binary_jitumv_scatter_f64_float
-FFI_BINARY_JITUMV_SCATTER(_f64_float, double,        float)
-// @BE binary_jitumv_scatter_f16_bool
-FFI_BINARY_JITUMV_SCATTER(_f16_bool,  __half,        int8_t)
-// @BE binary_jitumv_scatter_f16_float
-FFI_BINARY_JITUMV_SCATTER(_f16_float, __half,        float)
-// @BE binary_jitumv_scatter_bf16_bool
-FFI_BINARY_JITUMV_SCATTER(_bf16_bool, __nv_bfloat16, int8_t)
-// @BE binary_jitumv_scatter_bf16_float
-FFI_BINARY_JITUMV_SCATTER(_bf16_float,__nv_bfloat16, float)
+__device__ __forceinline__ unsigned int calibrated_chunk_clen(
+    unsigned int cl,
+    int k,
+    int chunk_size,
+    int n_chunks
+) {
+    if (cl < 2U) cl = 2U;
+    if (k <= 0 || chunk_size <= 0 || n_chunks <= 0) return cl;
+
+    int full_chunks = k / chunk_size;
+    int tail = k - full_chunks * chunk_size;
+    if (full_chunks > n_chunks) {
+        full_chunks = n_chunks;
+        tail = 0;
+    }
+
+    unsigned int full_streams =
+        (chunk_size < 32) ? (unsigned int)chunk_size : 32U;
+    unsigned long long stream_count =
+        (unsigned long long)full_chunks * (unsigned long long)full_streams;
+    if (tail > 0 && full_chunks < n_chunks) {
+        stream_count += (unsigned long long)((tail < 32) ? tail : 32);
+    }
+    if (stream_count == 0ULL) return cl;
+
+    /*
+     * Each chunk/lane stream is a finite renewal process.  For the uniform
+     * skip law used here its large-window expectation is approximately
+     *
+     *   2 * width / cl - 1 / 3
+     *
+     * per active lane stream.  Reduce cl so the finite chunked process matches
+     * the non-chunk target density 2 / cl.
+     */
+    float width2 = 2.0f * (float)k;
+    float target = width2 / (float)cl;
+    float corrected = target + (float)stream_count * (1.0f / 3.0f);
+    if (!(corrected > 0.0f)) return cl;
+
+    unsigned int eff = (unsigned int)(width2 / corrected + 0.5f);
+    if (eff < 2U) eff = 2U;
+    if (eff > cl) eff = cl;
+    return eff;
+}
+
+__global__ void _pack_bool_kern(
+    const int8_t* __restrict__ vector,
+    uint32_t*     __restrict__ packed,
+    int k
+) {
+    int word = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
+    int base = word << 5;
+    if (base >= k) return;
+
+    uint32_t bits = 0U;
+#pragma unroll
+    for (int b = 0; b < 32; ++b) {
+        int j = base + b;
+        if (j < k && __ldg(&vector[j]) != 0) {
+            bits |= (1U << b);
+        }
+    }
+    packed[word] = bits;
+}
+
+__global__ void _gather_f32_kern(
+    const float*    __restrict__ w_low,
+    const float*    __restrict__ w_high,
+    const int*      __restrict__ clen,
+    const int*      __restrict__ seed,
+    const uint32_t* __restrict__ packed,
+    float*          __restrict__ output,
+    int m, int k, int chunk_size, int n_chunks
+) {
+    int lane = threadIdx.x & 31;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int row_block = (int)blockIdx.x;
+    int chunk_id = (int)blockIdx.y;
+    int row = row_block * warps_per_block + warp_id;
+    if (row >= m || chunk_id >= n_chunks) return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= k) return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > k) chunk_end = k;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U) return;
+
+    float wlo = READ_F32(__ldg(&w_low[0]));
+    float range = READ_F32(__ldg(&w_high[0])) - wlo;
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    if (cl < 2U) cl = 2U;
+    cl = calibrated_chunk_clen(cl, k, chunk_size, n_chunks);
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
+
+    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int local_j = (unsigned int)lane + 32U * q;
+    float acc = 0.0f;
+    while (local_j < chunk_width) {
+        int j = chunk_start + (int)local_j;
+        if (IS_ACTIVE_PACKED(packed, j)) {
+            float u01 = hash_uniform01(seed0, row, j);
+            acc += wlo + u01 * range;
+        }
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)lane + 32U * q;
+    }
+
+    float row_acc = warp_reduce_sum_f32(acc);
+    if (lane == 0) {
+        atomic_add_f32(&output[row], row_acc);
+    }
+}
+
+__global__ void _scatter_f32_kern(
+    const float*    __restrict__ w_low,
+    const float*    __restrict__ w_high,
+    const int*      __restrict__ clen,
+    const int*      __restrict__ seed,
+    const uint32_t* __restrict__ packed,
+    float*          __restrict__ output,
+    int m, int k, int chunk_size, int n_chunks
+) {
+    int lane = threadIdx.x & 31;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int row_block = (int)blockIdx.x;
+    int chunk_id = (int)blockIdx.y;
+    int row = row_block * warps_per_block + warp_id;
+    if (row >= m || chunk_id >= n_chunks) return;
+    if (!IS_ACTIVE_PACKED(packed, row)) return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= k) return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > k) chunk_end = k;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U) return;
+
+    float wlo = READ_F32(__ldg(&w_low[0]));
+    float range = READ_F32(__ldg(&w_high[0])) - wlo;
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    if (cl < 2U) cl = 2U;
+    cl = calibrated_chunk_clen(cl, k, chunk_size, n_chunks);
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
+
+    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int local_j = (unsigned int)lane + 32U * q;
+    while (local_j < chunk_width) {
+        int j = chunk_start + (int)local_j;
+        float u01 = hash_uniform01(seed0, row, j);
+        float w = wlo + u01 * range;
+        atomic_add_f32(&output[j], w);
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)lane + 32U * q;
+    }
+}
+
+// @BE pack_bool
+void pack_bool(
+    const BE::Tensor vector,
+    BE::Tensor packed,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int k = static_cast<int>(vector.size(0));
+    int packed_words = static_cast<int>(packed.size(0));
+    if (packed_words == 0) return;
+
+    int threads = 256;
+    int blocks = (packed_words + threads - 1) / threads;
+    _pack_bool_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const int8_t*>(vector.data_ptr()),
+        static_cast<uint32_t*>(packed.data_ptr()),
+        k
+    );
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// @BE gather_f32
+void gather_f32(
+    const BE::Tensor w_low,
+    const BE::Tensor w_high,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    const BE::Tensor packed,
+    BE::Tensor output,
+    int vector_size,
+    int chunk_size,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int m = static_cast<int>(output.size(0));
+    int k = vector_size;
+    if (m == 0) return;
+    BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr(), 0, (size_t)m * sizeof(float), s));
+    if (k <= 0 || chunk_size <= 0) return;
+
+    int n_chunks = (k + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0) return;
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
+        fprintf(stderr,
+                "gather_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                row_warp_blocks, n_chunks);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
+
+    _gather_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float*>(w_low.data_ptr()),
+        static_cast<const float*>(w_high.data_ptr()),
+        static_cast<const int*>(clen.data_ptr()),
+        static_cast<const int*>(seed.data_ptr()),
+        static_cast<const uint32_t*>(packed.data_ptr()),
+        static_cast<float*>(output.data_ptr()),
+        m, k, chunk_size, n_chunks
+    );
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// @BE scatter_f32
+void scatter_f32(
+    const BE::Tensor w_low,
+    const BE::Tensor w_high,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    const BE::Tensor packed,
+    BE::Tensor output,
+    int vector_size,
+    int chunk_size,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int m = vector_size;
+    int k = static_cast<int>(output.size(0));
+    if (k == 0) return;
+    BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr(), 0, (size_t)k * sizeof(float), s));
+    if (m <= 0 || chunk_size <= 0) return;
+
+    int n_chunks = (k + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0) return;
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
+        fprintf(stderr,
+                "scatter_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                row_warp_blocks, n_chunks);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
+
+    _scatter_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float*>(w_low.data_ptr()),
+        static_cast<const float*>(w_high.data_ptr()),
+        static_cast<const int*>(clen.data_ptr()),
+        static_cast<const int*>(seed.data_ptr()),
+        static_cast<const uint32_t*>(packed.data_ptr()),
+        static_cast<float*>(output.data_ptr()),
+        m, k, chunk_size, n_chunks
+    );
+    BE_CHECK_KERNEL_LAUNCH();
+}

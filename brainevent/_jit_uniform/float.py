@@ -15,7 +15,8 @@
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
+import warnings
 
 import brainunit as u
 import jax
@@ -30,6 +31,8 @@ from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule,
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
 
+MatrixMode = Literal['mv', 'mm']
+
 __all__ = [
     "jitu",
     "jitu_p",
@@ -40,8 +43,41 @@ __all__ = [
 ]
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
-def jitu(
+def _normalize_matrix_mode(matrix_mode: str) -> MatrixMode:
+    if matrix_mode not in ('mv', 'mm'):
+        raise ValueError(f"matrix_mode must be 'mv' or 'mm', got {matrix_mode!r}.")
+    return matrix_mode
+
+
+def _normalize_chunk_size(n_cols: int, chunk_size: Optional[int], target_chunks: int) -> int:
+    if chunk_size is None:
+        target_chunks = int(target_chunks)
+        if target_chunks <= 0:
+            raise ValueError("target_chunks must be positive")
+        chunk_size = max(1, (int(n_cols) + target_chunks - 1) // target_chunks)
+    chunk_size = int(chunk_size)
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    return chunk_size
+
+
+def _warn_corder_ignored(corder: bool) -> None:
+    warnings.warn(
+        "corder is ignored by the light JIT uniform implementation.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+def _light_options(kwargs):
+    return {
+        'chunk_size': kwargs.get('chunk_size', None),
+        'target_chunks': kwargs.get('target_chunks', 4),
+    }
+
+
+@namescope(name="brainevent.jitu", static_argnames=("shape", "transpose", "corder", "matrix_mode", "chunk_size", "target_chunks"))
+def _jitu_impl(
     w_low: Data,
     w_high: Data,
     prob: float,
@@ -50,6 +86,9 @@ def jitu(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    matrix_mode: MatrixMode = 'mv',
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
     """
@@ -132,6 +171,7 @@ def jitu(
     w_low, unitd = u.split_mantissa_unit(w_low)
     w_high = u.Quantity(w_high).to(unitd).mantissa
     clen = _initialize_conn_length(prob)
+    matrix_mode = _normalize_matrix_mode(matrix_mode)
     res = jitu_p_call(
         w_low,
         w_high,
@@ -140,13 +180,49 @@ def jitu(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        matrix_mode=matrix_mode,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
-def jitumv(
+def jitu(
+    w_low: Data,
+    w_high: Data,
+    prob: float,
+    seed: int,
+    *,
+    shape: MatrixShape,
+    transpose: bool = False,
+    corder: bool = True,
+    matrix_mode: MatrixMode = 'mv',
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    backend: Optional[str] = None,
+) -> Data:
+    _warn_corder_ignored(corder)
+    return _jitu_impl(
+        w_low,
+        w_high,
+        prob,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        matrix_mode=matrix_mode,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
+        backend=backend,
+    )
+
+
+jitu.__doc__ = _jitu_impl.__doc__
+
+
+@namescope(name="brainevent.jitumv", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
+def _jitumv_impl(
     w_low: Data,
     w_high: Data,
     prob: float,
@@ -156,6 +232,8 @@ def jitumv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
     """
@@ -259,13 +337,48 @@ def jitumv(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
-def jitumm(
+def jitumv(
+    w_low: Data,
+    w_high: Data,
+    prob: float,
+    vector: Data,
+    seed: Optional[int] = None,
+    *,
+    shape: MatrixShape,
+    transpose: bool = False,
+    corder: bool = True,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    backend: Optional[str] = None,
+) -> Data:
+    _warn_corder_ignored(corder)
+    return _jitumv_impl(
+        w_low,
+        w_high,
+        prob,
+        vector,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
+        backend=backend,
+    )
+
+
+jitumv.__doc__ = _jitumv_impl.__doc__
+
+
+@namescope(name="brainevent.jitumm", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
+def _jitumm_impl(
     w_low: Data,
     w_high: Data,
     prob: float,
@@ -275,6 +388,8 @@ def jitumm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
     """
@@ -376,9 +491,45 @@ def jitumm(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
+        matrix_mode='mm',
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
+
+
+def jitumm(
+    w_low: Data,
+    w_high: Data,
+    prob: float,
+    B: Data,
+    seed: Optional[int] = None,
+    *,
+    shape: MatrixShape,
+    transpose: bool = False,
+    corder: bool = True,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    backend: Optional[str] = None,
+) -> Data:
+    _warn_corder_ignored(corder)
+    return _jitumm_impl(
+        w_low,
+        w_high,
+        prob,
+        B,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
+        backend=backend,
+    )
+
+
+jitumm.__doc__ = _jitumm_impl.__doc__
 
 
 def _jitu_numba_kernel_generator(
@@ -463,23 +614,49 @@ _dtype_sfx = {
 
 def _jitu_cuda_kernel(
     corder: bool = True,
+    shape: MatrixShape = None,
+    transpose: bool = False,
+    matrix_mode: MatrixMode = 'mv',
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     **kwargs
 ):
+    del corder
+    if np.dtype(kwargs['w_low_info'].dtype) != np.dtype('float32'):
+        raise NotImplementedError("light float jitu CUDA currently supports float32 weights only")
+
+    matrix_mode = _normalize_matrix_mode(matrix_mode)
+    n_rows, n_cols = int(shape[0]), int(shape[1])
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     load_cuda_file(
         Path(__file__).parent.joinpath('float_jitu.cu'),
         name='float_jitu',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'float_jitu.jitu_{variant}{sfx}'
+    kernel_name = (
+        'float_jitu.jitu_mv_f32'
+        if matrix_mode == 'mv'
+        else 'float_jitu.jitu_mm_aw_t4_f32'
+    )
 
     def kernel(w_low, w_high, clen, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed)
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            w_low,
+            w_high,
+            clen,
+            seed,
+            n_rows=np.int32(n_rows),
+            n_cols=np.int32(n_cols),
+            transpose=np.int32(int(transpose)),
+            chunk_size=np.int32(chunk_size_value),
+        )
 
     return kernel
 
 
-def _jitu_jvp_wlow(w_low_dot, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
+def _jitu_jvp_wlow(
+    w_low_dot, w_low, w_high, clen, seed, *,
+    shape, transpose: bool, corder: bool, matrix_mode: MatrixMode = 'mv', **kwargs
+):
     """
     JVP rule for the ``w_low`` argument of the JIT-uniform dense matrix generation.
 
@@ -509,12 +686,21 @@ def _jitu_jvp_wlow(w_low_dot, w_low, w_high, clen, seed, *, shape, transpose: bo
     reflecting the affine structure ``A = w_low + (w_high - w_low) * U``.
     """
     res = jitu_p_call(
-        0., w_low_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        0., w_low_dot, clen, seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        matrix_mode=matrix_mode,
+        **_light_options(kwargs),
+        backend=kwargs['backend'],
     )[0]
     return [w_low_dot - res]
 
 
-def _jitu_jvp_whigh(w_high_dot, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
+def _jitu_jvp_whigh(
+    w_high_dot, w_low, w_high, clen, seed, *,
+    shape, transpose: bool, corder: bool, matrix_mode: MatrixMode = 'mv', **kwargs
+):
     """
     JVP rule for the ``w_high`` argument of the JIT-uniform dense matrix generation.
 
@@ -539,7 +725,13 @@ def _jitu_jvp_whigh(w_high_dot, w_low, w_high, clen, seed, *, shape, transpose: 
         Single-element list containing the JVP result.
     """
     return jitu_p_call(
-        0., w_high_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        0., w_high_dot, clen, seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        matrix_mode=matrix_mode,
+        **_light_options(kwargs),
+        backend=kwargs['backend'],
     )
 
 
@@ -607,7 +799,10 @@ def _whigh_tranpose(ct, seed, clen, **kwargs):
     return jnp.expand_dims((ct * forward).sum(), axis=0)
 
 
-def _jitu_transpose(ct, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
+def _jitu_transpose(
+    ct, w_low, w_high, clen, seed, *,
+    shape, transpose: bool, corder: bool, matrix_mode: MatrixMode = 'mv', **kwargs
+):
     """
     Transpose (adjoint) rule for the JIT-uniform dense matrix generation.
 
@@ -647,6 +842,8 @@ def _jitu_transpose(ct, w_low, w_high, clen, seed, *, shape, transpose: bool, co
             shape=shape,
             transpose=transpose,
             corder=corder,
+            matrix_mode=matrix_mode,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )
         return (dwlow, w_high, clen, seed)
@@ -658,6 +855,8 @@ def _jitu_transpose(ct, w_low, w_high, clen, seed, *, shape, transpose: bool, co
             shape=shape,
             transpose=transpose,
             corder=corder,
+            matrix_mode=matrix_mode,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )
         return (w_low, dwhigh, clen, seed)
@@ -728,6 +927,9 @@ def jitu_p_call(
     shape,
     transpose: bool,
     corder: bool,
+    matrix_mode: MatrixMode = 'mv',
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ):
     """
@@ -778,6 +980,9 @@ def jitu_p_call(
     seed = jnp.atleast_1d(seed)
     assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
     assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
+    matrix_mode = _normalize_matrix_mode(matrix_mode)
+    _warn_corder_ignored(corder)
+    chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
 
     out_info = (
         jax.ShapeDtypeStruct(shape[::-1], dtype=w_low.dtype)
@@ -799,6 +1004,9 @@ def jitu_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        matrix_mode=matrix_mode,
+        chunk_size=chunk_size_value,
+        target_chunks=target_chunks,
         backend=backend,
     )
 
@@ -913,18 +1121,33 @@ def _jitumv_numba_kernel_generator(
 
 def _jitumv_cuda_kernel(
     corder: bool = True,
+    transpose: bool = False,
+    shape: MatrixShape = None,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     **kwargs
 ):
+    del corder
+    if np.dtype(kwargs['w_low_info'].dtype) != np.dtype('float32'):
+        raise NotImplementedError("light float jitumv CUDA currently supports float32 weights only")
+
+    chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
     load_cuda_file(
         Path(__file__).parent.joinpath('float_jitumv.cu'),
         name='float_jitumv',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'float_jitumv.jitumv_{variant}{sfx}'
+    variant = 'scatter' if transpose else 'gather'
+    kernel_name = f'float_jitumv.jitumv_{variant}_f32'
 
     def kernel(w_low, w_high, clen, vector, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            w_low,
+            w_high,
+            clen,
+            seed,
+            vector,
+            chunk_size=np.int32(chunk_size_value),
+        )
 
     return kernel
 
@@ -954,7 +1177,12 @@ def _jitumv_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose,
         Single-element list containing the JVP result.
     """
     return jitumv_p_call(
-        w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_low, w_high, clen, v_dot, seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        **_light_options(kwargs),
+        backend=kwargs['backend'],
     )
 
 
@@ -983,7 +1211,12 @@ def _jitumv_jvp_wlow(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpo
         Single-element list containing the JVP result.
     """
     return jitumv_p_call(
-        w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_dot, w_high, clen, vector, seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        **_light_options(kwargs),
+        backend=kwargs['backend'],
     )
 
 
@@ -1012,7 +1245,12 @@ def _jitumv_jvp_whigh(w_dot, w_low, w_high, clen, vector, seed, *, shape, transp
         Single-element list containing the JVP result.
     """
     return jitumv_p_call(
-        w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_low, w_dot, clen, vector, seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        **_light_options(kwargs),
+        backend=kwargs['backend'],
     )
 
 
@@ -1074,6 +1312,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             shape=shape,
             transpose=not transpose,
             corder=not corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         return w_low, w_high, clen, r, seed
@@ -1099,6 +1338,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             shape=shape,
             transpose=transpose,
             corder=corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         c_basis = jitumv_p_call(
@@ -1110,6 +1350,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             shape=shape,
             transpose=transpose,
             corder=corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
@@ -1126,6 +1367,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             shape=shape,
             transpose=transpose,
             corder=corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
@@ -1171,6 +1413,8 @@ def _jitumv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            matrix_mode='mv',
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )
         return r, [1]
@@ -1185,6 +1429,8 @@ def _jitumv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            matrix_mode='mv',
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )
         return r, [1]
@@ -1238,6 +1484,8 @@ def jitumv_p_call(
     shape,
     transpose: bool,
     corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ):
     """
@@ -1289,6 +1537,7 @@ def jitumv_p_call(
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
+    _warn_corder_ignored(corder)
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert w_low.shape == (1,), f"The weight shape should be (1,), but got {w_low.shape}."
@@ -1298,6 +1547,7 @@ def jitumv_p_call(
     assert seed.shape == (1,), f"The seed shape should be (1,), but got {seed.shape}."
     assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
     assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
+    chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
 
     if transpose:
         assert shape[0] == len(vector), f"The matrix shape and vector length do not match. {vector.shape} @ {shape}"
@@ -1326,6 +1576,8 @@ def jitumv_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size_value,
+        target_chunks=target_chunks,
         backend=backend,
     )
 
@@ -1445,23 +1697,51 @@ def _jitumm_numba_kernel_generator(
 
 def _jitumm_cuda_kernel(
     corder: bool = True,
+    B_info: jax.ShapeDtypeStruct = None,
+    transpose: bool = False,
+    shape: MatrixShape = None,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    matrix_mode: MatrixMode = 'mm',
     **kwargs
 ):
+    del corder
+    if np.dtype(kwargs['w_low_info'].dtype) != np.dtype('float32'):
+        raise NotImplementedError("light float jitumm CUDA currently supports float32 weights only")
+
+    matrix_mode = _normalize_matrix_mode(matrix_mode)
+    m = int(shape[0])
+    k = int(shape[1])
+    n = int(B_info.shape[1])
+    chunk_size_value = _normalize_chunk_size(k, chunk_size, target_chunks)
     load_cuda_file(
         Path(__file__).parent.joinpath('float_jitumm.cu'),
         name='float_jitumm',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'float_jitumm.jitumm_{variant}{sfx}'
+    variant = 'scatter' if transpose else 'gather'
+    prefix = 'jitumm_mv' if matrix_mode == 'mv' else 'jitumm'
+    kernel_name = f'float_jitumm.{prefix}_{variant}_f32'
 
     def kernel(w_low, w_high, clen, B, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            w_low,
+            w_high,
+            clen,
+            seed,
+            B,
+            m=np.int32(m),
+            k=np.int32(k),
+            n=np.int32(n),
+            chunk_size=np.int32(chunk_size_value),
+        )
 
     return kernel
 
 
-def _jitumm_jvp_wlow(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitumm_jvp_wlow(
+    w_dot, w_low, w_high, clen, B, seed, *,
+    shape, transpose, corder, matrix_mode: MatrixMode = 'mm', **kwargs
+):
     """
     JVP rule for the ``w_low`` argument of the float JIT-uniform matrix-matrix product.
 
@@ -1486,11 +1766,20 @@ def _jitumm_jvp_wlow(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, c
         Single-element list containing the JVP result.
     """
     return jitumm_p_call(
-        w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_dot, w_high, clen, B, seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        matrix_mode=matrix_mode,
+        **_light_options(kwargs),
+        backend=kwargs['backend'],
     )
 
 
-def _jitumm_jvp_whigh(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitumm_jvp_whigh(
+    w_dot, w_low, w_high, clen, B, seed, *,
+    shape, transpose, corder, matrix_mode: MatrixMode = 'mm', **kwargs
+):
     """
     JVP rule for the ``w_high`` argument of the float JIT-uniform matrix-matrix product.
 
@@ -1515,11 +1804,20 @@ def _jitumm_jvp_whigh(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, 
         Single-element list containing the JVP result.
     """
     return jitumm_p_call(
-        w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_low, w_dot, clen, B, seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        matrix_mode=matrix_mode,
+        **_light_options(kwargs),
+        backend=kwargs['backend'],
     )
 
 
-def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitumm_jvp_B(
+    B_dot, w_low, w_high, clen, B, seed, *,
+    shape, transpose, corder, matrix_mode: MatrixMode = 'mm', **kwargs
+):
     """
     JVP rule for the ``B`` argument of the float JIT-uniform matrix-matrix product.
 
@@ -1544,11 +1842,20 @@ def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, cord
         Single-element list containing the JVP result.
     """
     return jitumm_p_call(
-        w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_low, w_high, clen, B_dot, seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        matrix_mode=matrix_mode,
+        **_light_options(kwargs),
+        backend=kwargs['backend'],
     )
 
 
-def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitumm_transpose_rules(
+    ct, w_low, w_high, clen, B, seed, *,
+    shape, transpose, corder, matrix_mode: MatrixMode = 'mm', **kwargs
+):
     """
     Transpose (adjoint) rule for the float JIT-uniform matrix-matrix product.
 
@@ -1605,6 +1912,8 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             shape=shape,
             transpose=not transpose,
             corder=not corder,
+            matrix_mode=matrix_mode,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         return w_low, w_high, clen, dB, seed
@@ -1626,6 +1935,8 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             shape=shape,
             transpose=transpose,
             corder=corder,
+            matrix_mode=matrix_mode,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         c_basis = jitumm_p_call(
@@ -1637,6 +1948,8 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             shape=shape,
             transpose=transpose,
             corder=corder,
+            matrix_mode=matrix_mode,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
@@ -1653,6 +1966,8 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             shape=shape,
             transpose=transpose,
             corder=corder,
+            matrix_mode=matrix_mode,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
@@ -1699,6 +2014,8 @@ def _batching_axis1(args, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
+        matrix_mode=kwargs.get('matrix_mode', 'mm'),
+        **_light_options(kwargs),
         backend=kwargs['backend'],
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
@@ -1790,6 +2107,9 @@ def jitumm_p_call(
     shape: MatrixShape,
     transpose: bool,
     corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    matrix_mode: MatrixMode = 'mm',
     backend: Optional[str] = None,
 ):
     """
@@ -1841,6 +2161,8 @@ def jitumm_p_call(
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
+    matrix_mode = _normalize_matrix_mode(matrix_mode)
+    _warn_corder_ignored(corder)
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert B.ndim == 2, "The input matrix B should be a 2D array."
@@ -1858,6 +2180,7 @@ def jitumm_p_call(
         assert shape[1] == B.shape[0], f"The matrix shape and B shape do not match. {shape} @ {B.shape}"
     assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
     assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
+    chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], w_low.dtype)
@@ -1881,6 +2204,9 @@ def jitumm_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size_value,
+        target_chunks=target_chunks,
+        matrix_mode=matrix_mode,
         TITLE_SIZE=B.shape[1],
         backend=backend,
     )

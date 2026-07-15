@@ -164,7 +164,8 @@ class Test_JITC_Operator_Behavior:
     def test_jitc_uniform_r_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCUniformR((-1.5, 1.5, 0.1, 123), shape=shape, corder=corder)
-        dense = mat.todense()
+        dense_mv = mat.todense(matrix_mode="mv")
+        dense_mm = mat.todense(matrix_mode="mm")
 
         left_vec = gen_events(shape[0], asbool=False).value
         right_vec = gen_events(shape[1], asbool=False).value
@@ -172,24 +173,25 @@ class Test_JITC_Operator_Behavior:
         right_mat = gen_events((shape[1], 4), asbool=False).value
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
         assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_uniform_c_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCUniformC((-1.5, 1.5, 0.1, 123), shape=shape, corder=corder)
-        dense = mat.todense()
+        dense_mv = mat.todense(matrix_mode="mv")
+        dense_mm = mat.todense(matrix_mode="mm")
 
         left_vec = gen_events(shape[0], asbool=False).value
         right_vec = gen_events(shape[1], asbool=False).value
@@ -197,24 +199,25 @@ class Test_JITC_Operator_Behavior:
         right_mat = gen_events((shape[1], 4), asbool=False).value
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
         assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_uniform_r_transpose_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCUniformR((-1.5, 1.5, 0.1, 123), shape=shape, corder=corder).T
-        dense = mat.todense()
+        dense_mv = mat.todense(matrix_mode="mv")
+        dense_mm = mat.todense(matrix_mode="mm")
 
         left_vec = jnp.asarray(np.random.rand(shape[1]))
         right_vec = jnp.asarray(np.random.rand(shape[0]))
@@ -222,24 +225,25 @@ class Test_JITC_Operator_Behavior:
         right_mat = jnp.asarray(np.random.rand(shape[0], 4))
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
         assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_uniform_c_transpose_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCUniformC((-1.5, 1.5, 0.1, 123), shape=shape, corder=corder).T
-        dense = mat.todense()
+        dense_mv = mat.todense(matrix_mode="mv")
+        dense_mm = mat.todense(matrix_mode="mm")
 
         left_vec = jnp.asarray(np.random.rand(shape[1]))
         right_vec = jnp.asarray(np.random.rand(shape[0]))
@@ -247,18 +251,18 @@ class Test_JITC_Operator_Behavior:
         right_mat = jnp.asarray(np.random.rand(shape[0], 4))
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
         assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
     def test_jitc_uniform_unit_operator_behavior(self, cls):
@@ -276,33 +280,25 @@ class Test_JITC_Operator_Behavior:
         r2 = dense @ right_vec
         r3 = left_vec @ mat
         r4 = left_vec @ dense
-        assert u.math.allclose(
-            r1,
-            r2,
-            rtol=1e-4,
-            atol=1e-4 * u.get_unit(r2),
-        )
-        assert u.math.allclose(
-            r3,
-            r4,
-            rtol=1e-4,
-            atol=1e-4 * u.get_unit(r4),
-        )
+        assert u.get_unit(r1) == u.get_unit(r2)
+        assert u.get_unit(r3) == u.get_unit(r4)
+        assert allclose(u.get_mantissa(r1), u.get_mantissa(r2), rtol=1e-4, atol=1e-4)
+        assert allclose(u.get_mantissa(r3), u.get_mantissa(r4), rtol=1e-4, atol=1e-4)
         jax.block_until_ready((right_vec, left_vec))
 
 
 class Test_JITC_To_Dense:
     @pytest.mark.parametrize('shape', shapes)
-    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_todense(self, shape: MatrixShape, transpose, corder):
+    def test_todense(self, shape: MatrixShape, matrix_mode, corder):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
 
-        out1 = jitcr.todense()
-        out2 = jitcc.todense().T
-        out3 = jitcr.T.todense().T
-        out4 = jitcc.T.todense()
+        out1 = jitcr.todense(matrix_mode=matrix_mode)
+        out2 = jitcc.todense(matrix_mode=matrix_mode).T
+        out3 = jitcr.T.todense(matrix_mode=matrix_mode).T
+        out4 = jitcc.T.todense(matrix_mode=matrix_mode)
         assert allclose(out1, out2)
         assert allclose(out1, out3)
         assert allclose(out1, out4)
@@ -427,38 +423,66 @@ class Test_JITC_To_Dense:
 
 
 class Test_JITC_To_CSR:
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
+    def test_tocsr_matches_todense_for_r_and_c_views(self, corder, matrix_mode):
+        shape = (20, 30)
+        data = (-0.1, 0.1, 0.1, 123)
+
+        jitcr = brainevent.JITCUniformR(data, shape=shape, corder=corder)
+        with pytest.warns(UserWarning, match="corder.*ignored"):
+            csr_r = jitcr.tocsr(matrix_mode=matrix_mode)
+        dense_r = jitcr.todense(matrix_mode=matrix_mode)
+        assert allclose(csr_r.todense(), dense_r)
+
+        jitcc = brainevent.JITCUniformC(data, shape=shape, corder=corder)
+        base_r = brainevent.JITCUniformR(data, shape=shape[::-1], corder=not corder)
+        expected_c = base_r.todense(matrix_mode=matrix_mode).T
+        with pytest.warns(UserWarning, match="corder.*ignored"):
+            csr_c = jitcc.tocsr(matrix_mode=matrix_mode)
+        assert allclose(jitcc.todense(matrix_mode=matrix_mode), expected_c)
+        assert allclose(csr_c.todense(), expected_c)
+        jax.block_until_ready((csr_r.data, csr_c.data, dense_r, expected_c))
+
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_tocsr_roundtrip(self, cls, corder):
+    @pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
+    def test_tocsr_accepts_light_matrix_mode(self, cls, corder, matrix_mode):
         shape = (20, 30)
-        mat = cls((-0.1, 0.1, 0.2, 123), shape=shape, corder=corder)
+        mat = cls((-0.1, 0.1, 0.0, 123), shape=shape, corder=corder)
 
-        csr = mat.tocsr()
+        with pytest.warns(UserWarning, match="corder.*ignored"):
+            csr = mat.tocsr(matrix_mode=matrix_mode)
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == shape
-        # Converting to CSR and back to dense must reproduce the dense matrix.
-        assert allclose(csr.todense(), mat.todense())
+        assert np.asarray(csr.indices).shape == (0,)
+        assert np.asarray(csr.data).shape == (0,)
+        assert np.all(np.asarray(csr.indptr) == 0)
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
     @pytest.mark.parametrize('corder', [True, False])
     def test_tocsr_transpose_roundtrip(self, cls, corder):
         shape = (20, 30)
-        mat = cls((-0.1, 0.1, 0.2, 123), shape=shape, corder=corder).T
+        mat = cls((-0.1, 0.1, 0.0, 123), shape=shape, corder=corder).T
 
-        csr = mat.tocsr()
+        with pytest.warns(UserWarning, match="corder.*ignored"):
+            csr = mat.tocsr(matrix_mode="mv")
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == mat.shape
-        assert allclose(csr.todense(), mat.todense())
+        assert np.asarray(csr.indices).shape == (0,)
+        assert np.asarray(csr.data).shape == (0,)
+        assert np.all(np.asarray(csr.indptr) == 0)
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
     @pytest.mark.parametrize('corder', [True, False])
     def test_tocsr_structure_valid(self, cls, corder):
         shape = (20, 30)
-        mat = cls((-0.1, 0.1, 0.2, 123), shape=shape, corder=corder)
+        mat = cls((-0.1, 0.1, 0.0, 123), shape=shape, corder=corder)
 
-        csr = mat.tocsr()
+        with pytest.warns(UserWarning, match="corder.*ignored"):
+            csr = mat.tocsr(matrix_mode="mm")
         indptr = np.asarray(csr.indptr)
         indices = np.asarray(csr.indices)
         assert indptr.shape == (shape[0] + 1,)
@@ -477,13 +501,13 @@ class Test_JITC_To_CSR:
 
         shape = (20, 30)
         weight = 2.1 * u.mV
-        mat = cls((-weight, weight, 0.2, 123), shape=shape)
+        mat = cls((-weight, weight, 0.0, 123), shape=shape)
 
-        csr = mat.tocsr()
-        dense = mat.todense()
+        with pytest.warns(UserWarning, match="corder.*ignored"):
+            csr = mat.tocsr(matrix_mode="mv")
         assert isinstance(csr, brainevent.CSR)
-        assert u.get_unit(csr.data) == u.get_unit(dense)
-        assert u.math.allclose(csr.todense(), dense)
+        assert u.get_unit(csr.data) == u.get_unit(weight)
+        assert np.asarray(u.get_mantissa(csr.data)).shape == (0,)
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
 

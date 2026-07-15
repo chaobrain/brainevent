@@ -21,6 +21,10 @@ import numpy as np
 import pytest
 
 from brainevent._jit_normal.float import jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p
+from brainevent._jit_normal.csr import jitn_to_csr
+
+PROB = 0.1
+SEED = 123
 
 platform = jax.default_backend()
 JITN_IMPLEMENTATIONS = tuple(jitn_p.available_backends(platform))
@@ -73,6 +77,26 @@ def test_jitnmv_transpose_forward(implementation, shape, corder):
     jax.block_until_ready((vector, dense, out, expected))
 
 
+def _light_csr(w_loc, w_scale, *, shape, matrix_mode, corder, backend):
+    with pytest.warns(UserWarning, match="corder.*ignored"):
+        return jitn_to_csr(
+            w_loc,
+            w_scale,
+            PROB,
+            SEED,
+            shape=shape,
+            corder=corder,
+            matrix_mode=matrix_mode,
+            backend=backend,
+        )
+
+
+def _light_csr_dense(w_loc, w_scale, *, shape, matrix_mode, corder, backend):
+    return _light_csr(
+        w_loc, w_scale, shape=shape, matrix_mode=matrix_mode, corder=corder, backend=backend
+    ).todense()
+
+
 # ---- Forward: jitnmm (matrix @ matrix, transpose=False) ----
 
 @pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
@@ -83,12 +107,12 @@ def test_jitnmm_forward(implementation, k, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     B = jnp.asarray(np.random.rand(shape[1], k))
     out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, corder=corder, backend=implementation)
-    # Validate against jitnmv column-by-column (exact match expected)
-    for j in range(k):
-        expected_col = jitnmv(w_loc, w_scale, prob, B[:, j], seed, shape=shape, corder=corder, backend=implementation)
-        assert jnp.allclose(out[:, j], expected_col, rtol=1e-4, atol=1e-4), (
-            f"Column {j} mismatch: max_diff={float(jnp.max(jnp.abs(out[:, j] - expected_col)))}"
-        )
+    dense = _light_csr_dense(
+        jnp.asarray(w_loc, dtype=jnp.float32), jnp.asarray(w_scale, dtype=jnp.float32),
+        shape=shape, matrix_mode="mm", corder=corder, backend=implementation,
+    )
+    expected = dense @ B
+    assert jnp.allclose(out, expected, rtol=1e-3, atol=1e-3)
     jax.block_until_ready(out)
 
 
@@ -102,13 +126,12 @@ def test_jitnmm_transpose_forward(implementation, k, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     B = jnp.asarray(np.random.rand(shape[0], k))
     out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
-    # Validate against jitnmv column-by-column (exact match expected)
-    for j in range(k):
-        expected_col = jitnmv(w_loc, w_scale, prob, B[:, j], seed, shape=shape, transpose=True, corder=corder,
-                              backend=implementation)
-        assert jnp.allclose(out[:, j], expected_col, rtol=1e-4, atol=1e-4), (
-            f"Column {j} mismatch: max_diff={float(jnp.max(jnp.abs(out[:, j] - expected_col)))}"
-        )
+    dense = _light_csr_dense(
+        jnp.asarray(w_loc, dtype=jnp.float32), jnp.asarray(w_scale, dtype=jnp.float32),
+        shape=shape, matrix_mode="mm", corder=corder, backend=implementation,
+    )
+    expected = dense.T @ B
+    assert jnp.allclose(out, expected, rtol=1e-3, atol=1e-3)
     jax.block_until_ready(out)
 
 
@@ -179,26 +202,25 @@ def test_jitnmm_jvp(implementation, k, shape, corder, transpose):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     mat_rows = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(mat_rows, k))
+    dense = _light_csr_dense(
+        jnp.asarray(w_loc, dtype=jnp.float32), jnp.asarray(w_scale, dtype=jnp.float32),
+        shape=shape, matrix_mode="mm", corder=corder, backend=implementation,
+    )
+    op = dense.T if transpose else dense
 
-    # Validate jitnmm JVP against jitnmv JVP
-    # (avoids jitn vs jitnmm RNG mismatch for corder=False on GPU)
     def f_mm(x):
         return jitnmm(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder,
                       backend=implementation).sum()
 
-    def f_mv(v):
-        return jitnmv(w_loc, w_scale, prob, v, seed, shape=shape, transpose=transpose, corder=corder,
-                      backend=implementation).sum()
+    def f_dense(x):
+        return (op @ x).sum()
 
     tangent_mm = jnp.ones_like(x)
-    tangent_mv = jnp.ones(mat_rows)
     out1, jvp1 = jax.jvp(f_mm, (x,), (tangent_mm,))
-    out_mv, jvp_mv = jax.jvp(f_mv, (x[:, 0],), (tangent_mv,))
-    # JVP of sum(M @ B) with tangent=ones is sum(M @ ones_matrix) = k * sum(M @ ones_vector)
-    assert jnp.allclose(jvp1, jvp_mv * k, rtol=1e-4, atol=1e-4), (
-        f"JVP mismatch: jitnmm={float(jvp1)}, jitnmv*k={float(jvp_mv * k)}"
-    )
-    jax.block_until_ready((x, tangent_mm, tangent_mv, out1, jvp1, out_mv, jvp_mv))
+    out2, jvp2 = jax.jvp(f_dense, (x,), (tangent_mm,))
+    assert jnp.allclose(out1, out2, rtol=1e-3, atol=1e-3)
+    assert jnp.allclose(jvp1, jvp2, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((x, dense, tangent_mm, out1, jvp1, out2, jvp2))
 
 
 # ---- Gradient VJP: jitnmm ----
@@ -212,28 +234,24 @@ def test_jitnmm_vjp(implementation, k, shape, corder, transpose):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     mat_rows = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(mat_rows, k))
+    dense = _light_csr_dense(
+        jnp.asarray(w_loc, dtype=jnp.float32), jnp.asarray(w_scale, dtype=jnp.float32),
+        shape=shape, matrix_mode="mm", corder=corder, backend=implementation,
+    )
+    op = dense.T if transpose else dense
 
-    # Validate jitnmm VJP against jitnmv VJP column-by-column
-    # (avoids jitn vs jitnmm RNG mismatch for corder=False on GPU)
     def f_mm(x):
         return jitnmm(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder,
                       backend=implementation).sum()
 
+    def f_dense(x):
+        return (op @ x).sum()
+
     out_mm, (grad_mm,) = jax.value_and_grad(f_mm, argnums=(0,))(x)
-
-    # jitnmv gradient: grad of sum(M @ v) w.r.t. v = M^T @ ones
-    # Each column of grad_mm should match the jitnmv gradient
-    def f_mv(v):
-        return jitnmv(w_loc, w_scale, prob, v, seed, shape=shape, transpose=transpose, corder=corder,
-                      backend=implementation).sum()
-
-    v0 = x[:, 0]
-    _, (grad_mv,) = jax.value_and_grad(f_mv, argnums=(0,))(v0)
-    for j in range(k):
-        assert jnp.allclose(grad_mm[:, j], grad_mv, rtol=1e-4, atol=1e-4), (
-            f"VJP column {j} mismatch: max_diff={float(jnp.max(jnp.abs(grad_mm[:, j] - grad_mv)))}"
-        )
-    jax.block_until_ready((x, out_mm, grad_mm, grad_mv))
+    out_dense, (grad_dense,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
+    assert jnp.allclose(out_mm, out_dense, rtol=1e-3, atol=1e-3)
+    assert jnp.allclose(grad_mm, grad_dense, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((x, dense, out_mm, grad_mm, out_dense, grad_dense))
 
 
 # ---- Batching: jitnmv over vectors ----

@@ -31,6 +31,7 @@ from brainevent._jit_scalar.binary import (
     binary_jitsmm_p,
 )
 from brainevent._jit_scalar.float import jitsmv, jitsmm
+from brainevent._jit_scalar.csr import jits_to_csr
 from brainevent._test_util import allclose
 
 platform = jax.default_backend()
@@ -337,29 +338,17 @@ def test_binary_jitsmv_vmap_matches_reference(implementation, transpose, corder)
     f_binary = jax.vmap(
         lambda v: binary_jitsmv(
             jnp.asarray(1.5, dtype=jnp.float32),
-            prob,
-            v,
-            seed,
-            shape=shape,
-            transpose=transpose,
-            corder=corder,
-            backend=implementation,
-        )
-    )
-    f_ref = jax.vmap(
-        lambda v: jitsmv(
-            jnp.asarray(1.5, dtype=jnp.float32),
-            prob,
-            _binary_events(v, dtype=jnp.float32),
-            seed,
-            shape=shape,
-            transpose=transpose,
-            corder=corder,
-            backend=implementation,
+            prob, v, seed,
+            shape=shape, transpose=transpose, corder=corder, backend=implementation,
         )
     )
     result_binary = f_binary(vectors)
-    result_ref = f_ref(vectors)
+    # Oracle: CSR with matrix_mode="mm" @ thresholded events
+    w = jnp.asarray(1.5, dtype=jnp.float32)
+    csr = jits_to_csr(w, prob, seed,
+                      shape=shape, corder=corder, matrix_mode="mm", backend=implementation)
+    op = csr.T if transpose else csr
+    result_ref = jnp.stack([op @ _binary_events(v, dtype=jnp.float32) for v in vectors])
     assert allclose(result_binary, result_ref, rtol=1e-4, atol=1e-4)
     jax.block_until_ready((vectors, result_binary, result_ref))
 

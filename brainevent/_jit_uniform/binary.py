@@ -16,6 +16,7 @@
 
 from pathlib import Path
 from typing import Optional, Sequence
+import warnings
 
 import brainunit as u
 import jax
@@ -39,8 +40,35 @@ __all__ = [
 ]
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
-def binary_jitumv(
+def _warn_corder_ignored(corder: bool) -> None:
+    warnings.warn(
+        "corder is ignored by the light JIT uniform implementation.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+def _normalize_chunk_size(n_cols: int, chunk_size: Optional[int], target_chunks: int) -> int:
+    if chunk_size is None:
+        target_chunks = int(target_chunks)
+        if target_chunks <= 0:
+            raise ValueError("target_chunks must be positive")
+        chunk_size = max(1, (int(n_cols) + target_chunks - 1) // target_chunks)
+    chunk_size = int(chunk_size)
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    return chunk_size
+
+
+def _light_options(kwargs):
+    return {
+        'chunk_size': kwargs.get('chunk_size', None),
+        'target_chunks': kwargs.get('target_chunks', 4),
+    }
+
+
+@namescope(name="brainevent.binary_jitumv", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
+def _binary_jitumv_impl(
     w_low: Data,
     w_high: Data,
     prob: float,
@@ -50,6 +78,8 @@ def binary_jitumv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
     """
@@ -157,13 +187,48 @@ def binary_jitumv(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
-def binary_jitumm(
+def binary_jitumv(
+    w_low: Data,
+    w_high: Data,
+    prob: float,
+    vector: Data,
+    seed: Optional[int] = None,
+    *,
+    shape: MatrixShape,
+    transpose: bool = False,
+    corder: bool = True,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    backend: Optional[str] = None,
+) -> Data:
+    _warn_corder_ignored(corder)
+    return _binary_jitumv_impl(
+        w_low,
+        w_high,
+        prob,
+        vector,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
+        backend=backend,
+    )
+
+
+binary_jitumv.__doc__ = _binary_jitumv_impl.__doc__
+
+
+@namescope(name="brainevent.binary_jitumm", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
+def _binary_jitumm_impl(
     w_low: Data,
     w_high: Data,
     prob: float,
@@ -173,6 +238,8 @@ def binary_jitumm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
     """
@@ -281,9 +348,44 @@ def binary_jitumm(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
+
+
+def binary_jitumm(
+    w_low: Data,
+    w_high: Data,
+    prob: float,
+    B: Data,
+    seed: Optional[int] = None,
+    *,
+    shape: MatrixShape,
+    transpose: bool = False,
+    corder: bool = True,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    backend: Optional[str] = None,
+) -> Data:
+    _warn_corder_ignored(corder)
+    return _binary_jitumm_impl(
+        w_low,
+        w_high,
+        prob,
+        B,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
+        backend=backend,
+    )
+
+
+binary_jitumm.__doc__ = _binary_jitumm_impl.__doc__
 
 
 # Kernel generators for JIT connection SPMV
@@ -418,19 +520,44 @@ _spike_sfx = {
 def _binary_jitumv_cuda_kernel(
     corder: bool,
     vector_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    shape: MatrixShape,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     **kwargs
 ):
+    del corder
+    if np.dtype(kwargs['w_low_info'].dtype) != np.dtype('float32'):
+        raise NotImplementedError("light binary_jitumv currently supports float32 weights only")
+
     load_cuda_file(
         Path(__file__).parent.joinpath('binary_jitumv.cu'),
         name='binary_jitumv',
     )
-    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'binary_jitumv.binary_jitumv_{variant}{wt_sfx}{sp_sfx}'
+    event_size = int(vector_info.shape[0])
+    packed_words = (event_size + 31) // 32
+    packed_info = jax.ShapeDtypeStruct((packed_words,), jnp.uint32)
+    chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
+    compute_name = 'binary_jitumv.scatter_f32' if transpose else 'binary_jitumv.gather_f32'
 
     def kernel(w_low, w_high, clen, vector, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
+        active = vector if vector.dtype == jnp.bool_ else (vector > 0).astype(jnp.int8)
+        packed = jax.ffi.ffi_call(
+            'binary_jitumv.pack_bool',
+            packed_info,
+        )(active)
+        return jax.ffi.ffi_call(
+            compute_name,
+            kwargs['outs'],
+        )(
+            w_low,
+            w_high,
+            clen,
+            seed,
+            packed,
+            vector_size=np.int32(event_size),
+            chunk_size=np.int32(chunk_size_value),
+        )
 
     return kernel
 
@@ -489,7 +616,8 @@ def _jitumv_jvp_wloc(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpo
         Single-element list containing the JVP result.
     """
     return binary_jitumv_p_call(
-        w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose, corder=corder,
+        **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
@@ -518,7 +646,8 @@ def _jitumv_jvp_wscale(w_dot, w_low, w_high, clen, vector, seed, *, shape, trans
         Single-element list containing the JVP result.
     """
     return binary_jitumv_p_call(
-        w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder,
+        **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
@@ -603,6 +732,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             shape=shape,
             transpose=transpose,
             corder=corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         count_basis = binary_jitumv_p_call(
@@ -614,6 +744,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             shape=shape,
             transpose=transpose,
             corder=corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_low = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
@@ -630,6 +761,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             shape=shape,
             transpose=transpose,
             corder=corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_high = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
@@ -679,6 +811,7 @@ def _jitumv_batching(
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )
         return r, [1]
@@ -693,6 +826,7 @@ def _jitumv_batching(
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )
         return r, [1]
@@ -746,6 +880,8 @@ def binary_jitumv_p_call(
     shape: Sequence[int],
     transpose: bool,
     corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ):
     """
@@ -798,8 +934,11 @@ def binary_jitumv_p_call(
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
+    _warn_corder_ignored(corder)
     assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
     assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
+    if np.dtype(w_low.dtype) != np.dtype('float32') or np.dtype(w_high.dtype) != np.dtype('float32'):
+        raise NotImplementedError("light binary_jitumv currently supports float32 weights only")
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert w_low.shape == (1,), f"The weight shape should be (1,), but got {w_low.shape}."
@@ -835,6 +974,8 @@ def binary_jitumv_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
         backend=backend,
     )
 
@@ -864,7 +1005,6 @@ See Also
 binary_jitumv : High-level user-facing function wrapper.
 """
 )
-binary_jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
 binary_jitumv_p.def_cuda_raw_kernel(_binary_jitumv_cuda_kernel, asdefault=True)
 binary_jitumv_p.def_jvp_rule2(_jitumv_jvp_wloc, _jitumv_jvp_wscale, None, _jitumv_jvp_v, None)
 binary_jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
@@ -997,19 +1137,55 @@ def _jitumm_numba_kernel_generator(
 def _binary_jitumm_cuda_kernel(
     corder: bool,
     B_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    shape: MatrixShape,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     **kwargs
 ):
+    del corder
+    if np.dtype(kwargs['w_low_info'].dtype) != np.dtype('float32'):
+        raise NotImplementedError("light binary_jitumm currently supports float32 weights only")
+    if int(B_info.shape[1]) > 32:
+        raise NotImplementedError("light binary_jitumm currently supports at most 32 columns")
+
     load_cuda_file(
         Path(__file__).parent.joinpath('binary_jitumm.cu'),
         name='binary_jitumm',
     )
-    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
-    sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'binary_jitumm.binary_jitumm_{variant}{wt_sfx}{sp_sfx}'
+    event_rows = int(B_info.shape[0])
+    n_cols = int(B_info.shape[1])
+    n_words = (event_rows + 31) // 32
+    packed_info = jax.ShapeDtypeStruct((n_cols, n_words), jnp.uint32)
+    chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
+    compute_name = 'binary_jitumm.scatter_f32' if transpose else 'binary_jitumm.gather_f32'
 
     def kernel(w_low, w_high, clen, B, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
+        active = B if B.dtype == jnp.bool_ else (B > 0).astype(jnp.int8)
+        packed = jax.ffi.ffi_call(
+            'binary_jitumm.pack',
+            packed_info,
+        )(
+            active,
+            k=np.int32(event_rows),
+            n=np.int32(n_cols),
+            n_words=np.int32(n_words),
+        )
+        return jax.ffi.ffi_call(
+            compute_name,
+            kwargs['outs'],
+        )(
+            w_low,
+            w_high,
+            clen,
+            seed,
+            packed,
+            m=np.int32(shape[0]),
+            k=np.int32(shape[1]),
+            n=np.int32(n_cols),
+            n_words=np.int32(n_words),
+            chunk_size=np.int32(chunk_size_value),
+        )
 
     return kernel
 
@@ -1039,7 +1215,8 @@ def _jitumm_jvp_wloc(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, c
         Single-element list containing the JVP result.
     """
     return binary_jitumm_p_call(
-        w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
@@ -1068,7 +1245,8 @@ def _jitumm_jvp_wscale(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose,
         Single-element list containing the JVP result.
     """
     return binary_jitumm_p_call(
-        w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
@@ -1173,6 +1351,7 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             shape=shape,
             transpose=transpose,
             corder=corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         count_basis = binary_jitumm_p_call(
@@ -1184,6 +1363,7 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             shape=shape,
             transpose=transpose,
             corder=corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_low = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
@@ -1200,6 +1380,7 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             shape=shape,
             transpose=transpose,
             corder=corder,
+            **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_high = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
@@ -1246,6 +1427,7 @@ def _batching_axis1(args, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
+        **_light_options(kwargs),
         backend=kwargs['backend'],
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
@@ -1337,6 +1519,8 @@ def binary_jitumm_p_call(
     shape: MatrixShape,
     transpose: bool,
     corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ):
     """
@@ -1389,6 +1573,7 @@ def binary_jitumm_p_call(
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
+    _warn_corder_ignored(corder)
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert B.ndim == 2, "The input matrix B should be a 2D array."
@@ -1400,12 +1585,16 @@ def binary_jitumm_p_call(
     assert w_high.shape == (1,), "The weight should be a scalar."
     assert clen.shape == (1,), "The clen should be a scalar."
     assert seed.shape == (1,), "The seed should be a scalar."
+    if B.shape[1] > 32:
+        raise NotImplementedError("light binary_jitumm currently supports at most 32 columns")
     if transpose:
         assert shape[0] == B.shape[0], f"The matrix shape and B shape do not match. {B.shape} @ {shape}"
     else:
         assert shape[1] == B.shape[0], f"The matrix shape and B shape do not match. {shape} @ {B.shape}"
     assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
     assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
+    if np.dtype(w_low.dtype) != np.dtype('float32') or np.dtype(w_high.dtype) != np.dtype('float32'):
+        raise NotImplementedError("light binary_jitumm currently supports float32 weights only")
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], w_low.dtype)
@@ -1429,6 +1618,8 @@ def binary_jitumm_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
         backend=backend,
     )
 
@@ -1458,7 +1649,6 @@ See Also
 binary_jitumm : High-level user-facing function wrapper.
 """
 )
-binary_jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
 binary_jitumm_p.def_cuda_raw_kernel(_binary_jitumm_cuda_kernel, asdefault=True)
 binary_jitumm_p.def_jvp_rule2(_jitumm_jvp_wloc, _jitumm_jvp_wscale, None, _jitumm_jvp_B, None)
 binary_jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
