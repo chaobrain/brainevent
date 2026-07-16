@@ -22,19 +22,22 @@ import brainevent
 from brainevent._data import _initialize_conn_length
 from brainevent._jit_scalar.csr import (
     jits_to_csr,
+    jits_csr_count_p,
     jits_csr_count_p_call,
+    jits_csr_fill_p,
     jits_csr_fill_p_call,
 )
-from brainevent._test_util import allclose
+from brainevent._test_util import allclose, requires_gpu_only_kernel
 
-# The CSR count/fill primitives only have a native ``numba`` backend, which compiles per
-# test and dominates wall-clock. Mark the whole module ``slow`` so the default ``pytest``
-# run skips it; CI runs it via ``pytest -m ""``.
+# The CSR count/fill primitives currently have only a GPU cuda_raw backend.
+# Mark the whole module slow so the default pytest run skips it; CI can run
+# it explicitly when GPU coverage is available.
 pytestmark = pytest.mark.slow
 
 
 class Test_Scalar_To_CSR:
     @pytest.mark.parametrize('corder', [True, False])
+    @requires_gpu_only_kernel(jits_csr_count_p, jits_csr_fill_p)
     def test_to_csr_roundtrip(self, corder):
         # Converting directly to CSR reproduces the dense matrix; this also
         # exercises count/fill PRNG alignment end-to-end.
@@ -51,6 +54,7 @@ class Test_Scalar_To_CSR:
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
     @pytest.mark.parametrize('corder', [True, False])
+    @requires_gpu_only_kernel(jits_csr_count_p)
     def test_count_matches_row_nnz(self, corder):
         # The count primitive returns, per row, the number of non-zeros of the
         # dense matrix it mirrors.
@@ -67,6 +71,7 @@ class Test_Scalar_To_CSR:
         assert np.array_equal(np.asarray(row_counts), expected)
 
     @pytest.mark.parametrize('corder', [True, False])
+    @requires_gpu_only_kernel(jits_csr_count_p, jits_csr_fill_p)
     def test_fill_given_indptr(self, corder):
         # Given the count-derived indptr, the fill primitive writes a structure
         # whose densification matches the dense matrix.
@@ -99,6 +104,7 @@ class Test_Scalar_To_CSR:
         assert np.asarray(csr.data).shape == (0,)
         assert np.all(np.asarray(csr.indptr) == 0)
 
+    @requires_gpu_only_kernel(jits_csr_count_p, jits_csr_fill_p)
     def test_to_csr_units(self):
         import brainunit as u
 

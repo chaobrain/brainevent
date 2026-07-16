@@ -93,3 +93,21 @@ def test_m13_unregistered_global_backend_warns_and_falls_back():
         np.testing.assert_allclose(np.asarray(out[0]), np.arange(8) + 1.0)
     finally:
         clear_backends()
+
+
+@pytest.mark.skipif(jax.default_backend() != 'cpu', reason='Requires CPU as the default JAX platform.')
+def test_gpu_only_kernel_without_cpu_backend_raises_clear_error_on_cpu():
+    """A GPU-only primitive should fail before JAX reports a missing lowering."""
+    prim = XLACustomKernel('gpu_only_clear_error_probe')
+    prim.def_cuda_raw_kernel(lambda **kwargs: None, asdefault=True)
+
+    cpu = jax.devices('cpu')[0]
+    x = jax.device_put(jnp.arange(4, dtype=jnp.float32), cpu)
+
+    with pytest.raises(NotImplementedError) as exc:
+        prim(x, outs=[jax.ShapeDtypeStruct((4,), jnp.float32)])
+
+    text = str(exc.value)
+    assert "gpu_only_clear_error_probe has no backend for platform 'cpu'" in text
+    assert "gpu=['cuda_raw']" in text
+    assert 'MLIR translation rule' not in text

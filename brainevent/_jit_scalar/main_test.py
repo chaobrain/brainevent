@@ -20,11 +20,13 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent._test_util import allclose, gen_events
+from brainevent._jit_scalar.binary import binary_jitsmm_p, binary_jitsmv_p
+from brainevent._jit_scalar.csr import jits_csr_count_p, jits_csr_fill_p
+from brainevent._test_util import allclose, gen_events, requires_gpu_only_kernel
 
-# Every test in this module dispatches to the native ``numba`` backend (the only backend for
-# JIT-connectivity kernels), which compiles per test and dominates wall-clock. Mark the whole
-# module ``slow`` so the default ``pytest`` run skips it; CI runs it via ``pytest -m ""``.
+# These tests exercise JIT-connectivity native kernels and can compile per test.
+# Mark the whole module slow so the default pytest run skips it; CI runs it
+# explicitly via pytest -m empty-marker selection.
 pytestmark = pytest.mark.slow
 
 platform = jax.default_backend()
@@ -100,6 +102,7 @@ class Test_JITC_RC_Conversion:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
+    @requires_gpu_only_kernel(binary_jitsmv_p)
     def test_matvec_event(self, shape, corder, asbool):
         jitcr = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
@@ -114,6 +117,7 @@ class Test_JITC_RC_Conversion:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
+    @requires_gpu_only_kernel(binary_jitsmv_p)
     def test_vecmat_event(self, shape, corder, asbool):
         jitcr = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
@@ -129,6 +133,7 @@ class Test_JITC_RC_Conversion:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
+    @requires_gpu_only_kernel(binary_jitsmm_p)
     def test_jitmat_event(self, k, shape, corder, asbool):
         jitcr = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
@@ -144,6 +149,7 @@ class Test_JITC_RC_Conversion:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
+    @requires_gpu_only_kernel(binary_jitsmm_p)
     def test_matjit_event(self, k, shape, corder, asbool):
         jitcr = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
@@ -428,6 +434,7 @@ class Test_JITC_Scalar_Validation:
 class Test_JITC_To_CSR:
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
     @pytest.mark.parametrize('corder', [True, False])
+    @requires_gpu_only_kernel(jits_csr_count_p, jits_csr_fill_p)
     def test_tocsr_roundtrip(self, cls, corder):
         shape = (20, 30)
         mat = cls((1.5, 0.2, 123), shape=shape, corder=corder)
@@ -441,6 +448,7 @@ class Test_JITC_To_CSR:
 
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
     @pytest.mark.parametrize('corder', [True, False])
+    @requires_gpu_only_kernel(jits_csr_count_p, jits_csr_fill_p)
     def test_tocsr_transpose_roundtrip(self, cls, corder):
         shape = (20, 30)
         mat = cls((1.5, 0.2, 123), shape=shape, corder=corder).T
@@ -453,6 +461,7 @@ class Test_JITC_To_CSR:
 
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
     @pytest.mark.parametrize('corder', [True, False])
+    @requires_gpu_only_kernel(jits_csr_count_p, jits_csr_fill_p)
     def test_tocsr_structure_valid(self, cls, corder):
         shape = (20, 30)
         mat = cls((1.5, 0.2, 123), shape=shape, corder=corder)
@@ -476,6 +485,7 @@ class Test_JITC_To_CSR:
         assert allclose(csr.data, jnp.full_like(csr.data, 1.5))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    @requires_gpu_only_kernel(jits_csr_count_p, jits_csr_fill_p)
     def test_tocsr_units(self, cls):
         import brainunit as u
 

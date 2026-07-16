@@ -240,6 +240,30 @@ class XLACustomKernel:
         """
         return tuple(outs)
 
+    def _infer_call_platform(self, ins) -> str:
+        """Infer the target platform from concrete input device placement."""
+        platforms = set()
+        for value in jax.tree_util.tree_leaves(ins):
+            devices = None
+            if hasattr(value, 'devices'):
+                try:
+                    devices = value.devices()
+                except TypeError:
+                    devices = None
+            if devices is None and hasattr(value, 'device'):
+                device = value.device
+                if device is not None:
+                    devices = {device}
+            if devices:
+                platforms.update(
+                    device.platform
+                    for device in devices
+                    if hasattr(device, 'platform')
+                )
+        if len(platforms) == 1:
+            return next(iter(platforms))
+        return jax.default_backend()
+
     def __call__(self, *ins, outs: OutType, **kwargs):
         """Invoke the primitive with the given inputs and output specification.
 
@@ -296,6 +320,17 @@ class XLACustomKernel:
             >>> # After registering kernels...
             >>> out = kernel(x, outs=[jax.ShapeDtypeStruct((10,), jnp.float32)])  # doctest: +SKIP
         """
+        platform = self._infer_call_platform(ins)
+        if platform not in self._kernels:
+            available = ', '.join(
+                f"{name}={sorted(kernels)!r}"
+                for name, kernels in sorted(self._kernels.items())
+            ) or 'none'
+            raise NotImplementedError(
+                f"{self.name} has no backend for platform {platform!r}; "
+                f"available: {available}"
+            )
+
         flat_outs, tree_def = abstract_arguments(outs)
         r = self.primitive.bind(*ins, **kwargs, outs=tuple(flat_outs))
         assert len(r) == len(flat_outs), 'The number of outputs does not match the expected.'

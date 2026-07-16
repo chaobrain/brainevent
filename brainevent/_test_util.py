@@ -40,6 +40,28 @@ requires_gpu = pytest.mark.skipif(
 )
 
 
+def requires_gpu_only_kernel(*primitives):
+    """Skip when the current JAX platform has no backend for GPU-only kernels."""
+    platform = jax.default_backend()
+    unavailable = []
+    for primitive in primitives:
+        backends = primitive.available_backends(platform)
+        if backends:
+            continue
+        name = getattr(primitive, 'name', repr(primitive))
+        registered = []
+        for candidate in ('cpu', 'gpu', 'tpu'):
+            candidate_backends = primitive.available_backends(candidate)
+            if candidate_backends:
+                registered.append(f"{candidate}={candidate_backends!r}")
+        detail = ', '.join(registered) if registered else 'no registered backends'
+        unavailable.append(f"{name} ({detail})")
+    return pytest.mark.skipif(
+        bool(unavailable),
+        reason=f"No backend for platform {platform!r}: " + '; '.join(unavailable),
+    )
+
+
 def generate_fixed_conn_num_indices(
     n_pre: int,
     n_post: int,

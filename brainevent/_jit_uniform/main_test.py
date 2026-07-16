@@ -25,12 +25,14 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
     jax.config.update('jax_default_matmul_precision', 'highest')
 
 import brainevent
-from brainevent._test_util import allclose, gen_events
+from brainevent._jit_uniform.binary import binary_jitumm_p, binary_jitumv_p
+from brainevent._jit_uniform.csr import jitu_csr_count_p, jitu_csr_fill_p
+from brainevent._test_util import allclose, gen_events, requires_gpu_only_kernel
 from brainevent._typing import MatrixShape
 
-# Every test in this module dispatches to the native ``numba`` backend (the only backend for
-# JIT-connectivity kernels), which compiles per test and dominates wall-clock. Mark the whole
-# module ``slow`` so the default ``pytest`` run skips it; CI runs it via ``pytest -m ""``.
+# These tests exercise JIT-connectivity native kernels and can compile per test.
+# Mark the whole module slow so the default pytest run skips it; CI runs it
+# explicitly via pytest -m empty-marker selection.
 pytestmark = pytest.mark.slow
 
 platform = jax.default_backend()
@@ -104,6 +106,7 @@ class Test_JITC_RC_Conversion:
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
+    @requires_gpu_only_kernel(binary_jitumv_p)
     def test_jitvec_event(self, shape: MatrixShape, corder):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
@@ -117,6 +120,7 @@ class Test_JITC_RC_Conversion:
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
+    @requires_gpu_only_kernel(binary_jitumv_p)
     def test_vecjit_event(self, shape: MatrixShape, corder):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
@@ -132,6 +136,7 @@ class Test_JITC_RC_Conversion:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
+    @requires_gpu_only_kernel(binary_jitumm_p)
     def test_jitmat_event(self, k, shape: MatrixShape, corder, asbool):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
@@ -147,6 +152,7 @@ class Test_JITC_RC_Conversion:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
+    @requires_gpu_only_kernel(binary_jitumm_p)
     def test_matjit_event(self, k, shape: MatrixShape, corder, asbool):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
@@ -425,6 +431,7 @@ class Test_JITC_To_Dense:
 class Test_JITC_To_CSR:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
+    @requires_gpu_only_kernel(jitu_csr_count_p, jitu_csr_fill_p)
     def test_tocsr_matches_todense_for_r_and_c_views(self, corder, matrix_mode):
         shape = (20, 30)
         data = (-0.1, 0.1, 0.1, 123)

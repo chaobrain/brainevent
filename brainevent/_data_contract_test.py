@@ -32,6 +32,10 @@ import pytest
 import brainunit as u
 
 import brainevent as be
+from brainevent._jit_normal.csr import jitn_csr_count_p, jitn_csr_fill_p
+from brainevent._jit_scalar.csr import jits_csr_count_p, jits_csr_fill_p
+from brainevent._jit_uniform.csr import jitu_csr_count_p, jitu_csr_fill_p
+from brainevent._test_util import requires_gpu_only_kernel
 from brainevent import BrainEventError, UnsupportedOperationError
 from brainevent._data import DataRepresentation
 
@@ -173,6 +177,14 @@ def test_jitc_refuses_fromdense(cls, data):
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize('cls,data', JITC_INSTANCES, ids=JITC_IDS)
+@requires_gpu_only_kernel(
+    jits_csr_count_p,
+    jits_csr_fill_p,
+    jitn_csr_count_p,
+    jitn_csr_fill_p,
+    jitu_csr_count_p,
+    jitu_csr_fill_p,
+)
 def test_jitc_conversions_agree_with_todense(cls, data):
     m = cls(data, shape=(16, 16))
     dense = m.todense()
