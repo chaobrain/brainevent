@@ -583,7 +583,7 @@ _dtype_sfx = {
 
 
 def _jitn_cuda_kernel(
-    shape: Optional[MatrixShape] = None,
+    shape: MatrixShape,
     transpose: bool = False,
     matrix_mode: MatrixMode = 'mv',
     chunk_size: Optional[int] = None,
@@ -1045,8 +1045,8 @@ def _jitnmv_numba_kernel_generator(
 
 
 def _jitnmv_cuda_kernel(
+    shape: MatrixShape,
     transpose: bool = False,
-    shape: Optional[MatrixShape] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     **kwargs
@@ -1542,9 +1542,9 @@ def _jitnmm_numba_kernel_generator(
 
 
 def _jitnmm_cuda_kernel(
+    shape: MatrixShape,
     B_info: Optional[jax.ShapeDtypeStruct] = None,
     transpose: bool = False,
-    shape: Optional[MatrixShape] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     matrix_mode: MatrixMode = 'mm',

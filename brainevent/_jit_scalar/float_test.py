@@ -32,6 +32,11 @@ JITS_IMPLEMENTATIONS = tuple(jits_p.available_backends(platform))
 JITSMV_IMPLEMENTATIONS = tuple(jitsmv_p.available_backends(platform))
 JITSMM_IMPLEMENTATIONS = tuple(jitsmm_p.available_backends(platform))
 
+pytestmark = pytest.mark.skipif(
+    platform != 'gpu',
+    reason='light JIT scalar CSR/CUDA alignment tests require a GPU backend',
+)
+
 
 @pytest.fixture(autouse=True)
 def _seed_rng():

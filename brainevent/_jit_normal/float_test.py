@@ -31,6 +31,11 @@ JITN_IMPLEMENTATIONS = tuple(jitn_p.available_backends(platform))
 JITNMV_IMPLEMENTATIONS = tuple(jitnmv_p.available_backends(platform))
 JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends(platform))
 
+pytestmark = pytest.mark.skipif(
+    platform != 'gpu',
+    reason='light JIT normal CSR/CUDA alignment tests require a GPU backend',
+)
+
 
 def _skip_if_no_backend(implementation):
     if implementation is None:
