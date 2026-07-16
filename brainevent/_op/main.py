@@ -242,7 +242,7 @@ class XLACustomKernel:
 
     def _infer_call_platform(self, ins) -> str:
         """Infer the target platform from concrete input device placement."""
-        platforms = set()
+        platforms: set[str] = set()
         for value in jax.tree_util.tree_leaves(ins):
             devices = None
             if hasattr(value, 'devices'):

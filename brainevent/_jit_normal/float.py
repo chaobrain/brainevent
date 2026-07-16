@@ -592,6 +592,7 @@ def _jitn_cuda_kernel(
 ):
     if np.dtype(kwargs['w_loc_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light float jitn CUDA currently supports float32 weights only")
+    assert shape is not None, "shape must be provided"
 
     matrix_mode = _normalize_matrix_mode(matrix_mode)
     n_rows, n_cols = int(shape[0]), int(shape[1])
@@ -1052,6 +1053,7 @@ def _jitnmv_cuda_kernel(
 ):
     if np.dtype(kwargs['w_loc_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light float jitnmv CUDA currently supports float32 weights only")
+    assert shape is not None, "shape must be provided"
 
     chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
     load_cuda_file(
@@ -1540,7 +1542,7 @@ def _jitnmm_numba_kernel_generator(
 
 
 def _jitnmm_cuda_kernel(
-    B_info: jax.ShapeDtypeStruct = None,
+    B_info: Optional[jax.ShapeDtypeStruct] = None,
     transpose: bool = False,
     shape: Optional[MatrixShape] = None,
     chunk_size: Optional[int] = None,
@@ -1550,6 +1552,8 @@ def _jitnmm_cuda_kernel(
 ):
     if np.dtype(kwargs['w_loc_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light float jitnmm CUDA currently supports float32 weights only")
+    assert shape is not None, "shape must be provided"
+    assert B_info is not None, "B_info must be provided"
 
     matrix_mode = _normalize_matrix_mode(matrix_mode)
     m = int(shape[0])
