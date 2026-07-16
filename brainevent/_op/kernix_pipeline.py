@@ -22,6 +22,8 @@ Public API: load_cuda_inline, load_cuda_file, load_cuda_dir,
 """
 
 import glob
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -108,6 +110,91 @@ def _build_specs(
     return specs
 
 
+# Cap on the number of ``extra_include_paths`` headers byte-hashed into the
+# cache key.  Above this the (name, size, mtime) triples are hashed instead —
+# still change-sensitive, but O(1) reads per file (finding 10).
+_MAX_HASHED_HEADERS = 200
+
+
+def _serialize_specs(specs: list[FunctionSpec]) -> str:
+    """Canonically serialize resolved arg-specs for the cache key (finding 3).
+
+    The generated FFI wrapper ABI baked into the ``.so`` is a pure function of
+    these resolved specs, so two builds of the same source with different
+    ``functions`` mappings must serialize differently.  Entries are sorted by
+    function name so dict iteration order does not perturb the key.
+
+    Parameters
+    ----------
+    specs : list of FunctionSpec
+        The resolved specs (output of :func:`_build_specs`).
+
+    Returns
+    -------
+    str
+        A deterministic JSON string.
+    """
+    payload = [
+        {
+            "name": s.name,
+            "num_args": s.num_args,
+            "num_rets": s.num_rets,
+            "has_stream": s.has_stream,
+            "attrs": [list(a) for a in s.attrs],
+            "user_param_order": list(s.user_param_order),
+        }
+        for s in specs
+    ]
+    payload.sort(key=lambda d: str(d["name"]))
+    return json.dumps(payload, sort_keys=True)
+
+
+def _extra_include_headers(
+    extra_include_paths: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    """Resolve header files under ``extra_include_paths`` for the cache key.
+
+    Recursively globs ``*.h`` / ``*.cuh`` / ``*.hpp`` under each supplied
+    directory (finding 10) so editing a user header included via
+    ``extra_include_paths`` invalidates the cache.  Results are de-duplicated
+    and sorted for determinism.
+
+    Only headers found *directly under the listed directories* are tracked;
+    headers pulled in from elsewhere (system paths, siblings of a listed dir)
+    are **not** hashed — document this caveat to callers.
+
+    Parameters
+    ----------
+    extra_include_paths : list of str or None
+        The ``-I`` search directories supplied by the caller.
+
+    Returns
+    -------
+    tuple of (list[str], list[str])
+        ``(header_paths, extra_digests)``.  When the header count is at or below
+        :data:`_MAX_HASHED_HEADERS`, ``header_paths`` holds the files to
+        byte-hash and ``extra_digests`` is empty.  Above the cap, ``header_paths``
+        is empty and ``extra_digests`` holds a single summary digest of the
+        headers' (path, size, mtime) triples instead.
+    """
+    if not extra_include_paths:
+        return [], []
+    found: set[str] = set()
+    for directory in extra_include_paths:
+        for ext in ("*.h", "*.cuh", "*.hpp"):
+            for path in glob.glob(os.path.join(directory, "**", ext), recursive=True):
+                if os.path.isfile(path):
+                    found.add(os.path.abspath(path))
+    ordered = sorted(found)
+    if len(ordered) > _MAX_HASHED_HEADERS:
+        summary = "\n".join(
+            f"{p}\t{os.path.getsize(p)}\t{os.path.getmtime(p):.0f}" for p in ordered
+        )
+        digest = "extra_include_headers:" + hashlib.sha256(summary.encode()).hexdigest()
+        return [], [digest]
+    return ordered, []
+
+
 def _register_targets(
     specs: list[FunctionSpec],
     module: CompiledModule,
@@ -115,20 +202,33 @@ def _register_targets(
     name: str,
     target_prefix: str | None,
     platform: str,
+    replace: bool = False,
+    content_id: str | None = None,
 ) -> None:
     """Register each spec as a JAX FFI target, deduped per target name.
 
     A target already registered from the same *so_path* is skipped (idempotent
-    re-load).  The same source under a different *target_prefix* yields new
-    target names, which are registered.  A name already taken by a *different*
-    artefact raises ``KernelRegistrationError`` from ``register_ffi_target``.
+    re-load) **unless** *replace* is set.  The same source under a different
+    *target_prefix* yields new target names, which are registered.
+
+    When *replace* is ``True`` (``force_rebuild``/notebook iteration) the
+    per-path short-circuit is bypassed so the (possibly rebuilt-in-place)
+    artefact is handed to :func:`register_ffi_target`, which compares
+    *content_id* — the deterministic compilation cache key (source, ABI specs,
+    headers, build options).  Unchanged source therefore re-registers as an
+    idempotent no-op even when the recompiled ``.so`` bytes differ (compilers
+    embed build paths/timestamps); a name already taken by *different* content
+    raises ``KernelRegistrationError`` from ``register_ffi_target`` — a live
+    re-point is refused deterministically on this JAX (see its Notes); the
+    caller must use a distinct ``name=`` / ``target_prefix=``.
     """
     prefix = target_prefix or name
     for spec in specs:
         target = f"{prefix}.{spec.name}"
-        if _REGISTERED_TARGET_SO.get(target) == so_path:
+        if not replace and _REGISTERED_TARGET_SO.get(target) == so_path:
             continue
-        register_ffi_target(target, module, spec.name, platform=platform)
+        register_ffi_target(target, module, spec.name, platform=platform,
+                            replace=replace, content_id=content_id)
         _REGISTERED_TARGET_SO[target] = so_path
 
 
@@ -164,6 +264,7 @@ def load_cuda_inline(
     verbose: bool = False,
     compute_capability: str | None = None,
     force_rebuild: bool = False,
+    replace: bool = False,
     auto_register: bool = True,
     target_prefix: str | None = None,
     optimization_level: int = 3,
@@ -194,7 +295,20 @@ def load_cuda_inline(
     compute_capability : str, optional
         GPU architecture (e.g. ``"sm_86"``).  Auto-detected if ``None``.
     force_rebuild : bool
-        Skip cache and recompile.
+        Skip the cache and recompile.  Recompiling *unchanged* source under the
+        same name re-registers as a no-op; recompiling *changed* source under
+        the same name raises an actionable ``KernelRegistrationError`` (register
+        under a distinct ``name=`` / ``target_prefix=``) instead of silently
+        dispatching stale native code (audit finding 4).  Passes ``replace``
+        through to registration.
+    replace : bool
+        Reserved for forward compatibility.  On the installed JAX a live FFI
+        target cannot be re-pointed to new code in a verifiable way, so
+        rebuilding a *changed* kernel under an existing target name raises
+        deterministically (on **all** platforms) whether or not this is set —
+        never silently serving stale native code.  To run edited kernel source
+        live, register the rebuild under a distinct ``name=`` / ``target_prefix=``.
+        See :func:`register_ffi_target` Notes for the probe details.
     auto_register : bool
         Automatically register each function as a JAX FFI target with
         name ``"<target_prefix>.<func_name>"`` (or ``"<name>.<func>"``
@@ -246,9 +360,17 @@ def load_cuda_inline(
     gpu_arches = resolved if explicit_pin else resolved[:1]
     arch_key = "+".join(gpu_arches)
 
+    # Resolve arg-specs *before* the cache key so the wrapper ABI they generate
+    # participates in it (finding 3): the same source with a different
+    # ``functions`` mapping must not collide on a stale ``.so``.
+    specs = _build_specs(functions, user_source)
+
+    # Byte-hash any user headers reachable via extra_include_paths (finding 10).
+    inc_header_paths, inc_header_digests = _extra_include_headers(extra_include_paths)
+
     # Compute cache key (includes optimization settings so changing them
-    # rebuilds; also the include search path, injected-header bytes, and the
-    # jaxlib FFI ABI version — see CompilationCache.cache_key).
+    # rebuilds; also the resolved specs, include search path, injected-header
+    # bytes, and the jaxlib FFI ABI version — see CompilationCache.cache_key).
     cuda_ldflags = _cuda_runtime_lib_linker_search_flags(toolchain.cuda_home)
     cache_key = _cache.cache_key(
         source=user_source,
@@ -262,13 +384,13 @@ def load_cuda_inline(
         ),
         extra_ldflags=cuda_ldflags + (extra_ldflags or []),
         extra_include_paths=extra_include_paths,
-        header_paths=_cache_header_paths(toolchain),
+        header_paths=_cache_header_paths(toolchain) + inc_header_paths,
+        specs=_serialize_specs(specs),
+        extra_digests=inc_header_digests,
     )
 
     # Check cache
     cached_so = None if force_rebuild else _cache.lookup(name, cache_key)
-
-    specs = _build_specs(functions, user_source)
 
     if cached_so is not None:
         so_path = str(cached_so)
@@ -314,7 +436,11 @@ def load_cuda_inline(
     module = CompiledModule(so_path, list(functions.keys()))
 
     if auto_register:
-        _register_targets(specs, module, so_path, name, target_prefix, platform="CUDA")
+        _register_targets(
+            specs, module, so_path, name, target_prefix,
+            platform="CUDA", replace=replace or force_rebuild,
+            content_id=f"key:{cache_key}",
+        )
 
     return module
 
@@ -398,6 +524,7 @@ def load_cpp_inline(
     build_directory: str | None = None,
     verbose: bool = False,
     force_rebuild: bool = False,
+    replace: bool = False,
     auto_register: bool = True,
     target_prefix: str | None = None,
 ) -> CompiledModule:
@@ -430,7 +557,20 @@ def load_cpp_inline(
     verbose : bool
         Print the full compiler command.
     force_rebuild : bool
-        Skip cache and recompile.
+        Skip the cache and recompile.  Recompiling *unchanged* source under the
+        same name re-registers as a no-op; recompiling *changed* source under
+        the same name raises an actionable ``KernelRegistrationError`` (register
+        under a distinct ``name=`` / ``target_prefix=``) instead of silently
+        dispatching stale native code (audit finding 4).  Passes ``replace``
+        through to registration.
+    replace : bool
+        Reserved for forward compatibility.  On the installed JAX a live FFI
+        target cannot be re-pointed to new code in a verifiable way, so
+        rebuilding a *changed* kernel under an existing target name raises
+        deterministically (on **all** platforms) whether or not this is set —
+        never silently serving stale native code.  To run edited kernel source
+        live, register the rebuild under a distinct ``name=`` / ``target_prefix=``.
+        See :func:`register_ffi_target` Notes for the probe details.
     auto_register : bool
         Automatically register FFI targets as ``"<prefix>.<func>"``.
     target_prefix : str, optional
@@ -459,8 +599,11 @@ def load_cpp_inline(
     # Detect toolchain (CPU — no CUDA needed)
     toolchain = detect_cpp_toolchain()
 
-    # Cache key (include search path, injected-header bytes, and the jaxlib
-    # FFI ABI version participate — see CompilationCache.cache_key).
+    # Byte-hash any user headers reachable via extra_include_paths (finding 10).
+    inc_header_paths, inc_header_digests = _extra_include_headers(extra_include_paths)
+
+    # Cache key (resolved specs, include search path, injected-header bytes, and
+    # the jaxlib FFI ABI version participate — see CompilationCache.cache_key).
     cache_key = _cache.cache_key(
         source=user_source,
         arch="cpu",
@@ -468,7 +611,9 @@ def load_cpp_inline(
         extra_cflags=extra_cflags,
         extra_ldflags=extra_ldflags,
         extra_include_paths=extra_include_paths,
-        header_paths=_cache_header_paths(toolchain),
+        header_paths=_cache_header_paths(toolchain) + inc_header_paths,
+        specs=_serialize_specs(specs),
+        extra_digests=inc_header_digests,
     )
 
     cached_so = None if force_rebuild else _cache.lookup(name, cache_key)
@@ -508,7 +653,11 @@ def load_cpp_inline(
     module = CompiledModule(so_path, list(functions.keys()))
 
     if auto_register:
-        _register_targets(specs, module, so_path, name, target_prefix, platform="cpu")
+        _register_targets(
+            specs, module, so_path, name, target_prefix,
+            platform="cpu", replace=replace or force_rebuild,
+            content_id=f"key:{cache_key}",
+        )
 
     return module
 

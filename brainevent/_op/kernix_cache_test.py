@@ -15,7 +15,9 @@
 
 """Tests for Kernix compilation cache internals."""
 
+import hashlib
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -111,15 +113,16 @@ def test_m6a_clear_removes_and_counts_symlink_once(tmp_path):
     base.mkdir()
     cache = CompilationCache(base_dir=str(base))
 
-    # A real entry + a symlink entry pointing outside the cache.
-    real_entry = base / "mod_realkey0000000"
+    # A real entry + a symlink entry pointing outside the cache.  Entry names
+    # must be exactly ``<name>_<16-hex-key>`` for clear() to match them.
+    real_entry = base / "mod_0123456789abcdef"
     real_entry.mkdir()
     (real_entry / "mod.so").write_bytes(b"\x00")
 
     outside = tmp_path / "outside_target"
     outside.mkdir()
     (outside / "keep.txt").write_text("precious")
-    link_entry = base / "mod_linkkey0000000"
+    link_entry = base / "mod_fedcba9876543210"
     link_entry.symlink_to(outside, target_is_directory=True)
 
     removed = cache.clear("mod")
@@ -249,3 +252,182 @@ def test_l5_key_is_64bit_truncated(tmp_path):
 def test_l5_docstring_no_longer_says_jax_kernel_bridge():
     """The stale 'jax-kernel-bridge version' wording must be gone."""
     assert "jax-kernel-bridge" not in (CompilationCache.__doc__ or "")
+
+
+# ---------------------------------------------------------------------------
+# F3 — resolved arg-specs must participate in the cache key.
+# ---------------------------------------------------------------------------
+
+def test_f3_key_depends_on_specs(tmp_path):
+    """Same source, different ``specs`` → different keys.
+
+    The compiled ``.so`` is user source PLUS generated FFI wrappers derived from
+    the resolved specs, so a different ``functions`` mapping (different wrapper
+    ABI) must not collide on the same cache entry.
+    """
+    cache = CompilationCache(base_dir=str(tmp_path))
+    common = dict(source="void f(){}", arch="cpu")
+
+    key_a = cache.cache_key(**common, specs='[{"name":"f","num_args":1}]')
+    key_b = cache.cache_key(**common, specs='[{"name":"f","num_args":2}]')
+
+    assert key_a != key_b
+    # Absent specs stays backward-compatible and stable.
+    assert cache.cache_key(**common) == cache.cache_key(**common)
+
+
+def test_f3_extra_digests_change_key(tmp_path):
+    """The ``extra_digests`` summary channel (capped header sets) affects the key."""
+    cache = CompilationCache(base_dir=str(tmp_path))
+    common = dict(source="x", arch="cpu")
+    assert cache.cache_key(**common, extra_digests=["h1"]) != cache.cache_key(
+        **common, extra_digests=["h2"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# F19 — clear(name) matches "<name>_<16 hex>" exactly (no prefix bleed).
+# ---------------------------------------------------------------------------
+
+def test_f19_clear_prefix_is_exact(tmp_path):
+    """``clear("add")`` must not also delete ``add_fast_<key>`` siblings."""
+    base = tmp_path / "cache"
+    base.mkdir()
+    cache = CompilationCache(base_dir=str(base))
+
+    add = base / "add_0123456789abcdef"
+    add.mkdir()
+    (add / "add.so").write_bytes(b"\x00")
+    add_fast = base / "add_fast_0123456789abcdef"
+    add_fast.mkdir()
+    (add_fast / "add_fast.so").write_bytes(b"\x00")
+
+    removed = cache.clear("add")
+
+    assert removed == 1, f"clear('add') should remove only 'add_*', got {removed}"
+    assert not add.exists()
+    assert add_fast.exists(), "clear('add') wrongly deleted add_fast_* sibling"
+
+
+def test_f19_clear_ignores_non_key_dirs(tmp_path):
+    """A directory not shaped like ``<name>_<16hex>`` is left untouched."""
+    base = tmp_path / "cache"
+    base.mkdir()
+    cache = CompilationCache(base_dir=str(base))
+    # 15 hex chars — not a valid key length.
+    bad = base / "add_0123456789abcde"
+    bad.mkdir()
+    assert cache.clear("add") == 0
+    assert bad.exists()
+
+
+# ---------------------------------------------------------------------------
+# F15 — store() tolerates a Windows-locked DLL (dest already published).
+# ---------------------------------------------------------------------------
+
+def test_f15_store_returns_dest_when_replace_permission_denied(tmp_path, monkeypatch):
+    """A PermissionError on publish is benign iff ``dest`` already exists.
+
+    Simulates the Windows "os.replace over a loaded DLL" failure: the first
+    publish succeeds, the second raises PermissionError but a valid artefact is
+    already present, so store() returns it instead of propagating (finding 15).
+    """
+    base = tmp_path / "cache"
+    cache = CompilationCache(base_dir=str(base))
+
+    # First store publishes dest normally.
+    src1 = tmp_path / "b1" / "m.so"
+    src1.parent.mkdir(parents=True)
+    src1.write_bytes(b"PUBLISHED")
+    dest = cache.store("m", "0123456789abcdef", str(src1))
+    assert Path(dest).read_bytes() == b"PUBLISHED"
+
+    # Now make os.replace raise PermissionError only on the *publish* step.
+    real_replace = os.replace
+
+    def locked_replace(a, b):
+        if str(b) == str(dest):
+            raise PermissionError("[WinError 5] Access is denied (DLL locked)")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(os, "replace", locked_replace)
+
+    src2 = tmp_path / "b2" / "m.so"
+    src2.parent.mkdir(parents=True)
+    src2.write_bytes(b"NEWER")
+    # dest exists → treated as already-published → returns dest, no raise.
+    out = cache.store("m", "0123456789abcdef", str(src2))
+    assert Path(out) == Path(dest)
+    assert Path(dest).read_bytes() == b"PUBLISHED"  # kept the published one
+    # No leaked tmp file.
+    assert not list(Path(dest).parent.glob("*.tmp*"))
+
+
+def test_f15_store_reraises_when_dest_absent(tmp_path, monkeypatch):
+    """A PermissionError with no existing ``dest`` is a real failure → re-raise."""
+    base = tmp_path / "cache"
+    cache = CompilationCache(base_dir=str(base))
+    src = tmp_path / "b" / "m.so"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"X")
+
+    real_replace = os.replace
+
+    def deny_publish(a, b):
+        # allow staging into tmp, deny the publish (dest never created)
+        name = os.path.basename(str(b))
+        if name.endswith(".so") and ".tmp" not in name:
+            raise PermissionError("Access is denied")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(os, "replace", deny_publish)
+    with pytest.raises(PermissionError):
+        cache.store("m", "fedcba9876543210", str(src))
+
+
+# ---------------------------------------------------------------------------
+# F11 — concurrent same-process store() must publish a valid (uncorrupted) .so.
+# ---------------------------------------------------------------------------
+
+def test_f11_concurrent_store_publishes_valid_artifact(tmp_path):
+    """Two threads storing the same name/key must not publish a truncated lib.
+
+    Both threads (same pid) previously shared a single ``.tmp`` staging path,
+    so one could ``os.replace`` a file the other was still writing.  With a
+    uuid-suffixed temp name the published artefact must byte-match the payload.
+    """
+    base = tmp_path / "cache"
+    cache = CompilationCache(base_dir=str(base))
+
+    # A multi-KB payload so a torn write would be detectable via the hash.
+    payload = (b"KERNEL-BYTES-" * 4096)
+    expected = hashlib.sha256(payload).hexdigest()
+
+    n = 8
+    barrier = threading.Barrier(n)
+    errors: list[Exception] = []
+
+    def worker(i: int):
+        # Each thread owns a distinct source file with identical content.
+        src = tmp_path / f"build{i}" / "cc.so"
+        src.parent.mkdir(parents=True)
+        src.write_bytes(payload)
+        try:
+            barrier.wait()
+            cache.store("cc", "0123456789abcdef", str(src))
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"concurrent store raised: {errors}"
+    dest = cache.cache_dir_for("cc", "0123456789abcdef") / "cc.so"
+    assert dest.exists()
+    got = hashlib.sha256(dest.read_bytes()).hexdigest()
+    assert got == expected, "published artefact is corrupt/truncated"
+    # No staging temp files left behind.
+    assert not list(dest.parent.glob("*.tmp*"))

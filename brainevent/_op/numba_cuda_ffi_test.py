@@ -1659,8 +1659,9 @@ class TestErrorPropagation(unittest.TestCase):
             jax.block_until_ready(jax.jit(fn)(x))
 
     def test_bfloat16_rejected(self):
-        # numba CUDA cannot launch bfloat16 kernels; the bridge must reject the
-        # call (an error) rather than silently mis-decode the bytes (C2).
+        # numba CUDA cannot launch bfloat16 kernels; the bridge rejects bf16
+        # explicitly with a clear, specific error rather than letting numba fail
+        # opaquely deep in the launch (F19/C2).
         from numba import cuda
         from brainevent import numba_cuda_kernel
 
@@ -1670,14 +1671,22 @@ class TestErrorPropagation(unittest.TestCase):
             if i < out.size:
                 out[i] = x[i]
 
+        # A bf16 *output* is rejected at wrap time with a specific message.
+        with self.assertRaisesRegex(ValueError, 'bfloat16'):
+            numba_cuda_kernel(
+                copy_kernel,
+                outs=jax.ShapeDtypeStruct((128,), jnp.bfloat16),
+                launch_dims=128,
+            )
+
+        # A bf16 *input* is rejected at trace time with a specific message.
         fn = numba_cuda_kernel(
             copy_kernel,
-            outs=jax.ShapeDtypeStruct((128,), jnp.bfloat16),
+            outs=jax.ShapeDtypeStruct((128,), jnp.float32),
             launch_dims=128,
         )
-        x = jnp.arange(128, dtype=jnp.bfloat16)
-        with self.assertRaises(Exception):
-            jax.block_until_ready(jax.jit(fn)(x))
+        with self.assertRaisesRegex(ValueError, 'bfloat16'):
+            fn(jnp.arange(128, dtype=jnp.bfloat16))
 
 
 @requires_gpu
@@ -1733,3 +1742,439 @@ class TestRegistrationCaching(unittest.TestCase):
         after = len(numba_cuda_ffi._NUMBA_CUDA_FFI_TARGETS)
         # Five identical-signature calls add exactly one registration.
         self.assertEqual(after - before, 1)
+
+
+# ===========================================================================
+# CPU-runnable unit tests (no GPU / numba.cuda needed): launch-config
+# validation, bf16 rejection, and import-poisoning.  These exercise pure
+# argument validation that fails fast *before* numba.cuda is imported, so they
+# are deliberately NOT GPU-marked.
+# ===========================================================================
+
+
+def _dummy_kernel(x, out):  # a plain (non-CUDA) callable for validation tests
+    pass
+
+
+class TestNumbaCudaKernelLaunchValidation(unittest.TestCase):
+    """Mutual-exclusivity / partial launch-config validation (F19)."""
+
+    def test_no_config_raises(self):
+        from brainevent import numba_cuda_kernel
+        with self.assertRaises(ValueError):
+            numba_cuda_kernel(_dummy_kernel, outs=jax.ShapeDtypeStruct((8,), jnp.float32))
+
+    def test_grid_without_block_raises(self):
+        from brainevent import numba_cuda_kernel
+        with self.assertRaises(ValueError):
+            numba_cuda_kernel(_dummy_kernel, outs=jax.ShapeDtypeStruct((8,), jnp.float32), grid=4)
+
+    def test_block_without_grid_raises(self):
+        from brainevent import numba_cuda_kernel
+        with self.assertRaises(ValueError):
+            numba_cuda_kernel(_dummy_kernel, outs=jax.ShapeDtypeStruct((8,), jnp.float32), block=256)
+
+    def test_grid_block_and_launch_dims_conflict_raises(self):
+        from brainevent import numba_cuda_kernel
+        with self.assertRaises(ValueError):
+            numba_cuda_kernel(
+                _dummy_kernel,
+                outs=jax.ShapeDtypeStruct((8,), jnp.float32),
+                grid=4, block=256, launch_dims=1024,
+            )
+
+    def test_explicit_grid_block_with_vmap_method_raises(self):
+        """Explicit grid/block + vmap_method is refused at wrap time (F5)."""
+        from brainevent import numba_cuda_kernel
+        with self.assertRaises(ValueError):
+            numba_cuda_kernel(
+                _dummy_kernel,
+                outs=jax.ShapeDtypeStruct((8,), jnp.float32),
+                grid=4, block=256, vmap_method='expand_dims',
+            )
+
+    def test_launch_dims_with_vmap_method_is_allowed(self):
+        """launch_dims + vmap_method must NOT raise at wrap time (F5)."""
+        from brainevent import numba_cuda_kernel
+        # Reaches numba import + CUDADispatcher type check; on a non-CUDA build
+        # that surfaces as ImportError/TypeError, never a launch-config ValueError.
+        try:
+            numba_cuda_kernel(
+                _dummy_kernel,
+                outs=jax.ShapeDtypeStruct((8,), jnp.float32),
+                launch_dims=8, vmap_method='expand_dims',
+            )
+        except ValueError as exc:  # pragma: no cover - would be a regression
+            self.fail(f"launch_dims + vmap_method should not raise ValueError: {exc}")
+        except (ImportError, TypeError):
+            pass  # expected on a machine without numba.cuda / with a plain callable
+
+    def test_bfloat16_output_rejected_at_wrap_time(self):
+        from brainevent import numba_cuda_kernel
+        with self.assertRaisesRegex(ValueError, 'bfloat16'):
+            numba_cuda_kernel(
+                _dummy_kernel,
+                outs=jax.ShapeDtypeStruct((8,), jnp.bfloat16),
+                launch_dims=8,
+            )
+
+
+@pytest.mark.skipif(not numba_installed, reason="numba not installed")
+class TestImportNumbaCudaPoisoning(unittest.TestCase):
+    """A transient CUDA error must not poison the availability flag (F19)."""
+
+    def test_transient_cuda_error_does_not_poison_flag(self):
+        import numba
+        m = numba_cuda_ffi
+
+        saved_cuda = m.cuda
+        saved_flag = m.numba_cuda_installed
+        saved_is_available = numba.cuda.is_available
+        try:
+            m.cuda = None
+            m.numba_cuda_installed = True
+
+            def _boom():
+                raise RuntimeError('CUDA_ERROR_NOT_INITIALIZED')
+
+            numba.cuda.is_available = _boom
+            with self.assertRaises(ImportError):
+                m.import_numba_cuda()
+            # The flag reflects "numba importable", so a transient CUDA failure
+            # leaves it True (not poisoned).
+            self.assertTrue(m.numba_cuda_installed)
+
+            # A retry in a healthy context then succeeds.
+            numba.cuda.is_available = lambda: True
+            self.assertIs(m.import_numba_cuda(), numba.cuda)
+            self.assertTrue(m.numba_cuda_installed)
+        finally:
+            numba.cuda.is_available = saved_is_available
+            m.cuda = saved_cuda
+            m.numba_cuda_installed = saved_flag
+
+
+# ===========================================================================
+# GPU tests for the launch-policy / vmap / zero-fill / naming fixes.
+# ===========================================================================
+
+
+@requires_gpu
+class TestVmapLaunchDims(unittest.TestCase):
+    """vmap over a launch_dims kernel must compute EVERY batched element (F5).
+
+    Per-slice launches (not a single flattened launch) are required so that
+    coupled-row kernels — where an output element depends on other elements of
+    the same batch row — do not read/write across batch boundaries.
+    """
+
+    def test_vmap_elementwise_all_rows_correct(self):
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def add_kernel(x, y, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] + y[i]
+
+        n, batch = 16, 8
+        for vm in ('expand_dims', 'broadcast_all'):
+            fn = numba_cuda_kernel(
+                add_kernel,
+                outs=jax.ShapeDtypeStruct((n,), jnp.float32),
+                launch_dims=n,
+                vmap_method=vm,
+            )
+            x = jnp.arange(batch * n, dtype=jnp.float32).reshape(batch, n)
+            y = jnp.ones((batch, n), dtype=jnp.float32)
+            r = np.asarray(jax.vmap(fn)(x, y))
+            jax.block_until_ready(r)
+            expected = np.asarray(x) + 1.0
+            np.testing.assert_allclose(r, expected, rtol=1e-6,
+                                       err_msg=f"vmap_method={vm}")
+            self.assertTrue(np.isclose(r, expected).all(),
+                            f"some batched rows uninitialised for vmap_method={vm}")
+
+    def test_vmap_coupled_rows_reversal(self):
+        """A row-coupling kernel (each out[i] reads a different x element) must
+        stay within its batch slice.  This FAILS under a flattened/folded launch
+        (rows bleed together) and passes only with per-slice launches."""
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def reverse_kernel(x, out):
+            i = cuda.grid(1)
+            n = out.size
+            if i < n:
+                out[i] = x[n - 1 - i]
+
+        n, batch = 4, 4
+        for vm in ('expand_dims', 'broadcast_all'):
+            fn = numba_cuda_kernel(
+                reverse_kernel,
+                outs=jax.ShapeDtypeStruct((n,), jnp.float32),
+                launch_dims=n,
+                vmap_method=vm,
+            )
+            x = jnp.arange(batch * n, dtype=jnp.float32).reshape(batch, n)
+            r = np.asarray(jax.vmap(fn)(x))
+            jax.block_until_ready(r)
+            expected = np.asarray(x)[:, ::-1]  # per-row reversal
+            np.testing.assert_array_equal(r, expected)
+
+    def test_vmap_unmapped_input_in_axes_none(self):
+        """vmap in_axes=(0, None): the unmapped input arrives with a leading
+        axis of size 1 (expand_dims) or B (broadcast_all); both must broadcast
+        correctly across slices, never read out of bounds."""
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def add_kernel(x, y, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] + y[i]
+
+        n, batch = 8, 4
+        for vm in ('expand_dims', 'broadcast_all'):
+            fn = numba_cuda_kernel(
+                add_kernel,
+                outs=jax.ShapeDtypeStruct((n,), jnp.float32),
+                launch_dims=n,
+                vmap_method=vm,
+            )
+            x = jnp.arange(batch * n, dtype=jnp.float32).reshape(batch, n)
+            y = jnp.arange(n, dtype=jnp.float32)  # unmapped
+            r = np.asarray(jax.vmap(fn, in_axes=(0, None))(x, y))
+            jax.block_until_ready(r)
+            expected = np.asarray(x) + np.asarray(y)[None, :]
+            np.testing.assert_allclose(r, expected, rtol=1e-6,
+                                       err_msg=f"vmap_method={vm}")
+
+    def test_vmap_batch_size_one(self):
+        """Batch-1 vmap adds a leading axis of size 1; rank-based detection must
+        treat it as vmapped (a size-ratio check would see B==1 and mis-handle
+        the extra rank)."""
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def add_kernel(x, y, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] + y[i]
+
+        n = 8
+        fn = numba_cuda_kernel(
+            add_kernel,
+            outs=jax.ShapeDtypeStruct((n,), jnp.float32),
+            launch_dims=n,
+            vmap_method='expand_dims',
+        )
+        x = jnp.arange(1 * n, dtype=jnp.float32).reshape(1, n)
+        y = jnp.ones((1, n), dtype=jnp.float32)
+        r = np.asarray(jax.vmap(fn)(x, y))
+        jax.block_until_ready(r)
+        self.assertEqual(r.shape, (1, n))
+        np.testing.assert_allclose(r, np.asarray(x) + 1.0, rtol=1e-6)
+
+    def test_vmap_unbatched_still_correct(self):
+        # No vmap (equal ranks) leaves the single-launch path bit-identical.
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def add_kernel(x, y, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] + y[i]
+
+        n = 32
+        fn = numba_cuda_kernel(
+            add_kernel,
+            outs=jax.ShapeDtypeStruct((n,), jnp.float32),
+            launch_dims=n,
+            vmap_method='expand_dims',
+        )
+        x = jnp.arange(n, dtype=jnp.float32)
+        y = jnp.ones(n, dtype=jnp.float32)
+        r = np.asarray(jax.jit(fn)(x, y))
+        jax.block_until_ready(r)
+        np.testing.assert_allclose(r, np.asarray(x) + 1.0, rtol=1e-6)
+
+
+@requires_gpu
+class TestZeroGridZeroFill(unittest.TestCase):
+    """A skipped (zero) launch with a non-empty output zero-fills it (F9)."""
+
+    def test_launch_dims_zero_nonempty_output_is_zeroed(self):
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def add_one(x, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] + 1.0
+
+        n = 128
+        # Alias input 0 onto output 0 so the output buffer *starts* holding the
+        # (non-zero) input values; if the skipped launch failed to zero-fill,
+        # the result would be those donated values, not zeros.
+        fn = numba_cuda_kernel(
+            add_one,
+            outs=jax.ShapeDtypeStruct((n,), jnp.float32),
+            launch_dims=0,
+            input_output_aliases={0: 0},
+        )
+        x = jnp.arange(1, n + 1, dtype=jnp.float32)  # all non-zero
+        out = np.asarray(jax.jit(fn)(x))
+        jax.block_until_ready(out)
+        np.testing.assert_array_equal(out, np.zeros(n, dtype=np.float32))
+
+
+@requires_gpu
+class TestTwoShapesOneTarget(unittest.TestCase):
+    """Distinct input shapes reuse one registered target (F8)."""
+
+    def test_two_input_shapes_one_target(self):
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def copy_kernel(x, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i]
+
+        fn = numba_cuda_kernel(
+            copy_kernel,
+            outs=jax.ShapeDtypeStruct((8,), jnp.float32),
+            launch_dims=8,
+        )
+        before = len(numba_cuda_ffi._NUMBA_CUDA_FFI_TARGETS)
+        r1 = np.asarray(fn(jnp.arange(8, dtype=jnp.float32)))
+        r2 = np.asarray(fn(jnp.arange(16, dtype=jnp.float32)))
+        jax.block_until_ready((r1, r2))
+        after = len(numba_cuda_ffi._NUMBA_CUDA_FFI_TARGETS)
+        # Two distinct input shapes -> exactly one registration.
+        self.assertEqual(after - before, 1)
+        np.testing.assert_array_equal(r1, np.arange(8, dtype=np.float32))
+        np.testing.assert_array_equal(r2, np.arange(8, dtype=np.float32))
+
+
+@requires_gpu
+class TestContentDerivedNaming(unittest.TestCase):
+    """FFI target names are content-derived and reused across objects (F14)."""
+
+    @staticmethod
+    def _make_kernel():
+        # Two separate dispatcher objects with byte-identical content must
+        # fingerprint the same and share one target.  (ffi_naming now serialises
+        # modules in closure cells, so whether ``cuda`` is a global or a closed-
+        # over module, the fingerprint is deterministic and non-None.)
+        @cuda.jit
+        def scale_kernel(x, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] * 2.0
+
+        return scale_kernel
+
+    def test_identical_content_shares_target(self):
+        m = numba_cuda_ffi
+        f32 = np.dtype('float32')
+        lm = ('launch_dims', (8,), 256)
+
+        k1 = self._make_kernel()
+        k2 = self._make_kernel()  # separate dispatcher, identical content
+
+        name1, _ = m._register_numba_cuda_ffi_target(k1, (f32,), ((8,),), (f32,), lm, 0)
+        name2, _ = m._register_numba_cuda_ffi_target(k2, (f32,), ((8,),), (f32,), lm, 0)
+
+        self.assertTrue(name1.startswith('brainevent_numba_cuda_ffi_'))
+        # Content-derived: two distinct objects with identical content share one
+        # target (and one registration).
+        self.assertEqual(name1, name2)
+
+        # Same kernel wrapped with a different `outs` (different abstract size)
+        # must map to a DIFFERENT target.
+        name3, _ = m._register_numba_cuda_ffi_target(k1, (f32,), ((16,),), (f32,), lm, 0)
+        self.assertNotEqual(name1, name3)
+
+
+@requires_gpu
+class TestKernelZeroDimRejection(unittest.TestCase):
+    """0-d inputs are rejected at trace time on the kernel path (F19)."""
+
+    def test_scalar_input_rejected(self):
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def copy_kernel(x, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i]
+
+        fn = numba_cuda_kernel(
+            copy_kernel,
+            outs=jax.ShapeDtypeStruct((1,), jnp.float32),
+            launch_dims=1,
+        )
+        with self.assertRaises(ValueError):
+            fn(jnp.asarray(3.0))  # 0-d scalar input
+
+
+@requires_gpu
+class TestNestedVmapRejection(unittest.TestCase):
+    """MEDIUM fix: nested vmap (runtime rank == abstract rank + 2) must be
+    rejected loudly, not silently treated as unbatched.
+
+    The callback detects vmap by rank: ``extra_axes = runtime_rank -
+    abstract_rank`` on output 0. Pre-fix, only ``extra_axes == 1`` (a single
+    level of vmap) was handled; a *nested* ``jax.vmap(jax.vmap(f))`` produces
+    ``extra_axes == 2``, which fell through to the ``vmapped = (extra_axes ==
+    1)`` -> ``False`` branch -- i.e. treated as the unbatched/no-vmap path --
+    and silently reconstructed the wrong shape, returning garbage for every
+    slice but the first. The callback now checks ``extra_axes not in (0, 1)``
+    and returns an ``INVALID_ARGUMENT`` FFI error mentioning "only one level
+    of vmap" instead.
+    """
+
+    def test_nested_vmap_raises_and_single_vmap_still_works(self):
+        from numba import cuda
+        from brainevent import numba_cuda_kernel
+
+        @cuda.jit
+        def add_kernel(x, y, out):
+            i = cuda.grid(1)
+            if i < out.size:
+                out[i] = x[i] + y[i]
+
+        n = 8
+        fn = numba_cuda_kernel(
+            add_kernel,
+            outs=jax.ShapeDtypeStruct((n,), jnp.float32),
+            launch_dims=n,
+            vmap_method='expand_dims',
+        )
+
+        # Single vmap (extra_axes == 1) is unaffected by this fix and must
+        # still work correctly.
+        b1 = 4
+        x1 = jnp.arange(b1 * n, dtype=jnp.float32).reshape(b1, n)
+        y1 = jnp.ones((b1, n), dtype=jnp.float32)
+        r1 = np.asarray(jax.vmap(fn)(x1, y1))
+        jax.block_until_ready(r1)
+        np.testing.assert_allclose(r1, np.asarray(x1) + 1.0, rtol=1e-6)
+
+        # Nested vmap (extra_axes == 2) must be rejected, not silently
+        # mis-batched.
+        b_outer, b_inner = 2, 3
+        x2 = jnp.arange(b_outer * b_inner * n, dtype=jnp.float32).reshape(b_outer, b_inner, n)
+        y2 = jnp.ones((b_outer, b_inner, n), dtype=jnp.float32)
+        with pytest.raises(Exception, match='only one level of vmap'):
+            jax.block_until_ready(jax.vmap(jax.vmap(fn))(x2, y2))

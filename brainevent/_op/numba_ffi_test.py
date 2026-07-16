@@ -15,15 +15,21 @@
 
 """Tests for Numba CPU FFI integration with JAX."""
 
+import ctypes
+from ctypes import POINTER
+import gc
 import importlib.util
 import os
+import re
 import unittest
 import warnings
+from unittest import mock
 
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import jax
 import jax.numpy as jnp
+import ml_dtypes
 import numpy as np
 import pytest
 import brainstate
@@ -33,16 +39,38 @@ cpu_platform = jax.default_backend() == 'cpu'
 if not cpu_platform or not numba_installed:
     pytest.skip(allow_module_level=True, reason='Numba CPU FFI tests only run on CPU platform with Numba installed')
 
+from brainevent._error import KernelRegistrationError
 from brainevent._op import numba_ffi
+from brainevent._op.ffi_naming import kernel_content_fingerprint
 from brainevent._op.numba_ffi import (
     _ensure_sequence,
     _normalize_shapes_and_dtypes,
     _numpy_from_buffer,
     _detect_xla_ffi_api_version,
     _warn_if_untested_jax,
+    _report_unreportable_ffi_error,
     _MAX_VALIDATED_JAX,
     _XLA_FFI_DTYPE_TO_NUMPY,
+    XLA_FFI_Api,
+    XLA_FFI_Api_Version,
+    XLA_FFI_CallFrame,
+    XLA_FFI_Args,
+    XLA_FFI_Rets,
+    XLA_FFI_Attrs,
+    XLA_FFI_Extension_Base,
+    XLA_FFI_Extension_Type,
     XLA_FFI_Metadata,
+    XLA_FFI_Metadata_Extension,
+    XLA_FFI_TypeId,
+    XLA_FFI_Error_Create_Func,
+    XLA_FFI_Error_Destroy_Args,
+    XLA_FFI_Error_Destroy_Func,
+    XLA_FFI_Stream_Get_Func,
+    XLA_FFI_DeviceOrdinal_Get_Args,
+    XLA_FFI_DeviceOrdinal_Get_Func,
+    get_xla_stream,
+    get_device_ordinal,
+    resolve_buffer_dtype,
     numba_kernel,
     NumbaCpuFfiHandler,
 )
@@ -783,7 +811,16 @@ class TestNumbaKernelVmapMethod(unittest.TestCase):
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
 class TestNumbaCpuFfiHandler(unittest.TestCase):
-    """Tests for NumbaCpuFfiHandler class."""
+    """Tests for NumbaCpuFfiHandler class.
+
+    F8 deviation: ``NumbaCpuFfiHandler`` no longer accepts/stores
+    ``input_shapes``/``output_shapes`` -- the callback re-derives shapes at
+    run time from ``XLA_FFI_Buffer.dims``, so the stored copies were dead
+    weight that (via the old cache key) caused one target to be minted per
+    distinct call shape (audit finding 8). This test is updated accordingly;
+    see ``TestHandlerSelfPin`` below for the F7 self-pin-on-construction
+    behavior this direct-construction pattern now guarantees.
+    """
 
     def test_handler_attributes(self):
         """Test that handler stores correct attributes."""
@@ -793,25 +830,21 @@ class TestNumbaCpuFfiHandler(unittest.TestCase):
         def dummy_kernel(x, out):
             pass
 
-        input_shapes = ((10,),)
         input_dtypes = (np.dtype(np.float32),)
-        output_shapes = ((10,),)
         output_dtypes = (np.dtype(np.float32),)
 
         handler = NumbaCpuFfiHandler(
             name="test_handler",
             kernel=dummy_kernel,
-            input_shapes=input_shapes,
             input_dtypes=input_dtypes,
-            output_shapes=output_shapes,
             output_dtypes=output_dtypes,
         )
 
         self.assertEqual(handler.name, "test_handler")
-        self.assertEqual(handler.input_shapes, input_shapes)
         self.assertEqual(handler.input_dtypes, input_dtypes)
-        self.assertEqual(handler.output_shapes, output_shapes)
         self.assertEqual(handler.output_dtypes, output_dtypes)
+        self.assertFalse(hasattr(handler, 'input_shapes'))
+        self.assertFalse(hasattr(handler, 'output_shapes'))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -1023,3 +1056,625 @@ class TestRegistrationCaching:
             jax.block_until_ready(kernel(x))
         after = len(numba_ffi._NUMBA_CPU_FFI_HANDLES)
         assert after == before, f'leaked {after - before} FFI targets across 8 eager calls'
+
+
+# --- F8: shapes must not be part of the FFI registration key -------------------
+
+class TestShapeExcludedFromRegistrationKey:
+    """Finding 8: a single kernel called at different input shapes must not
+    mint a new FFI target/handler per shape (the callback re-derives shapes
+    from ``buf_ptr.dims`` at run time; ``self.input_shapes`` was dead weight
+    that the old cache key nonetheless leaked one entry per)."""
+
+    def test_one_kernel_two_shapes_single_target(self):
+        import numba
+
+        @numba.njit
+        def double_kernel(x, out):
+            for i in range(out.size):
+                out[i] = x[i] * 2.0
+
+        # Same underlying numba dispatcher, wrapped at two different output
+        # shapes -- exercises the *input* shape varying across calls to the
+        # same kernel identity/dtype signature.
+        kernel4 = numba_kernel(double_kernel, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+        kernel8 = numba_kernel(double_kernel, outs=jax.ShapeDtypeStruct((8,), jnp.float32))
+
+        before = len(numba_ffi._NUMBA_CPU_FFI_HANDLES)
+        x4 = jnp.arange(4, dtype=jnp.float32)
+        x8 = jnp.arange(8, dtype=jnp.float32)
+        r4 = kernel4(x4)
+        r4 = r4[0] if isinstance(r4, tuple) else r4
+        r8 = kernel8(x8)
+        r8 = r8[0] if isinstance(r8, tuple) else r8
+        jax.block_until_ready((r4, r8))
+        after = len(numba_ffi._NUMBA_CPU_FFI_HANDLES)
+
+        assert after == before + 1, (
+            f'two distinct shapes of the same kernel content minted '
+            f'{after - before} targets, expected exactly 1'
+        )
+        np.testing.assert_allclose(np.asarray(r4), np.asarray(x4) * 2.0)
+        np.testing.assert_allclose(np.asarray(r8), np.asarray(x8) * 2.0)
+
+
+# --- F14: content-derived FFI target naming -------------------------------------
+
+class TestContentDerivedNaming:
+    """Finding 14: FFI target names are derived from kernel content
+    (``kernel_content_fingerprint``), not a process-order-dependent counter."""
+
+    @staticmethod
+    def _target_name_for(kernel, dtype=np.float32):
+        dt = (np.dtype(dtype),)
+        return numba_ffi._NUMBA_CPU_FFI_TARGETS[(id(kernel), dt, dt)]
+
+    def test_name_format_is_content_hash(self):
+        import numba
+
+        @numba.njit
+        def add_seven(x, out):
+            for i in range(out.size):
+                out[i] = x[i] + 7.0
+
+        wrapped = numba_kernel(add_seven, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+        jax.block_until_ready(wrapped(jnp.arange(4, dtype=jnp.float32)))
+
+        name = self._target_name_for(add_seven)
+        assert re.match(r'^brainevent_numba_ffi_[0-9a-f]{16}$', name), name
+
+    def test_same_content_two_fresh_functions_share_name(self):
+        """Two independently defined (but byte-identical) kernels must
+        register once and reuse the same target -- no duplicate-registration
+        error -- because they fingerprint identically."""
+
+        def make_kernel():
+            import numba
+
+            @numba.njit
+            def add_one_fresh(x, out):
+                for i in range(out.size):
+                    out[i] = x[i] + 1.0
+
+            return add_one_fresh
+
+        kernel_a = make_kernel()
+        kernel_b = make_kernel()
+        assert kernel_a is not kernel_b
+
+        wrapped_a = numba_kernel(kernel_a, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+        wrapped_b = numba_kernel(kernel_b, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+
+        x = jnp.arange(4, dtype=jnp.float32)
+        ra = wrapped_a(x)
+        ra = ra[0] if isinstance(ra, tuple) else ra
+        rb = wrapped_b(x)
+        rb = rb[0] if isinstance(rb, tuple) else rb
+        jax.block_until_ready((ra, rb))
+
+        name_a = self._target_name_for(kernel_a)
+        name_b = self._target_name_for(kernel_b)
+        assert name_a == name_b, (name_a, name_b)
+        np.testing.assert_allclose(np.asarray(ra), np.asarray(x) + 1.0)
+        np.testing.assert_allclose(np.asarray(rb), np.asarray(x) + 1.0)
+
+    def test_different_kernels_different_names(self):
+        import numba
+
+        @numba.njit
+        def add_one_diff(x, out):
+            for i in range(out.size):
+                out[i] = x[i] + 1.0
+
+        @numba.njit
+        def add_two_diff(x, out):
+            for i in range(out.size):
+                out[i] = x[i] + 2.0
+
+        wrapped1 = numba_kernel(add_one_diff, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+        wrapped2 = numba_kernel(add_two_diff, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+        x = jnp.arange(4, dtype=jnp.float32)
+        jax.block_until_ready(wrapped1(x))
+        jax.block_until_ready(wrapped2(x))
+
+        name1 = self._target_name_for(add_one_diff)
+        name2 = self._target_name_for(add_two_diff)
+        assert name1 != name2
+
+    def test_name_collision_different_fingerprint_raises(self):
+        """A same-name-different-fingerprint registration must raise rather
+        than silently rebind the XLA target to a different kernel body."""
+        import numba
+
+        @numba.njit
+        def collision_kernel(x, out):
+            for i in range(out.size):
+                out[i] = x[i] + 9.0
+
+        fake_name = 'brainevent_numba_ffi_deadbeefdeadbeef'
+        numba_ffi._NUMBA_CPU_FFI_NAME_FINGERPRINTS[fake_name] = 'not-the-real-fingerprint'
+        try:
+            with mock.patch.object(
+                numba_ffi, 'kernel_content_fingerprint', return_value='deadbeefdeadbeef'
+            ):
+                wrapped = numba_kernel(collision_kernel, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+                with pytest.raises(KernelRegistrationError, match='different content fingerprint'):
+                    wrapped(jnp.arange(4, dtype=jnp.float32))
+        finally:
+            del numba_ffi._NUMBA_CPU_FFI_NAME_FINGERPRINTS[fake_name]
+
+
+class TestContentFingerprintFallback:
+    """Finding 14: a kernel whose closure/globals cannot be deterministically
+    fingerprinted falls back to the pre-existing counter-name scheme for that
+    kernel only, and still executes correctly.
+
+    ``kernel_content_fingerprint`` is mocked to return ``None`` rather than
+    hand-crafting a numba kernel with a genuinely unserializable closure: numba
+    itself restricts what a jitted function may close over, so this isolates
+    the test to the fallback *wiring* in ``_register_numba_cpu_ffi_target``
+    (the fingerprint helper's own None-returning behavior is covered by
+    ``brainevent/_op/ffi_naming_test.py``).
+    """
+
+    def test_unserializable_closure_falls_back_to_counter_name_and_works(self):
+        import numba
+
+        @numba.njit
+        def add_three_fallback(x, out):
+            for i in range(out.size):
+                out[i] = x[i] + 3.0
+
+        with mock.patch.object(numba_ffi, 'kernel_content_fingerprint', return_value=None):
+            wrapped = numba_kernel(add_three_fallback, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+            x = jnp.arange(4, dtype=jnp.float32)
+            result = wrapped(x)
+            result = result[0] if isinstance(result, tuple) else result
+            jax.block_until_ready(result)
+
+        np.testing.assert_allclose(np.asarray(result), np.asarray(x) + 3.0)
+
+        dt = (np.dtype(np.float32),)
+        name = numba_ffi._NUMBA_CPU_FFI_TARGETS[(id(add_three_fallback), dt, dt)]
+        assert re.match(r'^brainevent_numba_ffi_\d+$', name), name
+        assert numba_ffi._NUMBA_CPU_FFI_NAME_FINGERPRINTS[name] is None
+
+
+# --- HIGH: kernel-pin on fingerprint reuse --------------------------------------
+
+class TestKernelPinOnFingerprintReuse:
+    """HIGH fix: a kernel that hits the fingerprint-reuse branch must be pinned
+    so its ``id()`` can never be recycled while the memo entry lives.
+
+    Pre-fix, the fingerprint-reuse branch in ``_register_numba_cpu_ffi_target``
+    stored ``_NUMBA_CPU_FFI_TARGETS[(id(kernel), ...)] = target_name`` for the
+    *second* (content-identical) kernel object without keeping any strong
+    reference to that kernel. The shared FFI handler only keeps the *first*
+    kernel object alive, so once the second kernel was garbage-collected its
+    ``id()`` could be recycled by an unrelated object -- which would then
+    wrongly hit the memo (dispatching to a stale/wrong handler) since the memo
+    key is ``(id(kernel), input_dtypes, output_dtypes)``. The fix pins every
+    reused kernel object into the module-level ``_NUMBA_CPU_FFI_KERNEL_PINS``
+    dict, keyed by its own id, for as long as the memo entry exists.
+    """
+
+    def test_second_identical_kernel_is_pinned(self):
+        import numba
+
+        def make_kernel():
+            @numba.njit
+            def add_four_pin_test(x, out):
+                for i in range(out.size):
+                    out[i] = x[i] + 4.0
+
+            return add_four_pin_test
+
+        kernel_a = make_kernel()
+        kernel_b = make_kernel()
+        assert kernel_a is not kernel_b  # distinct objects, byte-identical content
+
+        x = jnp.arange(4, dtype=jnp.float32)
+
+        wrapped_a = numba_kernel(kernel_a, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+        ra = wrapped_a(x)
+        ra = ra[0] if isinstance(ra, tuple) else ra
+        jax.block_until_ready(ra)
+
+        # kernel_b is content-identical to kernel_a and hits the fingerprint-reuse
+        # branch: it reuses kernel_a's registered target rather than registering
+        # a fresh FFI handler.
+        wrapped_b = numba_kernel(kernel_b, outs=jax.ShapeDtypeStruct((4,), jnp.float32))
+        rb = wrapped_b(x)
+        rb = rb[0] if isinstance(rb, tuple) else rb
+        jax.block_until_ready(rb)
+
+        dt = (np.dtype(np.float32),)
+        name_a = numba_ffi._NUMBA_CPU_FFI_TARGETS[(id(kernel_a), dt, dt)]
+        name_b = numba_ffi._NUMBA_CPU_FFI_TARGETS[(id(kernel_b), dt, dt)]
+        assert name_a == name_b, 'byte-identical kernels must share one target'
+
+        # The reuse branch must have pinned kernel_b so its id() cannot be
+        # recycled while the memo entry above is still alive.
+        assert id(kernel_b) in numba_ffi._NUMBA_CPU_FFI_KERNEL_PINS, (
+            'reused kernel object was not pinned; its id() could be recycled '
+            'by an unrelated object that would then wrongly hit the memo'
+        )
+        assert numba_ffi._NUMBA_CPU_FFI_KERNEL_PINS[id(kernel_b)] is kernel_b
+
+
+# --- LOW: dispatcher-aware fingerprinting (globals and closures) ---------------
+
+class _FakeDispatcher:
+    """Stand-in for a numba dispatcher: exposes ``.py_func`` like a real
+    ``CPUDispatcher``/``CUDADispatcher``, without requiring an actual numba
+    compile. ``kernel_content_fingerprint``'s ``_serialize_value``/
+    ``_serialize_global`` helpers detect any object with a plain-function
+    ``.py_func`` attribute, not just real numba dispatchers, so this is a
+    faithful (and much cheaper) stand-in for the fix under test.
+    """
+
+    def __init__(self, fn):
+        self.py_func = fn
+
+
+def _make_named_helper(tag, offset):
+    """Build a helper function with a FIXED name/qualname but a body that
+    differs by *offset* (baked into ``co_consts``).  Using a fixed name proves
+    the fingerprint changes because of the recursion into ``py_func`` picking
+    up the differing bytecode/constants -- not merely because the wrapped
+    function's name changed.
+    """
+
+    def _shared_helper_name(x):
+        return x + offset
+
+    _shared_helper_name.__qualname__ = f'_shared_helper_name.{tag}'
+    return _shared_helper_name
+
+
+class TestDispatcherAwareFingerprint:
+    """LOW fix: ``_serialize_global``/``_serialize_value`` must recurse into
+    ``value.py_func`` for a dispatcher-like object, instead of stopping at a
+    qualname-only identity (for globals) or aborting to ``None`` (for
+    closures).
+
+    Pre-fix behavior:
+
+    - A global bound to a numba dispatcher fell into the generic ``callable``
+      qualname-only branch, so editing the *body* of the dispatched helper
+      while keeping the same global name did not change the kernel's
+      fingerprint -- a stale registration would be silently reused for
+      behaviorally different code.
+    - A dispatcher captured in a closure cell had no matching branch at all in
+      ``_serialize_value``, so fingerprinting aborted to ``None`` entirely,
+      losing cross-process/name stability for every such kernel.
+    """
+
+    def test_global_dispatcher_body_change_changes_fingerprint(self):
+        helper_1 = _make_named_helper('a', 1.0)
+        globals()['_fp_test_helper_global'] = _FakeDispatcher(helper_1)
+        try:
+            def kernel_using_global(x, out):
+                out[0] = _fp_test_helper_global(x)
+
+            fp1 = kernel_content_fingerprint(kernel_using_global)
+            assert fp1 is not None
+
+            # Same global name, dispatcher wrapping a helper with a DIFFERENT
+            # body (same fixed qualname, different baked-in constant).
+            helper_2 = _make_named_helper('a', 2.0)
+            globals()['_fp_test_helper_global'] = _FakeDispatcher(helper_2)
+            fp2 = kernel_content_fingerprint(kernel_using_global)
+
+            assert fp2 is not None
+            assert fp1 != fp2, 'fingerprint did not change when the global dispatcher body changed'
+        finally:
+            del globals()['_fp_test_helper_global']
+
+    def test_closure_dispatcher_fingerprints_and_body_change_changes_fingerprint(self):
+        def make_kernel(dispatcher):
+            def kernel_using_closure(x, out):
+                out[0] = dispatcher(x)
+
+            return kernel_using_closure
+
+        helper_1 = _make_named_helper('b', 10.0)
+        helper_2 = _make_named_helper('b', 20.0)
+
+        kernel_1 = make_kernel(_FakeDispatcher(helper_1))
+        kernel_2 = make_kernel(_FakeDispatcher(helper_2))
+
+        fp1 = kernel_content_fingerprint(kernel_1)
+        fp2 = kernel_content_fingerprint(kernel_2)
+
+        assert fp1 is not None, 'closure over a dispatcher must fingerprint, not abort to None'
+        assert fp2 is not None
+        assert fp1 != fp2, 'fingerprint did not change when the closed-over dispatcher body changed'
+
+
+# --- F7: handler self-pins its own lifetime -------------------------------------
+
+class TestHandlerSelfPin:
+    """Finding 7: direct ``NumbaCpuFfiHandler`` construction must self-pin so
+    registration and lifetime cannot be separated -- a use-after-free of the
+    ctypes trampoline is not a catchable Python error, so this proves liveness
+    by actually invoking the target through ``jax.ffi.ffi_call`` after the
+    only Python reference is dropped and collected."""
+
+    def test_direct_construction_survives_gc_and_stays_callable(self):
+        import numba
+
+        @numba.njit
+        def add_five_pin(x, out):
+            for i in range(out.size):
+                out[i] = x[i] + 5.0
+
+        name = 'test_self_pin_handler_b'
+        handler = NumbaCpuFfiHandler(
+            name=name,
+            kernel=add_five_pin,
+            input_dtypes=(np.dtype(np.float32),),
+            output_dtypes=(np.dtype(np.float32),),
+        )
+        del handler
+        gc.collect()
+
+        assert name in numba_ffi._NUMBA_CPU_FFI_HANDLES, 'handler was not self-pinned'
+
+        out_type = jax.ShapeDtypeStruct((4,), jnp.float32)
+        call = jax.ffi.ffi_call(name, out_type)
+        x = jnp.arange(4, dtype=jnp.float32)
+        result = jax.block_until_ready(call(x))
+        np.testing.assert_allclose(np.asarray(result), np.asarray(x) + 5.0)
+
+
+# --- F18: unknown / packed sub-byte dtype codes must raise ---------------------
+
+class TestResolveBufferDtypeRejections:
+    def test_known_dtype_still_resolves(self):
+        assert resolve_buffer_dtype(11, np.dtype(np.float32)) == np.dtype(np.float32)
+
+    def test_bf16_still_resolves(self):
+        assert resolve_buffer_dtype(16, np.dtype(np.float32)) == np.dtype(ml_dtypes.bfloat16)
+
+    def test_unknown_code_raises_value_error(self):
+        with pytest.raises(ValueError, match='999'):
+            resolve_buffer_dtype(999, np.dtype(np.float32))
+
+    @pytest.mark.parametrize('code,label', [
+        (21, 'S4'), (22, 'U4'), (26, 'S2'), (27, 'U2'),
+        (30, 'S1'), (31, 'U1'), (32, 'F4E2M1FN'),
+    ])
+    def test_packed_subbyte_codes_raise(self, code, label):
+        with pytest.raises(ValueError, match=label):
+            resolve_buffer_dtype(code, np.dtype(np.float32))
+
+    @pytest.mark.parametrize('code', [19, 20, 23, 24, 25, 28, 29, 33])
+    def test_fp8_family_codes_raise(self, code):
+        with pytest.raises(ValueError):
+            resolve_buffer_dtype(code, np.dtype(np.float32))
+
+    def test_error_names_the_code_and_trace_time_dtype(self):
+        with pytest.raises(ValueError) as ctx:
+            resolve_buffer_dtype(21, np.dtype(np.float64))
+        message = str(ctx.value)
+        assert '21' in message
+        assert 'float64' in message
+
+
+# --- F19a: FFI metadata extension chain must be walked, not just inspected -----
+
+class TestExtensionChainWalk:
+    """Finding 19: the metadata handshake must follow ``ext.next`` rather than
+    only inspecting ``extension_start`` -- a future jaxlib that prepends an
+    unrelated extension node ahead of Metadata must not break the handshake."""
+
+    def test_metadata_found_when_not_first_in_chain(self):
+        import numba
+
+        @numba.njit
+        def dummy_ext(x, out):
+            pass
+
+        handler = NumbaCpuFfiHandler(
+            name='test_ext_chain_walk',
+            kernel=dummy_ext,
+            input_dtypes=(np.dtype(np.float32),),
+            output_dtypes=(np.dtype(np.float32),),
+        )
+
+        metadata = XLA_FFI_Metadata(
+            struct_size=ctypes.sizeof(XLA_FFI_Metadata),
+            api_version=XLA_FFI_Api_Version(
+                struct_size=ctypes.sizeof(XLA_FFI_Api_Version),
+                extension_start=None,
+                major_version=0,
+                minor_version=0,
+            ),
+            traits=0xFF,  # sentinel: must be overwritten to 0 by the handshake
+            state_type_id=XLA_FFI_TypeId(type_id=0),
+        )
+        metadata_ext = XLA_FFI_Metadata_Extension(
+            extension_base=XLA_FFI_Extension_Base(
+                struct_size=ctypes.sizeof(XLA_FFI_Extension_Base),
+                type=int(XLA_FFI_Extension_Type.Metadata),
+                next=None,
+            ),
+            metadata=ctypes.pointer(metadata),
+        )
+        # A non-Metadata node placed FIRST, chaining to the real Metadata node
+        # via `.next` -- the walk must not stop at this first, unrecognized node.
+        unknown_ext = XLA_FFI_Extension_Base(
+            struct_size=ctypes.sizeof(XLA_FFI_Extension_Base),
+            type=999,
+            next=ctypes.cast(ctypes.pointer(metadata_ext), POINTER(XLA_FFI_Extension_Base)),
+        )
+
+        call_frame = XLA_FFI_CallFrame(
+            struct_size=ctypes.sizeof(XLA_FFI_CallFrame),
+            extension_start=ctypes.cast(ctypes.pointer(unknown_ext), POINTER(XLA_FFI_Extension_Base)),
+            api=0,
+            ctx=0,
+            stage=0,
+            args=XLA_FFI_Args(struct_size=ctypes.sizeof(XLA_FFI_Args), extension_start=None, size=0, types=None, args=None),
+            rets=XLA_FFI_Rets(struct_size=ctypes.sizeof(XLA_FFI_Rets), extension_start=None, size=0, types=None, rets=None),
+            attrs=XLA_FFI_Attrs(struct_size=ctypes.sizeof(XLA_FFI_Attrs), extension_start=None, size=0, types=None, names=None, attrs=None),
+            future=0,
+        )
+
+        result = handler._ffi_callback(ctypes.pointer(call_frame))
+
+        assert result is None  # success: the callback returned before touching args/rets
+        assert metadata.api_version.major_version == numba_ffi.XLA_FFI_API_MAJOR
+        assert metadata.api_version.minor_version == numba_ffi.XLA_FFI_API_MINOR
+        assert metadata.traits == 0
+
+
+# --- F19b: XLA_FFI_Error objects returned by API calls must be destroyed -------
+
+class TestXlaFfiErrorDestroyed:
+    """Finding 19: ``get_xla_stream``/``get_device_ordinal`` must destroy the
+    ``XLA_FFI_Error*`` an API call returns on failure via
+    ``XLA_FFI_Error_Destroy`` before raising/returning, instead of leaking it."""
+
+    @staticmethod
+    def _blank_api_version():
+        return XLA_FFI_Api_Version(
+            struct_size=ctypes.sizeof(XLA_FFI_Api_Version),
+            extension_start=None,
+            major_version=0,
+            minor_version=0,
+        )
+
+    def test_get_xla_stream_destroys_error_before_raising(self):
+        destroyed = []
+        fake_err = 0x1234
+
+        @XLA_FFI_Stream_Get_Func
+        def stream_get_cb(args_ptr):
+            return fake_err
+
+        @XLA_FFI_Error_Destroy_Func
+        def destroy_cb(args_ptr):
+            destroyed.append(args_ptr.contents.error)
+
+        api = XLA_FFI_Api(
+            struct_size=ctypes.sizeof(XLA_FFI_Api),
+            extension_start=None,
+            api_version=self._blank_api_version(),
+            internal_api=None,
+            XLA_FFI_Error_Create=ctypes.cast(0, XLA_FFI_Error_Create_Func),
+            XLA_FFI_Error_GetMessage=None,
+            XLA_FFI_Error_Destroy=destroy_cb,
+            XLA_FFI_Handler_Register=None,
+            XLA_FFI_Stream_Get=stream_get_cb,
+            XLA_FFI_Type_Register=None,
+            XLA_FFI_ExecutionContext_Get=None,
+            XLA_FFI_State_Set=None,
+            XLA_FFI_State_Get=None,
+            XLA_FFI_DeviceMemory_Allocate=None,
+            XLA_FFI_DeviceMemory_Free=None,
+            XLA_FFI_ThreadPool_Schedule=None,
+            XLA_FFI_ThreadPool_NumThreads=None,
+            XLA_FFI_Future_Create=None,
+            XLA_FFI_Future_SetAvailable=None,
+            XLA_FFI_Future_SetError=None,
+            XLA_FFI_RunId_Get=None,
+            XLA_FFI_DeviceOrdinal_Get=ctypes.cast(0, XLA_FFI_DeviceOrdinal_Get_Func),
+        )
+
+        with pytest.raises(RuntimeError):
+            get_xla_stream(ctypes.addressof(api), ctx=0)
+
+        assert destroyed == [fake_err]
+
+    def test_get_device_ordinal_destroys_error_and_returns_none(self):
+        destroyed = []
+        fake_err = 0x5678
+
+        @XLA_FFI_DeviceOrdinal_Get_Func
+        def ordinal_get_cb(args_ptr):
+            return fake_err
+
+        @XLA_FFI_Error_Destroy_Func
+        def destroy_cb(args_ptr):
+            destroyed.append(args_ptr.contents.error)
+
+        api = XLA_FFI_Api(
+            struct_size=ctypes.sizeof(XLA_FFI_Api),
+            extension_start=None,
+            api_version=self._blank_api_version(),
+            internal_api=None,
+            XLA_FFI_Error_Create=ctypes.cast(0, XLA_FFI_Error_Create_Func),
+            XLA_FFI_Error_GetMessage=None,
+            XLA_FFI_Error_Destroy=destroy_cb,
+            XLA_FFI_Handler_Register=None,
+            XLA_FFI_Stream_Get=ctypes.cast(0, XLA_FFI_Stream_Get_Func),
+            XLA_FFI_Type_Register=None,
+            XLA_FFI_ExecutionContext_Get=None,
+            XLA_FFI_State_Set=None,
+            XLA_FFI_State_Get=None,
+            XLA_FFI_DeviceMemory_Allocate=None,
+            XLA_FFI_DeviceMemory_Free=None,
+            XLA_FFI_ThreadPool_Schedule=None,
+            XLA_FFI_ThreadPool_NumThreads=None,
+            XLA_FFI_Future_Create=None,
+            XLA_FFI_Future_SetAvailable=None,
+            XLA_FFI_Future_SetError=None,
+            XLA_FFI_RunId_Get=None,
+            XLA_FFI_DeviceOrdinal_Get=ordinal_get_cb,
+        )
+
+        result = get_device_ordinal(ctypes.addressof(api), ctx=0)
+
+        assert result is None
+        assert destroyed == [fake_err]
+
+    def test_get_xla_stream_tolerates_null_destroy_fn(self):
+        """A null ``XLA_FFI_Error_Destroy`` (older jaxlib) must not crash the
+        error path -- it is guarded, not assumed present."""
+        fake_err = 0x9999
+
+        @XLA_FFI_Stream_Get_Func
+        def stream_get_cb(args_ptr):
+            return fake_err
+
+        api = XLA_FFI_Api(
+            struct_size=ctypes.sizeof(XLA_FFI_Api),
+            extension_start=None,
+            api_version=self._blank_api_version(),
+            internal_api=None,
+            XLA_FFI_Error_Create=ctypes.cast(0, XLA_FFI_Error_Create_Func),
+            XLA_FFI_Error_GetMessage=None,
+            XLA_FFI_Error_Destroy=ctypes.cast(0, XLA_FFI_Error_Destroy_Func),  # null function pointer
+            XLA_FFI_Handler_Register=None,
+            XLA_FFI_Stream_Get=stream_get_cb,
+            XLA_FFI_Type_Register=None,
+            XLA_FFI_ExecutionContext_Get=None,
+            XLA_FFI_State_Set=None,
+            XLA_FFI_State_Get=None,
+            XLA_FFI_DeviceMemory_Allocate=None,
+            XLA_FFI_DeviceMemory_Free=None,
+            XLA_FFI_ThreadPool_Schedule=None,
+            XLA_FFI_ThreadPool_NumThreads=None,
+            XLA_FFI_Future_Create=None,
+            XLA_FFI_Future_SetAvailable=None,
+            XLA_FFI_Future_SetError=None,
+            XLA_FFI_RunId_Get=None,
+            XLA_FFI_DeviceOrdinal_Get=ctypes.cast(0, XLA_FFI_DeviceOrdinal_Get_Func),
+        )
+
+        with pytest.raises(RuntimeError):
+            get_xla_stream(ctypes.addressof(api), ctx=0)
+
+
+# --- F19c: a loud stderr message when an error cannot be reported to XLA -------
+
+class TestUnreportableFfiError:
+    def test_writes_prominent_message_to_stderr(self, capfd):
+        _report_unreportable_ffi_error('my_kernel', ValueError('boom'))
+        captured = capfd.readouterr()
+        assert 'my_kernel' in captured.err
+        assert 'boom' in captured.err
+        assert 'FATAL' in captured.err
+        assert 'NOT be reported to XLA' in captured.err or 'could NOT be reported' in captured.err

@@ -23,9 +23,25 @@ import numpy as np
 import pytest
 
 import brainevent
+from brainevent._error import KernelRegistrationError
 
 if platform.platform().startswith('Windows'):
     pytest.skip(reason="Windows is not supported yet.", allow_module_level=True)
+
+
+@pytest.fixture
+def isolated_cache(tmp_path):
+    """Point the shared compilation cache at a scratch dir for one test.
+
+    F3/F10 exercise *cache-hit* behaviour (no ``force_rebuild``), so they need a
+    private cache dir that other tests cannot pre-populate.
+    """
+    old = brainevent.get_cache_dir()
+    brainevent.set_cache_dir(str(tmp_path / "becache"))
+    try:
+        yield
+    finally:
+        brainevent.set_cache_dir(old)
 
 ADD_ONE_SRC = r"""
 #include "brainevent/common.h"
@@ -215,3 +231,194 @@ def test_process_survives_after_check_failure():
 
     # Still alive: a normal JAX computation completes after the failure.
     assert float(jnp.sum(jnp.arange(5.0))) == 10.0
+
+
+# ---------------------------------------------------------------------------
+# Cluster D end-to-end tests (C++/CPU path)
+# ---------------------------------------------------------------------------
+
+# Source defining TWO functions; used to exercise the finding-3 scenario where
+# the same source is loaded first with one function, then with both.
+TWO_FN_SRC = r"""
+#include "brainevent/common.h"
+
+void addf(const BE::Tensor x, BE::Tensor y) {
+    int n = x.numel();
+    const float* i = static_cast<const float*>(x.data_ptr());
+    float* o = static_cast<float*>(y.data_ptr());
+    for (int k = 0; k < n; ++k) o[k] = i[k] + 1.0f;
+}
+
+void addg(const BE::Tensor x, BE::Tensor y) {
+    int n = x.numel();
+    const float* i = static_cast<const float*>(x.data_ptr());
+    float* o = static_cast<float*>(y.data_ptr());
+    for (int k = 0; k < n; ++k) o[k] = i[k] + 100.0f;
+}
+"""
+
+
+def test_f3_specs_participate_in_cache_key_e2e(isolated_cache):
+    """F3: same source + a superset ``functions`` mapping must recompile.
+
+    Before the fix the cache key hashed only the user source, so the second load
+    (which needs a ``be_addg`` wrapper) would hit the first load's ``.so`` — which
+    lacks that symbol — and fail with the misleading "Did the compilation
+    succeed?" error.  With specs in the key the two loads get distinct entries.
+    """
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.arange(8, dtype=jnp.float32), cpu)
+
+    # Load 1: only addf (seeds the cache under this name).
+    m1 = brainevent.load_cpp_inline(
+        name="bef3_mod", cpp_sources=TWO_FN_SRC,
+        functions={"addf": ["arg", "ret"]}, auto_register=False,
+    )
+    assert m1.function_names == ["addf"]
+
+    # Load 2: SAME source + name, now with BOTH functions.  Must not cache-hit
+    # the single-function artefact.
+    m2 = brainevent.load_cpp_inline(
+        name="bef3_mod", cpp_sources=TWO_FN_SRC,
+        functions={"addf": ["arg", "ret"], "addg": ["arg", "ret"]},
+        target_prefix="bef3_run",
+    )
+    assert m1.path != m2.path, "specs must change the cache entry (different .so)"
+    assert set(m2.function_names) == {"addf", "addg"}
+
+    # Both wrappers behave correctly.
+    rf = jax.ffi.ffi_call("bef3_run.addf", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    rg = jax.ffi.ffi_call("bef3_run.addg", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(rf), np.arange(8) + 1.0)
+    np.testing.assert_allclose(np.asarray(rg), np.arange(8) + 100.0)
+
+
+HDR_SRC = r"""
+#include "brainevent/common.h"
+#include "bef10_addend.h"
+
+void add_hdr(const BE::Tensor x, BE::Tensor y) {
+    int n = x.numel();
+    const float* i = static_cast<const float*>(x.data_ptr());
+    float* o = static_cast<float*>(y.data_ptr());
+    for (int k = 0; k < n; ++k) o[k] = i[k] + (float)BEF10_ADDEND;
+}
+"""
+
+
+def test_f10_extra_include_header_edit_rebuilds(isolated_cache, tmp_path):
+    """F10: editing a header under ``extra_include_paths`` must invalidate cache."""
+    inc = tmp_path / "inc"
+    inc.mkdir()
+    header = inc / "bef10_addend.h"
+    header.write_text("#define BEF10_ADDEND 1\n")
+
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.zeros(4, dtype=jnp.float32), cpu)
+
+    m1 = brainevent.load_cpp_inline(
+        name="bef10_mod", cpp_sources=HDR_SRC, functions=["add_hdr"],
+        extra_include_paths=[str(inc)], target_prefix="bef10_a",
+    )
+    r1 = jax.ffi.ffi_call("bef10_a.add_hdr", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(r1), np.full(4, 1.0))
+
+    # Edit the header contents (no force_rebuild): cache must miss and recompile.
+    header.write_text("#define BEF10_ADDEND 2\n")
+    m2 = brainevent.load_cpp_inline(
+        name="bef10_mod", cpp_sources=HDR_SRC, functions=["add_hdr"],
+        extra_include_paths=[str(inc)], target_prefix="bef10_b",
+    )
+    assert m1.path != m2.path, "header edit must produce a new cache entry"
+    r2 = jax.ffi.ffi_call("bef10_b.add_hdr", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(r2), np.full(4, 2.0))
+
+
+def _src_plus(delta: float) -> str:
+    return (
+        '#include "brainevent/common.h"\n'
+        "void bump(const BE::Tensor x, BE::Tensor y) {\n"
+        "  int n = x.numel();\n"
+        "  const float* i = static_cast<const float*>(x.data_ptr());\n"
+        "  float* o = static_cast<float*>(y.data_ptr());\n"
+        f"  for (int k = 0; k < n; ++k) o[k] = i[k] + {delta}f;\n"
+        "}\n"
+    )
+
+
+def test_f12_stem_collision_without_replace_errors(isolated_cache):
+    """F12: a second, different artefact under the same target name → clear error.
+
+    Models two sources that share a file stem (both target ``bef12.bump``).  The
+    error must name BOTH remedies: replace=True and a distinct name/target_prefix.
+    """
+    brainevent.load_cpp_inline(
+        name="bef12", cpp_sources=_src_plus(1.0), functions=["bump"],
+    )
+    with pytest.raises(KernelRegistrationError) as ei:
+        brainevent.load_cpp_inline(
+            name="bef12", cpp_sources=_src_plus(2.0), functions=["bump"],
+        )
+    msg = str(ei.value)
+    assert "replace=True" in msg
+    assert "target_prefix" in msg or "name=" in msg
+
+
+def test_f12_replace_refused_deterministically(isolated_cache):
+    """F12/F4: replace=True with changed content raises a clean, actionable error.
+
+    A live re-point cannot be verified on this JAX (probed: the Host registry
+    rejects a differing bundle address; the CUDA registry silently keeps the old
+    handler), so ``replace=True`` refuses deterministically and directs the user
+    to a distinct name — it never silently keeps serving the stale kernel.
+    """
+    brainevent.load_cpp_inline(
+        name="bef12r", cpp_sources=_src_plus(1.0), functions=["bump"],
+    )
+    with pytest.raises(KernelRegistrationError) as ei:
+        brainevent.load_cpp_inline(
+            name="bef12r", cpp_sources=_src_plus(2.0), functions=["bump"],
+            replace=True,
+        )
+    assert "distinct name" in str(ei.value) or "target_prefix" in str(ei.value)
+
+
+def test_f4_force_rebuild_new_code_via_distinct_name(isolated_cache):
+    """F4 e2e: force_rebuild refuses to silently serve stale code; a distinct
+    target name reliably dispatches the edited kernel.
+
+    On jax 0.10.2 the CPU registry cannot re-point a live target, so the honest
+    outcome is: (1) force_rebuild with changed content under the same name raises
+    (no silent stale dispatch — finding 4 fixed), and (2) the edited kernel runs
+    when registered under a new target name.
+    """
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.zeros(4, dtype=jnp.float32), cpu)
+
+    brainevent.load_cpp_inline(
+        name="bef4", cpp_sources=_src_plus(1.0), functions=["bump"],
+        target_prefix="bef4_v1",
+    )
+    r1 = jax.ffi.ffi_call("bef4_v1.bump", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(r1), np.full(4, 1.0))
+
+    # Edit + force_rebuild under the SAME target prefix → refuses (no silent stale).
+    with pytest.raises(KernelRegistrationError):
+        brainevent.load_cpp_inline(
+            name="bef4", cpp_sources=_src_plus(2.0), functions=["bump"],
+            force_rebuild=True, target_prefix="bef4_v1",
+        )
+
+    # Distinct target prefix → the edited kernel dispatches correctly.
+    brainevent.load_cpp_inline(
+        name="bef4", cpp_sources=_src_plus(2.0), functions=["bump"],
+        target_prefix="bef4_v2",
+    )
+    r2 = jax.ffi.ffi_call("bef4_v2.bump", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(r2), np.full(4, 2.0))

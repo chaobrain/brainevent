@@ -238,7 +238,24 @@ def _single_result_jvp(jvp_rules, primitive: Primitive, primals, tangents, **par
         A pair ``(val_out, tangent_out)`` where *val_out* is the single
         primal output and *tangent_out* is the summed tangent
         contribution.
+
+    Raises
+    ------
+    ValueError
+        If ``len(jvp_rules) != len(primals)``. Zero-tangent inputs are
+        expressed by passing ``None`` for their rule (see :func:`defjvp`),
+        so the rule list must have exactly one entry per input; a
+        length mismatch means a rule was forgotten (or an extra one added)
+        when the primitive was registered, and letting it through would
+        silently truncate/ignore rules via ``zip`` instead of raising.
     """
+    if len(jvp_rules) != len(primals):
+        raise ValueError(
+            f"defjvp for primitive '{primitive.name}' was given "
+            f"{len(jvp_rules)} JVP rule(s) but the primitive has "
+            f"{len(primals)} input(s). Pass exactly one rule per input "
+            f"(use None for an input whose tangent contribution is zero)."
+        )
     val_out = primitive.bind(*primals, **params)
     tangents_out = [
         rule(t, *primals, **params)
@@ -275,11 +292,25 @@ def _standard_jvp(jvp_rules, primitive: Primitive, primals, tangents, **params):
         A pair ``(val_out, tangents_out)`` where *val_out* is the tuple
         of primal outputs and *tangents_out* is the summed tangent
         contributions with the same pytree structure as *val_out*.
+
+    Raises
+    ------
+    ValueError
+        If ``len(jvp_rules) != len(primals)`` (see :func:`_single_result_jvp`
+        for the rationale -- the same exact-arity contract applies here),
+        or if *primitive* does not have ``multiple_results=True``.
     """
     if not primitive.multiple_results:
         raise ValueError(
             f"_standard_jvp is only valid for multiple-result primitives, "
             f"but {primitive} has multiple_results=False."
+        )
+    if len(jvp_rules) != len(primals):
+        raise ValueError(
+            f"defjvp for primitive '{primitive.name}' was given "
+            f"{len(jvp_rules)} JVP rule(s) but the primitive has "
+            f"{len(primals)} input(s). Pass exactly one rule per input "
+            f"(use None for an input whose tangent contribution is zero)."
         )
     val_out = tuple(primitive.bind(*primals, **params))
     tree = tree_util.tree_structure(val_out)
