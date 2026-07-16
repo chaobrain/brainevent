@@ -16,9 +16,9 @@
 /*
  * float_jitnmm.cu -- dense-matrix light-RNG backends.
  *
- * jitumm_gather/scatter_f32 use the AW-T4 MM random stream and match CSR
- * matrix_mode="mm".  jitumm_mv_gather/scatter_f32 use the MV random stream
- * column-by-column and are only used by vmap(jitumv).
+ * jitnmm_notrans/trans_f32 use the AW-T4 MM random stream and match CSR
+ * matrix_mode="mm".  jitnmm_mv_notrans/trans_f32 use the MV random stream
+ * column-by-column and are only used by vmap(jitnmv).
  */
 
 #include <cstdio>
@@ -206,7 +206,7 @@ __device__ __forceinline__ float group4_reduce_sum_f32(float value, int group) {
     return value;
 }
 
-__global__ void _mv_gather_f32_kern(
+__global__ void _mv_notrans_f32_kern(
     const float* __restrict__ w_loc,
     const float* __restrict__ w_scale,
     const int*   __restrict__ clen,
@@ -257,7 +257,7 @@ __global__ void _mv_gather_f32_kern(
     }
 }
 
-__global__ void _mv_scatter_f32_kern(
+__global__ void _mv_trans_f32_kern(
     const float* __restrict__ w_loc,
     const float* __restrict__ w_scale,
     const int*   __restrict__ clen,
@@ -305,7 +305,7 @@ __global__ void _mv_scatter_f32_kern(
     }
 }
 
-__global__ void _mm_gather_f32_kern(
+__global__ void _mm_notrans_f32_kern(
     const float* __restrict__ w_loc,
     const float* __restrict__ w_scale,
     const int*   __restrict__ clen,
@@ -358,7 +358,7 @@ __global__ void _mm_gather_f32_kern(
     }
 }
 
-__global__ void _mm_scatter_f32_kern(
+__global__ void _mm_trans_f32_kern(
     const float* __restrict__ w_loc,
     const float* __restrict__ w_scale,
     const int*   __restrict__ clen,
@@ -408,7 +408,7 @@ __global__ void _mm_scatter_f32_kern(
     }
 }
 
-static void launch_mv_gather_f32(
+static void launch_mv_notrans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -431,13 +431,13 @@ static void launch_mv_gather_f32(
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
     if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
         fprintf(stderr,
-                "jitnmm_mv_gather_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
+                "jitnmm_mv_notrans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
                 row_warp_blocks, n_chunks, n);
         abort();
     }
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n);
 
-    _mv_gather_f32_kern<<<blocks, threads, 0, s>>>(
+    _mv_notrans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(w_loc.data_ptr()),
         static_cast<const float*>(w_scale.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
@@ -449,7 +449,7 @@ static void launch_mv_gather_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-static void launch_mv_scatter_f32(
+static void launch_mv_trans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -472,13 +472,13 @@ static void launch_mv_scatter_f32(
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
     if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
         fprintf(stderr,
-                "jitnmm_mv_scatter_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
+                "jitnmm_mv_trans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
                 row_warp_blocks, n_chunks, n);
         abort();
     }
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n);
 
-    _mv_scatter_f32_kern<<<blocks, threads, 0, s>>>(
+    _mv_trans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(w_loc.data_ptr()),
         static_cast<const float*>(w_scale.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
@@ -490,7 +490,7 @@ static void launch_mv_scatter_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-static void launch_mm_gather_f32(
+static void launch_mm_notrans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -514,13 +514,13 @@ static void launch_mm_gather_f32(
     int row_group_blocks = (m + rows_per_block - 1) / rows_per_block;
     if (row_group_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
         fprintf(stderr,
-                "jitnmm_gather_f32 grid overflow: row_group_blocks=%d n_chunks=%d n=%d\n",
+                "jitnmm_notrans_f32 grid overflow: row_group_blocks=%d n_chunks=%d n=%d\n",
                 row_group_blocks, n_chunks, n);
         abort();
     }
     dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, (unsigned int)n);
 
-    _mm_gather_f32_kern<<<blocks, threads, 0, s>>>(
+    _mm_notrans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(w_loc.data_ptr()),
         static_cast<const float*>(w_scale.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
@@ -532,7 +532,7 @@ static void launch_mm_gather_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-static void launch_mm_scatter_f32(
+static void launch_mm_trans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -556,13 +556,13 @@ static void launch_mm_scatter_f32(
     int row_group_blocks = (m + rows_per_block - 1) / rows_per_block;
     if (row_group_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
         fprintf(stderr,
-                "jitnmm_scatter_f32 grid overflow: row_group_blocks=%d n_chunks=%d n=%d\n",
+                "jitnmm_trans_f32 grid overflow: row_group_blocks=%d n_chunks=%d n=%d\n",
                 row_group_blocks, n_chunks, n);
         abort();
     }
     dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, (unsigned int)n);
 
-    _mm_scatter_f32_kern<<<blocks, threads, 0, s>>>(
+    _mm_trans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(w_loc.data_ptr()),
         static_cast<const float*>(w_scale.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
@@ -574,8 +574,8 @@ static void launch_mm_scatter_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE jitnmm_mv_gather_f32
-void jitnmm_mv_gather_f32(
+// @BE jitnmm_mv_notrans_f32
+void jitnmm_mv_notrans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -585,11 +585,11 @@ void jitnmm_mv_gather_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mv_gather_f32(w_loc, w_scale, clen, seed, B, output, m, k, n, chunk_size, stream);
+    launch_mv_notrans_f32(w_loc, w_scale, clen, seed, B, output, m, k, n, chunk_size, stream);
 }
 
-// @BE jitnmm_mv_scatter_f32
-void jitnmm_mv_scatter_f32(
+// @BE jitnmm_mv_trans_f32
+void jitnmm_mv_trans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -599,11 +599,11 @@ void jitnmm_mv_scatter_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mv_scatter_f32(w_loc, w_scale, clen, seed, B, output, m, k, n, chunk_size, stream);
+    launch_mv_trans_f32(w_loc, w_scale, clen, seed, B, output, m, k, n, chunk_size, stream);
 }
 
-// @BE jitnmm_gather_f32
-void jitnmm_gather_f32(
+// @BE jitnmm_notrans_f32
+void jitnmm_notrans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -613,11 +613,11 @@ void jitnmm_gather_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mm_gather_f32(w_loc, w_scale, clen, seed, B, output, m, k, n, chunk_size, stream);
+    launch_mm_notrans_f32(w_loc, w_scale, clen, seed, B, output, m, k, n, chunk_size, stream);
 }
 
-// @BE jitnmm_scatter_f32
-void jitnmm_scatter_f32(
+// @BE jitnmm_trans_f32
+void jitnmm_trans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -627,5 +627,5 @@ void jitnmm_scatter_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mm_scatter_f32(w_loc, w_scale, clen, seed, B, output, m, k, n, chunk_size, stream);
+    launch_mm_trans_f32(w_loc, w_scale, clen, seed, B, output, m, k, n, chunk_size, stream);
 }

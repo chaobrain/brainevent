@@ -16,7 +16,7 @@
 /*
  * light_rng-chunk-wpr.cu -- bit-packed light-RNG WPR chunk backend.
  *
- * Gather and scatter share one row-major matrix.  One warp owns one
+ * Notrans and trans share one row-major matrix.  One warp owns one
  * (row, chunk_id) task, and each lane owns one residue class:
  *
  *   local_j = lane + 32 * q
@@ -151,7 +151,7 @@ __global__ void _pack_bool_kern(
     packed[word] = bits;
 }
 
-__global__ void _gather_f32_kern(
+__global__ void _notrans_f32_kern(
     const float*    __restrict__ w_low,
     const float*    __restrict__ w_high,
     const int*      __restrict__ clen,
@@ -202,7 +202,7 @@ __global__ void _gather_f32_kern(
     }
 }
 
-__global__ void _scatter_f32_kern(
+__global__ void _trans_f32_kern(
     const float*    __restrict__ w_low,
     const float*    __restrict__ w_high,
     const int*      __restrict__ clen,
@@ -268,8 +268,8 @@ void pack_bool(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE gather_f32
-void gather_f32(
+// @BE notrans_f32
+void notrans_f32(
     const BE::Tensor w_low,
     const BE::Tensor w_high,
     const BE::Tensor clen,
@@ -295,13 +295,13 @@ void gather_f32(
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
     if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
         fprintf(stderr,
-                "gather_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                "notrans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
                 row_warp_blocks, n_chunks);
         abort();
     }
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
-    _gather_f32_kern<<<blocks, threads, 0, s>>>(
+    _notrans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(w_low.data_ptr()),
         static_cast<const float*>(w_high.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),
@@ -313,8 +313,8 @@ void gather_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE scatter_f32
-void scatter_f32(
+// @BE trans_f32
+void trans_f32(
     const BE::Tensor w_low,
     const BE::Tensor w_high,
     const BE::Tensor clen,
@@ -340,13 +340,13 @@ void scatter_f32(
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
     if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
         fprintf(stderr,
-                "scatter_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                "trans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
                 row_warp_blocks, n_chunks);
         abort();
     }
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
-    _scatter_f32_kern<<<blocks, threads, 0, s>>>(
+    _trans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float*>(w_low.data_ptr()),
         static_cast<const float*>(w_high.data_ptr()),
         static_cast<const int*>(clen.data_ptr()),

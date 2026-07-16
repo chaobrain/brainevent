@@ -67,7 +67,7 @@ def jitumv_dt2t(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
+    corder: Optional[bool] = None,
     backend: Optional[str] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
@@ -81,6 +81,7 @@ def jitumv_dt2t(
     materialising the CSR weight data.
     """
     n_rows, n_cols = _normalize_shape(shape)
+    _warn_corder_ignored(corder)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
 
@@ -114,7 +115,6 @@ def jitumv_dt2t(
         clen,
         seed,
         shape=(n_rows, n_cols),
-        corder=corder,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         matrix_mode='mv',
@@ -145,7 +145,6 @@ def jitumv_dt2t(
         nnz,
         shape=(n_rows, n_cols),
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         backend=backend,
@@ -168,7 +167,6 @@ def jitumv_dt2t(
 # ---------------------------------------------------------------------- #
 
 def _jitumv_dt2t_fill_cuda_kernel(
-    corder: bool,
     shape: MatrixShape,
     transpose: bool,
     chunk_size: Optional[int] = None,
@@ -176,7 +174,6 @@ def _jitumv_dt2t_fill_cuda_kernel(
     **kwargs,
 ):
     """Build the CUDA kernel callable for the uniform JITC ``dt2t`` fill pass."""
-    del corder
     w0_dtype = np.dtype(kwargs['w0_info'].dtype)
     if w0_dtype != np.dtype('float32'):
         raise NotImplementedError("light dt2t currently supports float32 values only")
@@ -190,9 +187,9 @@ def _jitumv_dt2t_fill_cuda_kernel(
     n_cols = np.int32(shape[1])
     chunk_size_attr = np.int32(chunk_size_value)
     kernel_name = (
-        'jit_uniform_dt2t.fill_transpose_f32'
+        'jit_uniform_dt2t.fill_trans_f32'
         if transpose
-        else 'jit_uniform_dt2t.fill_f32'
+        else 'jit_uniform_dt2t.fill_notrans_f32'
     )
 
     def kernel(w0, w1, clen, y, seed, chunk_offsets):
@@ -221,7 +218,6 @@ def jitumv_dt2t_p_call(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
@@ -230,7 +226,6 @@ def jitumv_dt2t_p_call(
     n_rows, n_cols = _normalize_shape(shape)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
-    _warn_corder_ignored(corder)
 
     w0 = jnp.atleast_1d(w0)
     w1 = jnp.atleast_1d(w1)
@@ -276,7 +271,6 @@ def jitumv_dt2t_p_call(
         outs=[jax.ShapeDtypeStruct((nnz,), y.dtype)],
         shape=(n_rows, n_cols),
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         backend=backend,

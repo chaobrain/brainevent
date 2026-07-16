@@ -18,7 +18,7 @@
  *
  * This file mirrors the MV CSR row/chunk generator in csr.cu.  Fill receives
  * exclusive per-(row, chunk) offsets and writes sampled_weight * y[row] for
- * non-transpose mode or sampled_weight * y[col] for transpose mode in the same
+ * notrans mode or sampled_weight * y[col] for trans mode in the same
  * flat CSR data order as jitu_to_csr(..., matrix_mode="mv").data.
  */
 
@@ -259,8 +259,8 @@ void launch_fill_dt2t_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE fill_f32
-void fill_f32(
+// @BE fill_notrans_f32
+void fill_notrans_f32(
     const BE::Tensor w_low,
     const BE::Tensor w_high,
     const BE::Tensor clen,
@@ -278,8 +278,8 @@ void fill_f32(
     );
 }
 
-// @BE fill_transpose_f32
-void fill_transpose_f32(
+// @BE fill_trans_f32
+void fill_trans_f32(
     const BE::Tensor w_low,
     const BE::Tensor w_high,
     const BE::Tensor clen,

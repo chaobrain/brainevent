@@ -17,6 +17,7 @@
 
 
 from typing import Union, Tuple, Optional, Dict
+import warnings
 
 import brainunit as u
 import jax
@@ -35,6 +36,16 @@ __all__ = [
     'JITCScalarR',
     'JITCScalarC',
 ]
+
+
+def _warn_corder_deprecated(corder: Optional[bool]) -> None:
+    if corder is None:
+        return
+    warnings.warn(
+        "corder is deprecated and ignored by JITCScalarMatrix.",
+        FutureWarning,
+        stacklevel=3,
+    )
 
 
 class JITCScalarMatrix(JITCMatrix):
@@ -60,8 +71,6 @@ class JITCScalarMatrix(JITCMatrix):
         Random seed for reproducible sparse structure generation.
     shape : MatrixShape
         The shape of the matrix as a tuple (rows, columns).
-    corder : bool, optional
-        Memory layout order flag, by default False.
     backend : str, optional
         Computation backend override.
 
@@ -78,9 +87,6 @@ class JITCScalarMatrix(JITCMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
 
     Raises
     ------
@@ -117,7 +123,6 @@ class JITCScalarMatrix(JITCMatrix):
     prob: Union[float, jax.Array]
     seed: Union[int, jax.Array]
     shape: MatrixShape
-    corder: bool
 
     def __init__(
         self,
@@ -126,7 +131,7 @@ class JITCScalarMatrix(JITCMatrix):
         seed=None,
         *,
         shape: MatrixShape,
-        corder: bool = False,
+        corder: Optional[bool] = None,
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
     ):
@@ -144,11 +149,6 @@ class JITCScalarMatrix(JITCMatrix):
             Random seed for reproducible sparse structure generation.
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
-        corder : bool, optional
-            Memory layout order flag, by default False.
-            - False: Fortran-order (column-major)
-            - True: C-order (row-major)
-
         Notes
         -----
         The constructor extracts the components from the data tuple and sets them
@@ -170,8 +170,8 @@ class JITCScalarMatrix(JITCMatrix):
             if not (0. <= prob <= 1.):
                 raise ValueError(f"prob must be in [0, 1], but got {prob}.")
 
+        _warn_corder_deprecated(corder)
         self.weight = u.math.asarray(weight)
-        self.corder = corder
         self.backend = backend
         super().__init__(data, shape=shape, buffers=buffers)
 
@@ -183,13 +183,12 @@ class JITCScalarMatrix(JITCMatrix):
         -------
         str
             A string showing the class name, shape, scalar weight, probability,
-            seed, and corder flag of the matrix instance.
 
         Examples
         --------
         >>> matrix = JITCScalarMatrix((0.5, 0.2, 42), shape=(10, 10))
         >>> repr(matrix)
-        'JITScalarMatrix(shape=(10, 10), weight=0.5, prob=0.2, seed=42, corder=False)'
+        'JITScalarMatrix(shape=(10, 10), weight=0.5, prob=0.2, seed=42)'
         """
         return (
             f"{self.__class__.__name__}("
@@ -197,7 +196,6 @@ class JITCScalarMatrix(JITCMatrix):
             f"weight={self.weight}, "
             f"prob={self.prob}, "
             f"seed={self.seed}, "
-            f"corder={self.corder},"
             f"backend={self.backend},"
             f")"
         )
@@ -246,7 +244,7 @@ class JITCScalarMatrix(JITCMatrix):
         Create a new matrix instance with an updated weight, preserving all other structure.
 
         Accepts exactly the value returned by :attr:`data`, while keeping the same
-        ``prob``, ``seed``, ``shape``, ``corder``, ``backend``, and buffers. It is
+        ``prob``, ``seed``, ``shape``, ``backend``, and buffers. It is
         useful for updating the scalar weight without changing the connectivity pattern.
 
         Parameters
@@ -293,7 +291,6 @@ class JITCScalarMatrix(JITCMatrix):
         return type(self)(
             (weight, self.prob, self.seed),
             shape=self.shape,
-            corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -350,7 +347,7 @@ class JITCScalarMatrix(JITCMatrix):
             self.prob,
             self.seed,
             shape=self.shape,
-            corder=self.corder,
+            transpose=False,
             backend=self.backend,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
@@ -367,7 +364,7 @@ class JITCScalarMatrix(JITCMatrix):
         ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC scalar connectivity and weights are generated from this matrix's own
         metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
-        ``corder``, and ``backend``.
+        ``backend``.
         """
         return jitsmv_dt2t(
             self.weight,
@@ -376,7 +373,6 @@ class JITCScalarMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=False,
-            corder=self.corder,
             backend=self.backend,
         )
 
@@ -390,7 +386,7 @@ class JITCScalarMatrix(JITCMatrix):
         ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC scalar connectivity and weights are generated from this matrix's own
         metadata, including ``weight``, ``prob``, ``seed``, ``shape``,
-        ``corder``, and ``backend``.
+        ``backend``.
         """
         return jitsmv_dt2t(
             self.weight,
@@ -399,7 +395,6 @@ class JITCScalarMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=True,
-            corder=self.corder,
             backend=self.backend,
         )
 
@@ -412,14 +407,14 @@ class JITCScalarMatrix(JITCMatrix):
         tuple
             A pair of (children, aux_data) where children is a tuple of
             (weight, prob, seed) and aux_data is a dict containing
-            shape, corder, and backend.
+            shape and backend.
 
         Notes
         -----
         This method is used by JAX's pytree system to serialize the matrix
         for transformations such as ``jax.jit``, ``jax.grad``, and ``jax.vmap``.
         """
-        aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
+        aux = {'shape': self.shape, 'backend': self.backend}
         return (self.weight, self.prob, self.seed), (aux, self.buffers)
 
     @classmethod
@@ -430,7 +425,7 @@ class JITCScalarMatrix(JITCMatrix):
         Parameters
         ----------
         aux_data : dict
-            Auxiliary data containing shape, corder, and backend.
+            Auxiliary data containing shape and backend.
         children : tuple
             A tuple of (weight, prob, seed) leaf values.
 
@@ -448,6 +443,8 @@ class JITCScalarMatrix(JITCMatrix):
         obj = object.__new__(cls)
         obj.weight, obj.prob, obj.seed = children
         aux_data, buffer = aux_data
+        aux_data = dict(aux_data)
+        aux_data.pop('corder', None)
         obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
             setattr(obj, k, v)
@@ -470,7 +467,6 @@ class JITCScalarMatrix(JITCMatrix):
         ------
         NotImplementedError
             If the two matrices have different seeds, tracing seeds,
-            or different corder values.
         """
         if not (isinstance(other.seed, Tracer) and isinstance(self.seed, Tracer)):
             if self.seed != other.seed:
@@ -483,12 +479,6 @@ class JITCScalarMatrix(JITCMatrix):
             raise NotImplementedError(
                 f"binary operation {op} between two {self.__class__.__name__} "
                 f"objects with tracing seeds "
-                f"is not implemented currently."
-            )
-        if self.corder != other.corder:
-            raise NotImplementedError(
-                f"binary operation {op} between two {self.__class__.__name__} "
-                f"objects with different corder "
                 f"is not implemented currently."
             )
 
@@ -521,9 +511,6 @@ class JITCScalarR(JITCScalarMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -539,7 +526,7 @@ class JITCScalarR(JITCScalarMatrix):
         # Create a scalar matrix with weight 0.5, probability 0.2, and seed 42
         >>> scalar_matrix = JITCScalarR((0.5, 0.2, 42), shape=(10, 10))
         >>> scalar_matrix
-        JITCScalarR(shape=(10, 10), weight=0.5, prob=0.2, seed=42, corder=False)
+        JITCScalarR(shape=(10, 10), weight=0.5, prob=0.2, seed=42)
 
         # Create a scalar matrix with units
         >>> scalar_matrix_mv = JITCScalarR((0.5 * u.mV, 0.2, 42), shape=(10, 10))
@@ -586,7 +573,7 @@ class JITCScalarR(JITCScalarMatrix):
     where ``B[i, j] ~ Bernoulli(prob)`` is determined by ``seed``.
 
     The row-oriented representation means that the random number generator state is
-    seeded per-row (or per-column, depending on ``corder``), making row-based
+    The row-oriented representation uses the canonical row stream, making row-based
     operations (``W @ v``) the natural direction.
 
     Key properties:
@@ -660,7 +647,6 @@ class JITCScalarR(JITCScalarMatrix):
             self.seed,
             shape=self.shape,
             transpose=False,
-            corder=self.corder,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
             target_chunks=target_chunks,
@@ -704,9 +690,6 @@ class JITCScalarR(JITCScalarMatrix):
         ``seed``, the transposed matrix produces identical results to materializing
         ``W`` and transposing the dense array.
 
-        The ``corder`` flag is flipped during transposition to maintain consistency
-        with the underlying PRNG state ordering.
-
         Examples
         --------
 
@@ -727,7 +710,6 @@ class JITCScalarR(JITCScalarMatrix):
         return JITCScalarC(
             (self.weight, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -757,7 +739,6 @@ class JITCScalarR(JITCScalarMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -839,7 +820,7 @@ class JITCScalarR(JITCScalarMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __matmul__(self, other):
         """
         Compute matrix multiplication ``self @ other``.
 
@@ -887,7 +868,6 @@ class JITCScalarR(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -899,7 +879,6 @@ class JITCScalarR(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
@@ -917,7 +896,6 @@ class JITCScalarR(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -929,13 +907,12 @@ class JITCScalarR(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-    def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __rmatmul__(self, other):
         """
         Compute matrix multiplication ``other @ self``.
 
@@ -991,7 +968,6 @@ class JITCScalarR(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1007,7 +983,6 @@ class JITCScalarR(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
                 return r.T
@@ -1030,7 +1005,6 @@ class JITCScalarR(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1046,7 +1020,6 @@ class JITCScalarR(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
                     backend=self.backend,
                 )
                 return r.T
@@ -1083,9 +1056,6 @@ class JITCScalarC(JITCScalarMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -1101,7 +1071,7 @@ class JITCScalarC(JITCScalarMatrix):
         # Create a scalar matrix with weight 0.5, probability 0.2, and seed 42
         >>> scalar_matrix = JITCScalarC((0.5, 0.2, 42), shape=(10, 10))
         >>> scalar_matrix
-        JITCScalarC(shape=(10, 10), weight=0.5, prob=0.2, seed=42, corder=False)
+        JITCScalarC(shape=(10, 10), weight=0.5, prob=0.2, seed=42)
 
         # Create a scalar matrix with units
         >>> scalar_matrix_mv = JITCScalarC((0.5 * u.mV, 0.2, 42), shape=(10, 10))
@@ -1233,7 +1203,6 @@ class JITCScalarC(JITCScalarMatrix):
             self.seed,
             shape=self.shape[::-1],
             transpose=True,
-            corder=not self.corder,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
             target_chunks=target_chunks,
@@ -1253,13 +1222,13 @@ class JITCScalarC(JITCScalarMatrix):
             self.prob,
             self.seed,
             shape=self.shape[::-1],
-            corder=not self.corder,
+            transpose=True,
             backend=self.backend,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
             target_chunks=target_chunks,
         )
-        return csr.transpose().tocsr()
+        return csr
 
     def transpose(self, axes=None) -> 'JITCScalarR':
         """
@@ -1290,9 +1259,7 @@ class JITCScalarC(JITCScalarMatrix):
 
         Notes
         -----
-        The transpose satisfies ``W.T[j, i] = W[i, j]``. The ``corder`` flag is
-        flipped during transposition to maintain consistency with the underlying
-        PRNG state ordering.
+        The transpose satisfies ``W.T[j, i] = W[i, j]``.
 
         Examples
         --------
@@ -1314,7 +1281,6 @@ class JITCScalarC(JITCScalarMatrix):
         return JITCScalarR(
             (self.weight, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -1344,7 +1310,6 @@ class JITCScalarC(JITCScalarMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -1426,7 +1391,7 @@ class JITCScalarC(JITCScalarMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __matmul__(self, other):
         """
         Compute matrix multiplication ``self @ other``.
 
@@ -1477,7 +1442,6 @@ class JITCScalarC(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1491,7 +1455,6 @@ class JITCScalarC(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
@@ -1511,7 +1474,6 @@ class JITCScalarC(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1525,13 +1487,12 @@ class JITCScalarC(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-    def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __rmatmul__(self, other):
         """
         Compute matrix multiplication ``other @ self``.
 
@@ -1584,7 +1545,6 @@ class JITCScalarC(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1600,7 +1560,6 @@ class JITCScalarC(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
                 return r.T
@@ -1623,7 +1582,6 @@ class JITCScalarC(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1639,7 +1597,6 @@ class JITCScalarC(JITCScalarMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
                 return r.T

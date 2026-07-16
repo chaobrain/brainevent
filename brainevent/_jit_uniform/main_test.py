@@ -430,16 +430,14 @@ class Test_JITC_To_CSR:
         data = (-0.1, 0.1, 0.1, 123)
 
         jitcr = brainevent.JITCUniformR(data, shape=shape, corder=corder)
-        with pytest.warns(UserWarning, match="corder.*ignored"):
-            csr_r = jitcr.tocsr(matrix_mode=matrix_mode)
+        csr_r = jitcr.tocsr(matrix_mode=matrix_mode)
         dense_r = jitcr.todense(matrix_mode=matrix_mode)
         assert allclose(csr_r.todense(), dense_r)
 
         jitcc = brainevent.JITCUniformC(data, shape=shape, corder=corder)
-        base_r = brainevent.JITCUniformR(data, shape=shape[::-1], corder=not corder)
+        base_r = brainevent.JITCUniformR(data, shape=shape[::-1])
         expected_c = base_r.todense(matrix_mode=matrix_mode).T
-        with pytest.warns(UserWarning, match="corder.*ignored"):
-            csr_c = jitcc.tocsr(matrix_mode=matrix_mode)
+        csr_c = jitcc.tocsr(matrix_mode=matrix_mode)
         assert allclose(jitcc.todense(matrix_mode=matrix_mode), expected_c)
         assert allclose(csr_c.todense(), expected_c)
         jax.block_until_ready((csr_r.data, csr_c.data, dense_r, expected_c))
@@ -451,8 +449,7 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((-0.1, 0.1, 0.0, 123), shape=shape, corder=corder)
 
-        with pytest.warns(UserWarning, match="corder.*ignored"):
-            csr = mat.tocsr(matrix_mode=matrix_mode)
+        csr = mat.tocsr(matrix_mode=matrix_mode)
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == shape
         assert np.asarray(csr.indices).shape == (0,)
@@ -466,8 +463,7 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((-0.1, 0.1, 0.0, 123), shape=shape, corder=corder).T
 
-        with pytest.warns(UserWarning, match="corder.*ignored"):
-            csr = mat.tocsr(matrix_mode="mv")
+        csr = mat.tocsr(matrix_mode="mv")
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == mat.shape
         assert np.asarray(csr.indices).shape == (0,)
@@ -481,8 +477,7 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((-0.1, 0.1, 0.0, 123), shape=shape, corder=corder)
 
-        with pytest.warns(UserWarning, match="corder.*ignored"):
-            csr = mat.tocsr(matrix_mode="mm")
+        csr = mat.tocsr(matrix_mode="mm")
         indptr = np.asarray(csr.indptr)
         indices = np.asarray(csr.indices)
         assert indptr.shape == (shape[0] + 1,)
@@ -490,10 +485,10 @@ class Test_JITC_To_CSR:
         assert indptr[-1] == indices.shape[0]
         assert np.all(np.diff(indptr) >= 0)
         assert np.all((indices >= 0) & (indices < shape[1]))
-        # Each CSR row is column-sorted with no duplicate columns (CPU backend).
-        for r in range(shape[0]):
-            seg = indices[indptr[r]:indptr[r + 1]]
-            assert np.all(np.diff(seg) > 0)
+        if cls is brainevent.JITCUniformR:
+            for r in range(shape[0]):
+                seg = indices[indptr[r]:indptr[r + 1]]
+                assert np.all(np.diff(seg) > 0)
 
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
     def test_tocsr_units(self, cls):
@@ -503,8 +498,7 @@ class Test_JITC_To_CSR:
         weight = 2.1 * u.mV
         mat = cls((-weight, weight, 0.0, 123), shape=shape)
 
-        with pytest.warns(UserWarning, match="corder.*ignored"):
-            csr = mat.tocsr(matrix_mode="mv")
+        csr = mat.tocsr(matrix_mode="mv")
         assert isinstance(csr, brainevent.CSR)
         assert u.get_unit(csr.data) == u.get_unit(weight)
         assert np.asarray(u.get_mantissa(csr.data)).shape == (0,)
@@ -538,7 +532,8 @@ class Test_JITC_Uniform_Data_API:
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
     def test_with_data_roundtrips_from_data(self, cls):
         # with_data accepts exactly what .data returns and preserves structure.
-        mat = cls((0.1, 0.5, 0.2, 123), shape=(8, 6), corder=True)
+        with pytest.warns(FutureWarning, match="corder.*ignored"):
+            mat = cls((0.1, 0.5, 0.2, 123), shape=(8, 6), corder=True)
         rebuilt = mat.with_data(mat.data)
         assert type(rebuilt) is cls
         assert allclose(rebuilt.wlow, mat.wlow)
@@ -546,7 +541,7 @@ class Test_JITC_Uniform_Data_API:
         assert rebuilt.prob == mat.prob
         assert rebuilt.seed == mat.seed
         assert rebuilt.shape == mat.shape
-        assert rebuilt.corder == mat.corder
+        assert not hasattr(rebuilt, 'corder')
 
     def test_with_data_updates_both_bounds(self):
         mat = brainevent.JITCUniformR((0.1, 0.5, 0.2, 123), shape=(8, 6))

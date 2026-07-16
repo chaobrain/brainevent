@@ -79,7 +79,7 @@ def _sample_matrix(rows: int, cols: int, event_dtype, seed: int):
     return jnp.asarray(raw * mask)
 
 
-def _call_binary_jitnmm(w_loc, w_scale, prob, matrix, seed, *, shape, transpose, corder, implementation):
+def _call_binary_jitnmm(w_loc, w_scale, prob, matrix, seed, *, shape, transpose, implementation):
     return binary_jitnmm_p_call(
         w_loc,
         w_scale,
@@ -88,7 +88,6 @@ def _call_binary_jitnmm(w_loc, w_scale, prob, matrix, seed, *, shape, transpose,
         _initialize_seed(seed),
         shape=shape,
         transpose=transpose,
-        corder=corder,
         backend=implementation,
     )[0]
 
@@ -156,7 +155,6 @@ def test_binary_jitnmm_forward_matches_reference(implementation, shape, transpos
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         implementation=implementation,
     )
     y_ref = jitnmm(
@@ -235,7 +233,6 @@ def test_binary_jitnmm_thresholds_float_events(implementation, shape, transpose,
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         implementation=implementation,
     )
     y_binary = _call_binary_jitnmm(
@@ -246,7 +243,6 @@ def test_binary_jitnmm_thresholds_float_events(implementation, shape, transpose,
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         implementation=implementation,
     )
     assert allclose(y_float, y_binary, rtol=1e-4, atol=1e-4)
@@ -332,7 +328,6 @@ def test_binary_jitnmm_jvp_matches_reference(implementation, transpose, corder):
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             implementation=implementation,
         )
 
@@ -381,7 +376,7 @@ def test_binary_jitnmv_vmap_matches_reference(implementation, transpose, corder)
     result_binary = f_binary(vectors)
     # Oracle: CSR with matrix_mode="mm" @ thresholded events
     csr = jitn_to_csr(w_loc, w_scale, prob, seed,
-                      shape=shape, corder=corder, matrix_mode="mm", backend=implementation)
+                      shape=shape, matrix_mode="mm", backend=implementation)
     op = csr.T if transpose else csr
     result_ref = jnp.stack([op @ _binary_events(v, dtype=jnp.float32) for v in vectors])
     assert allclose(result_binary, result_ref, rtol=1e-4, atol=1e-4)
@@ -409,7 +404,6 @@ def test_binary_jitnmm_vmap_matches_reference(implementation, transpose, corder)
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             implementation=implementation,
         )
     )
@@ -559,7 +553,7 @@ def test_binary_jitnmm_vjp_wloc(implementation, shape, corder, transpose):
 
     def f_fn(wl):
         return _call_binary_jitnmm(wl, jnp.array([w_scale]), prob, B, seed,
-                                   shape=shape, transpose=transpose, corder=corder, implementation=implementation).sum()
+                                   shape=shape, transpose=transpose, implementation=implementation).sum()
 
     def f_ref(wl):
         return jitnmm(wl[0], w_scale, prob, B, seed, shape=shape, transpose=transpose, corder=corder,
@@ -586,7 +580,7 @@ def test_binary_jitnmm_vjp_wscale(implementation, shape, corder, transpose):
 
     def f_fn(ws):
         return _call_binary_jitnmm(jnp.array([w_loc]), ws, prob, B, seed,
-                                   shape=shape, transpose=transpose, corder=corder, implementation=implementation).sum()
+                                   shape=shape, transpose=transpose, implementation=implementation).sum()
 
     def f_ref(ws):
         return jitnmm(w_loc, ws[0], prob, B, seed, shape=shape, transpose=transpose, corder=corder,
@@ -615,7 +609,7 @@ def test_binary_jitnmm_vjp_wloc_with_loss(implementation, shape, corder, transpo
 
     def loss_fn(wl):
         out = _call_binary_jitnmm(wl, jnp.array([w_scale]), prob, B, seed,
-                                  shape=shape, transpose=transpose, corder=corder, implementation=implementation)
+                                  shape=shape, transpose=transpose, implementation=implementation)
         return jnp.sum((out - target) ** 2)
 
     def loss_ref(wl):
@@ -646,7 +640,7 @@ def test_binary_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, trans
 
     def loss_fn(ws):
         out = _call_binary_jitnmm(jnp.array([w_loc]), ws, prob, B, seed,
-                                  shape=shape, transpose=transpose, corder=corder, implementation=implementation)
+                                  shape=shape, transpose=transpose, implementation=implementation)
         return jnp.sum((out - target) ** 2)
 
     def loss_ref(ws):

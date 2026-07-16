@@ -13,14 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""CUDA-only CSR materialization for the light RNG chunk-WPR JIT scalar matrix.
-
-This module materializes the same row-major logical matrix used by
-``light_rng-chunk-wpr.cu``.  It is intentionally independent from
-``csr.py``: the latter mirrors the exact dense ``jits`` random walk, while this
-module mirrors the light row/chunk/lane generator used by the fastest event
-backend.
-"""
+"""CUDA-only CSR materialization for the light RNG chunk-WPR JIT scalar matrix."""
 
 from pathlib import Path
 from typing import Literal, Optional
@@ -88,12 +81,17 @@ def _normalize_matrix_mode(matrix_mode: MatrixMode) -> MatrixMode:
     return matrix_mode
 
 
-def _warn_corder_ignored(corder: bool) -> None:
+def _warn_corder_deprecated(corder: Optional[bool]) -> None:
+    if corder is None:
+        return
     warnings.warn(
-        "corder is ignored by the light JIT scalar implementation.",
-        UserWarning,
+        "corder is deprecated and ignored by the light JIT scalar implementation.",
+        FutureWarning,
         stacklevel=3,
     )
+
+
+_warn_corder_ignored = _warn_corder_deprecated
 
 
 def _as_f32_weight(weight):
@@ -108,20 +106,18 @@ def _as_f32_weight(weight):
 
 
 def _jits_csr_count_cuda_kernel(
-    corder: bool,
     shape: MatrixShape,
+    transpose: bool = False,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     matrix_mode: MatrixMode = 'mv',
     **kwargs,
 ):
-    del corder
     weight_dtype = np.dtype(kwargs['weight_info'].dtype)
     if weight_dtype != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
 
     n_rows, n_cols = _normalize_shape(shape)
-    del n_rows
     matrix_mode = _normalize_matrix_mode(matrix_mode)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     load_cuda_file(
@@ -130,23 +126,43 @@ def _jits_csr_count_cuda_kernel(
     )
     n_cols_attr = np.int32(n_cols)
     chunk_size_attr = np.int32(chunk_size_value)
-    kernel_name = (
-        'jit_scalar_csr.count_chunks_f32'
-        if matrix_mode == 'mv'
-        else 'jit_scalar_csr.count_chunks_mm_aw_t4_f32'
-    )
-
-    def kernel(weight, clen, seed):
-        return jax.ffi.ffi_call(
-            kernel_name,
-            kwargs['outs'],
-        )(
-            weight,
-            clen,
-            seed,
-            n_cols=n_cols_attr,
-            chunk_size=chunk_size_attr,
+    if transpose:
+        kernel_name = (
+            'jit_scalar_csr.count_chunks_trans_f32'
+            if matrix_mode == 'mv'
+            else 'jit_scalar_csr.count_chunks_trans_mm_aw_t4_f32'
         )
+
+        def kernel(weight, clen, seed):
+            return jax.ffi.ffi_call(
+                kernel_name,
+                kwargs['outs'],
+            )(
+                weight,
+                clen,
+                seed,
+                n_rows=np.int32(n_rows),
+                n_cols=n_cols_attr,
+                chunk_size=chunk_size_attr,
+            )
+    else:
+        kernel_name = (
+            'jit_scalar_csr.count_chunks_notrans_f32'
+            if matrix_mode == 'mv'
+            else 'jit_scalar_csr.count_chunks_notrans_mm_aw_t4_f32'
+        )
+
+        def kernel(weight, clen, seed):
+            return jax.ffi.ffi_call(
+                kernel_name,
+                kwargs['outs'],
+            )(
+                weight,
+                clen,
+                seed,
+                n_cols=n_cols_attr,
+                chunk_size=chunk_size_attr,
+            )
 
     return kernel
 
@@ -157,16 +173,15 @@ def jits_csr_count_p_call(
     seed,
     *,
     shape: MatrixShape,
-    corder: bool,
+    transpose: bool = False,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     matrix_mode: MatrixMode = 'mv',
     backend: Optional[str] = None,
 ):
-    """Return per-``(row, chunk)`` non-zero counts for the light CSR matrix."""
+    """Return per-output-row non-zero counts for the light CSR matrix."""
     n_rows, n_cols = _normalize_shape(shape)
     matrix_mode = _normalize_matrix_mode(matrix_mode)
-    _warn_corder_ignored(corder)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
 
@@ -175,19 +190,25 @@ def jits_csr_count_p_call(
     seed = jnp.atleast_1d(seed)
     if np.dtype(weight.dtype) != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
-    if n_rows == 0 or n_chunks == 0:
-        return (jnp.zeros((n_rows, n_chunks), dtype=jnp.int32),)
+    if transpose:
+        if n_rows == 0 or n_cols == 0:
+            return (jnp.zeros((n_cols,), dtype=jnp.int32),)
+        out_info = jax.ShapeDtypeStruct((n_cols,), jnp.int32)
+    else:
+        if n_rows == 0 or n_chunks == 0:
+            return (jnp.zeros((n_rows, n_chunks), dtype=jnp.int32),)
+        out_info = jax.ShapeDtypeStruct((n_rows, n_chunks), jnp.int32)
 
     return jits_csr_count_p(
         weight,
         clen,
         seed,
-        outs=[jax.ShapeDtypeStruct((n_rows, n_chunks), jnp.int32)],
+        outs=[out_info],
         shape=(n_rows, n_cols),
+        transpose=transpose,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         matrix_mode=matrix_mode,
-        corder=corder,
         backend=backend,
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
@@ -198,10 +219,7 @@ def jits_csr_count_p_call(
 jits_csr_count_p = XLACustomKernel(
     'jits_csr_count',
     doc="""
-Low-level CUDA primitive counting per-row/per-chunk non-zeros for light CSR.
-
-The returned array has shape ``(n_rows, n_chunks)`` and follows exactly the
-row/chunk/lane generator used by ``light_rng-chunk-wpr.cu``.
+Low-level CUDA primitive counting non-zeros for light scalar CSR materialization.
 """
 )
 jits_csr_count_p.def_cuda_raw_kernel(_jits_csr_count_cuda_kernel, asdefault=True)
@@ -210,20 +228,18 @@ jits_csr_count_p.def_tags('jit_scalar', 'csr', 'light_rng')
 
 
 def _jits_csr_fill_cuda_kernel(
-    corder: bool,
     shape: MatrixShape,
+    transpose: bool = False,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     matrix_mode: MatrixMode = 'mv',
     **kwargs,
 ):
-    del corder
     weight_dtype = np.dtype(kwargs['weight_info'].dtype)
     if weight_dtype != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
 
     n_rows, n_cols = _normalize_shape(shape)
-    del n_rows
     matrix_mode = _normalize_matrix_mode(matrix_mode)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     load_cuda_file(
@@ -232,24 +248,45 @@ def _jits_csr_fill_cuda_kernel(
     )
     n_cols_attr = np.int32(n_cols)
     chunk_size_attr = np.int32(chunk_size_value)
-    kernel_name = (
-        'jit_scalar_csr.fill_f32'
-        if matrix_mode == 'mv'
-        else 'jit_scalar_csr.fill_mm_aw_t4_f32'
-    )
-
-    def kernel(weight, clen, seed, chunk_offsets):
-        return jax.ffi.ffi_call(
-            kernel_name,
-            kwargs['outs'],
-        )(
-            weight,
-            clen,
-            seed,
-            chunk_offsets,
-            n_cols=n_cols_attr,
-            chunk_size=chunk_size_attr,
+    if transpose:
+        kernel_name = (
+            'jit_scalar_csr.fill_trans_f32'
+            if matrix_mode == 'mv'
+            else 'jit_scalar_csr.fill_trans_mm_aw_t4_f32'
         )
+
+        def kernel(weight, clen, seed, chunk_offsets):
+            return jax.ffi.ffi_call(
+                kernel_name,
+                kwargs['outs'],
+            )(
+                weight,
+                clen,
+                seed,
+                chunk_offsets,
+                n_rows=np.int32(n_rows),
+                n_cols=n_cols_attr,
+                chunk_size=chunk_size_attr,
+            )
+    else:
+        kernel_name = (
+            'jit_scalar_csr.fill_notrans_f32'
+            if matrix_mode == 'mv'
+            else 'jit_scalar_csr.fill_notrans_mm_aw_t4_f32'
+        )
+
+        def kernel(weight, clen, seed, chunk_offsets):
+            return jax.ffi.ffi_call(
+                kernel_name,
+                kwargs['outs'],
+            )(
+                weight,
+                clen,
+                seed,
+                chunk_offsets,
+                n_cols=n_cols_attr,
+                chunk_size=chunk_size_attr,
+            )
 
     return kernel
 
@@ -262,16 +299,15 @@ def jits_csr_fill_p_call(
     nnz: int,
     *,
     shape: MatrixShape,
-    corder: bool,
+    transpose: bool = False,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     matrix_mode: MatrixMode = 'mv',
     backend: Optional[str] = None,
 ):
-    """Fill light CSR ``indices`` and ``data`` using precomputed chunk offsets."""
+    """Fill light scalar CSR ``indices`` and ``data`` using precomputed offsets."""
     n_rows, n_cols = _normalize_shape(shape)
     matrix_mode = _normalize_matrix_mode(matrix_mode)
-    _warn_corder_ignored(corder)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
 
@@ -282,9 +318,10 @@ def jits_csr_fill_p_call(
     nnz = int(nnz)
     if np.dtype(weight.dtype) != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
-    if chunk_offsets.shape != (n_rows, n_chunks):
+    expected_offsets_shape = (n_cols + 1,) if transpose else (n_rows, n_chunks)
+    if chunk_offsets.shape != expected_offsets_shape:
         raise ValueError(
-            f"chunk_offsets must have shape {(n_rows, n_chunks)}, got {chunk_offsets.shape}."
+            f"chunk_offsets must have shape {expected_offsets_shape}, got {chunk_offsets.shape}."
         )
     if nnz < 0:
         raise ValueError("nnz must be non-negative")
@@ -294,35 +331,37 @@ def jits_csr_fill_p_call(
             jnp.zeros((0,), dtype=weight.dtype),
         )
 
-    return jits_csr_fill_p(
+    outs = [
+        jax.ShapeDtypeStruct((nnz,), jnp.int32),
+        jax.ShapeDtypeStruct((nnz,), weight.dtype),
+    ]
+    if transpose:
+        outs.append(jax.ShapeDtypeStruct((n_cols,), jnp.int32))
+
+    res = jits_csr_fill_p(
         weight,
         clen,
         seed,
         chunk_offsets,
-        outs=[
-            jax.ShapeDtypeStruct((nnz,), jnp.int32),
-            jax.ShapeDtypeStruct((nnz,), weight.dtype),
-        ],
+        outs=outs,
         shape=(n_rows, n_cols),
+        transpose=transpose,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         matrix_mode=matrix_mode,
-        corder=corder,
         backend=backend,
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         chunk_offsets_info=jax.ShapeDtypeStruct(chunk_offsets.shape, chunk_offsets.dtype),
     )
+    return res[:2]
 
 
 jits_csr_fill_p = XLACustomKernel(
     'jits_csr_fill',
     doc="""
-Low-level CUDA primitive filling CSR ``indices``/``data`` for light CSR.
-
-``chunk_offsets`` must be the exclusive per-row/per-chunk prefix derived from
-``jits_csr_count_p``.
+Low-level CUDA primitive filling CSR ``indices``/``data`` for light scalar CSR.
 """
 )
 jits_csr_fill_p.def_cuda_raw_kernel(_jits_csr_fill_cuda_kernel, asdefault=True)
@@ -336,34 +375,30 @@ def jits_to_csr(
     seed,
     *,
     shape: MatrixShape,
-    corder: bool,
+    transpose: bool = False,
+    corder: Optional[bool] = None,
     backend: Optional[str] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     matrix_mode: MatrixMode = 'mv',
 ):
-    """Materialize the light RNG chunk-WPR JIT scalar matrix as ``CSR``.
-
-    The returned matrix is the row-major logical matrix ``A`` used by
-    ``light_rng-chunk-wpr`` (``matrix_mode='mv'``) or its AW-T4 matrix-matrix
-    variant (``matrix_mode='mm'``).  It is eager-only because the data-dependent
-    ``nnz`` is read back between the count and fill passes.
-    """
+    """Materialize the light RNG chunk-WPR JIT scalar matrix as ``CSR``."""
     from brainevent._csr import CSR
 
     n_rows, n_cols = _normalize_shape(shape)
     matrix_mode = _normalize_matrix_mode(matrix_mode)
-    _warn_corder_ignored(corder)
+    _warn_corder_deprecated(corder)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
     weight, unitd = _as_f32_weight(weight)
     seed = _initialize_seed(seed)
 
+    out_rows, out_cols = (n_cols, n_rows) if transpose else (n_rows, n_cols)
     if n_rows == 0 or n_cols == 0 or _is_static_zero(prob):
-        indptr = jnp.zeros((n_rows + 1,), dtype=jnp.int32)
+        indptr = jnp.zeros((out_rows + 1,), dtype=jnp.int32)
         indices = jnp.zeros((0,), dtype=jnp.int32)
         data = u.maybe_decimal(jnp.zeros((0,), dtype=weight.dtype) * unitd)
-        return CSR((data, indices, indptr), shape=(n_rows, n_cols))
+        return CSR((data, indices, indptr), shape=(out_rows, out_cols))
 
     clen = _initialize_conn_length(prob)
     chunk_counts = jits_csr_count_p_call(
@@ -371,13 +406,13 @@ def jits_to_csr(
         clen,
         seed,
         shape=(n_rows, n_cols),
-        corder=corder,
+        transpose=transpose,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         matrix_mode=matrix_mode,
         backend=backend,
     )[0]
-    row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32)
+    row_counts = chunk_counts if transpose else chunk_counts.sum(axis=1, dtype=jnp.int32)
     indptr = jnp.concatenate(
         [jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
     )
@@ -385,13 +420,16 @@ def jits_to_csr(
     if nnz == 0:
         indices = jnp.zeros((0,), dtype=jnp.int32)
         data = u.maybe_decimal(jnp.zeros((0,), dtype=weight.dtype) * unitd)
-        return CSR((data, indices, indptr), shape=(n_rows, n_cols))
+        return CSR((data, indices, indptr), shape=(out_rows, out_cols))
 
-    chunk_offsets = (
-        indptr[:-1, None]
-        + jnp.cumsum(chunk_counts, axis=1, dtype=jnp.int32)
-        - chunk_counts
-    )
+    if transpose:
+        chunk_offsets = indptr
+    else:
+        chunk_offsets = (
+            indptr[:-1, None]
+            + jnp.cumsum(chunk_counts, axis=1, dtype=jnp.int32)
+            - chunk_counts
+        )
     indices, data = jits_csr_fill_p_call(
         weight,
         clen,
@@ -399,11 +437,11 @@ def jits_to_csr(
         chunk_offsets,
         nnz,
         shape=(n_rows, n_cols),
-        corder=corder,
+        transpose=transpose,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         matrix_mode=matrix_mode,
         backend=backend,
     )
     data = u.maybe_decimal(data * unitd)
-    return CSR((data, indices, indptr), shape=(n_rows, n_cols))
+    return CSR((data, indices, indptr), shape=(out_rows, out_cols))

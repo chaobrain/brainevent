@@ -56,8 +56,8 @@ def _sample_cotangent(shape, seed: int):
     return jnp.asarray(rng.randn(*shape).astype(np.float32))
 
 
-def _light_csr(w_low, w_high, *, shape, matrix_mode, corder, backend):
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+def _light_csr(w_low, w_high, *, shape, matrix_mode, corder, backend, transpose=False):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         return jitu_to_csr(
             w_low,
             w_high,
@@ -66,11 +66,12 @@ def _light_csr(w_low, w_high, *, shape, matrix_mode, corder, backend):
             shape=shape,
             corder=corder,
             matrix_mode=matrix_mode,
+            transpose=transpose,
             backend=backend,
         )
 
 
-def _light_csr_dense(w_low, w_high, *, shape, matrix_mode, corder, backend):
+def _light_csr_dense(w_low, w_high, *, shape, matrix_mode, corder, backend, transpose=False):
     return _light_csr(
         w_low,
         w_high,
@@ -78,6 +79,7 @@ def _light_csr_dense(w_low, w_high, *, shape, matrix_mode, corder, backend):
         matrix_mode=matrix_mode,
         corder=corder,
         backend=backend,
+        transpose=transpose,
     ).todense()
 
 
@@ -200,11 +202,30 @@ def test_jitu_matrix_mode_matches_light_csr_dense(implementation, shape, corder,
     )
     expected = _light_csr_dense(
         W_LOW, W_HIGH, shape=shape, matrix_mode=matrix_mode, corder=corder, backend=implementation,
+        transpose=transpose,
     )
-    if transpose:
-        expected = expected.T
     _assert_allclose(dense, expected)
     jax.block_until_ready((dense, expected))
+
+
+@pytest.mark.skipif(
+    not JITU_IMPLEMENTATIONS,
+    reason=f'No jitu implementation on platform={platform}',
+)
+@pytest.mark.parametrize('implementation', JITU_IMPLEMENTATIONS)
+@pytest.mark.parametrize('matrix_mode', ["mv", "mm"])
+def test_jitu_transpose_matches_notrans_transpose(implementation, matrix_mode):
+    shape = (20, 30)
+    notrans = jitu(
+        W_LOW, W_HIGH, PROB, SEED,
+        shape=shape, matrix_mode=matrix_mode, backend=implementation,
+    )
+    trans = jitu(
+        W_LOW, W_HIGH, PROB, SEED,
+        shape=shape, transpose=True, matrix_mode=matrix_mode, backend=implementation,
+    )
+    _assert_allclose(trans, notrans.T)
+    jax.block_until_ready((notrans, trans))
 
 
 @pytest.mark.skipif(
@@ -215,12 +236,14 @@ def test_jitu_matrix_mode_matches_light_csr_dense(implementation, shape, corder,
 def test_float_corder_warns_and_is_ignored(implementation):
     shape = (20, 30)
     vector = jnp.asarray(np.random.rand(shape[1]).astype(np.float32))
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    expected = jitumv(W_LOW, W_HIGH, PROB, vector, SEED, shape=shape, backend=implementation)
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         out_c = jitumv(W_LOW, W_HIGH, PROB, vector, SEED, shape=shape, corder=True, backend=implementation)
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         out_f = jitumv(W_LOW, W_HIGH, PROB, vector, SEED, shape=shape, corder=False, backend=implementation)
+    _assert_allclose(out_c, expected)
     _assert_allclose(out_c, out_f)
-    jax.block_until_ready((vector, out_c, out_f))
+    jax.block_until_ready((vector, expected, out_c, out_f))
 
 
 @pytest.mark.skipif(
@@ -234,15 +257,12 @@ def test_float_cuda_non_f32_weights_raise():
     vector = jnp.ones(shape[1], dtype=jnp.float16)
     matrix = jnp.ones((shape[1], 4), dtype=jnp.float16)
 
-    with pytest.warns(UserWarning, match="corder.*ignored"):
-        with pytest.raises(NotImplementedError, match="float32"):
-            jitu(w_low, w_high, PROB, SEED, shape=shape, backend='cuda_raw')
-    with pytest.warns(UserWarning, match="corder.*ignored"):
-        with pytest.raises(NotImplementedError, match="float32"):
-            jitumv(w_low, w_high, PROB, vector, SEED, shape=shape, backend='cuda_raw')
-    with pytest.warns(UserWarning, match="corder.*ignored"):
-        with pytest.raises(NotImplementedError, match="float32"):
-            jitumm(w_low, w_high, PROB, matrix, SEED, shape=shape, backend='cuda_raw')
+    with pytest.raises(NotImplementedError, match="float32"):
+        jitu(w_low, w_high, PROB, SEED, shape=shape, backend='cuda_raw')
+    with pytest.raises(NotImplementedError, match="float32"):
+        jitumv(w_low, w_high, PROB, vector, SEED, shape=shape, backend='cuda_raw')
+    with pytest.raises(NotImplementedError, match="float32"):
+        jitumm(w_low, w_high, PROB, matrix, SEED, shape=shape, backend='cuda_raw')
 
 
 @pytest.mark.skipif(

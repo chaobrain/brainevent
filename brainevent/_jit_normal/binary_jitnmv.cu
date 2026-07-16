@@ -16,7 +16,7 @@
 /*
  * binary_jitnmv.cu — stable binary MV backend with Normal weights (light RNG).
  *
- * Gather and scatter share one row-major matrix.  One warp owns one
+ * Notrans and trans kernels share one row-major matrix.  One warp owns one
  * (row, chunk_id) task, and each lane owns one residue class:
  *
  *   local_j = lane + 32 * q
@@ -226,11 +226,11 @@ __global__ void _pack_bool_kern(
 }
 
 // #########################################################################
-// ##  Normal Gather  (corder=True)                                       ##
+// ##  Normal Notrans                                       ##
 // ##  result[row] = Σ_{j:spike[j]} w(row,j)  where w ~ N(w_loc,w_scale)  ##
 // #########################################################################
 
-__global__ void _gather_f32_kern(
+__global__ void _notrans_f32_kern(
     const float *__restrict__ w_loc,
     const float *__restrict__ w_scale,
     const int *__restrict__ clen,
@@ -290,11 +290,11 @@ __global__ void _gather_f32_kern(
 }
 
 // #########################################################################
-// ##  Normal Scatter  (corder=False)                                     ##
-// ##  For active pre-neuron row, scatter w(row,j) → output[j]            ##
+// ##  Normal Trans                                     ##
+// ##  For active pre-neuron row, write w(row,j) → output[j]            ##
 // #########################################################################
 
-__global__ void _scatter_f32_kern(
+__global__ void _trans_f32_kern(
     const float *__restrict__ w_loc,
     const float *__restrict__ w_scale,
     const int *__restrict__ clen,
@@ -371,8 +371,8 @@ void pack_bool(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE gather_f32
-void gather_f32(
+// @BE notrans_f32
+void notrans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -402,13 +402,13 @@ void gather_f32(
     if (row_warp_blocks > 2147483647 || n_chunks > 65535)
     {
         fprintf(stderr,
-                "light_rng_chunk_wpr_gather_normal_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                "light_rng_chunk_wpr_notrans_normal_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
                 row_warp_blocks, n_chunks);
         abort();
     }
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
-    _gather_f32_kern<<<blocks, threads, 0, s>>>(
+    _notrans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float *>(w_loc.data_ptr()),
         static_cast<const float *>(w_scale.data_ptr()),
         static_cast<const int *>(clen.data_ptr()),
@@ -419,8 +419,8 @@ void gather_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE scatter_f32
-void scatter_f32(
+// @BE trans_f32
+void trans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -450,13 +450,13 @@ void scatter_f32(
     if (row_warp_blocks > 2147483647 || n_chunks > 65535)
     {
         fprintf(stderr,
-                "light_rng_chunk_wpr_scatter_normal_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                "light_rng_chunk_wpr_trans_normal_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
                 row_warp_blocks, n_chunks);
         abort();
     }
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
-    _scatter_f32_kern<<<blocks, threads, 0, s>>>(
+    _trans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float *>(w_loc.data_ptr()),
         static_cast<const float *>(w_scale.data_ptr()),
         static_cast<const int *>(clen.data_ptr()),

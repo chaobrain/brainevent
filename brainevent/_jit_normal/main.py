@@ -17,6 +17,7 @@
 
 
 from typing import Union, Tuple, Optional, Dict
+import warnings
 
 import brainunit as u
 import jax
@@ -35,6 +36,16 @@ __all__ = [
     'JITCNormalR',
     'JITCNormalC',
 ]
+
+
+def _warn_corder_deprecated(corder: Optional[bool]) -> None:
+    if corder is None:
+        return
+    warnings.warn(
+        "corder is deprecated and ignored by JITCNormalMatrix; use transpose/T for orientation.",
+        FutureWarning,
+        stacklevel=3,
+    )
 
 
 class JITCNormalMatrix(JITCMatrix):
@@ -63,7 +74,7 @@ class JITCNormalMatrix(JITCMatrix):
     shape : MatrixShape
         The shape of the matrix as a tuple (rows, columns).
     corder : bool, optional
-        Memory layout order flag, by default False.
+        Deprecated compatibility argument. Ignored; use ``transpose``/``T`` for orientation.
     backend : str, optional
         Computation backend override.
 
@@ -83,15 +94,12 @@ class JITCNormalMatrix(JITCMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
 
     Raises
     ------
     ValueError
-        If ``prob`` is not a finite scalar in [0, 1], or if ``wloc > wscale``
-        element-wise.
+        If ``prob`` is not a finite scalar in [0, 1], or if ``wscale`` is not
+        positive.
 
     See Also
     --------
@@ -126,7 +134,6 @@ class JITCNormalMatrix(JITCMatrix):
     prob: Union[float, jax.Array]
     seed: Union[int, jax.Array]
     shape: MatrixShape
-    corder: bool
 
     def __init__(
         self,
@@ -136,7 +143,7 @@ class JITCNormalMatrix(JITCMatrix):
         seed=None,
         *,
         shape: MatrixShape,
-        corder: bool = False,
+        corder: Optional[bool] = None,
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
     ):
@@ -169,6 +176,7 @@ class JITCNormalMatrix(JITCMatrix):
         dtypes and are verified to have matching dimensions before being converted
         to JAX arrays, preserving any attached units.
         """
+        _warn_corder_deprecated(corder)
         if scale is None and prob is None and seed is None:
             data = loc
         else:
@@ -194,7 +202,6 @@ class JITCNormalMatrix(JITCMatrix):
                 raise ValueError("wscale must be positive.")
         self.wloc = u.math.asarray(loc)
         self.wscale = u.math.asarray(scale)
-        self.corder = corder
         self.backend = backend
         super().__init__(data, shape=shape, buffers=buffers)
 
@@ -206,13 +213,13 @@ class JITCNormalMatrix(JITCMatrix):
         -------
         str
             A string showing the class name, shape, lower bound, upper bound,
-            probability, seed, and corder flag of the matrix instance.
+            probability, seed, and backend of the matrix instance.
 
         Examples
         --------
         >>> matrix = JITCNormalMatrix((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> repr(matrix)
-        'JITNormalMatrix(shape=(10, 10), wloc=0.1, wscale=0.5, prob=0.2, seed=42, corder=False)'
+        'JITNormalMatrix(shape=(10, 10), wloc=0.1, wscale=0.5, prob=0.2, seed=42, backend=None,)'
         """
         return (
             f"{self.__class__.__name__}("
@@ -221,7 +228,6 @@ class JITCNormalMatrix(JITCMatrix):
             f"wscale={self.wscale}, "
             f"prob={self.prob}, "
             f"seed={self.seed}, "
-            f"corder={self.corder},"
             f"backend={self.backend},"
             f")"
         )
@@ -257,7 +263,7 @@ class JITCNormalMatrix(JITCMatrix):
         Returns
         -------
         Tuple[WeightScalar, WeightScalar]
-            The ``(wloc, wscale)`` pair: the lower and upper bounds of the normal
+            The ``(wloc, wscale)`` pair: the mean and standard deviation of the normal
             distribution.
 
         See Also
@@ -272,7 +278,7 @@ class JITCNormalMatrix(JITCMatrix):
 
         Accepts exactly the tuple returned by :attr:`data`, i.e. the
         ``(loc, scale)`` pair, while keeping the same ``prob``, ``seed``,
-        ``shape``, ``corder``, ``backend``, and buffers.
+        ``shape``, ``backend``, and buffers.
 
         Parameters
         ----------
@@ -303,7 +309,6 @@ class JITCNormalMatrix(JITCMatrix):
         return type(self)(
             (loc, scale, self.prob, self.seed),
             shape=self.shape,
-            corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -328,7 +333,7 @@ class JITCNormalMatrix(JITCMatrix):
         -------
         CSR
             A :class:`~brainevent.CSR` matrix with the same shape and values as
-            :meth:`todense`. The data type matches the weight bounds, and
+            :meth:`todense`. The data type matches the weight parameters, and
             physical units (``brainunit.Quantity``) are preserved on the stored
             values.
 
@@ -361,7 +366,7 @@ class JITCNormalMatrix(JITCMatrix):
             self.prob,
             self.seed,
             shape=self.shape,
-            corder=self.corder,
+            transpose=False,
             backend=self.backend,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
@@ -378,7 +383,7 @@ class JITCNormalMatrix(JITCMatrix):
         ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC normal connectivity and weights are generated from this matrix's own
         metadata, including ``wloc``, ``wscale``, ``prob``, ``seed``, ``shape``,
-        ``corder``, and ``backend``.
+        and ``backend``.
         """
         return jitnmv_dt2t(
             self.wloc,
@@ -388,7 +393,6 @@ class JITCNormalMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=False,
-            corder=self.corder,
             backend=self.backend,
         )
 
@@ -402,7 +406,7 @@ class JITCNormalMatrix(JITCMatrix):
         ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC normal connectivity and weights are generated from this matrix's own
         metadata, including ``wloc``, ``wscale``, ``prob``, ``seed``, ``shape``,
-        ``corder``, and ``backend``.
+        and ``backend``.
         """
         return jitnmv_dt2t(
             self.wloc,
@@ -412,7 +416,6 @@ class JITCNormalMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=True,
-            corder=self.corder,
             backend=self.backend,
         )
 
@@ -425,14 +428,14 @@ class JITCNormalMatrix(JITCMatrix):
         tuple
             A pair of (children, aux_data) where children is a tuple of
             (wloc, wscale, prob, seed) and aux_data is a dict containing
-            shape, corder, and backend.
+            shape and backend.
 
         Notes
         -----
         This method is used by JAX's pytree system to serialize the matrix
         for transformations such as ``jax.jit``, ``jax.grad``, and ``jax.vmap``.
         """
-        aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
+        aux = {'shape': self.shape, 'backend': self.backend}
         return (self.wloc, self.wscale, self.prob, self.seed), (aux, self.buffers)
 
     @classmethod
@@ -443,7 +446,7 @@ class JITCNormalMatrix(JITCMatrix):
         Parameters
         ----------
         aux_data : dict
-            Auxiliary data containing shape, corder, and backend.
+            Auxiliary data containing shape and backend.
         children : tuple
             A tuple of (wloc, wscale, prob, seed) leaf values.
 
@@ -461,6 +464,8 @@ class JITCNormalMatrix(JITCMatrix):
         obj = object.__new__(cls)
         obj.wloc, obj.wscale, obj.prob, obj.seed = children
         aux_data, buffer = aux_data
+        aux_data = dict(aux_data)
+        aux_data.pop('corder', None)
         obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
             setattr(obj, k, v)
@@ -483,7 +488,7 @@ class JITCNormalMatrix(JITCMatrix):
         ------
         NotImplementedError
             If the two matrices have different seeds, tracing seeds,
-            or different corder values.
+            or incompatible traced seeds.
         """
         if not (isinstance(other.seed, Tracer) and isinstance(self.seed, Tracer)):
             if self.seed != other.seed:
@@ -498,12 +503,6 @@ class JITCNormalMatrix(JITCMatrix):
                 f"objects with tracing seeds "
                 f"is not implemented currently."
             )
-        if self.corder != other.corder:
-            raise NotImplementedError(
-                f"binary operation {op} between two {self.__class__.__name__} "
-                f"objects with different corder "
-                f"is not implemented currently."
-            )
 
 
 @jax.tree_util.register_pytree_node_class
@@ -513,7 +512,7 @@ class JITCNormalR(JITCNormalMatrix):
 
     This class implements a row-oriented sparse matrix optimized for JAX-based transformations,
     following the Compressed Sparse Row (CSR) format conceptually. Instead of storing all non-zero
-    elements explicitly, it uses a normal distribution with lower and upper bounds (wloc, wscale)
+    elements explicitly, it uses a normal distribution with mean and standard deviation (wloc, wscale)
     to generate weights for connections, along with probability and seed information to
     determine the sparse structure.
 
@@ -537,9 +536,6 @@ class JITCNormalR(JITCNormalMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -555,7 +551,7 @@ class JITCNormalR(JITCNormalMatrix):
         # Create a normal matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
         >>> normal_matrix = JITCNormalR((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> normal_matrix
-        JITCNormalR(shape=(10, 10), wloc=0.1, wscale=0.5, prob=0.2, seed=42, corder=False)
+        JITCNormalR(shape=(10, 10), wloc=0.1, wscale=0.5, prob=0.2, seed=42, backend=None,)
 
         # Create a normal matrix with units
         >>> normal_matrix_mv = JITCNormalR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
@@ -565,7 +561,7 @@ class JITCNormalR(JITCNormalMatrix):
         >>> result = normal_matrix @ vec
         >>> # Each element in result is a weighted sum using normally distributed weights
 
-        # Apply scalar operation (scales both lower and upper bounds)
+        # Apply scalar operation (scales both normal parameters)
         >>> scaled = normal_matrix * 2.0
         >>> print(scaled.wloc, scaled.wscale)  # 0.2 1.0
 
@@ -604,8 +600,8 @@ class JITCNormalR(JITCNormalMatrix):
     are independent random variables, both determined by ``seed``.
 
     The row-oriented representation means that the random number generator state is
-    seeded per-row (or per-column, depending on ``corder``), making row-based
-    operations (``W @ v``) the natural direction.
+    generated from a canonical row-stream; ``transpose`` selects whether operations
+    consume the matrix in its original or transposed orientation.
 
     Key properties:
 
@@ -678,7 +674,6 @@ class JITCNormalR(JITCNormalMatrix):
             self.seed,
             shape=self.shape,
             transpose=False,
-            corder=self.corder,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
             target_chunks=target_chunks,
@@ -690,7 +685,7 @@ class JITCNormalR(JITCNormalMatrix):
         Transpose the row-oriented matrix into a column-oriented matrix.
 
         Returns a column-oriented matrix (``JITCNormalC``) with rows and columns
-        swapped, preserving the same weight bounds, probability, and seed values.
+        swapped, preserving the same weight parameters, probability, and seed values.
         The transpose operation effectively converts between row-oriented and
         column-oriented sparse matrix formats.
 
@@ -721,9 +716,6 @@ class JITCNormalR(JITCNormalMatrix):
         ``seed``, the transposed matrix produces identical results to materializing
         ``W`` and transposing the dense array.
 
-        The ``corder`` flag is flipped during transposition to maintain consistency
-        with the underlying PRNG state ordering.
-
         Examples
         --------
 
@@ -744,14 +736,13 @@ class JITCNormalR(JITCNormalMatrix):
         return JITCNormalC(
             (self.wloc, self.wscale, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
 
     def _new_mat(self, wloc, wscale, prob=None, seed=None):
         """
-        Create a new ``JITCNormalR`` with the given weight bounds, reusing other attributes.
+        Create a new ``JITCNormalR`` with the given weight parameters, reusing other attributes.
 
         Parameters
         ----------
@@ -767,7 +758,7 @@ class JITCNormalR(JITCNormalMatrix):
         Returns
         -------
         JITCNormalR
-            A new row-oriented matrix with the specified weight bounds.
+            A new row-oriented matrix with the specified weight parameters.
         """
         return JITCNormalR(
             (
@@ -777,14 +768,13 @@ class JITCNormalR(JITCNormalMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCNormalR':
         """
-        Apply a unary operation to both weight bounds.
+        Apply a unary operation to both weight parameters.
 
         Parameters
         ----------
@@ -800,7 +790,7 @@ class JITCNormalR(JITCNormalMatrix):
 
     def _binary_op(self, other, op) -> 'JITCNormalR':
         """
-        Apply a binary operation between the weight bounds and a scalar operand.
+        Apply a binary operation between the weight parameters and a scalar operand.
 
         Parameters
         ----------
@@ -859,7 +849,7 @@ class JITCNormalR(JITCNormalMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __matmul__(self, other):
         """
         Compute matrix multiplication ``self @ other``.
 
@@ -908,7 +898,6 @@ class JITCNormalR(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -921,7 +910,6 @@ class JITCNormalR(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
@@ -941,7 +929,6 @@ class JITCNormalR(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -954,13 +941,12 @@ class JITCNormalR(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-    def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __rmatmul__(self, other):
         """
         Compute matrix multiplication ``other @ self``.
 
@@ -1017,7 +1003,6 @@ class JITCNormalR(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1034,7 +1019,6 @@ class JITCNormalR(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
                 return r.T
@@ -1058,8 +1042,7 @@ class JITCNormalR(JITCNormalMatrix):
                     other,
                     self.seed,
                     shape=self.shape,
-                    transpose=True,
-                    corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
+                    transpose=True,  # This is import to generate the same matrix as ``.todense()``
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1075,8 +1058,7 @@ class JITCNormalR(JITCNormalMatrix):
                     other.T,
                     self.seed,
                     shape=self.shape,
-                    transpose=True,
-                    corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
+                    transpose=True,  # This is import to generate the same matrix as ``.todense()``
                     backend=self.backend,
                 )
                 return r.T
@@ -1091,7 +1073,7 @@ class JITCNormalC(JITCNormalMatrix):
 
     This class implements a column-oriented sparse matrix optimized for JAX-based transformations,
     following the Compressed Sparse Column (CSC) format conceptually. Instead of storing all non-zero
-    elements explicitly, it uses a normal distribution with lower and upper bounds (wloc, wscale)
+    elements explicitly, it uses a normal distribution with mean and standard deviation (wloc, wscale)
     to generate weights for connections, along with probability and seed information to
     determine the sparse structure.
 
@@ -1116,9 +1098,6 @@ class JITCNormalC(JITCNormalMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -1134,7 +1113,7 @@ class JITCNormalC(JITCNormalMatrix):
         # Create a normal matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
         >>> normal_matrix = JITCNormalC((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> normal_matrix
-        JITCNormalC(shape=(10, 10), wloc=0.1, wscale=0.5, prob=0.2, seed=42, corder=False)
+        JITCNormalC(shape=(10, 10), wloc=0.1, wscale=0.5, prob=0.2, seed=42, backend=None,)
 
         # Create a normal matrix with units
         >>> normal_matrix_mv = JITCNormalC((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
@@ -1144,7 +1123,7 @@ class JITCNormalC(JITCNormalMatrix):
         >>> result = normal_matrix @ vec
         >>> # Each element in result is a weighted sum using normally distributed weights
 
-        # Apply scalar operation (scales both lower and upper bounds)
+        # Apply scalar operation (scales both normal parameters)
         >>> scaled = normal_matrix * 2.0
         >>> print(scaled.wloc, scaled.wscale)  # 0.2 1.0
 
@@ -1266,7 +1245,6 @@ class JITCNormalC(JITCNormalMatrix):
             self.seed,
             shape=self.shape[::-1],
             transpose=True,
-            corder=not self.corder,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
             target_chunks=target_chunks,
@@ -1280,26 +1258,25 @@ class JITCNormalC(JITCNormalMatrix):
         chunk_size: Optional[int] = None,
         target_chunks: int = 4,
     ):
-        csr = jitn_to_csr(
+        return jitn_to_csr(
             self.wloc,
             self.wscale,
             self.prob,
             self.seed,
             shape=self.shape[::-1],
-            corder=not self.corder,
+            transpose=True,
             backend=self.backend,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
             target_chunks=target_chunks,
         )
-        return csr.transpose().tocsr()
 
     def transpose(self, axes=None) -> 'JITCNormalR':
         """
         Transpose the column-oriented matrix into a row-oriented matrix.
 
         Returns a row-oriented matrix (``JITCNormalR``) with rows and columns
-        swapped, preserving the same weight bounds, probability, and seed values.
+        swapped, preserving the same weight parameters, probability, and seed values.
 
         Parameters
         ----------
@@ -1323,9 +1300,8 @@ class JITCNormalC(JITCNormalMatrix):
 
         Notes
         -----
-        The transpose satisfies ``W.T[j, i] = W[i, j]``. The ``corder`` flag is
-        flipped during transposition to maintain consistency with the underlying
-        PRNG state ordering.
+        The transpose satisfies ``W.T[j, i] = W[i, j]`` while preserving the
+        canonical row-stream generated by ``seed``.
 
         Examples
         --------
@@ -1347,14 +1323,13 @@ class JITCNormalC(JITCNormalMatrix):
         return JITCNormalR(
             (self.wloc, self.wscale, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
 
     def _new_mat(self, wloc, wscale, prob=None, seed=None):
         """
-        Create a new ``JITCNormalC`` with the given weight bounds, reusing other attributes.
+        Create a new ``JITCNormalC`` with the given weight parameters, reusing other attributes.
 
         Parameters
         ----------
@@ -1370,7 +1345,7 @@ class JITCNormalC(JITCNormalMatrix):
         Returns
         -------
         JITCNormalC
-            A new column-oriented matrix with the specified weight bounds.
+            A new column-oriented matrix with the specified weight parameters.
         """
         return JITCNormalC(
             (
@@ -1380,14 +1355,13 @@ class JITCNormalC(JITCNormalMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCNormalC':
         """
-        Apply a unary operation to both weight bounds.
+        Apply a unary operation to both weight parameters.
 
         Parameters
         ----------
@@ -1403,7 +1377,7 @@ class JITCNormalC(JITCNormalMatrix):
 
     def _binary_op(self, other, op) -> 'JITCNormalC':
         """
-        Apply a binary operation between the weight bounds and a scalar operand.
+        Apply a binary operation between the weight parameters and a scalar operand.
 
         Parameters
         ----------
@@ -1462,7 +1436,7 @@ class JITCNormalC(JITCNormalMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __matmul__(self, other):
         """
         Compute matrix multiplication ``self @ other``.
 
@@ -1514,7 +1488,6 @@ class JITCNormalC(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1529,7 +1502,6 @@ class JITCNormalC(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
@@ -1551,7 +1523,6 @@ class JITCNormalC(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1566,13 +1537,12 @@ class JITCNormalC(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-    def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __rmatmul__(self, other):
         """
         Compute matrix multiplication ``other @ self``.
 
@@ -1626,7 +1596,6 @@ class JITCNormalC(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1643,7 +1612,6 @@ class JITCNormalC(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
                 return r.T
@@ -1668,7 +1636,6 @@ class JITCNormalC(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1685,7 +1652,6 @@ class JITCNormalC(JITCNormalMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
                 return r.T

@@ -43,7 +43,7 @@ class Test_Scalar_To_CSR:
 
         csr = jits_to_csr(
             mat.weight, mat.prob, mat.seed,
-            shape=mat.shape, corder=mat.corder, backend=mat.backend,
+            shape=mat.shape, backend=mat.backend,
         )
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == shape
@@ -60,7 +60,7 @@ class Test_Scalar_To_CSR:
         clen = _initialize_conn_length(mat.prob)
         w = jnp.atleast_1d(jnp.asarray(mat.weight))
         chunk_counts = jits_csr_count_p_call(
-            w, clen, mat.seed, shape=shape, corder=corder, backend=mat.backend,
+            w, clen, mat.seed, shape=shape, backend=mat.backend,
         )[0]
         row_counts = chunk_counts.sum(axis=1)
         expected = (np.asarray(mat.todense()) != 0).sum(axis=1)
@@ -76,7 +76,7 @@ class Test_Scalar_To_CSR:
         clen = _initialize_conn_length(mat.prob)
         w = jnp.atleast_1d(jnp.asarray(mat.weight))
         chunk_counts = jits_csr_count_p_call(
-            w, clen, mat.seed, shape=shape, corder=corder, backend=mat.backend,
+            w, clen, mat.seed, shape=shape, backend=mat.backend,
         )[0]
         row_counts = chunk_counts.sum(axis=1)
         indptr = jnp.concatenate(
@@ -85,14 +85,14 @@ class Test_Scalar_To_CSR:
         chunk_offsets = indptr[:-1, None] + jnp.cumsum(chunk_counts, axis=1) - chunk_counts
         nnz = int(indptr[-1])
         indices, data = jits_csr_fill_p_call(
-            w, clen, mat.seed, chunk_offsets, nnz, shape=shape, corder=corder, backend=mat.backend,
+            w, clen, mat.seed, chunk_offsets, nnz, shape=shape, backend=mat.backend,
         )
         csr = brainevent.CSR((data, indices, indptr), shape=shape)
         assert allclose(csr.todense(), mat.todense())
 
     def test_to_csr_prob_zero_empty(self):
         shape = (20, 30)
-        csr = jits_to_csr(1.5, 0.0, 123, shape=shape, corder=True, backend=None)
+        csr = jits_to_csr(1.5, 0.0, 123, shape=shape, backend=None)
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == shape
         assert np.asarray(csr.indices).shape == (0,)
@@ -107,7 +107,7 @@ class Test_Scalar_To_CSR:
 
         csr = jits_to_csr(
             mat.weight, mat.prob, mat.seed,
-            shape=mat.shape, corder=mat.corder, backend=mat.backend,
+            shape=mat.shape, backend=mat.backend,
         )
         dense = mat.todense()
         assert u.get_unit(csr.data) == u.get_unit(dense)

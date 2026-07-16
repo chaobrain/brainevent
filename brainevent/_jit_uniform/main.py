@@ -17,6 +17,7 @@
 
 
 from typing import Union, Tuple, Optional, Dict
+import warnings
 
 import brainunit as u
 import jax
@@ -35,6 +36,16 @@ __all__ = [
     'JITCUniformR',
     'JITCUniformC',
 ]
+
+
+def _warn_corder_deprecated(corder: Optional[bool]) -> None:
+    if corder is None:
+        return
+    warnings.warn(
+        "corder is deprecated and ignored by the light JIT uniform implementation.",
+        FutureWarning,
+        stacklevel=3,
+    )
 
 
 class JITCUniformMatrix(JITCMatrix):
@@ -62,8 +73,6 @@ class JITCUniformMatrix(JITCMatrix):
         Random seed for reproducible sparse structure generation.
     shape : MatrixShape
         The shape of the matrix as a tuple (rows, columns).
-    corder : bool, optional
-        Memory layout order flag, by default False.
     backend : str, optional
         Computation backend override.
 
@@ -83,9 +92,6 @@ class JITCUniformMatrix(JITCMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
 
     Raises
     ------
@@ -126,7 +132,6 @@ class JITCUniformMatrix(JITCMatrix):
     prob: Union[float, jax.Array]
     seed: Union[int, jax.Array]
     shape: MatrixShape
-    corder: bool
 
     def __init__(
         self,
@@ -136,7 +141,7 @@ class JITCUniformMatrix(JITCMatrix):
         seed=None,
         *,
         shape: MatrixShape,
-        corder: bool = False,
+        corder: Optional[bool] = None,
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
     ):
@@ -158,9 +163,8 @@ class JITCUniformMatrix(JITCMatrix):
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
         corder : bool, optional
-            Memory layout order flag, by default False.
-            - False: Fortran-order (column-major)
-            - True: C-order (row-major)
+            Deprecated compatibility parameter. When provided, a
+            ``FutureWarning`` is emitted and the value is ignored.
 
         Notes
         -----
@@ -169,6 +173,7 @@ class JITCUniformMatrix(JITCMatrix):
         dtypes and are verified to have matching dimensions before being converted
         to JAX arrays, preserving any attached units.
         """
+        _warn_corder_deprecated(corder)
         if high is None and prob is None and seed is None:
             data = low
         else:
@@ -195,7 +200,6 @@ class JITCUniformMatrix(JITCMatrix):
                 raise ValueError("wlow must be <= whigh element-wise.")
         self.wlow = u.math.asarray(low)
         self.whigh = u.math.asarray(high)
-        self.corder = corder
         self.backend = backend
         super().__init__(data, shape=shape, buffers=buffers)
 
@@ -207,13 +211,13 @@ class JITCUniformMatrix(JITCMatrix):
         -------
         str
             A string showing the class name, shape, lower bound, upper bound,
-            probability, seed, and corder flag of the matrix instance.
+            probability and seed of the matrix instance.
 
         Examples
         --------
         >>> matrix = JITCUniformMatrix((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> repr(matrix)
-        'JITUniformMatrix(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)'
+        'JITUniformMatrix(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42)'
         """
         return (
             f"{self.__class__.__name__}("
@@ -222,7 +226,6 @@ class JITCUniformMatrix(JITCMatrix):
             f"whigh={self.whigh}, "
             f"prob={self.prob}, "
             f"seed={self.seed}, "
-            f"corder={self.corder},"
             f"backend={self.backend},"
             f")"
         )
@@ -273,7 +276,7 @@ class JITCUniformMatrix(JITCMatrix):
 
         Accepts exactly the tuple returned by :attr:`data`, i.e. the
         ``(low, high)`` pair, while keeping the same ``prob``, ``seed``,
-        ``shape``, ``corder``, ``backend``, and buffers. It is useful for updating
+        ``shape``, ``backend``, and buffers. It is useful for updating
         weight bounds without changing the connectivity pattern.
 
         Parameters
@@ -326,7 +329,6 @@ class JITCUniformMatrix(JITCMatrix):
         return type(self)(
             (low, high, self.prob, self.seed),
             shape=self.shape,
-            corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -384,7 +386,7 @@ class JITCUniformMatrix(JITCMatrix):
             self.prob,
             self.seed,
             shape=self.shape,
-            corder=self.corder,
+            transpose=False,
             backend=self.backend,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
@@ -401,7 +403,7 @@ class JITCUniformMatrix(JITCMatrix):
         ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC uniform connectivity and weights are generated from this matrix's own
         metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
-        ``corder``, and ``backend``.
+        ``backend``.
         """
         return jitumv_dt2t(
             self.wlow,
@@ -411,7 +413,6 @@ class JITCUniformMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=False,
-            corder=self.corder,
             backend=self.backend,
         )
 
@@ -425,7 +426,7 @@ class JITCUniformMatrix(JITCMatrix):
         ``w_dim_arr`` is required by the :class:`DataRepresentation` protocol and is not used.
         JITC uniform connectivity and weights are generated from this matrix's own
         metadata, including ``wlow``, ``whigh``, ``prob``, ``seed``, ``shape``,
-        ``corder``, and ``backend``.
+        ``backend``.
         """
         return jitumv_dt2t(
             self.wlow,
@@ -435,7 +436,6 @@ class JITCUniformMatrix(JITCMatrix):
             self.seed,
             shape=self.shape,
             transpose=True,
-            corder=self.corder,
             backend=self.backend,
         )
 
@@ -448,14 +448,14 @@ class JITCUniformMatrix(JITCMatrix):
         tuple
             A pair of (children, aux_data) where children is a tuple of
             (wlow, whigh, prob, seed) and aux_data is a dict containing
-            shape, corder, and backend.
+            shape and backend.
 
         Notes
         -----
         This method is used by JAX's pytree system to serialize the matrix
         for transformations such as ``jax.jit``, ``jax.grad``, and ``jax.vmap``.
         """
-        aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
+        aux = {'shape': self.shape, 'backend': self.backend}
         return (self.wlow, self.whigh, self.prob, self.seed), (aux, self.buffers)
 
     @classmethod
@@ -466,7 +466,7 @@ class JITCUniformMatrix(JITCMatrix):
         Parameters
         ----------
         aux_data : dict
-            Auxiliary data containing shape, corder, and backend.
+            Auxiliary data containing shape and backend.
         children : tuple
             A tuple of (wlow, whigh, prob, seed) leaf values.
 
@@ -485,6 +485,7 @@ class JITCUniformMatrix(JITCMatrix):
         obj.wlow, obj.whigh, obj.prob, obj.seed = children
         aux_data, buffer = aux_data
         obj._buffer_registry = set(buffer.keys())
+        aux_data.pop('corder', None)
         for k, v in aux_data.items():
             setattr(obj, k, v)
         for k, v in buffer.items():
@@ -505,8 +506,7 @@ class JITCUniformMatrix(JITCMatrix):
         Raises
         ------
         NotImplementedError
-            If the two matrices have different seeds, tracing seeds,
-            or different corder values.
+            If the two matrices have different seeds or tracing seeds.
         """
         if not (isinstance(other.seed, Tracer) and isinstance(self.seed, Tracer)):
             if self.seed != other.seed:
@@ -519,12 +519,6 @@ class JITCUniformMatrix(JITCMatrix):
             raise NotImplementedError(
                 f"binary operation {op} between two {self.__class__.__name__} "
                 f"objects with tracing seeds "
-                f"is not implemented currently."
-            )
-        if self.corder != other.corder:
-            raise NotImplementedError(
-                f"binary operation {op} between two {self.__class__.__name__} "
-                f"objects with different corder "
                 f"is not implemented currently."
             )
 
@@ -560,9 +554,6 @@ class JITCUniformR(JITCUniformMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -578,7 +569,7 @@ class JITCUniformR(JITCUniformMatrix):
         # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
         >>> uniform_matrix = JITCUniformR((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> uniform_matrix
-        JITCUniformR(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
+        JITCUniformR(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42)
 
         # Create a uniform matrix with units
         >>> uniform_matrix_mv = JITCUniformR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
@@ -627,7 +618,7 @@ class JITCUniformR(JITCUniformMatrix):
     are independent random variables, both determined by ``seed``.
 
     The row-oriented representation means that the random number generator state is
-    seeded per-row (or per-column, depending on ``corder``), making row-based
+    seeded per-row, making row-based
     operations (``W @ v``) the natural direction.
 
     Key properties:
@@ -701,7 +692,6 @@ class JITCUniformR(JITCUniformMatrix):
             self.seed,
             shape=self.shape,
             transpose=False,
-            corder=self.corder,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
             target_chunks=target_chunks,
@@ -744,8 +734,6 @@ class JITCUniformR(JITCUniformMatrix):
         ``seed``, the transposed matrix produces identical results to materializing
         ``W`` and transposing the dense array.
 
-        The ``corder`` flag is flipped during transposition to maintain consistency
-        with the underlying PRNG state ordering.
 
         Examples
         --------
@@ -767,7 +755,6 @@ class JITCUniformR(JITCUniformMatrix):
         return JITCUniformC(
             (self.wlow, self.whigh, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -800,7 +787,6 @@ class JITCUniformR(JITCUniformMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -882,7 +868,7 @@ class JITCUniformR(JITCUniformMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __matmul__(self, other):
         """
         Compute matrix multiplication ``self @ other``.
 
@@ -931,7 +917,6 @@ class JITCUniformR(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -944,7 +929,6 @@ class JITCUniformR(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
@@ -964,7 +948,6 @@ class JITCUniformR(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -977,13 +960,12 @@ class JITCUniformR(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=False,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-    def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __rmatmul__(self, other):
         """
         Compute matrix multiplication ``other @ self``.
 
@@ -1040,7 +1022,6 @@ class JITCUniformR(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1057,7 +1038,6 @@ class JITCUniformR(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
                 return r.T
@@ -1082,7 +1062,6 @@ class JITCUniformR(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1099,7 +1078,6 @@ class JITCUniformR(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape,
                     transpose=True,
-                    corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
                     backend=self.backend,
                 )
                 return r.T
@@ -1139,9 +1117,6 @@ class JITCUniformC(JITCUniformMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -1157,7 +1132,7 @@ class JITCUniformC(JITCUniformMatrix):
         # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
         >>> uniform_matrix = JITCUniformC((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> uniform_matrix
-        JITCUniformC(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
+        JITCUniformC(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42)
 
         # Create a uniform matrix with units
         >>> uniform_matrix_mv = JITCUniformC((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
@@ -1289,7 +1264,6 @@ class JITCUniformC(JITCUniformMatrix):
             self.seed,
             shape=self.shape[::-1],
             transpose=True,
-            corder=not self.corder,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
             target_chunks=target_chunks,
@@ -1303,19 +1277,18 @@ class JITCUniformC(JITCUniformMatrix):
         chunk_size: Optional[int] = None,
         target_chunks: int = 4,
     ):
-        csr = jitu_to_csr(
+        return jitu_to_csr(
             self.wlow,
             self.whigh,
             self.prob,
             self.seed,
             shape=self.shape[::-1],
-            corder=not self.corder,
+            transpose=True,
             backend=self.backend,
             matrix_mode=matrix_mode,
             chunk_size=chunk_size,
             target_chunks=target_chunks,
         )
-        return csr.transpose().tocsr()
 
     def transpose(self, axes=None) -> 'JITCUniformR':
         """
@@ -1346,9 +1319,7 @@ class JITCUniformC(JITCUniformMatrix):
 
         Notes
         -----
-        The transpose satisfies ``W.T[j, i] = W[i, j]``. The ``corder`` flag is
-        flipped during transposition to maintain consistency with the underlying
-        PRNG state ordering.
+        The transpose satisfies ``W.T[j, i] = W[i, j]``.
 
         Examples
         --------
@@ -1370,7 +1341,6 @@ class JITCUniformC(JITCUniformMatrix):
         return JITCUniformR(
             (self.wlow, self.whigh, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -1403,7 +1373,6 @@ class JITCUniformC(JITCUniformMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
         )
@@ -1485,7 +1454,7 @@ class JITCUniformC(JITCUniformMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __matmul__(self, other):
         """
         Compute matrix multiplication ``self @ other``.
 
@@ -1537,7 +1506,6 @@ class JITCUniformC(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1552,7 +1520,6 @@ class JITCUniformC(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
@@ -1574,7 +1541,6 @@ class JITCUniformC(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1589,13 +1555,12 @@ class JITCUniformC(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=True,
-                    corder=self.corder,
                     backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-    def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
+    def __rmatmul__(self, other):
         """
         Compute matrix multiplication ``other @ self``.
 
@@ -1649,7 +1614,6 @@ class JITCUniformC(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1666,7 +1630,6 @@ class JITCUniformC(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
                 return r.T
@@ -1691,7 +1654,6 @@ class JITCUniformC(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
             elif other.ndim == 2:
@@ -1708,7 +1670,6 @@ class JITCUniformC(JITCUniformMatrix):
                     self.seed,
                     shape=self.shape[::-1],
                     transpose=False,
-                    corder=not self.corder,
                     backend=self.backend,
                 )
                 return r.T

@@ -17,7 +17,7 @@
  * float_jitu.cu -- dense light-RNG JIT uniform materialization.
  *
  * jitu_mv_f32 matches CSR matrix_mode="mv"; jitu_mm_aw_t4_f32 matches CSR
- * matrix_mode="mm".  corder is intentionally not part of the CUDA semantics.
+ * matrix_mode="mm". The public transpose flag selects notrans/trans output.
  */
 
 #include <cstdio>
@@ -340,8 +340,8 @@ static void launch_jitu_mm_aw_t4_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE jitu_mv_f32
-void jitu_mv_f32(
+// @BE jitu_mv_notrans_f32
+void jitu_mv_notrans_f32(
     const BE::Tensor w_low,
     const BE::Tensor w_high,
     const BE::Tensor clen,
@@ -349,15 +349,14 @@ void jitu_mv_f32(
     BE::Tensor output,
     int n_rows,
     int n_cols,
-    int transpose,
     int chunk_size,
     int64_t stream
 ) {
-    launch_jitu_mv_f32(w_low, w_high, clen, seed, output, n_rows, n_cols, transpose, chunk_size, stream);
+    launch_jitu_mv_f32(w_low, w_high, clen, seed, output, n_rows, n_cols, 0, chunk_size, stream);
 }
 
-// @BE jitu_mm_aw_t4_f32
-void jitu_mm_aw_t4_f32(
+// @BE jitu_mv_trans_f32
+void jitu_mv_trans_f32(
     const BE::Tensor w_low,
     const BE::Tensor w_high,
     const BE::Tensor clen,
@@ -365,41 +364,38 @@ void jitu_mm_aw_t4_f32(
     BE::Tensor output,
     int n_rows,
     int n_cols,
-    int transpose,
     int chunk_size,
     int64_t stream
 ) {
-    launch_jitu_mm_aw_t4_f32(w_low, w_high, clen, seed, output, n_rows, n_cols, transpose, chunk_size, stream);
+    launch_jitu_mv_f32(w_low, w_high, clen, seed, output, n_rows, n_cols, 1, chunk_size, stream);
 }
 
-// @BE jitu_corder_true_f32
-void jitu_corder_true_f32(
+// @BE jitu_mm_aw_t4_notrans_f32
+void jitu_mm_aw_t4_notrans_f32(
     const BE::Tensor w_low,
     const BE::Tensor w_high,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
     int64_t stream
 ) {
-    int n_rows = static_cast<int>(output.size(0));
-    int n_cols = static_cast<int>(output.size(1));
-    launch_jitu_mv_f32(
-        w_low, w_high, clen, seed, output,
-        n_rows, n_cols, 0, default_light_chunk_size(n_cols), stream);
+    launch_jitu_mm_aw_t4_f32(w_low, w_high, clen, seed, output, n_rows, n_cols, 0, chunk_size, stream);
 }
 
-// @BE jitu_corder_false_f32
-void jitu_corder_false_f32(
+// @BE jitu_mm_aw_t4_trans_f32
+void jitu_mm_aw_t4_trans_f32(
     const BE::Tensor w_low,
     const BE::Tensor w_high,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
     int64_t stream
 ) {
-    int n_rows = static_cast<int>(output.size(0));
-    int n_cols = static_cast<int>(output.size(1));
-    launch_jitu_mv_f32(
-        w_low, w_high, clen, seed, output,
-        n_rows, n_cols, 0, default_light_chunk_size(n_cols), stream);
+    launch_jitu_mm_aw_t4_f32(w_low, w_high, clen, seed, output, n_rows, n_cols, 1, chunk_size, stream);
 }

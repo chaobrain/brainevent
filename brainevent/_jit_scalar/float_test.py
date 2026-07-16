@@ -45,12 +45,21 @@ def _seed_rng():
 
 @pytest.mark.parametrize("implementation", JITS_IMPLEMENTATIONS)
 @pytest.mark.parametrize('transpose', [True, False])
-@pytest.mark.parametrize('corder', [True, False])
-def test_jits_transpose_symmetry(implementation, transpose, corder):
-    out1 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=transpose, corder=corder, backend=implementation)
-    out2 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=not transpose, corder=not corder, backend=implementation)
+def test_jits_transpose_symmetry(implementation, transpose):
+    out1 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=transpose, backend=implementation)
+    out2 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=not transpose, backend=implementation)
     assert jnp.allclose(out1, out2.T)
     jax.block_until_ready((out1, out2))
+
+
+@pytest.mark.parametrize("implementation", JITS_IMPLEMENTATIONS)
+@pytest.mark.parametrize('corder', [True, False])
+def test_jits_corder_deprecated_and_ignored(implementation, corder):
+    expected = jits(1.5, 0.1, 123, shape=(30, 20), backend=implementation)
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
+        actual = jits(1.5, 0.1, 123, shape=(30, 20), corder=corder, backend=implementation)
+    assert jnp.allclose(actual, expected)
+    jax.block_until_ready((actual, expected))
 
 
 # ---- Forward: jitsmv (transpose=False) ----
@@ -102,7 +111,7 @@ SEED = 1234
 
 
 def _light_csr(weight, *, shape, matrix_mode, corder, backend):
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         return jits_to_csr(
             weight, PROB, SEED,
             shape=shape, corder=corder, matrix_mode=matrix_mode, backend=backend,

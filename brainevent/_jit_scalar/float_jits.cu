@@ -16,8 +16,8 @@
 /*
  * float_jits.cu -- dense light-RNG JIT scalar materialization.
  *
- * jits_mv_f32 matches CSR matrix_mode="mv"; jits_mm_aw_t4_f32 matches CSR
- * matrix_mode="mm".  corder is intentionally not part of the CUDA semantics.
+ * jits_mv_{notrans,trans}_f32 matches CSR matrix_mode="mv";
+ * jits_mm_aw_t4_{notrans,trans}_f32 matches CSR matrix_mode="mm".
  */
 
 #include <cstdio>
@@ -330,62 +330,59 @@ static void launch_jits_mm_aw_t4_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE jits_mv_f32
-void jits_mv_f32(
+
+// @BE jits_mv_notrans_f32
+void jits_mv_notrans_f32(
     const BE::Tensor weight,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
     int n_rows,
     int n_cols,
-    int transpose,
     int chunk_size,
     int64_t stream
 ) {
-    launch_jits_mv_f32(weight, clen, seed, output, n_rows, n_cols, transpose, chunk_size, stream);
+    launch_jits_mv_f32(weight, clen, seed, output, n_rows, n_cols, 0, chunk_size, stream);
 }
 
-// @BE jits_mm_aw_t4_f32
-void jits_mm_aw_t4_f32(
+// @BE jits_mv_trans_f32
+void jits_mv_trans_f32(
     const BE::Tensor weight,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
     int n_rows,
     int n_cols,
-    int transpose,
     int chunk_size,
     int64_t stream
 ) {
-    launch_jits_mm_aw_t4_f32(weight, clen, seed, output, n_rows, n_cols, transpose, chunk_size, stream);
+    launch_jits_mv_f32(weight, clen, seed, output, n_rows, n_cols, 1, chunk_size, stream);
 }
 
-// @BE jits_corder_true_f32
-void jits_corder_true_f32(
+// @BE jits_mm_aw_t4_notrans_f32
+void jits_mm_aw_t4_notrans_f32(
     const BE::Tensor weight,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
     int64_t stream
 ) {
-    int n_rows = static_cast<int>(output.size(0));
-    int n_cols = static_cast<int>(output.size(1));
-    launch_jits_mv_f32(
-        weight, clen, seed, output,
-        n_rows, n_cols, 0, default_light_chunk_size(n_cols), stream);
+    launch_jits_mm_aw_t4_f32(weight, clen, seed, output, n_rows, n_cols, 0, chunk_size, stream);
 }
 
-// @BE jits_corder_false_f32
-void jits_corder_false_f32(
+// @BE jits_mm_aw_t4_trans_f32
+void jits_mm_aw_t4_trans_f32(
     const BE::Tensor weight,
     const BE::Tensor clen,
     const BE::Tensor seed,
     BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
     int64_t stream
 ) {
-    int n_rows = static_cast<int>(output.size(0));
-    int n_cols = static_cast<int>(output.size(1));
-    launch_jits_mv_f32(
-        weight, clen, seed, output,
-        n_rows, n_cols, 0, default_light_chunk_size(n_cols), stream);
+    launch_jits_mm_aw_t4_f32(weight, clen, seed, output, n_rows, n_cols, 1, chunk_size, stream);
 }

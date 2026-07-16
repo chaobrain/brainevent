@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import inspect
+from pathlib import Path
 
 import brainunit as u
 import jax
@@ -191,16 +192,22 @@ def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
         clen = _initialize_conn_length(0.2)
         seed = _initialize_seed(42)
 
-        row_counts = jitn_csr_count_p_call(
-            w0, w1, clen, seed, shape=shape, corder=corder, backend=implementation,
+        chunk_counts = jitn_csr_count_p_call(
+            w0, w1, clen, seed, shape=shape, transpose=False, backend=implementation,
         )[0]
+        row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32)
         indptr = jnp.concatenate(
             [jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
         )
         nnz = int(indptr[-1])
+        chunk_offsets = (
+            indptr[:-1, None]
+            + jnp.cumsum(chunk_counts, axis=1, dtype=jnp.int32)
+            - chunk_counts
+        )
 
         indices, weights = jitn_csr_fill_p_call(
-            w0, w1, clen, seed, indptr, nnz, shape=shape, corder=corder, backend=implementation,
+            w0, w1, clen, seed, chunk_offsets, nnz, shape=shape, transpose=False, backend=implementation,
         )
         out = jitnmv_dt2t_p_call(
             w0,
@@ -208,11 +215,10 @@ def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
             clen,
             y,
             seed,
-            indptr,
+            chunk_offsets,
             nnz,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             backend=implementation,
         )[0]
         row_ids = jnp.repeat(
@@ -226,8 +232,9 @@ def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
     jax.block_until_ready((out, expected))
 
 
+@requires_gpu
 def test_jitnmv_dt2t_units_are_weight_times_y():
-    with jax.default_device(CPU_DEVICE):
+    with jax.default_device(jax.devices('gpu')[0]):
         out = jitnmv_dt2t(
             1.5 * u.siemens,
             0.2 * u.siemens,

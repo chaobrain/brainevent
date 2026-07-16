@@ -338,7 +338,7 @@ __device__ __forceinline__ unsigned int count_lane_connections_t4(
 // ##  Count pass — per-(row, chunk) non-zero counts                     ##
 // #########################################################################
 
-__global__ void _count_chunks_f32_kern(
+__global__ void _count_chunks_notrans_f32_kern(
     const int *__restrict__ clen,
     const int *__restrict__ seed,
     int *__restrict__ chunk_counts,
@@ -382,7 +382,7 @@ __global__ void _count_chunks_f32_kern(
 // ##  Fill pass — replay streams, write indices + Normal weights         ##
 // #########################################################################
 
-__global__ void _fill_f32_kern(
+__global__ void _fill_notrans_f32_kern(
     const float *__restrict__ w_loc,
     const float *__restrict__ w_scale,
     const int *__restrict__ clen,
@@ -445,7 +445,7 @@ __global__ void _fill_f32_kern(
 // ##  Count pass — MM AW-T4 mode (8 groups of 4 threads per warp)       ##
 // #########################################################################
 
-__global__ void _count_chunks_mm_aw_t4_f32_kern(
+__global__ void _count_chunks_notrans_mm_aw_t4_f32_kern(
     const int *__restrict__ clen,
     const int *__restrict__ seed,
     int *__restrict__ chunk_counts,
@@ -491,7 +491,7 @@ __global__ void _count_chunks_mm_aw_t4_f32_kern(
 // ##  Fill pass — MM AW-T4 mode                                          ##
 // #########################################################################
 
-__global__ void _fill_mm_aw_t4_f32_kern(
+__global__ void _fill_notrans_mm_aw_t4_f32_kern(
     const float *__restrict__ w_loc,
     const float *__restrict__ w_scale,
     const int *__restrict__ clen,
@@ -552,12 +552,398 @@ __global__ void _fill_mm_aw_t4_f32_kern(
     }
 }
 
+
+// #########################################################################
+// ##  Trans count/fill pass -- write CSR(A.T)                      ##
+// #########################################################################
+
+__global__ void _count_chunks_trans_f32_kern(
+    const int *__restrict__ clen,
+    const int *__restrict__ seed,
+    int *__restrict__ row_counts,
+    int m, int k, int chunk_size, int n_chunks)
+{
+    int lane = threadIdx.x & 31;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int row_block = (int)blockIdx.x;
+    int chunk_id = (int)blockIdx.y;
+    int row = row_block * warps_per_block + warp_id;
+    if (row >= m || chunk_id >= n_chunks)
+        return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= k)
+        return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > k)
+        chunk_end = k;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U)
+        return;
+
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    if (cl < 2U)
+        cl = 2U;
+    cl = calibrated_chunk_clen(cl, k, chunk_size, n_chunks);
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
+    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int local_j = (unsigned int)lane + 32U * q;
+    while (local_j < chunk_width)
+    {
+        int j = chunk_start + (int)local_j;
+        atomicAdd(&row_counts[j], 1);
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)lane + 32U * q;
+    }
+}
+
+__global__ void _fill_trans_f32_kern(
+    const float *__restrict__ w_loc,
+    const float *__restrict__ w_scale,
+    const int *__restrict__ clen,
+    const int *__restrict__ seed,
+    const int *__restrict__ indptr,
+    int *__restrict__ indices,
+    float *__restrict__ data,
+    int *__restrict__ cursor,
+    int m, int k, int chunk_size, int n_chunks)
+{
+    int lane = threadIdx.x & 31;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int row_block = (int)blockIdx.x;
+    int chunk_id = (int)blockIdx.y;
+    int row = row_block * warps_per_block + warp_id;
+    if (row >= m || chunk_id >= n_chunks)
+        return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= k)
+        return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > k)
+        chunk_end = k;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U)
+        return;
+
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    if (cl < 2U)
+        cl = 2U;
+    cl = calibrated_chunk_clen(cl, k, chunk_size, n_chunks);
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+    float loc = READ_F32(__ldg(&w_loc[0]));
+    float scale = READ_F32(__ldg(&w_scale[0]));
+
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
+    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int local_j = (unsigned int)lane + 32U * q;
+    while (local_j < chunk_width)
+    {
+        int j = chunk_start + (int)local_j;
+        int offset = atomicAdd(&cursor[j], 1);
+        int pos = __ldg(&indptr[j]) + offset;
+        indices[pos] = row;
+        float n01 = hash_normal01(seed0, row, j);
+        data[pos] = loc + n01 * scale;
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)lane + 32U * q;
+    }
+}
+
+__global__ void _count_chunks_trans_mm_aw_t4_f32_kern(
+    const int *__restrict__ clen,
+    const int *__restrict__ seed,
+    int *__restrict__ row_counts,
+    int m, int k, int chunk_size, int n_chunks)
+{
+    int lane = threadIdx.x & 31;
+    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);
+    int group = lane >> 2;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int chunk_id = (int)blockIdx.y;
+    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;
+    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;
+    if (row >= m || chunk_id >= n_chunks)
+        return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= k)
+        return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > k)
+        chunk_end = k;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U)
+        return;
+
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    if (cl < 2U)
+        cl = 2U;
+    cl = calibrated_chunk_clen_t4(cl, k, chunk_size, n_chunks);
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);
+    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
+    while (local_j < chunk_width)
+    {
+        int j = chunk_start + (int)local_j;
+        atomicAdd(&row_counts[j], 1);
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
+    }
+}
+
+__global__ void _fill_trans_mm_aw_t4_f32_kern(
+    const float *__restrict__ w_loc,
+    const float *__restrict__ w_scale,
+    const int *__restrict__ clen,
+    const int *__restrict__ seed,
+    const int *__restrict__ indptr,
+    int *__restrict__ indices,
+    float *__restrict__ data,
+    int *__restrict__ cursor,
+    int m, int k, int chunk_size, int n_chunks)
+{
+    int lane = threadIdx.x & 31;
+    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);
+    int group = lane >> 2;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int chunk_id = (int)blockIdx.y;
+    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;
+    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;
+    if (row >= m || chunk_id >= n_chunks)
+        return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= k)
+        return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > k)
+        chunk_end = k;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U)
+        return;
+
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    if (cl < 2U)
+        cl = 2U;
+    cl = calibrated_chunk_clen_t4(cl, k, chunk_size, n_chunks);
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+    float loc = READ_F32(__ldg(&w_loc[0]));
+    float scale = READ_F32(__ldg(&w_scale[0]));
+
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);
+    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
+    while (local_j < chunk_width)
+    {
+        int j = chunk_start + (int)local_j;
+        int offset = atomicAdd(&cursor[j], 1);
+        int pos = __ldg(&indptr[j]) + offset;
+        indices[pos] = row;
+        float n01 = hash_normal01(seed0, row, j);
+        data[pos] = loc + n01 * scale;
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
+    }
+}
+
 // #########################################################################
 // ##  FFI Wrappers                                                        ##
 // #########################################################################
 
-// @BE count_chunks_f32
-void count_chunks_f32(
+
+// @BE count_chunks_trans_f32
+void count_chunks_trans_f32(
+    const BE::Tensor w_loc,
+    const BE::Tensor w_scale,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    BE::Tensor row_counts,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
+    int64_t stream)
+{
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    (void)w_loc;
+    (void)w_scale;
+    if (n_rows <= 0 || n_cols <= 0 || chunk_size <= 0)
+        return;
+    int n_chunks = (n_cols + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0)
+        return;
+    cudaMemsetAsync(row_counts.data_ptr(), 0, (size_t)n_cols * sizeof(int), s);
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int row_warp_blocks = (n_rows + warps_per_block - 1) / warps_per_block;
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535)
+    {
+        fprintf(stderr,
+                "count_chunks_trans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                row_warp_blocks, n_chunks);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
+
+    _count_chunks_trans_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const int *>(clen.data_ptr()),
+        static_cast<const int *>(seed.data_ptr()),
+        static_cast<int *>(row_counts.data_ptr()),
+        n_rows, n_cols, chunk_size, n_chunks);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// @BE fill_trans_f32
+void fill_trans_f32(
+    const BE::Tensor w_loc,
+    const BE::Tensor w_scale,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    const BE::Tensor indptr,
+    BE::Tensor indices,
+    BE::Tensor data,
+    BE::Tensor cursor,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
+    int64_t stream)
+{
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (n_rows <= 0 || n_cols <= 0 || chunk_size <= 0)
+        return;
+    int n_chunks = (n_cols + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0)
+        return;
+    cudaMemsetAsync(cursor.data_ptr(), 0, (size_t)n_cols * sizeof(int), s);
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int row_warp_blocks = (n_rows + warps_per_block - 1) / warps_per_block;
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535)
+    {
+        fprintf(stderr,
+                "fill_trans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                row_warp_blocks, n_chunks);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
+
+    _fill_trans_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float *>(w_loc.data_ptr()),
+        static_cast<const float *>(w_scale.data_ptr()),
+        static_cast<const int *>(clen.data_ptr()),
+        static_cast<const int *>(seed.data_ptr()),
+        static_cast<const int *>(indptr.data_ptr()),
+        static_cast<int *>(indices.data_ptr()),
+        static_cast<float *>(data.data_ptr()),
+        static_cast<int *>(cursor.data_ptr()),
+        n_rows, n_cols, chunk_size, n_chunks);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// @BE count_chunks_trans_mm_aw_t4_f32
+void count_chunks_trans_mm_aw_t4_f32(
+    const BE::Tensor w_loc,
+    const BE::Tensor w_scale,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    BE::Tensor row_counts,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
+    int64_t stream)
+{
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    (void)w_loc;
+    (void)w_scale;
+    if (n_rows <= 0 || n_cols <= 0 || chunk_size <= 0)
+        return;
+    int n_chunks = (n_cols + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0)
+        return;
+    cudaMemsetAsync(row_counts.data_ptr(), 0, (size_t)n_cols * sizeof(int), s);
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int rows_per_block = warps_per_block * AW_T4_GROUPS_PER_WARP;
+    int row_group_blocks = (n_rows + rows_per_block - 1) / rows_per_block;
+    if (row_group_blocks > 2147483647 || n_chunks > 65535)
+    {
+        fprintf(stderr,
+                "count_chunks_trans_mm_aw_t4_f32 grid overflow: row_group_blocks=%d n_chunks=%d\n",
+                row_group_blocks, n_chunks);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, 1U);
+
+    _count_chunks_trans_mm_aw_t4_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const int *>(clen.data_ptr()),
+        static_cast<const int *>(seed.data_ptr()),
+        static_cast<int *>(row_counts.data_ptr()),
+        n_rows, n_cols, chunk_size, n_chunks);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// @BE fill_trans_mm_aw_t4_f32
+void fill_trans_mm_aw_t4_f32(
+    const BE::Tensor w_loc,
+    const BE::Tensor w_scale,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    const BE::Tensor indptr,
+    BE::Tensor indices,
+    BE::Tensor data,
+    BE::Tensor cursor,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
+    int64_t stream)
+{
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (n_rows <= 0 || n_cols <= 0 || chunk_size <= 0)
+        return;
+    int n_chunks = (n_cols + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0)
+        return;
+    cudaMemsetAsync(cursor.data_ptr(), 0, (size_t)n_cols * sizeof(int), s);
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int rows_per_block = warps_per_block * AW_T4_GROUPS_PER_WARP;
+    int row_group_blocks = (n_rows + rows_per_block - 1) / rows_per_block;
+    if (row_group_blocks > 2147483647 || n_chunks > 65535)
+    {
+        fprintf(stderr,
+                "fill_trans_mm_aw_t4_f32 grid overflow: row_group_blocks=%d n_chunks=%d\n",
+                row_group_blocks, n_chunks);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, 1U);
+
+    _fill_trans_mm_aw_t4_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float *>(w_loc.data_ptr()),
+        static_cast<const float *>(w_scale.data_ptr()),
+        static_cast<const int *>(clen.data_ptr()),
+        static_cast<const int *>(seed.data_ptr()),
+        static_cast<const int *>(indptr.data_ptr()),
+        static_cast<int *>(indices.data_ptr()),
+        static_cast<float *>(data.data_ptr()),
+        static_cast<int *>(cursor.data_ptr()),
+        n_rows, n_cols, chunk_size, n_chunks);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// @BE count_chunks_notrans_f32
+void count_chunks_notrans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -583,13 +969,13 @@ void count_chunks_f32(
     if (row_warp_blocks > 2147483647 || n_chunks > 65535)
     {
         fprintf(stderr,
-                "count_chunks_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                "count_chunks_notrans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
                 row_warp_blocks, n_chunks);
         abort();
     }
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
-    _count_chunks_f32_kern<<<blocks, threads, 0, s>>>(
+    _count_chunks_notrans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const int *>(clen.data_ptr()),
         static_cast<const int *>(seed.data_ptr()),
         static_cast<int *>(chunk_counts.data_ptr()),
@@ -597,8 +983,8 @@ void count_chunks_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE fill_f32
-void fill_f32(
+// @BE fill_notrans_f32
+void fill_notrans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -626,13 +1012,13 @@ void fill_f32(
     if (row_warp_blocks > 2147483647 || n_chunks > 65535)
     {
         fprintf(stderr,
-                "fill_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                "fill_notrans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
                 row_warp_blocks, n_chunks);
         abort();
     }
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
-    _fill_f32_kern<<<blocks, threads, 0, s>>>(
+    _fill_notrans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float *>(w_loc.data_ptr()),
         static_cast<const float *>(w_scale.data_ptr()),
         static_cast<const int *>(clen.data_ptr()),
@@ -644,8 +1030,8 @@ void fill_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE count_chunks_mm_aw_t4_f32
-void count_chunks_mm_aw_t4_f32(
+// @BE count_chunks_notrans_mm_aw_t4_f32
+void count_chunks_notrans_mm_aw_t4_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -672,13 +1058,13 @@ void count_chunks_mm_aw_t4_f32(
     if (row_group_blocks > 2147483647 || n_chunks > 65535)
     {
         fprintf(stderr,
-                "count_chunks_mm_aw_t4_f32 grid overflow: row_group_blocks=%d n_chunks=%d\n",
+                "count_chunks_notrans_mm_aw_t4_f32 grid overflow: row_group_blocks=%d n_chunks=%d\n",
                 row_group_blocks, n_chunks);
         abort();
     }
     dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, 1U);
 
-    _count_chunks_mm_aw_t4_f32_kern<<<blocks, threads, 0, s>>>(
+    _count_chunks_notrans_mm_aw_t4_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const int *>(clen.data_ptr()),
         static_cast<const int *>(seed.data_ptr()),
         static_cast<int *>(chunk_counts.data_ptr()),
@@ -686,8 +1072,8 @@ void count_chunks_mm_aw_t4_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE fill_mm_aw_t4_f32
-void fill_mm_aw_t4_f32(
+// @BE fill_notrans_mm_aw_t4_f32
+void fill_notrans_mm_aw_t4_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -716,13 +1102,13 @@ void fill_mm_aw_t4_f32(
     if (row_group_blocks > 2147483647 || n_chunks > 65535)
     {
         fprintf(stderr,
-                "fill_mm_aw_t4_f32 grid overflow: row_group_blocks=%d n_chunks=%d\n",
+                "fill_notrans_mm_aw_t4_f32 grid overflow: row_group_blocks=%d n_chunks=%d\n",
                 row_group_blocks, n_chunks);
         abort();
     }
     dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, 1U);
 
-    _fill_mm_aw_t4_f32_kern<<<blocks, threads, 0, s>>>(
+    _fill_notrans_mm_aw_t4_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float *>(w_loc.data_ptr()),
         static_cast<const float *>(w_scale.data_ptr()),
         static_cast<const int *>(clen.data_ptr()),

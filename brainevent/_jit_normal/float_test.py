@@ -32,6 +32,11 @@ JITNMV_IMPLEMENTATIONS = tuple(jitnmv_p.available_backends(platform))
 JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends(platform))
 
 
+def _skip_if_no_backend(implementation):
+    if implementation is None:
+        pytest.skip(f"No _jit_normal backend is available on {platform!r}.")
+
+
 @pytest.fixture(autouse=True)
 def _seed_rng():
     """Make the unseeded ``np.random`` draws in this module deterministic.
@@ -44,6 +49,104 @@ def _seed_rng():
     dependence without changing the statistical nature of the checks.
     """
     np.random.seed(0x5EED)
+
+
+@pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS or (None,))
+@pytest.mark.parametrize("matrix_mode", ["mv", "mm"])
+def test_jitn_dense_mv_mm_transpose_matches_transposed_notrans(implementation, matrix_mode):
+    _skip_if_no_backend(implementation)
+    shape = (8, 11)
+    dense = jitn(1.5, 0.15, PROB, SEED, shape=shape, matrix_mode=matrix_mode, backend=implementation)
+    dense_t = jitn(
+        1.5,
+        0.15,
+        PROB,
+        SEED,
+        shape=shape,
+        matrix_mode=matrix_mode,
+        transpose=True,
+        backend=implementation,
+    )
+    assert jnp.allclose(dense_t, dense.T, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((dense, dense_t))
+
+
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS or (None,))
+@pytest.mark.parametrize("matrix_mode", ["mv", "mm"])
+@pytest.mark.parametrize("transpose", [False, True])
+def test_jitnmm_matrix_mode_mv_and_mm_forward_transpose(implementation, matrix_mode, transpose):
+    _skip_if_no_backend(implementation)
+    shape = (8, 11)
+    batch = 3
+    rhs_rows = shape[0] if transpose else shape[1]
+    rhs = jnp.asarray(np.random.rand(rhs_rows, batch), dtype=jnp.float32)
+    dense = jitn(
+        1.5,
+        0.15,
+        PROB,
+        SEED,
+        shape=shape,
+        matrix_mode=matrix_mode,
+        transpose=transpose,
+        backend=implementation,
+    )
+    out = jitnmm(
+        1.5,
+        0.15,
+        PROB,
+        rhs,
+        SEED,
+        shape=shape,
+        matrix_mode=matrix_mode,
+        transpose=transpose,
+        backend=implementation,
+    )
+    assert jnp.allclose(out, dense @ rhs, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((dense, out))
+
+
+@pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS or (None,))
+@pytest.mark.parametrize("matrix_mode", ["mv", "mm"])
+@pytest.mark.parametrize("transpose", [False, True])
+def test_jitn_to_csr_mv_mm_transpose_matches_dense(implementation, matrix_mode, transpose):
+    _skip_if_no_backend(implementation)
+    shape = (8, 11)
+    dense = jitn(
+        1.5,
+        0.15,
+        PROB,
+        SEED,
+        shape=shape,
+        matrix_mode=matrix_mode,
+        transpose=transpose,
+        backend=implementation,
+    )
+    csr = jitn_to_csr(
+        1.5,
+        0.15,
+        PROB,
+        SEED,
+        shape=shape,
+        matrix_mode=matrix_mode,
+        transpose=transpose,
+        backend=implementation,
+    )
+    assert jnp.allclose(csr.todense(), dense, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((dense, csr.data))
+
+
+@pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS or (None,))
+def test_corder_deprecated_and_ignored(implementation):
+    _skip_if_no_backend(implementation)
+    shape = (8, 11)
+    baseline = jitn(1.5, 0.15, PROB, SEED, shape=shape, backend=implementation)
+    with pytest.warns(FutureWarning, match="corder.*deprecated.*ignored"):
+        corder_true = jitn(1.5, 0.15, PROB, SEED, shape=shape, corder=True, backend=implementation)
+    with pytest.warns(FutureWarning, match="corder.*deprecated.*ignored"):
+        corder_false = jitn(1.5, 0.15, PROB, SEED, shape=shape, corder=False, backend=implementation)
+    assert jnp.allclose(corder_true, baseline)
+    assert jnp.allclose(corder_false, baseline)
+    jax.block_until_ready((baseline, corder_true, corder_false))
 
 
 # ---- Forward: jitnmv (matrix @ vector, transpose=False) ----
@@ -78,7 +181,7 @@ def test_jitnmv_transpose_forward(implementation, shape, corder):
 
 
 def _light_csr(w_loc, w_scale, *, shape, matrix_mode, corder, backend):
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*deprecated.*ignored"):
         return jitn_to_csr(
             w_loc,
             w_scale,

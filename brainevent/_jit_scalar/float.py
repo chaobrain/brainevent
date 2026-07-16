@@ -61,10 +61,12 @@ def _normalize_chunk_size(n_cols: int, chunk_size: Optional[int], target_chunks:
     return chunk_size
 
 
-def _warn_corder_ignored(corder: bool) -> None:
+def _warn_corder_deprecated(corder: Optional[bool]) -> None:
+    if corder is None:
+        return
     warnings.warn(
-        "corder is ignored by the light JIT scalar implementation.",
-        UserWarning,
+        "corder is deprecated and ignored by the light JIT scalar implementation.",
+        FutureWarning,
         stacklevel=3,
     )
 
@@ -76,7 +78,7 @@ def _light_options(kwargs):
     }
 
 
-@namescope(name="brainevent.jits", static_argnames=("shape", "transpose", "corder", "matrix_mode", "chunk_size", "target_chunks"))
+@namescope(name="brainevent.jits", static_argnames=("shape", "transpose", "matrix_mode", "chunk_size", "target_chunks"))
 def _jits_impl(
     weight: Data,
     prob: float,
@@ -84,7 +86,6 @@ def _jits_impl(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
     matrix_mode: MatrixMode = 'mv',
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
@@ -115,9 +116,6 @@ def _jits_impl(
     transpose : bool, optional
         If True, generate the transposed matrix of shape ``(n, m)``.
         Default is False.
-    corder : bool, optional
-        Memory layout order for the connectivity generation. True for C-order
-        (row-major), False for Fortran-order (column-major). Default is True.
     backend : str, optional
         Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
@@ -175,7 +173,6 @@ def _jits_impl(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         matrix_mode=matrix_mode,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
@@ -191,20 +188,19 @@ def jits(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
+    corder: Optional[bool] = None,
     matrix_mode: MatrixMode = 'mv',
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
-    _warn_corder_ignored(corder)
+    _warn_corder_deprecated(corder)
     return _jits_impl(
         weight,
         prob,
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         matrix_mode=matrix_mode,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
@@ -215,7 +211,7 @@ def jits(
 jits.__doc__ = _jits_impl.__doc__
 
 
-@namescope(name="brainevent.jitsmv", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
+@namescope(name="brainevent.jitsmv", static_argnames=("shape", "transpose", "chunk_size", "target_chunks"))
 def _jitsmv_impl(
     weight: Data,
     prob: float,
@@ -224,7 +220,6 @@ def _jitsmv_impl(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
@@ -264,9 +259,6 @@ def _jitsmv_impl(
     transpose : bool, optional
         If True, compute ``A.T @ vector`` instead of ``A @ vector``.
         Default is False.
-    corder : bool, optional
-        Memory layout order for the connectivity generation. True for C-order
-        (row-major), False for Fortran-order (column-major). Default is True.
     backend : str, optional
         Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
@@ -326,7 +318,6 @@ def _jitsmv_impl(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
         backend=backend,
@@ -342,12 +333,12 @@ def jitsmv(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
+    corder: Optional[bool] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
-    _warn_corder_ignored(corder)
+    _warn_corder_deprecated(corder)
     return _jitsmv_impl(
         weight,
         prob,
@@ -355,7 +346,6 @@ def jitsmv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
         backend=backend,
@@ -365,7 +355,7 @@ def jitsmv(
 jitsmv.__doc__ = _jitsmv_impl.__doc__
 
 
-@namescope(name="brainevent.jitsmm", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
+@namescope(name="brainevent.jitsmm", static_argnames=("shape", "transpose", "matrix_mode", "chunk_size", "target_chunks"))
 def _jitsmm_impl(
     weight: Data,
     prob: float,
@@ -374,7 +364,7 @@ def _jitsmm_impl(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
+    matrix_mode: MatrixMode = 'mm',
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
@@ -412,9 +402,6 @@ def _jitsmm_impl(
     transpose : bool, optional
         If True, compute ``A.T @ B`` instead of ``A @ B``.
         Default is False.
-    corder : bool, optional
-        Memory layout order for the connectivity generation. True for C-order
-        (row-major), False for Fortran-order (column-major). Default is True.
     backend : str, optional
         Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
@@ -474,10 +461,9 @@ def _jitsmm_impl(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
-        matrix_mode='mm',
+        matrix_mode=matrix_mode,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
@@ -491,12 +477,13 @@ def jitsmm(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
+    corder: Optional[bool] = None,
+    matrix_mode: MatrixMode = 'mm',
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
-    _warn_corder_ignored(corder)
+    _warn_corder_deprecated(corder)
     return _jitsmm_impl(
         weight,
         prob,
@@ -504,7 +491,7 @@ def jitsmm(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
+        matrix_mode=matrix_mode,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
         backend=backend,
@@ -515,68 +502,43 @@ jitsmm.__doc__ = _jitsmm_impl.__doc__
 
 
 def _jits_numba_kernel_generator(
-    corder: bool = True,
+    transpose: bool = False,
     **kwargs
 ):
-    """
-    Generate a Numba CPU kernel for materializing a JIT scalar connectivity matrix.
-
-    Parameters
-    ----------
-    corder : bool, optional
-        If True, iterate over rows in the outer loop. If False, iterate
-        over columns in the outer loop. Default is True.
-    **kwargs
-        Additional keyword arguments, must include ``outs`` specifying
-        output shape/dtype information.
-
-    Returns
-    -------
-    callable
-        A function ``kernel(w0, w1, clen, seed)`` that executes
-        the Numba-compiled kernel and returns the dense matrix.
-    """
     import numba
     _lfsr_seed = get_numba_lfsr_seed()
     _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _lfsr_uniform = get_numba_lfsr_uniform()
 
-    if corder:
-        # JIT matrix.T
-        # - JIT matrix shape = [m, n]
+    if transpose:
         @numba.njit(fastmath=True)
         def kernel_impl(weight, clen, seed, posts):
             posts[:] = 0.
-            m = posts.shape[1]
-            n = posts.shape[0]
+            n_rows = posts.shape[1]
+            n_cols = posts.shape[0]
             w = weight[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            for i_row in range(n):
-                state = _lfsr_seed(seed0 + i_row * m)
-                i_col = _lfsr_random_integers(state, 0, clen0 - 1)
-                while i_col < m:
-                    posts[i_row, i_col] = w
-                    i_col += _lfsr_random_integers(state, 1, clen0 - 1)
-
-
+            for row in range(n_rows):
+                state = _lfsr_seed(seed0 + row * n_cols)
+                col = _lfsr_random_integers(state, 0, clen0 - 1)
+                while col < n_cols:
+                    posts[col, row] = w
+                    col += _lfsr_random_integers(state, 1, clen0 - 1)
     else:
-        # JIT matrix.T
-        # - JIT matrix shape = [m, n]
         @numba.njit(fastmath=True)
         def kernel_impl(weight, clen, seed, posts):
             posts[:] = 0.
-            m = posts.shape[1]
-            n = posts.shape[0]
+            n_rows = posts.shape[0]
+            n_cols = posts.shape[1]
             w = weight[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            for i_col in range(m):
-                state = _lfsr_seed(seed0 + i_col * n)
-                i_row = _lfsr_random_integers(state, 0, clen0 - 1)
-                while i_row < n:
-                    posts[i_row, i_col] = w
-                    i_row += _lfsr_random_integers(state, 1, clen0 - 1)
+            for row in range(n_rows):
+                state = _lfsr_seed(seed0 + row * n_cols)
+                col = _lfsr_random_integers(state, 0, clen0 - 1)
+                while col < n_cols:
+                    posts[row, col] = w
+                    col += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def kernel(weight, clen, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, seed)
@@ -593,15 +555,13 @@ _dtype_sfx = {
 
 
 def _jits_cuda_kernel(
-    corder: bool = True,
-    shape: MatrixShape = None,
+    shape: Optional[MatrixShape] = None,
     transpose: bool = False,
     matrix_mode: MatrixMode = 'mv',
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     **kwargs
 ):
-    del corder
     if np.dtype(kwargs['weight_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light float jits CUDA currently supports float32 weights only")
 
@@ -612,11 +572,18 @@ def _jits_cuda_kernel(
         Path(__file__).parent.joinpath('float_jits.cu'),
         name='float_jits',
     )
-    kernel_name = (
-        'float_jits.jits_mv_f32'
-        if matrix_mode == 'mv'
-        else 'float_jits.jits_mm_aw_t4_f32'
-    )
+    if matrix_mode == 'mv':
+        kernel_name = (
+            'float_jits.jits_mv_trans_f32'
+            if transpose
+            else 'float_jits.jits_mv_notrans_f32'
+        )
+    else:
+        kernel_name = (
+            'float_jits.jits_mm_aw_t4_trans_f32'
+            if transpose
+            else 'float_jits.jits_mm_aw_t4_notrans_f32'
+        )
 
     def kernel(weight, clen, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
@@ -625,7 +592,6 @@ def _jits_cuda_kernel(
             seed,
             n_rows=np.int32(n_rows),
             n_cols=np.int32(n_cols),
-            transpose=np.int32(int(transpose)),
             chunk_size=np.int32(chunk_size_value),
         )
 
@@ -634,13 +600,12 @@ def _jits_cuda_kernel(
 
 def _jits_jvp_weight(
     weight_dot, weight, clen, seed, *,
-    shape, transpose: bool, corder: bool, matrix_mode: MatrixMode = 'mv', **kwargs
+    shape, transpose: bool, matrix_mode: MatrixMode = 'mv', **kwargs
 ):
     return jits_p_call(
         weight_dot, clen, seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         matrix_mode=matrix_mode,
         **_light_options(kwargs),
         backend=kwargs['backend'],
@@ -655,36 +620,8 @@ def _weight_transpose(ct, seed, clen, **kwargs):
 
 def _jits_transpose(
     ct, weight, clen, seed, *,
-    shape, transpose: bool, corder: bool, matrix_mode: MatrixMode = 'mv', **kwargs
+    shape, transpose: bool, matrix_mode: MatrixMode = 'mv', **kwargs
 ):
-    """
-    Transpose (adjoint) rule for the JIT-scalar dense matrix generation.
-
-    Parameters
-    ----------
-    ct : list
-        Cotangent of the output.
-    w0, w1, clen, seed : jax.Array or ad.UndefinedPrimal
-        Primal values or undefined primals of the primitive's arguments.
-    shape : MatrixShape
-        Shape of the connectivity matrix.
-    transpose : bool
-        Whether the transposed operation was used in the forward pass.
-    corder : bool
-        Memory layout order flag.
-    **kwargs
-        Additional keyword arguments including ``backend``.
-
-    Returns
-    -------
-    tuple
-        Cotangents for each input argument ``(w0, w1, clen, seed)``.
-
-    Raises
-    ------
-    NotImplementedError
-        If the undefined primal is not ``w0`` or ``w1``.
-    """
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
@@ -695,7 +632,6 @@ def _jits_transpose(
             clen,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             matrix_mode=matrix_mode,
             **_light_options(kwargs),
             backend=kwargs['backend'],
@@ -708,53 +644,20 @@ def _jits_transpose(
 
 
 def _jits_batching(args, axes, **kwargs):
-    """
-    Batching rule for the JIT-scalar dense matrix generation primitive.
-
-    Parameters
-    ----------
-    args : tuple
-        Batched arguments ``(w0, w1, clen, seed)``.
-    axes : tuple
-        Batch axis for each argument (None means not batched).
-    **kwargs
-        Additional keyword arguments.
-
-    Returns
-    -------
-    tuple
-        A pair ``(results, out_axes)`` where ``results`` is the batched output
-        and ``out_axes`` indicates the batch dimension of each output.
-    """
     return general_batching_rule(jits_p, args, axes, **kwargs)
 
 
 def _jits_benchmark_data(*, platform):
-    """
-    Generate benchmark configurations for the JIT-scalar dense matrix generation.
-
-    Parameters
-    ----------
-    platform : str
-        The target platform (e.g., ``'cpu'``, ``'gpu'``).
-
-    Returns
-    -------
-    list of BenchmarkConfig
-        A list of benchmark configurations covering different combinations
-        of transpose and corder.
-    """
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
-        for corder in (True, False):
-            weight = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (weight, clen, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+        weight = jnp.ones(1, dtype=dtype)
+        clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+        seed = jnp.asarray(42, dtype=jnp.uint32)
+        name = f"{'T' if transpose else 'NT'}"
+        configs.append(BenchmarkConfig(name, (weight, clen, seed), {
+            'shape': (n_pre, n_post), 'transpose': transpose
+        }))
     return configs
 
 
@@ -765,60 +668,16 @@ def jits_p_call(
     *,
     shape,
     transpose: bool,
-    corder: bool,
     matrix_mode: MatrixMode = 'mv',
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
 ):
-    """
-    Low-level primitive call for materializing a JIT scalar connectivity matrix.
-
-    Validates input shapes and dtypes, constructs output metadata, and invokes
-    the ``jits_p`` XLA custom kernel. This function expects pre-processed
-    arguments (mantissa-only arrays, connection length instead of probability).
-
-    Parameters
-    ----------
-    w0 : jax.Array
-        Lower weight bound as a 1-D array of shape ``(1,)`` with floating dtype.
-    w1 : jax.Array
-        Upper weight bound as a 1-D array of shape ``(1,)`` with the same dtype
-        as ``w0``.
-    clen : jax.Array
-        Connection length parameter as a 1-D array of shape ``(1,)``, derived
-        from the connection probability via ``ceil(2 / prob)``.
-    seed : jax.Array
-        Random seed as a 1-D array of shape ``(1,)``.
-    shape : MatrixShape
-        Shape ``(m, n)`` of the output matrix.
-    transpose : bool
-        If True, the output shape is reversed to ``(n, m)``.
-    corder : bool
-        Memory layout order flag for the connectivity generation.
-    backend : str, optional
-        Computation backend (``'numba'`` or ``'pallas'``).
-
-    Returns
-    -------
-    tuple
-        A single-element tuple containing the dense matrix.
-
-    Raises
-    ------
-    AssertionError
-        If any input shape or dtype constraint is violated.
-
-    See Also
-    --------
-    jits : High-level wrapper with unit handling.
-    """
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
     assert jnp.issubdtype(weight.dtype, jnp.floating), 'Weights must be a floating-point type.'
     matrix_mode = _normalize_matrix_mode(matrix_mode)
-    _warn_corder_ignored(corder)
     chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
 
     out_info = (
@@ -838,7 +697,6 @@ def jits_p_call(
         out_info=out_info,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         matrix_mode=matrix_mode,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
@@ -884,67 +742,45 @@ jits_p.def_benchmark_data(_jits_benchmark_data)
 # Kernel generators for JIT connection SPMV
 
 def _jitsmv_numba_kernel_generator(
-    corder: bool = True,
+    transpose: bool = False,
     **kwargs
 ):
-    """
-    Generate a Numba CPU kernel for float JIT-scalar matrix-vector product.
-
-    Parameters
-    ----------
-    corder : bool, optional
-        If True, iterate over output elements (columns) in the outer loop.
-        If False, iterate over input elements (rows) in the outer loop.
-        Default is True.
-    **kwargs
-        Additional keyword arguments, must include ``outs`` specifying
-        output shape/dtype information.
-
-    Returns
-    -------
-    callable
-        A function ``kernel(w0, w1, clen, vector, seed)`` that
-        executes the Numba-compiled kernel and returns the result.
-    """
     import numba
     _lfsr_seed = get_numba_lfsr_seed()
     _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _lfsr_uniform = get_numba_lfsr_uniform()
 
-    if corder:
-        @numba.njit(fastmath=True)
-        def kernel_impl(weight, clen, vector, seed, posts):
-            n_col = posts.shape[0]
-            n_row = vector.shape[0]
-            w = weight[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-            for i_col in range(n_col):
-                state = _lfsr_seed(seed0 + i_col * n_row)
-                i_row = _lfsr_random_integers(state, 0, clen0 - 1)
-                out = np.asarray(0., dtype=vector.dtype)
-                while i_row < n_row:
-                    out += vector[i_row] * w
-                    i_row += _lfsr_random_integers(state, 1, clen0 - 1)
-                posts[i_col] = out
-
-
-    else:
+    if transpose:
         @numba.njit(fastmath=True)
         def kernel_impl(weight, clen, vector, seed, posts):
             posts[:] = 0.
-            num_col = posts.shape[0]
-            num_row = vector.shape[0]
+            n_rows = vector.shape[0]
+            n_cols = posts.shape[0]
             w = weight[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            for i_row in range(num_row):
-                state = _lfsr_seed(seed0 + i_row * num_col)
-                v = vector[i_row]
-                i_col = _lfsr_random_integers(state, 0, clen0 - 1)
-                while i_col < num_col:
-                    posts[i_col] += v * w
-                    i_col += _lfsr_random_integers(state, 1, clen0 - 1)
+            for row in range(n_rows):
+                state = _lfsr_seed(seed0 + row * n_cols)
+                v = vector[row]
+                col = _lfsr_random_integers(state, 0, clen0 - 1)
+                while col < n_cols:
+                    posts[col] += v * w
+                    col += _lfsr_random_integers(state, 1, clen0 - 1)
+    else:
+        @numba.njit(fastmath=True)
+        def kernel_impl(weight, clen, vector, seed, posts):
+            n_rows = posts.shape[0]
+            n_cols = vector.shape[0]
+            w = weight[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            for row in range(n_rows):
+                state = _lfsr_seed(seed0 + row * n_cols)
+                col = _lfsr_random_integers(state, 0, clen0 - 1)
+                out = np.asarray(0., dtype=vector.dtype)
+                while col < n_cols:
+                    out += vector[col] * w
+                    col += _lfsr_random_integers(state, 1, clen0 - 1)
+                posts[row] = out
 
     def kernel(weight, clen, vector, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, vector, seed)
@@ -953,14 +789,12 @@ def _jitsmv_numba_kernel_generator(
 
 
 def _jitsmv_cuda_kernel(
-    corder: bool = True,
     transpose: bool = False,
-    shape: MatrixShape = None,
+    shape: Optional[MatrixShape] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     **kwargs
 ):
-    del corder
     if np.dtype(kwargs['weight_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light float jitsmv CUDA currently supports float32 weights only")
 
@@ -969,7 +803,7 @@ def _jitsmv_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitsmv.cu'),
         name='float_jitsmv',
     )
-    variant = 'scatter' if transpose else 'gather'
+    variant = 'trans' if transpose else 'notrans'
     kernel_name = f'float_jitsmv.jitsmv_{variant}_f32'
 
     def kernel(weight, clen, vector, seed):
@@ -984,117 +818,27 @@ def _jitsmv_cuda_kernel(
     return kernel
 
 
-def _jitsmv_jvp_v(v_dot, weight, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    """
-    JVP rule for the vector argument of the float JIT-scalar matrix-vector product.
-
-    Parameters
-    ----------
-    v_dot : jax.Array
-        Tangent vector for the ``vector`` argument.
-    w0, w1, clen, vector, seed : jax.Array
-        Primal values of the primitive's arguments.
-    shape : MatrixShape
-        Shape of the connectivity matrix.
-    transpose : bool
-        Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
-    **kwargs
-        Additional keyword arguments including ``backend``.
-
-    Returns
-    -------
-    list
-        Single-element list containing the JVP result.
-    """
+def _jitsmv_jvp_v(v_dot, weight, clen, vector, seed, *, shape, transpose, **kwargs):
     return jitsmv_p_call(
         weight, clen, v_dot, seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         **_light_options(kwargs),
         backend=kwargs['backend'],
     )
 
 
-def _jitsmv_jvp_weight(w_dot, weight, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    """
-    JVP rule for the ``w0`` argument of the float JIT-scalar matrix-vector product.
-
-    Parameters
-    ----------
-    w_dot : jax.Array
-        Tangent vector for the ``w0`` argument.
-    w0, w1, clen, vector, seed : jax.Array
-        Primal values of the primitive's arguments.
-    shape : MatrixShape
-        Shape of the connectivity matrix.
-    transpose : bool
-        Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
-    **kwargs
-        Additional keyword arguments including ``backend``.
-
-    Returns
-    -------
-    list
-        Single-element list containing the JVP result.
-    """
+def _jitsmv_jvp_weight(w_dot, weight, clen, vector, seed, *, shape, transpose, **kwargs):
     return jitsmv_p_call(
         w_dot, clen, vector, seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         **_light_options(kwargs),
         backend=kwargs['backend'],
     )
 
-def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    """
-    Transpose (adjoint) rule for the float JIT-scalar matrix-vector product.
 
-    Implements the VJP transpose for differentiation through the primitive.
-    Supports transposing with respect to the ``vector``, ``w0``, or ``w1``
-    arguments.
-
-    Parameters
-    ----------
-    ct : list
-        Cotangent of the output.
-    w0, w1, clen, vector, seed : jax.Array or ad.UndefinedPrimal
-        Primal values or undefined primals of the primitive's arguments.
-    shape : MatrixShape
-        Shape of the connectivity matrix.
-    transpose : bool
-        Whether the transposed operation was used in the forward pass.
-    corder : bool
-        Memory layout order flag.
-    **kwargs
-        Additional keyword arguments including ``backend``.
-
-    Returns
-    -------
-    tuple
-        Cotangents for each input argument (w0, w1, clen, vector, seed).
-
-    Raises
-    ------
-    NotImplementedError
-        If the undefined primal is not ``vector``, ``w0``, or ``w1``.
-
-    Notes
-    -----
-    For the weight bounds, the transpose uses an affine decomposition:
-
-        ``y = w0 * C(v) + (w1 - w0) * U(v)``
-
-    where ``U(v) = y(0, 1)`` and ``C(v) = y(1, 1)``. The cotangents are:
-
-    - ``dL/dw1 = <ct, U(v)>``
-    - ``dL/dw0  = <ct, C(v) - U(v)>``
-    """
+def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, *, shape, transpose, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1107,7 +851,6 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, *, shape, transpose,
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder,
             **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
@@ -1121,7 +864,6 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, *, shape, transpose,
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
@@ -1135,28 +877,6 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, *, shape, transpose,
 
 
 def _jitsmv_batching(args, axes, **kwargs):
-    """
-    Batching rule for the float JIT-scalar matrix-vector product primitive.
-
-    Handles ``vmap`` over the vector argument by promoting the operation to
-    a matrix-matrix product (``jitsmm_p_call``).
-
-    Parameters
-    ----------
-    args : tuple
-        Batched arguments ``(w0, w1, clen, vector, seed)``.
-    axes : tuple
-        Batch axis for each argument (None means not batched).
-    **kwargs
-        Additional keyword arguments including ``shape``, ``transpose``,
-        ``corder``, and ``backend``.
-
-    Returns
-    -------
-    tuple
-        A pair ``(results, out_axes)`` where ``results`` is the batched output
-        and ``out_axes`` indicates the batch dimension of each output.
-    """
     if tuple(axes) == (None, None, 0, None):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = jitsmm_p_call(
@@ -1166,7 +886,6 @@ def _jitsmv_batching(args, axes, **kwargs):
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            corder=kwargs['corder'],
             matrix_mode='mv',
             **_light_options(kwargs),
             backend=kwargs['backend'],
@@ -1181,7 +900,6 @@ def _jitsmv_batching(args, axes, **kwargs):
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            corder=kwargs['corder'],
             matrix_mode='mv',
             **_light_options(kwargs),
             backend=kwargs['backend'],
@@ -1192,37 +910,22 @@ def _jitsmv_batching(args, axes, **kwargs):
 
 
 def _jitsmv_benchmark_data(*, platform):
-    """
-    Generate benchmark configurations for the float JIT-scalar matrix-vector product.
-
-    Parameters
-    ----------
-    platform : str
-        The target platform (e.g., ``'cpu'``, ``'gpu'``).
-
-    Returns
-    -------
-    list of BenchmarkConfig
-        A list of benchmark configurations covering different combinations
-        of transpose and corder.
-    """
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
-        for corder in (True, False):
-            weight = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(
-                BenchmarkConfig(
-                    name,
-                    (weight, clen, vector, seed),
-                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
-                )
+        weight = jnp.ones(1, dtype=dtype)
+        clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+        v_size = n_post if not transpose else n_pre
+        vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
+        seed = jnp.asarray(42, dtype=jnp.uint32)
+        name = f"{'T' if transpose else 'NT'}"
+        configs.append(
+            BenchmarkConfig(
+                name,
+                (weight, clen, vector, seed),
+                {'shape': (n_pre, n_post), 'transpose': transpose}
             )
+        )
     return configs
 
 
@@ -1234,61 +937,13 @@ def jitsmv_p_call(
     *,
     shape,
     transpose: bool,
-    corder: bool,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
 ):
-    """
-    Low-level primitive call for the float JIT-scalar matrix-vector product.
-
-    Validates input shapes and dtypes, constructs output metadata, and invokes
-    the ``jitsmv_p`` XLA custom kernel. This function expects pre-processed
-    arguments (mantissa-only arrays, connection length instead of probability).
-
-    Parameters
-    ----------
-    w0 : jax.Array
-        Lower weight bound as a 1-D array of shape ``(1,)`` with floating dtype.
-    w1 : jax.Array
-        Upper weight bound as a 1-D array of shape ``(1,)`` with the same dtype
-        as ``w0``.
-    clen : jax.Array
-        Connection length parameter as a 1-D array of shape ``(1,)``, derived
-        from the connection probability via ``ceil(2 / prob)``.
-    vector : jax.Array
-        Input dense vector, a 1-D array. Length must match ``shape[1]``
-        (if ``transpose=False``) or ``shape[0]`` (if ``transpose=True``).
-    seed : jax.Array
-        Random seed as a 1-D array of shape ``(1,)``.
-    shape : MatrixShape
-        Shape ``(m, n)`` of the logical connectivity matrix.
-    transpose : bool
-        If True, compute ``A.T @ vector``; otherwise compute ``A @ vector``.
-    corder : bool
-        Memory layout order flag for the connectivity generation.
-    backend : str, optional
-        Computation backend (``'numba'`` or ``'pallas'``).
-
-    Returns
-    -------
-    tuple
-        A single-element tuple containing the result array of shape
-        ``(shape[0],)`` or ``(shape[1],)`` depending on ``transpose``.
-
-    Raises
-    ------
-    AssertionError
-        If any input shape, dtype, or dimension constraint is violated.
-
-    See Also
-    --------
-    jitsmv : High-level wrapper with unit handling and seed initialization.
-    """
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
-    _warn_corder_ignored(corder)
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert weight.shape == (1,), f"The weight shape should be (1,), but got {weight.shape}."
@@ -1322,7 +977,6 @@ def jitsmv_p_call(
         out_info=out_info,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         backend=backend,
@@ -1366,73 +1020,46 @@ jitsmv_p.def_benchmark_data(_jitsmv_benchmark_data)
 
 
 def _jitsmm_numba_kernel_generator(
-    corder: bool = True,
+    transpose: bool = False,
     **kwargs
 ):
-    """
-    Generate a Numba CPU kernel for float JIT-scalar matrix-matrix product.
-
-    Parameters
-    ----------
-    corder : bool, optional
-        If True, iterate over output rows in the outer loop. If False,
-        iterate over ``B`` rows in the outer loop. Default is True.
-    **kwargs
-        Additional keyword arguments, must include ``outs`` specifying
-        output shape/dtype information.
-
-    Returns
-    -------
-    callable
-        A function ``kernel(w0, w1, clen, B, seed)`` that
-        executes the Numba-compiled kernel and returns the result.
-    """
     import numba
     _lfsr_seed = get_numba_lfsr_seed()
     _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _lfsr_uniform = get_numba_lfsr_uniform()
 
-    if corder:
-        # JIT Matrix.T @ B
-        # - JIT matrix: [k, m]
-        # - B: [k, n]
-        @numba.njit(fastmath=True)
-        def kernel_impl(weight, clen, B, seed, posts):
-            m = posts.shape[0]
-            n = posts.shape[1]
-            k = B.shape[0]
-            w = weight[0]
-            seed0 = seed[0]
-            clen0 = clen[0]
-            for i_m in range(m):
-                state = _lfsr_seed(seed0 + i_m * k)
-                i_k = _lfsr_random_integers(state, 0, clen0 - 1)
-                out = np.zeros(n, dtype=B.dtype)
-                while i_k < k:
-                    out += B[i_k] * w
-                    i_k += _lfsr_random_integers(state, 1, clen0 - 1)
-                posts[i_m] = out
-
-
-    else:
-        # JIT Matrix.T @ B
-        # - JIT matrix: [k, m]
-        # - B: [k, n]
+    if transpose:
         @numba.njit(fastmath=True)
         def kernel_impl(weight, clen, B, seed, posts):
             posts[:] = 0.
-            m = posts.shape[0]
-            k = B.shape[0]
+            n_rows = B.shape[0]
+            n_cols = posts.shape[0]
             w = weight[0]
             seed0 = seed[0]
             clen0 = clen[0]
-            for i_k in range(k):
-                state = _lfsr_seed(seed0 + i_k * m)
-                out = B[i_k]
-                i_m = _lfsr_random_integers(state, 0, clen0 - 1)
-                while i_m < m:
-                    posts[i_m] += out * w
-                    i_m += _lfsr_random_integers(state, 1, clen0 - 1)
+            for row in range(n_rows):
+                state = _lfsr_seed(seed0 + row * n_cols)
+                out = B[row]
+                col = _lfsr_random_integers(state, 0, clen0 - 1)
+                while col < n_cols:
+                    posts[col] += out * w
+                    col += _lfsr_random_integers(state, 1, clen0 - 1)
+    else:
+        @numba.njit(fastmath=True)
+        def kernel_impl(weight, clen, B, seed, posts):
+            n_rows = posts.shape[0]
+            n_cols = B.shape[0]
+            n_batch = B.shape[1]
+            w = weight[0]
+            seed0 = seed[0]
+            clen0 = clen[0]
+            for row in range(n_rows):
+                state = _lfsr_seed(seed0 + row * n_cols)
+                col = _lfsr_random_integers(state, 0, clen0 - 1)
+                out = np.zeros(n_batch, dtype=B.dtype)
+                while col < n_cols:
+                    out += B[col] * w
+                    col += _lfsr_random_integers(state, 1, clen0 - 1)
+                posts[row] = out
 
     def kernel(weight, clen, B, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, B, seed)
@@ -1441,16 +1068,14 @@ def _jitsmm_numba_kernel_generator(
 
 
 def _jitsmm_cuda_kernel(
-    corder: bool = True,
     B_info: jax.ShapeDtypeStruct = None,
     transpose: bool = False,
-    shape: MatrixShape = None,
+    shape: Optional[MatrixShape] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     matrix_mode: MatrixMode = 'mm',
     **kwargs
 ):
-    del corder
     if np.dtype(kwargs['weight_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light float jitsmm CUDA currently supports float32 weights only")
 
@@ -1463,7 +1088,7 @@ def _jitsmm_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitsmm.cu'),
         name='float_jitsmm',
     )
-    variant = 'scatter' if transpose else 'gather'
+    variant = 'trans' if transpose else 'notrans'
     prefix = 'jitsmm_mv' if matrix_mode == 'mv' else 'jitsmm'
     kernel_name = f'float_jitsmm.{prefix}_{variant}_f32'
 
@@ -1484,73 +1109,26 @@ def _jitsmm_cuda_kernel(
 
 def _jitsmm_jvp_weight(
     w_dot, weight, clen, B, seed, *,
-    shape, transpose, corder, matrix_mode: MatrixMode = 'mm', **kwargs
+    shape, transpose, matrix_mode: MatrixMode = 'mm', **kwargs
 ):
-    """
-    JVP rule for the ``w0`` argument of the float JIT-scalar matrix-matrix product.
-
-    Parameters
-    ----------
-    w_dot : jax.Array
-        Tangent vector for the ``w0`` argument.
-    w0, w1, clen, B, seed : jax.Array
-        Primal values of the primitive's arguments.
-    shape : MatrixShape
-        Shape of the connectivity matrix.
-    transpose : bool
-        Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
-    **kwargs
-        Additional keyword arguments including ``backend``.
-
-    Returns
-    -------
-    list
-        Single-element list containing the JVP result.
-    """
     return jitsmm_p_call(
         w_dot, clen, B, seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         matrix_mode=matrix_mode,
         **_light_options(kwargs),
         backend=kwargs['backend'],
     )
 
+
 def _jitsmm_jvp_B(
     B_dot, weight, clen, B, seed, *,
-    shape, transpose, corder, matrix_mode: MatrixMode = 'mm', **kwargs
+    shape, transpose, matrix_mode: MatrixMode = 'mm', **kwargs
 ):
-    """
-    JVP rule for the ``B`` argument of the float JIT-scalar matrix-matrix product.
-
-    Parameters
-    ----------
-    B_dot : jax.Array
-        Tangent matrix for the ``B`` argument.
-    w0, w1, clen, B, seed : jax.Array
-        Primal values of the primitive's arguments.
-    shape : MatrixShape
-        Shape of the connectivity matrix.
-    transpose : bool
-        Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
-    **kwargs
-        Additional keyword arguments including ``backend``.
-
-    Returns
-    -------
-    list
-        Single-element list containing the JVP result.
-    """
     return jitsmm_p_call(
         weight, clen, B_dot, seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         matrix_mode=matrix_mode,
         **_light_options(kwargs),
         backend=kwargs['backend'],
@@ -1559,50 +1137,8 @@ def _jitsmm_jvp_B(
 
 def _jitsmm_transpose_rules(
     ct, weight, clen, B, seed, *,
-    shape, transpose, corder, matrix_mode: MatrixMode = 'mm', **kwargs
+    shape, transpose, matrix_mode: MatrixMode = 'mm', **kwargs
 ):
-    """
-    Transpose (adjoint) rule for the float JIT-scalar matrix-matrix product.
-
-    Implements the VJP transpose for differentiation through the primitive.
-    Supports transposing with respect to ``B``, ``w0``, or ``w1``.
-
-    Parameters
-    ----------
-    ct : list
-        Cotangent of the output.
-    w0, w1, clen, B, seed : jax.Array or ad.UndefinedPrimal
-        Primal values or undefined primals of the primitive's arguments.
-    shape : MatrixShape
-        Shape of the connectivity matrix.
-    transpose : bool
-        Whether the transposed operation was used in the forward pass.
-    corder : bool
-        Memory layout order flag.
-    **kwargs
-        Additional keyword arguments including ``backend``.
-
-    Returns
-    -------
-    tuple
-        Cotangents for each input argument (w0, w1, clen, B, seed).
-
-    Raises
-    ------
-    NotImplementedError
-        If the undefined primal is not ``B``, ``w0``, or ``w1``.
-
-    Notes
-    -----
-    For the weight bounds, the transpose uses the affine decomposition:
-
-        ``Y = w0 * C(B) + (w1 - w0) * U(B)``
-
-    where ``U(B) = Y(0, 1)`` and ``C(B) = Y(1, 1)``. The cotangents are:
-
-    - ``dL/dw1 = <ct, U(B)>``
-    - ``dL/dw0  = <ct, C(B) - U(B)>``
-    """
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1615,7 +1151,6 @@ def _jitsmm_transpose_rules(
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder,
             matrix_mode=matrix_mode,
             **_light_options(kwargs),
             backend=kwargs['backend'],
@@ -1630,7 +1165,6 @@ def _jitsmm_transpose_rules(
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             matrix_mode=matrix_mode,
             **_light_options(kwargs),
             backend=kwargs['backend'],
@@ -1645,28 +1179,6 @@ def _jitsmm_transpose_rules(
 
 
 def _batching_axis1(args, axis=1, **kwargs):
-    """
-    Helper for batching along axis 1 of the ``B`` matrix.
-
-    Reshapes a 3-D batched ``B`` into a 2-D matrix, performs the matrix-matrix
-    product, and reshapes the result back to 3-D.
-
-    Parameters
-    ----------
-        args : tuple
-        Batched arguments ``(weight, clen, B, seed)``.
-    axis : int, optional
-        The output batch axis. Default is 1.
-    **kwargs
-        Additional keyword arguments including ``shape``, ``transpose``,
-        ``corder``, and ``backend``.
-
-    Returns
-    -------
-    tuple
-        A pair ``(results, out_axes)`` where ``results`` is the batched output
-        and ``out_axes`` indicates the batch dimension of each output.
-    """
     assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
     m, maybe_batch1, maybe_batch2 = args[2].shape
     B = args[2].reshape(m, maybe_batch1 * maybe_batch2)
@@ -1677,7 +1189,6 @@ def _batching_axis1(args, axis=1, **kwargs):
         args[3],
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
-        corder=kwargs['corder'],
         matrix_mode=kwargs.get('matrix_mode', 'mm'),
         **_light_options(kwargs),
         backend=kwargs['backend'],
@@ -1687,28 +1198,6 @@ def _batching_axis1(args, axis=1, **kwargs):
 
 
 def _jitsmm_batching(args, axes, **kwargs):
-    """
-    Batching rule for the float JIT-scalar matrix-matrix product primitive.
-
-    Handles ``vmap`` over the ``B`` argument along different axes by
-    reshaping and delegating to ``jitsmm_p_call``.
-
-    Parameters
-    ----------
-    args : tuple
-        Batched arguments ``(w0, w1, clen, B, seed)``.
-    axes : tuple
-        Batch axis for each argument (None means not batched).
-    **kwargs
-        Additional keyword arguments including ``shape``, ``transpose``,
-        ``corder``, and ``backend``.
-
-    Returns
-    -------
-    tuple
-        A pair ``(results, out_axes)`` where ``results`` is the batched output
-        and ``out_axes`` indicates the batch dimension of each output.
-    """
     if tuple(axes) == (None, None, 0, None):
         assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
@@ -1726,37 +1215,22 @@ def _jitsmm_batching(args, axes, **kwargs):
 
 
 def _jitsmm_benchmark_data(*, platform):
-    """
-    Generate benchmark configurations for the float JIT-scalar matrix-matrix product.
-
-    Parameters
-    ----------
-    platform : str
-        The target platform (e.g., ``'cpu'``, ``'gpu'``).
-
-    Returns
-    -------
-    list of BenchmarkConfig
-        A list of benchmark configurations covering different combinations
-        of transpose and corder.
-    """
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
-        for corder in (True, False):
-            weight = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(
-                BenchmarkConfig(
-                    name,
-                    (weight, clen, B, seed),
-                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
-                )
+        weight = jnp.ones(1, dtype=dtype)
+        clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+        b_rows = n_post if not transpose else n_pre
+        B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
+        seed = jnp.asarray(42, dtype=jnp.uint32)
+        name = f"{'T' if transpose else 'NT'}"
+        configs.append(
+            BenchmarkConfig(
+                name,
+                (weight, clen, B, seed),
+                {'shape': (n_pre, n_post), 'transpose': transpose}
             )
+        )
     return configs
 
 
@@ -1768,63 +1242,15 @@ def jitsmm_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
-    corder: bool,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     matrix_mode: MatrixMode = 'mm',
     backend: Optional[str] = None,
 ):
-    """
-    Low-level primitive call for the float JIT-scalar matrix-matrix product.
-
-    Validates input shapes and dtypes, constructs output metadata, and invokes
-    the ``jitsmm_p`` XLA custom kernel. This function expects pre-processed
-    arguments (mantissa-only arrays, connection length instead of probability).
-
-    Parameters
-    ----------
-    w0 : jax.Array
-        Lower weight bound as a 1-D array of shape ``(1,)`` with floating dtype.
-    w1 : jax.Array
-        Upper weight bound as a 1-D array of shape ``(1,)`` with the same dtype
-        as ``w0``.
-    clen : jax.Array
-        Connection length parameter as a 1-D array of shape ``(1,)``, derived
-        from the connection probability via ``ceil(2 / prob)``.
-    B : jax.Array
-        Input dense matrix, a 2-D array of shape ``(n, k)`` (if
-        ``transpose=False``) or ``(m, k)`` (if ``transpose=True``).
-    seed : jax.Array
-        Random seed as a 1-D array of shape ``(1,)``.
-    shape : MatrixShape
-        Shape ``(m, n)`` of the logical connectivity matrix.
-    transpose : bool
-        If True, compute ``A.T @ B``; otherwise compute ``A @ B``.
-    corder : bool
-        Memory layout order flag for the connectivity generation.
-    backend : str, optional
-        Computation backend (``'numba'`` or ``'pallas'``).
-
-    Returns
-    -------
-    tuple
-        A single-element tuple containing the result matrix of shape
-        ``(m, k)`` or ``(n, k)`` depending on ``transpose``.
-
-    Raises
-    ------
-    AssertionError
-        If any input shape, dtype, or dimension constraint is violated.
-
-    See Also
-    --------
-    jitsmm : High-level wrapper with unit handling and seed initialization.
-    """
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
     matrix_mode = _normalize_matrix_mode(matrix_mode)
-    _warn_corder_ignored(corder)
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert B.ndim == 2, "The input matrix B should be a 2D array."
@@ -1860,7 +1286,6 @@ def jitsmm_p_call(
         out_info=out_info,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         matrix_mode=matrix_mode,

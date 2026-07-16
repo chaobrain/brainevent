@@ -13,10 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 """
-  1. gather   — binary_jitumv(transpose=False)  [reference]
-  2. scatter  — binary_jitumv(transpose=True)   [dot identity]
-  3. tocsr    — jitu_to_csr → CSR @ ones
-  4. todense  — jitu → dense @ ones             [n ≤ 5000]
+  1. notrans  — binary_jitumv(transpose=False)  [reference]
+  2. trans    — binary_jitumv(transpose=True)   [dot identity]
+  3. tocsr    — jitu_to_csr -> CSR @ ones
+  4. todense  — jitu -> dense @ ones            [n <= 5000]
   5. tofloat  — jitumv(ones)                    [float kernel]
 """
 
@@ -68,7 +68,7 @@ def _check_backend():
 @pytest.mark.parametrize('scale', [1, 2, 5, 10])
 @pytest.mark.parametrize('conn', [10, 50, 200])
 def test_5way_consistency(scale, conn):
-    """gather / scatter / tocsr / todense / tofloat."""
+    """notrans / trans / tocsr / todense / tofloat."""
     _check_backend()
 
     n = scale * BASE_SIZE
@@ -81,43 +81,43 @@ def test_5way_consistency(scale, conn):
     tolerance = float(ATOL) + float(RTOL) * float(n) * float(W_HIGH)
 
     with warnings.catch_warnings():
-        warnings.simplefilter('ignore', UserWarning)
+        warnings.simplefilter('ignore', FutureWarning)
 
-        # ---- 1. gather (reference) ----
+        # ---- 1. notrans (reference) ----
         @jax.jit
-        def _gather(ev):
+        def _notrans(ev):
             return binary_jitumv(w_low, w_high, prob, ev, SEED,
                                  shape=shape, transpose=False, corder=True, backend=BACKEND)
-        gather = jax.block_until_ready(_gather(ones))
-        gather_f64 = gather.astype(_dot_dtype())
+        notrans = jax.block_until_ready(_notrans(ones))
+        notrans_f64 = notrans.astype(_dot_dtype())
 
-        # ---- 2. scatter (dot identity) ----
+        # ---- 2. trans (dot identity) ----
         @jax.jit
-        def _scatter(ev):
+        def _trans(ev):
             return binary_jitumv(w_low, w_high, prob, ev, SEED,
                                  shape=shape, transpose=True, corder=True, backend=BACKEND)
-        scatter = jax.block_until_ready(_scatter(ones))
-        lhs = jnp.dot(gather_f64, ones_f64)
-        rhs = jnp.dot(ones_f64, scatter.astype(_dot_dtype()))
+        trans = jax.block_until_ready(_trans(ones))
+        lhs = jnp.dot(notrans_f64, ones_f64)
+        rhs = jnp.dot(ones_f64, trans.astype(_dot_dtype()))
         assert float(jnp.abs(lhs - rhs)) <= tolerance, \
-            f'scatter dot-identity mismatch: |{lhs} - {rhs}| = {float(jnp.abs(lhs - rhs))} > {tolerance}'
+            f'trans dot-identity mismatch: |{lhs} - {rhs}| = {float(jnp.abs(lhs - rhs))} > {tolerance}'
 
         # ---- 3. tocsr — CSR @ ones ----
         csr = jitu_to_csr(w_low, w_high, prob, SEED,
                           shape=shape, corder=True, backend=BACKEND, matrix_mode='mv')
-        diff = _max_abs_diff(csr @ ones_f64, gather_f64)
+        diff = _max_abs_diff(csr @ ones_f64, notrans_f64)
         assert diff <= tolerance, f'tocsr mismatch: diff={diff} > {tolerance}'
 
         # ---- 4. todense (skip for large n) ----
         if n <= DENSE_MAX_N:
             dense = jitu(w_low, w_high, prob, SEED,
                          shape=shape, transpose=False, corder=True, backend=BACKEND)
-            diff = _max_abs_diff(dense @ ones_f64, gather_f64)
+            diff = _max_abs_diff(dense @ ones_f64, notrans_f64)
             assert diff <= tolerance, f'todense mismatch: diff={diff} > {tolerance}'
 
         # ---- 5. tofloat — float kernel matvec ----
         ones_f32 = ones.astype(jnp.float32)
         fresult = jitumv(w_low, w_high, prob, ones_f32, SEED,
                          shape=shape, transpose=False, corder=True, backend=BACKEND)
-        diff = _max_abs_diff(fresult, gather_f64)
+        diff = _max_abs_diff(fresult, notrans_f64)
         assert diff <= tolerance, f'tofloat mismatch: diff={diff} > {tolerance}'

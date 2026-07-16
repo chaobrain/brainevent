@@ -57,7 +57,7 @@ def test_jitumv_dt2t_matches_csr_reference(implementation, shape, corder, transp
         y_size = shape[1] if transpose else shape[0]
         y = jnp.linspace(-1.0, 2.0, y_size, dtype=jnp.float32)
 
-        with pytest.warns(UserWarning, match='corder is ignored'):
+        with pytest.warns(FutureWarning, match='corder.*ignored'):
             out = jitumv_dt2t(
                 0.1,
                 0.5,
@@ -76,7 +76,6 @@ def test_jitumv_dt2t_matches_csr_reference(implementation, shape, corder, transp
             0.2,
             42,
             shape=shape,
-            corder=corder,
             backend=implementation,
             matrix_mode='mv',
             chunk_size=7,
@@ -134,7 +133,6 @@ def test_jitumv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
             clen,
             seed,
             shape=shape,
-            corder=corder,
             backend=implementation,
             matrix_mode='mv',
             chunk_size=chunk_size,
@@ -158,7 +156,6 @@ def test_jitumv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
             chunk_offsets,
             nnz,
             shape=shape,
-            corder=corder,
             backend=implementation,
             matrix_mode='mv',
             chunk_size=chunk_size,
@@ -173,7 +170,6 @@ def test_jitumv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
             nnz,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             backend=implementation,
             chunk_size=chunk_size,
         )[0]
@@ -336,7 +332,7 @@ def test_jitumv_dt2t_corder_warns_and_is_ignored():
     with jax.default_device(GPU_DEVICE):
         shape = (20, 30)
         y = jnp.linspace(-1.0, 2.0, shape[0], dtype=jnp.float32)
-        with pytest.warns(UserWarning, match='corder is ignored'):
+        with pytest.warns(FutureWarning, match='corder.*ignored'):
             out_true = jitumv_dt2t(
                 0.1,
                 0.5,
@@ -347,7 +343,7 @@ def test_jitumv_dt2t_corder_warns_and_is_ignored():
                 corder=True,
                 backend='cuda_raw',
             )
-        with pytest.warns(UserWarning, match='corder is ignored'):
+        with pytest.warns(FutureWarning, match='corder.*ignored'):
             out_false = jitumv_dt2t(
                 0.1,
                 0.5,

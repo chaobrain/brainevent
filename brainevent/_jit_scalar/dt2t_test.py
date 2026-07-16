@@ -69,10 +69,9 @@ def test_jitsmv_dt2t_matches_csr_reference(implementation, shape, corder, transp
             1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             backend=implementation,
         )
-        csr = jits_to_csr(1.5, 0.2, 123, shape=shape, corder=corder, backend=implementation)
+        csr = jits_to_csr(1.5, 0.2, 123, shape=shape, transpose=False, backend=implementation)
         expected = _csr_yw_reference(csr, y, transpose)
 
     assert allclose(out, expected)
@@ -84,7 +83,6 @@ def test_jitsmv_dt2t_prob_zero_empty():
         out = jitsmv_dt2t(
             1.5, 0.0, jnp.ones(20, dtype=jnp.float32), 123,
             shape=(20, 30),
-            corder=True,
         )
 
     assert np.asarray(out).shape == (0,)
@@ -96,7 +94,7 @@ def test_jitsmv_dt2t_prob_zero_empty():
 )
 @pytest.mark.parametrize('implementation', JITS_dt2t_IMPLEMENTATIONS)
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitsmv_dt2t_corder_false_is_repeatable(implementation, transpose):
+def test_jitsmv_dt2t_is_repeatable(implementation, transpose):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y_size = shape[1] if transpose else shape[0]
@@ -106,14 +104,12 @@ def test_jitsmv_dt2t_corder_false_is_repeatable(implementation, transpose):
             1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
-            corder=False,
             backend=implementation,
         )
         out2 = jitsmv_dt2t(
             1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
-            corder=False,
             backend=implementation,
         )
 
@@ -137,7 +133,7 @@ def test_jitsmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
         seed = jnp.asarray([123], dtype=jnp.int32)
 
         chunk_counts = jits_csr_count_p_call(
-            w, clen, seed, shape=shape, corder=corder, backend=implementation,
+            w, clen, seed, shape=shape, transpose=False, backend=implementation,
         )[0]
         row_counts = chunk_counts.sum(axis=1)
         indptr = jnp.concatenate(
@@ -147,7 +143,7 @@ def test_jitsmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
         nnz = int(indptr[-1])
 
         indices, weights = jits_csr_fill_p_call(
-            w, clen, seed, chunk_offsets, nnz, shape=shape, corder=corder, backend=implementation,
+            w, clen, seed, chunk_offsets, nnz, shape=shape, transpose=False, backend=implementation,
         )
         out = jitsmv_dt2t_p_call(
             w,
@@ -158,7 +154,6 @@ def test_jitsmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
             nnz,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             backend=implementation,
         )[0]
         row_ids = jnp.repeat(
@@ -182,7 +177,6 @@ def test_jitsmv_dt2t_units_are_weight_times_y():
             1.5 * u.siemens, 0.2,
             jnp.ones(20, dtype=jnp.float32) * u.mV, 123,
             shape=(20, 30),
-            corder=True,
         )
 
     assert u.get_unit(out) == u.mA
@@ -237,7 +231,6 @@ def test_jits_matrix_dt2t_uses_init_parameters(implementation, transpose):
         mat = brainevent.JITCScalarR(
             (1.5, 0.2, 123),
             shape=shape,
-            corder=True,
             backend=implementation,
         )
 
@@ -247,7 +240,6 @@ def test_jits_matrix_dt2t_uses_init_parameters(implementation, transpose):
             1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
-            corder=True,
             backend=implementation,
         )
 
@@ -259,14 +251,13 @@ def test_jits_matrix_dt2t_uses_init_parameters(implementation, transpose):
     reason=f'No jitsmv_dt2t implementation on platform={platform}',
 )
 @pytest.mark.parametrize('implementation', JITS_dt2t_IMPLEMENTATIONS)
-def test_jits_matrix_dt2t_uses_instance_backend_and_corder(implementation):
+def test_jits_matrix_dt2t_uses_instance_backend(implementation):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y = jnp.linspace(-1.0, 2.0, shape[0], dtype=jnp.float32)
         mat = brainevent.JITCScalarR(
             (1.5, 0.2, 123),
             shape=shape,
-            corder=False,
             backend=implementation,
         )
 
@@ -274,7 +265,6 @@ def test_jits_matrix_dt2t_uses_instance_backend_and_corder(implementation):
         expected = jitsmv_dt2t(
             1.5, 0.2, y, 123,
             shape=shape,
-            corder=False,
             backend=implementation,
         )
 
@@ -298,13 +288,11 @@ def test_jitsmv_dt2t_cuda_matches_cuda_csr_reference(shape, corder, transpose):
             1.5, 0.2, y, 123,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             backend='cuda_raw',
         )
         csr = jits_to_csr(
             1.5, 0.2, 123,
             shape=shape,
-            corder=corder,
             backend='cuda_raw',
         )
         expected = _csr_yw_reference(csr, y, transpose)

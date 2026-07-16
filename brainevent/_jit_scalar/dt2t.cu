@@ -254,8 +254,8 @@ void launch_fill_dt2t_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE fill_f32
-void fill_f32(
+// @BE fill_notrans_f32
+void fill_notrans_f32(
     const BE::Tensor weight,
     const BE::Tensor clen,
     const BE::Tensor y,
@@ -272,8 +272,8 @@ void fill_f32(
     );
 }
 
-// @BE fill_transpose_f32
-void fill_transpose_f32(
+// @BE fill_trans_f32
+void fill_trans_f32(
     const BE::Tensor weight,
     const BE::Tensor clen,
     const BE::Tensor y,

@@ -18,7 +18,7 @@
  *
  * This file mirrors the MV CSR row/chunk generator in csr.cu.  Fill receives
  * exclusive per-(row, chunk) offsets and writes sampled_weight * y[row] for
- * non-transpose mode or sampled_weight * y[col] for transpose mode in the same
+ * notrans mode or sampled_weight * y[col] for trans mode in the same
  * flat CSR data order as jitu_to_csr(..., matrix_mode="mv").data.
  */
 
@@ -241,7 +241,7 @@ __global__ void _fill_dt2t_f32_kern(
     int base = __ldg(&chunk_offsets[row * n_chunks + chunk_id]) + (int)lane_offset;
 
     float loc = __ldg(&w_loc[0]);
-    float scale = __ldg(&w_scale[0]) - loc;
+    float scale = __ldg(&w_scale[0]);
     float y_row = TRANSPOSE ? 0.0f : __ldg(&y[row]);
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
     unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
@@ -304,8 +304,8 @@ void launch_fill_dt2t_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE fill_f32
-void fill_f32(
+// @BE fill_notrans_f32
+void fill_notrans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -323,8 +323,8 @@ void fill_f32(
     );
 }
 
-// @BE fill_transpose_f32
-void fill_transpose_f32(
+// @BE fill_trans_f32
+void fill_trans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,

@@ -21,7 +21,7 @@
  *   - Grid 3D: (row_group_blocks, n_chunks, n).
  *   - One warp = 8 independent 4-thread (row, chunk_id, col) slices.
  *
- * Both gather (corder=True) and scatter (corder=False) are provided.
+ * Both notrans and trans kernels are provided.
  *
  * Restrictions: f32 weights, bool/int8 spikes, n <= 32.
  */
@@ -209,11 +209,11 @@ __global__ void _pack_kern(
 }
 
 // #########################################################################
-// ##  AW-Light T4 Gather  (corder=True)                                  ##
+// ##  AW-Light T4 Notrans                                  ##
 // ##  Y[row, col] = sum_j w(row,j) * active(B[j, col])                  ##
 // #########################################################################
 
-__global__ void _gather_f32_kern(
+__global__ void _notrans_f32_kern(
     const float *__restrict__ w_loc,
     const float *__restrict__ w_scale,
     const int *__restrict__ clen,
@@ -278,11 +278,11 @@ __global__ void _gather_f32_kern(
 }
 
 // #########################################################################
-// ##  AW-Light T4 Scatter  (corder=False)                                ##
-// ##  For active B[row, col], scatter w(row,j) to Y[j, col]              ##
+// ##  AW-Light T4 Trans                                ##
+// ##  For active B[row, col], write w(row,j) to Y[j, col]              ##
 // #########################################################################
 
-__global__ void _scatter_f32_kern(
+__global__ void _trans_f32_kern(
     const float *__restrict__ w_loc,
     const float *__restrict__ w_scale,
     const int *__restrict__ clen,
@@ -365,8 +365,8 @@ void pack(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE gather_f32
-void gather_f32(
+// @BE notrans_f32
+void notrans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -395,7 +395,7 @@ void gather_f32(
     if (row_group_blocks > 2147483647 || n_chunks > 65535 || n > 65535)
     {
         fprintf(stderr,
-                "gather_f32 grid overflow: "
+                "notrans_f32 grid overflow: "
                 "row_group_blocks=%d n_chunks=%d n=%d\n",
                 row_group_blocks, n_chunks, n);
         abort();
@@ -404,7 +404,7 @@ void gather_f32(
                 (unsigned int)n_chunks,
                 (unsigned int)n);
 
-    _gather_f32_kern<<<blocks, threads, 0, s>>>(
+    _notrans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float *>(w_loc.data_ptr()),
         static_cast<const float *>(w_scale.data_ptr()),
         static_cast<const int *>(clen.data_ptr()),
@@ -415,8 +415,8 @@ void gather_f32(
     BE_CHECK_KERNEL_LAUNCH();
 }
 
-// @BE scatter_f32
-void scatter_f32(
+// @BE trans_f32
+void trans_f32(
     const BE::Tensor w_loc,
     const BE::Tensor w_scale,
     const BE::Tensor clen,
@@ -445,7 +445,7 @@ void scatter_f32(
     if (row_group_blocks > 2147483647 || n_chunks > 65535 || n > 65535)
     {
         fprintf(stderr,
-                "scatter_f32 grid overflow: "
+                "trans_f32 grid overflow: "
                 "row_group_blocks=%d n_chunks=%d n=%d\n",
                 row_group_blocks, n_chunks, n);
         abort();
@@ -454,7 +454,7 @@ void scatter_f32(
                 (unsigned int)n_chunks,
                 (unsigned int)n);
 
-    _scatter_f32_kern<<<blocks, threads, 0, s>>>(
+    _trans_f32_kern<<<blocks, threads, 0, s>>>(
         static_cast<const float *>(w_loc.data_ptr()),
         static_cast<const float *>(w_scale.data_ptr()),
         static_cast<const int *>(clen.data_ptr()),

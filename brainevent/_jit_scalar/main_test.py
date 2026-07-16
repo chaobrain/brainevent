@@ -409,7 +409,7 @@ class Test_JITC_Scalar_Validation:
         assert rebuilt.prob == mat.prob
         assert rebuilt.seed == mat.seed
         assert rebuilt.shape == mat.shape
-        assert rebuilt.corder == mat.corder
+        assert not hasattr(rebuilt, "corder")
 
     def test_with_data_preserves_unit(self):
         import brainunit as u
@@ -465,10 +465,13 @@ class Test_JITC_To_CSR:
         assert indptr[-1] == indices.shape[0]
         assert np.all(np.diff(indptr) >= 0)
         assert np.all((indices >= 0) & (indices < shape[1]))
-        # Each CSR row is column-sorted with no duplicate columns (CPU backend).
+        # Transpose CSR materialization may write rows out of order, but must not
+        # introduce duplicate columns. The notrans/R path remains sorted.
         for r in range(shape[0]):
             seg = indices[indptr[r]:indptr[r + 1]]
-            assert np.all(np.diff(seg) > 0)
+            assert np.unique(seg).size == seg.size
+            if cls is brainevent.JITCScalarR:
+                assert np.all(np.diff(seg) > 0)
         # Scalar matrices store the constant weight at every connection.
         assert allclose(csr.data, jnp.full_like(csr.data, 1.5))
 

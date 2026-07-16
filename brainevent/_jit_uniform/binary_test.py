@@ -93,7 +93,7 @@ def _active_events(events):
 
 
 def _light_csr_reference(w_low, w_high, prob, seed, events, *, shape, transpose, corder, matrix_mode, backend):
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         csr = jitu_to_csr(
             w_low,
             w_high,
@@ -138,7 +138,6 @@ def test_binary_jitumv_warns_that_corder_is_ignored(monkeypatch):
         *,
         shape,
         transpose,
-        corder,
         chunk_size,
         target_chunks,
         backend,
@@ -148,7 +147,7 @@ def test_binary_jitumv_warns_that_corder_is_ignored(monkeypatch):
 
     monkeypatch.setattr(jitu_binary, "binary_jitumv_p_call", fake_p_call)
 
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         out = binary_jitumv(
             jnp.asarray(0.1, dtype=jnp.float32),
             jnp.asarray(0.5, dtype=jnp.float32),
@@ -161,7 +160,7 @@ def test_binary_jitumv_warns_that_corder_is_ignored(monkeypatch):
 
     assert out.shape == (2,)
 
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         out = binary_jitumv(
             jnp.asarray(0.1, dtype=jnp.float32),
             jnp.asarray(0.5, dtype=jnp.float32),
@@ -185,7 +184,6 @@ def test_binary_jitumm_warns_that_corder_is_ignored(monkeypatch):
         *,
         shape,
         transpose,
-        corder,
         chunk_size,
         target_chunks,
         backend,
@@ -195,7 +193,7 @@ def test_binary_jitumm_warns_that_corder_is_ignored(monkeypatch):
 
     monkeypatch.setattr(jitu_binary, "binary_jitumm_p_call", fake_p_call)
 
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         out = binary_jitumm(
             jnp.asarray(0.1, dtype=jnp.float32),
             jnp.asarray(0.5, dtype=jnp.float32),
@@ -208,7 +206,7 @@ def test_binary_jitumm_warns_that_corder_is_ignored(monkeypatch):
 
     assert out.shape == (2, 2)
 
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         out = binary_jitumm(
             jnp.asarray(0.1, dtype=jnp.float32),
             jnp.asarray(0.5, dtype=jnp.float32),
@@ -225,8 +223,8 @@ def test_binary_jitumm_warns_that_corder_is_ignored(monkeypatch):
 @pytest.mark.parametrize(
     ("transpose", "compute_symbol"),
     [
-        (False, "binary_jitumv.gather_f32"),
-        (True, "binary_jitumv.scatter_f32"),
+        (False, "binary_jitumv.notrans_f32"),
+        (True, "binary_jitumv.trans_f32"),
     ],
 )
 def test_binary_jitumv_cuda_generator_selects_light_symbols(monkeypatch, transpose, compute_symbol):
@@ -252,7 +250,6 @@ def test_binary_jitumv_cuda_generator_selects_light_symbols(monkeypatch, transpo
     out_shape = (7,) if transpose else (5,)
     vector_shape = (5,) if transpose else (7,)
     kernel = jitu_binary._binary_jitumv_cuda_kernel(
-        corder=False,
         vector_info=jax.ShapeDtypeStruct(vector_shape, jnp.bool_),
         transpose=transpose,
         shape=(5, 7),
@@ -274,8 +271,8 @@ def test_binary_jitumv_cuda_generator_selects_light_symbols(monkeypatch, transpo
 @pytest.mark.parametrize(
     ("transpose", "compute_symbol"),
     [
-        (False, "binary_jitumm.gather_f32"),
-        (True, "binary_jitumm.scatter_f32"),
+        (False, "binary_jitumm.notrans_f32"),
+        (True, "binary_jitumm.trans_f32"),
     ],
 )
 def test_binary_jitumm_cuda_generator_selects_light_symbols(monkeypatch, transpose, compute_symbol):
@@ -301,7 +298,6 @@ def test_binary_jitumm_cuda_generator_selects_light_symbols(monkeypatch, transpo
     out_shape = (7, 3) if transpose else (5, 3)
     B_shape = (5, 3) if transpose else (7, 3)
     kernel = jitu_binary._binary_jitumm_cuda_kernel(
-        corder=True,
         B_info=jax.ShapeDtypeStruct(B_shape, jnp.bool_),
         transpose=transpose,
         shape=(5, 7),
@@ -333,7 +329,7 @@ def test_binary_jitumv_forward_matches_reference(implementation, shape, transpos
     event_size = shape[0] if transpose else shape[1]
     vector = _sample_vector(event_size, event_dtype, seed + 7)
 
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         y = binary_jitumv(
             w_low,
             w_high,
@@ -375,7 +371,7 @@ def test_binary_jitumm_forward_matches_reference(implementation, shape, transpos
     rows = shape[0] if transpose else shape[1]
     matrix = _sample_matrix(rows, k, event_dtype, seed + 11)
 
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         y = binary_jitumm(
             w_low,
             w_high,
@@ -416,7 +412,7 @@ def test_binary_jitumv_thresholds_float_events(implementation, shape, transpose,
     vector = _sample_vector(size, float, seed + 17)
     vector_binary = _binary_events(vector, dtype=jnp.float32)
 
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         y_float = binary_jitumv(
             w_low,
             w_high,
@@ -428,7 +424,7 @@ def test_binary_jitumv_thresholds_float_events(implementation, shape, transpose,
             corder=corder,
             backend=implementation,
         )
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         y_binary = binary_jitumv(
             w_low,
             w_high,
@@ -458,7 +454,7 @@ def test_binary_jitumm_thresholds_float_events(implementation, shape, transpose,
     matrix = _sample_matrix(rows, k, float, seed + 23)
     matrix_binary = _binary_events(matrix, dtype=jnp.float32)
 
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         y_float = binary_jitumm(
             w_low,
             w_high,
@@ -470,7 +466,7 @@ def test_binary_jitumm_thresholds_float_events(implementation, shape, transpose,
             corder=corder,
             backend=implementation,
         )
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         y_binary = binary_jitumm(
             w_low,
             w_high,
@@ -620,7 +616,7 @@ def test_binary_jitumv_vmap_matches_reference(implementation, transpose, corder)
             backend=implementation,
         )
     )
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         y_binary = f_binary(vectors)
     y_ref = _light_csr_reference(
         jnp.asarray(-1.5, dtype=jnp.float32),
@@ -663,7 +659,7 @@ def test_binary_jitumm_vmap_matches_reference(implementation, transpose, corder)
             backend=implementation,
         )
     )
-    with pytest.warns(UserWarning, match="corder.*ignored"):
+    with pytest.warns(FutureWarning, match="corder.*ignored"):
         y_binary = f_binary(matrices)
     y_ref = _light_csr_batched_mm_reference(
         jnp.asarray(-1.5, dtype=jnp.float32),

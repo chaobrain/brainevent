@@ -40,12 +40,17 @@ __all__ = [
 ]
 
 
-def _warn_corder_ignored(corder: bool) -> None:
+def _warn_corder_deprecated(corder: Optional[bool]) -> None:
+    if corder is None:
+        return
     warnings.warn(
-        "corder is ignored by the light JIT uniform implementation.",
-        UserWarning,
+        "corder is deprecated and ignored by the light JIT uniform implementation.",
+        FutureWarning,
         stacklevel=3,
     )
+
+
+_warn_corder_ignored = _warn_corder_deprecated
 
 
 def _normalize_chunk_size(n_cols: int, chunk_size: Optional[int], target_chunks: int) -> int:
@@ -67,7 +72,7 @@ def _light_options(kwargs):
     }
 
 
-@namescope(name="brainevent.binary_jitumv", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
+@namescope(name="brainevent.binary_jitumv", static_argnames=("shape", "transpose", "chunk_size", "target_chunks"))
 def _binary_jitumv_impl(
     w_low: Data,
     w_high: Data,
@@ -77,7 +82,6 @@ def _binary_jitumv_impl(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
@@ -117,9 +121,6 @@ def _binary_jitumv_impl(
     transpose : bool, optional
         If True, compute ``A.T @ vector`` instead of ``A @ vector``.
         Default is False.
-    corder : bool, optional
-        Memory layout order for the connectivity generation. True for C-order
-        (row-major), False for Fortran-order (column-major). Default is True.
     backend : str, optional
         Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
@@ -167,7 +168,7 @@ def _binary_jitumv_impl(
         >>> events = jnp.array([True, False, True, True, False])
         >>> result = binary_jitumv(
         ...     0.1, 0.5, 0.2, events, seed=42,
-        ...     shape=(3, 5), transpose=False, corder=True,
+        ...     shape=(3, 5), transpose=False,
         ... )
         >>> result.shape
         (3,)
@@ -186,7 +187,6 @@ def _binary_jitumv_impl(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
         backend=backend,
@@ -203,12 +203,12 @@ def binary_jitumv(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
+    corder: Optional[bool] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
-    _warn_corder_ignored(corder)
+    _warn_corder_deprecated(corder)
     return _binary_jitumv_impl(
         w_low,
         w_high,
@@ -217,7 +217,6 @@ def binary_jitumv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
         backend=backend,
@@ -227,7 +226,7 @@ def binary_jitumv(
 binary_jitumv.__doc__ = _binary_jitumv_impl.__doc__
 
 
-@namescope(name="brainevent.binary_jitumm", static_argnames=("shape", "transpose", "corder", "chunk_size", "target_chunks"))
+@namescope(name="brainevent.binary_jitumm", static_argnames=("shape", "transpose", "chunk_size", "target_chunks"))
 def _binary_jitumm_impl(
     w_low: Data,
     w_high: Data,
@@ -237,7 +236,6 @@ def _binary_jitumm_impl(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
@@ -277,9 +275,6 @@ def _binary_jitumm_impl(
     transpose : bool, optional
         If True, compute ``A.T @ B`` instead of ``A @ B``.
         Default is False.
-    corder : bool, optional
-        Memory layout order for the connectivity generation. True for C-order
-        (row-major), False for Fortran-order (column-major). Default is True.
     backend : str, optional
         Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
@@ -328,7 +323,7 @@ def _binary_jitumm_impl(
         ...                [False, False], [True, False]])
         >>> result = binary_jitumm(
         ...     0.1, 0.5, 0.2, B, seed=42,
-        ...     shape=(3, 5), transpose=False, corder=True,
+        ...     shape=(3, 5), transpose=False,
         ... )
         >>> result.shape
         (3, 2)
@@ -347,7 +342,6 @@ def _binary_jitumm_impl(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
         backend=backend,
@@ -364,12 +358,12 @@ def binary_jitumm(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
+    corder: Optional[bool] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
 ) -> Data:
-    _warn_corder_ignored(corder)
+    _warn_corder_deprecated(corder)
     return _binary_jitumm_impl(
         w_low,
         w_high,
@@ -378,7 +372,6 @@ def binary_jitumm(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
         backend=backend,
@@ -392,7 +385,7 @@ binary_jitumm.__doc__ = _binary_jitumm_impl.__doc__
 
 def _jitumv_numba_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
+    transpose: bool = False,
     **kwargs
 ):
     """
@@ -402,10 +395,6 @@ def _jitumv_numba_kernel_generator(
     ----------
     vector_info : jax.ShapeDtypeStruct
         Shape and dtype metadata for the input event vector.
-    corder : bool, optional
-        If True, iterate over output elements (columns) in the outer loop.
-        If False, iterate over input elements (rows) in the outer loop.
-        Default is True.
     **kwargs
         Additional keyword arguments, must include ``outs`` specifying
         output shape/dtype information.
@@ -422,7 +411,7 @@ def _jitumv_numba_kernel_generator(
     _lfsr_random_integers = get_numba_lfsr_random_integers()
     _lfsr_uniform = get_numba_lfsr_uniform()
 
-    if corder:
+    if not transpose:
         if vector_info.dtype == jnp.bool_:
             @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, vector, seed, posts):
@@ -518,7 +507,6 @@ _spike_sfx = {
 
 
 def _binary_jitumv_cuda_kernel(
-    corder: bool,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
     shape: MatrixShape,
@@ -526,7 +514,6 @@ def _binary_jitumv_cuda_kernel(
     target_chunks: int = 4,
     **kwargs
 ):
-    del corder
     if np.dtype(kwargs['w_low_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light binary_jitumv currently supports float32 weights only")
 
@@ -538,7 +525,7 @@ def _binary_jitumv_cuda_kernel(
     packed_words = (event_size + 31) // 32
     packed_info = jax.ShapeDtypeStruct((packed_words,), jnp.uint32)
     chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
-    compute_name = 'binary_jitumv.scatter_f32' if transpose else 'binary_jitumv.gather_f32'
+    compute_name = 'binary_jitumv.trans_f32' if transpose else 'binary_jitumv.notrans_f32'
 
     def kernel(w_low, w_high, clen, vector, seed):
         active = vector if vector.dtype == jnp.bool_ else (vector > 0).astype(jnp.int8)
@@ -562,7 +549,7 @@ def _binary_jitumv_cuda_kernel(
     return kernel
 
 
-def _jitumv_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+def _jitumv_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, **kwargs):
     """
     JVP rule for the vector argument of the binary JIT-uniform matrix-vector product.
 
@@ -576,8 +563,6 @@ def _jitumv_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose,
         Shape of the connectivity matrix.
     transpose : bool
         Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
     **kwargs
         Additional keyword arguments including ``backend``.
 
@@ -587,11 +572,11 @@ def _jitumv_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose,
         Single-element list containing the JVP result.
     """
     return jitumv_p_call(
-        w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose, backend=kwargs['backend'],
     )
 
 
-def _jitumv_jvp_wloc(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+def _jitumv_jvp_wloc(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, **kwargs):
     """
     JVP rule for the ``w_low`` argument of the binary JIT-uniform matrix-vector product.
 
@@ -605,8 +590,6 @@ def _jitumv_jvp_wloc(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpo
         Shape of the connectivity matrix.
     transpose : bool
         Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
     **kwargs
         Additional keyword arguments including ``backend``.
 
@@ -616,12 +599,12 @@ def _jitumv_jvp_wloc(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpo
         Single-element list containing the JVP result.
     """
     return binary_jitumv_p_call(
-        w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose, corder=corder,
+        w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose,
         **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
-def _jitumv_jvp_wscale(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+def _jitumv_jvp_wscale(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, **kwargs):
     """
     JVP rule for the ``w_high`` argument of the binary JIT-uniform matrix-vector product.
 
@@ -635,8 +618,6 @@ def _jitumv_jvp_wscale(w_dot, w_low, w_high, clen, vector, seed, *, shape, trans
         Shape of the connectivity matrix.
     transpose : bool
         Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
     **kwargs
         Additional keyword arguments including ``backend``.
 
@@ -646,12 +627,12 @@ def _jitumv_jvp_wscale(w_dot, w_low, w_high, clen, vector, seed, *, shape, trans
         Single-element list containing the JVP result.
     """
     return binary_jitumv_p_call(
-        w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder,
+        w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose,
         **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
-def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, transpose, **kwargs):
     """
     Transpose (adjoint) rule for the binary JIT-uniform matrix-vector product.
 
@@ -669,8 +650,6 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
         Shape of the connectivity matrix.
     transpose : bool
         Whether the transposed operation was used in the forward pass.
-    corder : bool
-        Memory layout order flag.
     **kwargs
         Additional keyword arguments including ``backend``.
 
@@ -706,7 +685,6 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder,
             backend=kwargs['backend'],
         )[0]
         return w_low, w_high, clen, r, seed
@@ -731,8 +709,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
+                **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         count_basis = binary_jitumv_p_call(
@@ -743,8 +720,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
+                **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_low = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
@@ -760,8 +736,7 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
+                **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_high = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
@@ -792,7 +767,7 @@ def _jitumv_batching(
         Batch axis for each argument (None means not batched).
     **kwargs
         Additional keyword arguments including ``shape``, ``transpose``,
-        ``corder``, and ``backend``.
+        ``backend``.
 
     Returns
     -------
@@ -810,8 +785,7 @@ def _jitumv_batching(
             args[4],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            corder=kwargs['corder'],
-            **_light_options(kwargs),
+                **_light_options(kwargs),
             backend=kwargs['backend'],
         )
         return r, [1]
@@ -825,8 +799,7 @@ def _jitumv_batching(
             args[4],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            corder=kwargs['corder'],
-            **_light_options(kwargs),
+                **_light_options(kwargs),
             backend=kwargs['backend'],
         )
         return r, [1]
@@ -835,38 +808,23 @@ def _jitumv_batching(
 
 
 def _binary_jitumv_benchmark_data(*, platform):
-    """
-    Generate benchmark configurations for the binary JIT-uniform matrix-vector product.
-
-    Parameters
-    ----------
-    platform : str
-        The target platform (e.g., ``'cpu'``, ``'gpu'``).
-
-    Returns
-    -------
-    list of BenchmarkConfig
-        A list of benchmark configurations covering different combinations
-        of transpose, corder, and boolean/float event types.
-    """
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
-        for corder in (True, False):
-            for bool_event in (True, False):
-                w_low = jnp.zeros(1, dtype=dtype)
-                w_high = jnp.ones(1, dtype=dtype)
-                clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-                v_size = n_post if not transpose else n_pre
-                if bool_event:
-                    vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
-                else:
-                    vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
-                seed = jnp.asarray(42, dtype=jnp.uint32)
-                name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (w_low, w_high, clen, vector, seed), {
-                    'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-                }))
+        for bool_event in (True, False):
+            w_low = jnp.zeros(1, dtype=dtype)
+            w_high = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            v_size = n_post if not transpose else n_pre
+            if bool_event:
+                vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+            else:
+                vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'bool' if bool_event else 'float'}"
+            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, vector, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
     return configs
 
 
@@ -879,7 +837,6 @@ def binary_jitumv_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
-    corder: bool,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
@@ -911,8 +868,6 @@ def binary_jitumv_p_call(
         Shape ``(m, n)`` of the logical connectivity matrix.
     transpose : bool
         If True, compute ``A.T @ vector``; otherwise compute ``A @ vector``.
-    corder : bool
-        Memory layout order flag for the connectivity generation.
     backend : str, optional
         Computation backend (``'numba'`` or ``'pallas'``).
 
@@ -934,7 +889,6 @@ def binary_jitumv_p_call(
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
-    _warn_corder_ignored(corder)
     assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
     assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
     if np.dtype(w_low.dtype) != np.dtype('float32') or np.dtype(w_high.dtype) != np.dtype('float32'):
@@ -973,7 +927,6 @@ def binary_jitumv_p_call(
         out_info=out_info,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
         backend=backend,
@@ -1016,7 +969,7 @@ binary_jitumv_p.def_benchmark_data(_binary_jitumv_benchmark_data)
 
 def _jitumm_numba_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
+    transpose: bool = False,
     **kwargs
 ):
     """
@@ -1026,9 +979,6 @@ def _jitumm_numba_kernel_generator(
     ----------
     B_info : jax.ShapeDtypeStruct
         Shape and dtype metadata for the input event matrix ``B``.
-    corder : bool, optional
-        If True, iterate over output rows in the outer loop. If False,
-        iterate over ``B`` rows in the outer loop. Default is True.
     **kwargs
         Additional keyword arguments, must include ``outs`` specifying
         output shape/dtype information.
@@ -1045,7 +995,7 @@ def _jitumm_numba_kernel_generator(
     _lfsr_random_integers = get_numba_lfsr_random_integers()
     _lfsr_uniform = get_numba_lfsr_uniform()
 
-    if corder:
+    if not transpose:
         if B_info.dtype == jnp.bool_:
             @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, B, seed, posts):
@@ -1135,7 +1085,6 @@ def _jitumm_numba_kernel_generator(
 
 
 def _binary_jitumm_cuda_kernel(
-    corder: bool,
     B_info: jax.ShapeDtypeStruct,
     transpose: bool,
     shape: MatrixShape,
@@ -1143,7 +1092,6 @@ def _binary_jitumm_cuda_kernel(
     target_chunks: int = 4,
     **kwargs
 ):
-    del corder
     if np.dtype(kwargs['w_low_info'].dtype) != np.dtype('float32'):
         raise NotImplementedError("light binary_jitumm currently supports float32 weights only")
     if int(B_info.shape[1]) > 32:
@@ -1158,7 +1106,7 @@ def _binary_jitumm_cuda_kernel(
     n_words = (event_rows + 31) // 32
     packed_info = jax.ShapeDtypeStruct((n_cols, n_words), jnp.uint32)
     chunk_size_value = _normalize_chunk_size(int(shape[1]), chunk_size, target_chunks)
-    compute_name = 'binary_jitumm.scatter_f32' if transpose else 'binary_jitumm.gather_f32'
+    compute_name = 'binary_jitumm.trans_f32' if transpose else 'binary_jitumm.notrans_f32'
 
     def kernel(w_low, w_high, clen, B, seed):
         active = B if B.dtype == jnp.bool_ else (B > 0).astype(jnp.int8)
@@ -1190,7 +1138,7 @@ def _binary_jitumm_cuda_kernel(
     return kernel
 
 
-def _jitumm_jvp_wloc(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitumm_jvp_wloc(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, **kwargs):
     """
     JVP rule for the ``w_low`` argument of the binary JIT-uniform matrix-matrix product.
 
@@ -1204,8 +1152,6 @@ def _jitumm_jvp_wloc(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, c
         Shape of the connectivity matrix.
     transpose : bool
         Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
     **kwargs
         Additional keyword arguments including ``backend``.
 
@@ -1215,12 +1161,12 @@ def _jitumm_jvp_wloc(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, c
         Single-element list containing the JVP result.
     """
     return binary_jitumm_p_call(
-        w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose,
         **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
-def _jitumm_jvp_wscale(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitumm_jvp_wscale(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, **kwargs):
     """
     JVP rule for the ``w_high`` argument of the binary JIT-uniform matrix-matrix product.
 
@@ -1234,8 +1180,6 @@ def _jitumm_jvp_wscale(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose,
         Shape of the connectivity matrix.
     transpose : bool
         Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
     **kwargs
         Additional keyword arguments including ``backend``.
 
@@ -1245,12 +1189,12 @@ def _jitumm_jvp_wscale(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose,
         Single-element list containing the JVP result.
     """
     return binary_jitumm_p_call(
-        w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose,
         **_light_options(kwargs), backend=kwargs['backend'],
     )
 
 
-def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, **kwargs):
     """
     JVP rule for the ``B`` argument of the binary JIT-uniform matrix-matrix product.
 
@@ -1264,8 +1208,6 @@ def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, cord
         Shape of the connectivity matrix.
     transpose : bool
         Whether the transposed operation is used.
-    corder : bool
-        Memory layout order flag.
     **kwargs
         Additional keyword arguments including ``backend``.
 
@@ -1275,11 +1217,11 @@ def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, cord
         Single-element list containing the JVP result.
     """
     return jitumm_p_call(
-        w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, backend=kwargs['backend'],
     )
 
 
-def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpose, **kwargs):
     """
     Transpose (adjoint) rule for the binary JIT-uniform matrix-matrix product.
 
@@ -1296,8 +1238,6 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
         Shape of the connectivity matrix.
     transpose : bool
         Whether the transposed operation was used in the forward pass.
-    corder : bool
-        Memory layout order flag.
     **kwargs
         Additional keyword arguments including ``backend``.
 
@@ -1333,7 +1273,6 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder,
             backend=kwargs['backend'],
         )[0]
         return w_low, w_high, clen, r, seed
@@ -1350,8 +1289,7 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
+                **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         count_basis = binary_jitumm_p_call(
@@ -1362,8 +1300,7 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
+                **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_low = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
@@ -1379,8 +1316,7 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder,
-            **_light_options(kwargs),
+                **_light_options(kwargs),
             backend=kwargs['backend'],
         )[0]
         dw_high = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
@@ -1407,7 +1343,7 @@ def _batching_axis1(args, axis=1, **kwargs):
         The output batch axis. Default is 1.
     **kwargs
         Additional keyword arguments including ``shape``, ``transpose``,
-        ``corder``, and ``backend``.
+        ``backend``.
 
     Returns
     -------
@@ -1426,7 +1362,6 @@ def _batching_axis1(args, axis=1, **kwargs):
         args[4],
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
-        corder=kwargs['corder'],
         **_light_options(kwargs),
         backend=kwargs['backend'],
     )
@@ -1449,7 +1384,7 @@ def _jitumm_batching(args, axes, **kwargs):
         Batch axis for each argument (None means not batched).
     **kwargs
         Additional keyword arguments including ``shape``, ``transpose``,
-        ``corder``, and ``backend``.
+        ``backend``.
 
     Returns
     -------
@@ -1474,38 +1409,23 @@ def _jitumm_batching(args, axes, **kwargs):
 
 
 def _binary_jitumm_benchmark_data(*, platform):
-    """
-    Generate benchmark configurations for the binary JIT-uniform matrix-matrix product.
-
-    Parameters
-    ----------
-    platform : str
-        The target platform (e.g., ``'cpu'``, ``'gpu'``).
-
-    Returns
-    -------
-    list of BenchmarkConfig
-        A list of benchmark configurations covering different combinations
-        of transpose, corder, and boolean/float event types.
-    """
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
-        for corder in (True, False):
-            for bool_event in (True, False):
-                w_low = jnp.zeros(1, dtype=dtype)
-                w_high = jnp.ones(1, dtype=dtype)
-                clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-                b_rows = n_post if not transpose else n_pre
-                if bool_event:
-                    B = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
-                else:
-                    B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
-                seed = jnp.asarray(42, dtype=jnp.uint32)
-                name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (w_low, w_high, clen, B, seed), {
-                    'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-                }))
+        for bool_event in (True, False):
+            w_low = jnp.zeros(1, dtype=dtype)
+            w_high = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            b_rows = n_post if not transpose else n_pre
+            if bool_event:
+                B = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+            else:
+                B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'bool' if bool_event else 'float'}"
+            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, B, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
     return configs
 
 
@@ -1518,7 +1438,6 @@ def binary_jitumm_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
-    corder: bool,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
@@ -1550,8 +1469,6 @@ def binary_jitumm_p_call(
         Shape ``(m, n)`` of the logical connectivity matrix.
     transpose : bool
         If True, compute ``A.T @ B``; otherwise compute ``A @ B``.
-    corder : bool
-        Memory layout order flag for the connectivity generation.
     backend : str, optional
         Computation backend (``'numba'`` or ``'pallas'``).
 
@@ -1573,7 +1490,6 @@ def binary_jitumm_p_call(
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
-    _warn_corder_ignored(corder)
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert B.ndim == 2, "The input matrix B should be a 2D array."
@@ -1617,7 +1533,6 @@ def binary_jitumm_p_call(
         out_info=out_info,
         shape=shape,
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size,
         target_chunks=target_chunks,
         backend=backend,

@@ -66,7 +66,7 @@ def jitsmv_dt2t(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool = True,
+    corder: Optional[bool] = None,
     backend: Optional[str] = None,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
@@ -99,6 +99,7 @@ def jitsmv_dt2t(
     else:
         assert n_rows == y.shape[0], "Shape mismatch for non-transpose operation."
 
+    _warn_corder_ignored(corder)
     if n_rows == 0 or n_cols == 0 or _is_static_zero(prob):
         data = jnp.zeros(0, dtype=common_dtype)
         return u.maybe_decimal(data * unitd * unity)
@@ -110,7 +111,7 @@ def jitsmv_dt2t(
         clen,
         seed,
         shape=(n_rows, n_cols),
-        corder=corder,
+        transpose=False,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         matrix_mode='mv',
@@ -140,7 +141,6 @@ def jitsmv_dt2t(
         nnz,
         shape=(n_rows, n_cols),
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         backend=backend,
@@ -163,7 +163,6 @@ def jitsmv_dt2t(
 # ---------------------------------------------------------------------- #
 
 def _jitsmv_dt2t_fill_cuda_kernel(
-    corder: bool,
     shape: MatrixShape,
     transpose: bool,
     chunk_size: Optional[int] = None,
@@ -171,7 +170,6 @@ def _jitsmv_dt2t_fill_cuda_kernel(
     **kwargs,
 ):
     """Build the CUDA kernel callable for the scalar JITC ``dt2t`` fill pass."""
-    del corder
     weight_dtype = np.dtype(kwargs['weight_info'].dtype)
     if weight_dtype != np.dtype('float32'):
         raise NotImplementedError("light dt2t currently supports float32 values only")
@@ -185,9 +183,9 @@ def _jitsmv_dt2t_fill_cuda_kernel(
     n_cols = np.int32(shape[1])
     chunk_size_attr = np.int32(chunk_size_value)
     kernel_name = (
-        'jit_scalar_dt2t.fill_transpose_f32'
+        'jit_scalar_dt2t.fill_trans_f32'
         if transpose
-        else 'jit_scalar_dt2t.fill_f32'
+        else 'jit_scalar_dt2t.fill_notrans_f32'
     )
 
     def kernel(weight, clen, y, seed, chunk_offsets):
@@ -214,7 +212,6 @@ def jitsmv_dt2t_p_call(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool,
     chunk_size: Optional[int] = None,
     target_chunks: int = 4,
     backend: Optional[str] = None,
@@ -223,7 +220,6 @@ def jitsmv_dt2t_p_call(
     n_rows, n_cols = _normalize_shape(shape)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     n_chunks = _n_chunks(n_cols, chunk_size_value)
-    _warn_corder_ignored(corder)
 
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
@@ -266,7 +262,6 @@ def jitsmv_dt2t_p_call(
         outs=[jax.ShapeDtypeStruct((nnz,), y.dtype)],
         shape=(n_rows, n_cols),
         transpose=transpose,
-        corder=corder,
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         backend=backend,
