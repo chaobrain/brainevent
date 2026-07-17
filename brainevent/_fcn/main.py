@@ -34,7 +34,7 @@ from brainevent._csr.slice import csr_slice_rows
 from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
 from brainevent._misc import (
-    _coo_todense, COOInfo, fixed_conn_num_csc_structure,
+    _as_int32_indices, _coo_todense, COOInfo, fixed_conn_num_csc_structure,
     fixed_conn_num_csr_indptr, normalize_row_index, build_sub_csr,
 )
 from brainevent._typing import ArrayData, Data, MatrixShape, Index
@@ -822,12 +822,17 @@ class FixedNumPerPre(FixedNumConn):
         buffers: Optional[dict] = None,
     ):
         if indices is None:
-            args = data
+            data_arg, indices_arg = data
         else:
-            args = (data, indices)
-        self.data, self.indices = map(u.math.asarray, args)
-        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedNumPerPre')
-        _validate_fixed_conn_indices(self.indices, expected_rows=shape[0], kind='Post-synaptic')
+            data_arg, indices_arg = data, indices
+        self.data = u.math.asarray(data_arg)
+        if not hasattr(indices_arg, "ndim"):
+            indices_arg = np.asarray(indices_arg)
+        _ensure_fixed_conn_initialized_outside_jit(indices_arg, kind='FixedNumPerPre')
+        _validate_fixed_conn_indices(indices_arg, expected_rows=shape[0], kind='Post-synaptic')
+        self.indices = _as_int32_indices(
+            indices_arg, shape[1], "FixedNumPerPre indices", output_is_numpy=False
+        )
         if self.data.size != 1 and self.data.shape != self.indices.shape:
             raise ValueError(
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
@@ -1077,12 +1082,17 @@ class FixedNumPerPost(FixedNumConn):
         buffers: Optional[dict] = None,
     ):
         if indices is None:
-            args = data
+            data_arg, indices_arg = data
         else:
-            args = (data, indices)
-        self.data, self.indices = map(u.math.asarray, args)
-        _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedNumPerPost')
-        _validate_fixed_conn_indices(self.indices, expected_rows=shape[1], kind='Pre-synaptic')
+            data_arg, indices_arg = data, indices
+        self.data = u.math.asarray(data_arg)
+        if not hasattr(indices_arg, "ndim"):
+            indices_arg = np.asarray(indices_arg)
+        _ensure_fixed_conn_initialized_outside_jit(indices_arg, kind='FixedNumPerPost')
+        _validate_fixed_conn_indices(indices_arg, expected_rows=shape[1], kind='Pre-synaptic')
+        self.indices = _as_int32_indices(
+            indices_arg, shape[0], "FixedNumPerPost indices", output_is_numpy=False
+        )
         if self.data.size != 1 and self.data.shape != self.indices.shape:
             raise ValueError(
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "

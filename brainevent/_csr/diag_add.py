@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters.partial_eval import DynamicJaxprTracer
 
-from brainevent._misc import MatrixShape
+from brainevent._misc import MatrixShape, _require_jax_x64_for_int64, _resolve_indptr_dtype
 
 __all__ = [
     'csr_diag_position',
@@ -145,7 +145,7 @@ def csr_diag_position(indptr, indices, *, shape: MatrixShape):
 
         # First pass: compute the length of every augmented row so we can size
         # the output arrays exactly (JAX needs a static, value-independent shape).
-        new_indptr_ = np.zeros(n_outer + 1, dtype=np.int32)
+        new_indptr_ = np.zeros(n_outer + 1, dtype=np.int64)
         for i in range(n_outer):
             start = indptr_[i]
             end = indptr_[i + 1]
@@ -162,8 +162,8 @@ def csr_diag_position(indptr, indices, *, shape: MatrixShape):
 
         new_nse = new_indptr_[n_outer]
         new_indices_ = np.empty(new_nse, dtype=np.int32)
-        old_to_new_ = np.empty(old_nse, dtype=np.int32)
-        diag_dest_ = np.full(n_diag_, -1, dtype=np.int32)
+        old_to_new_ = np.empty(old_nse, dtype=np.int64)
+        diag_dest_ = np.full(n_diag_, -1, dtype=np.int64)
 
         # Second pass: emit each row, inserting the diagonal in sorted position
         # where it is missing, and record both mappings.
@@ -211,7 +211,16 @@ def csr_diag_position(indptr, indices, *, shape: MatrixShape):
 
         return new_indptr_, new_indices_, old_to_new_, diag_dest_
 
-    return _build_diag_augmented_structure(np.asarray(indptr), np.asarray(indices), n_diag)
+    new_indptr, new_indices, old_to_new, diag_dest = _build_diag_augmented_structure(
+        np.asarray(indptr), np.asarray(indices, dtype=np.int32), n_diag
+    )
+    offset_dtype = _resolve_indptr_dtype(int(new_indptr[-1]), requested="auto")
+    return (
+        np.asarray(new_indptr, dtype=offset_dtype),
+        np.asarray(new_indices, dtype=np.int32),
+        np.asarray(old_to_new, dtype=offset_dtype),
+        np.asarray(diag_dest, dtype=offset_dtype),
+    )
 
 
 def csr_diag_add(csr_value, positions, diag_value):
@@ -293,6 +302,8 @@ def csr_diag_add(csr_value, positions, diag_value):
     assert jnp.issubdtype(diag_dest.dtype, jnp.integer), "diag_dest must be an integer array"
     assert csr_value.shape[0] == old_to_new.shape[0], "csr_value length must match the original number of stored elements"
     assert diag_value.shape[0] == diag_dest.shape[0], "diag_value must have one entry per diagonal (min(shape))"
+    _require_jax_x64_for_int64(old_to_new.dtype, "csr_diag_add old_to_new")
+    _require_jax_x64_for_int64(diag_dest.dtype, "csr_diag_add diag_dest")
 
     diag_value = u.Quantity(diag_value).to(u.get_unit(csr_value)).mantissa
     csr_value, csr_unit = u.split_mantissa_unit(csr_value)

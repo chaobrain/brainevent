@@ -36,15 +36,170 @@ def _normalize_dtype(dtype):
     return np.dtype(dtype)
 
 
+def _resolve_indptr_dtype(nse: int, requested="auto") -> np.dtype:
+    """Resolve the row/column pointer dtype from an output nonzero count."""
+    nse = int(nse)
+    if nse < 0:
+        raise ValueError(f"nse must be non-negative, got {nse}.")
+    if requested == "auto":
+        return np.dtype(np.int64 if nse > _INT32_MAX else np.int32)
+    requested_dtype = _normalize_dtype(requested)
+    if requested_dtype == np.dtype(np.int32):
+        if nse > _INT32_MAX:
+            raise OverflowError(
+                f"indptr_dtype=int32 cannot represent nse={nse}; use indptr_dtype='auto' "
+                "or indptr_dtype=int64 with jax_enable_x64 enabled."
+            )
+        return np.dtype(np.int32)
+    if requested_dtype == np.dtype(np.int64):
+        return np.dtype(np.int64)
+    raise TypeError("indptr_dtype must be 'auto', int32, or int64.")
+
+
+def _require_jax_x64_for_int64(dtype, context: str) -> None:
+    """Fail before creating a JAX int64 array when x64 is disabled."""
+    if _normalize_dtype(dtype) == np.dtype(np.int64) and not jax.config.jax_enable_x64:
+        raise ValueError(
+            f"{context} requires int64 indices, but jax_enable_x64 is False. "
+            "Enable x64 before constructing large CSR/CSC structures."
+        )
+
+
+def _is_numpy_output(*arrays) -> bool:
+    return all(isinstance(x, np.ndarray) for x in arrays)
+
+
+def _as_output_index_array(values, dtype, *, output_is_numpy: bool, context: str):
+    dtype = _normalize_dtype(dtype)
+    arr = np.asarray(values, dtype=dtype)
+    if output_is_numpy:
+        return arr
+    _require_jax_x64_for_int64(dtype, context)
+    return jnp.asarray(arr, dtype=jnp.dtype(dtype))
+
+
+def _as_int32_indices(indices, secondary_dim: int, context: str, *, output_is_numpy: Optional[bool] = None):
+    """Validate compressed secondary indices and return them as int32."""
+    secondary_dim = int(secondary_dim)
+    if secondary_dim < 0:
+        raise ValueError(f"{context}: secondary dimension must be non-negative, got {secondary_dim}.")
+    if secondary_dim > _INT32_MAX + 1:
+        raise OverflowError(
+            f"{context}: secondary dimension {secondary_dim} cannot be represented by int32 indices."
+        )
+    indices_np = np.asarray(jax.device_get(indices))
+    if not np.issubdtype(indices_np.dtype, np.integer):
+        raise TypeError(f"{context}: indices must be an integer array, got dtype {indices_np.dtype}.")
+    if indices_np.size:
+        min_index = int(indices_np.min())
+        max_index = int(indices_np.max())
+        if min_index < 0:
+            raise ValueError(f"{context}: indices must be non-negative.")
+        if max_index >= secondary_dim:
+            raise ValueError(
+                f"{context}: index value {max_index} is out of bounds for secondary dimension {secondary_dim}."
+            )
+        if max_index > _INT32_MAX:
+            raise OverflowError(f"{context}: index value {max_index} cannot be represented by int32.")
+    if output_is_numpy is None:
+        output_is_numpy = isinstance(indices, np.ndarray)
+    return _as_output_index_array(indices_np, np.int32, output_is_numpy=output_is_numpy, context=context)
+
+
+def _as_indptr(indptr, nse: int, indptr_dtype="auto", context: str = "CSR", *, output_is_numpy: Optional[bool] = None):
+    """Validate and convert a compressed pointer array without silent truncation."""
+    dtype = _resolve_indptr_dtype(nse, requested=indptr_dtype)
+    indptr_np = np.asarray(jax.device_get(indptr))
+    if not np.issubdtype(indptr_np.dtype, np.integer):
+        raise TypeError(f"{context}: indptr must be an integer array, got dtype {indptr_np.dtype}.")
+    if indptr_np.size and int(indptr_np.min()) < 0:
+        raise ValueError(f"{context}: indptr values must be non-negative.")
+    if dtype == np.dtype(np.int32) and indptr_np.size:
+        max_offset = int(indptr_np.max())
+        if max_offset > _INT32_MAX:
+            raise OverflowError(
+                f"{context}: indptr value {max_offset} cannot be represented by int32; "
+                "use indptr_dtype=int64 with jax_enable_x64 enabled."
+            )
+    if output_is_numpy is None:
+        output_is_numpy = isinstance(indptr, np.ndarray)
+    return _as_output_index_array(indptr_np, dtype, output_is_numpy=output_is_numpy, context=context)
+
+
+def _as_int32_cuda_offsets(offsets, context: str):
+    """Return int32 offsets for CUDA kernels that do not support int64 offsets."""
+    dtype = getattr(offsets, "dtype", None)
+    if dtype is None:
+        dtype = np.asarray(offsets).dtype
+    dtype = _normalize_dtype(dtype)
+    if not np.issubdtype(dtype, np.integer):
+        raise TypeError(f"{context}: offsets must be an integer array, got dtype {dtype}.")
+    if dtype == np.dtype(np.int64):
+        raise NotImplementedError(
+            f"{context}: this CUDA path currently supports only int32 offsets; got int64. "
+            "Large CSR/CSC structures that require int64 indptr are refused here instead of "
+            "being truncated to int32."
+        )
+    if dtype != np.dtype(np.int32):
+        offsets_np = np.asarray(jax.device_get(offsets))
+        if offsets_np.size:
+            min_offset = int(offsets_np.min())
+            max_offset = int(offsets_np.max())
+            if min_offset < 0:
+                raise ValueError(f"{context}: offsets must be non-negative.")
+            if max_offset > _INT32_MAX:
+                raise OverflowError(
+                    f"{context}: offset value {max_offset} cannot be represented by int32."
+                )
+        return jnp.asarray(offsets_np, dtype=jnp.int32)
+    return jnp.asarray(offsets, dtype=jnp.int32)
+
+
+def _check_compressed_structure(indices, indptr, shape: MatrixShape, format: str) -> None:
+    """Validate CSR/CSC structure arrays after safe dtype conversion."""
+    assert isinstance(shape, (tuple, list)), "Shape must be a tuple or list"
+    assert len(shape) == 2, "Shape must have exactly two dimensions"
+    n_rows, n_cols = int(shape[0]), int(shape[1])
+    if n_rows < 0 or n_cols < 0:
+        raise ValueError(f"{format}: shape dimensions must be non-negative, got {shape}.")
+    fmt = format.lower()
+    if fmt == "csr":
+        primary_dim, secondary_dim = n_rows, n_cols
+    elif fmt == "csc":
+        primary_dim, secondary_dim = n_cols, n_rows
+    else:
+        raise ValueError(f"Unknown compressed sparse format {format!r}.")
+    indices_np = np.asarray(jax.device_get(indices))
+    indptr_np = np.asarray(jax.device_get(indptr))
+    if indices_np.ndim != 1:
+        raise ValueError(f"{format}: indices must be 1D, got shape {indices_np.shape}.")
+    if indptr_np.ndim != 1:
+        raise ValueError(f"{format}: indptr must be 1D, got shape {indptr_np.shape}.")
+    if indptr_np.size != primary_dim + 1:
+        raise ValueError(
+            f"{format}: indptr length must be primary dimension + 1 ({primary_dim + 1}), "
+            f"got {indptr_np.size}."
+        )
+    if indptr_np.size == 0:
+        raise ValueError(f"{format}: indptr must contain at least one element.")
+    if int(indptr_np[0]) != 0:
+        raise ValueError(f"{format}: indptr must start at 0.")
+    if np.any(np.diff(indptr_np.astype(np.int64, copy=False)) < 0):
+        raise ValueError(f"{format}: indptr must be non-decreasing.")
+    if int(indptr_np[-1]) != int(indices_np.size):
+        raise ValueError(
+            f"{format}: indptr[-1] ({int(indptr_np[-1])}) must equal indices.size ({indices_np.size})."
+        )
+    _as_int32_indices(indices_np, secondary_dim, f"{format} structure", output_is_numpy=True)
+
+
 def _coordinate_index_dtype(dtype):
     dtype = _normalize_dtype(dtype)
-    return np.int64 if dtype == np.dtype(np.int64) else np.int32
+    return np.int32
 
 
 def _offset_index_dtype(nse: int, preferred=None):
-    if preferred is not None and _normalize_dtype(preferred) == np.dtype(np.int64):
-        return np.int64
-    return np.int64 if int(nse) > _INT32_MAX else np.int32
+    return _resolve_indptr_dtype(nse, requested="auto").type
 
 
 def is_known_type(x):
@@ -204,18 +359,15 @@ _CSR_SIGNED_INDEX_DTYPES = (jnp.dtype(jnp.int32), jnp.dtype(jnp.int64))
 def _check_csr_structure_dtypes(indices, indptr) -> None:
     """Validate public CSR structure dtypes.
 
-    CSR kernels support signed int32/int64 structure arrays.  Mixed precision is
-    allowed only as ``indices=int32, indptr=int64`` so CUDA kernels can keep
-    column indices compact while row offsets grow past int32.
+    CSR kernels use int32 column indices and int32/int64 row pointers.
     """
     indices_dtype = jnp.dtype(indices.dtype)
     indptr_dtype = jnp.dtype(indptr.dtype)
-    assert indices_dtype in _CSR_SIGNED_INDEX_DTYPES, "Indices must be signed int32 or int64."
-    assert indptr_dtype in _CSR_SIGNED_INDEX_DTYPES, "Indptr must be signed int32 or int64."
-    same_dtype = indices_dtype == indptr_dtype
-    mixed_cuda_dtype = indices_dtype == jnp.dtype(jnp.int32) and indptr_dtype == jnp.dtype(jnp.int64)
-    assert same_dtype or mixed_cuda_dtype, (
-        "Indices and indptr must have the same dtype, or use indices=int32 with indptr=int64."
+    assert indices_dtype == jnp.dtype(jnp.int32), (
+        f"CSR kernels require indices with dtype int32; got indices dtype {indices_dtype}."
+    )
+    assert indptr_dtype in _CSR_SIGNED_INDEX_DTYPES, (
+        f"CSR kernels require indptr with dtype int32 or int64; got indptr dtype {indptr_dtype}."
     )
 
 
@@ -341,12 +493,21 @@ def _block_csr_tocsr(
     col = col[mask]
     val = val[mask]
 
-    counts = jnp.bincount(row, length=N)
-    csr_indptr = jnp.concatenate([jnp.array([0], dtype=jnp.int32), jnp.cumsum(counts)])
+    nse = int(val.size)
+    offset_dtype = _resolve_indptr_dtype(nse, requested="auto")
+    _require_jax_x64_for_int64(offset_dtype, "_block_csr_tocsr indptr")
+    offset_jdtype = jnp.dtype(offset_dtype)
+
+    counts = jnp.bincount(row.astype(offset_jdtype), length=N).astype(offset_jdtype)
+    csr_indptr = jnp.concatenate(
+        [jnp.zeros((1,), dtype=offset_jdtype), jnp.cumsum(counts, dtype=offset_jdtype)]
+    )
 
     order = jnp.lexsort((col, row))  # row based sort
     csr_data = val[order]
-    csr_indices = col[order]
+    csr_indices = _as_int32_indices(
+        col[order], M, "_block_csr_tocsr column indices", output_is_numpy=False
+    )
 
     return csr_data, csr_indices, csr_indptr
 
@@ -637,9 +798,15 @@ def _nonzero_blocks(
             indices.append(i % n_block_cols)
         if (i + 1) % n_block_cols == 0:
             indptr.append(len(nonzero_blocks))
+    nse = len(nonzero_blocks)
+    offset_dtype = _resolve_indptr_dtype(nse, requested="auto")
     nonzero_blocks = jnp.array(nonzero_blocks)
-    indices = jnp.array(indices)
-    indptr = jnp.array(indptr, dtype=jnp.int32)
+    indices = _as_int32_indices(
+        np.asarray(indices), n_block_cols, "_nonzero_blocks indices", output_is_numpy=False
+    )
+    indptr = _as_output_index_array(
+        np.asarray(indptr), offset_dtype, output_is_numpy=False, context="_nonzero_blocks indptr"
+    )
 
     return nonzero_blocks, indices, indptr
 
@@ -996,6 +1163,7 @@ def coo_to_csc_index(
     indices: Union[jax.Array, np.ndarray],
     *,
     shape: Tuple[int, int],
+    indptr_dtype="auto",
 ):
     """Convert COO format index arrays to CSC format.
 
@@ -1053,36 +1221,43 @@ def coo_to_csc_index(
         ...     row_ids, col_ids, shape=(3, 4)
         ... )
     """
-    n_post = shape[1]
-    # int32 is brainevent's canonical index dtype (cf. ``CSR`` / ``index_dtype``).
-    # Defined locally so this helper stays free of an external precision provider.
-    index_dtype = jnp.int32
-    if isinstance(indices, np.ndarray) and isinstance(pre_ids, np.ndarray):
-        # to maintain the original order of the elements with the same value
-        new_post_position = np.argsort(indices, kind='stable')
-        pre_ids_new = np.asarray(pre_ids[new_post_position], dtype=index_dtype)
+    n_pre, n_post = shape
+    output_is_numpy = _is_numpy_output(pre_ids, indices)
+    with jax.ensure_compile_time_eval():
+        pre_ids_np = np.asarray(jax.device_get(pre_ids))
+        post_ids_np = np.asarray(jax.device_get(indices))
+        if pre_ids_np.shape != post_ids_np.shape:
+            raise ValueError(
+                f"coo_to_csc_index: pre_ids and indices must have the same shape, "
+                f"got {pre_ids_np.shape} and {post_ids_np.shape}."
+            )
+        nse = int(post_ids_np.size)
+        offset_dtype = _resolve_indptr_dtype(nse, requested=indptr_dtype)
+        _as_int32_indices(pre_ids_np, n_pre, "coo_to_csc_index row ids", output_is_numpy=True)
+        post_ids_i32 = _as_int32_indices(
+            post_ids_np, n_post, "coo_to_csc_index column ids", output_is_numpy=True
+        )
 
-        unique_post_ids, count = np.unique(indices, return_counts=True)
-        post_count = np.zeros(n_post, dtype=index_dtype)
+        new_post_position_np = np.argsort(post_ids_i32, kind='stable')
+        pre_ids_new_np = pre_ids_np[new_post_position_np]
+        unique_post_ids, count = np.unique(post_ids_i32, return_counts=True)
+        post_count = np.zeros(n_post, dtype=offset_dtype)
         post_count[unique_post_ids] = count
 
-        indptr_new = np.insert(post_count.cumsum(), 0, 0)
-        indptr_new = np.asarray(indptr_new, dtype=index_dtype)
+        indptr_np = np.empty(n_post + 1, dtype=offset_dtype)
+        indptr_np[0] = 0
+        np.cumsum(post_count, dtype=offset_dtype, out=indptr_np[1:])
 
-    else:
-        # to maintain the original order of the elements with the same value
-
-        with jax.ensure_compile_time_eval():
-            new_post_position = jnp.argsort(indices, stable=True)
-            pre_ids_new = jnp.asarray(pre_ids[new_post_position], dtype=index_dtype)
-
-            unique_post_ids, count = jnp.unique(indices, return_counts=True)
-            post_count = jnp.zeros(n_post, dtype=index_dtype)
-            post_count = post_count.at[unique_post_ids].set(count)
-
-            indptr_new = jnp.insert(post_count.cumsum(), 0, 0)
-            indptr_new = jnp.asarray(indptr_new, dtype=index_dtype)
-
+    indptr_new = _as_output_index_array(
+        indptr_np, offset_dtype, output_is_numpy=output_is_numpy, context="coo_to_csc_index indptr"
+    )
+    pre_ids_new = _as_int32_indices(
+        pre_ids_new_np, n_pre, "coo_to_csc_index row ids", output_is_numpy=output_is_numpy
+    )
+    new_post_position = _as_output_index_array(
+        new_post_position_np, offset_dtype, output_is_numpy=output_is_numpy,
+        context="coo_to_csc_index permutation",
+    )
     return indptr_new, pre_ids_new, new_post_position
 
 
@@ -1091,6 +1266,7 @@ def coo2csr(
     col_ids: Union[jax.Array, np.ndarray],
     *,
     shape: Tuple[int, int],
+    indptr_dtype="auto",
 ):
     """Convert COO format index arrays to CSR format.
 
@@ -1153,35 +1329,40 @@ def coo2csr(
         >>> print(indices)
         [0 2 1 3 0]
     """
-    n_pre = shape[0]
-    # int32 is brainevent's canonical index dtype (cf. ``CSR`` / ``index_dtype``).
-    # Defined locally so this helper stays free of an external precision provider.
-    index_dtype = jnp.int32
-    if isinstance(row_ids, np.ndarray) and isinstance(col_ids, np.ndarray):
-        # stable sort keeps the original order of entries within each row
-        order = np.argsort(row_ids, kind='stable')
-        csr_indices = np.asarray(col_ids[order], dtype=index_dtype)
+    n_pre, n_post = shape
+    output_is_numpy = _is_numpy_output(row_ids, col_ids)
+    with jax.ensure_compile_time_eval():
+        row_ids_np = np.asarray(jax.device_get(row_ids))
+        col_ids_np = np.asarray(jax.device_get(col_ids))
+        if row_ids_np.shape != col_ids_np.shape:
+            raise ValueError(
+                f"coo2csr: row_ids and col_ids must have the same shape, "
+                f"got {row_ids_np.shape} and {col_ids_np.shape}."
+            )
+        nse = int(col_ids_np.size)
+        offset_dtype = _resolve_indptr_dtype(nse, requested=indptr_dtype)
+        row_ids_i32 = _as_int32_indices(row_ids_np, n_pre, "coo2csr row ids", output_is_numpy=True)
+        _as_int32_indices(col_ids_np, n_post, "coo2csr column ids", output_is_numpy=True)
 
-        unique_row_ids, count = np.unique(row_ids, return_counts=True)
-        row_count = np.zeros(n_pre, dtype=index_dtype)
+        order_np = np.argsort(row_ids_i32, kind='stable')
+        csr_indices_np = col_ids_np[order_np]
+        unique_row_ids, count = np.unique(row_ids_i32, return_counts=True)
+        row_count = np.zeros(n_pre, dtype=offset_dtype)
         row_count[unique_row_ids] = count
 
-        csr_indptr = np.insert(row_count.cumsum(), 0, 0)
-        csr_indptr = np.asarray(csr_indptr, dtype=index_dtype)
+        csr_indptr_np = np.empty(n_pre + 1, dtype=offset_dtype)
+        csr_indptr_np[0] = 0
+        np.cumsum(row_count, dtype=offset_dtype, out=csr_indptr_np[1:])
 
-    else:
-        with jax.ensure_compile_time_eval():
-            # stable sort keeps the original order of entries within each row
-            order = jnp.argsort(row_ids, stable=True)
-            csr_indices = jnp.asarray(col_ids[order], dtype=index_dtype)
-
-            unique_row_ids, count = jnp.unique(row_ids, return_counts=True)
-            row_count = jnp.zeros(n_pre, dtype=index_dtype)
-            row_count = row_count.at[unique_row_ids].set(count)
-
-            csr_indptr = jnp.insert(row_count.cumsum(), 0, 0)
-            csr_indptr = jnp.asarray(csr_indptr, dtype=index_dtype)
-
+    csr_indptr = _as_output_index_array(
+        csr_indptr_np, offset_dtype, output_is_numpy=output_is_numpy, context="coo2csr indptr"
+    )
+    csr_indices = _as_int32_indices(
+        csr_indices_np, n_post, "coo2csr column ids", output_is_numpy=output_is_numpy
+    )
+    order = _as_output_index_array(
+        order_np, offset_dtype, output_is_numpy=output_is_numpy, context="coo2csr permutation"
+    )
     return csr_indptr, csr_indices, order
 
 
@@ -1191,9 +1372,14 @@ def fixed_conn_num_csr_indptr(
     """Build the implicit CSR ``indptr`` for a fixed-connection matrix."""
     assert indices.ndim == 2, f'Indices must be 2D, got {indices.ndim}D.'
     n_pre, n_conn = indices.shape
+    nse = int(n_pre) * int(n_conn)
+    offset_dtype = _resolve_indptr_dtype(nse, requested="auto")
+    indptr_np = np.arange(n_pre + 1, dtype=offset_dtype) * n_conn
     if isinstance(indices, np.ndarray):
-        return np.arange(n_pre + 1, dtype=indices.dtype) * n_conn
-    return jnp.arange(n_pre + 1, dtype=indices.dtype) * n_conn
+        return indptr_np
+    return _as_output_index_array(
+        indptr_np, offset_dtype, output_is_numpy=False, context="fixed_conn_num_csr_indptr"
+    )
 
 
 def normalize_row_index(index, n_rows: int):
@@ -1280,16 +1466,22 @@ def build_sub_csr(data, indices, indptr, rows, n_cols: int):
         starts = indptr_np[rows_np]
         ends = indptr_np[rows_np + 1]
         counts = (ends - starts).astype(np.int64)
-        new_indptr_np = np.zeros(rows_np.shape[0] + 1, dtype=indptr_np.dtype)
-        np.cumsum(counts, out=new_indptr_np[1:])
+        new_nse = int(counts.sum())
+        offset_dtype = _resolve_indptr_dtype(new_nse, requested="auto")
+        new_indptr_np = np.zeros(rows_np.shape[0] + 1, dtype=offset_dtype)
+        np.cumsum(counts, dtype=offset_dtype, out=new_indptr_np[1:])
         if counts.sum() == 0:
-            gather_np = np.zeros((0,), dtype=np.int64)
+            gather_np = np.zeros((0,), dtype=offset_dtype)
         else:
             gather_np = np.concatenate(
-                [np.arange(s, e, dtype=np.int64) for s, e in zip(starts, ends)]
+                [np.arange(s, e, dtype=offset_dtype) for s, e in zip(starts, ends)]
             )
-    gather = jnp.asarray(gather_np)
-    new_indptr = jnp.asarray(new_indptr_np)
+    gather = _as_output_index_array(
+        gather_np, offset_dtype, output_is_numpy=False, context="build_sub_csr gather"
+    )
+    new_indptr = _as_output_index_array(
+        new_indptr_np, offset_dtype, output_is_numpy=False, context="build_sub_csr indptr"
+    )
     new_indices = jnp.asarray(indices).reshape(-1)[gather]
     new_data = data if data.size == 1 else data.reshape(-1)[gather]
     return new_data, new_indices, new_indptr, (int(rows_np.shape[0]), int(n_cols))
@@ -1313,21 +1505,24 @@ def fixed_conn_num_csc_structure(
         csc_indptr, csc_indices, perm = csr_to_csc_index(csr_indptr, flat_indices, shape=shape)
         if isinstance(indices, np.ndarray):
             return (
-                np.asarray(csc_indptr, dtype=indices.dtype),
-                np.asarray(csc_indices, dtype=indices.dtype),
-                np.asarray(perm, dtype=indices.dtype),
+                np.asarray(csc_indptr),
+                np.asarray(csc_indices, dtype=np.int32),
+                np.asarray(perm),
             )
         return (
-            jnp.asarray(csc_indptr, dtype=indices.dtype),
-            jnp.asarray(csc_indices, dtype=indices.dtype),
-            jnp.asarray(perm, dtype=indices.dtype),
+            csc_indptr,
+            jnp.asarray(csc_indices, dtype=jnp.int32),
+            perm,
         )
 
-    row_ids = jnp.repeat(jnp.arange(n_pre, dtype=indices.dtype), indices.shape[1])
-    perm = jnp.argsort(flat_indices, stable=True)
-    counts = jnp.bincount(flat_indices, length=n_post).astype(indices.dtype)
+    nse = int(flat_indices.size)
+    offset_dtype = _resolve_indptr_dtype(nse, requested="auto")
+    _require_jax_x64_for_int64(offset_dtype, "fixed_conn_num_csc_structure")
+    row_ids = jnp.repeat(jnp.arange(n_pre, dtype=jnp.int32), indices.shape[1])
+    perm = jnp.argsort(flat_indices, stable=True).astype(jnp.dtype(offset_dtype))
+    counts = jnp.bincount(flat_indices.astype(jnp.int32), length=n_post).astype(jnp.dtype(offset_dtype))
     indptr = jnp.concatenate(
-        [jnp.zeros(1, dtype=indices.dtype), jnp.cumsum(counts, dtype=indices.dtype)]
+        [jnp.zeros(1, dtype=jnp.dtype(offset_dtype)), jnp.cumsum(counts, dtype=jnp.dtype(offset_dtype))]
     )
     return indptr, row_ids[perm], perm
 
@@ -1361,10 +1556,21 @@ def _csr_to_csc_index_via_coo(
     *,
     shape: Tuple[int, int],
     include_perm: bool = True,
+    indptr_dtype="auto",
 ):
     """Convert CSR indices to CSC indices through the legacy COO path."""
+    nse = int(getattr(csr_indices, 'size', len(csr_indices)))
+    output_is_numpy = _is_numpy_output(csr_indptr, csr_indices)
+    csr_indices = _as_int32_indices(
+        csr_indices, shape[1], "csr_to_csc_index column indices", output_is_numpy=output_is_numpy
+    )
+    csr_indptr = _as_indptr(
+        csr_indptr, nse, indptr_dtype, "csr_to_csc_index indptr", output_is_numpy=output_is_numpy
+    )
     pre_ids, post_ids = csr_to_coo_index(csr_indptr, csr_indices)
-    csc_indptr, csc_indices, post_positions = coo_to_csc_index(pre_ids, post_ids, shape=shape)
+    csc_indptr, csc_indices, post_positions = coo_to_csc_index(
+        pre_ids, post_ids, shape=shape, indptr_dtype=indptr_dtype
+    )
     if not include_perm:
         post_positions = None
     return csc_indptr, csc_indices, post_positions
@@ -1376,17 +1582,23 @@ def _csr_to_csc_index_numpy(
     *,
     shape: Tuple[int, int],
     include_perm: bool = True,
+    indptr_dtype="auto",
 ):
     """Convert CSR indices to CSC on CPU with NumPy, then restore array type."""
     n_post = shape[1]
-    coord_dtype = _coordinate_index_dtype(getattr(csr_indices, 'dtype', np.int32))
     nse = getattr(csr_indices, 'size', None)
     if nse is None:
         nse = len(csr_indices)
-    offset_dtype = _offset_index_dtype(nse, getattr(csr_indptr, 'dtype', None))
+    nse = int(nse)
+    offset_dtype = _resolve_indptr_dtype(nse, requested=indptr_dtype)
+    output_is_numpy = _is_numpy_output(csr_indptr, csr_indices)
 
-    csr_indptr_np = np.asarray(csr_indptr)
-    csr_indices_np = np.asarray(csr_indices)
+    csr_indptr_np = np.asarray(_as_indptr(
+        csr_indptr, nse, indptr_dtype, "csr_to_csc_index indptr", output_is_numpy=True
+    ))
+    csr_indices_np = _as_int32_indices(
+        csr_indices, n_post, "csr_to_csc_index column indices", output_is_numpy=True
+    )
 
     counts = np.bincount(csr_indices_np, minlength=n_post).astype(offset_dtype, copy=False)
     csc_indptr_np = np.empty(n_post + 1, dtype=offset_dtype)
@@ -1396,24 +1608,23 @@ def _csr_to_csc_index_numpy(
     order_np = np.argsort(csr_indices_np, kind='stable')
     order_np = np.asarray(order_np, dtype=offset_dtype)
     csc_indices_np = np.searchsorted(csr_indptr_np, order_np, side='right') - 1
-    csc_indices_np = np.asarray(csc_indices_np, dtype=coord_dtype)
+    csc_indices_np = _as_int32_indices(
+        csc_indices_np, shape[0], "csr_to_csc_index row indices", output_is_numpy=True
+    )
     perm_np = order_np if include_perm else None
 
-    if isinstance(csr_indptr, np.ndarray) and isinstance(csr_indices, np.ndarray):
-        return csc_indptr_np, csc_indices_np, perm_np
-
-    old_x64 = jax.config.jax_enable_x64
-    needs_x64 = _normalize_dtype(offset_dtype) == np.dtype(np.int64)
-    if needs_x64 and not old_x64:
-        jax.config.update('jax_enable_x64', True)
-    try:
-        csc_indptr = jnp.asarray(csc_indptr_np)
-        csc_indices = jnp.asarray(csc_indices_np)
-        perm = None if perm_np is None else jnp.asarray(perm_np)
-        return csc_indptr, csc_indices, perm
-    finally:
-        if needs_x64 and not old_x64:
-            jax.config.update('jax_enable_x64', False)
+    csc_indptr = _as_output_index_array(
+        csc_indptr_np, offset_dtype, output_is_numpy=output_is_numpy,
+        context="csr_to_csc_index indptr",
+    )
+    csc_indices = _as_int32_indices(
+        csc_indices_np, shape[0], "csr_to_csc_index row indices", output_is_numpy=output_is_numpy
+    )
+    perm = None if perm_np is None else _as_output_index_array(
+        perm_np, offset_dtype, output_is_numpy=output_is_numpy,
+        context="csr_to_csc_index permutation",
+    )
+    return csc_indptr, csc_indices, perm
 
 
 _CSR_TO_CSC_CUDA_MODULE = None
@@ -1440,6 +1651,7 @@ def _csr_to_csc_index_gpu_column_block(
     shape: Tuple[int, int],
     include_perm: bool = True,
     column_block_size: int = 4096,
+    indptr_dtype="auto",
 ):
     """Convert CSR indices to CSC using CUDA column blocks and CPU stitching."""
     n_post = shape[1]
@@ -1450,39 +1662,39 @@ def _csr_to_csc_index_gpu_column_block(
     if column_block_size <= 0:
         raise ValueError("column_block_size must be a positive integer")
 
-    coord_dtype = _coordinate_index_dtype(getattr(csr_indices, 'dtype', np.int32))
     nse = getattr(csr_indices, 'size', None)
     if nse is None:
         nse = len(csr_indices)
     nse = int(nse)
-    offset_dtype = _offset_index_dtype(nse, getattr(csr_indptr, 'dtype', None))
-
-    old_x64 = jax.config.jax_enable_x64
-    needs_x64 = (
-        _normalize_dtype(offset_dtype) == np.dtype(np.int64) or
-        _normalize_dtype(coord_dtype) == np.dtype(np.int64)
-    )
-    if needs_x64 and not old_x64:
-        jax.config.update('jax_enable_x64', True)
+    offset_dtype = _resolve_indptr_dtype(nse, requested=indptr_dtype)
+    output_is_numpy = _is_numpy_output(csr_indptr, csr_indices)
 
     try:
-        try:
-            gpu_device = jax.devices("gpu")[0]
-            _load_csr_to_csc_cuda_module()
-        except Exception:
-            return _csr_to_csc_index_numpy(
-                csr_indptr,
-                csr_indices,
-                shape=shape,
-                include_perm=include_perm,
-            )
+        gpu_device = jax.devices("gpu")[0]
+        _load_csr_to_csc_cuda_module()
+    except Exception:
+        return _csr_to_csc_index_numpy(
+            csr_indptr,
+            csr_indices,
+            shape=shape,
+            include_perm=include_perm,
+            indptr_dtype=indptr_dtype,
+        )
 
+    _require_jax_x64_for_int64(offset_dtype, "csr_to_csc_index gpu_column_block")
+    try:
+        csr_indices_i32 = _as_int32_indices(
+            csr_indices, n_post, "csr_to_csc_index column indices", output_is_numpy=False
+        )
+        csr_indptr_checked = _as_indptr(
+            csr_indptr, nse, offset_dtype, "csr_to_csc_index indptr", output_is_numpy=False
+        )
         csr_indices_dev = jax.device_put(
-            jnp.asarray(csr_indices, dtype=coord_dtype),
+            csr_indices_i32,
             gpu_device,
         )
         csr_indptr_dev = jax.device_put(
-            jnp.asarray(csr_indptr, dtype=offset_dtype),
+            csr_indptr_checked,
             gpu_device,
         )
 
@@ -1502,7 +1714,7 @@ def _csr_to_csc_index_gpu_column_block(
                 f"{int(csc_indptr_np[-1])} != {nse}"
             )
 
-        csc_indices_np = np.empty(nse, dtype=coord_dtype)
+        csc_indices_np = np.empty(nse, dtype=np.int32)
         perm_np = np.empty(nse, dtype=offset_dtype) if include_perm else None
 
         for col_start in range(0, n_post, column_block_size):
@@ -1525,7 +1737,7 @@ def _csr_to_csc_index_gpu_column_block(
             )
 
             scratch_info = jax.ShapeDtypeStruct((block_ncols,), offset_dtype)
-            rows_info = jax.ShapeDtypeStruct((block_nnz,), coord_dtype)
+            rows_info = jax.ShapeDtypeStruct((block_nnz,), jnp.int32)
             perm_info = jax.ShapeDtypeStruct((block_nnz,), offset_dtype)
             _, local_rows_dev, local_perm_dev = jax.ffi.ffi_call(
                 "csr_to_csc.csr_to_csc_fill_block",
@@ -1538,20 +1750,19 @@ def _csr_to_csc_index_gpu_column_block(
                 col_end=np.int64(col_end),
             )
 
-            csc_indices_np[base:end] = np.asarray(local_rows_dev, dtype=coord_dtype)
+            csc_indices_np[base:end] = np.asarray(local_rows_dev, dtype=np.int32)
             if perm_np is not None:
                 perm_np[base:end] = np.asarray(local_perm_dev, dtype=offset_dtype)
 
-        if isinstance(csr_indptr, np.ndarray) and isinstance(csr_indices, np.ndarray):
+        if output_is_numpy:
             return csc_indptr_np, csc_indices_np, perm_np
 
         csc_indptr = jax.device_put(csc_indptr_np, gpu_device)
         csc_indices = jax.device_put(csc_indices_np, gpu_device)
         perm = None if perm_np is None else jax.device_put(perm_np, gpu_device)
         return csc_indptr, csc_indices, perm
-    finally:
-        if needs_x64 and not old_x64:
-            jax.config.update('jax_enable_x64', False)
+    except Exception:
+        raise
 
 
 def csr_to_csc_index(
@@ -1560,8 +1771,9 @@ def csr_to_csc_index(
     *,
     shape: Tuple[int, int],
     include_perm: bool = True,
-    method: str = "coo",
+    method: str = "gpu_column_block",
     column_block_size: int = 4096,
+    indptr_dtype="auto",
 ):
     """Convert CSR format index arrays to CSC format.
 
@@ -1643,6 +1855,7 @@ def csr_to_csc_index(
             csr_indices,
             shape=shape,
             include_perm=include_perm,
+            indptr_dtype=indptr_dtype,
         )
     elif method == "numpy":
         csc_indptr, csc_indices, post_positions = _csr_to_csc_index_numpy(
@@ -1650,6 +1863,7 @@ def csr_to_csc_index(
             csr_indices,
             shape=shape,
             include_perm=include_perm,
+            indptr_dtype=indptr_dtype,
         )
     elif method == "gpu_column_block":
         csc_indptr, csc_indices, post_positions = _csr_to_csc_index_gpu_column_block(
@@ -1658,6 +1872,7 @@ def csr_to_csc_index(
             shape=shape,
             include_perm=include_perm,
             column_block_size=column_block_size,
+            indptr_dtype=indptr_dtype,
         )
     else:
         raise ValueError(
@@ -1673,6 +1888,7 @@ def csc_to_csr_index(
     *,
     shape: Tuple[int, int],
     include_perm: bool = True,
+    indptr_dtype="auto",
 ):
     """Convert CSC format index arrays to CSR format.
 
@@ -1746,6 +1962,8 @@ def csc_to_csr_index(
         csc_indices,
         shape=(shape[1], shape[0]),
         include_perm=include_perm,
+        indptr_dtype=indptr_dtype,
+        method="coo",
     )
     return csr_indptr, csr_indices, perm
 

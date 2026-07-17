@@ -150,16 +150,16 @@ class TestCsrToCscIndexMethods(unittest.TestCase):
         _, _, back_perm = csc_to_csr_index(csc_indptr, csc_indices, shape=(3, 4), include_perm=False)
         self.assertIsNone(back_perm)
 
-    def test_numpy_preserves_int64_indptr_and_int32_indices(self):
+    def test_numpy_auto_downcasts_small_int64_indptr_and_keeps_int32_indices(self):
         from brainevent._misc import csr_to_csc_index
         indptr = np.array([0, 2, 3, 5], dtype=np.int64)
         indices = np.array([0, 2, 1, 0, 3], dtype=np.int32)
         csc_indptr, csc_indices, perm = csr_to_csc_index(
             indptr, indices, shape=(3, 4), method="numpy"
         )
-        self.assertEqual(np.asarray(csc_indptr).dtype, np.int64)
+        self.assertEqual(np.asarray(csc_indptr).dtype, np.int32)
         self.assertEqual(np.asarray(csc_indices).dtype, np.int32)
-        self.assertEqual(np.asarray(perm).dtype, np.int64)
+        self.assertEqual(np.asarray(perm).dtype, np.int32)
 
     def test_unknown_method_raises(self):
         from brainevent._misc import csr_to_csc_index
@@ -168,7 +168,7 @@ class TestCsrToCscIndexMethods(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown csr_to_csc_index method"):
             csr_to_csc_index(indptr, indices, shape=(1, 1), method="bogus")
 
-    def test_numpy_preserves_int64_coordinate_indices(self):
+    def test_numpy_casts_coordinate_indices_to_int32(self):
         from brainevent._misc import csr_to_csc_index
         indptr = np.array([0, 2, 3, 5], dtype=np.int32)
         indices = np.array([0, 2, 1, 0, 3], dtype=np.int64)
@@ -176,31 +176,37 @@ class TestCsrToCscIndexMethods(unittest.TestCase):
             indptr, indices, shape=(3, 4), method="numpy"
         )
         self.assertEqual(np.asarray(csc_indptr).dtype, np.int32)
-        self.assertEqual(np.asarray(csc_indices).dtype, np.int64)
+        self.assertEqual(np.asarray(csc_indices).dtype, np.int32)
         self.assertEqual(np.asarray(perm).dtype, np.int32)
 
-    def test_numpy_jax_output_temporarily_enables_int64_offsets(self):
+    def test_numpy_jax_output_requires_x64_for_explicit_int64_offsets(self):
         from brainevent._misc import csr_to_csc_index
         old_x64 = jax.config.jax_enable_x64
         jax.config.update("jax_enable_x64", False)
         try:
-            indptr = np.array([0, 2, 3, 5], dtype=np.int64)
+            indptr = np.array([0, 2, 3, 5], dtype=np.int32)
             indices = jnp.array([0, 2, 1, 0, 3], dtype=jnp.int32)
-            csc_indptr, csc_indices, perm = csr_to_csc_index(
-                indptr, indices, shape=(3, 4), method="numpy"
-            )
-            self.assertEqual(csc_indptr.dtype, jnp.int64)
-            self.assertEqual(csc_indices.dtype, jnp.int32)
-            self.assertEqual(perm.dtype, jnp.int64)
+            with self.assertRaisesRegex(ValueError, "jax_enable_x64"):
+                csr_to_csc_index(
+                    indptr, indices, shape=(3, 4), method="numpy",
+                    indptr_dtype=jnp.int64,
+                )
             self.assertFalse(jax.config.jax_enable_x64)
         finally:
             jax.config.update("jax_enable_x64", old_x64)
 
-    def test_offset_index_dtype_promotes_large_nse(self):
-        from brainevent._misc import _offset_index_dtype
-        self.assertEqual(_offset_index_dtype(np.iinfo(np.int32).max), np.int32)
-        self.assertEqual(_offset_index_dtype(np.iinfo(np.int32).max + 1), np.int64)
-        self.assertEqual(_offset_index_dtype(3, preferred=np.int64), np.int64)
+    def test_resolve_indptr_dtype_auto_promotes_large_nse(self):
+        from brainevent._misc import _resolve_indptr_dtype
+        self.assertEqual(_resolve_indptr_dtype(np.iinfo(np.int32).max), np.dtype(np.int32))
+        self.assertEqual(_resolve_indptr_dtype(np.iinfo(np.int32).max + 1), np.dtype(np.int64))
+        with self.assertRaisesRegex(OverflowError, "indptr_dtype=int32"):
+            _resolve_indptr_dtype(np.iinfo(np.int32).max + 1, requested=np.int32)
+
+    def test_cuda_offset_helper_rejects_int64_without_downcast(self):
+        from brainevent._misc import _as_int32_cuda_offsets
+        offsets = np.array([0, 1, 2], dtype=np.int64)
+        with self.assertRaisesRegex(NotImplementedError, "supports only int32 offsets"):
+            _as_int32_cuda_offsets(offsets, "test cuda offsets")
 
 
 class TestCsrToCooIndex(unittest.TestCase):
@@ -233,35 +239,31 @@ class TestCsrToCooIndex(unittest.TestCase):
 
 
 class TestCsrStructureDtypes(unittest.TestCase):
-    def test_public_structure_dtype_contract_accepts_signed_layouts(self):
+    def test_public_structure_dtype_contract_accepts_int32_indices_and_int32_or_int64_indptr(self):
         from brainevent._misc import _check_csr_structure_dtypes
         _check_csr_structure_dtypes(
             np.array([0, 1], dtype=np.int32),
             np.array([0, 2], dtype=np.int32),
         )
         _check_csr_structure_dtypes(
-            np.array([0, 1], dtype=np.int64),
-            np.array([0, 2], dtype=np.int64),
-        )
-        _check_csr_structure_dtypes(
             np.array([0, 1], dtype=np.int32),
             np.array([0, 2], dtype=np.int64),
         )
 
-    def test_public_structure_dtype_contract_rejects_unsigned_indices(self):
+    def test_public_structure_dtype_contract_rejects_non_int32_indices(self):
         from brainevent._misc import _check_csr_structure_dtypes
-        with self.assertRaisesRegex(AssertionError, "signed int32 or int64"):
-            _check_csr_structure_dtypes(
-                np.array([0, 1], dtype=np.uint32),
-                np.array([0, 2], dtype=np.int32),
-            )
-
-    def test_public_structure_dtype_contract_rejects_int64_indices_with_int32_indptr(self):
-        from brainevent._misc import _check_csr_structure_dtypes
-        with self.assertRaisesRegex(AssertionError, "same dtype"):
+        with self.assertRaisesRegex(AssertionError, "indices with dtype int32"):
             _check_csr_structure_dtypes(
                 np.array([0, 1], dtype=np.int64),
                 np.array([0, 2], dtype=np.int32),
+            )
+
+    def test_public_structure_dtype_contract_rejects_unsigned_indptr(self):
+        from brainevent._misc import _check_csr_structure_dtypes
+        with self.assertRaisesRegex(AssertionError, "indptr with dtype int32 or int64"):
+            _check_csr_structure_dtypes(
+                np.array([0, 1], dtype=np.int32),
+                np.array([0, 2], dtype=np.uint32),
             )
 
     def test_cuda_structure_dtype_contract_accepts_int32_indices_and_int64_indptr(self):

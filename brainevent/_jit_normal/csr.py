@@ -33,6 +33,7 @@ import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import _initialize_conn_length, _initialize_seed
+from brainevent._misc import _as_int32_cuda_offsets, _require_jax_x64_for_int64, _resolve_indptr_dtype
 from brainevent._op import XLACustomKernel, load_cuda_file
 from brainevent._typing import MatrixShape
 
@@ -336,7 +337,7 @@ def jitn_csr_fill_p_call(
     w1 = jnp.atleast_1d(w1)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
-    chunk_offsets = jnp.asarray(chunk_offsets, dtype=jnp.int32)
+    chunk_offsets = _as_int32_cuda_offsets(chunk_offsets, "jitn_csr_fill_p_call chunk_offsets")
     nnz = int(nnz)
     if np.dtype(w0.dtype) != np.dtype('float32') or np.dtype(w1.dtype) != np.dtype('float32'):
         raise NotImplementedError("light CSR currently supports float32 weights only")
@@ -448,10 +449,14 @@ def jitn_to_csr(
         backend=backend,
     )[0]
     row_counts = chunk_counts if transpose else chunk_counts.sum(axis=1, dtype=jnp.int32)
+    nnz = int(np.asarray(jax.device_get(row_counts), dtype=np.int64).sum())
+    offset_dtype = _resolve_indptr_dtype(nnz, requested="auto")
+    _require_jax_x64_for_int64(offset_dtype, "jitn_to_csr indptr")
+    offset_jdtype = jnp.dtype(offset_dtype)
+    row_counts = row_counts.astype(offset_jdtype)
     indptr = jnp.concatenate(
-        [jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
+        [jnp.zeros((1,), dtype=offset_jdtype), jnp.cumsum(row_counts, dtype=offset_jdtype)]
     )
-    nnz = int(indptr[-1])
     if nnz == 0:
         indices = jnp.zeros((0,), dtype=jnp.int32)
         data = u.maybe_decimal(jnp.zeros((0,), dtype=w_loc.dtype) * unitd)
@@ -460,10 +465,11 @@ def jitn_to_csr(
     if transpose:
         chunk_offsets = indptr
     else:
+        chunk_counts_offsets = chunk_counts.astype(offset_jdtype)
         chunk_offsets = (
             indptr[:-1, None]
-            + jnp.cumsum(chunk_counts, axis=1, dtype=jnp.int32)
-            - chunk_counts
+            + jnp.cumsum(chunk_counts_offsets, axis=1, dtype=offset_jdtype)
+            - chunk_counts_offsets
         )
     indices, data = jitn_csr_fill_p_call(
         w_loc,

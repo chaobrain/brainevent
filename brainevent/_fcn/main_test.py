@@ -159,6 +159,28 @@ def test_fixed_post_num_conn_tree_flatten_data_only_leaf():
     assert isinstance(buffers, dict)
 
 
+def test_fixed_num_constructors_cast_small_numpy_int64_indices_to_int32():
+    data = np.ones((2, 2), dtype=np.float32)
+    indices = np.array([[0, 1], [1, 2]], dtype=np.int64)
+
+    pre = brainevent.FixedNumPerPre((data, indices), shape=(2, 3))
+    post = brainevent.FixedNumPerPost((data, indices), shape=(3, 2))
+
+    assert pre.indices.dtype == jnp.int32
+    assert post.indices.dtype == jnp.int32
+
+
+def test_fixed_num_constructor_rejects_unrepresentable_secondary_axis():
+    data = jnp.array(1.0, dtype=jnp.float32)
+    indices = np.empty((0, 0), dtype=np.int32)
+
+    with pytest.raises(OverflowError, match="secondary dimension"):
+        brainevent.FixedNumPerPre(
+            (data, indices),
+            shape=(0, np.iinfo(np.int32).max + 2),
+        )
+
+
 class Test_Illegal_Slots:
     def test_invalid_indices_rejected_post(self):
         idx = jnp.array([[0, -1, 2, 2], [1, 4, 3, 1], [2, 0, -3, 1]], dtype=jnp.int32)

@@ -25,7 +25,17 @@ import numpy as np
 
 from brainevent._data import DataRepresentation
 from brainevent._event import BinaryArray
-from brainevent._misc import _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to_csr_index, normalize_row_index, build_sub_csr
+from brainevent._misc import (
+    _as_indptr,
+    _as_int32_indices,
+    _check_compressed_structure,
+    _csr_to_coo,
+    _csr_todense,
+    csr_to_csc_index,
+    csc_to_csr_index,
+    normalize_row_index,
+    build_sub_csr,
+)
 from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
 from .binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
@@ -123,6 +133,7 @@ def _binary_workspace_helpers(buffer_name: str):
             shape=matrix.shape,
             buffers=buffers,
             backend=matrix.backend,
+            indptr_dtype=matrix.indptr.dtype,
         )
 
     def split(buffers):
@@ -251,6 +262,8 @@ class CompressedSparseData(DataRepresentation):
         shape: MatrixShape,
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
+        indptr_dtype="auto",
+        check_structure: bool = True,
     ):
         if indices is None and indptr is None:
             # Tuple syntax: CSR((data, indices, indptr), shape=...)
@@ -260,9 +273,22 @@ class CompressedSparseData(DataRepresentation):
             args = (data, indices, indptr)
 
         assert len(args) == 3, "Expected three arguments: data, indices, indptr."
-        self.data, self.indices, self.indptr = map(u.math.asarray, args)
+        data_arg, indices_arg, indptr_arg = args
+        if check_structure:
+            fmt = type(self).__name__.lower()
+            secondary_dim = shape[1] if fmt == "csr" else shape[0]
+            nse = np.asarray(jax.device_get(indices_arg)).size
+            context = f"{type(self).__name__} structure"
+            self.data = u.math.asarray(data_arg)
+            self.indices = _as_int32_indices(indices_arg, secondary_dim, context, output_is_numpy=False)
+            self.indptr = _as_indptr(indptr_arg, nse, indptr_dtype, context, output_is_numpy=False)
+            _check_compressed_structure(self.indices, self.indptr, shape, fmt)
+        else:
+            self.data = u.math.asarray(data_arg)
+            self.indices = u.math.asarray(indices_arg)
+            self.indptr = u.math.asarray(indptr_arg)
         self.backend = backend
-        super().__init__(args, shape=shape, buffers=buffers)
+        super().__init__((self.data, self.indices, self.indptr), shape=shape, buffers=buffers)
 
     @property
     def nse(self):
@@ -361,6 +387,8 @@ class CompressedSparseData(DataRepresentation):
             shape=aux["shape"],
             backend=aux["backend"],
             buffers=buffers,
+            indptr_dtype=aux["indptr"].dtype,
+            check_structure=False,
         )
 
     def apply(self, fn):
@@ -1011,6 +1039,7 @@ class CSR(CompressedSparseData):
         *,
         nse: Optional[int] = None,
         index_dtype=jnp.int32,
+        indptr_dtype="auto",
         backend: Optional[str] = None,
         precompute_weight_indices: bool = False,
     ) -> 'CSR':
@@ -1056,10 +1085,16 @@ class CSR(CompressedSparseData):
             dense = jnp.array([[1.0, 0.0], [0.0, 2.0]])
             csr = brainevent.CSR.fromdense(dense)
         """
+        if np.dtype(index_dtype) != np.dtype(np.int32):
+            raise ValueError(
+                "CSR.fromdense only supports int32 indices. Use indptr_dtype='auto' "
+                "or indptr_dtype=jnp.int64 to control row-pointer precision."
+            )
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
         csr = u.sparse.csr_fromdense(mat, nse=nse, index_dtype=index_dtype)
-        out = CSR(csr.data, csr.indices, csr.indptr, shape=csr.shape, backend=backend)
+        out = CSR(csr.data, csr.indices, csr.indptr, shape=csr.shape, backend=backend,
+                  indptr_dtype=indptr_dtype)
         if precompute_weight_indices:
             out = out.build_weight_indices()
         return out
@@ -1102,6 +1137,7 @@ class CSR(CompressedSparseData):
             shape=self.shape,
             buffers=self.buffers,
             backend=self.backend,
+            indptr_dtype=self.indptr.dtype,
         )
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
@@ -1230,7 +1266,8 @@ class CSR(CompressedSparseData):
             self.data, self.indices, self.indptr,
             shape=self.shape[::-1],
             buffers=buffers,
-            backend=self.backend
+            backend=self.backend,
+            indptr_dtype=self.indptr.dtype,
         )
 
     def apply(self, fn) -> 'CSR':
@@ -1264,6 +1301,7 @@ class CSR(CompressedSparseData):
             shape=self.shape,
             buffers=self.buffers,
             backend=self.backend,
+            indptr_dtype=self.indptr.dtype,
         )
 
     def _weight_indices(self):
@@ -1332,6 +1370,7 @@ class CSR(CompressedSparseData):
             shape=self.shape,
             buffers=buffers,
             backend=self.backend,
+            indptr_dtype=self.indptr.dtype,
         )
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None) -> 'CSR':
@@ -1462,6 +1501,7 @@ class CSR(CompressedSparseData):
                     shape=self.shape,
                     buffers=self.buffers,
                     backend=self.backend,
+                    indptr_dtype=self.indptr.dtype,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
@@ -1473,6 +1513,7 @@ class CSR(CompressedSparseData):
                 shape=self.shape,
                 buffers=self.buffers,
                 backend=self.backend,
+                indptr_dtype=self.indptr.dtype,
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1485,6 +1526,7 @@ class CSR(CompressedSparseData):
                 shape=self.shape,
                 buffers=self.buffers,
                 backend=self.backend,
+                indptr_dtype=self.indptr.dtype,
             )
 
         else:
@@ -1506,6 +1548,7 @@ class CSR(CompressedSparseData):
                     shape=self.shape,
                     buffers=self.buffers,
                     backend=self.backend,
+                    indptr_dtype=self.indptr.dtype,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
@@ -1519,6 +1562,7 @@ class CSR(CompressedSparseData):
                 shape=self.shape,
                 buffers=self.buffers,
                 backend=self.backend,
+                indptr_dtype=self.indptr.dtype,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols = _csr_to_coo(self.indices, self.indptr)
@@ -1530,6 +1574,7 @@ class CSR(CompressedSparseData):
                 shape=self.shape,
                 buffers=self.buffers,
                 backend=self.backend,
+                indptr_dtype=self.indptr.dtype,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -1898,6 +1943,7 @@ class CSC(CompressedSparseData):
         *,
         nse: Optional[int] = None,
         index_dtype=jnp.int32,
+        indptr_dtype="auto",
         backend: Optional[str] = None,
         precompute_weight_indices: bool = False,
     ) -> 'CSC':
@@ -1944,10 +1990,16 @@ class CSC(CompressedSparseData):
             dense = jnp.array([[1.0, 0.0], [0.0, 2.0]])
             csc = brainevent.CSC.fromdense(dense)
         """
+        if np.dtype(index_dtype) != np.dtype(np.int32):
+            raise ValueError(
+                "CSC.fromdense only supports int32 indices. Use indptr_dtype='auto' "
+                "or indptr_dtype=jnp.int64 to control column-pointer precision."
+            )
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
         csc = u.sparse.csr_fromdense(mat.T, nse=nse, index_dtype=index_dtype).T
-        out = CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape, backend=backend)
+        out = CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape, backend=backend,
+                  indptr_dtype=indptr_dtype)
         if precompute_weight_indices:
             out = out.build_weight_indices()
         return out
@@ -1988,7 +2040,8 @@ class CSC(CompressedSparseData):
         return CSC((data, self.indices, self.indptr),
                    shape=self.shape,
                    buffers=self.buffers,
-                   backend=self.backend)
+                   backend=self.backend,
+                   indptr_dtype=self.indptr.dtype)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -2113,7 +2166,8 @@ class CSC(CompressedSparseData):
         return CSR((self.data, self.indices, self.indptr),
                    shape=self.shape[::-1],
                    buffers=buffers,
-                   backend=self.backend)
+                   backend=self.backend,
+                   indptr_dtype=self.indptr.dtype)
 
     def apply(self, fn) -> 'CSC':
         """
@@ -2142,7 +2196,8 @@ class CSC(CompressedSparseData):
             squared = csc.apply(lambda x: x ** 2)
         """
         return CSC((fn(self.data), self.indices, self.indptr),
-                   shape=self.shape, buffers=self.buffers, backend=self.backend)
+                   shape=self.shape, buffers=self.buffers, backend=self.backend,
+                   indptr_dtype=self.indptr.dtype)
 
     def _weight_indices(self):
         """Return the cached row-major (CSR-like) weight indices, building lazily.
@@ -2210,6 +2265,7 @@ class CSC(CompressedSparseData):
             shape=self.shape,
             buffers=buffers,
             backend=self.backend,
+            indptr_dtype=self.indptr.dtype,
         )
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None) -> 'CSC':
@@ -2354,6 +2410,7 @@ class CSC(CompressedSparseData):
                     shape=self.shape,
                     buffers=self.buffers,
                     backend=self.backend,
+                    indptr_dtype=self.indptr.dtype,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
@@ -2367,6 +2424,7 @@ class CSC(CompressedSparseData):
                 shape=self.shape,
                 buffers=self.buffers,
                 backend=self.backend,
+                indptr_dtype=self.indptr.dtype,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
@@ -2378,6 +2436,7 @@ class CSC(CompressedSparseData):
                 shape=self.shape,
                 buffers=self.buffers,
                 backend=self.backend,
+                indptr_dtype=self.indptr.dtype,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -2397,6 +2456,7 @@ class CSC(CompressedSparseData):
                     shape=self.shape,
                     buffers=self.buffers,
                     backend=self.backend,
+                    indptr_dtype=self.indptr.dtype,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
@@ -2410,6 +2470,7 @@ class CSC(CompressedSparseData):
                 shape=self.shape,
                 buffers=self.buffers,
                 backend=self.backend,
+                indptr_dtype=self.indptr.dtype,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
@@ -2421,6 +2482,7 @@ class CSC(CompressedSparseData):
                 shape=self.shape,
                 buffers=self.buffers,
                 backend=self.backend,
+                indptr_dtype=self.indptr.dtype,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
