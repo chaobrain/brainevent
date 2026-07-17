@@ -830,6 +830,7 @@ class FixedNumPerPre(FixedNumConn):
             indices_arg = np.asarray(indices_arg)
         _ensure_fixed_conn_initialized_outside_jit(indices_arg, kind='FixedNumPerPre')
         _validate_fixed_conn_indices(indices_arg, expected_rows=shape[0], kind='Post-synaptic')
+        _contains_invalid_indices(indices_arg, upper_bound=shape[1])
         self.indices = _as_int32_indices(
             indices_arg, shape[1], "FixedNumPerPre indices", output_is_numpy=False
         )
@@ -839,7 +840,6 @@ class FixedNumPerPre(FixedNumConn):
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
         super().__init__((self.data, self.indices), shape=shape, backend=backend, buffers=buffers)
-        _contains_invalid_indices(self.indices, upper_bound=self.shape[1])
         if precompute_weight_indices:
             self._weight_indices()
 
@@ -910,8 +910,10 @@ class FixedNumPerPre(FixedNumConn):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return FixedNumPerPre((data, self.indices), shape=self.shape,
-                              backend=self.backend, buffers=self.buffers)
+        return FixedNumPerPre.tree_unflatten(
+            ({'indices': self.indices, 'shape': self.shape, 'backend': self.backend}, self.buffers),
+            (data,),
+        )
 
     def __getitem__(self, index):
         """Extract rows of ``W`` as a dense array (NumPy semantics).
@@ -980,7 +982,10 @@ class FixedNumPerPre(FixedNumConn):
         the new matrix rebuilds its own mirror lazily on first need.
         """
         assert axes is None, "transpose does not support axes argument."
-        return FixedNumPerPost(self.data, self.indices, shape=self.shape[::-1], backend=self.backend)
+        return FixedNumPerPost.tree_unflatten(
+            ({'indices': self.indices, 'shape': self.shape[::-1], 'backend': self.backend}, {}),
+            (self.data,),
+        )
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
         """Pre-spike STDP (favorable, row-driven) -- mirrors :meth:`brainevent.CSR.update_on_pre`."""
@@ -1090,6 +1095,7 @@ class FixedNumPerPost(FixedNumConn):
             indices_arg = np.asarray(indices_arg)
         _ensure_fixed_conn_initialized_outside_jit(indices_arg, kind='FixedNumPerPost')
         _validate_fixed_conn_indices(indices_arg, expected_rows=shape[1], kind='Pre-synaptic')
+        _contains_invalid_indices(indices_arg, upper_bound=shape[0])
         self.indices = _as_int32_indices(
             indices_arg, shape[0], "FixedNumPerPost indices", output_is_numpy=False
         )
@@ -1099,7 +1105,6 @@ class FixedNumPerPost(FixedNumConn):
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
         super().__init__((self.data, self.indices), shape=shape, backend=backend, buffers=buffers)
-        _contains_invalid_indices(self.indices, upper_bound=self.shape[0])
         if precompute_weight_indices:
             self._weight_indices()
 
@@ -1173,8 +1178,10 @@ class FixedNumPerPost(FixedNumConn):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return FixedNumPerPost((data, self.indices), shape=self.shape,
-                               backend=self.backend, buffers=self.buffers)
+        return FixedNumPerPost.tree_unflatten(
+            ({'indices': self.indices, 'shape': self.shape, 'backend': self.backend}, self.buffers),
+            (data,),
+        )
 
     def __getitem__(self, index):
         """Extract rows of ``W`` as a dense array (NumPy semantics).
@@ -1244,10 +1251,9 @@ class FixedNumPerPost(FixedNumConn):
         the new matrix rebuilds its own mirror lazily on first need.
         """
         assert axes is None, "transpose does not support axes argument."
-        return FixedNumPerPre(
-            (self.data, self.indices),
-            shape=self.shape[::-1],
-            backend=self.backend,
+        return FixedNumPerPre.tree_unflatten(
+            ({'indices': self.indices, 'shape': self.shape[::-1], 'backend': self.backend}, {}),
+            (self.data,),
         )
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):

@@ -25,6 +25,7 @@ import numpy as np
 
 from brainevent._data import DataRepresentation
 from brainevent._event import BinaryArray
+from brainevent._compatible_import import Tracer
 from brainevent._misc import (
     _as_indptr,
     _as_int32_indices,
@@ -53,9 +54,24 @@ __all__ = [
 
 
 
+_BINARY_TASK_TPR_THRESHOLD = 128
+_BINARY_TASK_NNZ = 4096
 
 
-def _binary_task_capacity_from_indptr(indptr) -> int:
+def _binary_task_capacity_from_indptr(indptr, nse: Optional[int] = None) -> int:
+    if isinstance(indptr, Tracer):
+        if nse is None:
+            raise ValueError("nse is required to build a binary task workspace from traced indptr.")
+        n_rows = max(0, int(indptr.shape[0]) - 1)
+        nse = int(nse)
+        if nse <= _BINARY_TASK_TPR_THRESHOLD:
+            return 0
+        chunks_per_row = (nse + _BINARY_TASK_NNZ - 1) // _BINARY_TASK_NNZ
+        task_capacity = int(n_rows) * int(chunks_per_row)
+        if task_capacity > np.iinfo(np.int32).max:
+            raise ValueError("binary task capacity exceeds int32 range.")
+        return task_capacity
+
     indptr_np = np.asarray(jax.device_get(indptr), dtype=np.int64)
     if indptr_np.ndim != 1:
         raise ValueError(f"indptr must be one-dimensional, got shape={indptr_np.shape}.")
@@ -64,10 +80,6 @@ def _binary_task_capacity_from_indptr(indptr) -> int:
     row_lengths = np.diff(indptr_np)
     if np.any(row_lengths < 0):
         raise ValueError("CSR row lengths must be non-negative.")
-    
-    _BINARY_TASK_TPR_THRESHOLD = 128
-
-    _BINARY_TASK_NNZ = 4096
 
     chunks = np.where(
         row_lengths > _BINARY_TASK_TPR_THRESHOLD,
@@ -102,8 +114,8 @@ class _BinaryTaskWorkspace:
         )
 
 
-def _make_binary_task_workspace(indptr) -> _BinaryTaskWorkspace:
-    task_capacity = _binary_task_capacity_from_indptr(indptr)
+def _make_binary_task_workspace(indptr, nse: Optional[int] = None) -> _BinaryTaskWorkspace:
+    task_capacity = _binary_task_capacity_from_indptr(indptr, nse=nse)
     task_dtype = jnp.dtype(indptr.dtype)
     return _BinaryTaskWorkspace(
         task_capacity=task_capacity,
@@ -134,6 +146,7 @@ def _binary_workspace_helpers(buffer_name: str):
             buffers=buffers,
             backend=matrix.backend,
             indptr_dtype=matrix.indptr.dtype,
+            check_structure=False,
         )
 
     def split(buffers):
@@ -175,7 +188,7 @@ def _binary_workspace_helpers(buffer_name: str):
         workspace_map = workspace_map_from(matrix.buffers)
         if key in workspace_map:
             return matrix
-        workspace_map[key] = _make_binary_task_workspace(indptr)
+        workspace_map[key] = _make_binary_task_workspace(indptr, nse=matrix.indices.shape[0])
         if buffer_name in matrix.buffers:
             matrix.set_buffer(buffer_name, workspace_map)
         else:
@@ -277,11 +290,15 @@ class CompressedSparseData(DataRepresentation):
         if check_structure:
             fmt = type(self).__name__.lower()
             secondary_dim = shape[1] if fmt == "csr" else shape[0]
-            nse = np.asarray(jax.device_get(indices_arg)).size
             context = f"{type(self).__name__} structure"
             self.data = u.math.asarray(data_arg)
-            self.indices = _as_int32_indices(indices_arg, secondary_dim, context, output_is_numpy=False)
-            self.indptr = _as_indptr(indptr_arg, nse, indptr_dtype, context, output_is_numpy=False)
+            if isinstance(indices_arg, Tracer) or isinstance(indptr_arg, Tracer):
+                self.indices = u.math.asarray(indices_arg)
+                self.indptr = u.math.asarray(indptr_arg)
+            else:
+                nse = np.asarray(jax.device_get(indices_arg)).size
+                self.indices = _as_int32_indices(indices_arg, secondary_dim, context, output_is_numpy=False)
+                self.indptr = _as_indptr(indptr_arg, nse, indptr_dtype, context, output_is_numpy=False)
             _check_compressed_structure(self.indices, self.indptr, shape, fmt)
         else:
             self.data = u.math.asarray(data_arg)
@@ -940,6 +957,7 @@ class CompressedSparseData(DataRepresentation):
             shape=self.shape,
             backend=self.backend,
             buffers={'diag_positions': result_plan},
+            check_structure=False,
         )
 
     def solve(self, b: Union[jax.Array, u.Quantity]) -> Union[jax.Array, u.Quantity]:
@@ -1138,6 +1156,7 @@ class CSR(CompressedSparseData):
             buffers=self.buffers,
             backend=self.backend,
             indptr_dtype=self.indptr.dtype,
+            check_structure=False,
         )
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
@@ -1268,6 +1287,7 @@ class CSR(CompressedSparseData):
             buffers=buffers,
             backend=self.backend,
             indptr_dtype=self.indptr.dtype,
+            check_structure=False,
         )
 
     def apply(self, fn) -> 'CSR':
@@ -1302,6 +1322,7 @@ class CSR(CompressedSparseData):
             buffers=self.buffers,
             backend=self.backend,
             indptr_dtype=self.indptr.dtype,
+            check_structure=False,
         )
 
     def _weight_indices(self):
@@ -1371,6 +1392,7 @@ class CSR(CompressedSparseData):
             buffers=buffers,
             backend=self.backend,
             indptr_dtype=self.indptr.dtype,
+            check_structure=False,
         )
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None) -> 'CSR':
@@ -1502,6 +1524,7 @@ class CSR(CompressedSparseData):
                     buffers=self.buffers,
                     backend=self.backend,
                     indptr_dtype=self.indptr.dtype,
+                    check_structure=False,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
@@ -1514,6 +1537,7 @@ class CSR(CompressedSparseData):
                 buffers=self.buffers,
                 backend=self.backend,
                 indptr_dtype=self.indptr.dtype,
+                check_structure=False,
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1527,6 +1551,7 @@ class CSR(CompressedSparseData):
                 buffers=self.buffers,
                 backend=self.backend,
                 indptr_dtype=self.indptr.dtype,
+                check_structure=False,
             )
 
         else:
@@ -1549,6 +1574,7 @@ class CSR(CompressedSparseData):
                     buffers=self.buffers,
                     backend=self.backend,
                     indptr_dtype=self.indptr.dtype,
+                    check_structure=False,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
@@ -1563,6 +1589,7 @@ class CSR(CompressedSparseData):
                 buffers=self.buffers,
                 backend=self.backend,
                 indptr_dtype=self.indptr.dtype,
+                check_structure=False,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols = _csr_to_coo(self.indices, self.indptr)
@@ -1575,6 +1602,7 @@ class CSR(CompressedSparseData):
                 buffers=self.buffers,
                 backend=self.backend,
                 indptr_dtype=self.indptr.dtype,
+                check_structure=False,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -2041,7 +2069,8 @@ class CSC(CompressedSparseData):
                    shape=self.shape,
                    buffers=self.buffers,
                    backend=self.backend,
-                   indptr_dtype=self.indptr.dtype)
+                   indptr_dtype=self.indptr.dtype,
+                   check_structure=False)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -2167,7 +2196,8 @@ class CSC(CompressedSparseData):
                    shape=self.shape[::-1],
                    buffers=buffers,
                    backend=self.backend,
-                   indptr_dtype=self.indptr.dtype)
+                   indptr_dtype=self.indptr.dtype,
+                   check_structure=False)
 
     def apply(self, fn) -> 'CSC':
         """
@@ -2197,7 +2227,8 @@ class CSC(CompressedSparseData):
         """
         return CSC((fn(self.data), self.indices, self.indptr),
                    shape=self.shape, buffers=self.buffers, backend=self.backend,
-                   indptr_dtype=self.indptr.dtype)
+                   indptr_dtype=self.indptr.dtype,
+                   check_structure=False)
 
     def _weight_indices(self):
         """Return the cached row-major (CSR-like) weight indices, building lazily.
@@ -2266,6 +2297,7 @@ class CSC(CompressedSparseData):
             buffers=buffers,
             backend=self.backend,
             indptr_dtype=self.indptr.dtype,
+            check_structure=False,
         )
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None) -> 'CSC':
@@ -2411,6 +2443,7 @@ class CSC(CompressedSparseData):
                     buffers=self.buffers,
                     backend=self.backend,
                     indptr_dtype=self.indptr.dtype,
+                    check_structure=False,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
@@ -2425,6 +2458,7 @@ class CSC(CompressedSparseData):
                 buffers=self.buffers,
                 backend=self.backend,
                 indptr_dtype=self.indptr.dtype,
+                check_structure=False,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
@@ -2437,6 +2471,7 @@ class CSC(CompressedSparseData):
                 buffers=self.buffers,
                 backend=self.backend,
                 indptr_dtype=self.indptr.dtype,
+                check_structure=False,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -2457,6 +2492,7 @@ class CSC(CompressedSparseData):
                     buffers=self.buffers,
                     backend=self.backend,
                     indptr_dtype=self.indptr.dtype,
+                    check_structure=False,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
@@ -2471,6 +2507,7 @@ class CSC(CompressedSparseData):
                 buffers=self.buffers,
                 backend=self.backend,
                 indptr_dtype=self.indptr.dtype,
+                check_structure=False,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
@@ -2483,6 +2520,7 @@ class CSC(CompressedSparseData):
                 buffers=self.buffers,
                 backend=self.backend,
                 indptr_dtype=self.indptr.dtype,
+                check_structure=False,
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")

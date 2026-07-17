@@ -169,6 +169,28 @@ def _check_compressed_structure(indices, indptr, shape: MatrixShape, format: str
         primary_dim, secondary_dim = n_cols, n_rows
     else:
         raise ValueError(f"Unknown compressed sparse format {format!r}.")
+    if isinstance(indices, Tracer) or isinstance(indptr, Tracer):
+        if indices.ndim != 1:
+            raise ValueError(f"{format}: indices must be 1D, got shape {indices.shape}.")
+        if indptr.ndim != 1:
+            raise ValueError(f"{format}: indptr must be 1D, got shape {indptr.shape}.")
+        if indptr.shape[0] != primary_dim + 1:
+            raise ValueError(
+                f"{format}: indptr length must be primary dimension + 1 ({primary_dim + 1}), "
+                f"got {indptr.shape[0]}."
+            )
+        indices_dtype = jnp.dtype(indices.dtype)
+        indptr_dtype = jnp.dtype(indptr.dtype)
+        if indices_dtype != jnp.dtype(jnp.int32):
+            raise TypeError(f"{format}: indices must have dtype int32, got {indices_dtype}.")
+        if indptr_dtype not in (jnp.dtype(jnp.int32), jnp.dtype(jnp.int64)):
+            raise TypeError(f"{format}: indptr must have dtype int32 or int64, got {indptr_dtype}.")
+        _require_jax_x64_for_int64(indptr_dtype, f"{format} traced indptr")
+        if secondary_dim > _INT32_MAX + 1:
+            raise OverflowError(
+                f"{format}: secondary dimension {secondary_dim} cannot be represented by int32 indices."
+            )
+        return
     indices_np = np.asarray(jax.device_get(indices))
     indptr_np = np.asarray(jax.device_get(indptr))
     if indices_np.ndim != 1:
