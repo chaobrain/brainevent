@@ -65,7 +65,7 @@ def test_jits_corder_deprecated_and_ignored(implementation, corder):
         actual = jits(1.5, 0.1, 123, shape=(30, 20), corder=corder, backend=implementation)
     assert jnp.allclose(actual, expected)
     jax.block_until_ready((actual, expected))
-
+    
 
 # ---- Forward: jitsmv (transpose=False) ----
 

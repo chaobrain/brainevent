@@ -87,86 +87,22 @@ __device__ __forceinline__ float hash_scalar01(
     return (float)(h & 0x00ffffffU) * (1.0f / 16777216.0f);
 }
 
-__device__ __forceinline__ unsigned int calibrated_chunk_clen(
-    unsigned int cl,
-    int k,
-    int chunk_size,
-    int n_chunks
+__device__ __forceinline__ unsigned int stationary_initial_q(
+    unsigned int* state,
+    unsigned int cl
 ) {
-    if (cl < 2U) cl = 2U;
-    if (k <= 0 || chunk_size <= 0 || n_chunks <= 0) return cl;
-
-    int full_chunks = k / chunk_size;
-    int tail = k - full_chunks * chunk_size;
-    if (full_chunks > n_chunks) {
-        full_chunks = n_chunks;
-        tail = 0;
-    }
-
-    unsigned int full_streams =
-        (chunk_size < 32) ? (unsigned int)chunk_size : 32U;
-    unsigned long long stream_count =
-        (unsigned long long)full_chunks * (unsigned long long)full_streams;
-    if (tail > 0 && full_chunks < n_chunks) {
-        stream_count += (unsigned long long)((tail < 32) ? tail : 32);
-    }
-    if (stream_count == 0ULL) return cl;
-
     /*
-     * Each chunk/lane stream is a finite renewal process.  For the scalar
-     * skip law used here its large-window expectation is approximately
-     *
-     *   2 * width / cl - 1 / 3
-     *
-     * per active lane stream.  Reduce cl so the finite chunked process matches
-     * the non-chunk target density 2 / cl.
+     * The inter-arrival skip is Uniform{1, ..., cl - 1}.  A stationary
+     * renewal stream must start from the equilibrium residual distribution
+     * P(q = r) = 2 * (cl - 1 - r) / (cl * (cl - 1)), r in [0, cl - 2].
+     * Starting from Uniform{0, ..., cl - 1} creates a chunk-position ramp.
      */
-    float width2 = 2.0f * (float)k;
-    float target = width2 / (float)cl;
-    float corrected = target + (float)stream_count * (1.0f / 3.0f);
-    if (!(corrected > 0.0f)) return cl;
-
-    unsigned int eff = (unsigned int)(width2 / corrected + 0.5f);
-    if (eff < 2U) eff = 2U;
-    if (eff > cl) eff = cl;
-    return eff;
-}
-
-__device__ __forceinline__ unsigned int calibrated_chunk_clen_t4(
-    unsigned int cl,
-    int k,
-    int chunk_size,
-    int n_chunks
-) {
-    if (cl < 2U) cl = 2U;
-    if (k <= 0 || chunk_size <= 0 || n_chunks <= 0) return cl;
-
-    int full_chunks = k / chunk_size;
-    int tail = k - full_chunks * chunk_size;
-    if (full_chunks > n_chunks) {
-        full_chunks = n_chunks;
-        tail = 0;
+    unsigned int n = cl - 1U;
+    while (true) {
+        unsigned int q = fast_bounded_u32(light_rng_next(state), n);
+        unsigned int gate = fast_bounded_u32(light_rng_next(state), n);
+        if (gate < n - q) return q;
     }
-
-    unsigned int full_streams =
-        (chunk_size < AW_T4_GROUP_SIZE) ? (unsigned int)chunk_size : AW_T4_GROUP_SIZE;
-    unsigned long long stream_count =
-        (unsigned long long)full_chunks * (unsigned long long)full_streams;
-    if (tail > 0 && full_chunks < n_chunks) {
-        stream_count +=
-            (unsigned long long)((tail < AW_T4_GROUP_SIZE) ? tail : AW_T4_GROUP_SIZE);
-    }
-    if (stream_count == 0ULL) return cl;
-
-    float width2 = 2.0f * (float)k;
-    float target = width2 / (float)cl;
-    float corrected = target + (float)stream_count * (1.0f / 3.0f);
-    if (!(corrected > 0.0f)) return cl;
-
-    unsigned int eff = (unsigned int)(width2 / corrected + 0.5f);
-    if (eff < 2U) eff = 2U;
-    if (eff > cl) eff = cl;
-    return eff;
 }
 
 __device__ __forceinline__ unsigned int warp_sum_u32(unsigned int value) {
@@ -226,7 +162,7 @@ __device__ __forceinline__ unsigned int count_lane_connections(
     unsigned int chunk_width
 ) {
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
-    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int q = stationary_initial_q(&rng, cl);
     unsigned int local_j = (unsigned int)lane + 32U * q;
     unsigned int count = 0U;
     while (local_j < chunk_width) {
@@ -246,7 +182,7 @@ __device__ __forceinline__ unsigned int count_lane_connections_t4(
     unsigned int chunk_width
 ) {
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);
-    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int q = stationary_initial_q(&rng, cl);
     unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
     unsigned int count = 0U;
     while (local_j < chunk_width) {
@@ -280,7 +216,6 @@ __global__ void _count_chunks_notrans_f32_kern(
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
     if (cl < 2U) cl = 2U;
-    cl = calibrated_chunk_clen(cl, k, chunk_size, n_chunks);
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
 
     unsigned int lane_count = count_lane_connections(
@@ -317,7 +252,6 @@ __global__ void _count_chunks_notrans_mm_aw_t4_f32_kern(
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
     if (cl < 2U) cl = 2U;
-    cl = calibrated_chunk_clen_t4(cl, k, chunk_size, n_chunks);
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
 
     unsigned int lane_count = count_lane_connections_t4(
@@ -355,7 +289,6 @@ __global__ void _fill_notrans_f32_kern(
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
     if (cl < 2U) cl = 2U;
-    cl = calibrated_chunk_clen(cl, k, chunk_size, n_chunks);
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
 
     unsigned int lane_count = count_lane_connections(
@@ -367,7 +300,7 @@ __global__ void _fill_notrans_f32_kern(
     float w = READ_F32(__ldg(&weight[0]));
     
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
-    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int q = stationary_initial_q(&rng, cl);
     unsigned int local_j = (unsigned int)lane + 32U * q;
     int write = 0;
     while (local_j < chunk_width) {
@@ -409,7 +342,6 @@ __global__ void _fill_notrans_mm_aw_t4_f32_kern(
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
     if (cl < 2U) cl = 2U;
-    cl = calibrated_chunk_clen_t4(cl, k, chunk_size, n_chunks);
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
 
     unsigned int lane_count = count_lane_connections_t4(
@@ -421,7 +353,7 @@ __global__ void _fill_notrans_mm_aw_t4_f32_kern(
     float w = READ_F32(__ldg(&weight[0]));
     
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);
-    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int q = stationary_initial_q(&rng, cl);
     unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
     int write = 0;
     while (local_j < chunk_width) {
@@ -463,11 +395,10 @@ __global__ void _count_chunks_trans_f32_kern(
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
     if (cl < 2U) cl = 2U;
-    cl = calibrated_chunk_clen(cl, k, chunk_size, n_chunks);
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
 
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
-    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int q = stationary_initial_q(&rng, cl);
     unsigned int local_j = (unsigned int)lane + 32U * q;
     while (local_j < chunk_width) {
         int j = chunk_start + (int)local_j;
@@ -504,12 +435,11 @@ __global__ void _fill_trans_f32_kern(
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
     if (cl < 2U) cl = 2U;
-    cl = calibrated_chunk_clen(cl, k, chunk_size, n_chunks);
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
     float w = READ_F32(__ldg(&weight[0]));
 
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
-    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int q = stationary_initial_q(&rng, cl);
     unsigned int local_j = (unsigned int)lane + 32U * q;
     while (local_j < chunk_width) {
         int j = chunk_start + (int)local_j;
@@ -547,11 +477,10 @@ __global__ void _count_chunks_trans_mm_aw_t4_f32_kern(
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
     if (cl < 2U) cl = 2U;
-    cl = calibrated_chunk_clen_t4(cl, k, chunk_size, n_chunks);
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
 
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);
-    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int q = stationary_initial_q(&rng, cl);
     unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
     while (local_j < chunk_width) {
         int j = chunk_start + (int)local_j;
@@ -590,12 +519,11 @@ __global__ void _fill_trans_mm_aw_t4_f32_kern(
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
     if (cl < 2U) cl = 2U;
-    cl = calibrated_chunk_clen_t4(cl, k, chunk_size, n_chunks);
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
     float w = READ_F32(__ldg(&weight[0]));
 
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);
-    unsigned int q = fast_bounded_u32(light_rng_next(&rng), cl);
+    unsigned int q = stationary_initial_q(&rng, cl);
     unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
     while (local_j < chunk_width) {
         int j = chunk_start + (int)local_j;
