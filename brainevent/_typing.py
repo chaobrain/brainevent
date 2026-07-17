@@ -56,7 +56,7 @@ Row = Index
 Col = Index
 
 # Alias for Index, representing an index pointer.
-Indptr = +
+Indptr = Index
 
 # A callable type, representing a function or method.
 Kernel = Callable
