@@ -4,4 +4,4 @@
 # dependencies. The gate relies on `ignore_missing_imports` so every third-party
 # import collapses to `Any`, which keeps the mypy verdict reproducible regardless
 # of which typed packages happen to be installed.
-mypy==2.1.0
+mypy==2.3.0
