@@ -594,7 +594,7 @@ def test_indexed_mv_rejects_int64_indices_with_int32_indptr():
         events = jnp.ones(2, dtype=bool)
         workspace = _make_binary_task_workspace(indptr)
 
-        with pytest.raises(AssertionError, match="same dtype"):
+        with pytest.raises(AssertionError, match="Indices must be int32"):
             binary_csrmv_indexed(
                 weights, indices, indptr, perm, events, shape=(1, 2), backend='jax_raw', workspace=workspace
             )
@@ -625,7 +625,7 @@ def test_indexed_mm_rejects_unsigned_structure_dtype():
     events = jnp.ones((2, 1), dtype=bool)
     workspace = _make_binary_task_workspace(indptr)
 
-    with pytest.raises(AssertionError, match="signed int32 or int64"):
+    with pytest.raises(AssertionError, match="Indices must be int32"):
         binary_csrmm_indexed(
             weights, indices, indptr, perm, events, shape=(1, 2), backend='jax_raw', workspace=workspace
         )

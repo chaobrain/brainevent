@@ -20,7 +20,12 @@ import numpy as np
 import pytest
 
 import brainevent
+from brainevent._jit_scalar.binary import binary_jitsmv, binary_jitsmm
 from brainevent._test_util import allclose, gen_events
+
+# Keep GPU matmul reference numerics stable (avoid TF32 drift in dense @ B checks).
+if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
+    jax.config.update('jax_default_matmul_precision', 'highest')
 
 # Every test in this module dispatches to the native ``numba`` backend (the only backend for
 # JIT-connectivity kernels), which compiles per test and dominates wall-clock. Mark the whole
@@ -162,7 +167,8 @@ class Test_JITC_Operator_Behavior:
     def test_jitc_scalar_r_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
-        dense = mat.todense()
+        dense_mv = mat.mv.todense()
+        dense_mm = mat.mm.todense()
 
         left_vec = gen_events(shape[0], asbool=False).value
         right_vec = gen_events(shape[1], asbool=False).value
@@ -170,24 +176,25 @@ class Test_JITC_Operator_Behavior:
         right_mat = gen_events((shape[1], 4), asbool=False).value
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
         assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_scalar_c_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCScalarC((1.5, 0.1, 123), shape=shape, corder=corder)
-        dense = mat.todense()
+        dense_mv = mat.mv.todense()
+        dense_mm = mat.mm.todense()
 
         left_vec = gen_events(shape[0], asbool=False).value
         right_vec = gen_events(shape[1], asbool=False).value
@@ -195,24 +202,25 @@ class Test_JITC_Operator_Behavior:
         right_mat = gen_events((shape[1], 4), asbool=False).value
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
         assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_scalar_r_transpose_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder).T
-        dense = mat.todense()
+        dense_mv = mat.mv.todense()
+        dense_mm = mat.mm.todense()
 
         left_vec = jnp.asarray(np.random.rand(shape[1]))
         right_vec = jnp.asarray(np.random.rand(shape[0]))
@@ -220,24 +228,25 @@ class Test_JITC_Operator_Behavior:
         right_mat = jnp.asarray(np.random.rand(shape[0], 4))
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
         assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_scalar_c_transpose_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCScalarC((1.5, 0.1, 123), shape=shape, corder=corder).T
-        dense = mat.todense()
+        dense_mv = mat.mv.todense()
+        dense_mm = mat.mm.todense()
 
         left_vec = jnp.asarray(np.random.rand(shape[1]))
         right_vec = jnp.asarray(np.random.rand(shape[0]))
@@ -245,18 +254,18 @@ class Test_JITC_Operator_Behavior:
         right_mat = jnp.asarray(np.random.rand(shape[0], 4))
 
         r1 = left_vec @ mat
-        r2 = left_vec @ dense
+        r2 = left_vec @ dense_mv
         r3 = mat @ right_vec
-        r4 = dense @ right_vec
+        r4 = dense_mv @ right_vec
         r5 = left_mat @ mat
-        r6 = left_mat @ dense
+        r6 = left_mat @ dense_mm
         r7 = mat @ right_mat
-        r8 = dense @ right_mat
+        r8 = dense_mm @ right_mat
         assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
         assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
         assert allclose(r5, r6, atol=1e-2, rtol=1e-2)
         assert allclose(r7, r8, atol=1e-2, rtol=1e-2)
-        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
+        jax.block_until_ready((dense_mv, dense_mm, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
     def test_jitc_scalar_unit_operator_behavior(self, cls):
@@ -264,21 +273,22 @@ class Test_JITC_Operator_Behavior:
         shape = (20, 30)
         weight = 2.1 * u.mV
         mat = cls((weight, 0.2, 123), shape=shape)
-        dense = mat.todense()
+        dense_mv = mat.mv.todense()
+        dense_mm = mat.mm.todense()
 
         right_vec = jnp.asarray(np.random.rand(shape[1]))
         left_vec = jnp.asarray(np.random.rand(shape[0]))
 
         r1 = mat @ right_vec
-        r2 = dense @ right_vec
+        r2 = dense_mv @ right_vec
         r3 = left_vec @ mat
-        r4 = left_vec @ dense
-        assert u.math.allclose(r1, r2,
-                               rtol=1e-4,
-                               atol=1e-4 * u.get_unit(r2))
-        assert u.math.allclose(r3, r4,
-                               rtol=1e-4,
-                               atol=1e-4 * u.get_unit(r4))
+        r4 = left_vec @ dense_mv
+        # Compare unit and mantissa separately: mixing a dimensionless ``rtol`` with a
+        # unit-carrying ``atol`` trips saiunit's ``allclose``; the operator preserves mV.
+        assert u.get_unit(r1) == u.get_unit(r2)
+        assert u.get_unit(r3) == u.get_unit(r4)
+        assert allclose(u.get_mantissa(r1), u.get_mantissa(r2), rtol=1e-4, atol=1e-4)
+        assert allclose(u.get_mantissa(r3), u.get_mantissa(r4), rtol=1e-4, atol=1e-4)
         jax.block_until_ready((right_vec, left_vec))
 
 
@@ -291,10 +301,10 @@ class Test_JITC_To_Dense:
         jitcr = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
 
-        out1 = jitcr.todense()
-        out2 = jitcc.todense().T
-        out3 = jitcr.T.todense().T
-        out4 = jitcc.T.todense()
+        out1 = jitcr.mv.todense()
+        out2 = jitcc.mv.todense().T
+        out3 = jitcr.T.mv.todense().T
+        out4 = jitcc.T.mv.todense()
         assert allclose(out1, out2)
         assert allclose(out1, out3)
         assert allclose(out1, out4)
@@ -309,7 +319,7 @@ class Test_JITC_To_Dense:
         (shapes[1], True, -1.),
     ])
     def test_vjp(self, shape, corder, weight):
-        base = brainevent.JITCScalarR((1.0, 0.1, 123), shape=shape, corder=corder).todense()
+        base = brainevent.JITCScalarR((1.0, 0.1, 123), shape=shape, corder=corder).mv.todense()
 
         def f_dense_vjp(weight):
             res = base * weight
@@ -324,7 +334,7 @@ class Test_JITC_To_Dense:
 
         def f_jitc_vjp(weight):
             mat = brainevent.JITCScalarR((weight, 0.1, 123), shape=shape, corder=corder)
-            return mat.todense()
+            return mat.mv.todense()
 
         primals, f_vjp2 = jax.vjp(f_jitc_vjp, weight)
         jitc_weight_grad, = f_vjp2(ct)
@@ -339,7 +349,7 @@ class Test_JITC_To_Dense:
         (shapes[1], True, -1.),
     ])
     def test_jvp(self, shape, corder, weight):
-        base = brainevent.JITCScalarR((1., 0.1, 123), shape=shape, corder=corder).todense()
+        base = brainevent.JITCScalarR((1., 0.1, 123), shape=shape, corder=corder).mv.todense()
         tagents = (brainstate.random.random(),)
 
         def f_dense_jvp(weight):
@@ -348,7 +358,7 @@ class Test_JITC_To_Dense:
 
         def f_jitc_jvp(weight):
             mat = brainevent.JITCScalarR((weight, 0.1, 123), shape=shape, corder=corder)
-            return mat.todense()
+            return mat.mv.todense()
 
         primals, true_grad = jax.jvp(f_dense_jvp, (weight,), tagents)
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (weight,), tagents)
@@ -369,7 +379,7 @@ class Test_JITC_Scalar_Validation:
     #     shape = (8, 6)
     #     mat = cls((1.5, 0.0, 123), shape=shape, corder=corder)
     #
-    #     dense = mat.todense()
+    #     dense = mat.mv.todense()
     #     assert allclose(dense, jnp.zeros_like(dense))
     #
     #     vec = jnp.ones(shape[1])
@@ -423,6 +433,24 @@ class Test_JITC_Scalar_Validation:
             mat.with_data(2.0)  # dimensionless where mV is expected
 
 
+class Test_JITC_Ambiguous_Materialization:
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    def test_bare_materialization_raises(self, cls):
+        # mv and mm draw different matrices, so bare todense/tocsr/tocsc/tocoo are
+        # ambiguous and must raise; mat.mv / mat.mm select the mode explicitly.
+        mat = cls((1.5, 0.1, 123), shape=(8, 6))
+        with pytest.raises(NotImplementedError):
+            mat.todense()
+        with pytest.raises(NotImplementedError):
+            mat.tocsr()
+        with pytest.raises(NotImplementedError):
+            mat.tocsc()
+        with pytest.raises(NotImplementedError):
+            mat.tocoo()
+        assert mat.mv.todense().shape == mat.shape
+        assert mat.mm.todense().shape == mat.shape
+
+
 class Test_JITC_To_CSR:
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
     @pytest.mark.parametrize('corder', [True, False])
@@ -430,11 +458,11 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((1.5, 0.2, 123), shape=shape, corder=corder)
 
-        csr = mat.tocsr()
+        csr = mat.mv.tocsr()
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == shape
         # Converting to CSR and back to dense must reproduce the dense matrix.
-        assert allclose(csr.todense(), mat.todense())
+        assert allclose(csr.todense(), mat.mv.todense())
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
@@ -443,10 +471,10 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((1.5, 0.2, 123), shape=shape, corder=corder).T
 
-        csr = mat.tocsr()
+        csr = mat.mv.tocsr()
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == mat.shape
-        assert allclose(csr.todense(), mat.todense())
+        assert allclose(csr.todense(), mat.mv.todense())
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
@@ -455,7 +483,7 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((1.5, 0.2, 123), shape=shape, corder=corder)
 
-        csr = mat.tocsr()
+        csr = mat.mv.tocsr()
         indptr = np.asarray(csr.indptr)
         indices = np.asarray(csr.indices)
         assert indptr.shape == (shape[0] + 1,)
@@ -477,9 +505,83 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((1.5 * u.mV, 0.2, 123), shape=shape)
 
-        csr = mat.tocsr()
-        dense = mat.todense()
+        csr = mat.mv.tocsr()
+        dense_mv = mat.mv.todense()
         assert isinstance(csr, brainevent.CSR)
-        assert u.get_unit(csr.data) == u.get_unit(dense)
-        assert u.math.allclose(csr.todense(), dense)
+        assert u.get_unit(csr.data) == u.get_unit(dense_mv)
+        assert u.math.allclose(csr.todense(), dense_mv)
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
+
+
+class Test_JITC_Materialization_Matches_Binary:
+    """Cross-check: the materialized matrix must reproduce exactly the matrix the
+    event-driven ``binary_jits*`` operators use internally.
+
+    The same ``(weight, prob, seed, shape, corder)`` connectivity is materialized
+    *two independent ways* — ``mat.<mode>.todense()`` and ``mat.<mode>.tocsr()`` —
+    and a **float 0/1 spike** is pushed through ``@``.  Both results must equal the
+    direct event-driven computation (``binary_jitsmv`` for mv, ``binary_jitsmm`` for
+    mm), which never materializes the matrix.  Since the mv (32-lane) and mm
+    (4-thread AW-T4) kernels draw *different* matrices, each mode is validated
+    against its own binary operator, covering all cases.
+    """
+
+    # The mv/mm views regenerate ``jits(shape, transpose, corder, matrix_mode)``
+    # from the matrix's ``_materialize_params()``; feeding those same
+    # ``(shape, transpose, corder)`` to ``binary_jits*`` reproduces the identical
+    # matrix, so ``materialized @ spike`` must equal the event-driven result.
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_mv_matvec_dense_csr_binary_agree(self, cls, corder):
+        shape = (20, 30)
+        mat = cls((1.5, 0.2, 123), shape=shape, corder=corder)
+
+        # The concrete mv matrix, materialized two independent ways.
+        dense = mat.mv.todense()
+        csr = mat.mv.tocsr()
+        assert isinstance(csr, brainevent.CSR)
+
+        # Float 0/1 spike vector sized to the materialized matrix's columns.
+        spike = gen_events(dense.shape[1], asbool=False).value
+        out_dense = dense @ spike
+        out_csr = csr @ spike
+
+        # binary_jitsmv regenerates the SAME mv matrix from identical parameters.
+        gen_shape, gen_transpose = mat._materialize_params()
+        out_binary = binary_jitsmv(
+            mat.weight, mat.prob, spike, mat.seed,
+            shape=gen_shape, transpose=gen_transpose, corder=mat.corder,
+        )
+
+        assert allclose(out_dense, out_binary, rtol=1e-4, atol=1e-4)
+        assert allclose(out_csr, out_binary, rtol=1e-4, atol=1e-4)
+        jax.block_until_ready((out_dense, out_csr, out_binary))
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('k', [4, 7])
+    def test_mm_matmat_dense_csr_binary_agree(self, cls, corder, k):
+        shape = (20, 30)
+        mat = cls((1.5, 0.2, 123), shape=shape, corder=corder)
+
+        # The concrete mm matrix (different from mv), materialized two ways.
+        dense = mat.mm.todense()
+        csr = mat.mm.tocsr()
+        assert isinstance(csr, brainevent.CSR)
+
+        # Float 0/1 spike matrix sized to the materialized matrix's columns.
+        spikes = gen_events((dense.shape[1], k), asbool=False).value
+        out_dense = dense @ spikes
+        out_csr = csr @ spikes
+
+        # binary_jitsmm regenerates the SAME mm matrix from identical parameters.
+        gen_shape, gen_transpose = mat._materialize_params()
+        out_binary = binary_jitsmm(
+            mat.weight, mat.prob, spikes, mat.seed,
+            shape=gen_shape, transpose=gen_transpose, corder=mat.corder,
+        )
+
+        assert allclose(out_dense, out_binary, rtol=1e-4, atol=1e-4)
+        assert allclose(out_csr, out_binary, rtol=1e-4, atol=1e-4)
+        jax.block_until_ready((out_dense, out_csr, out_binary))

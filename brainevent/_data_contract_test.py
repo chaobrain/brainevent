@@ -26,6 +26,7 @@ compressed-sparse, fixed-num-connection, and JIT-connectivity families.
 
 import inspect
 
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -65,6 +66,19 @@ JITC_INSTANCES = [
     (be.JITCUniformC, (0.0, 1.0, 0.2, 42)),
 ]
 JITC_IDS = [c.__name__ for c, _ in JITC_INSTANCES]
+
+# JITC *scalar* matrices materialize mode-dependently: the mv (32-lane) and mm
+# (4-thread AW-T4) light kernels draw different matrices, so bare
+# ``todense()/tocsr()/tocsc()/tocoo()`` raise and callers must go through the
+# ``mat.mv`` / ``mat.mm`` views.  Their CSR conversion is CUDA-only.
+_SCALAR_CLASSES = (be.JITCScalarR, be.JITCScalarC)
+
+try:
+    from brainevent._jit_scalar.csr import jits_csr_count_p
+
+    _SCALAR_CSR_BACKENDS = tuple(jits_csr_count_p.available_backends(jax.default_backend()))
+except Exception:  # pragma: no cover - defensive: import/registration failure
+    _SCALAR_CSR_BACKENDS = ()
 
 _DENSE = jnp.array([[1., 0., 2.], [0., 3., 0.], [4., 0., 5.]])
 
@@ -175,6 +189,23 @@ def test_jitc_refuses_fromdense(cls, data):
 @pytest.mark.parametrize('cls,data', JITC_INSTANCES, ids=JITC_IDS)
 def test_jitc_conversions_agree_with_todense(cls, data):
     m = cls(data, shape=(16, 16))
+    if cls in _SCALAR_CLASSES:
+        # Bare materialization is ambiguous for JITC scalar and must raise; the
+        # mv/mm views resolve the mode. tocsr/tocsc/tocoo are CUDA-only.
+        with pytest.raises(NotImplementedError):
+            m.todense()
+        with pytest.raises(NotImplementedError):
+            m.tocsr()
+        dense = m.mv.todense()
+        assert dense.shape == m.shape
+        if not _SCALAR_CSR_BACKENDS:
+            pytest.skip('JITC scalar CSR conversion is CUDA-only')
+        assert jnp.allclose(m.mv.tocsr().todense(), dense)
+        assert jnp.allclose(m.mv.tocsc().todense(), dense)
+        assert jnp.allclose(m.mv.tocoo().todense(), dense)
+        assert m.mv.tocsc().shape == m.shape
+        assert m.mv.tocoo().shape == m.shape
+        return
     dense = m.todense()
     assert jnp.allclose(m.tocsr().todense(), dense)
     assert jnp.allclose(m.tocsc().todense(), dense)

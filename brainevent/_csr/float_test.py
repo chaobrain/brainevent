@@ -122,7 +122,7 @@ def test_csrmv_rejects_int64_indices_with_int32_indptr():
         indptr = jnp.array([0, 2], dtype=jnp.int32)
         vector = jnp.ones(2, dtype=jnp.float32)
 
-        with pytest.raises(AssertionError, match="same dtype"):
+        with pytest.raises(AssertionError, match="Indices must be int32"):
             csrmv(weights, indices, indptr, vector, shape=(1, 2), backend='jax_raw')
 
 
@@ -145,7 +145,7 @@ def test_csrmm_rejects_unsigned_structure_dtype():
     indptr = jnp.array([0, 2], dtype=jnp.uint32)
     matrix = jnp.ones((2, 1), dtype=jnp.float32)
 
-    with pytest.raises(AssertionError, match="signed int32 or int64"):
+    with pytest.raises(AssertionError, match="Indices must be int32"):
         csrmm(weights, indices, indptr, matrix, shape=(1, 2), backend='jax_raw')
 
 

@@ -47,6 +47,200 @@ def _offset_index_dtype(nse: int, preferred=None):
     return np.int64 if int(nse) > _INT32_MAX else np.int32
 
 
+# ---------------------------------------------------------------------------
+# Unified index/offset dtype policy.
+#
+# ``indices`` are secondary-axis coordinates (CSR column / CSC row) and are
+# *always* int32 -- if a coordinate cannot be represented in int32 that is an
+# error, not a reason to widen. ``indptr``/offset arrays are cumulative ``nnz``
+# offsets and auto-promote to int64 only when ``nnz`` exceeds the int32 range.
+# Creating a JAX int64 array requires ``jax_enable_x64``; the library never
+# toggles that global config on the user's behalf -- it raises instead.
+# ---------------------------------------------------------------------------
+
+def _resolve_indptr_dtype(nse, requested="auto"):
+    """Resolve the dtype of an ``indptr``/offset array holding ``nse`` offsets.
+
+    Parameters
+    ----------
+    nse : int
+        Number of stored elements (the largest offset value).
+    requested : {"auto"} or dtype-like, optional
+        ``"auto"`` (default) selects int64 when ``nse > int32_max`` else int32.
+        An explicit ``int32`` raises :class:`OverflowError` when ``nse`` cannot
+        be represented. An explicit ``int64`` is always honoured (the caller is
+        responsible for gating on ``jax_enable_x64`` via
+        :func:`_require_jax_x64_for_int64`).
+
+    Returns
+    -------
+    numpy.dtype
+        Either ``int32`` or ``int64``.
+    """
+    nse = int(nse)
+    if isinstance(requested, str):
+        if requested != "auto":
+            raise ValueError(
+                f"indptr_dtype must be 'auto', int32, or int64; got {requested!r}."
+            )
+        return np.dtype(np.int64) if nse > _INT32_MAX else np.dtype(np.int32)
+    requested_dtype = _normalize_dtype(requested)
+    if requested_dtype == np.dtype(np.int32):
+        if nse > _INT32_MAX:
+            raise OverflowError(
+                f"nnz={nse} exceeds the int32 range ({_INT32_MAX}); request "
+                "indptr_dtype='auto' or int64 (int64 requires jax_enable_x64)."
+            )
+        return np.dtype(np.int32)
+    if requested_dtype == np.dtype(np.int64):
+        return np.dtype(np.int64)
+    raise ValueError(
+        f"indptr_dtype must be 'auto', int32, or int64; got {requested!r}."
+    )
+
+
+def _require_jax_x64_for_int64(dtype, context):
+    """Raise if ``dtype`` is int64 but JAX x64 is disabled.
+
+    Creating a JAX int64 array while ``jax_enable_x64=False`` silently downcasts
+    to int32. Rather than mutate the global config, we refuse and tell the user
+    to enable x64 at program startup.
+    """
+    if _normalize_dtype(dtype) == np.dtype(np.int64) and not jax.config.jax_enable_x64:
+        raise ValueError(
+            f"{context} requires an int64 array, but JAX x64 is disabled. Enable "
+            "it at program startup via "
+            "`jax.config.update('jax_enable_x64', True)` (or set the environment "
+            "variable `JAX_ENABLE_X64=1`) before constructing large sparse "
+            "structures. The library does not toggle this global config for you."
+        )
+
+
+def _as_int32_indices(indices, secondary_dim, context, check_values=True):
+    """Validate and cast a CSR/CSC ``indices`` array to int32.
+
+    ``indices`` are secondary-axis coordinates and are always int32. Under a JAX
+    tracer only static dtype is enforced (int64 tracers are rejected); host value
+    checks are skipped. When ``check_values`` is ``False`` (structure-preserving
+    reconstruction of already-validated arrays) the concrete value checks are
+    skipped and only a dtype coercion is performed.
+    """
+    arr = u.math.asarray(indices)
+    dtype = jnp.dtype(arr.dtype)
+    if not jnp.issubdtype(dtype, jnp.integer):
+        raise TypeError(f"{context}: indices must be an integer array; got dtype {dtype}.")
+    if secondary_dim is not None and int(secondary_dim) > _INT32_MAX + 1:
+        raise OverflowError(
+            f"{context}: secondary dimension {int(secondary_dim)} exceeds the "
+            "int32-representable coordinate range."
+        )
+    if isinstance(arr, Tracer):
+        if dtype == jnp.dtype(jnp.int64):
+            raise TypeError(
+                f"{context}: indices must be int32 (secondary-axis coordinates), "
+                "but a traced int64 array was supplied."
+            )
+        return arr if dtype == jnp.dtype(jnp.int32) else arr.astype(jnp.int32)
+    if check_values:
+        host = np.asarray(jax.device_get(arr))
+        if host.size:
+            min_v = int(host.min())
+            max_v = int(host.max())
+            if min_v < 0:
+                raise ValueError(f"{context}: indices must be non-negative; got minimum {min_v}.")
+            if secondary_dim is not None and max_v >= int(secondary_dim):
+                raise ValueError(
+                    f"{context}: index {max_v} is out of bounds for secondary "
+                    f"dimension {int(secondary_dim)}."
+                )
+            if max_v > _INT32_MAX:
+                raise OverflowError(
+                    f"{context}: index {max_v} exceeds the int32 range; "
+                    "secondary-axis coordinates must fit int32."
+                )
+    return arr if dtype == jnp.dtype(jnp.int32) else arr.astype(jnp.int32)
+
+
+def _as_indptr(indptr, nse, indptr_dtype, context):
+    """Validate and cast an ``indptr``/offset array with safe precision.
+
+    Resolves the target dtype from ``nse`` and the requested ``indptr_dtype``,
+    gates int64 on ``jax_enable_x64``, and casts without silent int64->int32
+    truncation (the target is int32 only when ``nse`` fits int32, and every
+    offset is bounded by ``nse``).
+    """
+    arr = u.math.asarray(indptr)
+    src_dtype = jnp.dtype(arr.dtype)
+    if not jnp.issubdtype(src_dtype, jnp.integer):
+        raise TypeError(f"{context}: indptr must be an integer array; got dtype {src_dtype}.")
+    target = _resolve_indptr_dtype(nse, indptr_dtype)
+    _require_jax_x64_for_int64(target, context)
+    if src_dtype == jnp.dtype(target):
+        return arr
+    return arr.astype(target)
+
+
+def _check_compressed_structure(indices, indptr, shape, format="csr", check_values=True):
+    """Validate CSR/CSC structural invariants.
+
+    Static checks (ndim, dtype, indptr length, x64 gating for int64 indptr) run
+    for both concrete and traced arrays. Value checks (``indptr[0] == 0``,
+    monotonicity, ``indptr[-1] == indices.size``) run only for concrete arrays
+    and only when ``check_values`` is set.
+    """
+    fmt = format.lower()
+    if fmt not in ("csr", "csc"):
+        raise ValueError(f"format must be 'csr' or 'csc'; got {format!r}.")
+    primary_dim = shape[0] if fmt == "csr" else shape[1]
+
+    if indices.ndim != 1:
+        raise ValueError(f"{fmt} indices must be a 1D array; got ndim {indices.ndim}.")
+    if indptr.ndim != 1:
+        raise ValueError(f"{fmt} indptr must be a 1D array; got ndim {indptr.ndim}.")
+    idx_dtype = jnp.dtype(indices.dtype)
+    ptr_dtype = jnp.dtype(indptr.dtype)
+    if idx_dtype != jnp.dtype(jnp.int32):
+        raise TypeError(f"{fmt} indices must be int32; got {idx_dtype}.")
+    if ptr_dtype not in (jnp.dtype(jnp.int32), jnp.dtype(jnp.int64)):
+        raise TypeError(f"{fmt} indptr must be int32 or int64; got {ptr_dtype}.")
+    _require_jax_x64_for_int64(ptr_dtype, f"{fmt} indptr")
+    if indptr.shape[0] != int(primary_dim) + 1:
+        raise ValueError(
+            f"{fmt} indptr length must be primary dimension + 1 "
+            f"({int(primary_dim) + 1}); got {indptr.shape[0]}."
+        )
+
+    if not check_values or isinstance(indices, Tracer) or isinstance(indptr, Tracer):
+        return
+
+    ptr_host = np.asarray(jax.device_get(indptr))
+    if ptr_host.size and int(ptr_host[0]) != 0:
+        raise ValueError(f"{fmt} indptr[0] must be 0; got {int(ptr_host[0])}.")
+    if np.any(np.diff(ptr_host) < 0):
+        raise ValueError(f"{fmt} indptr must be monotonically non-decreasing.")
+    if int(ptr_host[-1]) != int(indices.shape[0]):
+        raise ValueError(
+            f"{fmt} indptr[-1] ({int(ptr_host[-1])}) must equal the number of "
+            f"stored elements ({int(indices.shape[0])})."
+        )
+
+
+def _as_int32_cuda_offsets(offsets, context):
+    """Guard int32-only CUDA/JITC offset ABIs.
+
+    Raises :class:`NotImplementedError` when ``offsets`` is int64 rather than
+    silently truncating to int32. int32 offsets pass through unchanged.
+    """
+    arr = u.math.asarray(offsets)
+    if jnp.dtype(arr.dtype) == jnp.dtype(jnp.int64):
+        raise NotImplementedError(
+            f"{context}: int64 offset arrays are not supported by this CUDA "
+            "kernel (int32 ABI). The structure exceeds the int32 offset range; "
+            "an int64-capable path is required."
+        )
+    return arr if jnp.dtype(arr.dtype) == jnp.dtype(jnp.int32) else arr.astype(jnp.int32)
+
+
 def is_known_type(x):
     """Check whether an object is a recognized array or event type.
 
@@ -204,18 +398,17 @@ _CSR_SIGNED_INDEX_DTYPES = (jnp.dtype(jnp.int32), jnp.dtype(jnp.int64))
 def _check_csr_structure_dtypes(indices, indptr) -> None:
     """Validate public CSR structure dtypes.
 
-    CSR kernels support signed int32/int64 structure arrays.  Mixed precision is
-    allowed only as ``indices=int32, indptr=int64`` so CUDA kernels can keep
-    column indices compact while row offsets grow past int32.
+    ``indices`` are secondary-axis coordinates and must be int32. ``indptr`` is
+    an offset array and may be int32 or int64 (auto-promoted when ``nnz``
+    exceeds the int32 range).
     """
     indices_dtype = jnp.dtype(indices.dtype)
     indptr_dtype = jnp.dtype(indptr.dtype)
-    assert indices_dtype in _CSR_SIGNED_INDEX_DTYPES, "Indices must be signed int32 or int64."
-    assert indptr_dtype in _CSR_SIGNED_INDEX_DTYPES, "Indptr must be signed int32 or int64."
-    same_dtype = indices_dtype == indptr_dtype
-    mixed_cuda_dtype = indices_dtype == jnp.dtype(jnp.int32) and indptr_dtype == jnp.dtype(jnp.int64)
-    assert same_dtype or mixed_cuda_dtype, (
-        "Indices and indptr must have the same dtype, or use indices=int32 with indptr=int64."
+    assert indices_dtype == jnp.dtype(jnp.int32), (
+        f"Indices must be int32 (secondary-axis coordinates); got {indices_dtype}."
+    )
+    assert indptr_dtype in _CSR_SIGNED_INDEX_DTYPES, (
+        f"Indptr must be int32 or int64; got {indptr_dtype}."
     )
 
 
@@ -1054,34 +1247,38 @@ def coo_to_csc_index(
         ... )
     """
     n_post = shape[1]
-    # int32 is brainevent's canonical index dtype (cf. ``CSR`` / ``index_dtype``).
-    # Defined locally so this helper stays free of an external precision provider.
-    index_dtype = jnp.int32
+    # ``indices`` (row coordinates) are always int32; ``indptr`` offsets and the
+    # ``perm`` permutation index into the nnz array and follow the nnz-resolved
+    # offset dtype (auto-promoting to int64, gated on ``jax_enable_x64``).
+    coord_dtype = np.dtype(np.int32)
+    nse = int(np.asarray(indices).size) if isinstance(indices, np.ndarray) else int(indices.size)
+    offset_dtype = _resolve_indptr_dtype(nse, "auto")
+    _require_jax_x64_for_int64(offset_dtype, "coo_to_csc_index")
     if isinstance(indices, np.ndarray) and isinstance(pre_ids, np.ndarray):
         # to maintain the original order of the elements with the same value
-        new_post_position = np.argsort(indices, kind='stable')
-        pre_ids_new = np.asarray(pre_ids[new_post_position], dtype=index_dtype)
+        new_post_position = np.asarray(np.argsort(indices, kind='stable'), dtype=offset_dtype)
+        pre_ids_new = np.asarray(pre_ids[new_post_position], dtype=coord_dtype)
 
         unique_post_ids, count = np.unique(indices, return_counts=True)
-        post_count = np.zeros(n_post, dtype=index_dtype)
+        post_count = np.zeros(n_post, dtype=offset_dtype)
         post_count[unique_post_ids] = count
 
         indptr_new = np.insert(post_count.cumsum(), 0, 0)
-        indptr_new = np.asarray(indptr_new, dtype=index_dtype)
+        indptr_new = np.asarray(indptr_new, dtype=offset_dtype)
 
     else:
         # to maintain the original order of the elements with the same value
 
         with jax.ensure_compile_time_eval():
-            new_post_position = jnp.argsort(indices, stable=True)
-            pre_ids_new = jnp.asarray(pre_ids[new_post_position], dtype=index_dtype)
+            new_post_position = jnp.asarray(jnp.argsort(indices, stable=True), dtype=offset_dtype)
+            pre_ids_new = jnp.asarray(pre_ids[new_post_position], dtype=coord_dtype)
 
             unique_post_ids, count = jnp.unique(indices, return_counts=True)
-            post_count = jnp.zeros(n_post, dtype=index_dtype)
+            post_count = jnp.zeros(n_post, dtype=offset_dtype)
             post_count = post_count.at[unique_post_ids].set(count)
 
             indptr_new = jnp.insert(post_count.cumsum(), 0, 0)
-            indptr_new = jnp.asarray(indptr_new, dtype=index_dtype)
+            indptr_new = jnp.asarray(indptr_new, dtype=offset_dtype)
 
     return indptr_new, pre_ids_new, new_post_position
 
@@ -1154,33 +1351,38 @@ def coo2csr(
         [0 2 1 3 0]
     """
     n_pre = shape[0]
-    # int32 is brainevent's canonical index dtype (cf. ``CSR`` / ``index_dtype``).
-    # Defined locally so this helper stays free of an external precision provider.
-    index_dtype = jnp.int32
+    # ``indices`` (column coordinates) are always int32; ``indptr`` offsets and
+    # the ``order`` permutation index into the nnz array and follow the
+    # nnz-resolved offset dtype (auto-promoting to int64, gated on
+    # ``jax_enable_x64``).
+    coord_dtype = np.dtype(np.int32)
+    nse = int(np.asarray(row_ids).size) if isinstance(row_ids, np.ndarray) else int(row_ids.size)
+    offset_dtype = _resolve_indptr_dtype(nse, "auto")
+    _require_jax_x64_for_int64(offset_dtype, "coo2csr")
     if isinstance(row_ids, np.ndarray) and isinstance(col_ids, np.ndarray):
         # stable sort keeps the original order of entries within each row
-        order = np.argsort(row_ids, kind='stable')
-        csr_indices = np.asarray(col_ids[order], dtype=index_dtype)
+        order = np.asarray(np.argsort(row_ids, kind='stable'), dtype=offset_dtype)
+        csr_indices = np.asarray(col_ids[order], dtype=coord_dtype)
 
         unique_row_ids, count = np.unique(row_ids, return_counts=True)
-        row_count = np.zeros(n_pre, dtype=index_dtype)
+        row_count = np.zeros(n_pre, dtype=offset_dtype)
         row_count[unique_row_ids] = count
 
         csr_indptr = np.insert(row_count.cumsum(), 0, 0)
-        csr_indptr = np.asarray(csr_indptr, dtype=index_dtype)
+        csr_indptr = np.asarray(csr_indptr, dtype=offset_dtype)
 
     else:
         with jax.ensure_compile_time_eval():
             # stable sort keeps the original order of entries within each row
-            order = jnp.argsort(row_ids, stable=True)
-            csr_indices = jnp.asarray(col_ids[order], dtype=index_dtype)
+            order = jnp.asarray(jnp.argsort(row_ids, stable=True), dtype=offset_dtype)
+            csr_indices = jnp.asarray(col_ids[order], dtype=coord_dtype)
 
             unique_row_ids, count = jnp.unique(row_ids, return_counts=True)
-            row_count = jnp.zeros(n_pre, dtype=index_dtype)
+            row_count = jnp.zeros(n_pre, dtype=offset_dtype)
             row_count = row_count.at[unique_row_ids].set(count)
 
             csr_indptr = jnp.insert(row_count.cumsum(), 0, 0)
-            csr_indptr = jnp.asarray(csr_indptr, dtype=index_dtype)
+            csr_indptr = jnp.asarray(csr_indptr, dtype=offset_dtype)
 
     return csr_indptr, csr_indices, order
 
@@ -1188,12 +1390,22 @@ def coo2csr(
 def fixed_conn_num_csr_indptr(
     indices: Union[jax.Array, np.ndarray],
 ) -> Union[jax.Array, np.ndarray]:
-    """Build the implicit CSR ``indptr`` for a fixed-connection matrix."""
+    """Build the implicit CSR ``indptr`` for a fixed-connection matrix.
+
+    ``indices`` are always int32 (secondary-axis coordinates), but the ``indptr``
+    offsets range up to ``n_pre * n_conn`` (the nnz), which may exceed the int32
+    range for very large matrices. The offset dtype is therefore resolved from
+    the nnz (auto-promoting to int64, gated on ``jax_enable_x64``) rather than
+    inherited from ``indices.dtype``.
+    """
     assert indices.ndim == 2, f'Indices must be 2D, got {indices.ndim}D.'
     n_pre, n_conn = indices.shape
+    nse = int(n_pre) * int(n_conn)
+    offset_dtype = _resolve_indptr_dtype(nse, "auto")
+    _require_jax_x64_for_int64(offset_dtype, "fixed_conn_num_csr_indptr")
     if isinstance(indices, np.ndarray):
-        return np.arange(n_pre + 1, dtype=indices.dtype) * n_conn
-    return jnp.arange(n_pre + 1, dtype=indices.dtype) * n_conn
+        return np.arange(n_pre + 1, dtype=offset_dtype) * n_conn
+    return jnp.arange(n_pre + 1, dtype=offset_dtype) * n_conn
 
 
 def normalize_row_index(index, n_rows: int):
@@ -1300,12 +1512,23 @@ def fixed_conn_num_csc_structure(
     *,
     shape: Tuple[int, int],
 ) -> Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]:
-    """Convert row-major FCN connectivity into compact CSC structure."""
+    """Convert row-major FCN connectivity into compact CSC structure.
+
+    ``indices`` (row ids) are always int32, but the ``indptr`` offsets and the
+    ``perm`` permutation index into the flattened nnz array, so they follow the
+    nnz-resolved offset dtype (auto-promoting to int64, gated on
+    ``jax_enable_x64``) rather than the int32 ``indices`` dtype.
+    """
     assert indices.ndim == 2, f'Indices must be 2D, got {indices.ndim}D.'
     n_pre, n_post = shape
     assert indices.shape[0] == n_pre, (
         f'Pre size mismatch: indices.shape[0] ({indices.shape[0]}) != shape[0] ({n_pre})'
     )
+
+    nse = int(indices.shape[0]) * int(indices.shape[1])
+    offset_dtype = _resolve_indptr_dtype(nse, "auto")
+    _require_jax_x64_for_int64(offset_dtype, "fixed_conn_num_csc_structure")
+    coord_dtype = np.dtype(np.int32)
 
     csr_indptr = fixed_conn_num_csr_indptr(indices)
     flat_indices = indices.reshape(-1)
@@ -1313,21 +1536,21 @@ def fixed_conn_num_csc_structure(
         csc_indptr, csc_indices, perm = csr_to_csc_index(csr_indptr, flat_indices, shape=shape)
         if isinstance(indices, np.ndarray):
             return (
-                np.asarray(csc_indptr, dtype=indices.dtype),
-                np.asarray(csc_indices, dtype=indices.dtype),
-                np.asarray(perm, dtype=indices.dtype),
+                np.asarray(csc_indptr, dtype=offset_dtype),
+                np.asarray(csc_indices, dtype=coord_dtype),
+                np.asarray(perm, dtype=offset_dtype),
             )
         return (
-            jnp.asarray(csc_indptr, dtype=indices.dtype),
-            jnp.asarray(csc_indices, dtype=indices.dtype),
-            jnp.asarray(perm, dtype=indices.dtype),
+            jnp.asarray(csc_indptr, dtype=offset_dtype),
+            jnp.asarray(csc_indices, dtype=coord_dtype),
+            jnp.asarray(perm, dtype=offset_dtype),
         )
 
-    row_ids = jnp.repeat(jnp.arange(n_pre, dtype=indices.dtype), indices.shape[1])
-    perm = jnp.argsort(flat_indices, stable=True)
-    counts = jnp.bincount(flat_indices, length=n_post).astype(indices.dtype)
+    row_ids = jnp.repeat(jnp.arange(n_pre, dtype=coord_dtype), indices.shape[1])
+    perm = jnp.argsort(flat_indices, stable=True).astype(offset_dtype)
+    counts = jnp.bincount(flat_indices, length=n_post).astype(offset_dtype)
     indptr = jnp.concatenate(
-        [jnp.zeros(1, dtype=indices.dtype), jnp.cumsum(counts, dtype=indices.dtype)]
+        [jnp.zeros(1, dtype=offset_dtype), jnp.cumsum(counts, dtype=offset_dtype)]
     )
     return indptr, row_ids[perm], perm
 
@@ -1379,11 +1602,13 @@ def _csr_to_csc_index_numpy(
 ):
     """Convert CSR indices to CSC on CPU with NumPy, then restore array type."""
     n_post = shape[1]
-    coord_dtype = _coordinate_index_dtype(getattr(csr_indices, 'dtype', np.int32))
+    # indices are secondary-axis coordinates -> always int32.
+    coord_dtype = np.dtype(np.int32)
     nse = getattr(csr_indices, 'size', None)
     if nse is None:
         nse = len(csr_indices)
-    offset_dtype = _offset_index_dtype(nse, getattr(csr_indptr, 'dtype', None))
+    # offsets auto-promote to int64 only when nnz exceeds the int32 range.
+    offset_dtype = _offset_index_dtype(nse)
 
     csr_indptr_np = np.asarray(csr_indptr)
     csr_indices_np = np.asarray(csr_indices)
@@ -1402,18 +1627,13 @@ def _csr_to_csc_index_numpy(
     if isinstance(csr_indptr, np.ndarray) and isinstance(csr_indices, np.ndarray):
         return csc_indptr_np, csc_indices_np, perm_np
 
-    old_x64 = jax.config.jax_enable_x64
-    needs_x64 = _normalize_dtype(offset_dtype) == np.dtype(np.int64)
-    if needs_x64 and not old_x64:
-        jax.config.update('jax_enable_x64', True)
-    try:
-        csc_indptr = jnp.asarray(csc_indptr_np)
-        csc_indices = jnp.asarray(csc_indices_np)
-        perm = None if perm_np is None else jnp.asarray(perm_np)
-        return csc_indptr, csc_indices, perm
-    finally:
-        if needs_x64 and not old_x64:
-            jax.config.update('jax_enable_x64', False)
+    # Creating int64 JAX arrays requires x64; refuse rather than toggle the
+    # global config behind the user's back.
+    _require_jax_x64_for_int64(offset_dtype, "csr_to_csc_index (numpy)")
+    csc_indptr = jnp.asarray(csc_indptr_np)
+    csc_indices = jnp.asarray(csc_indices_np)
+    perm = None if perm_np is None else jnp.asarray(perm_np)
+    return csc_indptr, csc_indices, perm
 
 
 _CSR_TO_CSC_CUDA_MODULE = None
@@ -1450,108 +1670,102 @@ def _csr_to_csc_index_gpu_column_block(
     if column_block_size <= 0:
         raise ValueError("column_block_size must be a positive integer")
 
-    coord_dtype = _coordinate_index_dtype(getattr(csr_indices, 'dtype', np.int32))
+    # indices are secondary-axis coordinates -> always int32.
+    coord_dtype = np.dtype(np.int32)
     nse = getattr(csr_indices, 'size', None)
     if nse is None:
         nse = len(csr_indices)
     nse = int(nse)
-    offset_dtype = _offset_index_dtype(nse, getattr(csr_indptr, 'dtype', None))
+    # offsets auto-promote to int64 only when nnz exceeds the int32 range.
+    offset_dtype = _offset_index_dtype(nse)
 
-    old_x64 = jax.config.jax_enable_x64
-    needs_x64 = (
-        _normalize_dtype(offset_dtype) == np.dtype(np.int64) or
-        _normalize_dtype(coord_dtype) == np.dtype(np.int64)
-    )
-    if needs_x64 and not old_x64:
-        jax.config.update('jax_enable_x64', True)
+    # Creating int64 JAX arrays requires x64; refuse rather than toggle the
+    # global config behind the user's back.
+    _require_jax_x64_for_int64(offset_dtype, "csr_to_csc_index (gpu_column_block)")
 
     try:
-        try:
-            gpu_device = jax.devices("gpu")[0]
-            _load_csr_to_csc_cuda_module()
-        except Exception:
-            return _csr_to_csc_index_numpy(
-                csr_indptr,
-                csr_indices,
-                shape=shape,
-                include_perm=include_perm,
-            )
-
-        csr_indices_dev = jax.device_put(
-            jnp.asarray(csr_indices, dtype=coord_dtype),
-            gpu_device,
-        )
-        csr_indptr_dev = jax.device_put(
-            jnp.asarray(csr_indptr, dtype=offset_dtype),
-            gpu_device,
+        gpu_device = jax.devices("gpu")[0]
+        _load_csr_to_csc_cuda_module()
+    except Exception:
+        return _csr_to_csc_index_numpy(
+            csr_indptr,
+            csr_indices,
+            shape=shape,
+            include_perm=include_perm,
         )
 
-        counts_dev = jax.ffi.ffi_call(
-            "csr_to_csc.csr_to_csc_count",
-            jax.ShapeDtypeStruct((n_post,), offset_dtype),
-        )(csr_indices_dev, csr_indptr_dev)
-        counts_np = np.asarray(counts_dev, dtype=offset_dtype)
+    csr_indices_dev = jax.device_put(
+        jnp.asarray(csr_indices, dtype=coord_dtype),
+        gpu_device,
+    )
+    csr_indptr_dev = jax.device_put(
+        jnp.asarray(csr_indptr, dtype=offset_dtype),
+        gpu_device,
+    )
 
-        csc_indptr_np = np.empty(n_post + 1, dtype=offset_dtype)
-        csc_indptr_np[0] = 0
-        np.cumsum(counts_np, dtype=offset_dtype, out=csc_indptr_np[1:])
+    counts_dev = jax.ffi.ffi_call(
+        "csr_to_csc.csr_to_csc_count",
+        jax.ShapeDtypeStruct((n_post,), offset_dtype),
+    )(csr_indices_dev, csr_indptr_dev)
+    counts_np = np.asarray(counts_dev, dtype=offset_dtype)
 
-        if int(csc_indptr_np[-1]) != nse:
-            raise RuntimeError(
-                "CUDA CSR-to-CSC count produced an unexpected nnz total: "
-                f"{int(csc_indptr_np[-1])} != {nse}"
-            )
+    csc_indptr_np = np.empty(n_post + 1, dtype=offset_dtype)
+    csc_indptr_np[0] = 0
+    np.cumsum(counts_np, dtype=offset_dtype, out=csc_indptr_np[1:])
 
-        csc_indices_np = np.empty(nse, dtype=coord_dtype)
-        perm_np = np.empty(nse, dtype=offset_dtype) if include_perm else None
+    if int(csc_indptr_np[-1]) != nse:
+        raise RuntimeError(
+            "CUDA CSR-to-CSC count produced an unexpected nnz total: "
+            f"{int(csc_indptr_np[-1])} != {nse}"
+        )
 
-        for col_start in range(0, n_post, column_block_size):
-            col_end = min(col_start + column_block_size, n_post)
-            base = int(csc_indptr_np[col_start])
-            end = int(csc_indptr_np[col_end])
-            block_nnz = end - base
-            block_ncols = col_end - col_start
+    csc_indices_np = np.empty(nse, dtype=coord_dtype)
+    perm_np = np.empty(nse, dtype=offset_dtype) if include_perm else None
 
-            if block_nnz == 0:
-                continue
+    for col_start in range(0, n_post, column_block_size):
+        col_end = min(col_start + column_block_size, n_post)
+        base = int(csc_indptr_np[col_start])
+        end = int(csc_indptr_np[col_end])
+        block_nnz = end - base
+        block_ncols = col_end - col_start
 
-            local_indptr_np = (
-                csc_indptr_np[col_start:col_end + 1] -
-                csc_indptr_np[col_start]
-            ).astype(offset_dtype, copy=False)
-            initial_pos_dev = jax.device_put(
-                jnp.asarray(local_indptr_np[:-1], dtype=offset_dtype),
-                gpu_device,
-            )
+        if block_nnz == 0:
+            continue
 
-            scratch_info = jax.ShapeDtypeStruct((block_ncols,), offset_dtype)
-            rows_info = jax.ShapeDtypeStruct((block_nnz,), coord_dtype)
-            perm_info = jax.ShapeDtypeStruct((block_nnz,), offset_dtype)
-            _, local_rows_dev, local_perm_dev = jax.ffi.ffi_call(
-                "csr_to_csc.csr_to_csc_fill_block",
-                (scratch_info, rows_info, perm_info),
-            )(
-                csr_indices_dev,
-                csr_indptr_dev,
-                initial_pos_dev,
-                col_start=np.int64(col_start),
-                col_end=np.int64(col_end),
-            )
+        local_indptr_np = (
+            csc_indptr_np[col_start:col_end + 1] -
+            csc_indptr_np[col_start]
+        ).astype(offset_dtype, copy=False)
+        initial_pos_dev = jax.device_put(
+            jnp.asarray(local_indptr_np[:-1], dtype=offset_dtype),
+            gpu_device,
+        )
 
-            csc_indices_np[base:end] = np.asarray(local_rows_dev, dtype=coord_dtype)
-            if perm_np is not None:
-                perm_np[base:end] = np.asarray(local_perm_dev, dtype=offset_dtype)
+        scratch_info = jax.ShapeDtypeStruct((block_ncols,), offset_dtype)
+        rows_info = jax.ShapeDtypeStruct((block_nnz,), coord_dtype)
+        perm_info = jax.ShapeDtypeStruct((block_nnz,), offset_dtype)
+        _, local_rows_dev, local_perm_dev = jax.ffi.ffi_call(
+            "csr_to_csc.csr_to_csc_fill_block",
+            (scratch_info, rows_info, perm_info),
+        )(
+            csr_indices_dev,
+            csr_indptr_dev,
+            initial_pos_dev,
+            col_start=np.int64(col_start),
+            col_end=np.int64(col_end),
+        )
 
-        if isinstance(csr_indptr, np.ndarray) and isinstance(csr_indices, np.ndarray):
-            return csc_indptr_np, csc_indices_np, perm_np
+        csc_indices_np[base:end] = np.asarray(local_rows_dev, dtype=coord_dtype)
+        if perm_np is not None:
+            perm_np[base:end] = np.asarray(local_perm_dev, dtype=offset_dtype)
 
-        csc_indptr = jax.device_put(csc_indptr_np, gpu_device)
-        csc_indices = jax.device_put(csc_indices_np, gpu_device)
-        perm = None if perm_np is None else jax.device_put(perm_np, gpu_device)
-        return csc_indptr, csc_indices, perm
-    finally:
-        if needs_x64 and not old_x64:
-            jax.config.update('jax_enable_x64', False)
+    if isinstance(csr_indptr, np.ndarray) and isinstance(csr_indices, np.ndarray):
+        return csc_indptr_np, csc_indices_np, perm_np
+
+    csc_indptr = jax.device_put(csc_indptr_np, gpu_device)
+    csc_indices = jax.device_put(csc_indices_np, gpu_device)
+    perm = None if perm_np is None else jax.device_put(perm_np, gpu_device)
+    return csc_indptr, csc_indices, perm
 
 
 def csr_to_csc_index(
@@ -1618,9 +1832,10 @@ def csr_to_csc_index(
     Notes
     -----
     The returned ``post_positions`` permutation array can be used to reorder a
-    CSR data array into CSC order. The ``"coo"`` method preserves the public
-    int32 index-helper contract, while ``"numpy"`` and ``"gpu_column_block"``
-    may return int64 offset arrays when the input row pointer requires them.
+    CSR data array into CSC order. Across all methods ``csc_indices`` are always
+    int32 (secondary-axis coordinates), while ``csc_indptr`` / ``post_positions``
+    auto-promote to int64 when the nnz exceeds the int32 range (gated on
+    ``jax_enable_x64``).
 
     Examples
     --------

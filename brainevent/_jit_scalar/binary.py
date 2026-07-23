@@ -401,14 +401,24 @@ _dtype_sfx = {
     np.dtype('bfloat16'): '_bf16',
 }
 
-_spike_sfx = {
-    np.dtype('bool'): '_bool',
-    np.dtype('int8'): '_bool',
-    np.dtype('float32'): '_float',
-    np.dtype('float16'): '_float',
-    np.dtype('float64'): '_float',
-    np.dtype('bfloat16'): '_float',
-}
+
+def _normalize_chunk_size(n_cols, chunk_size, target_chunks=4):
+    """Chunk width for the light-RNG connectivity walk.
+
+    Must match the ``float``/CSR light kernels' convention (``target_chunks=4``
+    over ``shape[1]``): ``chunk_size`` participates in the RNG stream keying, so
+    the binary operator only draws the *same* matrix as ``float.jitsmv`` /
+    ``float.jitsmm`` (and the CSR materialization) when they all chunk identically.
+    """
+    if chunk_size is None:
+        target_chunks = int(target_chunks)
+        if target_chunks <= 0:
+            raise ValueError("target_chunks must be positive")
+        chunk_size = max(1, (int(n_cols) + target_chunks - 1) // target_chunks)
+    chunk_size = int(chunk_size)
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    return chunk_size
 
 
 def _binary_jitsmv_cuda_kernel(
@@ -421,12 +431,31 @@ def _binary_jitsmv_cuda_kernel(
         name='jit_scalar_binary_jitsmv',
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
-    sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_scalar_binary_jitsmv.binary_jitsmv_{variant}{wt_sfx}{sp_sfx}'
+    # Dispatch is unchanged from the curand implementation: ``corder`` selects the
+    # kernel (gather -> notrans, scatter -> trans); ``transpose`` only sets the
+    # output shape and is absorbed by the FFI (it derives m/k from the tensor
+    # sizes), so it is not needed here.
+    variant = 'notrans' if corder else 'trans'
+    kernel_name = f'jit_scalar_binary_jitsmv.{variant}{wt_sfx}'
+
+    # The light kernel consumes a bit-packed spike mask.  ``chunk_size`` follows the
+    # float/CSR convention so the drawn matrix is identical across operators.
+    k = int(vector_info.shape[0])
+    n_words = (k + 31) // 32
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    # bool/int8 spikes are active when non-zero; float spikes when > 0.
+    is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(weight, clen, vector, seed, _):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, vector)
+        spikes = vector.astype(jnp.int8) if is_bool else (vector > 0).astype(jnp.int8)
+        packed = jax.ffi.ffi_call(
+            'jit_scalar_binary_jitsmv.pack_bool',
+            jax.ShapeDtypeStruct((n_words,), jnp.uint32),
+        )(spikes)
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            weight, clen, seed, packed,
+            vector_size=np.int32(k), chunk_size=np.int32(chunk_size),
+        )
 
     return kernel
 
@@ -926,12 +955,36 @@ def _binary_jitsmm_cuda_kernel(
         name='jit_scalar_binary_jitsmm',
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
-    sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_scalar_binary_jitsmm.binary_jitsmm_{variant}{wt_sfx}{sp_sfx}'
+    # Same dispatch as the mv kernel: ``corder`` picks notrans/trans.  ``binary_jitsmm``
+    # always uses the AW-T4 (mm) kernels, so its drawn matrix differs from the mv
+    # (32-lane) one -- gradients therefore delegate to ``float.jitsmm`` (mm mode) and
+    # CSR materialization must use the matching mm mode.
+    variant = 'notrans' if corder else 'trans'
+    kernel_name = f'jit_scalar_binary_jitsmm.{variant}{wt_sfx}'
+
+    out_info = kwargs['out_info']
+    k_pack = int(B_info.shape[0])          # rows of B == the packed (spike) dimension
+    n = int(B_info.shape[1])               # independent columns processed together
+    n_words = (k_pack + 31) // 32
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    # notrans: output has m rows and walks k = B-rows; trans swaps the two roles.
+    if corder:
+        m_ffi, k_ffi = int(out_info.shape[0]), k_pack
+    else:
+        m_ffi, k_ffi = k_pack, int(out_info.shape[0])
+    is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(weight, clen, B, seed, _):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, B)
+        spikes = B.astype(jnp.int8) if is_bool else (B > 0).astype(jnp.int8)
+        packed = jax.ffi.ffi_call(
+            'jit_scalar_binary_jitsmm.pack',
+            jax.ShapeDtypeStruct((n, n_words), jnp.uint32),
+        )(spikes, k=np.int32(k_pack), n=np.int32(n), n_words=np.int32(n_words))
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            weight, clen, seed, packed,
+            m=np.int32(m_ffi), k=np.int32(k_ffi), n=np.int32(n),
+            n_words=np.int32(n_words), chunk_size=np.int32(chunk_size),
+        )
 
     return kernel
 

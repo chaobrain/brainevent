@@ -29,7 +29,7 @@ from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import ArrayData, Data, MatrixShape
-from .float import jitnmv_p_call, jitnmm_p_call
+from .float import _normalize_chunk_size, jitnmv_p_call, jitnmm_p_call
 
 __all__ = [
     "binary_jitnmv",
@@ -419,12 +419,24 @@ def _binary_jitnmv_cuda_kernel(
         name='jit_normal_binary_jitnmv',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
-    stype = '_bool' if kwargs['vector_info'].dtype == jnp.bool_ else '_float'
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_normal_binary_jitnmv.binary_jitnmv_{variant}{sfx}{stype}'
+    variant = 'notrans' if corder else 'trans'
+    kernel_name = f'jit_normal_binary_jitnmv.{variant}{sfx}'
+    vector_info = kwargs['vector_info']
+    k = int(vector_info.shape[0])
+    n_words = (k + 31) // 32
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(w_loc, w_scale, clen, vector, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, vector)
+        spikes = vector.astype(jnp.int8) if is_bool else (vector > 0).astype(jnp.int8)
+        packed = jax.ffi.ffi_call(
+            'jit_normal_binary_jitnmv.pack_bool',
+            jax.ShapeDtypeStruct((n_words,), jnp.uint32),
+        )(spikes)
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            w_loc, w_scale, clen, seed, packed,
+            vector_size=np.int32(k), chunk_size=np.int32(chunk_size),
+        )
 
     return kernel
 
@@ -809,12 +821,32 @@ def _binary_jitnmm_cuda_kernel(
         name='jit_normal_binary_jitnmm',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
-    stype = '_bool' if kwargs['B_info'].dtype == jnp.bool_ else '_float'
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_normal_binary_jitnmm.binary_jitnmm_{variant}{sfx}{stype}'
+    variant = 'notrans' if corder else 'trans'
+    kernel_name = f'jit_normal_binary_jitnmm.{variant}{sfx}'
+
+    out_info = kwargs['out_info']
+    B_info = kwargs['B_info']
+    k_pack = int(B_info.shape[0])
+    n = int(B_info.shape[1])
+    n_words = (k_pack + 31) // 32
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    if corder:
+        m_ffi, k_ffi = int(out_info.shape[0]), k_pack
+    else:
+        m_ffi, k_ffi = k_pack, int(out_info.shape[0])
+    is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(w_loc, w_scale, clen, B, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, B)
+        spikes = B.astype(jnp.int8) if is_bool else (B > 0).astype(jnp.int8)
+        packed = jax.ffi.ffi_call(
+            'jit_normal_binary_jitnmm.pack',
+            jax.ShapeDtypeStruct((n, n_words), jnp.uint32),
+        )(spikes, k=np.int32(k_pack), n=np.int32(n), n_words=np.int32(n_words))
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            w_loc, w_scale, clen, seed, packed,
+            m=np.int32(m_ffi), k=np.int32(k_ffi), n=np.int32(n),
+            n_words=np.int32(n_words), chunk_size=np.int32(chunk_size),
+        )
 
     return kernel
 
@@ -836,7 +868,8 @@ def _jitc_mm_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, t
 def _jitc_mm_normal_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     """JVP rule for the B argument of binary_jitnmm."""
     return jitnmm_p_call(
-        w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder,
+        matrix_mode='mm', backend=kwargs['backend'],
     )
 
 
@@ -856,6 +889,7 @@ def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape,
             shape=shape,
             transpose=not transpose,
             corder=not corder,
+            matrix_mode='mm',
             backend=kwargs['backend'],
         )[0]
         return w_loc, w_scale, clen, r, seed
@@ -865,6 +899,7 @@ def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape,
         r = jitnmm_p_call(
             1., 0., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
+            matrix_mode='mm',
             backend=kwargs['backend'],
         )[0]
         dw_loc = jnp.expand_dims(jnp.sum(r * B), axis=0)
@@ -874,6 +909,7 @@ def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape,
         r = jitnmm_p_call(
             0., 1., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
+            matrix_mode='mm',
             backend=kwargs['backend'],
         )[0]
         dw_scale = jnp.expand_dims(jnp.sum(r * B), axis=0)
