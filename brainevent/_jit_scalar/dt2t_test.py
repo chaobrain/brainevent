@@ -35,8 +35,9 @@ from brainevent._jit_scalar.dt2t import (
 )
 from brainevent._test_util import allclose
 
-# ``jitsmv_dt2t`` composes over the light-RNG CSR kernels, which are CUDA-only. Mark the
-# module ``slow`` so the default ``pytest`` run skips it; CI runs it via ``pytest -m ""``.
+# ``jitsmv_dt2t`` composes over the light-RNG CSR kernels, which have both CUDA and
+# ``numba`` backends. Mark the module ``slow`` so the default ``pytest`` run skips it
+# (numba JIT compilation is slow); CI runs it via ``pytest -m ""``.
 pytestmark = pytest.mark.slow
 
 platform = jax.default_backend()
@@ -149,7 +150,7 @@ def test_jitsmv_dt2t_exports_from_package():
 
 
 # --------------------------------------------------------------------------- #
-#  Fused fill primitive (corder=True / mv-notrans structure), CUDA-only
+#  Fused fill primitive (corder=True / mv-notrans structure), CUDA + numba
 # --------------------------------------------------------------------------- #
 
 @requires_dt2t_backend

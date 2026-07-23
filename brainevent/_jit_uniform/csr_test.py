@@ -27,6 +27,7 @@ from brainevent._jit_uniform.csr import (
     jitu_csr_count_p_call,
     jitu_csr_fill_p_call,
 )
+from brainevent._jit_uniform._test_util import dense_uniform_reference
 from brainevent._jit_uniform.float import jitu
 from brainevent._test_util import allclose
 
@@ -36,11 +37,17 @@ pytestmark = pytest.mark.slow
 
 platform = jax.default_backend()
 CSR_IMPLEMENTATIONS = tuple(jitu_csr_count_p.available_backends(platform))
+CPU_DEVICE = jax.devices('cpu')[0]
+CPU_CSR_IMPLEMENTATIONS = tuple(jitu_csr_count_p.available_backends('cpu'))
 MATRIX_MODES = ['mv', 'mm']
 
 requires_csr_backend = pytest.mark.skipif(
     not CSR_IMPLEMENTATIONS,
     reason=f'No jitu_csr_count/fill implementation on platform={platform}',
+)
+requires_cpu_csr_backend = pytest.mark.skipif(
+    'numba' not in CPU_CSR_IMPLEMENTATIONS,
+    reason='No jitu_csr_count/fill numba implementation on CPU',
 )
 
 
@@ -68,6 +75,35 @@ def _counts_to_offsets(count_out, corder, n_rows):
     else:
         offsets = indptr
     return indptr, offsets, row_counts
+
+
+@requires_cpu_csr_backend
+@pytest.mark.parametrize('matrix_mode', MATRIX_MODES)
+@pytest.mark.parametrize('corder', [True, False])
+def test_to_csr_numba_matches_light_rng_reference(matrix_mode, corder):
+    shape = (13, 17)
+    w_low, w_high, prob, seed = -1.5, 1.5, 0.2, 123
+    with jax.default_device(CPU_DEVICE):
+        csr = jitu_to_csr(
+            w_low,
+            w_high,
+            prob,
+            seed,
+            shape=shape,
+            corder=corder,
+            matrix_mode=matrix_mode,
+            backend='numba',
+        )
+    expected = dense_uniform_reference(
+        w_low,
+        w_high,
+        prob,
+        seed,
+        shape=shape,
+        corder=corder,
+        matrix_mode=matrix_mode,
+    )
+    assert np.allclose(np.asarray(csr.todense()), expected, rtol=1e-6, atol=1e-6)
 
 
 @requires_csr_backend

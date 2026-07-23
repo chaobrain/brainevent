@@ -25,11 +25,29 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
     jax.config.update('jax_default_matmul_precision', 'highest')
 
 from brainevent._jit_normal.float import jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p
+from brainevent._jit_normal._test_util import dense_normal_reference
 
 platform = jax.default_backend()
 JITN_IMPLEMENTATIONS = tuple(jitn_p.available_backends(platform))
 JITNMV_IMPLEMENTATIONS = tuple(jitnmv_p.available_backends(platform))
 JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends(platform))
+CPU_DEVICE = jax.devices('cpu')[0]
+CPU_JITN_IMPLEMENTATIONS = tuple(jitn_p.available_backends('cpu'))
+CPU_JITNMV_IMPLEMENTATIONS = tuple(jitnmv_p.available_backends('cpu'))
+CPU_JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends('cpu'))
+
+requires_cpu_jitn = pytest.mark.skipif(
+    'numba' not in CPU_JITN_IMPLEMENTATIONS,
+    reason='No jitn numba backend registered on CPU',
+)
+requires_cpu_jitnmv = pytest.mark.skipif(
+    'numba' not in CPU_JITNMV_IMPLEMENTATIONS,
+    reason='No jitnmv numba backend registered on CPU',
+)
+requires_cpu_jitnmm = pytest.mark.skipif(
+    'numba' not in CPU_JITNMM_IMPLEMENTATIONS,
+    reason='No jitnmm numba backend registered on CPU',
+)
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +70,74 @@ def test_jitn_requires_matrix_mode():
     # mv and mm draw different matrices, so dense materialization must pick one.
     with pytest.raises(TypeError):
         jitn(1.5, 0.15, 0.1, 123, shape=(20, 30))
+
+
+@requires_cpu_jitn
+@pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitn_numba_matches_light_rng_reference(matrix_mode, transpose, corder):
+    shape = (13, 17)
+    w_loc = jnp.asarray(1.5, dtype=jnp.float32)
+    w_scale = jnp.asarray(0.15, dtype=jnp.float32)
+    prob, seed = 0.2, 123
+    with jax.default_device(CPU_DEVICE):
+        actual = jitn(
+            w_loc, w_scale, prob, seed,
+            shape=shape, transpose=transpose, corder=corder,
+            matrix_mode=matrix_mode, backend='numba',
+        )
+    expected = dense_normal_reference(
+        w_loc, w_scale, prob, seed,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode=matrix_mode,
+    )
+    assert np.allclose(np.asarray(actual), expected, rtol=5e-6, atol=5e-6)
+
+
+@requires_cpu_jitnmv
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmv_numba_matches_light_rng_reference(transpose, corder):
+    shape = (13, 17)
+    w_loc = jnp.asarray(1.5, dtype=jnp.float32)
+    w_scale = jnp.asarray(0.15, dtype=jnp.float32)
+    prob, seed = 0.2, 123
+    vec_size = shape[0] if transpose else shape[1]
+    vector = jnp.linspace(-0.3, 0.7, vec_size, dtype=jnp.float32)
+    with jax.default_device(CPU_DEVICE):
+        actual = jitnmv(
+            w_loc, w_scale, prob, vector, seed,
+            shape=shape, transpose=transpose, corder=corder, backend='numba',
+        )
+    dense = dense_normal_reference(
+        w_loc, w_scale, prob, seed,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode='mv',
+    )
+    expected = dense @ np.asarray(vector)
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
+
+
+@requires_cpu_jitnmm
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmm_numba_matches_light_rng_reference(transpose, corder):
+    shape = (13, 17)
+    w_loc = jnp.asarray(1.5, dtype=jnp.float32)
+    w_scale = jnp.asarray(0.15, dtype=jnp.float32)
+    prob, seed = 0.2, 123
+    b_rows = shape[0] if transpose else shape[1]
+    B = jnp.reshape(jnp.linspace(-0.5, 0.8, b_rows * 3, dtype=jnp.float32), (b_rows, 3))
+    with jax.default_device(CPU_DEVICE):
+        actual = jitnmm(
+            w_loc, w_scale, prob, B, seed,
+            shape=shape, transpose=transpose, corder=corder, backend='numba',
+        )
+    dense = dense_normal_reference(
+        w_loc, w_scale, prob, seed,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode='mm',
+    )
+    expected = dense @ np.asarray(B)
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS)

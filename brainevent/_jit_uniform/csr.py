@@ -31,7 +31,8 @@ Generation is split into two passes (``nnz`` is data dependent, XLA needs static
 1. count : per-(row, chunk) counts (notrans) or per-row counts (trans)
 2. fill  : column indices + values, given the offsets derived from the counts
 
-This is CUDA-only and eager (``nnz`` is read back between the passes).
+Both CUDA and ``numba`` backends draw the same matrix; the two-pass flow is
+eager either way (``nnz`` is read back between the passes).
 """
 
 from pathlib import Path
@@ -47,9 +48,10 @@ from brainevent._data import _initialize_conn_length, _initialize_seed
 from brainevent._misc import (
     _resolve_indptr_dtype, _require_jax_x64_for_int64, _as_int32_cuda_offsets,
 )
-from brainevent._op import XLACustomKernel, load_cuda_file
+from brainevent._numba_random import get_numba_light_rng_funcs
+from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
-from .float import MatrixMode, _normalize_chunk_size, _normalize_matrix_mode
+from .float import MatrixMode, _normalize_chunk_size, _normalize_matrix_mode, _MV_STRIDE, _MM_STRIDE
 
 __all__ = [
     'jitu_to_csr',
@@ -126,6 +128,95 @@ def _jitu_csr_count_cuda_kernel(
     return kernel
 
 
+def _jitu_csr_count_numba_kernel(
+    shape: MatrixShape,
+    corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    matrix_mode: MatrixMode = 'mv',
+    **kwargs,
+):
+    """Numba CPU count pass mirroring ``csr.cu``."""
+    import numba
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+
+    stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
+    n_rows, n_cols = int(shape[0]), int(shape[1])
+    cs_val = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
+
+    if corder:
+        k = n_cols
+
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, seed, chunk_counts):
+            m = chunk_counts.shape[0]
+            n_chunks = chunk_counts.shape[1]
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            for row in range(m):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        chunk_counts[row, chunk_id] = 0
+                        continue
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    cnt = 0
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            cnt += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+                    chunk_counts[row, chunk_id] = cnt
+    else:
+        m_walk = n_cols
+
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, seed, row_counts):
+            row_counts[:] = 0
+            k = row_counts.shape[0]
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + cs_val - 1) // cs_val
+            for row in range(m_walk):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            row_counts[chunk_start + local_j] += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+
+    def kernel(w_low, w_high, clen, seed):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, seed)
+
+    return kernel
+
+
 def jitu_csr_count_p_call(
     w_low,
     w_high,
@@ -180,6 +271,7 @@ jitu_csr_count_p = XLACustomKernel(
     doc="Low-level CUDA primitive counting non-zeros for light uniform CSR materialization.",
 )
 jitu_csr_count_p.def_cuda_raw_kernel(_jitu_csr_count_cuda_kernel, asdefault=True)
+jitu_csr_count_p.def_numba_kernel(_jitu_csr_count_numba_kernel)
 jitu_csr_count_p.def_call(jitu_csr_count_p_call)
 jitu_csr_count_p.def_tags('jit_uniform', 'csr', 'light_rng')
 
@@ -219,6 +311,109 @@ def _jitu_csr_fill_cuda_kernel(
                 n_rows=np.int32(n_cols), n_cols=np.int32(n_rows),
                 chunk_size=np.int32(chunk_size_value),
             )
+
+    return kernel
+
+
+def _jitu_csr_fill_numba_kernel(
+    shape: MatrixShape,
+    corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    matrix_mode: MatrixMode = 'mv',
+    **kwargs,
+):
+    """Numba CPU fill pass mirroring ``csr.cu``."""
+    import numba
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+    _rng_uniform01 = _rng['uniform01']
+
+    stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
+    n_rows, n_cols = int(shape[0]), int(shape[1])
+    cs_val = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
+
+    if corder:
+        k = n_cols
+
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, seed, offsets, indices, data):
+            m = offsets.shape[0]
+            n_chunks = offsets.shape[1]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            for row in range(m):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        continue
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    pos = offsets[row, chunk_id]
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            col = chunk_start + local_j
+                            u01 = _rng_uniform01(seed0, row, col)
+                            indices[pos] = col
+                            data[pos] = w_low0 + u01 * span
+                            pos += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+    else:
+        m_walk = n_cols
+
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, seed, offsets, indices, data, cursor):
+            cursor[:] = 0
+            k = cursor.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + cs_val - 1) // cs_val
+            for row in range(m_walk):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            pos = offsets[j] + cursor[j]
+                            cursor[j] += 1
+                            u01 = _rng_uniform01(seed0, row, j)
+                            indices[pos] = row
+                            data[pos] = w_low0 + u01 * span
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+
+    def kernel(w_low, w_high, clen, seed, offsets):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, seed, offsets)
 
     return kernel
 
@@ -284,6 +479,7 @@ jitu_csr_fill_p = XLACustomKernel(
     doc="Low-level CUDA primitive filling CSR indices/data for light uniform CSR.",
 )
 jitu_csr_fill_p.def_cuda_raw_kernel(_jitu_csr_fill_cuda_kernel, asdefault=True)
+jitu_csr_fill_p.def_numba_kernel(_jitu_csr_fill_numba_kernel)
 jitu_csr_fill_p.def_call(jitu_csr_fill_p_call)
 jitu_csr_fill_p.def_tags('jit_uniform', 'csr', 'light_rng')
 

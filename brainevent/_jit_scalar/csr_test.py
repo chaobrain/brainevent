@@ -30,8 +30,9 @@ from brainevent._jit_scalar.csr import (
 from brainevent._jit_scalar.float import jits
 from brainevent._test_util import allclose
 
-# The light-RNG CSR count/fill primitives are CUDA-only (no native ``numba`` backend).
-# Mark the whole module ``slow`` so the default ``pytest`` run skips it; CI runs it via
+# The light-RNG CSR count/fill primitives have both CUDA and ``numba`` backends
+# (the numba path draws the same matrix as CUDA). Mark the whole module ``slow`` so
+# the default ``pytest`` run skips it (numba JIT compilation is slow); CI runs it via
 # ``pytest -m ""``.
 pytestmark = pytest.mark.slow
 

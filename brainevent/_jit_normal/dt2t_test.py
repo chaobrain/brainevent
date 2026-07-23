@@ -112,7 +112,6 @@ def test_jitnmv_dt2t_float64_matches_csr_reference(implementation, corder):
             42,
             shape=shape,
             corder=corder,
-            matrix_mode='mv',
             backend=implementation,
         )
         csr = jitn_to_csr(
@@ -122,6 +121,7 @@ def test_jitnmv_dt2t_float64_matches_csr_reference(implementation, corder):
             42,
             shape=shape,
             corder=corder,
+            matrix_mode='mv',
             backend=implementation,
         )
         expected = _csr_yw_reference(csr, y, False)

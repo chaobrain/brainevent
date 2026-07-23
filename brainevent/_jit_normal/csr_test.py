@@ -27,20 +27,28 @@ from brainevent._jit_normal.csr import (
     jitn_csr_count_p_call,
     jitn_csr_fill_p_call,
 )
+from brainevent._jit_normal._test_util import dense_normal_reference
 from brainevent._jit_normal.float import jitn
 from brainevent._test_util import allclose
 
-# The light-RNG CSR count/fill primitives are CUDA-only. Mark the whole module
-# slow so the default pytest run skips it; CI runs it via ``pytest -m ""``.
+# The light-RNG CSR count/fill primitives compile native kernels. Mark the
+# whole module slow so the default pytest run skips it; CI runs it via
+# ``pytest -m ""``.
 pytestmark = pytest.mark.slow
 
 platform = jax.default_backend()
+CPU_DEVICE = jax.devices('cpu')[0]
 CSR_IMPLEMENTATIONS = tuple(jitn_csr_count_p.available_backends(platform))
+CPU_CSR_IMPLEMENTATIONS = tuple(jitn_csr_count_p.available_backends('cpu'))
 MATRIX_MODES = ['mv', 'mm']
 
 requires_csr_backend = pytest.mark.skipif(
     not CSR_IMPLEMENTATIONS,
     reason=f'No jitn_csr_count/fill implementation on platform={platform}',
+)
+requires_cpu_csr_backend = pytest.mark.skipif(
+    'numba' not in CPU_CSR_IMPLEMENTATIONS,
+    reason='No jitn_csr_count/fill numba backend registered on CPU',
 )
 
 
@@ -72,6 +80,24 @@ def _counts_to_offsets(count_out, corder, n_rows):
 
 @requires_csr_backend
 class Test_Normal_To_CSR:
+    @requires_cpu_csr_backend
+    @pytest.mark.parametrize('matrix_mode', MATRIX_MODES)
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_to_csr_numba_matches_light_rng_reference(self, matrix_mode, corder):
+        shape = (13, 17)
+        w_loc = jnp.asarray(1.5, dtype=jnp.float32)
+        w_scale = jnp.asarray(0.15, dtype=jnp.float32)
+        with jax.default_device(CPU_DEVICE):
+            csr = jitn_to_csr(
+                w_loc, w_scale, 0.2, 123,
+                shape=shape, corder=corder, matrix_mode=matrix_mode, backend='numba',
+            )
+        expected = dense_normal_reference(
+            w_loc, w_scale, 0.2, 123,
+            shape=shape, corder=corder, matrix_mode=matrix_mode,
+        )
+        assert np.allclose(np.asarray(csr.todense()), expected, rtol=1e-5, atol=1e-5)
+
     @pytest.mark.parametrize('implementation', CSR_IMPLEMENTATIONS)
     @pytest.mark.parametrize('matrix_mode', MATRIX_MODES)
     @pytest.mark.parametrize('corder', [True, False])

@@ -25,11 +25,11 @@ from jax.interpreters import ad
 
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import namescope
-from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
+from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from .float import _normalize_chunk_size, jitumv_p_call, jitumm_p_call, _dtype_sfx
+from .float import _normalize_chunk_size, _MV_STRIDE, _MM_STRIDE, jitumv_p_call, jitumm_p_call, _dtype_sfx
 
 __all__ = [
     "binary_jitumv",
@@ -315,89 +315,97 @@ def _jitumv_numba_kernel_generator(
         executes the Numba-compiled kernel and returns the result.
     """
     import numba
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+    _rng_uniform01 = _rng['uniform01']
 
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _lfsr_uniform = get_numba_lfsr_uniform()
+    stride = _MV_STRIDE
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
-        if vector_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                n_col = posts.shape[0]
-                n_row = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                for i_col in range(n_col):
-                    state = _lfsr_seed(seed0 + i_col * n_row)
-                    i_row = _lfsr_random_integers(state, 0, clen0 - 1)
-                    out = np.asarray(0., dtype=posts.dtype)
-                    while i_row < n_row:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        if vector[i_row]:
-                            out += w
-                        i_row += _lfsr_random_integers(state, 1, clen0 - 1)
-                    posts[i_col] = out
-        else:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                n_col = posts.shape[0]
-                n_row = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                for i_col in range(n_col):
-                    state = _lfsr_seed(seed0 + i_col * n_row)
-                    i_row = _lfsr_random_integers(state, 0, clen0 - 1)
-                    out = np.asarray(0., dtype=posts.dtype)
-                    while i_row < n_row:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        if vector[i_row] > 0.:
-                            out += w
-                        i_row += _lfsr_random_integers(state, 1, clen0 - 1)
-                    posts[i_col] = out
-
-
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, vector, seed, posts):
+            m = posts.shape[0]
+            k = vector.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + chunk_size - 1) // chunk_size
+            for row in range(m):
+                out = np.float64(0.)
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            if is_bool:
+                                active = vector[j]
+                            else:
+                                active = vector[j] > 0.
+                            if active:
+                                u01 = _rng_uniform01(seed0, row, j)
+                                out += w_low0 + u01 * span
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+                posts[row] = out
     else:
-        if vector_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                posts[:] = 0.
-                num_col = posts.shape[0]
-                num_row = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                for i_row in range(num_row):
-                    if vector[i_row]:
-                        state = _lfsr_seed(seed0 + i_row * num_col)
-                        i_col = _lfsr_random_integers(state, 0, clen0 - 1)
-                        while i_col < num_col:
-                            w = _lfsr_uniform(state, w_low0, w_high0)
-                            posts[i_col] += w
-                            i_col += _lfsr_random_integers(state, 1, clen0 - 1)
-        else:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                posts[:] = 0.
-                num_col = posts.shape[0]
-                num_row = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                for i_row in range(num_row):
-                    if vector[i_row] > 0.:
-                        state = _lfsr_seed(seed0 + i_row * num_col)
-                        i_col = _lfsr_random_integers(state, 0, clen0 - 1)
-                        while i_col < num_col:
-                            w = _lfsr_uniform(state, w_low0, w_high0)
-                            posts[i_col] += w
-                            i_col += _lfsr_random_integers(state, 1, clen0 - 1)
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, vector, seed, posts):
+            posts[:] = 0.
+            k = posts.shape[0]
+            m = vector.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + chunk_size - 1) // chunk_size
+            for row in range(m):
+                if is_bool:
+                    active_row = vector[row]
+                else:
+                    active_row = vector[row] > 0.
+                if not active_row:
+                    continue
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            u01 = _rng_uniform01(seed0, row, j)
+                            posts[j] += w_low0 + u01 * span
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
 
     def kernel(w_low, w_high, clen, vector, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, vector, seed)
@@ -908,93 +916,102 @@ def _jitumm_numba_kernel_generator(
         executes the Numba-compiled kernel and returns the result.
     """
     import numba
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+    _rng_uniform01 = _rng['uniform01']
 
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _lfsr_uniform = get_numba_lfsr_uniform()
+    stride = _MM_STRIDE
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
-        if B_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                m = posts.shape[0]
-                n = posts.shape[1]
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                for i_m in range(m):
-                    state = _lfsr_seed(seed0 + i_m * k)
-                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
-                    out = np.zeros(n, dtype=posts.dtype)
-                    while i_k < k:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        for j in range(B.shape[1]):
-                            if B[i_k, j]:
-                                out[j] += w
-                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
-                    posts[i_m] = out
-        else:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                m = posts.shape[0]
-                n = posts.shape[1]
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                for i_m in range(m):
-                    state = _lfsr_seed(seed0 + i_m * k)
-                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
-                    out = np.zeros(n, dtype=posts.dtype)
-                    while i_k < k:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        for j in range(B.shape[1]):
-                            if B[i_k, j] > 0.:
-                                out[j] += w
-                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
-                    posts[i_m] = out
-
-
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, B, seed, posts):
+            m = posts.shape[0]
+            n = posts.shape[1]
+            k = B.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + chunk_size - 1) // chunk_size
+            for row in range(m):
+                out = np.zeros(n, dtype=posts.dtype)
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            u01 = _rng_uniform01(seed0, row, j)
+                            w = w_low0 + u01 * span
+                            for col in range(n):
+                                if is_bool:
+                                    active = B[j, col]
+                                else:
+                                    active = B[j, col] > 0.
+                                if active:
+                                    out[col] += w
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+                posts[row] = out
     else:
-        if B_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                for i_k in range(k):
-                    state = _lfsr_seed(seed0 + i_k * m)
-                    indices = np.where(B[i_k])[0]
-                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
-                    while i_m < m:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        posts[i_m, indices] += w
-                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
-        else:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                for i_k in range(k):
-                    state = _lfsr_seed(seed0 + i_k * m)
-                    indices = np.where(B[i_k] > 0.)[0]
-                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
-                    while i_m < m:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        posts[i_m, indices] += w
-                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, B, seed, posts):
+            posts[:] = 0.
+            k = posts.shape[0]
+            m = B.shape[0]
+            n = B.shape[1]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + chunk_size - 1) // chunk_size
+            for row in range(m):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            u01 = _rng_uniform01(seed0, row, j)
+                            w = w_low0 + u01 * span
+                            for col in range(n):
+                                if is_bool:
+                                    active = B[row, col]
+                                else:
+                                    active = B[row, col] > 0.
+                                if active:
+                                    posts[j, col] += w
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
 
     def kernel(w_low, w_high, clen, B, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)

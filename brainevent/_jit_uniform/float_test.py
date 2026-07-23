@@ -24,11 +24,29 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
     jax.config.update('jax_default_matmul_precision', 'highest')
 
 from brainevent._jit_uniform.float import jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p
+from brainevent._jit_uniform._test_util import dense_uniform_reference
 
 platform = jax.default_backend()
 JITU_IMPLEMENTATIONS = tuple(jitu_p.available_backends(platform))
 JITUMV_IMPLEMENTATIONS = tuple(jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(jitumm_p.available_backends(platform))
+CPU_DEVICE = jax.devices('cpu')[0]
+CPU_JITU_IMPLEMENTATIONS = tuple(jitu_p.available_backends('cpu'))
+CPU_JITUMV_IMPLEMENTATIONS = tuple(jitumv_p.available_backends('cpu'))
+CPU_JITUMM_IMPLEMENTATIONS = tuple(jitumm_p.available_backends('cpu'))
+
+requires_cpu_jitu = pytest.mark.skipif(
+    'numba' not in CPU_JITU_IMPLEMENTATIONS,
+    reason='No jitu numba backend registered on CPU',
+)
+requires_cpu_jitumv = pytest.mark.skipif(
+    'numba' not in CPU_JITUMV_IMPLEMENTATIONS,
+    reason='No jitumv numba backend registered on CPU',
+)
+requires_cpu_jitumm = pytest.mark.skipif(
+    'numba' not in CPU_JITUMM_IMPLEMENTATIONS,
+    reason='No jitumm numba backend registered on CPU',
+)
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +77,65 @@ def test_jitu_requires_matrix_mode():
     # mv and mm draw different matrices, so dense materialization must pick one.
     with pytest.raises(TypeError):
         jitu(W_LOW, W_HIGH, PROB, SEED, shape=(20, 30))
+
+
+@requires_cpu_jitu
+@pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitu_numba_matches_light_rng_reference(matrix_mode, transpose, corder):
+    shape = (13, 17)
+    with jax.default_device(CPU_DEVICE):
+        actual = jitu(
+            W_LOW, W_HIGH, 0.2, SEED,
+            shape=shape, transpose=transpose, corder=corder,
+            matrix_mode=matrix_mode, backend='numba',
+        )
+    expected = dense_uniform_reference(
+        W_LOW, W_HIGH, 0.2, SEED,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode=matrix_mode,
+    )
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-6, atol=1e-6)
+
+
+@requires_cpu_jitumv
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitumv_numba_matches_light_rng_reference(transpose, corder):
+    shape = (13, 17)
+    vec_size = shape[0] if transpose else shape[1]
+    vector = jnp.linspace(-0.3, 0.7, vec_size, dtype=jnp.float32)
+    with jax.default_device(CPU_DEVICE):
+        actual = jitumv(
+            W_LOW, W_HIGH, 0.2, vector, SEED,
+            shape=shape, transpose=transpose, corder=corder, backend='numba',
+        )
+    dense = dense_uniform_reference(
+        W_LOW, W_HIGH, 0.2, SEED,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode='mv',
+    )
+    expected = dense @ np.asarray(vector)
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
+
+
+@requires_cpu_jitumm
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitumm_numba_matches_light_rng_reference(transpose, corder):
+    shape = (13, 17)
+    b_rows = shape[0] if transpose else shape[1]
+    B = jnp.reshape(jnp.linspace(-0.5, 0.8, b_rows * 3, dtype=jnp.float32), (b_rows, 3))
+    with jax.default_device(CPU_DEVICE):
+        actual = jitumm(
+            W_LOW, W_HIGH, 0.2, B, SEED,
+            shape=shape, transpose=transpose, corder=corder, backend='numba',
+        )
+    dense = dense_uniform_reference(
+        W_LOW, W_HIGH, 0.2, SEED,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode='mm',
+    )
+    expected = dense @ np.asarray(B)
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.skipif(

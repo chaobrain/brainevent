@@ -26,6 +26,7 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
 
 import brainevent
 from brainevent._jit_normal.binary import binary_jitnmv, binary_jitnmm
+from brainevent._jit_normal.csr import jitn_csr_count_p
 from brainevent._test_util import allclose, gen_events
 
 # Every test in this module dispatches to the native ``numba`` backend (the only backend for
@@ -34,14 +35,13 @@ from brainevent._test_util import allclose, gen_events
 pytestmark = pytest.mark.slow
 
 platform = jax.default_backend()
+CSR_IMPLEMENTATIONS = tuple(jitn_csr_count_p.available_backends(platform))
 
-# JITC CSR materialization goes through the ``jitn_csr_count`` primitive, which
-# registers only a CUDA backend (``def_cuda_raw_kernel``); on CPU it raises
-# ``NotImplementedError: ... not found for platform cpu``. Gate the CSR
-# materialization tests to GPU.
-requires_gpu = pytest.mark.skipif(
-    platform != 'gpu',
-    reason='JITC CSR materialization (csr_count) is a CUDA-only primitive',
+# JITC CSR materialization goes through the ``jitn_csr_count`` primitive; run
+# these tests on any platform that has a registered CSR backend.
+requires_csr_backend = pytest.mark.skipif(
+    not CSR_IMPLEMENTATIONS,
+    reason=f'No JITC CSR materialization backend on platform={platform}',
 )
 
 if platform == 'cpu':
@@ -479,7 +479,7 @@ class Test_JITC_Ambiguous_Materialization:
         assert mat.mm.todense().shape == mat.shape
 
 
-@requires_gpu
+@requires_csr_backend
 class Test_JITC_Materialization_Matches_Binary:
     @pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
     @pytest.mark.parametrize('corder', [True, False])
@@ -521,7 +521,7 @@ class Test_JITC_Materialization_Matches_Binary:
         assert allclose(csr @ spikes, out_binary, rtol=1e-4, atol=1e-4)
 
 
-@requires_gpu
+@requires_csr_backend
 class Test_JITC_To_CSR:
     @pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
     @pytest.mark.parametrize('corder', [True, False])

@@ -25,7 +25,7 @@ namely ``sampled_weight * y[row]`` (``transpose=False``) or ``sampled_weight * y
 (``transpose=True``).  It always materializes the mv matrix.
 
 ``corder`` keeps its usual meaning (it selects the notrans/trans generation).  The
-``corder=True`` path uses the fused ``dt2t.cu`` fill (which replays the mv-notrans
+``corder=True`` path can use the fused fill primitive (which replays the mv-notrans
 walk); the ``corder=False`` path composes over :func:`jitn_to_csr` (whose trans
 materialization has a different flat order the fused kernel can't reproduce).
 """
@@ -40,10 +40,11 @@ import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import _initialize_seed
-from brainevent._op import XLACustomKernel, load_cuda_file
+from brainevent._numba_random import get_numba_light_rng_funcs
+from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
 from .csr import jitn_to_csr
-from .float import _normalize_chunk_size
+from .float import _MV_STRIDE, _normalize_chunk_size
 
 __all__ = [
     'jitnmv_dt2t',
@@ -116,11 +117,11 @@ def jitnmv_dt2t(
             jnp.arange(n_rows, dtype=jnp.int32), jnp.diff(indptr), total_repeat_length=nnz
         )
         gathered = y[row_ids]                                         # weight * y[row]
-    return u.maybe_decimal(csr.data * gathered * unity)
+    return u.maybe_decimal(csr.data * gathered * unitd * unity)
 
 
 # ---------------------------------------------------------------------- #
-#  Fused fill primitive (corder=True / notrans structure), CUDA-only
+#  Fused fill primitive (corder=True / notrans structure), CUDA + numba
 # ---------------------------------------------------------------------- #
 
 def _jitnmv_dt2t_fill_cuda_kernel(
@@ -142,6 +143,100 @@ def _jitnmv_dt2t_fill_cuda_kernel(
             w_loc, w_scale, clen, y, seed, chunk_offsets,
             n_cols=np.int32(n_cols), chunk_size=np.int32(chunk_size_value),
         )
+
+    return kernel
+
+
+def _jitnmv_dt2t_fill_numba_kernel(
+    shape: MatrixShape,
+    transpose: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    **kwargs,
+):
+    """Numba CPU fused ``dt2t`` fill mirroring ``dt2t.cu``."""
+    import numba
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+    _rng_normal01 = _rng['normal01']
+
+    stride = _MV_STRIDE
+    k = int(shape[1])
+    cs_val = _normalize_chunk_size(k, chunk_size, target_chunks)
+
+    if transpose:
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_loc, w_scale, clen, y, seed, chunk_offsets, data):
+            m = chunk_offsets.shape[0]
+            n_chunks = chunk_offsets.shape[1]
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            for row in range(m):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        continue
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    pos = chunk_offsets[row, chunk_id]
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            n01 = _rng_normal01(seed0, row, j)
+                            data[pos] = (w_loc0 + n01 * w_scale0) * y[j]
+                            pos += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+    else:
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_loc, w_scale, clen, y, seed, chunk_offsets, data):
+            m = chunk_offsets.shape[0]
+            n_chunks = chunk_offsets.shape[1]
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            for row in range(m):
+                yrow = y[row]
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        continue
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    pos = chunk_offsets[row, chunk_id]
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            n01 = _rng_normal01(seed0, row, j)
+                            data[pos] = (w_loc0 + n01 * w_scale0) * yrow
+                            pos += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+
+    def kernel(w_loc, w_scale, clen, y, seed, chunk_offsets):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_loc, w_scale, clen, y, seed, chunk_offsets)
 
     return kernel
 
@@ -207,5 +302,6 @@ JITC (mv) matrix, in the mv-notrans CSR flat order.
 """,
 )
 jitnmv_dt2t_p.def_cuda_raw_kernel(_jitnmv_dt2t_fill_cuda_kernel, asdefault=True)
+jitnmv_dt2t_p.def_numba_kernel(_jitnmv_dt2t_fill_numba_kernel)
 jitnmv_dt2t_p.def_call(jitnmv_dt2t_p_call)
 jitnmv_dt2t_p.def_tags('jit_normal', 'dt2t', 'light_rng')

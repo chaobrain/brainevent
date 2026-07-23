@@ -69,12 +69,21 @@ __all__ = [
     'lfsr128_uniform',
     'lfsr128_normal',
     'lfsr128_random_integers',
+    # light-RNG (mirrors the CUDA ``light_rng`` connectivity sampler)
+    'light_rng_mix32',
+    'light_rng_bounded',
+    'light_rng_next',
+    'light_rng_init',
+    'light_rng_uniform01',
+    'light_rng_normal01',
+    'light_rng_initial_q',
     # Dispatch helpers (for kernel generators)
     'get_numba_lfsr_seed',
     'get_numba_lfsr_random_integers',
     'get_numba_lfsr_uniform',
     'get_numba_lfsr_normal',
     'get_numba_lfsr_funcs',
+    'get_numba_light_rng_funcs',
 ]
 
 
@@ -358,6 +367,142 @@ def lfsr128_random_integers(state, low, high):
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  light-RNG (bit-exact port of the CUDA connectivity sampler)
+# ──────────────────────────────────────────────────────────────────────
+#
+# These primitives mirror, one-to-one, the ``light_rng`` helpers used by the
+# CUDA JIT-connectivity kernels (``binary_jitsmv.cu`` / ``binary_jitsmm.cu``):
+# ``mix32``, ``light_rng_init_wpr``, ``light_rng_next`` (xorshift32),
+# ``fast_bounded_u32`` (``__umulhi``) and ``stationary_initial_q``. The state is
+# a single ``uint32`` value threaded by return value (rather than an array),
+# which matches the pointer-mutation semantics of the CUDA code: every
+# ``light_rng_next`` advances the stream and returns the new state.
+#
+# All arithmetic is done in ``uint32`` with C-style wraparound; the 32-bit
+# multiplies are widened to ``uint64`` and masked so the result is independent
+# of NumPy/Numba integer-promotion rules.
+
+def light_rng_mix32(x):
+    """Finalising bit-mixer (the CUDA ``mix32``)."""
+    x = np.uint32(x)
+    x = np.uint32(x ^ (x >> np.uint32(16)))
+    x = np.uint32((np.uint64(x) * np.uint64(0x7feb352d)) & np.uint64(0xFFFFFFFF))
+    x = np.uint32(x ^ (x >> np.uint32(15)))
+    x = np.uint32((np.uint64(x) * np.uint64(0x846ca68b)) & np.uint64(0xFFFFFFFF))
+    x = np.uint32(x ^ (x >> np.uint32(16)))
+    return x
+
+
+def light_rng_bounded(r, bound):
+    """Unbiased ``r`` reduced to ``[0, bound)`` (the CUDA ``__umulhi``-based ``fast_bounded_u32``)."""
+    return np.uint32((np.uint64(r) * np.uint64(bound)) >> np.uint64(32))
+
+
+def light_rng_next(state):
+    """Advance the xorshift32 stream and return the new ``uint32`` state."""
+    x = np.uint32(state)
+    x = np.uint32(x ^ np.uint32(x << np.uint32(13)))
+    x = np.uint32(x ^ (x >> np.uint32(17)))
+    x = np.uint32(x ^ np.uint32(x << np.uint32(5)))
+    if x == np.uint32(0):
+        x = np.uint32(0x6d2b79f5)
+    return x
+
+
+def light_rng_init(seed, row, chunk_id, lane):
+    """Seed a per-``(row, chunk_id, lane)`` stream (the CUDA ``light_rng_init_wpr``)."""
+    x = np.uint32(np.uint32(seed) ^ np.uint32(0xd1b54a35))
+    x = np.uint32(x ^ np.uint32((np.uint64(np.uint32(row)) * np.uint64(0x85ebca6b)) & np.uint64(0xFFFFFFFF)))
+    x = np.uint32(x ^ np.uint32((np.uint64(np.uint32(chunk_id)) * np.uint64(0xc2b2ae35)) & np.uint64(0xFFFFFFFF)))
+    x = np.uint32(x ^ np.uint32((np.uint64(np.uint32(lane)) * np.uint64(0x27d4eb2d)) & np.uint64(0xFFFFFFFF)))
+    x = light_rng_mix32(x)
+    if x == np.uint32(0):
+        x = np.uint32(0x6d2b79f5)
+    return x
+
+
+def light_rng_uniform01(seed, row, col):
+    """CUDA-compatible 24-bit uniform variate for a generated edge."""
+    h = np.uint32(np.uint32(seed) ^ np.uint32(0xa0761d65))
+    h = np.uint32(h ^ np.uint32((np.uint64(np.uint32(row)) * np.uint64(0xe7037ed1)) & np.uint64(0xFFFFFFFF)))
+    h = np.uint32(h ^ np.uint32((np.uint64(np.uint32(col)) * np.uint64(0x8ebc6af1)) & np.uint64(0xFFFFFFFF)))
+    h = light_rng_mix32(h)
+    return np.float32((h & np.uint32(0x00FFFFFF)) * np.float32(1.0 / 16777216.0))
+
+
+def light_rng_normal01(seed, row, col):
+    """CUDA-compatible standard-normal variate for a generated edge."""
+    u = np.float32(light_rng_uniform01(seed, row, col))
+    lo = np.float32(1e-10)
+    hi = np.float32(1.0 - 1e-10)
+    if u < lo:
+        u = lo
+    elif u > hi:
+        u = hi
+
+    a1 = np.float32(-39.696830)
+    a2 = np.float32(220.94609)
+    a3 = np.float32(-275.92851)
+    a4 = np.float32(138.35775)
+    a5 = np.float32(-30.664799)
+    a6 = np.float32(2.5066283)
+    b1 = np.float32(-54.476099)
+    b2 = np.float32(161.58584)
+    b3 = np.float32(-155.69898)
+    b4 = np.float32(66.801312)
+    b5 = np.float32(-13.280681)
+
+    c1 = np.float32(-0.007784894)
+    c2 = np.float32(-0.32239646)
+    c3 = np.float32(-2.4007583)
+    c4 = np.float32(-2.5497325)
+    c5 = np.float32(4.3746641)
+    c6 = np.float32(2.9381640)
+    d1 = np.float32(0.007784696)
+    d2 = np.float32(0.32246713)
+    d3 = np.float32(2.4451342)
+    d4 = np.float32(3.7544087)
+
+    if u < np.float32(0.02425):
+        v = np.float32(np.sqrt(np.float32(-2.0) * np.log(u)))
+        z = np.float32(
+            (((((c1 * v + c2) * v + c3) * v + c4) * v + c5) * v + c6) /
+            ((((d1 * v + d2) * v + d3) * v + d4) * v + np.float32(1.0))
+        )
+        z = np.float32(-z)
+    elif u > np.float32(0.97575):
+        v = np.float32(np.sqrt(np.float32(-2.0) * np.log(np.float32(1.0) - u)))
+        z = np.float32(
+            (((((c1 * v + c2) * v + c3) * v + c4) * v + c5) * v + c6) /
+            ((((d1 * v + d2) * v + d3) * v + d4) * v + np.float32(1.0))
+        )
+    else:
+        v = np.float32(u - np.float32(0.5))
+        r = np.float32(v * v)
+        z = np.float32(
+            (((((a1 * r + a2) * r + a3) * r + a4) * r + a5) * r + a6) * v /
+            (((((b1 * r + b2) * r + b3) * r + b4) * r + b5) * r + np.float32(1.0))
+        )
+    return np.float32(z)
+
+
+def light_rng_initial_q(state, cl):
+    """Draw the stationary residual ``q`` and return ``(q, new_state)``.
+
+    Mirrors the CUDA ``stationary_initial_q``: two ``light_rng_next`` draws per
+    rejection round, so the stream advances identically to the device code.
+    """
+    n = np.uint32(np.uint32(cl) - np.uint32(1))
+    while True:
+        state = light_rng_next(state)
+        q = light_rng_bounded(state, n)
+        state = light_rng_next(state)
+        gate = light_rng_bounded(state, n)
+        if gate < np.uint32(n - q):
+            return q, state
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Dispatch tables and helpers
 # ──────────────────────────────────────────────────────────────────────
 
@@ -371,6 +516,14 @@ _LFSR_FUNC_NAMES = (
     'lfsr113_randn', 'lfsr113_uniform', 'lfsr113_normal', 'lfsr113_random_integers',
     'lfsr128_seed', 'lfsr128_next_key', 'lfsr128_randint', 'lfsr128_rand',
     'lfsr128_randn', 'lfsr128_uniform', 'lfsr128_normal', 'lfsr128_random_integers',
+)
+
+# The light-RNG primitives form a single (non-selectable) family; they are
+# njit-compiled by ``_ensure_numba_compiled`` alongside the LFSR functions and
+# rebound as module globals so their mutual references resolve at compile time.
+_LIGHT_RNG_FUNC_NAMES = (
+    'light_rng_mix32', 'light_rng_bounded', 'light_rng_next',
+    'light_rng_init', 'light_rng_uniform01', 'light_rng_normal01', 'light_rng_initial_q',
 )
 
 # Dispatch tables mapping an algorithm name to its primitive. They are populated
@@ -424,6 +577,8 @@ def _ensure_numba_compiled():
     if numba is not None:
         for name in _LFSR_FUNC_NAMES:
             g[name] = numba.njit(inline='always')(g[name])
+        for name in _LIGHT_RNG_FUNC_NAMES:
+            g[name] = numba.njit(inline='always')(g[name])
 
     _NUMBA_LFSR_SEED.update(
         lfsr88=g['lfsr88_seed'], lfsr113=g['lfsr113_seed'], lfsr128=g['lfsr128_seed'],
@@ -476,6 +631,30 @@ def get_numba_lfsr_normal():
     return _NUMBA_LFSR_NORMAL[get_lfsr_algorithm()]
 
 
+def get_numba_light_rng_funcs():
+    """Return the njit light-RNG primitives (bit-exact port of the CUDA sampler).
+
+    Returns
+    -------
+    dict
+        Keys: ``'init'``, ``'next'``, ``'bounded'``, ``'uniform01'``,
+        ``'normal01'``, ``'initial_q'``, ``'mix32'`` -- the
+        ``@numba.njit(inline='always')`` dispatchers used to
+        regenerate the same JIT connectivity matrix that the CUDA kernels draw.
+    """
+    _ensure_numba_compiled()
+    g = globals()
+    return {
+        'init': g['light_rng_init'],
+        'next': g['light_rng_next'],
+        'bounded': g['light_rng_bounded'],
+        'uniform01': g['light_rng_uniform01'],
+        'normal01': g['light_rng_normal01'],
+        'initial_q': g['light_rng_initial_q'],
+        'mix32': g['light_rng_mix32'],
+    }
+
+
 def get_numba_lfsr_funcs():
     """Return a dict of all Numba LFSR functions for the current global algorithm.
 
@@ -496,4 +675,3 @@ def get_numba_lfsr_funcs():
         'normal': _NUMBA_LFSR_NORMAL[alg],
         'random_integers': _NUMBA_LFSR_RANDOM_INTEGERS[alg],
     }
-
