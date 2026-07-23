@@ -35,6 +35,7 @@ from ._data import (
     JITCMatrix,
 )
 from ._dense import (
+    Dense,
     binary_densemv, binary_densemv_p,
     binary_densemm, binary_densemm_p,
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
@@ -169,6 +170,7 @@ __all__ = [
     'csr_slice_rows', 'csr_slice_rows_p',
 
     # --- dense matrix --- #
+    'Dense',
     'binary_densemv', 'binary_densemv_p',
     'binary_densemm', 'binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
@@ -354,4 +356,3 @@ def __dir__():
         | set(_DEPRECATED_RENAMES)
         | set(_DEPRECATED_REMOVED)
     )
-

@@ -40,6 +40,7 @@ SPARSE_BASE = u.sparse.SparseMatrix
 
 # Concrete subclasses of DataRepresentation (the in-scope families).
 CONCRETE_CLASSES = [
+    be.Dense,
     be.CSR, be.CSC,
     be.FixedNumPerPre, be.FixedNumPerPost,
     be.JITCScalarR, be.JITCScalarC,

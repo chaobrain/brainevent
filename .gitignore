@@ -243,6 +243,7 @@ cython_debug/
 /dev/fcn/results/
 /dev/REVIEW_AND_PLAN.md
 /a.py
+dev/
 
 # brainx-sphinx-header build artifacts
 docs/_brand/
