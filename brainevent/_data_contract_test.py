@@ -67,18 +67,30 @@ JITC_INSTANCES = [
 ]
 JITC_IDS = [c.__name__ for c, _ in JITC_INSTANCES]
 
-# JITC *scalar* matrices materialize mode-dependently: the mv (32-lane) and mm
+# Every JITC family materializes mode-dependently: the mv (32-lane) and mm
 # (4-thread AW-T4) light kernels draw different matrices, so bare
 # ``todense()/tocsr()/tocsc()/tocoo()`` raise and callers must go through the
-# ``mat.mv`` / ``mat.mm`` views.  Their CSR conversion is CUDA-only.
-_SCALAR_CLASSES = (be.JITCScalarR, be.JITCScalarC)
+# ``mat.mv`` / ``mat.mm`` views.  Their CSR conversion is CUDA-only (the
+# per-family ``*_csr_count`` primitives register only a CUDA backend).
+def _csr_count_backends(cls):
+    """CSR-materialization backends available for ``cls`` on the current platform.
 
-try:
-    from brainevent._jit_scalar.csr import jits_csr_count_p
-
-    _SCALAR_CSR_BACKENDS = tuple(jits_csr_count_p.available_backends(jax.default_backend()))
-except Exception:  # pragma: no cover - defensive: import/registration failure
-    _SCALAR_CSR_BACKENDS = ()
+    Returns an empty tuple when the family's ``csr_count`` primitive has no
+    backend for the active platform (e.g. CPU), so callers can skip the
+    CUDA-only conversion assertions.
+    """
+    try:
+        if cls in (be.JITCScalarR, be.JITCScalarC):
+            from brainevent._jit_scalar.csr import jits_csr_count_p as count_p
+        elif cls in (be.JITCNormalR, be.JITCNormalC):
+            from brainevent._jit_normal.csr import jitn_csr_count_p as count_p
+        elif cls in (be.JITCUniformR, be.JITCUniformC):
+            from brainevent._jit_uniform.csr import jitu_csr_count_p as count_p
+        else:  # pragma: no cover - defensive
+            return ()
+        return tuple(count_p.available_backends(jax.default_backend()))
+    except Exception:  # pragma: no cover - defensive: import/registration failure
+        return ()
 
 _DENSE = jnp.array([[1., 0., 2.], [0., 3., 0.], [4., 0., 5.]])
 
@@ -189,29 +201,21 @@ def test_jitc_refuses_fromdense(cls, data):
 @pytest.mark.parametrize('cls,data', JITC_INSTANCES, ids=JITC_IDS)
 def test_jitc_conversions_agree_with_todense(cls, data):
     m = cls(data, shape=(16, 16))
-    if cls in _SCALAR_CLASSES:
-        # Bare materialization is ambiguous for JITC scalar and must raise; the
-        # mv/mm views resolve the mode. tocsr/tocsc/tocoo are CUDA-only.
-        with pytest.raises(NotImplementedError):
-            m.todense()
-        with pytest.raises(NotImplementedError):
-            m.tocsr()
-        dense = m.mv.todense()
-        assert dense.shape == m.shape
-        if not _SCALAR_CSR_BACKENDS:
-            pytest.skip('JITC scalar CSR conversion is CUDA-only')
-        assert jnp.allclose(m.mv.tocsr().todense(), dense)
-        assert jnp.allclose(m.mv.tocsc().todense(), dense)
-        assert jnp.allclose(m.mv.tocoo().todense(), dense)
-        assert m.mv.tocsc().shape == m.shape
-        assert m.mv.tocoo().shape == m.shape
-        return
-    dense = m.todense()
-    assert jnp.allclose(m.tocsr().todense(), dense)
-    assert jnp.allclose(m.tocsc().todense(), dense)
-    assert jnp.allclose(m.tocoo().todense(), dense)
-    assert m.tocsc().shape == m.shape
-    assert m.tocoo().shape == m.shape
+    # Bare materialization is ambiguous for every JITC family and must raise; the
+    # mv/mm views resolve the mode. tocsr/tocsc/tocoo are CUDA-only.
+    with pytest.raises(NotImplementedError):
+        m.todense()
+    with pytest.raises(NotImplementedError):
+        m.tocsr()
+    dense = m.mv.todense()
+    assert dense.shape == m.shape
+    if not _csr_count_backends(cls):
+        pytest.skip('JITC CSR conversion is CUDA-only')
+    assert jnp.allclose(m.mv.tocsr().todense(), dense)
+    assert jnp.allclose(m.mv.tocsc().todense(), dense)
+    assert jnp.allclose(m.mv.tocoo().todense(), dense)
+    assert m.mv.tocsc().shape == m.shape
+    assert m.mv.tocoo().shape == m.shape
 
 
 # --------------------------------------------------------------------------- #

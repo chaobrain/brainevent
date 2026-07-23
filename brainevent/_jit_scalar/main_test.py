@@ -34,6 +34,15 @@ pytestmark = pytest.mark.slow
 
 platform = jax.default_backend()
 
+# JITC CSR materialization goes through the ``jits_csr_count`` primitive, which
+# registers only a CUDA backend (``def_cuda_raw_kernel``); on CPU it raises
+# ``NotImplementedError: ... not found for platform cpu``. Gate the CSR
+# materialization tests to GPU.
+requires_gpu = pytest.mark.skipif(
+    platform != 'gpu',
+    reason='JITC CSR materialization (csr_count) is a CUDA-only primitive',
+)
+
 if platform == 'cpu':
     shapes = [
         (200, 300),
@@ -451,6 +460,7 @@ class Test_JITC_Ambiguous_Materialization:
         assert mat.mm.todense().shape == mat.shape
 
 
+@requires_gpu
 class Test_JITC_To_CSR:
     @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
     @pytest.mark.parametrize('corder', [True, False])
@@ -513,6 +523,7 @@ class Test_JITC_To_CSR:
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
 
+@requires_gpu
 class Test_JITC_Materialization_Matches_Binary:
     """Cross-check: the materialized matrix must reproduce exactly the matrix the
     event-driven ``binary_jits*`` operators use internally.
