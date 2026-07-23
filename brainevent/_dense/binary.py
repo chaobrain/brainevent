@@ -39,7 +39,7 @@ __all__ = [
 
 def _find_cublas_library() -> Path:
     """Locate the cuBLAS shared library shipped by NVIDIA Python wheels."""
-    candidates = []
+    candidates: list[Path] = []
     spec = importlib.util.find_spec("nvidia")
     if spec is not None and spec.submodule_search_locations:
         for root in spec.submodule_search_locations:

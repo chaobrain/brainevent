@@ -23,7 +23,7 @@ the sparse families.
 """
 
 import operator
-from typing import Dict, Optional, Sequence, Union
+from typing import Dict, Optional, Sequence, Union, cast
 
 import brainunit as u
 import jax
@@ -32,7 +32,7 @@ import numpy as np
 from jax.tree_util import register_pytree_node_class
 
 from brainevent._data import DataRepresentation
-from brainevent._typing import Data, MatrixShape
+from brainevent._typing import ArrayData, Data, MatrixShape
 from .binary import binary_densemm, binary_densemv
 from .plasticity_binary import update_dense_on_binary_pre, update_dense_on_binary_post
 
@@ -131,7 +131,7 @@ class Dense(DataRepresentation):
     binary_densemm : Dense matrix-matrix event primitive.
     """
 
-    data: Data
+    data: ArrayData
     shape: MatrixShape
     __module__ = 'brainevent'
 
@@ -143,7 +143,7 @@ class Dense(DataRepresentation):
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
     ):
-        data = u.math.asarray(data)
+        data = cast(ArrayData, u.math.asarray(data))
         if data.ndim != 2:
             raise ValueError(f"Dense data must be 2-D, got shape={data.shape}.")
         if shape is None:
@@ -222,7 +222,7 @@ class Dense(DataRepresentation):
         the dense analogue of ``CSR.with_data``: only values change, while
         backend and buffers are carried forward.
         """
-        data = u.math.asarray(data)
+        data = cast(ArrayData, u.math.asarray(data))
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
