@@ -43,6 +43,11 @@ from brainevent._misc import (
     namescope,
 )
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, load_cuda_file
+from .hybrid_config import (
+    get_hybrid_config,
+    compile_flags_for_config,
+    module_suffix_for_config,
+)
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
@@ -314,12 +319,15 @@ def _binary_csrmv_indexed_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose and is_homo:
+        _cfg = get_hybrid_config()
+        _mod = 'csr_binary_csrmv_hybrid' + module_suffix_for_config(_cfg)
         load_cuda_file(
             Path(__file__).parent.joinpath('binary_csrmv_hybrid.cu'),
-            name='csr_binary_csrmv_hybrid',
+            name=_mod,
+            extra_cuda_cflags=compile_flags_for_config(_cfg),
             allow_cuda_graph=False,
         )
-        kernel_name = f'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid_homo{wt_sfx}{spk_suffix}'
+        kernel_name = f'{_mod}.binary_csrmv_wat_hybrid_homo{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
             return jax.ffi.ffi_call(
@@ -338,12 +346,15 @@ def _binary_csrmv_indexed_cuda_kernel(
             )
 
     elif transpose:
+        _cfg = get_hybrid_config()
+        _mod = 'csr_binary_indexed_csrmv_hybrid' + module_suffix_for_config(_cfg)
         load_cuda_file(
             Path(__file__).parent.joinpath('binary_indexed_csrmv_hybrid.cu'),
-            name='csr_binary_indexed_csrmv_hybrid',
+            name=_mod,
+            extra_cuda_cflags=compile_flags_for_config(_cfg),
             allow_cuda_graph=False,
         )
-        kernel_name = f'csr_binary_indexed_csrmv_hybrid.binary_indexed_csrmv_wat_hybrid_hetero{wt_sfx}{spk_suffix}'
+        kernel_name = f'{_mod}.binary_indexed_csrmv_wat_hybrid_hetero{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
             return jax.ffi.ffi_call(
@@ -864,9 +875,12 @@ def _binary_csrmm_indexed_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose and is_homo:
+        _cfg = get_hybrid_config()
+        _mod = 'csr_binary_csrmm_hybrid' + module_suffix_for_config(_cfg)
         load_cuda_file(
             Path(__file__).parent.joinpath('binary_csrmm_hybrid.cu'),
-            name='csr_binary_csrmm_hybrid',
+            name=_mod,
+            extra_cuda_cflags=compile_flags_for_config(_cfg),
             allow_cuda_graph=False,
         )
         logical_out_info = kwargs['outs'][0]
@@ -875,7 +889,7 @@ def _binary_csrmm_indexed_cuda_kernel(
             logical_out_info.dtype,
         )
         out_info = (physical_out_info, *kwargs['outs'][1:])
-        kernel_name = f'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid_homo{wt_sfx}{spk_suffix}'
+        kernel_name = f'{_mod}.binary_csrmm_sraw_hybrid_homo{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
             output, task_begin_out, task_end_out, status_out = jax.ffi.ffi_call(
@@ -895,9 +909,12 @@ def _binary_csrmm_indexed_cuda_kernel(
             return jnp.transpose(output), task_begin_out, task_end_out, status_out
 
     elif transpose:
+        _cfg = get_hybrid_config()
+        _mod = 'csr_binary_indexed_csrmm_hybrid' + module_suffix_for_config(_cfg)
         load_cuda_file(
             Path(__file__).parent.joinpath('binary_indexed_csrmm_hybrid.cu'),
-            name='csr_binary_indexed_csrmm_hybrid',
+            name=_mod,
+            extra_cuda_cflags=compile_flags_for_config(_cfg),
             allow_cuda_graph=False,
         )
         logical_out_info = kwargs['outs'][0]
@@ -906,7 +923,7 @@ def _binary_csrmm_indexed_cuda_kernel(
             logical_out_info.dtype,
         )
         out_info = (physical_out_info, *kwargs['outs'][1:])
-        kernel_name = f'csr_binary_indexed_csrmm_hybrid.binary_indexed_csrmm_sraw_hybrid_hetero{wt_sfx}{spk_suffix}'
+        kernel_name = f'{_mod}.binary_indexed_csrmm_sraw_hybrid_hetero{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
             output, task_begin_out, task_end_out, status_out = jax.ffi.ffi_call(

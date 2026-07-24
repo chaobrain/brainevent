@@ -38,6 +38,7 @@ from .plasticity_binary import update_csr_on_binary_pre, update_csr_on_binary_po
 from .slice import csr_slice_rows
 from .spsolve import csr_solve
 from .dt2t import csrmv_dt2t
+from .hybrid_config import hybrid_task_capacity
 
 __all__ = [
     'CSR',
@@ -49,28 +50,9 @@ __all__ = [
 
 
 def _binary_task_capacity_from_indptr(indptr) -> int:
-    indptr_np = np.asarray(jax.device_get(indptr), dtype=np.int64)
-    if indptr_np.ndim != 1:
-        raise ValueError(f"indptr must be one-dimensional, got shape={indptr_np.shape}.")
-    if indptr_np.size == 0:
-        raise ValueError("indptr must contain at least one element.")
-    row_lengths = np.diff(indptr_np)
-    if np.any(row_lengths < 0):
-        raise ValueError("CSR row lengths must be non-negative.")
-    
-    _BINARY_TASK_TPR_THRESHOLD = 128
-
-    _BINARY_TASK_NNZ = 4096
-
-    chunks = np.where(
-        row_lengths > _BINARY_TASK_TPR_THRESHOLD,
-        (row_lengths + _BINARY_TASK_NNZ - 1) // _BINARY_TASK_NNZ,
-        0,
-    )
-    task_capacity = int(chunks.sum())
-    if task_capacity > np.iinfo(np.int32).max:
-        raise ValueError("binary task capacity exceeds int32 range.")
-    return task_capacity
+    # Single source of truth (shared with the compiled hybrid ``.so``): see
+    # :func:`brainevent._csr.hybrid_config.hybrid_task_capacity`.
+    return hybrid_task_capacity(indptr)
 
 
 @jax.tree_util.register_pytree_node_class

@@ -29,6 +29,7 @@ from ._csr import (
     update_csr_on_binary_post, update_csr_on_binary_post_p,
     update_csc_on_binary_pre, update_csc_on_binary_post,
     csr_slice_rows, csr_slice_rows_p,
+    HybridConfig, get_hybrid_config, init_csr_config,
 )
 from ._data import (
     DataRepresentation,
@@ -164,6 +165,7 @@ __all__ = [
     'csrmm', 'csrmm_p',
     'csrmv_dt2t', 'cscmv_dt2t', 'csrmv_dt2t_p',
     'csrmm_dt2t', 'cscmm_dt2t', 'csrmm_dt2t_p',
+    'HybridConfig', 'get_hybrid_config', 'init_csr_config',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',
