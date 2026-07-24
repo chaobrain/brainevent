@@ -118,7 +118,7 @@ def jitumv_dt2t(
             jnp.arange(n_rows, dtype=jnp.int32), jnp.diff(indptr), total_repeat_length=nnz
         )
         gathered = y[row_ids]                                         # weight * y[row]
-    return u.maybe_decimal(csr.data * gathered * unity)
+    return u.maybe_decimal(csr.data * gathered * unitd * unity)
 
 
 # ---------------------------------------------------------------------- #

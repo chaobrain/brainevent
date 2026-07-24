@@ -67,6 +67,10 @@ _dtype_sfx = {
     np.dtype('float64'): '_f64',
     np.dtype('bfloat16'): '_bf16',
 }
+_NUMBA_UNSUPPORTED_DTYPES = frozenset({
+    np.dtype('float16'),
+    np.dtype('bfloat16'),
+})
 
 
 def _is_static_zero(value) -> bool:
@@ -244,6 +248,13 @@ def jits_csr_count_p_call(
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
+    # Counting only depends on shape/probability/seed; cast low-precision
+    # scalar weights so Numba does not reject unsupported array arguments.
+    count_weight = (
+        weight.astype(jnp.float32)
+        if np.dtype(weight.dtype) in _NUMBA_UNSUPPORTED_DTYPES
+        else weight
+    )
 
     if corder:
         n_chunks = _n_chunks(n_cols, chunk_size_value)
@@ -256,7 +267,7 @@ def jits_csr_count_p_call(
         out_info = jax.ShapeDtypeStruct((n_rows,), jnp.int32)
 
     return jits_csr_count_p(
-        weight, clen, seed,
+        count_weight, clen, seed,
         outs=[out_info],
         shape=(n_rows, n_cols),
         corder=corder,
@@ -264,7 +275,7 @@ def jits_csr_count_p_call(
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         backend=backend,
-        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
+        weight_info=jax.ShapeDtypeStruct(count_weight.shape, count_weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
     )
@@ -444,23 +455,29 @@ def jits_csr_fill_p_call(
     matrix_mode = _normalize_matrix_mode(matrix_mode)
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
     weight = jnp.atleast_1d(weight)
+    out_dtype = weight.dtype
+    kernel_weight = weight
+    if np.dtype(out_dtype) in _NUMBA_UNSUPPORTED_DTYPES:
+        # Numba cannot lower f16/bf16 arrays; the scalar fill value is constant,
+        # so compute it through float32 and restore the public dtype.
+        kernel_weight = weight.astype(jnp.float32)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
     offsets = jnp.asarray(offsets, dtype=jnp.int32)
     nnz = int(nnz)
     if nnz == 0:
-        return (jnp.zeros((0,), dtype=jnp.int32), jnp.zeros((0,), dtype=weight.dtype))
+        return (jnp.zeros((0,), dtype=jnp.int32), jnp.zeros((0,), dtype=out_dtype))
 
     outs = [
         jax.ShapeDtypeStruct((nnz,), jnp.int32),
-        jax.ShapeDtypeStruct((nnz,), weight.dtype),
+        jax.ShapeDtypeStruct((nnz,), kernel_weight.dtype),
     ]
     if not corder:
         # trans fill also needs an int32 write cursor (one per output row).
         outs.append(jax.ShapeDtypeStruct((n_rows,), jnp.int32))
 
     res = jits_csr_fill_p(
-        weight, clen, seed, offsets,
+        kernel_weight, clen, seed, offsets,
         outs=outs,
         shape=(n_rows, n_cols),
         corder=corder,
@@ -468,12 +485,13 @@ def jits_csr_fill_p_call(
         chunk_size=chunk_size_value,
         target_chunks=target_chunks,
         backend=backend,
-        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
+        weight_info=jax.ShapeDtypeStruct(kernel_weight.shape, kernel_weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         offsets_info=jax.ShapeDtypeStruct(offsets.shape, offsets.dtype),
     )
-    return res[0], res[1]
+    data = res[1].astype(out_dtype) if res[1].dtype != out_dtype else res[1]
+    return res[0], data
 
 
 jits_csr_fill_p = XLACustomKernel(
