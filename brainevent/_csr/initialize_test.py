@@ -26,6 +26,17 @@ from brainevent._csr import hybrid_config as hc
 from brainevent._csr import initialize
 
 
+@pytest.fixture(autouse=True)
+def _restore_cache_dir():
+    cache_dir = brainevent.get_cache_dir()
+    hc.get_hybrid_config.cache_clear()
+    try:
+        yield
+    finally:
+        brainevent.set_cache_dir(cache_dir)
+        hc.get_hybrid_config.cache_clear()
+
+
 def test_default_config_matches_cu_defaults():
     assert hc.DEFAULT_HYBRID_CONFIG == hc.HybridConfig(256, 2048, 128, 4096)
 
