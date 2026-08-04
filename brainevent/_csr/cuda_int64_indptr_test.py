@@ -34,6 +34,18 @@ from brainevent._csr.main import _make_binary_task_workspace
 from brainevent._csr.plasticity_binary import update_csr_on_binary_post, update_csr_on_binary_pre
 from brainevent._csr.slice import csr_slice_rows, csr_slice_rows_grad
 from brainevent._csr.dt2t import csrmv_dt2t
+from brainevent._csr.hybrid_config import get_hybrid_config, module_suffix_for_config
+
+
+def _strip_hybrid_suffix(name):
+    """Remove the config-dependent hybrid module suffix (e.g. ``_b256_s2048_t128_n4096``).
+
+    The hybrid ``.so`` module names embed the active :func:`get_hybrid_config` so
+    different configs compile to distinct modules.  These tests only care about the
+    logical module identity, so we normalise the suffix away to stay config-agnostic.
+    """
+    suffix = module_suffix_for_config(get_hybrid_config())
+    return name.replace(suffix, '') if suffix else name
 
 
 requires_gpu = pytest.mark.skipif(
@@ -351,13 +363,13 @@ def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatc
             workspace.status,
         )
 
-    assert [name for _, name, _ in load_calls] == [
+    assert [_strip_hybrid_suffix(name) for _, name, _ in load_calls] == [
         'csr_binary_csrmv',
         'csr_binary_csrmv_hybrid',
         'csr_binary_csrmm',
         'csr_binary_csrmm_hybrid',
     ]
-    assert [call[0] for call in ffi_calls] == [
+    assert [_strip_hybrid_suffix(call[0]) for call in ffi_calls] == [
         'csr_binary_csrmv.binary_csrmv_nt_auto_homo_f32_bool',
         'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid_homo_f32_bool',
         'csr_binary_csrmm.binary_csrmm_nt_auto_hetero_f32_bool',
@@ -533,7 +545,7 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
             workspace.status,
         )
 
-    assert [name for _, name, _ in load_calls] == [
+    assert [_strip_hybrid_suffix(name) for _, name, _ in load_calls] == [
         'csr_binary_indexed_csrmv',
         'csr_binary_indexed_csrmv_hybrid',
         'csr_binary_csrmv_hybrid',
@@ -541,7 +553,7 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
         'csr_binary_indexed_csrmm_hybrid',
         'csr_binary_csrmm_hybrid',
     ]
-    assert [call[0] for call in ffi_calls] == [
+    assert [_strip_hybrid_suffix(call[0]) for call in ffi_calls] == [
         'csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero_f32_bool',
         'csr_binary_indexed_csrmv_hybrid.binary_indexed_csrmv_wat_hybrid_hetero_f32_bool',
         'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid_homo_f32_bool',

@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters.partial_eval import DynamicJaxprTracer
 
-from brainevent._misc import MatrixShape
+from brainevent._misc import MatrixShape, _INT32_MAX
 
 __all__ = [
     'csr_diag_position',
@@ -135,6 +135,34 @@ def csr_diag_position(indptr, indices, *, shape: MatrixShape):
     if _is_tracer(indices):
         raise ValueError('Cannot trace indices when finding diagonal position')
     n_diag = min(shape)
+
+    # int64-indptr diagonal augmentation is deferred (NotImplementedError).
+    #
+    # Why: the numba planner ``_build_diag_augmented_structure`` below hardcodes
+    # ``np.int32`` for every structural output -- ``new_indptr_``, ``new_indices_``,
+    # ``old_to_new_`` and ``diag_dest_``. The augmented matrix has up to
+    # ``nse + n_diag`` stored elements, so its offsets (``new_indptr``) and the
+    # position maps (``old_to_new`` / ``diag_dest``) overflow int32 once that
+    # exceeds ``_INT32_MAX``. Silently emitting int32 there would corrupt the
+    # result, so we refuse rather than truncate.
+    #
+    # Implementation plan (for when int64 diag_add is needed):
+    #   1. Parameterize the numba kernel's offset dtype: build ``new_indptr_``,
+    #      ``old_to_new_`` and ``diag_dest_`` as int64 (leave ``new_indices_``
+    #      int32 -- column ids are secondary-axis coordinates and always fit
+    #      int32); pass the resolved dtype in as an argument.
+    #   2. Resolve the dtype via ``_resolve_indptr_dtype(new_nse)`` and gate it
+    #      with ``_require_jax_x64_for_int64`` before allocating int64 arrays.
+    #   3. Construct the augmented CSR/CSC via ``_from_parts`` (check_structure
+    #      =False) so the already-valid structure is not re-validated on host.
+    max_new_nse = int(indices.shape[0]) + int(n_diag)
+    if max_new_nse > _INT32_MAX:
+        raise NotImplementedError(
+            "diag_add would require int64 indptr offsets (augmented nnz up to "
+            f"{max_new_nse} exceeds the int32 range {_INT32_MAX}); int64-indptr "
+            "diagonal augmentation is not yet implemented. See csr_diag_position "
+            "for the implementation plan."
+        )
 
     import numba
 

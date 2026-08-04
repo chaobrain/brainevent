@@ -14,489 +14,186 @@
 // ==============================================================================
 
 /*
- * binary_densemm.cu -- Event-Driven Binary Dense Matrix-Matrix CUDA Kernels
+ * binary_densemm wpr.cu -- Event-driven dense matrix-matrix WPR kernels
  * ==========================================================================
  *
- * This module provides optimized CUDA kernels for event-driven dense
- * matrix-matrix operations (SpMM):
+ * This dev backend keeps only two compute kernels:
  *
- * 1. binary_densemm_gather_auto  -- weights[m,k] @ spikes[k,n] -> out[m,n]
- *    (transpose=False): tiled shared-memory gather kernel.
+ * 1. binary_densemm_no_transpose
+ *      weights[m, k] @ spikes[k, batch] -> output[m, batch]
  *
- * 2. binary_densemm_scatter_auto  -- spikes[k,n] @ weights[k,m] -> out[m,n]
- *    (transpose=True): tiled shared-memory scatter kernel.
+ * 2. binary_densemm_transpose
+ *      weights[k, m].T @ spikes[k, batch] -> output[m, batch]
  *
- * Python API (brainevent._dense.binary):
- *   binary_densemm(weights, spikes, transpose=False)
- *     weights : float16/float32/float64/bfloat16 matrix or scalar
- *     spikes  : bool (int8) or float32 spike matrix
- *     returns : output matrix
+ * The CUDA kernels write a physical batch-major buffer:
  *
- * CUDA entry points:
- *   binary_densemm_gather_auto_homo_{dtype}_{spike_dtype}
- *   binary_densemm_gather_auto_hetero_{dtype}_{spike_dtype}
- *   binary_densemm_scatter_auto_homo_{dtype}_{spike_dtype}
- *   binary_densemm_scatter_auto_hetero_{dtype}_{spike_dtype}
+ *   output[batch, post] -> output[batch * n_post + post]
  *
- * PERFORMANCE NOTES (RTX 3080 Ti, f32, bool spikes):
- * ===================================================
- *  Config (m x k x n)         Density  cuda    cuBLAS   Speedup
- *  5K x 5K x 100          1%       1.1ms     1.17ms   1.06x  ok
- *  10K x 10K x 100        1%       3.3ms     1.33ms   0.40x  slow
- *  20K x 20K x 100        1%       11ms      5ms      0.44x  slow
- *
- * The event-driven tiled kernel matches cuBLAS at small sizes (<=5K) but
- * falls behind at large sizes (>=10K) where weight reads dominate bandwidth
- * and cannot be skipped.  Use brainevent._csr (CSR format) for 3-5x speedup
- * at high sparsity, or jax_raw backend (cuBLAS) for large dense matrices.
+ * The Python wrapper transposes that physical buffer back to the logical
+ * [post, batch] result.  This mirrors the CSR AW path and keeps writes
+ * contiguous within each batch row.
  */
 
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
-// =========================================================================
-// Dense Matrix-Matrix Multiplication (densemm) -- tiling constants
-// =========================================================================
+#define DENSEMM_WPR_WARP_THREADS 32
+#define DENSEMM_WPR_WARPS_PER_BLOCK 8
+#define DENSEMM_WPR_BLOCK_THREADS \
+    (DENSEMM_WPR_WARPS_PER_BLOCK * DENSEMM_WPR_WARP_THREADS)
 
-#define BN  128
-#define BM  32
-#define RPT 16
-#define BK  64
+/*
+ * Event-driven transpose path:
+ *   weights[k,m].T @ spikes[k,batch] -> output[m,batch]
+ */
 
-// =========================================================================
-// Homo gather kernel (scalar weight broadcast to all connections)
-// =========================================================================
-
-#define DEFINE_GATHER_TILED_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,  \
-                                 READ_W, WRITE_W, ACC_ZERO, ACC_SIZE)          \
-__global__ void _gather_tiled_homo_kern##SUFFIX(                               \
-    const WEIGHT_T* __restrict__ weights,                                      \
-    const SPIKE_T*  __restrict__ spikes,                                       \
-    WEIGHT_T*       __restrict__ output,                                       \
-    int m, int k, int n                                                        \
-) {                                                                            \
-    int j0 = blockIdx.x * BN;                                                  \
-    int i0 = blockIdx.y * BM;                                                  \
-    int tx = threadIdx.x;                                                      \
-    int ty = threadIdx.y;                                                      \
-    int j = j0 + tx;                                                           \
-    int i_base = i0 + ty * RPT;                                                \
-    int tid = ty * BN + tx;                                                    \
-    int nthreads = BN * (BM / RPT);                                            \
-    ACC_T acc[RPT];                                                            \
-    for (int ri = 0; ri < RPT; ri++) acc[ri] = ACC_ZERO;                       \
-    extern __shared__ char _smem_bytes[];                                      \
-    ACC_T* s_W = reinterpret_cast<ACC_T*>(_smem_bytes);                        \
-    const int SW_STRIDE = BM + 1;                                              \
-    ACC_T homo_w = READ_W(weights[0]);                                         \
-    for (int k0 = 0; k0 < k; k0 += BK) {                                       \
-        int krem = k - k0;                                                     \
-        int bk_end = (krem < BK) ? krem : BK;                                  \
-        for (int idx = tid; idx < BM * BK; idx += nthreads) {                  \
-            int bm = idx / BK;                                                 \
-            int bk = idx % BK;                                                 \
-            int gi = i0 + bm;                                                  \
-            int gk = k0 + bk;                                                  \
-            s_W[bk * SW_STRIDE + bm] = (gi < m && gk < k) ? homo_w : ACC_ZERO; \
-        }                                                                      \
-        __syncthreads();                                                       \
-        if (j < n) {                                                           \
-            for (int bk = 0; bk < bk_end; bk++) {                              \
-                SPIKE_T spk = spikes[(size_t)(k0 + bk) * n + j];               \
-                if (IS_ACTIVE(spk)) {                                          \
-                    for (int ri = 0; ri < RPT; ri++) {                         \
-                        acc[ri] += s_W[bk * SW_STRIDE + (ty * RPT + ri)];      \
-                    }                                                          \
-                }                                                              \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-    if (j < n) {                                                               \
-        for (int ri = 0; ri < RPT; ri++) {                                     \
-            int gi = i_base + ri;                                              \
-            if (gi < m) {                                                      \
-                output[(size_t)gi * n + j] = WRITE_W(acc[ri]);                 \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+#define DEFINE_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _transpose_kern##SUFFIX(                                                    \
+    const WEIGHT_T* __restrict__ weights,                                                   \
+    const SPIKE_T*  __restrict__ spikes,                                                    \
+    WEIGHT_T*       __restrict__ output,                                                    \
+    int k, int m, int n_batch, int is_homo                                                  \
+) {                                                                                         \
+    int warp_id = static_cast<int>(threadIdx.x) >> 5;                                       \
+    int lane = static_cast<int>(threadIdx.x) & 31;                                          \
+    int row = static_cast<int>(blockIdx.x) * DENSEMM_WPR_WARPS_PER_BLOCK + warp_id;         \
+    int batch = static_cast<int>(blockIdx.y);                                                \
+    if (row >= k || batch >= n_batch) return;                                                \
+    if (!IS_ACTIVE(__ldg(&spikes[static_cast<size_t>(row) * n_batch + batch]))) return;      \
+    ACC_T homo_w = is_homo ? READ_W(__ldg(&weights[0])) : ACC_T(0);                         \
+    for (int post = lane; post < m; post += DENSEMM_WPR_WARP_THREADS) {                     \
+        ACC_T wk = is_homo ? homo_w : READ_W(__ldg(&weights[static_cast<size_t>(row) * m + post])); \
+        ATOMIC_ADD_W(&output[static_cast<size_t>(batch) * m + post], wk);                   \
+    }                                                                                       \
 }
 
-// =========================================================================
-// Hetero gather kernel (per-connection weight matrix)
-// =========================================================================
+/*
+ * Event-driven no-transpose path:
+ *   weights[m,k] @ spikes[k,batch] -> output[m,batch]
+ */
 
-#define DEFINE_GATHER_TILED_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                   READ_W, WRITE_W, ACC_ZERO, ACC_SIZE)         \
-__global__ void _gather_tiled_hetero_kern##SUFFIX(                              \
-    const WEIGHT_T* __restrict__ weights,                                       \
-    const SPIKE_T*  __restrict__ spikes,                                        \
-    WEIGHT_T*       __restrict__ output,                                        \
-    int m, int k, int n                                                         \
-) {                                                                             \
-    int j0 = blockIdx.x * BN;                                                   \
-    int i0 = blockIdx.y * BM;                                                   \
-    int tx = threadIdx.x;                                                       \
-    int ty = threadIdx.y;                                                       \
-    int j = j0 + tx;                                                            \
-    int i_base = i0 + ty * RPT;                                                 \
-    int tid = ty * BN + tx;                                                     \
-    int nthreads = BN * (BM / RPT);                                             \
-    ACC_T acc[RPT];                                                             \
-    for (int ri = 0; ri < RPT; ri++) acc[ri] = ACC_ZERO;                        \
-    extern __shared__ char _smem_bytes[];                                       \
-    ACC_T* s_W = reinterpret_cast<ACC_T*>(_smem_bytes);                         \
-    const int SW_STRIDE = BM + 1;                                               \
-    for (int k0 = 0; k0 < k; k0 += BK) {                                        \
-        int krem = k - k0;                                                      \
-        int bk_end = (krem < BK) ? krem : BK;                                   \
-        for (int idx = tid; idx < BM * BK; idx += nthreads) {                   \
-            int bm = idx / BK;                                                  \
-            int bk = idx % BK;                                                  \
-            int gi = i0 + bm;                                                   \
-            int gk = k0 + bk;                                                   \
-            ACC_T val = ACC_ZERO;                                               \
-            if (gi < m && gk < k) {                                             \
-                val = READ_W(weights[(size_t)gi * k + gk]);                     \
-            }                                                                   \
-            s_W[bk * SW_STRIDE + bm] = val;                                     \
-        }                                                                       \
-        __syncthreads();                                                        \
-        if (j < n) {                                                            \
-            for (int bk = 0; bk < bk_end; bk++) {                               \
-                SPIKE_T spk = spikes[(size_t)(k0 + bk) * n + j];                \
-                if (IS_ACTIVE(spk)) {                                           \
-                    for (int ri = 0; ri < RPT; ri++) {                          \
-                        acc[ri] += s_W[bk * SW_STRIDE + (ty * RPT + ri)];       \
-                    }                                                           \
-                }                                                               \
-            }                                                                   \
-        }                                                                       \
-        __syncthreads();                                                        \
-    }                                                                           \
-    if (j < n) {                                                                \
-        for (int ri = 0; ri < RPT; ri++) {                                      \
-            int gi = i_base + ri;                                               \
-            if (gi < m) {                                                       \
-                output[(size_t)gi * n + j] = WRITE_W(acc[ri]);                  \
-            }                                                                   \
-        }                                                                       \
-    }                                                                           \
+#define DEFINE_NO_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _no_transpose_kern##SUFFIX(                                                    \
+    const WEIGHT_T* __restrict__ weights,                                                       \
+    const SPIKE_T*  __restrict__ spikes,                                                        \
+    WEIGHT_T*       __restrict__ output,                                                        \
+    int m, int k, int n_batch, int is_homo                                                      \
+) {                                                                                             \
+    int warp_id = static_cast<int>(threadIdx.x) >> 5;                                           \
+    int lane = static_cast<int>(threadIdx.x) & 31;                                              \
+    int row = static_cast<int>(blockIdx.x) * DENSEMM_WPR_WARPS_PER_BLOCK + warp_id;             \
+    int batch = static_cast<int>(blockIdx.y);                                                    \
+    if (row >= k || batch >= n_batch) return;                                                    \
+    if (!IS_ACTIVE(__ldg(&spikes[static_cast<size_t>(row) * n_batch + batch]))) return;          \
+    ACC_T homo_w = is_homo ? READ_W(__ldg(&weights[0])) : ACC_T(0);                             \
+    for (int post = lane; post < m; post += DENSEMM_WPR_WARP_THREADS) {                         \
+        ACC_T wk = is_homo ? homo_w : READ_W(__ldg(&weights[static_cast<size_t>(post) * k + row])); \
+        ATOMIC_ADD_W(&output[static_cast<size_t>(batch) * m + post], wk);                       \
+    }                                                                                           \
 }
 
-// =========================================================================
-// Homo scatter kernel (scalar weight broadcast to all connections)
-// =========================================================================
+// Transpose Instantiations
+DEFINE_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomic_add_f32)
+DEFINE_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, float, READ_F32, atomic_add_f32)
+DEFINE_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, double, READ_F64, atomic_add_f64)
+DEFINE_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
+DEFINE_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, float, READ_F16, atomic_add_f16)
+DEFINE_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 
-#define DEFINE_SCATTER_TILED_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                  READ_W, WRITE_W, ACC_ZERO, ACC_SIZE)         \
-__global__ void _scatter_tiled_homo_kern##SUFFIX(                              \
-    const WEIGHT_T* __restrict__ weights,                                      \
-    const SPIKE_T*  __restrict__ spikes,                                       \
-    WEIGHT_T*       __restrict__ output,                                       \
-    int k, int m, int n                                                        \
-) {                                                                            \
-    int j0 = blockIdx.x * BN;                                                  \
-    int i0 = blockIdx.y * BM;                                                  \
-    int tx = threadIdx.x;                                                      \
-    int ty = threadIdx.y;                                                      \
-    int j = j0 + tx;                                                           \
-    int i_base = i0 + ty * RPT;                                                \
-    int tid = ty * BN + tx;                                                    \
-    int nthreads = BN * (BM / RPT);                                            \
-    ACC_T acc[RPT];                                                            \
-    for (int ri = 0; ri < RPT; ri++) acc[ri] = ACC_ZERO;                       \
-    extern __shared__ char _smem_bytes[];                                      \
-    ACC_T* s_W = reinterpret_cast<ACC_T*>(_smem_bytes);                        \
-    const int SW_STRIDE = BM + 1;                                              \
-    ACC_T homo_w = READ_W(weights[0]);                                         \
-    for (int k0 = 0; k0 < k; k0 += BK) {                                       \
-        int krem = k - k0;                                                     \
-        int bk_end = (krem < BK) ? krem : BK;                                  \
-        for (int idx = tid; idx < BM * BK; idx += nthreads) {                  \
-            int bm = idx % BM;                                                 \
-            int bk = idx / BM;                                                 \
-            int gi = i0 + bm;                                                  \
-            int gk = k0 + bk;                                                  \
-            s_W[bk * SW_STRIDE + bm] = (gi < m && gk < k) ? homo_w : ACC_ZERO; \
-        }                                                                      \
-        __syncthreads();                                                       \
-        if (j < n) {                                                           \
-            for (int bk = 0; bk < bk_end; bk++) {                              \
-                SPIKE_T spk = spikes[(size_t)(k0 + bk) * n + j];               \
-                if (IS_ACTIVE(spk)) {                                          \
-                    for (int ri = 0; ri < RPT; ri++) {                         \
-                        acc[ri] += s_W[bk * SW_STRIDE + (ty * RPT + ri)];      \
-                    }                                                          \
-                }                                                              \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-    if (j < n) {                                                               \
-        for (int ri = 0; ri < RPT; ri++) {                                     \
-            int gi = i_base + ri;                                              \
-            if (gi < m) {                                                      \
-                output[(size_t)gi * n + j] = WRITE_W(acc[ri]);                 \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+// No-transpose Instantiations
+DEFINE_NO_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomic_add_f32)
+DEFINE_NO_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, float, READ_F32, atomic_add_f32)
+DEFINE_NO_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_NO_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, double, READ_F64, atomic_add_f64)
+DEFINE_NO_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
+DEFINE_NO_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, float, READ_F16, atomic_add_f16)
+DEFINE_NO_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_NO_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+
+#define DENSEMM_WPR_IS_HOMO(weights) \
+    (((weights).ndim() == 0 || (weights).numel() == 1) ? 1 : 0)
+
+// FFI Macros
+#define FFI_TRANSPOSE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                         \
+void binary_densemm_transpose##SUFFIX(                                        \
+    const BE::Tensor weights, const BE::Tensor spikes,                        \
+    BE::Tensor output, int64_t stream                                         \
+) {                                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \
+    int k = static_cast<int>(spikes.size(0));                                 \
+    int n_batch = static_cast<int>(spikes.size(1));                           \
+    int m = static_cast<int>(output.size(1));                                 \
+    int is_homo = DENSEMM_WPR_IS_HOMO(weights);                               \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());          \
+    BE_CUDA_CHECK(cudaMemsetAsync(                                            \
+        d_out, 0, static_cast<size_t>(output.size(0)) * output.size(1) * sizeof(WEIGHT_C_T), s)); \
+    if (m <= 0 || k <= 0 || n_batch <= 0) return;                             \
+    int grid_x = (k + DENSEMM_WPR_WARPS_PER_BLOCK - 1) / DENSEMM_WPR_WARPS_PER_BLOCK; \
+    dim3 grid(grid_x, n_batch);                                               \
+    _transpose_kern##SUFFIX<<<grid, DENSEMM_WPR_BLOCK_THREADS, 0, s>>>(       \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                   \
+        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),                     \
+        d_out, k, m, n_batch, is_homo);                                       \
+    BE_CHECK_KERNEL_LAUNCH();                                                 \
 }
 
-// =========================================================================
-// Hetero scatter kernel (per-connection weight matrix)
-// =========================================================================
-
-#define DEFINE_SCATTER_TILED_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                    READ_W, WRITE_W, ACC_ZERO, ACC_SIZE)         \
-__global__ void _scatter_tiled_hetero_kern##SUFFIX(                              \
-    const WEIGHT_T* __restrict__ weights,                                        \
-    const SPIKE_T*  __restrict__ spikes,                                         \
-    WEIGHT_T*       __restrict__ output,                                         \
-    int k, int m, int n                                                          \
-) {                                                                              \
-    int j0 = blockIdx.x * BN;                                                    \
-    int i0 = blockIdx.y * BM;                                                    \
-    int tx = threadIdx.x;                                                        \
-    int ty = threadIdx.y;                                                        \
-    int j = j0 + tx;                                                             \
-    int i_base = i0 + ty * RPT;                                                  \
-    int tid = ty * BN + tx;                                                      \
-    int nthreads = BN * (BM / RPT);                                              \
-    ACC_T acc[RPT];                                                              \
-    for (int ri = 0; ri < RPT; ri++) acc[ri] = ACC_ZERO;                         \
-    extern __shared__ char _smem_bytes[];                                        \
-    ACC_T* s_W = reinterpret_cast<ACC_T*>(_smem_bytes);                          \
-    const int SW_STRIDE = BM + 1;                                                \
-    for (int k0 = 0; k0 < k; k0 += BK) {                                         \
-        int krem = k - k0;                                                       \
-        int bk_end = (krem < BK) ? krem : BK;                                    \
-        for (int idx = tid; idx < BM * BK; idx += nthreads) {                    \
-            int bm = idx % BM;                                                   \
-            int bk = idx / BM;                                                   \
-            int gi = i0 + bm;                                                    \
-            int gk = k0 + bk;                                                    \
-            ACC_T val = ACC_ZERO;                                                \
-            if (gi < m && gk < k) {                                              \
-                val = READ_W(weights[(size_t)gk * m + gi]);                      \
-            }                                                                    \
-            s_W[bk * SW_STRIDE + bm] = val;                                      \
-        }                                                                        \
-        __syncthreads();                                                         \
-        if (j < n) {                                                             \
-            for (int bk = 0; bk < bk_end; bk++) {                                \
-                SPIKE_T spk = spikes[(size_t)(k0 + bk) * n + j];                 \
-                if (IS_ACTIVE(spk)) {                                            \
-                    for (int ri = 0; ri < RPT; ri++) {                           \
-                        acc[ri] += s_W[bk * SW_STRIDE + (ty * RPT + ri)];        \
-                    }                                                            \
-                }                                                                \
-            }                                                                    \
-        }                                                                        \
-        __syncthreads();                                                         \
-    }                                                                            \
-    if (j < n) {                                                                 \
-        for (int ri = 0; ri < RPT; ri++) {                                       \
-            int gi = i_base + ri;                                                \
-            if (gi < m) {                                                        \
-                output[(size_t)gi * n + j] = WRITE_W(acc[ri]);                   \
-            }                                                                    \
-        }                                                                        \
-    }                                                                            \
+#define FFI_NO_TRANSPOSE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                      \
+void binary_densemm_no_transpose##SUFFIX(                                    \
+    const BE::Tensor weights, const BE::Tensor spikes,                       \
+    BE::Tensor output, int64_t stream                                        \
+) {                                                                         \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                 \
+    int k = static_cast<int>(spikes.size(0));                                \
+    int n_batch = static_cast<int>(spikes.size(1));                          \
+    int m = static_cast<int>(output.size(1));                                \
+    int is_homo = DENSEMM_WPR_IS_HOMO(weights);                              \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());         \
+    BE_CUDA_CHECK(cudaMemsetAsync(                                           \
+        d_out, 0, static_cast<size_t>(output.size(0)) * output.size(1) * sizeof(WEIGHT_C_T), s)); \
+    if (m <= 0 || k <= 0 || n_batch <= 0) return;                            \
+    int grid_x = (k + DENSEMM_WPR_WARPS_PER_BLOCK - 1) / DENSEMM_WPR_WARPS_PER_BLOCK; \
+    dim3 grid(grid_x, n_batch);                                              \
+    _no_transpose_kern##SUFFIX<<<grid, DENSEMM_WPR_BLOCK_THREADS, 0, s>>>(   \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                  \
+        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),                    \
+        d_out, m, k, n_batch, is_homo);                                      \
+    BE_CHECK_KERNEL_LAUNCH();                                                \
 }
 
-// Homo gather instantiations
-DEFINE_GATHER_TILED_HOMO(_f32_bool,   int8_t, IS_ACTIVE_BOOL,  float,          float,  READ_F32,  WRITE_F32,  0.0f, 4)
-DEFINE_GATHER_TILED_HOMO(_f32_float,  float,  IS_ACTIVE_FLOAT, float,          float,  READ_F32,  WRITE_F32,  0.0f, 4)
-DEFINE_GATHER_TILED_HOMO(_f64_bool,   int8_t, IS_ACTIVE_BOOL,  double,         double, READ_F64,  WRITE_F64,  0.0,  8)
-DEFINE_GATHER_TILED_HOMO(_f64_float,  float,  IS_ACTIVE_FLOAT, double,         double, READ_F64,  WRITE_F64,  0.0,  8)
-DEFINE_GATHER_TILED_HOMO(_f16_bool,   int8_t, IS_ACTIVE_BOOL,  __half,         float,  READ_F16,  WRITE_F16,  0.0f, 4)
-DEFINE_GATHER_TILED_HOMO(_f16_float,  float,  IS_ACTIVE_FLOAT, __half,         float,  READ_F16,  WRITE_F16,  0.0f, 4)
-DEFINE_GATHER_TILED_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0f, 4)
-DEFINE_GATHER_TILED_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0f, 4)
+// Transpose FFI Instantiations
+// @BE binary_densemm_transpose_f32_bool
+FFI_TRANSPOSE(_f32_bool, float, int8_t)
+// @BE binary_densemm_transpose_f32_float
+FFI_TRANSPOSE(_f32_float, float, float)
+// @BE binary_densemm_transpose_f64_bool
+FFI_TRANSPOSE(_f64_bool, double, int8_t)
+// @BE binary_densemm_transpose_f64_float
+FFI_TRANSPOSE(_f64_float, double, float)
+// @BE binary_densemm_transpose_f16_bool
+FFI_TRANSPOSE(_f16_bool, __half, int8_t)
+// @BE binary_densemm_transpose_f16_float
+FFI_TRANSPOSE(_f16_float, __half, float)
+// @BE binary_densemm_transpose_bf16_bool
+FFI_TRANSPOSE(_bf16_bool, __nv_bfloat16, int8_t)
+// @BE binary_densemm_transpose_bf16_float
+FFI_TRANSPOSE(_bf16_float, __nv_bfloat16, float)
 
-// Hetero gather instantiations
-DEFINE_GATHER_TILED_HETERO(_f32_bool,   int8_t, IS_ACTIVE_BOOL,  float,          float,  READ_F32,  WRITE_F32,  0.0f, 4)
-DEFINE_GATHER_TILED_HETERO(_f32_float,  float,  IS_ACTIVE_FLOAT, float,          float,  READ_F32,  WRITE_F32,  0.0f, 4)
-DEFINE_GATHER_TILED_HETERO(_f64_bool,   int8_t, IS_ACTIVE_BOOL,  double,         double, READ_F64,  WRITE_F64,  0.0,  8)
-DEFINE_GATHER_TILED_HETERO(_f64_float,  float,  IS_ACTIVE_FLOAT, double,         double, READ_F64,  WRITE_F64,  0.0,  8)
-DEFINE_GATHER_TILED_HETERO(_f16_bool,   int8_t, IS_ACTIVE_BOOL,  __half,         float,  READ_F16,  WRITE_F16,  0.0f, 4)
-DEFINE_GATHER_TILED_HETERO(_f16_float,  float,  IS_ACTIVE_FLOAT, __half,         float,  READ_F16,  WRITE_F16,  0.0f, 4)
-DEFINE_GATHER_TILED_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0f, 4)
-DEFINE_GATHER_TILED_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0f, 4)
-
-// Homo scatter instantiations
-DEFINE_SCATTER_TILED_HOMO(_f32_bool,   int8_t, IS_ACTIVE_BOOL,  float,          float,  READ_F32,  WRITE_F32,  0.0f, 4)
-DEFINE_SCATTER_TILED_HOMO(_f32_float,  float,  IS_ACTIVE_FLOAT, float,          float,  READ_F32,  WRITE_F32,  0.0f, 4)
-DEFINE_SCATTER_TILED_HOMO(_f64_bool,   int8_t, IS_ACTIVE_BOOL,  double,         double, READ_F64,  WRITE_F64,  0.0,  8)
-DEFINE_SCATTER_TILED_HOMO(_f64_float,  float,  IS_ACTIVE_FLOAT, double,         double, READ_F64,  WRITE_F64,  0.0,  8)
-DEFINE_SCATTER_TILED_HOMO(_f16_bool,   int8_t, IS_ACTIVE_BOOL,  __half,         float,  READ_F16,  WRITE_F16,  0.0f, 4)
-DEFINE_SCATTER_TILED_HOMO(_f16_float,  float,  IS_ACTIVE_FLOAT, __half,         float,  READ_F16,  WRITE_F16,  0.0f, 4)
-DEFINE_SCATTER_TILED_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0f, 4)
-DEFINE_SCATTER_TILED_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0f, 4)
-
-// Hetero scatter instantiations
-DEFINE_SCATTER_TILED_HETERO(_f32_bool,   int8_t, IS_ACTIVE_BOOL,  float,          float,  READ_F32,  WRITE_F32,  0.0f, 4)
-DEFINE_SCATTER_TILED_HETERO(_f32_float,  float,  IS_ACTIVE_FLOAT, float,          float,  READ_F32,  WRITE_F32,  0.0f, 4)
-DEFINE_SCATTER_TILED_HETERO(_f64_bool,   int8_t, IS_ACTIVE_BOOL,  double,         double, READ_F64,  WRITE_F64,  0.0,  8)
-DEFINE_SCATTER_TILED_HETERO(_f64_float,  float,  IS_ACTIVE_FLOAT, double,         double, READ_F64,  WRITE_F64,  0.0,  8)
-DEFINE_SCATTER_TILED_HETERO(_f16_bool,   int8_t, IS_ACTIVE_BOOL,  __half,         float,  READ_F16,  WRITE_F16,  0.0f, 4)
-DEFINE_SCATTER_TILED_HETERO(_f16_float,  float,  IS_ACTIVE_FLOAT, __half,         float,  READ_F16,  WRITE_F16,  0.0f, 4)
-DEFINE_SCATTER_TILED_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0f, 4)
-DEFINE_SCATTER_TILED_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0f, 4)
-
-// =========================================================================
-// FFI entry points -- Homo gather
-// =========================================================================
-
-#define FFI_GATHER_MM_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
-void binary_densemm_gather_auto_homo##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes,              \
-    BE::Tensor output, int64_t stream                               \
-) {                                                                 \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);        \
-    int m = static_cast<int>(output.size(0));                       \
-    int k = static_cast<int>(spikes.size(0));                       \
-    int n = static_cast<int>(spikes.size(1));                       \
-    dim3 grid((n + BN - 1) / BN, (m + BM - 1) / BM);                \
-    dim3 block(BN, BM / RPT);                                       \
-    _gather_tiled_homo_kern##SUFFIX<<<grid, block, SHM_SIZE, s>>>(  \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),         \
-        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),           \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k, n);      \
-}
-
-// =========================================================================
-// FFI entry points -- Hetero gather
-// =========================================================================
-
-#define FFI_GATHER_MM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
-void binary_densemm_gather_auto_hetero##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes,                \
-    BE::Tensor output, int64_t stream                                 \
-) {                                                                   \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);          \
-    int m = static_cast<int>(weights.size(0));                        \
-    int k = static_cast<int>(weights.size(1));                        \
-    int n = static_cast<int>(spikes.size(1));                         \
-    dim3 grid((n + BN - 1) / BN, (m + BM - 1) / BM);                  \
-    dim3 block(BN, BM / RPT);                                         \
-    _gather_tiled_hetero_kern##SUFFIX<<<grid, block, SHM_SIZE, s>>>(  \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),           \
-        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),             \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k, n);        \
-}
-
-// =========================================================================
-// FFI entry points -- Homo scatter
-// =========================================================================
-
-#define FFI_SCATTER_MM_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
-void binary_densemm_scatter_auto_homo##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes,               \
-    BE::Tensor output, int64_t stream                                \
-) {                                                                  \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);         \
-    int k = static_cast<int>(spikes.size(0));  /* spikes[k,n] */     \
-    int m = static_cast<int>(output.size(0));  /* output[m,n] */     \
-    int n = static_cast<int>(spikes.size(1));                        \
-    dim3 grid((n + BN - 1) / BN, (m + BM - 1) / BM);                 \
-    dim3 block(BN, BM / RPT);                                        \
-    _scatter_tiled_homo_kern##SUFFIX<<<grid, block, SHM_SIZE, s>>>(  \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),          \
-        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),            \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), k, m, n);       \
-}
-
-// =========================================================================
-// FFI entry points -- Hetero scatter
-// =========================================================================
-
-#define FFI_SCATTER_MM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
-void binary_densemm_scatter_auto_hetero##SUFFIX(                       \
-    const BE::Tensor weights, const BE::Tensor spikes,                 \
-    BE::Tensor output, int64_t stream                                  \
-) {                                                                    \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);           \
-    int k = static_cast<int>(weights.size(0));                         \
-    int m = static_cast<int>(weights.size(1));                         \
-    int n = static_cast<int>(spikes.size(1));                          \
-    dim3 grid((n + BN - 1) / BN, (m + BM - 1) / BM);                   \
-    dim3 block(BN, BM / RPT);                                          \
-    _scatter_tiled_hetero_kern##SUFFIX<<<grid, block, SHM_SIZE, s>>>(  \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
-        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),              \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), k, m, n);         \
-}
-
-// Homo gather FFI instantiations
-// @BE binary_densemm_gather_auto_homo_f32_bool
-FFI_GATHER_MM_HOMO(_f32_bool,    float,          int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_homo_f32_float
-FFI_GATHER_MM_HOMO(_f32_float,   float,          float,  BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_homo_f64_bool
-FFI_GATHER_MM_HOMO(_f64_bool,    double,         int8_t, BK * (BM + 1) * sizeof(double))
-// @BE binary_densemm_gather_auto_homo_f64_float
-FFI_GATHER_MM_HOMO(_f64_float,   double,         float,  BK * (BM + 1) * sizeof(double))
-// @BE binary_densemm_gather_auto_homo_f16_bool
-FFI_GATHER_MM_HOMO(_f16_bool,    __half,         int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_homo_f16_float
-FFI_GATHER_MM_HOMO(_f16_float,   __half,         float,  BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_homo_bf16_bool
-FFI_GATHER_MM_HOMO(_bf16_bool,   __nv_bfloat16,  int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_homo_bf16_float
-FFI_GATHER_MM_HOMO(_bf16_float,  __nv_bfloat16,  float,  BK * (BM + 1) * sizeof(float))
-
-// Hetero gather FFI instantiations
-// @BE binary_densemm_gather_auto_hetero_f32_bool
-FFI_GATHER_MM_HETERO(_f32_bool,    float,          int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_hetero_f32_float
-FFI_GATHER_MM_HETERO(_f32_float,   float,          float,  BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_hetero_f64_bool
-FFI_GATHER_MM_HETERO(_f64_bool,    double,         int8_t, BK * (BM + 1) * sizeof(double))
-// @BE binary_densemm_gather_auto_hetero_f64_float
-FFI_GATHER_MM_HETERO(_f64_float,   double,         float,  BK * (BM + 1) * sizeof(double))
-// @BE binary_densemm_gather_auto_hetero_f16_bool
-FFI_GATHER_MM_HETERO(_f16_bool,    __half,         int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_hetero_f16_float
-FFI_GATHER_MM_HETERO(_f16_float,   __half,         float,  BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_hetero_bf16_bool
-FFI_GATHER_MM_HETERO(_bf16_bool,   __nv_bfloat16,  int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_gather_auto_hetero_bf16_float
-FFI_GATHER_MM_HETERO(_bf16_float,  __nv_bfloat16,  float,  BK * (BM + 1) * sizeof(float))
-
-// Homo scatter FFI instantiations
-// @BE binary_densemm_scatter_auto_homo_f32_bool
-FFI_SCATTER_MM_HOMO(_f32_bool,    float,          int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_homo_f32_float
-FFI_SCATTER_MM_HOMO(_f32_float,   float,          float,  BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_homo_f64_bool
-FFI_SCATTER_MM_HOMO(_f64_bool,    double,         int8_t, BK * (BM + 1) * sizeof(double))
-// @BE binary_densemm_scatter_auto_homo_f64_float
-FFI_SCATTER_MM_HOMO(_f64_float,   double,         float,  BK * (BM + 1) * sizeof(double))
-// @BE binary_densemm_scatter_auto_homo_f16_bool
-FFI_SCATTER_MM_HOMO(_f16_bool,    __half,         int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_homo_f16_float
-FFI_SCATTER_MM_HOMO(_f16_float,   __half,         float,  BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_homo_bf16_bool
-FFI_SCATTER_MM_HOMO(_bf16_bool,   __nv_bfloat16,  int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_homo_bf16_float
-FFI_SCATTER_MM_HOMO(_bf16_float,  __nv_bfloat16,  float,  BK * (BM + 1) * sizeof(float))
-
-// Hetero scatter FFI instantiations
-// @BE binary_densemm_scatter_auto_hetero_f32_bool
-FFI_SCATTER_MM_HETERO(_f32_bool,    float,          int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_hetero_f32_float
-FFI_SCATTER_MM_HETERO(_f32_float,   float,          float,  BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_hetero_f64_bool
-FFI_SCATTER_MM_HETERO(_f64_bool,    double,         int8_t, BK * (BM + 1) * sizeof(double))
-// @BE binary_densemm_scatter_auto_hetero_f64_float
-FFI_SCATTER_MM_HETERO(_f64_float,   double,         float,  BK * (BM + 1) * sizeof(double))
-// @BE binary_densemm_scatter_auto_hetero_f16_bool
-FFI_SCATTER_MM_HETERO(_f16_bool,    __half,         int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_hetero_f16_float
-FFI_SCATTER_MM_HETERO(_f16_float,   __half,         float,  BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_hetero_bf16_bool
-FFI_SCATTER_MM_HETERO(_bf16_bool,   __nv_bfloat16,  int8_t, BK * (BM + 1) * sizeof(float))
-// @BE binary_densemm_scatter_auto_hetero_bf16_float
-FFI_SCATTER_MM_HETERO(_bf16_float,  __nv_bfloat16,  float,  BK * (BM + 1) * sizeof(float))
+// No-transpose FFI Instantiations
+// @BE binary_densemm_no_transpose_f32_bool
+FFI_NO_TRANSPOSE(_f32_bool, float, int8_t)
+// @BE binary_densemm_no_transpose_f32_float
+FFI_NO_TRANSPOSE(_f32_float, float, float)
+// @BE binary_densemm_no_transpose_f64_bool
+FFI_NO_TRANSPOSE(_f64_bool, double, int8_t)
+// @BE binary_densemm_no_transpose_f64_float
+FFI_NO_TRANSPOSE(_f64_float, double, float)
+// @BE binary_densemm_no_transpose_f16_bool
+FFI_NO_TRANSPOSE(_f16_bool, __half, int8_t)
+// @BE binary_densemm_no_transpose_f16_float
+FFI_NO_TRANSPOSE(_f16_float, __half, float)
+// @BE binary_densemm_no_transpose_bf16_bool
+FFI_NO_TRANSPOSE(_bf16_bool, __nv_bfloat16, int8_t)
+// @BE binary_densemm_no_transpose_bf16_float
+FFI_NO_TRANSPOSE(_bf16_float, __nv_bfloat16, float)

@@ -29,12 +29,14 @@ from ._csr import (
     update_csr_on_binary_post, update_csr_on_binary_post_p,
     update_csc_on_binary_pre, update_csc_on_binary_post,
     csr_slice_rows, csr_slice_rows_p,
+    HybridConfig, get_hybrid_config, init_csr_config,
 )
 from ._data import (
     DataRepresentation,
     JITCMatrix,
 )
 from ._dense import (
+    Dense,
     binary_densemv, binary_densemv_p,
     binary_densemm, binary_densemm_p,
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
@@ -163,12 +165,14 @@ __all__ = [
     'csrmm', 'csrmm_p',
     'csrmv_dt2t', 'cscmv_dt2t', 'csrmv_dt2t_p',
     'csrmm_dt2t', 'cscmm_dt2t', 'csrmm_dt2t_p',
+    'HybridConfig', 'get_hybrid_config', 'init_csr_config',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',
     'csr_slice_rows', 'csr_slice_rows_p',
 
     # --- dense matrix --- #
+    'Dense',
     'binary_densemv', 'binary_densemv_p',
     'binary_densemm', 'binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
@@ -354,4 +358,3 @@ def __dir__():
         | set(_DEPRECATED_RENAMES)
         | set(_DEPRECATED_REMOVED)
     )
-

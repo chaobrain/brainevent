@@ -76,15 +76,38 @@
     } while (0)
 #endif
 
+#ifndef BE_HYBRID_BLOCK_SIZE
+#define BE_HYBRID_BLOCK_SIZE 256
+#endif
+
+#ifndef BE_HYBRID_FIXED_SCATTER_BLOCKS
+#define BE_HYBRID_FIXED_SCATTER_BLOCKS 2048
+#endif
+
+#ifndef BE_HYBRID_TPR_THRESHOLD
+#define BE_HYBRID_TPR_THRESHOLD 128
+#endif
+
+#ifndef BE_HYBRID_TASK_NNZ
+#define BE_HYBRID_TASK_NNZ 4096
+#endif
+
 namespace
 {
 
-    constexpr int kBlockSize = 256;
-    constexpr int kFixedScatterBlocks = 2048;
-    constexpr int kTprThreshold = 128;
-    constexpr int kTaskNnz = 4096;
+    constexpr int kBlockSize = BE_HYBRID_BLOCK_SIZE;
+    constexpr int kFixedScatterBlocks = BE_HYBRID_FIXED_SCATTER_BLOCKS;
+    constexpr int kTprThreshold = BE_HYBRID_TPR_THRESHOLD;
+    constexpr int kTaskNnz = BE_HYBRID_TASK_NNZ;
     constexpr int kStatusCountIndex = 0;
     constexpr int kStatusOverflowIndex = 1;
+
+    static_assert(kBlockSize > 0, "BE_HYBRID_BLOCK_SIZE must be positive");
+    static_assert(kBlockSize % 32 == 0, "BE_HYBRID_BLOCK_SIZE must be a multiple of 32");
+    static_assert(kBlockSize <= 1024, "BE_HYBRID_BLOCK_SIZE must not exceed 1024");
+    static_assert(kFixedScatterBlocks > 0, "BE_HYBRID_FIXED_SCATTER_BLOCKS must be positive");
+    static_assert(kTprThreshold >= 0, "BE_HYBRID_TPR_THRESHOLD must be non-negative");
+    static_assert(kTaskNnz > 0, "BE_HYBRID_TASK_NNZ must be positive");
     constexpr int64_t kInt32Max = 2147483647LL;
 
     static bool IsSignedIndexDType(BE::DType dtype)

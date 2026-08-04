@@ -31,6 +31,12 @@ from brainevent._misc import (
 )
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
+from .hybrid_config import (
+    get_hybrid_config,
+    compile_flags_for_config,
+    module_suffix_for_config,
+    hybrid_task_capacity,
+)
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -90,10 +96,6 @@ class _BinaryCsrmvTaskWorkspace(namedtuple(
         jax.block_until_ready((self.task_begin, self.task_end, self.status))
         return self
 
-_BINARY_TASK_TPR_THRESHOLD = 128
-_BINARY_TASK_NNZ = 4096
-
-
 def _workspace_from_task_operands(task_capacity, task_begin, task_end, status):
     return _BinaryCsrmvTaskWorkspace(
         int(task_capacity),
@@ -104,14 +106,10 @@ def _workspace_from_task_operands(task_capacity, task_begin, task_end, status):
 
 
 def _make_binary_csrmv_workspace(indptr):
-    indptr_np = np.asarray(indptr, dtype=np.int64)
-    row_lengths = np.diff(indptr_np)
-    task_chunks = np.where(
-        row_lengths > _BINARY_TASK_TPR_THRESHOLD,
-        (row_lengths + _BINARY_TASK_NNZ - 1) // _BINARY_TASK_NNZ,
-        0,
-    )
-    task_capacity = int(task_chunks.sum())
+    # ``task_capacity`` must use the same tpr_threshold / task_nnz as the constants
+    # compiled into the hybrid ``.so``; both come from ``get_hybrid_config`` so they
+    # cannot drift.  See :mod:`brainevent._csr.hybrid_config`.
+    task_capacity = hybrid_task_capacity(indptr)
     task_dtype = jnp.dtype(indptr.dtype)
     return _workspace_from_task_operands(
         task_capacity,
@@ -587,12 +585,15 @@ def _binary_csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
+        _cfg = get_hybrid_config()
+        _mod = 'csr_binary_csrmv_hybrid' + module_suffix_for_config(_cfg)
         load_cuda_file(
             Path(__file__).parent.joinpath('binary_csrmv_hybrid.cu'),
-            name='csr_binary_csrmv_hybrid',
+            name=_mod,
+            extra_cuda_cflags=compile_flags_for_config(_cfg),
             allow_cuda_graph=False,
         )
-        kernel_name = f'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
+        kernel_name = f'{_mod}.binary_csrmv_wat_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
             return jax.ffi.ffi_call(
@@ -1262,9 +1263,12 @@ def _binary_csrmm_cuda_kernel(
     homo_suffix = '_homo' if is_homo else '_hetero'
 
     if transpose:
+        _cfg = get_hybrid_config()
+        _mod = 'csr_binary_csrmm_hybrid' + module_suffix_for_config(_cfg)
         load_cuda_file(
             Path(__file__).parent.joinpath('binary_csrmm_hybrid.cu'),
-            name='csr_binary_csrmm_hybrid',
+            name=_mod,
+            extra_cuda_cflags=compile_flags_for_config(_cfg),
             allow_cuda_graph=False,
         )
         logical_out_info = kwargs['outs'][0]
@@ -1273,7 +1277,7 @@ def _binary_csrmm_cuda_kernel(
             logical_out_info.dtype,
         )
         out_info = (physical_out_info, *kwargs['outs'][1:])
-        kernel_name = f'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
+        kernel_name = f'{_mod}.binary_csrmm_sraw_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, B, task_begin, task_end, status):
             output, task_begin_out, task_end_out, status_out = jax.ffi.ffi_call(

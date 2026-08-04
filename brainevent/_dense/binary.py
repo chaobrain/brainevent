@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+import importlib.util
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +35,33 @@ __all__ = [
     'binary_densemv', 'binary_densemv_p',
     'binary_densemm', 'binary_densemm_p',
 ]
+
+
+def _find_cublas_library() -> Path:
+    """Locate the cuBLAS shared library shipped by NVIDIA Python wheels."""
+    candidates: list[Path] = []
+    spec = importlib.util.find_spec("nvidia")
+    if spec is not None and spec.submodule_search_locations:
+        for root in spec.submodule_search_locations:
+            candidates.extend(Path(root).glob("cu*/lib/libcublas.so.13"))
+            candidates.extend(Path(root).glob("cu*/lib/libcublas.so.*"))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise RuntimeError(
+        "Unable to find libcublas.so.13 in the installed nvidia CUDA Python packages."
+    )
+
+
+def _load_dense_cublas_file():
+    """Compile and load the dense cuBLAS FFI module with its runtime library."""
+    libcublas = _find_cublas_library()
+    return load_cuda_file(
+        Path(__file__).parent.joinpath('binary_dense_cublas.cu'),
+        name='dense_binary_cublas',
+        extra_ldflags=[str(libcublas), f'-rpath={libcublas.parent}'],
+        allow_cuda_graph=False,
+    )
 
 
 # ==============================================================================
@@ -69,8 +97,10 @@ def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None)
         If False, compute ``weights @ spikes``. If True, compute
         ``spikes @ weights``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``,
-        ``'pallas'``, or ``None`` (auto-select).
+        Backend to use for the computation. On GPU production backends include
+        ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
+        (float32 weights with bool spikes only). ``None`` selects the platform
+        default.
 
     Returns
     -------
@@ -199,6 +229,7 @@ def _binary_densemv_cuda_kernel(
     transpose: bool,
     **kwargs
 ):
+    """Select the production WPR CUDA entry point for dense binary MV."""
     load_cuda_file(
         Path(__file__).parent.joinpath('binary_densemv.cu'),
         name='dense_binary_mv',
@@ -216,9 +247,33 @@ def _binary_densemv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
-        kernel_name = f'dense_binary_mv.binary_densemv_scatter{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mv.binary_densemv_transpose{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'dense_binary_mv.binary_densemv_gather_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mv.binary_densemv_no_transpose{wt_sfx}{spk_suffix}'
+
+    def kernel(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+
+    return kernel
+
+
+def _binary_densemv_cublas_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    """Select the cuBLAS dense MV backend for float32 weights and bool spikes."""
+    if jnp.dtype(weight_info.dtype) != jnp.dtype('float32'):
+        raise NotImplementedError("cublas dense MV only supports float32 weights.")
+    if jnp.dtype(spk_info.dtype) != jnp.dtype(jnp.bool_):
+        raise NotImplementedError("cublas dense MV only supports bool spikes.")
+
+    _load_dense_cublas_file()
+
+    out_info = kwargs['outs']
+    suffix = 't' if transpose else 'nt'
+    kernel_name = f'dense_binary_cublas.binary_densemv_cublas_{suffix}_f32_bool'
 
     def kernel(weights, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
@@ -314,8 +369,10 @@ def binary_densemv_p_call(weights, spikes, *, transpose, backend: Optional[str] 
         If False, compute ``weights @ spikes`` producing shape ``(m,)``.
         If True, compute ``spikes @ weights`` producing shape ``(n,)``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``,
-        ``'pallas'``, or ``None`` (auto-select).
+        Backend to use for the computation. On GPU production backends include
+        ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
+        (float32 weights with bool spikes only). ``None`` selects the platform
+        default.
 
     Returns
     -------
@@ -386,8 +443,10 @@ binary_densemv_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``binary_densemv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) dense
-matrix-vector multiplication operation to registered backends (``numba``,
-``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
+matrix-vector multiplication operation to registered backends. On GPU,
+``cuda_raw`` is the WPR event-driven CUDA backend and remains the default;
+``jax_raw`` provides a pure JAX reference path, and ``cublas`` provides an
+optional float32/bool cuBLAS path.
 
 The operation computes ``weights[m,k] @ spikes[k] -> out[m]`` when ``transpose=False``,
 or ``spikes[k] @ weights[k,n] -> out[n]`` when ``transpose=True``, where only active
@@ -410,6 +469,7 @@ binary_densemv_p.def_cuda_raw_kernel(_binary_densemv_cuda_kernel, asdefault=True
 binary_densemv_p.def_kernel('jax_raw', 'cpu', _binary_densemv_jax_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'gpu', _binary_densemv_jax_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'tpu', _binary_densemv_jax_kernel)
+binary_densemv_p.def_kernel('cublas', 'gpu', _binary_densemv_cublas_kernel)
 binary_densemv_p.def_jvp_rule2(_binary_densemv_jvp_weights, _binary_densemv_jvp_spikes)
 binary_densemv_p.def_transpose_rule(_binary_densemv_transpose_rule)
 binary_densemv_p.def_batching_rule(_binary_densemv_batching)
@@ -452,8 +512,10 @@ def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None)
         If False, compute ``weights @ spikes``. If True, compute
         ``weights.T @ spikes``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``,
-        ``'pallas'``, or ``None`` (auto-select).
+        Backend to use for the computation. On GPU production backends include
+        ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
+        (float32 weights with bool events only). ``None`` selects the platform
+        default.
 
     Returns
     -------
@@ -486,8 +548,9 @@ def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None)
     where ``s[k, j]`` is ``1`` if ``spikes[k, j]`` is active and ``0``
     otherwise.
 
-    Boolean spikes are converted to ``weights.dtype`` before the primitive
-    call to avoid Pallas Triton boolean buffer corruption.
+    Boolean spikes are passed to the primitive unchanged. Backends that need a
+    numeric event matrix, such as ``jax_raw``, perform the conversion inside
+    their own kernel wrapper.
 
     Examples
     --------
@@ -774,14 +837,16 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
     spikes : jax.Array
         The binary matrix with shape ``(k, n)``. Can be boolean or float.
         Boolean inputs are passed through to backends that support them
-        natively (cuda_raw, numba) for better performance; Pallas converts
-        internally.
+        natively (``cuda_raw``, ``numba``, ``cublas``) for better performance;
+        ``jax_raw`` converts internally.
     transpose : bool
         If False, compute ``weights @ spikes`` producing shape ``(m, n)``.
         If True, compute ``weights.T @ spikes`` producing shape ``(m, n)``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``,
-        ``'pallas'``, or ``None`` (auto-select).
+        Backend to use for the computation. On GPU production backends include
+        ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
+        (float32 weights with bool events only). ``None`` selects the platform
+        default.
 
     Returns
     -------
@@ -812,9 +877,9 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
     ``out[i, j] = sum_{k where s[k, j] active} weights[k, i]``
 
     Boolean spikes are passed through to the primitive unchanged. Backends
-    that require float spikes (Pallas, jax_raw) handle the conversion
-    internally. The function returns a single-element list to conform to
-    the JAX primitive output convention.
+    that require a numeric event matrix, such as ``jax_raw``, handle the
+    conversion internally. The function returns a single-element list to
+    conform to the JAX primitive output convention.
 
     Examples
     --------
@@ -877,11 +942,12 @@ def _binary_densemm_cuda_kernel(
     **kwargs
 ):
     """
-    CUDA Raw kernel generator for ``binary_densemm``.
+    Select the production WPR CUDA entry point for dense binary MM.
 
-    Registers and selects optimised CUDA kernels from ``binary_densemm.cu``
-    for the binary dense matrix-matrix multiply. The kernel variant is chosen
-    based on the weight dtype, spike dtype, and transpose mode.
+    The CUDA source writes a physical batch-major buffer ``[batch, post]`` so
+    each active event writes contiguous post-synaptic values within a batch row.
+    The Python wrapper transposes that physical buffer back to the public
+    logical result ``[post, batch]`` before returning.
 
     Parameters
     ----------
@@ -890,7 +956,8 @@ def _binary_densemm_cuda_kernel(
     weight_info : jax.ShapeDtypeStruct
         Shape and dtype metadata for the weight matrix.
     transpose : bool
-        If False, gather mode. If True, scatter mode.
+        If False, compute ``weights[m,k] @ spikes[k,batch]``. If True, compute
+        ``weights[k,m].T @ spikes[k,batch]``.
     **kwargs
         Must include ``outs`` (list of jax.ShapeDtypeStruct for output).
 
@@ -899,36 +966,11 @@ def _binary_densemm_cuda_kernel(
     kernel : callable
         A function ``kernel(weights, spikes) -> output`` that invokes the
         selected CUDA kernel via ``jax.ffi.ffi_call``.
-
-    Performance notes (RTX 3080 Ti Laptop, f32, bool spikes, vs cuBLAS)
-    --------------------------------------------------------------------
-    The event-driven CUDA kernel matches or slightly beats cuBLAS at
-    moderate sizes (<=5000) with low spike density:
-
-    ==============================  =======  =======  =======
-    Config (m x k x n)             density  gather   scatter
-    ==============================  =======  =======  =======
-    5000 x 5000 x 100              0.1%     1.08x    --
-    5000 x 5000 x 100              1%       1.00x    1.06x
-    5000 x 5000 x 100              10%      0.71x    0.86x
-    10000 x 10000 x 100            0.1%     0.44x    --
-    10000 x 10000 x 100            1%       0.41x    0.35x
-    20000 x 20000 x 100            0.1%     0.61x    --
-    ==============================  =======  =======  =======
-
-    At large sizes (>=10000), cuBLAS wins by 2-4x because weight reads
-    (O(m*k)) dominate bandwidth and cannot be skipped by the event-driven
-    approach.  cuBLAS achieves ~80% of peak memory bandwidth through
-    tensor cores, software pipelining, and vectorised loads, while the
-    tiled kernel achieves ~33%.  The ``jax_raw`` backend (cuBLAS) should
-    be preferred for large matrices.
     """
     load_cuda_file(
         Path(__file__).parent.joinpath('binary_densemm.cu'),
         name='dense_binary_mm',
     )
-
-    out_info = kwargs['outs']
 
     # Spike type suffix
     spk_suffix = '_bool' if spk_info.dtype == jnp.bool_ else '_float'
@@ -941,12 +983,40 @@ def _binary_densemm_cuda_kernel(
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    weight_mode = 'homo' if weight_info.size == 1 else 'hetero'
-
     if transpose:
-        kernel_name = f'dense_binary_mm.binary_densemm_scatter_auto_{weight_mode}{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mm.binary_densemm_transpose{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'dense_binary_mm.binary_densemm_gather_auto_{weight_mode}{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mm.binary_densemm_no_transpose{wt_sfx}{spk_suffix}'
+
+    out_info = kwargs['outs'][0]
+    physical_out_info = (
+        jax.ShapeDtypeStruct([out_info.shape[1], out_info.shape[0]], out_info.dtype),
+    )
+
+    def kernel(weights, spikes):
+        output = jax.ffi.ffi_call(kernel_name, physical_out_info)(weights, spikes)[0]
+        return (jnp.transpose(output),)
+
+    return kernel
+
+
+def _binary_densemm_cublas_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    """Select the cuBLAS dense MM backend for float32 weights and bool events."""
+    if jnp.dtype(weight_info.dtype) != jnp.dtype('float32'):
+        raise NotImplementedError("cublas dense MM only supports float32 weights.")
+    if jnp.dtype(spk_info.dtype) != jnp.dtype(jnp.bool_):
+        raise NotImplementedError("cublas dense MM only supports bool events.")
+
+    _load_dense_cublas_file()
+
+    out_info = kwargs['outs']
+    suffix = 't' if transpose else 'nt'
+    kernel_name = f'dense_binary_cublas.binary_densemm_cublas_{suffix}_f32_bool'
 
     def kernel(weights, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
@@ -960,8 +1030,10 @@ binary_densemm_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``binary_densemm``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) dense
-matrix-matrix multiplication operation to registered backends (``numba``,
-``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
+matrix-matrix multiplication operation to registered backends. On GPU,
+``cuda_raw`` is the WPR event-driven CUDA backend and remains the default;
+``jax_raw`` provides a pure JAX reference path, and ``cublas`` provides an
+optional float32/bool cuBLAS path.
 
 The operation computes ``weights[m,k] @ spikes[k,n] -> out[m,n]`` when ``transpose=False``,
 or ``weights[k,m].T @ spikes[k,n] -> out[m,n]`` when ``transpose=True``, where only active
@@ -984,6 +1056,7 @@ binary_densemm_p.def_cuda_raw_kernel(_binary_densemm_cuda_kernel, asdefault=True
 binary_densemm_p.def_kernel('jax_raw', 'cpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'gpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'tpu', _binary_densemm_jax_kernel)
+binary_densemm_p.def_kernel('cublas', 'gpu', _binary_densemm_cublas_kernel)
 binary_densemm_p.def_jvp_rule2(_binary_densemm_jvp_weights, _binary_densemm_jvp_spikes)
 binary_densemm_p.def_transpose_rule(_binary_densemm_transpose_rule)
 binary_densemm_p.def_batching_rule(_binary_densemm_batching)

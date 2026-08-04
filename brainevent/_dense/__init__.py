@@ -21,8 +21,10 @@ from .plasticity_binary import (
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
 )
+from .main import Dense
 
 __all__ = [
+    'Dense',
     'binary_densemv', 'binary_densemv_p',
     'binary_densemm', 'binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',

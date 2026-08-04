@@ -16,27 +16,23 @@
 # -*- coding: utf-8 -*-
 
 """
-Dedicated CPU/CUDA operators that materialize a uniform-weight just-in-time
-connectivity (JITC) matrix directly into Compressed Sparse Row (CSR) format.
+Materialize a uniform-weight just-in-time connectivity (JITC) matrix directly
+into Compressed Sparse Row (CSR) format using the light-RNG chunk kernels.
 
-Unlike :meth:`~brainevent.CSR.fromdense`, these operators never allocate the
-full dense matrix. They reproduce the *exact* random walk used by the dense
-``jitu`` kernels (and thus by ``.todense()``), emitting the non-zero structure
-``(data, indices, indptr)`` instead of a dense array. Each stored entry draws
-one variate from ``U(low, high)``.
+The mv (32-lane) and mm (4-thread AW-T4) kernels draw *different* matrices, so
+``matrix_mode`` (``'mv'`` or ``'mm'``) is **required**: ``jitu_to_csr(..., matrix_mode='mv')``
+reproduces exactly the matrix used by ``jitumv`` / ``jitu(matrix_mode='mv')`` (and the mv
+event kernels), while ``matrix_mode='mm'`` reproduces the ``jitumm`` / ``jitu(matrix_mode='mm')``
+matrix.  ``corder`` keeps its usual meaning (it selects the notrans/trans generation, exactly
+as in ``jitumv``); the matrix class flips it on transpose.
 
-Because the number of stored elements (``nnz``) is data dependent and XLA
-requires static output shapes, generation is split into two passes:
+Generation is split into two passes (``nnz`` is data dependent, XLA needs static shapes):
 
-1. a *count* pass returning the per-row non-zero counts (``row_counts``), and
-2. a *fill* pass that, given the resulting ``indptr``, writes ``indices`` and
-   ``data``.
+1. count : per-(row, chunk) counts (notrans) or per-row counts (trans)
+2. fill  : column indices + values, given the offsets derived from the counts
 
-Both passes walk the same pseudo-random stream; the count pass mirrors the
-per-connection weight draw of the fill pass so that the two passes agree on the
-connection positions. ``nnz`` is read back between the passes, so
-:func:`jitu_to_csr` is an eager-only conversion (it cannot be traced under
-``jax.jit``), mirroring the ``nse`` requirement of ``CSR.fromdense``.
+Both CUDA and ``numba`` backends draw the same matrix; the two-pass flow is
+eager either way (``nnz`` is read back between the passes).
 """
 
 from pathlib import Path
@@ -48,19 +44,21 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
-from brainevent._data import _initialize_conn_length
-from brainevent._numba_random import (
-    get_numba_lfsr_seed,
-    get_numba_lfsr_random_integers,
-    get_numba_lfsr_uniform,
+from brainevent._data import _initialize_conn_length, _initialize_seed
+from brainevent._misc import (
+    _resolve_indptr_dtype, _require_jax_x64_for_int64, _as_int32_cuda_offsets,
 )
-from brainevent._op import XLACustomKernel, numba_kernel, load_cuda_file
+from brainevent._numba_random import get_numba_light_rng_funcs
+from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
+from .float import MatrixMode, _normalize_chunk_size, _normalize_matrix_mode, _MV_STRIDE, _MM_STRIDE
 
 __all__ = [
     'jitu_to_csr',
     'jitu_csr_count_p',
+    'jitu_csr_count_p_call',
     'jitu_csr_fill_p',
+    'jitu_csr_fill_p_call',
 ]
 
 _dtype_sfx = {
@@ -71,111 +69,198 @@ _dtype_sfx = {
 }
 
 
+def _is_static_zero(value) -> bool:
+    if isinstance(value, Tracer):
+        return False
+    try:
+        return float(np.asarray(value)) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _n_chunks(n_cols: int, chunk_size: int) -> int:
+    return 0 if n_cols <= 0 else (int(n_cols) + int(chunk_size) - 1) // int(chunk_size)
+
+
+def _mode_infix(matrix_mode: MatrixMode) -> str:
+    """CSR kernel infix: '' for mv (plain), '_mm_aw_t4' for mm."""
+    return '' if _normalize_matrix_mode(matrix_mode) == 'mv' else '_mm_aw_t4'
+
+
 # ──────────────────────────────────────────────────────────────────────
-#  Count pass — per-row non-zero counts
+#  Count pass
 # ──────────────────────────────────────────────────────────────────────
 
-def _jitu_csr_count_numba_kernel_generator(corder: bool, shape: MatrixShape, **kwargs):
-    """Build the Numba CPU kernel for the uniform CSR count pass.
-
-    Parameters
-    ----------
-    corder : bool
-        If True, walk rows in the outer loop (each row samples its columns).
-        If False, walk columns in the outer loop (each column samples its rows).
-    shape : tuple of int
-        Logical matrix shape ``(n_rows, n_cols)``.
-
-    Returns
-    -------
-    callable
-        A function ``kernel(w0, w1, clen, seed)`` returning ``row_counts``. The
-        per-connection uniform draw is replicated and discarded to keep the PRNG
-        stream in sync with the fill pass.
-    """
-    import numba
-
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _draw = get_numba_lfsr_uniform()
+def _jitu_csr_count_cuda_kernel(
+    shape: MatrixShape,
+    corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    matrix_mode: MatrixMode = 'mv',
+    **kwargs,
+):
+    load_cuda_file(Path(__file__).parent.joinpath('csr.cu'), name='jit_uniform_csr')
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    infix = _mode_infix(matrix_mode)
     n_rows, n_cols = int(shape[0]), int(shape[1])
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
 
     if corder:
-        @numba.njit(fastmath=True)
-        def kernel_impl(w0, w1, clen, seed, row_counts):
-            row_counts[:] = 0
-            a = w0[0]
-            b = w1[0]
-            cl = clen[0]
-            s = seed[0]
-            for r in range(n_rows):
-                state = _lfsr_seed(s + r * n_cols)
-                c = _lfsr_random_integers(state, 0, cl - 1)
-                cnt = 0
-                while c < n_cols:
-                    _draw(state, a, b)  # discard; keep PRNG aligned with fill pass
-                    cnt += 1
-                    c += _lfsr_random_integers(state, 1, cl - 1)
-                row_counts[r] = cnt
+        # notrans: chunk the mat columns; per-(row, chunk) counts.
+        kernel_name = f'jit_uniform_csr.count_chunks_notrans{infix}{sfx}'
+
+        def kernel(w_low, w_high, clen, seed):
+            return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+                w_low, w_high, clen, seed,
+                n_cols=np.int32(n_cols), chunk_size=np.int32(chunk_size_value),
+            )
     else:
+        # trans: seed over mat columns, walk mat rows, atomic per-row counts.
+        kernel_name = f'jit_uniform_csr.count_chunks_trans{infix}{sfx}'
+
+        def kernel(w_low, w_high, clen, seed):
+            return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+                w_low, w_high, clen, seed,
+                n_rows=np.int32(n_cols), n_cols=np.int32(n_rows),
+                chunk_size=np.int32(chunk_size_value),
+            )
+
+    return kernel
+
+
+def _jitu_csr_count_numba_kernel(
+    shape: MatrixShape,
+    corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    matrix_mode: MatrixMode = 'mv',
+    **kwargs,
+):
+    """Numba CPU count pass mirroring ``csr.cu``."""
+    import numba
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+
+    stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
+    n_rows, n_cols = int(shape[0]), int(shape[1])
+    cs_val = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
+
+    if corder:
+        k = n_cols
+
         @numba.njit(fastmath=True)
-        def kernel_impl(w0, w1, clen, seed, row_counts):
+        def kernel_impl(w_low, w_high, clen, seed, chunk_counts):
+            m = chunk_counts.shape[0]
+            n_chunks = chunk_counts.shape[1]
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            for row in range(m):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        chunk_counts[row, chunk_id] = 0
+                        continue
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    cnt = 0
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            cnt += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+                    chunk_counts[row, chunk_id] = cnt
+    else:
+        m_walk = n_cols
+
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, seed, row_counts):
             row_counts[:] = 0
-            a = w0[0]
-            b = w1[0]
-            cl = clen[0]
-            s = seed[0]
-            for c in range(n_cols):
-                state = _lfsr_seed(s + c * n_rows)
-                rr = _lfsr_random_integers(state, 0, cl - 1)
-                while rr < n_rows:
-                    _draw(state, a, b)  # discard; keep PRNG aligned with fill pass
-                    row_counts[rr] += 1
-                    rr += _lfsr_random_integers(state, 1, cl - 1)
+            k = row_counts.shape[0]
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + cs_val - 1) // cs_val
+            for row in range(m_walk):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            row_counts[chunk_start + local_j] += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
 
-    def kernel(w0, w1, clen, seed):
-        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w0, w1, clen, seed)
-
-    return kernel
-
-
-def _jitu_csr_count_cuda_kernel(corder: bool, shape: MatrixShape, **kwargs):
-    """Build the CUDA kernel callable for the uniform CSR count pass.
-
-    The matrix column count ``n_cols`` is forwarded as an XLA FFI scalar
-    attribute (``attr.n_cols:int32``); ``n_rows`` is recovered on the device
-    from ``row_counts.size(0)``.
-    """
-    load_cuda_file(
-        Path(__file__).parent.joinpath('csr.cu'),
-        name='jit_uniform_csr',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w0_info'].dtype), '_f32')
-    variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'jit_uniform_csr.count_{variant}{sfx}'
-    n_cols = np.int32(shape[1])
-
-    def kernel(w0, w1, clen, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w0, w1, clen, seed, n_cols=n_cols)
+    def kernel(w_low, w_high, clen, seed):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, seed)
 
     return kernel
 
 
-def jitu_csr_count_p_call(w0, w1, clen, seed, *, shape, corder: bool, backend=None):
-    """Invoke the uniform CSR count primitive, returning per-row non-zero counts."""
-    w0 = jnp.atleast_1d(w0)
-    w1 = jnp.atleast_1d(w1)
+def jitu_csr_count_p_call(
+    w_low,
+    w_high,
+    clen,
+    seed,
+    *,
+    shape: MatrixShape,
+    corder: bool,
+    matrix_mode: MatrixMode = 'mv',
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    backend: Optional[str] = None,
+):
+    """Count pass. Returns ``chunk_counts`` (n_rows, n_chunks) for ``corder=True``,
+    or ``row_counts`` (n_rows,) for ``corder=False``."""
+    n_rows, n_cols = int(shape[0]), int(shape[1])
+    matrix_mode = _normalize_matrix_mode(matrix_mode)
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
+    w_low = jnp.atleast_1d(w_low)
+    w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
-    n_rows = int(shape[0])
+
+    if corder:
+        n_chunks = _n_chunks(n_cols, chunk_size_value)
+        if n_rows == 0 or n_chunks == 0:
+            return (jnp.zeros((n_rows, n_chunks), dtype=jnp.int32),)
+        out_info = jax.ShapeDtypeStruct((n_rows, n_chunks), jnp.int32)
+    else:
+        if n_rows == 0 or n_cols == 0:
+            return (jnp.zeros((n_rows,), dtype=jnp.int32),)
+        out_info = jax.ShapeDtypeStruct((n_rows,), jnp.int32)
+
     return jitu_csr_count_p(
-        w0, w1, clen, seed,
-        outs=[jax.ShapeDtypeStruct((n_rows,), jnp.int32)],
-        shape=tuple(shape),
+        w_low, w_high, clen, seed,
+        outs=[out_info],
+        shape=(n_rows, n_cols),
         corder=corder,
+        matrix_mode=matrix_mode,
+        chunk_size=chunk_size_value,
+        target_chunks=target_chunks,
         backend=backend,
-        w0_info=jax.ShapeDtypeStruct(w0.shape, w0.dtype),
-        w1_info=jax.ShapeDtypeStruct(w1.shape, w1.dtype),
+        w_low_info=jax.ShapeDtypeStruct(w_low.shape, w_low.dtype),
+        w_high_info=jax.ShapeDtypeStruct(w_high.shape, w_high.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
     )
@@ -183,222 +268,313 @@ def jitu_csr_count_p_call(w0, w1, clen, seed, *, shape, corder: bool, backend=No
 
 jitu_csr_count_p = XLACustomKernel(
     'jitu_csr_count',
-    doc="""
-Low-level XLA custom-kernel primitive counting per-row non-zeros of a uniform JITC matrix.
-
-Walks the same deterministic random connectivity stream as the dense ``jitu``
-kernels and returns, for each row, the number of non-zero entries. Used as the
-first pass of :func:`jitu_to_csr` to build the CSR ``indptr`` array before the
-fill pass writes ``indices`` and ``data``.
-
-See Also
---------
-jitu_csr_fill_p : Companion fill primitive.
-jitu_to_csr : High-level CSR conversion wrapper.
-"""
+    doc="Low-level CUDA primitive counting non-zeros for light uniform CSR materialization.",
 )
-jitu_csr_count_p.def_numba_kernel(_jitu_csr_count_numba_kernel_generator)
 jitu_csr_count_p.def_cuda_raw_kernel(_jitu_csr_count_cuda_kernel, asdefault=True)
+jitu_csr_count_p.def_numba_kernel(_jitu_csr_count_numba_kernel)
 jitu_csr_count_p.def_call(jitu_csr_count_p_call)
-jitu_csr_count_p.def_tags('jit_uniform', 'csr')
+jitu_csr_count_p.def_tags('jit_uniform', 'csr', 'light_rng')
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Fill pass — column indices and values
+#  Fill pass
 # ──────────────────────────────────────────────────────────────────────
 
-def _jitu_csr_fill_numba_kernel_generator(corder: bool, shape: MatrixShape, **kwargs):
-    """Build the Numba CPU kernel for the uniform CSR fill pass.
-
-    Returns a function ``kernel(w0, w1, clen, seed, indptr)`` writing the
-    ``indices`` and ``data`` output arrays. For ``corder=True`` each row writes
-    its slice ``[indptr[r], indptr[r+1])`` sequentially. For ``corder=False`` a
-    per-row write cursor is advanced as columns are visited in increasing order,
-    which yields column-sorted CSR rows. Each entry draws one variate from
-    ``U(w0, w1)``.
-    """
-    import numba
-
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _draw = get_numba_lfsr_uniform()
+def _jitu_csr_fill_cuda_kernel(
+    shape: MatrixShape,
+    corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    matrix_mode: MatrixMode = 'mv',
+    **kwargs,
+):
+    load_cuda_file(Path(__file__).parent.joinpath('csr.cu'), name='jit_uniform_csr')
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    infix = _mode_infix(matrix_mode)
     n_rows, n_cols = int(shape[0]), int(shape[1])
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
 
     if corder:
-        @numba.njit(fastmath=True)
-        def kernel_impl(w0, w1, clen, seed, indptr, indices, data):
-            a = w0[0]
-            b = w1[0]
-            cl = clen[0]
-            s = seed[0]
-            for r in range(n_rows):
-                state = _lfsr_seed(s + r * n_cols)
-                c = _lfsr_random_integers(state, 0, cl - 1)
-                pos = indptr[r]
-                while c < n_cols:
-                    indices[pos] = c
-                    data[pos] = _draw(state, a, b)
-                    pos += 1
-                    c += _lfsr_random_integers(state, 1, cl - 1)
+        kernel_name = f'jit_uniform_csr.fill_notrans{infix}{sfx}'
+
+        def kernel(w_low, w_high, clen, seed, offsets):
+            return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+                w_low, w_high, clen, seed, offsets,
+                n_cols=np.int32(n_cols), chunk_size=np.int32(chunk_size_value),
+            )
     else:
+        kernel_name = f'jit_uniform_csr.fill_trans{infix}{sfx}'
+
+        def kernel(w_low, w_high, clen, seed, offsets):
+            return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+                w_low, w_high, clen, seed, offsets,
+                n_rows=np.int32(n_cols), n_cols=np.int32(n_rows),
+                chunk_size=np.int32(chunk_size_value),
+            )
+
+    return kernel
+
+
+def _jitu_csr_fill_numba_kernel(
+    shape: MatrixShape,
+    corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    matrix_mode: MatrixMode = 'mv',
+    **kwargs,
+):
+    """Numba CPU fill pass mirroring ``csr.cu``."""
+    import numba
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+    _rng_uniform01 = _rng['uniform01']
+
+    stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
+    n_rows, n_cols = int(shape[0]), int(shape[1])
+    cs_val = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
+
+    if corder:
+        k = n_cols
+
         @numba.njit(fastmath=True)
-        def kernel_impl(w0, w1, clen, seed, indptr, indices, data):
-            a = w0[0]
-            b = w1[0]
-            cl = clen[0]
-            s = seed[0]
-            wptr = indptr[:n_rows].copy()
-            for c in range(n_cols):
-                state = _lfsr_seed(s + c * n_rows)
-                rr = _lfsr_random_integers(state, 0, cl - 1)
-                while rr < n_rows:
-                    pos = wptr[rr]
-                    indices[pos] = c
-                    data[pos] = _draw(state, a, b)
-                    wptr[rr] += 1
-                    rr += _lfsr_random_integers(state, 1, cl - 1)
+        def kernel_impl(w_low, w_high, clen, seed, offsets, indices, data):
+            m = offsets.shape[0]
+            n_chunks = offsets.shape[1]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            for row in range(m):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        continue
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    pos = offsets[row, chunk_id]
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            col = chunk_start + local_j
+                            u01 = _rng_uniform01(seed0, row, col)
+                            indices[pos] = col
+                            data[pos] = w_low0 + u01 * span
+                            pos += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+    else:
+        m_walk = n_cols
 
-    def kernel(w0, w1, clen, seed, indptr):
-        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w0, w1, clen, seed, indptr)
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, seed, offsets, indices, data, cursor):
+            cursor[:] = 0
+            k = cursor.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + cs_val - 1) // cs_val
+            for row in range(m_walk):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            pos = offsets[j] + cursor[j]
+                            cursor[j] += 1
+                            u01 = _rng_uniform01(seed0, row, j)
+                            indices[pos] = row
+                            data[pos] = w_low0 + u01 * span
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+
+    def kernel(w_low, w_high, clen, seed, offsets):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, seed, offsets)
 
     return kernel
 
 
-def _jitu_csr_fill_cuda_kernel(corder: bool, shape: MatrixShape, **kwargs):
-    """Build the CUDA kernel callable for the uniform CSR fill pass.
-
-    The matrix column count ``n_cols`` is forwarded as an XLA FFI scalar
-    attribute (``attr.n_cols:int32``); ``n_rows`` is recovered on the device
-    from ``indptr.size(0) - 1``.
-    """
-    load_cuda_file(
-        Path(__file__).parent.joinpath('csr.cu'),
-        name='jit_uniform_csr',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w0_info'].dtype), '_f32')
-    variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'jit_uniform_csr.fill_{variant}{sfx}'
-    n_cols = np.int32(shape[1])
-
-    def kernel(w0, w1, clen, seed, indptr):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w0, w1, clen, seed, indptr, n_cols=n_cols)
-
-    return kernel
-
-
-def jitu_csr_fill_p_call(w0, w1, clen, seed, indptr, nnz: int, *, shape, corder: bool, backend=None):
-    """Invoke the uniform CSR fill primitive, returning ``(indices, data)`` of length ``nnz``."""
-    w0 = jnp.atleast_1d(w0)
-    w1 = jnp.atleast_1d(w1)
+def jitu_csr_fill_p_call(
+    w_low,
+    w_high,
+    clen,
+    seed,
+    offsets,
+    nnz: int,
+    *,
+    shape: MatrixShape,
+    corder: bool,
+    matrix_mode: MatrixMode = 'mv',
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    backend: Optional[str] = None,
+):
+    """Fill pass. ``offsets`` are the per-(row, chunk) exclusive offsets
+    (``corder=True``, shape ``(n_rows, n_chunks)``) or the ``indptr``
+    (``corder=False``, shape ``(n_rows + 1,)``). Returns ``(indices, data)``."""
+    n_rows, n_cols = int(shape[0]), int(shape[1])
+    matrix_mode = _normalize_matrix_mode(matrix_mode)
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
+    w_low = jnp.atleast_1d(w_low)
+    w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
-    indptr = jnp.asarray(indptr, dtype=jnp.int32)
-    return jitu_csr_fill_p(
-        w0, w1, clen, seed, indptr,
-        outs=[
-            jax.ShapeDtypeStruct((nnz,), jnp.int32),
-            jax.ShapeDtypeStruct((nnz,), w0.dtype),
-        ],
-        shape=tuple(shape),
+    offsets = jnp.asarray(offsets, dtype=jnp.int32)
+    nnz = int(nnz)
+    if nnz == 0:
+        return (jnp.zeros((0,), dtype=jnp.int32), jnp.zeros((0,), dtype=w_low.dtype))
+
+    outs = [
+        jax.ShapeDtypeStruct((nnz,), jnp.int32),
+        jax.ShapeDtypeStruct((nnz,), w_low.dtype),
+    ]
+    if not corder:
+        # trans fill also needs an int32 write cursor (one per output row).
+        outs.append(jax.ShapeDtypeStruct((n_rows,), jnp.int32))
+
+    res = jitu_csr_fill_p(
+        w_low, w_high, clen, seed, offsets,
+        outs=outs,
+        shape=(n_rows, n_cols),
         corder=corder,
+        matrix_mode=matrix_mode,
+        chunk_size=chunk_size_value,
+        target_chunks=target_chunks,
         backend=backend,
-        w0_info=jax.ShapeDtypeStruct(w0.shape, w0.dtype),
-        w1_info=jax.ShapeDtypeStruct(w1.shape, w1.dtype),
+        w_low_info=jax.ShapeDtypeStruct(w_low.shape, w_low.dtype),
+        w_high_info=jax.ShapeDtypeStruct(w_high.shape, w_high.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
-        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        offsets_info=jax.ShapeDtypeStruct(offsets.shape, offsets.dtype),
     )
+    return res[0], res[1]
 
 
 jitu_csr_fill_p = XLACustomKernel(
     'jitu_csr_fill',
-    doc="""
-Low-level XLA custom-kernel primitive filling CSR ``indices``/``data`` of a uniform JITC matrix.
-
-Given the ``indptr`` produced from :func:`jitu_csr_count_p`, walks the same
-deterministic random connectivity stream as the dense ``jitu`` kernels and
-writes the column indices and the uniform weight values for every non-zero
-entry. The second pass of :func:`jitu_to_csr`.
-
-See Also
---------
-jitu_csr_count_p : Companion count primitive.
-jitu_to_csr : High-level CSR conversion wrapper.
-"""
+    doc="Low-level CUDA primitive filling CSR indices/data for light uniform CSR.",
 )
-jitu_csr_fill_p.def_numba_kernel(_jitu_csr_fill_numba_kernel_generator)
 jitu_csr_fill_p.def_cuda_raw_kernel(_jitu_csr_fill_cuda_kernel, asdefault=True)
+jitu_csr_fill_p.def_numba_kernel(_jitu_csr_fill_numba_kernel)
 jitu_csr_fill_p.def_call(jitu_csr_fill_p_call)
-jitu_csr_fill_p.def_tags('jit_uniform', 'csr')
+jitu_csr_fill_p.def_tags('jit_uniform', 'csr', 'light_rng')
 
 
 # ──────────────────────────────────────────────────────────────────────
 #  High-level orchestration
 # ──────────────────────────────────────────────────────────────────────
 
-def jitu_to_csr(w_low, w_high, prob, seed, *, shape: MatrixShape, corder: bool, backend: Optional[str] = None):
-    """Materialize a uniform-weight JITC matrix directly into a :class:`~brainevent.CSR`.
+def jitu_to_csr(
+    w_low,
+    w_high,
+    prob,
+    seed,
+    *,
+    shape: MatrixShape,
+    corder: bool,
+    matrix_mode: MatrixMode,
+    backend: Optional[str] = None,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+):
+    """Materialize the light-RNG JIT uniform matrix as a :class:`~brainevent.CSR`.
 
-    Parameters
-    ----------
-    w_low, w_high : array_like or brainunit.Quantity
-        Lower and upper bounds of the per-connection uniform weight draw
-        ``U(low, high)``.
-    prob : float
-        Connection probability in ``[0, 1]``.
-    seed : int or array_like
-        Random seed controlling the connectivity (and weights).
-    shape : tuple of int
-        Matrix shape ``(n_rows, n_cols)``.
-    corder : bool
-        Memory layout order flag, matching the JITC matrix.
-    backend : str or None, optional
-        Compute backend (``'numba'`` or CUDA). Default ``None`` (auto-select).
-
-    Returns
-    -------
-    CSR
-        A :class:`~brainevent.CSR` matrix reproducing the same dense matrix as
-        ``.todense()`` for the active backend.
-
-    Notes
-    -----
-    This is an eager-only conversion: the number of stored elements is read back
-    between the count and fill passes, so it cannot be traced under ``jax.jit``.
+    ``matrix_mode`` (``'mv'``/``'mm'``) is required: the mv and mm light kernels
+    draw different matrices, so ``jitu_to_csr`` reproduces exactly the matrix used
+    by ``jitu(matrix_mode=..., corder=...)`` (and thus by ``jitumv``/``jitumm``).
     """
     from brainevent._csr import CSR
 
-    n_rows = int(shape[0])
-    out_shape = (int(shape[0]), int(shape[1]))
+    n_rows, n_cols = int(shape[0]), int(shape[1])
+    matrix_mode = _normalize_matrix_mode(matrix_mode)
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
 
-    # Unit handling mirrors the dense ``jitu`` wrapper.
+    u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unitd = u.split_mantissa_unit(w_low)
     w_high = u.Quantity(w_high).to(unitd).mantissa
-    # Promote both weight parameters to a common dtype so the kernels (which read
-    # ``w0``/``w1`` through a single ``WEIGHT_T`` pointer) see identical types.
-    common_dtype = jnp.result_type(w_low, w_high)
-    w_low = jnp.atleast_1d(jnp.asarray(w_low, dtype=common_dtype))
-    w_high = jnp.atleast_1d(jnp.asarray(w_high, dtype=common_dtype))
+    dtype = jnp.result_type(w_low, w_high)
+    w_low = jnp.atleast_1d(jnp.asarray(w_low, dtype=dtype))
+    w_high = jnp.atleast_1d(jnp.asarray(w_high, dtype=dtype))
+    seed = _initialize_seed(seed)
 
-    # Statically-zero probability => the empty matrix (avoids clen = 2/0).
-    if not isinstance(prob, Tracer) and float(np.asarray(prob)) == 0.0:
-        indptr = jnp.zeros(n_rows + 1, dtype=jnp.int32)
-        indices = jnp.zeros(0, dtype=jnp.int32)
-        data = u.maybe_decimal(jnp.zeros(0, dtype=w_low.dtype) * unitd)
-        return CSR((data, indices, indptr), shape=out_shape)
+    if n_rows == 0 or n_cols == 0 or _is_static_zero(prob):
+        indptr = jnp.zeros((n_rows + 1,), dtype=jnp.int32)
+        indices = jnp.zeros((0,), dtype=jnp.int32)
+        data = u.maybe_decimal(jnp.zeros((0,), dtype=w_low.dtype) * unitd)
+        return CSR((data, indices, indptr), shape=(n_rows, n_cols))
 
     clen = _initialize_conn_length(prob)
 
-    row_counts = jitu_csr_count_p_call(
-        w_low, w_high, clen, seed, shape=shape, corder=corder, backend=backend,
+    chunk_counts = jitu_csr_count_p_call(
+        w_low, w_high, clen, seed,
+        shape=(n_rows, n_cols), corder=corder, matrix_mode=matrix_mode,
+        chunk_size=chunk_size_value, target_chunks=target_chunks, backend=backend,
     )[0]
+    # notrans returns 2D per-(row, chunk) counts; trans returns 1D per-row counts.
+    row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32) if corder else chunk_counts
+    nnz = int(np.asarray(jax.device_get(row_counts), dtype=np.int64).sum())
+
+    # ``indptr`` offsets range up to ``nnz``; auto-promote to int64 when that
+    # exceeds the int32 range (gated on ``jax_enable_x64``). ``indices`` (columns)
+    # stay int32.
+    offset_dtype = _resolve_indptr_dtype(nnz, "auto")
+    _require_jax_x64_for_int64(offset_dtype, "jitu_to_csr indptr")
     indptr = jnp.concatenate(
-        [jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
+        [jnp.zeros((1,), dtype=offset_dtype), jnp.cumsum(row_counts, dtype=offset_dtype)]
     )
-    nnz = int(indptr[-1])
+    if nnz == 0:
+        indices = jnp.zeros((0,), dtype=jnp.int32)
+        data = u.maybe_decimal(jnp.zeros((0,), dtype=w_low.dtype) * unitd)
+        return CSR((data, indices, indptr), shape=(n_rows, n_cols))
+
+    if corder:
+        # per-(row, chunk) exclusive offsets within each row's CSR slice.
+        cc = chunk_counts.astype(offset_dtype)
+        offsets = indptr[:-1, None] + jnp.cumsum(cc, axis=1, dtype=offset_dtype) - cc
+    else:
+        offsets = indptr
+    # The light fill kernel has an int32-only offset ABI; refuse (rather than
+    # silently truncate) when the nnz forced int64 offsets.
+    offsets = _as_int32_cuda_offsets(offsets, "jitu_to_csr fill offsets")
 
     indices, data = jitu_csr_fill_p_call(
-        w_low, w_high, clen, seed, indptr, nnz, shape=shape, corder=corder, backend=backend,
+        w_low, w_high, clen, seed, offsets, nnz,
+        shape=(n_rows, n_cols), corder=corder, matrix_mode=matrix_mode,
+        chunk_size=chunk_size_value, target_chunks=target_chunks, backend=backend,
     )
+    # The light fill emits per-row entries in lane order (notrans) or atomic order
+    # (trans, non-deterministic); reorder to canonical column-sorted CSR so the
+    # output is deterministic and matches the conventional CSR layout. Rows are
+    # already contiguous, so a stable sort by (row, col) only reorders within rows.
+    if nnz > 1:
+        row_counts_np = np.asarray(jax.device_get(row_counts), dtype=np.int64)
+        seg = np.repeat(np.arange(n_rows, dtype=np.int64), row_counts_np)
+        order = jnp.asarray(np.lexsort((np.asarray(jax.device_get(indices)), seg)))
+        indices = indices[order]
+        data = data[order]
     data = u.maybe_decimal(data * unitd)
-    return CSR((data, indices, indptr), shape=out_shape)
+    return CSR((data, indices, indptr), shape=(n_rows, n_cols))
