@@ -26,6 +26,7 @@ from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     'csrmv_dt2t',
@@ -290,13 +291,7 @@ def _csrmv_dt2t_cuda_kernel(
     out_info = kwargs['outs']
 
     # Weight dtype suffix
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
+    wt_sfx = dtype_suffix(w_info.dtype)
 
     kernel_name = f'csrmv_dt2t.csrmv_dt2t_nt_auto{wt_sfx}'
 
@@ -815,13 +810,7 @@ def _csrmm_dt2t_cuda_kernel(
     out_info = kwargs['outs']
 
     # Weight dtype suffix
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
+    wt_sfx = dtype_suffix(w_info.dtype)
 
     kernel_name = f'csrmv_dt2t.csrmm_dt2t_nt_auto{wt_sfx}'
 

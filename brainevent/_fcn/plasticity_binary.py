@@ -39,6 +39,7 @@ from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, load_cuda_file
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     'update_fixed_post_conn_on_binary_pre',
@@ -133,13 +134,7 @@ def _fcn_plasticity_row_cuda_kernel(
     )
     out_info = kwargs['outs']
     spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    wt_sfx = dtype_suffix(weight_info.dtype)
     kernel_name = f'fcn_plasticity_row_driven.update_fcn_row{wt_sfx}{spk_suffix}'
 
     def kernel(data, indices, spike, trace):

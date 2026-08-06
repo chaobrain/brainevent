@@ -28,6 +28,7 @@ from brainevent._op import (
 )
 from brainevent._op import load_cuda_file
 from brainevent.config import get_numba_parallel
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     'update_dense_on_binary_pre',
@@ -172,13 +173,7 @@ def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
     out_info = kwargs['outs']
     spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
 
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    wt_sfx = dtype_suffix(weight_info.dtype)
     kernel_name = f'dense_plasticity_on_pre.update_dense_on_pre{wt_sfx}{spk_suffix}'
 
     def kernel(weight, spike, trace):
@@ -496,13 +491,7 @@ def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
     out_info = kwargs['outs']
     spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
 
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    wt_sfx = dtype_suffix(weight_info.dtype)
     kernel_name = f'dense_plasticity_on_post.update_dense_on_post{wt_sfx}{spk_suffix}'
 
     def kernel(weight, trace, spike):

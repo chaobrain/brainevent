@@ -35,6 +35,7 @@ from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     'csrmv',
@@ -220,13 +221,7 @@ def _csrmv_cuda_kernel(
         )
         out_info = kwargs['outs']
 
-        _dtype_sfx = {
-            jnp.dtype('float16'): '_f16',
-            jnp.dtype('float32'): '_f32',
-            jnp.dtype('float64'): '_f64',
-            jnp.dtype('bfloat16'): '_bf16',
-        }
-        wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+        wt_sfx = dtype_suffix(weight_info.dtype)
 
         if transpose:
             kernel_name = f'csr_float_csrmv.csrmv_t_warp{wt_sfx}'
@@ -764,13 +759,7 @@ def _csrmm_cuda_kernel(
 
         out_info = kwargs['outs']
 
-        _dtype_sfx = {
-            jnp.dtype('float16'): '_f16',
-            jnp.dtype('float32'): '_f32',
-            jnp.dtype('float64'): '_f64',
-            jnp.dtype('bfloat16'): '_bf16',
-        }
-        wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+        wt_sfx = dtype_suffix(weight_info.dtype)
 
         # Only homogeneous kernels exist in float_csrmm.cu; this branch is
         # already guarded by ``if is_homo`` above.

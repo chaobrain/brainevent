@@ -29,6 +29,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     "jits",
@@ -538,14 +539,6 @@ def _jitc_homo_matrix_numba_kernel(
     return kernel
 
 
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
-
-
 def _jits_cuda_kernel(
     corder: bool = True,
     matrix_mode: MatrixMode = 'mv',
@@ -555,7 +548,7 @@ def _jits_cuda_kernel(
         Path(__file__).parent.joinpath('float_jits.cu'),
         name='jit_scalar_jits',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['weight_info'].dtype)
     mode = 'mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'mm_aw_t4'
     # ``corder`` selects the kernel (as in binary.py); the write layout is baked
     # into notrans/trans and the output shape encodes ``transpose``.
@@ -966,7 +959,7 @@ def _jitsmv_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitsmv.cu'),
         name='jit_scalar_jitsmv',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['weight_info'].dtype)
     # corder selects the kernel (gather -> notrans, scatter -> trans); transpose
     # only sets the output shape (m/k are derived from the tensor sizes).
     variant = 'notrans' if corder else 'trans'
@@ -1457,7 +1450,7 @@ def _jitsmm_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitsmm.cu'),
         name='jit_scalar_jitsmm',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['weight_info'].dtype)
     # 'mm' -> AW-T4 (4-thread) kernels (native matmat); 'mv' -> 32-lane kernels
     # (draw the same matrix as jitsmv, used by vmap(jitsmv)).
     prefix = 'jitsmm_mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'jitsmm'

@@ -56,6 +56,7 @@ from .binary import (
     _workspace_task_operands,
 )
 from .float import csrmv, csrmm
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     'binary_csrmv_indexed',
@@ -308,13 +309,7 @@ def _binary_csrmv_indexed_cuda_kernel(
     spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
 
     # Weight dtype suffix
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    wt_sfx = dtype_suffix(weight_info.dtype)
 
     if transpose and is_homo:
         _cfg = get_hybrid_config()
@@ -864,13 +859,7 @@ def _binary_csrmm_indexed_cuda_kernel(
     out_info = kwargs['outs'][0]
     is_homo = (weight_info.size == 1)
     spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    wt_sfx = dtype_suffix(weight_info.dtype)
 
     if transpose and is_homo:
         _cfg = get_hybrid_config()

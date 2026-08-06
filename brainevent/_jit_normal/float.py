@@ -30,6 +30,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     "jitn",
@@ -41,13 +42,6 @@ __all__ = [
 ]
 
 MatrixMode = Literal['mv', 'mm']
-
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
 
 
 def _normalize_matrix_mode(matrix_mode: MatrixMode) -> MatrixMode:
@@ -545,7 +539,7 @@ def _jitn_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitn.cu'),
         name='jit_normal_jitn',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
     mode = 'mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'mm_aw_t4'
     direction = 'notrans' if corder else 'trans'
     kernel_name = f'jit_normal_jitn.jitn_{mode}_{direction}{sfx}'
@@ -857,7 +851,7 @@ def _jitnmv_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitnmv.cu'),
         name='jit_normal_jitnmv',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
     variant = 'notrans' if corder else 'trans'
     kernel_name = f'jit_normal_jitnmv.jitnmv_{variant}{sfx}'
     chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
@@ -1253,7 +1247,7 @@ def _jitnmm_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitnmm.cu'),
         name='jit_normal_jitnmm',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
     prefix = 'jitnmm_mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'jitnmm'
     variant = 'notrans' if corder else 'trans'
     kernel_name = f'jit_normal_jitnmm.{prefix}_{variant}{sfx}'

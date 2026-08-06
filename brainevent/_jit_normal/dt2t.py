@@ -45,19 +45,13 @@ from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
 from .csr import jitn_to_csr
 from .float import _MV_STRIDE, _normalize_chunk_size
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     'jitnmv_dt2t',
     'jitnmv_dt2t_p',
     'jitnmv_dt2t_p_call',
 ]
-
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
 
 
 def jitnmv_dt2t(
@@ -132,7 +126,7 @@ def _jitnmv_dt2t_fill_cuda_kernel(
     **kwargs,
 ):
     load_cuda_file(Path(__file__).parent.joinpath('dt2t.cu'), name='jit_normal_dt2t')
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
     direction = 'trans' if transpose else 'notrans'
     kernel_name = f'jit_normal_dt2t.fill_{direction}{sfx}'
     n_cols = int(shape[1])

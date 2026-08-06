@@ -30,6 +30,7 @@ from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule,
 from brainevent._op import load_cuda_file
 from brainevent._typing import ArrayData, Data, MatrixShape
 from .float import _MM_STRIDE, _MV_STRIDE, _normalize_chunk_size, jitnmv_p_call, jitnmm_p_call
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     "binary_jitnmv",
@@ -303,14 +304,6 @@ def binary_jitnmm(
     return u.maybe_decimal(res * unitd * unitB)
 
 
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
-
-
 def _jitc_mv_normal_numba_kernel_generator(
     corder: bool,
     vector_info: jax.ShapeDtypeStruct,
@@ -423,7 +416,7 @@ def _binary_jitnmv_cuda_kernel(
         Path(__file__).parent.joinpath('binary_jitnmv.cu'),
         name='jit_normal_binary_jitnmv',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
     variant = 'notrans' if corder else 'trans'
     kernel_name = f'jit_normal_binary_jitnmv.{variant}{sfx}'
     vector_info = kwargs['vector_info']
@@ -826,7 +819,7 @@ def _binary_jitnmm_cuda_kernel(
         Path(__file__).parent.joinpath('binary_jitnmm.cu'),
         name='jit_normal_binary_jitnmm',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
     variant = 'notrans' if corder else 'trans'
     kernel_name = f'jit_normal_binary_jitnmm.{variant}{sfx}'
 
