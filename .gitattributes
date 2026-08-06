@@ -1,6 +1,99 @@
+# Normalize all text files to LF in the repository. Git still checks out the
+# working-copy ending each platform expects; only the stored blob is normalized,
+# so a Windows contributor cannot accidentally commit a CRLF-only diff.
 * text=auto eol=lf
-*.cu text eol=lf
-*.py text eol=lf
-*.md text eol=lf
-*.bat text eol=crlf
-*.cmd text eol=crlf
+
+# ---------------------------------------------------------------------------
+# Source code
+# ---------------------------------------------------------------------------
+# `diff=python` / `diff=cpp` give Git language-aware hunk headers, so a diff
+# shows the enclosing function or class instead of a bare line number.
+*.py     text eol=lf diff=python
+*.pyi    text eol=lf diff=python
+*.pyx    text eol=lf diff=python
+
+*.cu     text eol=lf diff=cpp
+*.cuh    text eol=lf diff=cpp
+*.cpp    text eol=lf diff=cpp
+*.cc     text eol=lf diff=cpp
+*.hpp    text eol=lf diff=cpp
+# The headers under brainevent/include/ are C++ (templates, namespaces) even
+# though they use the .h suffix; without this GitHub reports them as C.
+*.h      text eol=lf diff=cpp linguist-language=C++
+
+# ---------------------------------------------------------------------------
+# Documentation and configuration
+# ---------------------------------------------------------------------------
+*.md     text eol=lf diff=markdown
+*.rst    text eol=lf
+*.txt    text eol=lf
+*.toml   text eol=lf
+*.cfg    text eol=lf
+*.ini    text eol=lf
+*.in     text eol=lf
+*.json   text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+LICENSE  text eol=lf
+py.typed text eol=lf
+
+# Jupyter notebooks are JSON: keep them text so they diff and merge, but count
+# them as documentation rather than source in GitHub's language statistics.
+*.ipynb  text eol=lf linguist-documentation
+
+# ---------------------------------------------------------------------------
+# Platform scripts
+# ---------------------------------------------------------------------------
+# Windows batch interpreters require CRLF; shell scripts break with it.
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+*.ps1    text eol=crlf
+*.sh     text eol=lf
+*.bash   text eol=lf
+
+# ---------------------------------------------------------------------------
+# Binary files — never diffed, never line-ending converted
+# ---------------------------------------------------------------------------
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.webp   binary
+*.svg    text eol=lf
+*.pdf    binary
+
+*.so     binary
+*.dylib  binary
+*.dll    binary
+*.pyd    binary
+*.o      binary
+*.a      binary
+
+*.npy    binary
+*.npz    binary
+*.h5     binary
+*.pkl    binary
+
+*.zip    binary
+*.gz     binary
+*.whl    binary
+
+# ---------------------------------------------------------------------------
+# GitHub language statistics
+# ---------------------------------------------------------------------------
+# Keep the language bar describing the library itself, not its prose.
+docs/**      linguist-documentation
+examples/**  linguist-documentation
+
+# ---------------------------------------------------------------------------
+# Archive exports (`git archive`, GitHub "Source code" release tarballs)
+# ---------------------------------------------------------------------------
+# Strip development-only infrastructure. Source, tests, docs and examples are
+# deliberately NOT excluded, so a tarball can still be built and tested.
+.github/                export-ignore
+.gitattributes          export-ignore
+.gitignore              export-ignore
+.pre-commit-config.yaml export-ignore
+.readthedocs.yml        export-ignore
+codecov.yml             export-ignore
