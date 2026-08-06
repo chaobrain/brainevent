@@ -434,9 +434,7 @@ class XLACustomKernel:
                     backend_to_use = self._defaults.get(platform)
 
             # Get the kernel entry
-            if backend_to_use and backend_to_use in kernels:
-                pass
-            else:
+            if not backend_to_use or backend_to_use not in kernels:
                 # No explicit/global/default backend resolved: fall back to the
                 # first registered kernel.  When more than one is registered the
                 # choice is dict-insertion-order arbitrary, so log it (M13).
@@ -1214,46 +1212,7 @@ class XLACustomKernel:
                 def run_fn(*args):
                     return self._call_fn(*args, backend=be, **config.kernel_kwargs)
 
-                if catch_errors:
-                    try:
-                        mean_s, std_s, min_s, _max_s, output = benchmark_function(
-                            run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run, data=config.args,
-                        )
-                        record = BenchmarkRecord(
-                            platform=platform,
-                            backend=be,
-                            label=config.name,
-                            mean_ms=mean_s * 1000.0,
-                            std_ms=std_s * 1000.0,
-                            min_ms=min_s * 1000.0,
-                            throughput=None,
-                            success=True,
-                            error=None,
-                            kernel_kwargs=dict(config.kernel_kwargs),
-                            data_kwargs=dict(config.data_kwargs),
-                        )
-                        config_outputs[be] = output
-                    except Exception as exc:
-                        error_msg = f"{type(exc).__name__}: {exc}"
-                        record = BenchmarkRecord(
-                            platform=platform,
-                            backend=be,
-                            label=config.name,
-                            mean_ms=float('nan'),
-                            std_ms=float('nan'),
-                            min_ms=float('nan'),
-                            throughput=None,
-                            success=False,
-                            error=error_msg,
-                            kernel_kwargs=dict(config.kernel_kwargs),
-                            data_kwargs=dict(config.data_kwargs),
-                        )
-                        if verbose:
-                            print(
-                                f"[{self.name}] [{platform}|{be}] {config.name}: "
-                                f"FAILED — {error_msg}"
-                            )
-                else:
+                try:
                     mean_s, std_s, min_s, _max_s, output = benchmark_function(
                         run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run, data=config.args,
                     )
@@ -1271,6 +1230,28 @@ class XLACustomKernel:
                         data_kwargs=dict(config.data_kwargs),
                     )
                     config_outputs[be] = output
+                except Exception as exc:
+                    if not catch_errors:
+                        raise
+                    error_msg = f"{type(exc).__name__}: {exc}"
+                    record = BenchmarkRecord(
+                        platform=platform,
+                        backend=be,
+                        label=config.name,
+                        mean_ms=float('nan'),
+                        std_ms=float('nan'),
+                        min_ms=float('nan'),
+                        throughput=None,
+                        success=False,
+                        error=error_msg,
+                        kernel_kwargs=dict(config.kernel_kwargs),
+                        data_kwargs=dict(config.data_kwargs),
+                    )
+                    if verbose:
+                        print(
+                            f"[{self.name}] [{platform}|{be}] {config.name}: "
+                            f"FAILED — {error_msg}"
+                        )
 
                 records.append(record)
                 if verbose and record.success:

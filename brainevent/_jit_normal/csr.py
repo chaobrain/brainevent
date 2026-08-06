@@ -43,15 +43,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._compatible_import import Tracer
 from brainevent._data import _initialize_conn_length, _initialize_seed
 from brainevent._misc import (
     _resolve_indptr_dtype, _require_jax_x64_for_int64, _as_int32_cuda_offsets,
+    _is_static_zero, _n_chunks, _mode_infix,
 )
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
 from .float import MatrixMode, _MM_STRIDE, _MV_STRIDE, _normalize_chunk_size, _normalize_matrix_mode
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     'jitn_to_csr',
@@ -60,31 +61,6 @@ __all__ = [
     'jitn_csr_fill_p',
     'jitn_csr_fill_p_call',
 ]
-
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
-
-
-def _is_static_zero(value) -> bool:
-    if isinstance(value, Tracer):
-        return False
-    try:
-        return float(np.asarray(value)) == 0.0
-    except (TypeError, ValueError):
-        return False
-
-
-def _n_chunks(n_cols: int, chunk_size: int) -> int:
-    return 0 if n_cols <= 0 else (int(n_cols) + int(chunk_size) - 1) // int(chunk_size)
-
-
-def _mode_infix(matrix_mode: MatrixMode) -> str:
-    """CSR kernel infix: '' for mv (plain), '_mm_aw_t4' for mm."""
-    return '' if _normalize_matrix_mode(matrix_mode) == 'mv' else '_mm_aw_t4'
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -100,7 +76,7 @@ def _jitn_csr_count_cuda_kernel(
     **kwargs,
 ):
     load_cuda_file(Path(__file__).parent.joinpath('csr.cu'), name='jit_normal_csr')
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
     infix = _mode_infix(matrix_mode)
     n_rows, n_cols = int(shape[0]), int(shape[1])
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
@@ -145,7 +121,7 @@ def _jitn_csr_count_numba_kernel(
     _rng_initial_q = _rng['initial_q']
 
     stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
-    n_rows, n_cols = int(shape[0]), int(shape[1])
+    n_cols = int(shape[1])
     cs_val = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
 
     if corder:
@@ -289,7 +265,7 @@ def _jitn_csr_fill_cuda_kernel(
     **kwargs,
 ):
     load_cuda_file(Path(__file__).parent.joinpath('csr.cu'), name='jit_normal_csr')
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
     infix = _mode_infix(matrix_mode)
     n_rows, n_cols = int(shape[0]), int(shape[1])
     chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
@@ -333,7 +309,7 @@ def _jitn_csr_fill_numba_kernel(
     _rng_normal01 = _rng['normal01']
 
     stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
-    n_rows, n_cols = int(shape[0]), int(shape[1])
+    n_cols = int(shape[1])
     cs_val = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
 
     if corder:
@@ -534,7 +510,8 @@ def jitn_to_csr(
     )[0]
     # notrans returns 2D per-(row, chunk) counts; trans returns 1D per-row counts.
     row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32) if corder else chunk_counts
-    nnz = int(np.asarray(jax.device_get(row_counts), dtype=np.int64).sum())
+    row_counts_np = np.asarray(jax.device_get(row_counts), dtype=np.int64)
+    nnz = int(row_counts_np.sum())
 
     # ``indptr`` offsets range up to ``nnz``; auto-promote to int64 when that
     # exceeds the int32 range (gated on ``jax_enable_x64``). ``indices`` (columns)
@@ -569,7 +546,6 @@ def jitn_to_csr(
     # output is deterministic and matches the conventional CSR layout. Rows are
     # already contiguous, so a stable sort by (row, col) only reorders within rows.
     if nnz > 1:
-        row_counts_np = np.asarray(jax.device_get(row_counts), dtype=np.int64)
         seg = np.repeat(np.arange(n_rows, dtype=np.int64), row_counts_np)
         order = jnp.asarray(np.lexsort((np.asarray(jax.device_get(indices)), seg)))
         indices = indices[order]

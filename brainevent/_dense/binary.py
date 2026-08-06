@@ -30,6 +30,7 @@ from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
 from brainevent._op import load_cuda_file
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     'binary_densemv', 'binary_densemv_p',
@@ -238,13 +239,7 @@ def _binary_densemv_cuda_kernel(
     out_info = kwargs['outs']
     spk_suffix = '_bool' if spk_info.dtype == jnp.bool_ else '_float'
 
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(kwargs['weight_info'].dtype), '_f32')
+    wt_sfx = dtype_suffix(kwargs['weight_info'].dtype)
 
     if transpose:
         kernel_name = f'dense_binary_mv.binary_densemv_transpose{wt_sfx}{spk_suffix}'
@@ -976,13 +971,7 @@ def _binary_densemm_cuda_kernel(
     spk_suffix = '_bool' if spk_info.dtype == jnp.bool_ else '_float'
 
     # Weight dtype suffix
-    _dtype_sfx = {
-        jnp.dtype('float16'): '_f16',
-        jnp.dtype('float32'): '_f32',
-        jnp.dtype('float64'): '_f64',
-        jnp.dtype('bfloat16'): '_bf16',
-    }
-    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    wt_sfx = dtype_suffix(weight_info.dtype)
     if transpose:
         kernel_name = f'dense_binary_mm.binary_densemm_transpose{wt_sfx}{spk_suffix}'
     else:

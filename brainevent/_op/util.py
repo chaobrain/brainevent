@@ -41,7 +41,98 @@ __all__ = [
     'jaxinfo_to_warpinfo',
     'check_pallas_jax_version',
     'check_warp_installed',
+    'dtype_suffix',
+    'spike_suffix',
 ]
+
+_DTYPE_SUFFIX = {
+    np.dtype('float16'): '_f16',
+    np.dtype('float32'): '_f32',
+    np.dtype('float64'): '_f64',
+    np.dtype('bfloat16'): '_bf16',
+}
+
+
+def dtype_suffix(dtype) -> str:
+    """Map a weight dtype to the suffix used in CUDA kernel symbol names.
+
+    The ``.cu`` sources define one kernel per supported floating-point
+    precision, distinguished by a trailing suffix (``_f16``, ``_f32``,
+    ``_f64``, ``_bf16``). This helper is the single place that encodes that
+    naming contract between Python and the generated kernels.
+
+    Parameters
+    ----------
+    dtype : dtype_like
+        Any object accepted by :func:`numpy.dtype`, including
+        ``jax.numpy`` dtypes and :class:`jax.ShapeDtypeStruct` ``.dtype``
+        attributes.
+
+    Returns
+    -------
+    suffix : str
+        The kernel-name suffix for *dtype*. Unmapped dtypes fall back to
+        ``'_f32'``.
+
+    See Also
+    --------
+    spike_suffix : Companion helper for the spike/event operand suffix.
+
+    Notes
+    -----
+    The ``'_f32'`` fallback preserves the behaviour of the per-module tables
+    this helper replaced. It is deliberately lenient rather than raising,
+    because raising here would change dispatch behaviour for callers that
+    currently pass an unmapped dtype and silently receive the f32 kernel.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._op.util import dtype_suffix
+        >>> dtype_suffix(jnp.float32)
+        '_f32'
+
+        >>> dtype_suffix(jnp.bfloat16)
+        '_bf16'
+    """
+    return _DTYPE_SUFFIX.get(np.dtype(dtype), '_f32')
+
+
+def spike_suffix(dtype) -> str:
+    """Map a spike/event dtype to its CUDA kernel symbol suffix.
+
+    Event operands are dispatched to either a boolean-specialized kernel or a
+    float-valued one.
+
+    Parameters
+    ----------
+    dtype : dtype_like
+        Any object accepted by :func:`numpy.dtype`.
+
+    Returns
+    -------
+    suffix : str
+        ``'_bool'`` for boolean event arrays, ``'_float'`` otherwise.
+
+    See Also
+    --------
+    dtype_suffix : Companion helper for the weight dtype suffix.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._op.util import spike_suffix
+        >>> spike_suffix(jnp.bool_)
+        '_bool'
+
+        >>> spike_suffix(jnp.float32)
+        '_float'
+    """
+    return '_bool' if np.dtype(dtype) == np.dtype(np.bool_) else '_float'
 
 _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
 _WARP_INSTALL_ERROR_MESSAGE = (

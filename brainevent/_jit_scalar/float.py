@@ -15,7 +15,7 @@
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
-from typing import Literal, Optional, Sequence
+from typing import Optional
 
 import brainunit as u
 import jax
@@ -24,11 +24,14 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import namescope
+from brainevent._misc import (
+    namescope, _normalize_chunk_size, _normalize_matrix_mode, _MV_STRIDE, _MM_STRIDE,
+)
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
-from brainevent._typing import Data, MatrixShape
+from brainevent._typing import Data, MatrixShape, MatrixMode
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     "jits",
@@ -38,41 +41,6 @@ __all__ = [
     "jitsmm",
     "jitsmm_p",
 ]
-
-MatrixMode = Literal['mv', 'mm']
-
-
-def _normalize_matrix_mode(matrix_mode: MatrixMode) -> MatrixMode:
-    """Validate the ``mv``/``mm`` materialization mode.
-
-    ``mv`` uses the 32-lane kernels (matches ``jitsmv`` and the mv CSR
-    materialization); ``mm`` uses the 4-thread AW-T4 kernels (matches ``jitsmm``
-    and the mm CSR materialization).  The two draw *different* connectivity
-    matrices on CUDA, so the mode must be chosen explicitly by the caller.
-    """
-    if matrix_mode not in ('mv', 'mm'):
-        raise ValueError(f"matrix_mode must be 'mv' or 'mm', got {matrix_mode!r}.")
-    return matrix_mode
-
-
-def _normalize_chunk_size(n_cols, chunk_size, target_chunks=4):
-    """Chunk width for the light-RNG connectivity walk.
-
-    ``chunk_size`` participates in the RNG stream keying, so every operator that
-    must draw the *same* matrix (``jits``/``jitsmv``/``jitsmm``, the binary
-    kernels, and the CSR materialization) has to chunk identically: default to
-    ``ceil(shape[1] / target_chunks)`` with ``target_chunks=4``.
-    """
-    if chunk_size is None:
-        target_chunks = int(target_chunks)
-        if target_chunks <= 0:
-            raise ValueError("target_chunks must be positive")
-        chunk_size = max(1, (int(n_cols) + target_chunks - 1) // target_chunks)
-    chunk_size = int(chunk_size)
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
-    return chunk_size
-
 
 @namescope(static_argnames=("shape", "transpose", "corder", "matrix_mode"))
 def jits(
@@ -415,14 +383,6 @@ def jitsmm(
     return u.maybe_decimal(res * unitd * unitB)
 
 
-#: Residue-class stride of the light-RNG walk. The ``mv`` kernels mirror the
-#: 32-lane CUDA kernels; the ``mm`` (AW-T4) kernels mirror the 4-thread CUDA
-#: kernels. The stride is part of the drawn matrix, so ``matrix_mode='mv'`` and
-#: ``matrix_mode='mm'`` sample *different* connectivity -- exactly as on CUDA.
-_MV_STRIDE = 32
-_MM_STRIDE = 4
-
-
 def _jitc_homo_matrix_numba_kernel(
     corder: bool = True,
     matrix_mode: MatrixMode = 'mv',
@@ -538,14 +498,6 @@ def _jitc_homo_matrix_numba_kernel(
     return kernel
 
 
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
-
-
 def _jits_cuda_kernel(
     corder: bool = True,
     matrix_mode: MatrixMode = 'mv',
@@ -555,7 +507,7 @@ def _jits_cuda_kernel(
         Path(__file__).parent.joinpath('float_jits.cu'),
         name='jit_scalar_jits',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['weight_info'].dtype)
     mode = 'mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'mm_aw_t4'
     # ``corder`` selects the kernel (as in binary.py); the write layout is baked
     # into notrans/trans and the output shape encodes ``transpose``.
@@ -966,7 +918,7 @@ def _jitsmv_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitsmv.cu'),
         name='jit_scalar_jitsmv',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['weight_info'].dtype)
     # corder selects the kernel (gather -> notrans, scatter -> trans); transpose
     # only sets the output shape (m/k are derived from the tensor sizes).
     variant = 'notrans' if corder else 'trans'
@@ -1457,7 +1409,7 @@ def _jitsmm_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitsmm.cu'),
         name='jit_scalar_jitsmm',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sfx = dtype_suffix(kwargs['weight_info'].dtype)
     # 'mm' -> AW-T4 (4-thread) kernels (native matmat); 'mv' -> 32-lane kernels
     # (draw the same matrix as jitsmv, used by vmap(jitsmv)).
     prefix = 'jitsmm_mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'jitsmm'

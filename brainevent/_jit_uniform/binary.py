@@ -29,7 +29,8 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from .float import _normalize_chunk_size, _MV_STRIDE, _MM_STRIDE, jitumv_p_call, jitumm_p_call, _dtype_sfx
+from .float import _normalize_chunk_size, _MV_STRIDE, _MM_STRIDE, jitumv_p_call, jitumm_p_call
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     "binary_jitumv",
@@ -413,16 +414,6 @@ def _jitumv_numba_kernel_generator(
     return kernel
 
 
-_spike_sfx = {
-    np.dtype('bool'): '_bool',
-    np.dtype('int8'): '_bool',
-    np.dtype('float32'): '_float',
-    np.dtype('float16'): '_float',
-    np.dtype('float64'): '_float',
-    np.dtype('bfloat16'): '_float',
-}
-
-
 def _binary_jitumv_cuda_kernel(
     corder: bool = True,
     **kwargs
@@ -431,7 +422,7 @@ def _binary_jitumv_cuda_kernel(
         Path(__file__).parent.joinpath('binary_jitumv.cu'),
         name='jit_uniform_binary_jitumv',
     )
-    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    wt_sfx = dtype_suffix(kwargs['w_low_info'].dtype)
     vector_info = kwargs['vector_info']
     variant = 'notrans' if corder else 'trans'
     kernel_name = f'jit_uniform_binary_jitumv.{variant}{wt_sfx}'
@@ -1027,7 +1018,7 @@ def _binary_jitumm_cuda_kernel(
         Path(__file__).parent.joinpath('binary_jitumm.cu'),
         name='jit_uniform_binary_jitumm',
     )
-    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    wt_sfx = dtype_suffix(kwargs['w_low_info'].dtype)
     B_info = kwargs['B_info']
     variant = 'notrans' if corder else 'trans'
     kernel_name = f'jit_uniform_binary_jitumm.{variant}{wt_sfx}'

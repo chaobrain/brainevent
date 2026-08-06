@@ -83,6 +83,9 @@ def _detect_xla_ffi_api_version() -> Tuple[int, int]:
                 m = re.match(r'\s*#\s*define\s+XLA_FFI_API_MINOR\s+(\d+)', line)
                 if m:
                     minor = int(m.group(1))
+                if major is not None and minor is not None:
+                    # Both defines found; no need to scan the rest of the header.
+                    break
         if major is not None and minor is not None:
             return major, minor
     except Exception:
