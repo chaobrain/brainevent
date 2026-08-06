@@ -25,7 +25,7 @@ import numpy as np
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
-from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
+from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitnmv, binary_jitnmm
 from .csr import jitn_to_csr
 from .float import jitn, jitnmv, jitnmm

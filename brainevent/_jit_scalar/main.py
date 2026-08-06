@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Union, Tuple, Optional, Dict
+from typing import Union, Optional, Dict
 
 import brainunit as u
 import jax
@@ -25,7 +25,7 @@ import numpy as np
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
-from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
+from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitsmv, binary_jitsmm
 from .csr import jits_to_csr
 from .float import jits, jitsmv, jitsmm

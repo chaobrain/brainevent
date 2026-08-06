@@ -15,7 +15,7 @@
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
-from typing import Literal, Optional, Sequence
+from typing import Literal, Optional
 
 import brainunit as u
 import jax

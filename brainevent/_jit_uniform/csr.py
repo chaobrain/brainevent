@@ -145,7 +145,7 @@ def _jitu_csr_count_numba_kernel(
     _rng_initial_q = _rng['initial_q']
 
     stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
-    n_rows, n_cols = int(shape[0]), int(shape[1])
+    n_cols = int(shape[1])
     cs_val = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
 
     if corder:
@@ -333,7 +333,7 @@ def _jitu_csr_fill_numba_kernel(
     _rng_uniform01 = _rng['uniform01']
 
     stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
-    n_rows, n_cols = int(shape[0]), int(shape[1])
+    n_cols = int(shape[1])
     cs_val = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
 
     if corder:

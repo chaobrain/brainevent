@@ -18,7 +18,6 @@
 
 import inspect
 import random
-from pathlib import Path
 
 import brainstate
 import braintools

@@ -297,7 +297,7 @@ def _dense_on_pre_transpose_rule(ct, weight, pre_spike, post_trace, **kwargs):
 
 
 def _update_dense_pre_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    n_pre, n_post, dtype = 1000, 1000, jnp.float32
     configs = []
     for bool_event in (True, False):
         weight = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
@@ -629,7 +629,7 @@ def _dense_on_post_batching(args, axes, **kwargs):
 
 
 def _update_dense_post_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    n_pre, n_post, dtype = 1000, 1000, jnp.float32
     configs = []
     for bool_event in (True, False):
         weight = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)

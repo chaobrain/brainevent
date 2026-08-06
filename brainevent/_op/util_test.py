@@ -35,7 +35,6 @@ The tests are written to fail against the pre-fix ``util.py`` and pass once
 the corrected behavior is in place.
 """
 
-import functools
 import importlib.util
 
 import jax
@@ -44,9 +43,8 @@ import numpy as np
 import pytest
 
 from jax.extend.core import Primitive
-from jax.interpreters import ad, mlir
+from jax.interpreters import mlir
 
-from brainevent._op import util
 from brainevent._op.util import (
     defjvp,
     general_batching_rule,

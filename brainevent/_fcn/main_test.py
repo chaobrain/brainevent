@@ -21,7 +21,6 @@ os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import functools
 import inspect
-from pathlib import Path
 import numpy as np
 
 import brainstate

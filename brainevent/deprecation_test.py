@@ -25,7 +25,6 @@ removed raise an :class:`AttributeError` naming the migration path. Normal
 
 import subprocess
 import sys
-import warnings
 
 import pytest
 

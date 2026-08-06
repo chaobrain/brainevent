@@ -16,7 +16,7 @@
 
 import operator
 from dataclasses import dataclass
-from typing import Optional, Union, Sequence, Dict, cast
+from typing import Optional, Union, Dict, cast
 
 import brainunit as u
 import jax
@@ -27,7 +27,7 @@ from brainevent._data import DataRepresentation
 from brainevent._event import BinaryArray
 from brainevent._misc import (
     _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to_csr_index, normalize_row_index, build_sub_csr,
-    _as_int32_indices, _as_indptr, _check_compressed_structure, _resolve_indptr_dtype, _require_jax_x64_for_int64,
+    _as_int32_indices, _as_indptr, _check_compressed_structure,
 )
 from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm

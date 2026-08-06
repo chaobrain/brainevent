@@ -856,7 +856,7 @@ def test_import_brainevent_needs_no_nvcc():
 
 def test_indexed_mm_is_exported():
     import brainevent
-    from brainevent import binary_csrmm_indexed, binary_csrmm_indexed_p
+    from brainevent import binary_csrmm_indexed
     assert "binary_csrmm_indexed" in brainevent.__all__
     assert "binary_csrmm_indexed_p" in brainevent.__all__
     assert binary_csrmm_indexed is brainevent.binary_csrmm_indexed

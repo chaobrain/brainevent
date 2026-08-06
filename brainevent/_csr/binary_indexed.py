@@ -54,8 +54,6 @@ from brainevent.config import get_numba_parallel
 from .binary import (
     _workspace_from_task_operands,
     _workspace_task_operands,
-    binary_csrmv,
-    binary_csrmm,
 )
 from .float import csrmv, csrmm
 
