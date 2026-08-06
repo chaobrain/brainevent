@@ -24,7 +24,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import namescope
+from brainevent._misc import namescope, _normalize_chunk_size, _MV_STRIDE, _MM_STRIDE
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
@@ -286,14 +286,6 @@ def binary_jitsmm(
     return u.maybe_decimal(res * unitd * unitB)
 
 
-#: Residue-class stride of the light-RNG walk. The mv kernels mirror the
-#: 32-lane CUDA kernel (``binary_jitsmv.cu``); the mm kernels mirror the 4-thread
-#: AW-T4 CUDA kernel (``binary_jitsmm.cu``). The stride is part of the drawn
-#: matrix, so mv and mm sample *different* connectivity -- exactly as on CUDA.
-_MV_STRIDE = 32
-_MM_STRIDE = 4
-
-
 def _jitsmv_numba_kernel(
     corder: bool,
     vector_info: jax.ShapeDtypeStruct,
@@ -427,25 +419,6 @@ def _jitsmv_numba_kernel(
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, vector, seed)
 
     return kernel
-
-
-def _normalize_chunk_size(n_cols, chunk_size, target_chunks=4):
-    """Chunk width for the light-RNG connectivity walk.
-
-    Must match the ``float``/CSR light kernels' convention (``target_chunks=4``
-    over ``shape[1]``): ``chunk_size`` participates in the RNG stream keying, so
-    the binary operator only draws the *same* matrix as ``float.jitsmv`` /
-    ``float.jitsmm`` (and the CSR materialization) when they all chunk identically.
-    """
-    if chunk_size is None:
-        target_chunks = int(target_chunks)
-        if target_chunks <= 0:
-            raise ValueError("target_chunks must be positive")
-        chunk_size = max(1, (int(n_cols) + target_chunks - 1) // target_chunks)
-    chunk_size = int(chunk_size)
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
-    return chunk_size
 
 
 def _binary_jitsmv_cuda_kernel(

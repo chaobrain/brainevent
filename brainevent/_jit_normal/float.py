@@ -15,7 +15,7 @@
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 import brainunit as u
 import jax
@@ -25,11 +25,13 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import namescope
+from brainevent._misc import (
+    namescope, _normalize_chunk_size, _normalize_matrix_mode, _MV_STRIDE, _MM_STRIDE,
+)
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
-from brainevent._typing import Data, MatrixShape
+from brainevent._typing import Data, MatrixShape, MatrixMode
 from brainevent._op.util import dtype_suffix
 
 __all__ = [
@@ -40,27 +42,6 @@ __all__ = [
     "jitnmm",
     "jitnmm_p",
 ]
-
-MatrixMode = Literal['mv', 'mm']
-
-
-def _normalize_matrix_mode(matrix_mode: MatrixMode) -> MatrixMode:
-    if matrix_mode not in ('mv', 'mm'):
-        raise ValueError(f"matrix_mode must be 'mv' or 'mm', got {matrix_mode!r}.")
-    return matrix_mode
-
-
-def _normalize_chunk_size(n_cols, chunk_size, target_chunks=4):
-    if chunk_size is None:
-        target_chunks = int(target_chunks)
-        if target_chunks <= 0:
-            raise ValueError("target_chunks must be positive")
-        chunk_size = max(1, (int(n_cols) + target_chunks - 1) // target_chunks)
-    chunk_size = int(chunk_size)
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
-    return chunk_size
-
 
 def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
     if isinstance(prob, Tracer):
@@ -74,10 +55,6 @@ def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
     if not (0. <= prob_scalar <= 1.):
         raise ValueError(f"{op_name}: prob must be in [0, 1], but got {prob_scalar}.")
     return prob_scalar == 0.
-
-
-_MV_STRIDE = 32
-_MM_STRIDE = 4
 
 
 @namescope(static_argnames=("shape", "transpose", "corder", "matrix_mode"))

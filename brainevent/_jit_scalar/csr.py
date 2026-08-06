@@ -43,10 +43,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._compatible_import import Tracer
 from brainevent._data import _initialize_conn_length, _initialize_seed
 from brainevent._misc import (
     _resolve_indptr_dtype, _require_jax_x64_for_int64, _as_int32_cuda_offsets,
+    _is_static_zero, _n_chunks, _mode_infix,
 )
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
@@ -66,24 +66,6 @@ _NUMBA_UNSUPPORTED_DTYPES = frozenset({
     np.dtype('float16'),
     np.dtype('bfloat16'),
 })
-
-
-def _is_static_zero(value) -> bool:
-    if isinstance(value, Tracer):
-        return False
-    try:
-        return float(np.asarray(value)) == 0.0
-    except (TypeError, ValueError):
-        return False
-
-
-def _n_chunks(n_cols: int, chunk_size: int) -> int:
-    return 0 if n_cols <= 0 else (int(n_cols) + int(chunk_size) - 1) // int(chunk_size)
-
-
-def _mode_infix(matrix_mode: MatrixMode) -> str:
-    """CSR kernel infix: '' for mv (plain), '_mm_aw_t4' for mm."""
-    return '' if _normalize_matrix_mode(matrix_mode) == 'mv' else '_mm_aw_t4'
 
 
 # ──────────────────────────────────────────────────────────────────────
