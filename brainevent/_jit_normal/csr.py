@@ -534,7 +534,8 @@ def jitn_to_csr(
     )[0]
     # notrans returns 2D per-(row, chunk) counts; trans returns 1D per-row counts.
     row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32) if corder else chunk_counts
-    nnz = int(np.asarray(jax.device_get(row_counts), dtype=np.int64).sum())
+    row_counts_np = np.asarray(jax.device_get(row_counts), dtype=np.int64)
+    nnz = int(row_counts_np.sum())
 
     # ``indptr`` offsets range up to ``nnz``; auto-promote to int64 when that
     # exceeds the int32 range (gated on ``jax_enable_x64``). ``indices`` (columns)
@@ -569,7 +570,6 @@ def jitn_to_csr(
     # output is deterministic and matches the conventional CSR layout. Rows are
     # already contiguous, so a stable sort by (row, col) only reorders within rows.
     if nnz > 1:
-        row_counts_np = np.asarray(jax.device_get(row_counts), dtype=np.int64)
         seg = np.repeat(np.arange(n_rows, dtype=np.int64), row_counts_np)
         order = jnp.asarray(np.lexsort((np.asarray(jax.device_get(indices)), seg)))
         indices = indices[order]

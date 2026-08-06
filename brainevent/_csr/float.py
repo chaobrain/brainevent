@@ -772,14 +772,12 @@ def _csrmm_cuda_kernel(
         }
         wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
-        # Homogeneous vs heterogeneous suffix
-        is_homo = (weight_info.size == 1)
-        homo_suffix = '_homo' if is_homo else '_hetero'
-
+        # Only homogeneous kernels exist in float_csrmm.cu; this branch is
+        # already guarded by ``if is_homo`` above.
         if transpose:
-            kernel_name = f'csr_float_csrmm.csrmm_t_warp{homo_suffix}{wt_sfx}'
+            kernel_name = f'csr_float_csrmm.csrmm_t_warp_homo{wt_sfx}'
         else:
-            kernel_name = f'csr_float_csrmm.csrmm_nt_auto{homo_suffix}{wt_sfx}'
+            kernel_name = f'csr_float_csrmm.csrmm_nt_auto_homo{wt_sfx}'
 
         def kernel(weights, indices, indptr, B):
             return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
@@ -865,7 +863,6 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
             )[0]
             return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B
         else:
-            # TODO
             row, col = _csr_to_coo(indices, indptr)
             if transpose:
                 d_data = sddmm_coo_indices(B, ct.T, row, col).data

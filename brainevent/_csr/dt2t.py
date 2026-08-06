@@ -338,10 +338,6 @@ def _csrmv_dt2t_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwarg
     return csrmv_dt2t_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
-def _csrmv_dt2t_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, **kwargs):
-    raise NotImplementedError
-
-
 def _csrmv_dt2t_benchmark_data(*, platform):
     """
     Benchmark configurations for ``csrmv_dt2t``.

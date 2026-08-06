@@ -413,15 +413,6 @@ def _jitumv_numba_kernel_generator(
     return kernel
 
 
-_spike_sfx = {
-    np.dtype('bool'): '_bool',
-    np.dtype('int8'): '_bool',
-    np.dtype('float32'): '_float',
-    np.dtype('float16'): '_float',
-    np.dtype('float64'): '_float',
-    np.dtype('bfloat16'): '_float',
-}
-
 
 def _binary_jitumv_cuda_kernel(
     corder: bool = True,

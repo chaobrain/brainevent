@@ -38,7 +38,6 @@ class DataRepresentation(u.sparse.SparseMatrix):
         self._buffer_registry: set[str] = set()
         if buffers is not None:
             assert isinstance(buffers, dict), "buffers must be a dictionary of name-value pairs."
-            self._buffer_registry.update(buffers.keys())
             for name, value in buffers.items():
                 self.register_buffer(name, value)
 
