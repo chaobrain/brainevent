@@ -3,6 +3,35 @@
 Status: in progress
 Branch: `worktree-simplify-package-cleanup`
 
+## Progress
+
+Landed (each as its own commit):
+
+- **Tier A** — A1–A8, A11, A12, A13, plus one bonus finding (a `TestCompactOnlyVector`
+  class defined twice, the first shadowed and never executed).
+- **Tier B** — B1 (`_dtype_sfx` ×31), B2/B3/B4 (the `_jit_*` chunking, mode and
+  stride helpers).
+
+Deliberately skipped, with reasons:
+
+- **A9 (`_registered_platforms`)** — reported as always equal to `set(self._kernels)`.
+  True on the happy path only: the field records *successful* lowering registration,
+  so if `_register_fallback_lowering` raises, the two diverge and a retry would
+  re-attempt registration. Removing it changes error-path behaviour for the sake of
+  one set. Not worth it.
+- **A10 (write-only FFI handler attributes)** — entangled with C2, which rekeys the
+  same cache. Should be done together, not separately.
+- **Pallas compat shim** — see "Adjudicated conflicts" below; needs JAX-version
+  verification first.
+- **`dtype_suffix` raising on unmapped dtypes** — recommended by the reviewer, but it
+  changes dispatch behaviour rather than preserving it. Documented and pinned by test
+  instead; raising is a follow-up decision, not a cleanup.
+
+Not started: B5–B17, all of Tier C, all of Tier D.
+
+Verification at this point: full fast suite 1574 passed / 0 failed / 201 skipped;
+mypy 204 errors, down from the 208-error baseline (no regression).
+
 ## Motivation
 
 A four-angle quality review (reuse, simplification, efficiency, altitude) of the
