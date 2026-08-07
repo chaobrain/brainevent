@@ -86,16 +86,20 @@ __global__ void _csrmv_nt_warp_kern##SUFFIX(                                    
     WEIGHT_T*       __restrict__ output,                                                   \
     int m                                                                                  \
 ) {                                                                                        \
-    int row = blockIdx.x;                                                                  \
-    if (row >= m) return;                                                                  \
-    IndptrT start = indptr[row], end = indptr[row + 1];                                        \
-    ACC_T acc = ACC_ZERO;                                                                  \
-    ACC_T w   = READ_W(weights[0]);                                                        \
-    for (IndptrT j = start + (int)threadIdx.x; j < end; j += 32) {                             \
-        acc += w * READ_W(vector[indices[j]]);                                             \
+    int lane      = threadIdx.x & 31;                                                      \
+    int warp_id   = threadIdx.x >> 5;                                                      \
+    int warps_per = blockDim.x >> 5;                                                       \
+    ACC_T w = READ_W(weights[0]);                                                          \
+    for (int row = blockIdx.x * warps_per + warp_id; row < m;                              \
+         row += gridDim.x * warps_per) {                                                   \
+        IndptrT start = indptr[row], end = indptr[row + 1];                                \
+        ACC_T acc = ACC_ZERO;                                                              \
+        for (IndptrT j = start + lane; j < end; j += 32) {                                 \
+            acc += w * READ_W(vector[indices[j]]);                                         \
+        }                                                                                  \
+        acc = WARP_RED(acc);                                                               \
+        if (lane == 0) output[row] = WRITE_W(acc);                                         \
     }                                                                                      \
-    acc = WARP_RED(acc);                                                                   \
-    if (threadIdx.x == 0) output[row] = WRITE_W(acc);                                      \
 }
 
 #define DEFINE_CSRMV_NT_BLOCK(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, WARP_RED, ACC_ZERO) \
@@ -139,13 +143,18 @@ __global__ void _csrmv_t_warp_kern##SUFFIX(                                     
     WEIGHT_T*       __restrict__ output,                                         \
     int m                                                                        \
 ) {                                                                              \
-    int row = blockIdx.x;                                                        \
-    if (row >= m) return;                                                        \
-    ACC_T v_val = READ_W(vector[row]);                                           \
-    IndptrT start = indptr[row], end = indptr[row + 1];                              \
-    WEIGHT_T contrib = WRITE_W(READ_W(weights[0]) * v_val);                      \
-    for (IndptrT j = start + (int)threadIdx.x; j < end; j += 32) {                   \
-        atomicAdd(&output[indices[j]], contrib);                                 \
+    int lane      = threadIdx.x & 31;                                            \
+    int warp_id   = threadIdx.x >> 5;                                            \
+    int warps_per = blockDim.x >> 5;                                             \
+    ACC_T w0 = READ_W(weights[0]);                                               \
+    for (int row = blockIdx.x * warps_per + warp_id; row < m;                    \
+         row += gridDim.x * warps_per) {                                         \
+        ACC_T v_val = READ_W(vector[row]);                                       \
+        IndptrT start = indptr[row], end = indptr[row + 1];                      \
+        WEIGHT_T contrib = WRITE_W(w0 * v_val);                                  \
+        for (IndptrT j = start + lane; j < end; j += 32) {                       \
+            atomicAdd(&output[indices[j]], contrib);                             \
+        }                                                                        \
     }                                                                            \
 }
 
@@ -190,7 +199,7 @@ void csrmv_nt_auto##SUFFIX(                                                     
             _csrmv_nt_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(               \
                 d_w, d_i, d_p, d_v, d_o, m);                                    \
         } else if (avg_nnz < 512) {                                             \
-            _csrmv_nt_warp_kern##SUFFIX<<<m, 32, 0, s>>>(                       \
+            _csrmv_nt_warp_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(m), 256, 0, s>>>(  \
                 d_w, d_i, d_p, d_v, d_o, m);                                    \
         } else {                                                                \
             _csrmv_nt_block_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(              \
@@ -212,7 +221,7 @@ void csrmv_t_warp##SUFFIX(                                           \
     WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr()); \
     cudaMemsetAsync(d_out, 0, (size_t)k * sizeof(WEIGHT_C_T), s);    \
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                \
-        _csrmv_t_warp_kern##SUFFIX<<<m, 32, 0, s>>>(                 \
+        _csrmv_t_warp_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(m), 256, 0, s>>>( \
             static_cast<const WEIGHT_C_T*>(weights.data_ptr()),      \
             static_cast<const int32_t*>(indices.data_ptr()),         \
             static_cast<const IndptrT*>(indptr.data_ptr()),          \

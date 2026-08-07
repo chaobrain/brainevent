@@ -41,13 +41,6 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
-// Maximum grid.x dimension — caps block count for reduced scheduling overhead.
-// 4096 blocks x 128 threads = 524K threads, saturates all SMs.
-#define CSRMM_MAX_GRID_X 4096
-
-// Rows per block for warp kernels (4 warps x 32 lanes = 128 threads)
-#define CSRMM_WARP_RPB 4
-
 // -------------------------------------------------------------------------
 // Permuted-heterogeneous kernels: read weights[perm[j]] (fused gather).
 // Identical to the plain heterogeneous CSR mat-mat kernels, but with an extra
@@ -81,16 +74,16 @@ __global__ void _csrmm_nt_warp_perm_hetero_kern##SUFFIX(                        
         IndptrT j = start;                                                               \
         _Pragma("unroll 4")                                                          \
         for (; j + 1 < end; j += 2) {                                                \
-            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);                 \
-            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+1] * n + c]);                \
+            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j]   * n + c]);         \
+            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j+1] * n + c]);        \
             acc0 += READ_W(weights[perm[j]])   * mask0;                              \
             acc1 += READ_W(weights[perm[j+1]]) * mask1;                              \
         }                                                                            \
         for (; j < end; j++) {                                                       \
-            ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);                    \
+            ACC_T mask = (ACC_T)IS_ACTIVE(B[(size_t)indices[j] * n + c]);            \
             acc0 += READ_W(weights[perm[j]]) * mask;                                 \
         }                                                                            \
-        C[row * n + c] = WRITE_W(acc0 + acc1);                                       \
+        C[(size_t)row * n + c] = WRITE_W(acc0 + acc1);                               \
     }                                                                                \
 }
 
@@ -119,13 +112,13 @@ __global__ void _csrmm_nt_block_perm_hetero_kern##SUFFIX(                       
             IndptrT j = start + strip;                                                    \
             _Pragma("unroll 4")                                                      \
             for (; j + 8 < end; j += 16) {                                           \
-                ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);             \
-                ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+8] * n + c]);            \
+                ACC_T mask0 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j]   * n + c]);     \
+                ACC_T mask1 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j+8] * n + c]);    \
                 acc0 += READ_W(weights[perm[j]])   * mask0;                          \
                 acc1 += READ_W(weights[perm[j+8]]) * mask1;                          \
             }                                                                        \
             for (; j < end; j += 8) {                                                 \
-                ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);                \
+                ACC_T mask = (ACC_T)IS_ACTIVE(B[(size_t)indices[j] * n + c]);        \
                 acc0 += READ_W(weights[perm[j]]) * mask;                             \
             }                                                                        \
         }                                                                             \
@@ -135,34 +128,12 @@ __global__ void _csrmm_nt_block_perm_hetero_kern##SUFFIX(                       
             ACC_T sum = ACC_ZERO;                                                     \
             _Pragma("unroll 8")                                                      \
             for (int s = 0; s < 8; s++) sum += smem[s * 32 + lane];                  \
-            C[row * n + c] = WRITE_W(sum);                                           \
+            C[(size_t)row * n + c] = WRITE_W(sum);                                   \
         }                                                                             \
         __syncthreads();                                                              \
     }                                                                                 \
 }
 
-#define DEFINE_CSRMM_T_WARP_PERM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                         READ_W, WRITE_W, ACC_ZERO)                  \
-template <typename IndptrT> \
-__global__ void _csrmm_t_warp_perm_hetero_kern##SUFFIX(                              \
-    const WEIGHT_T* __restrict__ weights,                                           \
-    const int32_t*  __restrict__ indices,                                           \
-    const IndptrT*  __restrict__ indptr,                                            \
-    const int32_t*  __restrict__ perm,                                              \
-    const SPIKE_T*  __restrict__ B,                                                 \
-    WEIGHT_T*       __restrict__ C,                                                 \
-    int m, int n                                                                    \
-) {                                                                                 \
-    int row       = blockIdx.x;                                                     \
-    int col_start = blockIdx.y * 32;                                                \
-    int c         = col_start + (int)threadIdx.x;                                   \
-    if (row >= m || c >= n) return;                                                 \
-    if (!IS_ACTIVE(B[row * n + c])) return;                                        \
-    IndptrT start = indptr[row], end = indptr[row + 1];                                \
-    for (IndptrT j = start; j < end; j++) {                                             \
-        atomicAdd(&C[indices[j] * n + c], weights[perm[j]]);                       \
-    }                                                                               \
-}
 
 // =========================================================================
 // Kernel Instantiations — Permuted Heterogeneous Weights
@@ -177,10 +148,6 @@ DEFINE_CSRMM_NT_BLOCK_PERM_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, fl
                                    READ_F32, WRITE_F32, 0.0f)
 DEFINE_CSRMM_NT_BLOCK_PERM_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, \
                                    READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_T_WARP_PERM_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,   \
-                                 READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_T_WARP_PERM_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,   \
-                                 READ_F32, WRITE_F32, 0.0f)
 
 // float64 perm-heterogeneous
 DEFINE_CSRMM_NT_WARP_PERM_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, \
@@ -191,10 +158,6 @@ DEFINE_CSRMM_NT_BLOCK_PERM_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, d
                                    READ_F64, WRITE_F64, 0.0)
 DEFINE_CSRMM_NT_BLOCK_PERM_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, \
                                    READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_T_WARP_PERM_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,   \
-                                 READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_T_WARP_PERM_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,   \
-                                 READ_F64, WRITE_F64, 0.0)
 
 // float16 perm-heterogeneous
 DEFINE_CSRMM_NT_WARP_PERM_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, \
@@ -205,10 +168,6 @@ DEFINE_CSRMM_NT_BLOCK_PERM_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, f
                                    READ_F16, WRITE_F16, 0.0f)
 DEFINE_CSRMM_NT_BLOCK_PERM_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, \
                                    READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_T_WARP_PERM_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,   \
-                                 READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_T_WARP_PERM_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,   \
-                                 READ_F16, WRITE_F16, 0.0f)
 
 // bfloat16 perm-heterogeneous
 DEFINE_CSRMM_NT_WARP_PERM_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, \
@@ -219,69 +178,11 @@ DEFINE_CSRMM_NT_BLOCK_PERM_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfl
                                    READ_BF16, WRITE_BF16, 0.0f)
 DEFINE_CSRMM_NT_BLOCK_PERM_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, \
                                    READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_T_WARP_PERM_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,   \
-                                 READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_T_WARP_PERM_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,   \
-                                 READ_BF16, WRITE_BF16, 0.0f)
 
 // =========================================================================
 // FFI Entry Points — Permuted Heterogeneous Weights
 // =========================================================================
 
-#define FFI_CSRMM_NT_WARP_PERM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)      \
-void binary_csrmm_nt_warp_perm_hetero##SUFFIX(                             \
-    const BE::Tensor weights, const BE::Tensor indices,                    \
-    const BE::Tensor indptr,  const BE::Tensor perm,                       \
-    const BE::Tensor B,       BE::Tensor C,       int64_t stream           \
-) {                                                                        \
-    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);             \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                   \
-    int n        = static_cast<int>(B.size(1));                            \
-    int c_blocks = (n + 31) / 32;                                          \
-    int rpb      = CSRMM_WARP_RPB;                                         \
-    int gx       = (m + rpb - 1) / rpb;                                    \
-    if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                    \
-    if (gx < 1) gx = 1;                                                   \
-    dim3 grid(gx, c_blocks);                                               \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
-        _csrmm_nt_warp_perm_hetero_kern##SUFFIX<<<grid, rpb * 32, 0, s>>>( \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
-            static_cast<const int32_t*>(indices.data_ptr()),               \
-            static_cast<const IndptrT*>(indptr.data_ptr()),                \
-            static_cast<const int32_t*>(perm.data_ptr()),                  \
-            static_cast<const SPIKE_C_T*>(B.data_ptr()),                   \
-            static_cast<WEIGHT_C_T*>(C.data_ptr()),                        \
-            m, n);                                                         \
-    });                                                                    \
-}
-
-#define FFI_CSRMM_NT_BLOCK_PERM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
-void binary_csrmm_nt_block_perm_hetero##SUFFIX(                             \
-    const BE::Tensor weights, const BE::Tensor indices,                     \
-    const BE::Tensor indptr,  const BE::Tensor perm,                        \
-    const BE::Tensor B,       BE::Tensor C,       int64_t stream            \
-) {                                                                         \
-    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);              \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                    \
-    int n        = static_cast<int>(B.size(1));                             \
-    int c_blocks = (n + 31) / 32;                                           \
-    int gx       = m;                                                       \
-    if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                     \
-    if (gx < 1) gx = 1;                                                    \
-    dim3 grid(gx, c_blocks);                                                \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                      \
-        _csrmm_nt_block_perm_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),             \
-            static_cast<const int32_t*>(indices.data_ptr()),                \
-            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
-            static_cast<const int32_t*>(perm.data_ptr()),                   \
-            static_cast<const SPIKE_C_T*>(B.data_ptr()),                    \
-            static_cast<WEIGHT_C_T*>(C.data_ptr()),                         \
-            m, n);                                                          \
-    });                                                                     \
-}
 
 #define FFI_CSRMM_NT_AUTO_PERM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_csrmm_nt_auto_perm_hetero##SUFFIX(                                  \
@@ -322,80 +223,31 @@ void binary_csrmm_nt_auto_perm_hetero##SUFFIX(                                  
     });                                                                         \
 }
 
-#define FFI_CSRMM_T_WARP_PERM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)       \
-void binary_csrmm_t_warp_perm_hetero##SUFFIX(                              \
-    const BE::Tensor weights, const BE::Tensor indices,                    \
-    const BE::Tensor indptr,  const BE::Tensor perm,                       \
-    const BE::Tensor B,       BE::Tensor C,       int64_t stream           \
-) {                                                                        \
-    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);             \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                   \
-    int n        = static_cast<int>(B.size(1));                            \
-    int k        = static_cast<int>(C.size(0));                            \
-    int c_blocks = (n + 31) / 32;                                          \
-    dim3 grid(m, c_blocks);                                                \
-    WEIGHT_C_T* d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
-    cudaMemsetAsync(d_c, 0, (size_t)k * n * sizeof(WEIGHT_C_T), s);       \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
-        _csrmm_t_warp_perm_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(       \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
-            static_cast<const int32_t*>(indices.data_ptr()),               \
-            static_cast<const IndptrT*>(indptr.data_ptr()),                \
-            static_cast<const int32_t*>(perm.data_ptr()),                  \
-            static_cast<const SPIKE_C_T*>(B.data_ptr()),                   \
-            d_c, m, n);                                                    \
-    });                                                                    \
-}
 
 // =========================================================================
 // FFI Instantiations — Permuted Heterogeneous Weights
 // =========================================================================
 
 // float32 perm-heterogeneous
-// @BE binary_csrmm_nt_warp_perm_hetero_f32_bool
-FFI_CSRMM_NT_WARP_PERM_HETERO(_f32_bool,  float,  int8_t)
-// @BE binary_csrmm_nt_warp_perm_hetero_f32_float
-FFI_CSRMM_NT_WARP_PERM_HETERO(_f32_float, float,  float)
-// @BE binary_csrmm_nt_block_perm_hetero_f32_bool
-FFI_CSRMM_NT_BLOCK_PERM_HETERO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
-// @BE binary_csrmm_nt_block_perm_hetero_f32_float
-FFI_CSRMM_NT_BLOCK_PERM_HETERO(_f32_float, float,  float,  8 * sizeof(float))
 // @BE binary_csrmm_nt_auto_perm_hetero_f32_bool
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f32_bool,  float,  int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_perm_hetero_f32_float
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f32_float, float,  float,  8 * sizeof(float))
-// @BE binary_csrmm_t_warp_perm_hetero_f32_bool
-FFI_CSRMM_T_WARP_PERM_HETERO(_f32_bool,  float,  int8_t)
-// @BE binary_csrmm_t_warp_perm_hetero_f32_float
-FFI_CSRMM_T_WARP_PERM_HETERO(_f32_float, float,  float)
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f32_float, float,  float,  8 * 32 * sizeof(float))
 
 // float64 perm-heterogeneous
 // @BE binary_csrmm_nt_auto_perm_hetero_f64_bool
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f64_bool,  double, int8_t, 8 * sizeof(double))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f64_bool,  double, int8_t, 8 * 32 * sizeof(double))
 // @BE binary_csrmm_nt_auto_perm_hetero_f64_float
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f64_float, double, float,  8 * sizeof(double))
-// @BE binary_csrmm_t_warp_perm_hetero_f64_bool
-FFI_CSRMM_T_WARP_PERM_HETERO(_f64_bool,  double, int8_t)
-// @BE binary_csrmm_t_warp_perm_hetero_f64_float
-FFI_CSRMM_T_WARP_PERM_HETERO(_f64_float, double, float)
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f64_float, double, float,  8 * 32 * sizeof(double))
 
 // float16 perm-heterogeneous
 // @BE binary_csrmm_nt_auto_perm_hetero_f16_bool
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f16_bool,  __half, int8_t, 8 * sizeof(float))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f16_bool,  __half, int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_perm_hetero_f16_float
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f16_float, __half, float,  8 * sizeof(float))
-// @BE binary_csrmm_t_warp_perm_hetero_f16_bool
-FFI_CSRMM_T_WARP_PERM_HETERO(_f16_bool,  __half, int8_t)
-// @BE binary_csrmm_t_warp_perm_hetero_f16_float
-FFI_CSRMM_T_WARP_PERM_HETERO(_f16_float, __half, float)
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f16_float, __half, float,  8 * 32 * sizeof(float))
 
 // bfloat16 perm-heterogeneous
 // @BE binary_csrmm_nt_auto_perm_hetero_bf16_bool
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * sizeof(float))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_perm_hetero_bf16_float
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_bf16_float, __nv_bfloat16, float,  8 * sizeof(float))
-// @BE binary_csrmm_t_warp_perm_hetero_bf16_bool
-FFI_CSRMM_T_WARP_PERM_HETERO(_bf16_bool,  __nv_bfloat16, int8_t)
-// @BE binary_csrmm_t_warp_perm_hetero_bf16_float
-FFI_CSRMM_T_WARP_PERM_HETERO(_bf16_float, __nv_bfloat16, float)
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_bf16_float, __nv_bfloat16, float,  8 * 32 * sizeof(float))

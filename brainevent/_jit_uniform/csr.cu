@@ -223,7 +223,7 @@ __global__ void _count_chunks_notrans_f32_kern(
     );
     unsigned int chunk_count = warp_sum_u32(lane_count);
     if (lane == 0) {
-        chunk_counts[row * n_chunks + chunk_id] = (int)chunk_count;
+        chunk_counts[(size_t)row * n_chunks + chunk_id] = (int)chunk_count;
     }
 }
 
@@ -259,7 +259,7 @@ __global__ void _count_chunks_notrans_mm_aw_t4_f32_kern(
     );
     unsigned int chunk_count = group4_sum_u32(lane_count, group);
     if (sub_lane == 0) {
-        chunk_counts[row * n_chunks + chunk_id] = (int)chunk_count;
+        chunk_counts[(size_t)row * n_chunks + chunk_id] = (int)chunk_count;
     }
 }
 
@@ -296,7 +296,7 @@ __global__ void _fill_notrans_f32_kern(
         seed0, row, chunk_id, lane, cl, chunk_width
     );
     unsigned int lane_offset = warp_exclusive_prefix_u32(lane_count, lane);
-    int base = __ldg(&chunk_offsets[row * n_chunks + chunk_id]) + (int)lane_offset;
+    int base = __ldg(&chunk_offsets[(size_t)row * n_chunks + chunk_id]) + (int)lane_offset;
 
     float wlo = READ_F32(__ldg(&w_low[0]));
     float range = READ_F32(__ldg(&w_high[0])) - wlo;
@@ -351,7 +351,7 @@ __global__ void _fill_notrans_mm_aw_t4_f32_kern(
         seed0, row, chunk_id, sub_lane, cl, chunk_width
     );
     unsigned int lane_offset = group4_exclusive_prefix_u32(lane_count, sub_lane, group);
-    int base = __ldg(&chunk_offsets[row * n_chunks + chunk_id]) + (int)lane_offset;
+    int base = __ldg(&chunk_offsets[(size_t)row * n_chunks + chunk_id]) + (int)lane_offset;
 
     float wlo = READ_F32(__ldg(&w_low[0]));
     float range = READ_F32(__ldg(&w_high[0])) - wlo;
@@ -577,7 +577,7 @@ __global__ void _fill_notrans##SFX##_kern( \
         seed0, row, chunk_id, lane, cl, chunk_width \
     ); \
     unsigned int lane_offset = warp_exclusive_prefix_u32(lane_count, lane); \
-    int base = __ldg(&chunk_offsets[row * n_chunks + chunk_id]) + (int)lane_offset; \
+    int base = __ldg(&chunk_offsets[(size_t)row * n_chunks + chunk_id]) + (int)lane_offset; \
     ACC_T wlo = READ_W(__ldg(&w_low[0])); \
     ACC_T range = READ_W(__ldg(&w_high[0])) - wlo; \
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane); \
@@ -629,7 +629,7 @@ __global__ void _fill_notrans_mm_aw_t4##SFX##_kern( \
         seed0, row, chunk_id, sub_lane, cl, chunk_width \
     ); \
     unsigned int lane_offset = group4_exclusive_prefix_u32(lane_count, sub_lane, group); \
-    int base = __ldg(&chunk_offsets[row * n_chunks + chunk_id]) + (int)lane_offset; \
+    int base = __ldg(&chunk_offsets[(size_t)row * n_chunks + chunk_id]) + (int)lane_offset; \
     ACC_T wlo = READ_W(__ldg(&w_low[0])); \
     ACC_T range = READ_W(__ldg(&w_high[0])) - wlo; \
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane); \

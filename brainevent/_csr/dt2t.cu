@@ -62,7 +62,8 @@
  *                   non-zeros with step 32.  Writes are coalesced within each
  *                   warp stride.  Best when avg_nnz 8 – 512: enough non-zeros
  *                   per row to saturate a warp without the overhead of a block.
- *                   Grid: (m, 1, 1)   Block: (32, 1, 1)
+ *                   Grid: (BE_WARP_PER_ROW_GRID(m), 1, 1)   Block: (256, 1, 1)
+ *                   i.e. 8 warps (= 8 rows) per block, grid-strided.
  *
  *   NT_nz_thread:   1 thread per non-zero j.  Thread finds its row via O(log m)
  *                   binary search in indptr, then computes w[j]*y[row].
@@ -172,17 +173,21 @@ __global__ void _dt2t_nt_row_warp_kern##SUFFIX(                                 
     WEIGHT_T*       __restrict__ output,                                         \
     int m                                                                        \
 ) {                                                                              \
-    int row = blockIdx.x;                                                        \
-    if (row >= m) return;                                                        \
-    /* Broadcast: all 32 threads in the warp read the same y[row].           */  \
-    /* On modern NVIDIA GPUs this is served from L1 with a single cache line  */ \
-    /* fetch; no extra transactions compared to a single-thread read.         */ \
-    ACC_T y_val = READ_W(y[row]);                                                \
-    IndptrT start = indptr[row], end = indptr[row + 1];                              \
-    /* Warp-stride loop: threads handle j = start+tid, start+tid+32, ...      */ \
-    /* Consecutive threads write consecutive output elements -> coalesced.    */ \
-    for (IndptrT j = start + (int)threadIdx.x; j < end; j += 32) {                   \
-        output[j] = WRITE_W(READ_W(w[j]) * y_val);                               \
+    int lane      = threadIdx.x & 31;                                            \
+    int warp_id   = threadIdx.x >> 5;                                            \
+    int warps_per = blockDim.x >> 5;                                             \
+    for (int row = blockIdx.x * warps_per + warp_id; row < m;                    \
+         row += gridDim.x * warps_per) {                                         \
+        /* Broadcast: all 32 lanes of the warp read the same y[row].         */  \
+        /* On modern NVIDIA GPUs this is served from L1 with a single cache  */  \
+        /* line fetch; no extra transactions vs. a single-thread read.       */  \
+        ACC_T y_val = READ_W(y[row]);                                            \
+        IndptrT start = indptr[row], end = indptr[row + 1];                      \
+        /* Warp-stride loop: lanes handle j = start+lane, start+lane+32, ... */  \
+        /* Consecutive lanes write consecutive output elements -> coalesced. */  \
+        for (IndptrT j = start + lane; j < end; j += 32) {                       \
+            output[j] = WRITE_W(READ_W(w[j]) * y_val);                           \
+        }                                                                        \
     }                                                                            \
 }
 
@@ -335,7 +340,7 @@ void csrmv_dt2t_nt_auto##SUFFIX(                                                
             int blocks = (m + 255) / 256;                                                       \
             _dt2t_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m); \
         } else if (avg_nnz < 512) {                                                             \
-            _dt2t_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(d_y, d_w, d_ptr, d_out, m);         \
+            _dt2t_nt_row_warp_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(m), 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m);         \
         } else {                                                                                \
             const int VEC_SIZE = 4;                                                             \
             int total_threads = (nse + VEC_SIZE - 1) / VEC_SIZE;                                \
@@ -413,17 +418,21 @@ __global__ void _dt2t_mm_nt_row_warp_kern##SUFFIX(                              
     WEIGHT_T*       __restrict__ output,                                          \
     int m, int nse                                                                \
 ) {                                                                               \
-    int row = blockIdx.x;                                                         \
-    if (row >= m) return;                                                         \
+    int lane      = threadIdx.x & 31;                                             \
+    int warp_id   = threadIdx.x >> 5;                                             \
+    int warps_per = blockDim.x >> 5;                                              \
     int b = blockIdx.y;                                                           \
     const WEIGHT_T* w_b   = w      + (int64_t)b * nse;                            \
     WEIGHT_T*       out_b = output + (int64_t)b * nse;                            \
-    /* Broadcast: all 32 threads in the warp read the same y[b, row]. */          \
-    ACC_T y_val = READ_W(y[(int64_t)b * m + row]);                                \
-    IndptrT start = indptr[row], end = indptr[row + 1];                           \
-    /* Warp-stride loop -> coalesced writes within each stride segment. */        \
-    for (IndptrT j = start + (int)threadIdx.x; j < end; j += 32) {                \
-        out_b[j] = WRITE_W(READ_W(w_b[j]) * y_val);                               \
+    for (int row = blockIdx.x * warps_per + warp_id; row < m;                     \
+         row += gridDim.x * warps_per) {                                          \
+        /* Broadcast: all 32 lanes of the warp read the same y[b, row]. */        \
+        ACC_T y_val = READ_W(y[(int64_t)b * m + row]);                            \
+        IndptrT start = indptr[row], end = indptr[row + 1];                       \
+        /* Warp-stride loop -> coalesced writes within each stride segment. */    \
+        for (IndptrT j = start + lane; j < end; j += 32) {                        \
+            out_b[j] = WRITE_W(READ_W(w_b[j]) * y_val);                           \
+        }                                                                         \
     }                                                                             \
 }
 
@@ -520,8 +529,8 @@ void csrmm_dt2t_nt_auto##SUFFIX(                                                
             dim3 grid((m + 255) / 256, n_batch, 1);                                                   \
             _dt2t_mm_nt_row_thread_kern##SUFFIX<<<grid, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m, nse); \
         } else if (avg_nnz < 512) {                                                                   \
-            dim3 grid(m, n_batch, 1);                                                                 \
-            _dt2t_mm_nt_row_warp_kern##SUFFIX<<<grid, 32, 0, s>>>(d_y, d_w, d_ptr, d_out, m, nse);    \
+            dim3 grid(BE_WARP_PER_ROW_GRID(m), n_batch, 1);                                           \
+            _dt2t_mm_nt_row_warp_kern##SUFFIX<<<grid, 256, 0, s>>>(d_y, d_w, d_ptr, d_out, m, nse);   \
         } else {                                                                                      \
             const int VEC_SIZE = 4;                                                                   \
             int total_threads = (nse + VEC_SIZE - 1) / VEC_SIZE;                                      \

@@ -225,6 +225,57 @@ __device__ __inline__ double warp_reduce_sum_f64(double val) {
 #define ZERO_BF16 0.0f  // accumulator is float32
 
 // =========================================================================
+// Launch Geometry — one warp per row (SpMV, row slicing, dt2t)
+// =========================================================================
+
+/**
+ * Warps per block for kernels that map one row to one warp.
+ *
+ * 8 warps == 256 threads, so one block retires 8 rows per sweep. Measured
+ * 2-3x faster than the one-warp-per-block (`<<<m, 32>>>`) shape at low average
+ * row length, and never slower.
+ */
+#define BE_WARP_PER_ROW_WPB 8
+
+/** Upper bound on the warp-tier grid; the kernels are grid-strided. */
+#define BE_WARP_PER_ROW_MAX_GRID 4096
+
+/**
+ * Grid size covering @p m rows at ::BE_WARP_PER_ROW_WPB rows per
+ * block, capped at ::BE_WARP_PER_ROW_MAX_GRID so the grid tracks the resident
+ * block count instead of scaling with the row count.
+ *
+ * Kernels launched with this must be grid-strided, since the cap can make the
+ * grid smaller than the row count. Never returns 0: an empty matrix still gets
+ * one block (which exits immediately), because a zero-sized grid is an invalid
+ * launch configuration.
+ *
+ * @param m  Number of rows.
+ * @return   Number of blocks to launch, in [1, ::BE_WARP_PER_ROW_MAX_GRID].
+ */
+__host__ __inline__ int be_warp_per_row_grid(int m) {
+    int blocks = (m + BE_WARP_PER_ROW_WPB - 1) / BE_WARP_PER_ROW_WPB;
+    if (blocks > BE_WARP_PER_ROW_MAX_GRID) blocks = BE_WARP_PER_ROW_MAX_GRID;
+    return blocks > 0 ? blocks : 1;
+}
+
+/** Convenience spelling of ::be_warp_per_row_grid for use inside launch macros. */
+#define BE_WARP_PER_ROW_GRID(m) be_warp_per_row_grid(m)
+
+// =========================================================================
+// Launch Geometry — warp-per-row SpMM
+// =========================================================================
+//
+// SpMM warp kernels map lanes to *columns* (32 columns per warp) and warps to
+// rows, so the row tiling is a separate knob from the CSRMV one above.
+
+/** Maximum grid.x for SpMM warp kernels; 4096 x 128 threads saturates all SMs. */
+#define CSRMM_MAX_GRID_X 4096
+
+/** Rows per block for SpMM warp kernels (4 warps x 32 lanes = 128 threads). */
+#define CSRMM_WARP_RPB 4
+
+// =========================================================================
 // Atomic Add Helpers (with CUDA arch guards)
 // =========================================================================
 

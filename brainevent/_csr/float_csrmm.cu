@@ -78,17 +78,23 @@ __global__ void _csrmm_nt_warp_homo_kern##SUFFIX(                           \
     WEIGHT_T*       __restrict__ C,                                         \
     int m, int n                                                            \
 ) {                                                                         \
-    int row       = blockIdx.x;                                             \
+    int warp_id   = threadIdx.x >> 5;                                       \
+    int lane      = threadIdx.x & 31;                                       \
+    int rpb       = blockDim.x >> 5;                                        \
     int col_start = blockIdx.y * 32;                                        \
-    int c         = col_start + (int)threadIdx.x;                           \
-    if (row >= m || c >= n) return;                                         \
-    IndptrT start = indptr[row], end = indptr[row + 1];                         \
-    ACC_T w   = READ_W(weights[0]);                                         \
-    ACC_T acc = ACC_ZERO;                                                   \
-    for (IndptrT j = start; j < end; j++) {                                     \
-        acc += w * READ_W(B[indices[j] * n + c]);                           \
+    int c         = col_start + lane;                                       \
+    if (c >= n) return;                                                     \
+    ACC_T w = READ_W(weights[0]);                                           \
+    for (int base = blockIdx.x * rpb; base < m; base += gridDim.x * rpb) {  \
+        int row = base + warp_id;                                           \
+        if (row >= m) continue;                                             \
+        IndptrT start = indptr[row], end = indptr[row + 1];                 \
+        ACC_T acc = ACC_ZERO;                                               \
+        for (IndptrT j = start; j < end; j++) {                             \
+            acc += w * READ_W(B[(size_t)indices[j] * n + c]);               \
+        }                                                                   \
+        C[(size_t)row * n + c] = WRITE_W(acc);                              \
     }                                                                       \
-    C[row * n + c] = WRITE_W(acc);                                          \
 }
 
 #define DEFINE_CSRMM_NT_BLOCK_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, \
@@ -115,7 +121,7 @@ __global__ void _csrmm_nt_block_homo_kern##SUFFIX(                           \
     ACC_T acc = ACC_ZERO;                                                    \
     if (c < n) {                                                             \
         for (IndptrT j = start + strip; j < end; j += 8) {                       \
-            acc += w * READ_W(B[indices[j] * n + c]);                        \
+            acc += w * READ_W(B[(size_t)indices[j] * n + c]);                \
         }                                                                    \
     }                                                                        \
     smem[strip * 32 + lane] = acc;                                           \
@@ -123,7 +129,7 @@ __global__ void _csrmm_nt_block_homo_kern##SUFFIX(                           \
     if (strip == 0 && c < n) {                                               \
         acc = ACC_ZERO;                                                      \
         for (int s = 0; s < 8; s++) acc += smem[s * 32 + lane];              \
-        C[row * n + c] = WRITE_W(acc);                                       \
+        C[(size_t)row * n + c] = WRITE_W(acc);                               \
     }                                                                        \
 }
 
@@ -138,16 +144,21 @@ __global__ void _csrmm_t_warp_homo_kern##SUFFIX(                           \
     WEIGHT_T*       __restrict__ C,                                        \
     int m, int n                                                           \
 ) {                                                                        \
-    int row       = blockIdx.x;                                            \
+    int warp_id   = threadIdx.x >> 5;                                      \
+    int lane      = threadIdx.x & 31;                                      \
+    int rpb       = blockDim.x >> 5;                                       \
     int col_start = blockIdx.y * 32;                                       \
-    int c         = col_start + (int)threadIdx.x;                          \
-    if (row >= m || c >= n) return;                                        \
-    ACC_T b_val   = READ_W(B[row * n + c]);                                \
-    ACC_T w       = READ_W(weights[0]);                                    \
-    ACC_T contrib = w * b_val;                                             \
-    IndptrT start = indptr[row], end = indptr[row + 1];                        \
-    for (IndptrT j = start; j < end; j++) {                                    \
-        ATOMIC_ADD_W(&C[indices[j] * n + c], contrib);                     \
+    int c         = col_start + lane;                                      \
+    if (c >= n) return;                                                    \
+    ACC_T w = READ_W(weights[0]);                                          \
+    for (int base = blockIdx.x * rpb; base < m; base += gridDim.x * rpb) { \
+        int row = base + warp_id;                                          \
+        if (row >= m) continue;                                            \
+        ACC_T contrib = w * READ_W(B[(size_t)row * n + c]);                \
+        IndptrT start = indptr[row], end = indptr[row + 1];                \
+        for (IndptrT j = start; j < end; j++) {                            \
+            ATOMIC_ADD_W(&C[(size_t)indices[j] * n + c], contrib);         \
+        }                                                                  \
     }                                                                      \
 }
 
@@ -200,7 +211,6 @@ void csrmm_nt_auto_homo##SUFFIX(                                                
     int n           = static_cast<int>(B.size(1));                              \
     int avg_nnz     = (m > 0) ? (nse / m) : 0;                                  \
     int c_blocks    = (n + 31) / 32;                                            \
-    dim3 grid(m, c_blocks);                                                     \
     const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
     const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr());    \
     const WEIGHT_C_T* d_b = static_cast<const WEIGHT_C_T*>(B.data_ptr());       \
@@ -208,9 +218,15 @@ void csrmm_nt_auto_homo##SUFFIX(                                                
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                           \
         const IndptrT* d_p = static_cast<const IndptrT*>(indptr.data_ptr());    \
         if (avg_nnz <= 64) {                                                    \
-            _csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(               \
+            int gx = (m + CSRMM_WARP_RPB - 1) / CSRMM_WARP_RPB;                 \
+            if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                   \
+            if (gx < 1) gx = 1;                                                 \
+            dim3 warp_grid(gx, c_blocks);                                       \
+            _csrmm_nt_warp_homo_kern##SUFFIX                                    \
+                <<<warp_grid, CSRMM_WARP_RPB * 32, 0, s>>>(                     \
                 d_w, d_i, d_p, d_b, d_c, m, n);                                 \
         } else {                                                                \
+            dim3 grid(m, c_blocks);                                             \
             _csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(      \
                 d_w, d_i, d_p, d_b, d_c, m, n);                                 \
         }                                                                       \
@@ -231,9 +247,12 @@ void csrmm_t_warp_homo##SUFFIX(                                             \
     WEIGHT_C_T* d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());               \
     cudaMemsetAsync(d_c, 0, (size_t)k * (size_t)n * sizeof(WEIGHT_C_T), s); \
     int c_blocks    = (n + 31) / 32;                                        \
-    dim3 grid(m, c_blocks);                                                 \
+    int gx          = (m + CSRMM_WARP_RPB - 1) / CSRMM_WARP_RPB;            \
+    if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                       \
+    if (gx < 1) gx = 1;                                                     \
+    dim3 grid(gx, c_blocks);                                                \
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                       \
-        _csrmm_t_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(                \
+        _csrmm_t_warp_homo_kern##SUFFIX<<<grid, CSRMM_WARP_RPB * 32, 0, s>>>( \
             static_cast<const WEIGHT_C_T*>(weights.data_ptr()),             \
             static_cast<const int32_t*>(indices.data_ptr()),                \
             static_cast<const IndptrT*>(indptr.data_ptr()),                 \
