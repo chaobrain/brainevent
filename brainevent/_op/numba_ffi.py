@@ -68,8 +68,9 @@ def _detect_xla_ffi_api_version() -> Tuple[int, int]:
     The metadata handshake (:meth:`NumbaCpuFfiHandler._ffi_callback`) must report
     an API version the running XLA framework accepts; XLA validates
     ``minimum <= reported <= framework``.  That framework version is
-    jaxlib-specific — jaxlib 0.7/0.8 ship ``0.1``, 0.9 ships ``0.2`` and 0.10
-    ships ``0.3`` — so a value hardcoded to the newest release is rejected by
+    jaxlib-specific — jaxlib 0.7/0.8 ship ``0.1``, 0.9 ships ``0.2``, and 0.10
+    and 0.11 both ship ``0.3`` — so a value hardcoded to the newest release is
+    rejected by
     every older jaxlib whose framework version is lower (the mismatch that broke
     the entire numba FFI path on ``jax < 0.10``).  Minor-version bumps are
     ABI-compatible (new struct fields are only appended and gated by
@@ -102,6 +103,9 @@ def _detect_xla_ffi_api_version() -> Tuple[int, int]:
                 m = re.match(r'\s*#\s*define\s+XLA_FFI_API_MINOR\s+(\d+)', line)
                 if m:
                     minor = int(m.group(1))
+                if major is not None and minor is not None:
+                    # Both defines found; no need to scan the rest of the header.
+                    break
         if major is not None and minor is not None:
             return major, minor
     except Exception:
@@ -113,7 +117,7 @@ def _detect_xla_ffi_api_version() -> Tuple[int, int]:
 # XLA FFI API version reported by this bridge during the metadata handshake.
 # Detected from the installed jaxlib (see :func:`_detect_xla_ffi_api_version`)
 # rather than hardcoded, so the bridge works across the supported jax range
-# (0.7 → 0.10+) instead of only the newest release.
+# (0.7 → 0.11+) instead of only the newest release.
 XLA_FFI_API_MAJOR, XLA_FFI_API_MINOR = _detect_xla_ffi_api_version()
 
 
@@ -122,7 +126,7 @@ XLA_FFI_API_MAJOR, XLA_FFI_API_MINOR = _detect_xla_ffi_api_version()
 # ctypes definitions in this module — has been validated against this bridge.
 # This replaces the former hard ``jax<0.11`` install pin: newer jax is allowed,
 # but :func:`_warn_if_untested_jax` warns once if the ABI may have shifted.
-_MAX_VALIDATED_JAX = (0, 10)
+_MAX_VALIDATED_JAX = (0, 11)
 
 # Set the first time :func:`_warn_if_untested_jax` runs so the warning fires at
 # most once per process.

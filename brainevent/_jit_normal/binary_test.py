@@ -27,12 +27,25 @@ from brainevent._jit_normal.binary import (
     binary_jitnmm_p,
     binary_jitnmm_p_call,
 )
+from brainevent._jit_normal._test_util import dense_normal_reference
 from brainevent._jit_normal.float import jitnmv, jitnmm
 from brainevent._test_util import allclose
 
 platform = jax.default_backend()
+CPU_DEVICE = jax.devices('cpu')[0]
 JITNMV_IMPLEMENTATIONS = tuple(binary_jitnmv_p.available_backends(platform))
 JITNMM_IMPLEMENTATIONS = tuple(binary_jitnmm_p.available_backends(platform))
+CPU_JITNMV_IMPLEMENTATIONS = tuple(binary_jitnmv_p.available_backends('cpu'))
+CPU_JITNMM_IMPLEMENTATIONS = tuple(binary_jitnmm_p.available_backends('cpu'))
+
+requires_cpu_jitnmv = pytest.mark.skipif(
+    'numba' not in CPU_JITNMV_IMPLEMENTATIONS,
+    reason='No binary_jitnmv numba backend registered on CPU',
+)
+requires_cpu_jitnmm = pytest.mark.skipif(
+    'numba' not in CPU_JITNMM_IMPLEMENTATIONS,
+    reason='No binary_jitnmm numba backend registered on CPU',
+)
 
 if platform == 'cpu':
     SHAPES = ((20, 30), (100, 50))
@@ -90,6 +103,58 @@ def _call_binary_jitnmm(w_loc, w_scale, prob, matrix, seed, *, shape, transpose,
         corder=corder,
         backend=implementation,
     )[0]
+
+
+@requires_cpu_jitnmv
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+def test_binary_jitnmv_numba_matches_light_rng_reference(transpose, corder, event_dtype):
+    shape = (13, 17)
+    prob, seed = 0.2, 123
+    w_loc = jnp.asarray(1.5, dtype=jnp.float32)
+    w_scale = jnp.asarray(0.15, dtype=jnp.float32)
+    event_size = shape[0] if transpose else shape[1]
+    vector = _sample_vector(event_size, event_dtype, seed + 31)
+    vector_ref = np.asarray(_binary_events(vector, dtype=jnp.float32))
+
+    with jax.default_device(CPU_DEVICE):
+        actual = binary_jitnmv(
+            w_loc, w_scale, prob, vector, seed,
+            shape=shape, transpose=transpose, corder=corder, backend='numba',
+        )
+    dense = dense_normal_reference(
+        w_loc, w_scale, prob, seed,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode='mv',
+    )
+    expected = dense @ vector_ref
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
+
+
+@requires_cpu_jitnmm
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+def test_binary_jitnmm_numba_matches_light_rng_reference(transpose, corder, event_dtype):
+    shape = (13, 17)
+    prob, seed = 0.2, 123
+    w_loc = jnp.asarray([1.5], dtype=jnp.float32)
+    w_scale = jnp.asarray([0.15], dtype=jnp.float32)
+    b_rows = shape[0] if transpose else shape[1]
+    matrix = _sample_matrix(b_rows, 3, event_dtype, seed + 37)
+    matrix_ref = np.asarray(_binary_events(matrix, dtype=jnp.float32))
+
+    with jax.default_device(CPU_DEVICE):
+        actual = _call_binary_jitnmm(
+            w_loc, w_scale, prob, matrix, seed,
+            shape=shape, transpose=transpose, corder=corder, implementation='numba',
+        )
+    dense = dense_normal_reference(
+        w_loc[0], w_scale[0], prob, seed,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode='mm',
+    )
+    expected = dense @ matrix_ref
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize('implementation', JITNMV_PARAMS)

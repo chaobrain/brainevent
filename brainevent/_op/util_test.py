@@ -35,7 +35,6 @@ The tests are written to fail against the pre-fix ``util.py`` and pass once
 the corrected behavior is in place.
 """
 
-import functools
 import importlib.util
 
 import jax
@@ -44,14 +43,15 @@ import numpy as np
 import pytest
 
 from jax.extend.core import Primitive
-from jax.interpreters import ad, mlir
+from jax.interpreters import mlir
 
-from brainevent._op import util
 from brainevent._op.util import (
     defjvp,
     general_batching_rule,
     jaxtype_to_warptype,
     jaxinfo_to_warpinfo,
+    dtype_suffix,
+    spike_suffix,
 )
 
 warp_installed = importlib.util.find_spec('warp') is not None
@@ -330,3 +330,75 @@ def test_f2_defjvp_with_correct_arity_matches_jacfwd():
     dx, dy = jax.jacfwd(call, argnums=(0, 1))(x, y)
     assert float(dx) == pytest.approx(5.0)  # d/dx (x*y) = y
     assert float(dy) == pytest.approx(3.0)  # d/dy (x*y) = x
+
+# ---------------------------------------------------------------------------
+# Kernel-name suffix helpers
+#
+# ``dtype_suffix`` / ``spike_suffix`` encode the naming contract between the
+# Python dispatch layer and the symbols defined in the ``.cu`` sources. They
+# replaced 31 verbatim copies of the same table, so the mapping is pinned here:
+# a silent change would mis-dispatch to a wrong-precision kernel rather than
+# raise, and CPU-only test runs never lower the CUDA generators that use it.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    'dtype, expected',
+    [
+        (jnp.float16, '_f16'),
+        (jnp.float32, '_f32'),
+        (jnp.float64, '_f64'),
+        (jnp.bfloat16, '_bf16'),
+    ],
+)
+def test_dtype_suffix_maps_each_supported_precision(dtype, expected):
+    """Every precision with a generated kernel gets its own distinct suffix."""
+    assert dtype_suffix(dtype) == expected
+
+
+def test_dtype_suffix_accepts_every_spelling_of_a_dtype():
+    """np dtypes, jnp dtypes, bare types and ShapeDtypeStruct.dtype agree.
+
+    The call sites this helper replaced passed all four spellings, so they must
+    normalize identically.
+    """
+    info = jax.ShapeDtypeStruct((3, 4), jnp.float16)
+    assert (
+        dtype_suffix(np.dtype('float16'))
+        == dtype_suffix(jnp.dtype('float16'))
+        == dtype_suffix(np.float16)
+        == dtype_suffix(info.dtype)
+        == '_f16'
+    )
+
+
+def test_dtype_suffix_falls_back_to_f32_for_unmapped_dtype():
+    """Unmapped dtypes fall back to ``_f32`` rather than raising.
+
+    This preserves the behaviour of the per-module tables, every one of which
+    used ``.get(dtype, '_f32')``. It is a known sharp edge, not an oversight:
+    an integer weight dtype silently selects the f32 kernel.
+    """
+    assert dtype_suffix(jnp.int32) == '_f32'
+    assert dtype_suffix(np.dtype('int64')) == '_f32'
+
+
+def test_dtype_suffixes_are_distinct():
+    """No two supported precisions may collide on the same kernel symbol."""
+    suffixes = [dtype_suffix(d) for d in (jnp.float16, jnp.float32, jnp.float64, jnp.bfloat16)]
+    assert len(set(suffixes)) == len(suffixes)
+
+
+@pytest.mark.parametrize(
+    'dtype, expected',
+    [
+        (jnp.bool_, '_bool'),
+        (np.dtype('bool'), '_bool'),
+        (jnp.float32, '_float'),
+        (jnp.float16, '_float'),
+        (jnp.bfloat16, '_float'),
+        (jnp.int8, '_float'),
+    ],
+)
+def test_spike_suffix_splits_bool_from_everything_else(dtype, expected):
+    """Only boolean event arrays select the ``_bool`` kernel variant."""
+    assert spike_suffix(dtype) == expected

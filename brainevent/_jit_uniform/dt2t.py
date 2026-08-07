@@ -17,19 +17,18 @@
 
 """
 Direct per-synapse ``y * w`` generation for uniform-weight just-in-time
-connectivity (JITC) matrices.
+connectivity (JITC) matrices, on the light-RNG (mv) kernels.
 
-The public :func:`jitumv_dt2t` wrapper mirrors the CSR ``dt2t`` contract:
-it returns one value per generated structural non-zero, in the same flat CSR
-data order as :func:`brainevent._jit_uniform.csr.jitu_to_csr`. Unlike a wrapper
-around ``tocsr().dt2t(...)``, the fill pass draws each uniform weight and
-multiplies by ``y[row]`` or ``y[col]`` directly.
+:func:`jitumv_dt2t` returns one value per generated structural non-zero in
+canonical CSR flat order (the same order as ``jitu_to_csr(..., matrix_mode='mv')``),
+namely ``sampled_weight * y[row]`` (``transpose=False``) or ``sampled_weight * y[col]``
+(``transpose=True``).  It always materializes the mv matrix.
 
-Because the number of structural non-zeros is data dependent, generation is
-eager-only and split into:
-
-1. the existing JIT-uniform CSR count pass, which determines ``indptr``; and
-2. a dedicated ``dt2t`` fill pass, which writes ``sampled_weight * y[...]``.
+``corder`` keeps its usual meaning (it selects the notrans/trans generation).  The
+``corder=True`` path can use the fused fill primitive (which replays the
+mv-notrans walk); the ``corder=False`` path composes over :func:`jitu_to_csr`
+(whose trans materialization has a different flat order the fused kernel can't
+reproduce).
 """
 
 from pathlib import Path
@@ -41,28 +40,19 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
-from brainevent._data import _initialize_conn_length
-from brainevent._jit_uniform.csr import jitu_csr_count_p_call
-from brainevent._numba_random import (
-    get_numba_lfsr_seed,
-    get_numba_lfsr_random_integers,
-    get_numba_lfsr_uniform,
-)
+from brainevent._data import _initialize_seed
+from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
+from .csr import jitu_to_csr
+from .float import _normalize_chunk_size, _MV_STRIDE
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     'jitumv_dt2t',
     'jitumv_dt2t_p',
     'jitumv_dt2t_p_call',
 ]
-
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
 
 
 def jitumv_dt2t(
@@ -77,187 +67,207 @@ def jitumv_dt2t(
     corder: bool = True,
     backend: Optional[str] = None,
 ):
-    """Generate per-synapse ``y * w`` values for a uniform JITC matrix.
-
-    The result is a flat vector of length ``nnz`` in the same order as
-    ``jitu_to_csr(...).data``. The output equals ``csr.dt2t(y, csr.data)``
-    when ``transpose=False`` and ``csr.dt2t_transposed(y, csr.data)`` when
-    ``transpose=True``, without first materialising the CSR weight data.
-    """
+    """Generate per-synapse ``y * w`` values for a uniform JITC (mv) matrix."""
     shape = (int(shape[0]), int(shape[1]))
+    n_rows, n_cols = shape
 
+    u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unitd = u.split_mantissa_unit(w_low)
     w_high = u.Quantity(w_high).to(unitd).mantissa
     y, unity = u.split_mantissa_unit(y)
-
     common_dtype = jnp.result_type(w_low, w_high, y)
     w_low = jnp.atleast_1d(jnp.asarray(w_low, dtype=common_dtype))
     w_high = jnp.atleast_1d(jnp.asarray(w_high, dtype=common_dtype))
     y = jnp.asarray(y, dtype=common_dtype)
+    seed = _initialize_seed(seed)
 
     if y.ndim != 1:
         raise AssertionError("y must be 1D.")
     if transpose:
-        assert shape[1] == y.shape[0], "Shape mismatch for transpose operation."
+        assert n_cols == y.shape[0], "Shape mismatch for transpose operation."
     else:
-        assert shape[0] == y.shape[0], "Shape mismatch for non-transpose operation."
+        assert n_rows == y.shape[0], "Shape mismatch for non-transpose operation."
 
     if not isinstance(prob, Tracer) and float(np.asarray(prob)) == 0.0:
         data = jnp.zeros(0, dtype=common_dtype)
         return u.maybe_decimal(data * unitd * unity)
 
-    clen = _initialize_conn_length(prob)
-    row_counts = jitu_csr_count_p_call(
-        w_low, w_high, clen, seed, shape=shape, corder=corder, backend=backend,
-    )[0]
-    indptr = jnp.concatenate(
-        [jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
+    # Materialize the canonical (column-sorted) mv CSR; dt2t is ``weight * y`` at
+    # each structural non-zero, taken in that CSR's flat order.  Composing over
+    # ``jitu_to_csr`` keeps both corder values and both directions consistent with
+    # the materialized structure and is deterministic.
+    csr = jitu_to_csr(
+        w_low, w_high, prob, seed,
+        shape=shape, corder=corder, matrix_mode='mv', backend=backend,
     )
+    indptr = csr.indptr
     nnz = int(indptr[-1])
+    if nnz == 0:
+        return u.maybe_decimal(jnp.zeros(0, dtype=common_dtype) * unitd * unity)
 
-    data = jitumv_dt2t_p_call(
-        w_low,
-        w_high,
-        clen,
-        y,
-        seed,
-        indptr,
-        nnz,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-        backend=backend,
-    )[0]
-    return u.maybe_decimal(data * unitd * unity)
-
-
-# ---------------------------------------------------------------------- #
-#  Count pass - per-row non-zero counts
-# ---------------------------------------------------------------------- #
-#
-# The dt2t path deliberately reuses the JIT-uniform CSR count pass instead of
-# duplicating it here. This keeps the data-dependent ``nnz``/``indptr`` logic
-# aligned with ``jitu_to_csr``; the dedicated dt2t work starts at the fill pass.
-
-
-# ---------------------------------------------------------------------- #
-#  Fill pass - per-synapse y * w values
-# ---------------------------------------------------------------------- #
-
-def _jitumv_dt2t_fill_numba_kernel_generator(
-    corder: bool,
-    shape: MatrixShape,
-    transpose: bool,
-    **kwargs,
-):
-    """Build the Numba CPU kernel for the uniform JITC ``dt2t`` fill pass."""
-    import numba  # pylint: disable=import-outside-toplevel
-
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _draw = get_numba_lfsr_uniform()
-    n_rows, n_cols = int(shape[0]), int(shape[1])
-
-    if corder:
-        @numba.njit(fastmath=True)
-        def kernel_impl(w0, w1, clen, y, seed, indptr, out):
-            a = w0[0]
-            b = w1[0]
-            cl = clen[0]
-            s = seed[0]
-            for r in range(n_rows):
-                state = _lfsr_seed(s + r * n_cols)
-                c = _lfsr_random_integers(state, 0, cl - 1)
-                pos = indptr[r]
-                while c < n_cols:
-                    y_value = y[c] if transpose else y[r]
-                    out[pos] = _draw(state, a, b) * y_value
-                    pos += 1
-                    c += _lfsr_random_integers(state, 1, cl - 1)
+    if transpose:
+        gathered = y[csr.indices]                                     # weight * y[col]
     else:
-        @numba.njit(fastmath=True)
-        def kernel_impl(w0, w1, clen, y, seed, indptr, out):
-            a = w0[0]
-            b = w1[0]
-            cl = clen[0]
-            s = seed[0]
-            wptr = indptr[:n_rows].copy()
-            for c in range(n_cols):
-                state = _lfsr_seed(s + c * n_rows)
-                r = _lfsr_random_integers(state, 0, cl - 1)
-                while r < n_rows:
-                    pos = wptr[r]
-                    y_value = y[c] if transpose else y[r]
-                    out[pos] = _draw(state, a, b) * y_value
-                    wptr[r] += 1
-                    r += _lfsr_random_integers(state, 1, cl - 1)
+        row_ids = jnp.repeat(
+            jnp.arange(n_rows, dtype=jnp.int32), jnp.diff(indptr), total_repeat_length=nnz
+        )
+        gathered = y[row_ids]                                         # weight * y[row]
+    return u.maybe_decimal(csr.data * gathered * unitd * unity)
 
-    def kernel(w0, w1, clen, y, seed, indptr):
-        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w0, w1, clen, y, seed, indptr)
 
-    return kernel
-
+# ---------------------------------------------------------------------- #
+#  Fused fill primitive (corder=True / notrans structure), CUDA + numba
+# ---------------------------------------------------------------------- #
 
 def _jitumv_dt2t_fill_cuda_kernel(
-    corder: bool,
     shape: MatrixShape,
     transpose: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     **kwargs,
 ):
-    """Build the CUDA kernel callable for the uniform JITC ``dt2t`` fill pass."""
-    load_cuda_file(
-        Path(__file__).parent.joinpath('dt2t.cu'),
-        name='jit_uniform_dt2t',
-    )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w0_info'].dtype), '_f32')
-    order = 'corder_true' if corder else 'corder_false'
-    direction = 't' if transpose else 'nt'
-    kernel_name = f'jit_uniform_dt2t.fill_{order}_{direction}{sfx}'
-    n_cols = np.int32(shape[1])
+    load_cuda_file(Path(__file__).parent.joinpath('dt2t.cu'), name='jit_uniform_dt2t')
+    sfx = dtype_suffix(kwargs['w_low_info'].dtype)
+    direction = 'trans' if transpose else 'notrans'
+    kernel_name = f'jit_uniform_dt2t.fill_{direction}{sfx}'
+    n_cols = int(shape[1])
+    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
 
-    def kernel(w0, w1, clen, y, seed, indptr):
+    def kernel(w_low, w_high, clen, y, seed, chunk_offsets):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
-            w0, w1, clen, y, seed, indptr, n_cols=n_cols,
+            w_low, w_high, clen, y, seed, chunk_offsets,
+            n_cols=np.int32(n_cols), chunk_size=np.int32(chunk_size_value),
         )
 
     return kernel
 
 
+def _jitumv_dt2t_fill_numba_kernel(
+    shape: MatrixShape,
+    transpose: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
+    **kwargs,
+):
+    """Numba CPU fused ``dt2t`` fill mirroring ``dt2t.cu``."""
+    import numba
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+    _rng_uniform01 = _rng['uniform01']
+
+    stride = _MV_STRIDE
+    k = int(shape[1])
+    cs_val = _normalize_chunk_size(k, chunk_size, target_chunks)
+
+    if transpose:
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, y, seed, chunk_offsets, data):
+            m = chunk_offsets.shape[0]
+            n_chunks = chunk_offsets.shape[1]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            for row in range(m):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        continue
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    pos = chunk_offsets[row, chunk_id]
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            u01 = _rng_uniform01(seed0, row, j)
+                            data[pos] = (w_low0 + u01 * span) * y[j]
+                            pos += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+    else:
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, y, seed, chunk_offsets, data):
+            m = chunk_offsets.shape[0]
+            n_chunks = chunk_offsets.shape[1]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            span = w_high0 - w_low0
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            for row in range(m):
+                yrow = y[row]
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * cs_val
+                    if chunk_start >= k:
+                        continue
+                    chunk_end = chunk_start + cs_val
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    pos = chunk_offsets[row, chunk_id]
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            j = chunk_start + local_j
+                            u01 = _rng_uniform01(seed0, row, j)
+                            data[pos] = (w_low0 + u01 * span) * yrow
+                            pos += 1
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+
+    def kernel(w_low, w_high, clen, y, seed, chunk_offsets):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, y, seed, chunk_offsets)
+
+    return kernel
+
+
 def jitumv_dt2t_p_call(
-    w0,
-    w1,
+    w_low,
+    w_high,
     clen,
     y,
     seed,
-    indptr,
+    chunk_offsets,
     nnz: int,
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    corder: bool,
+    chunk_size: Optional[int] = None,
+    target_chunks: int = 4,
     backend: Optional[str] = None,
 ):
-    """Invoke the uniform JITC ``dt2t`` fill primitive."""
-    w0 = jnp.atleast_1d(w0)
-    w1 = jnp.atleast_1d(w1)
+    """Fused ``dt2t`` fill over the mv-notrans structure (``chunk_offsets`` is the
+    per-(row, chunk) exclusive-offset table). Returns ``(data,)`` of length ``nnz``."""
+    w_low = jnp.atleast_1d(w_low)
+    w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
     y = jnp.asarray(y)
     seed = jnp.atleast_1d(seed)
-    indptr = jnp.asarray(indptr, dtype=jnp.int32)
+    chunk_offsets = jnp.asarray(chunk_offsets, dtype=jnp.int32)
     assert len(shape) == 2, f"shape must be two-dimensional, but got {shape}."
-    assert w0.ndim == w1.ndim == clen.ndim == seed.ndim == 1
-    assert w0.size == w1.size == clen.size == seed.size == 1
     assert y.ndim == 1, "y must be 1D."
-    assert indptr.ndim == 1, "indptr must be 1D."
-    assert indptr.shape[0] == shape[0] + 1, (
-        f"indptr shape mismatch, expected {(shape[0] + 1,)}, got {indptr.shape}."
-    )
-    assert jnp.issubdtype(indptr.dtype, jnp.integer), "indptr must be an integer type."
-    assert jnp.issubdtype(w0.dtype, jnp.floating), "w0 must be a floating-point type."
-    assert jnp.issubdtype(w1.dtype, jnp.floating), "w1 must be a floating-point type."
-    assert jnp.issubdtype(y.dtype, jnp.floating), "y must be a floating-point type."
-    assert w0.dtype == w1.dtype == y.dtype, (
-        f"w0, w1 and y must have the same dtype, got {w0.dtype}, {w1.dtype}, {y.dtype}."
+    assert chunk_offsets.ndim == 2, "chunk_offsets must be 2D (n_rows, n_chunks)."
+    assert jnp.issubdtype(w_low.dtype, jnp.floating), "w_low must be a floating-point type."
+    assert jnp.issubdtype(w_high.dtype, jnp.floating), "w_high must be a floating-point type."
+    assert w_low.dtype == w_high.dtype == y.dtype, (
+        f"w_low, w_high, and y must share dtype, got {w_low.dtype}, {w_high.dtype}, {y.dtype}."
     )
     if transpose:
         assert shape[1] == y.shape[0], "Shape mismatch for transpose operation."
@@ -265,40 +275,30 @@ def jitumv_dt2t_p_call(
         assert shape[0] == y.shape[0], "Shape mismatch for non-transpose operation."
 
     return jitumv_dt2t_p(
-        w0,
-        w1,
-        clen,
-        y,
-        seed,
-        indptr,
-        outs=[jax.ShapeDtypeStruct((nnz,), y.dtype)],
-        shape=shape,
+        w_low, w_high, clen, y, seed, chunk_offsets,
+        outs=[jax.ShapeDtypeStruct((int(nnz),), y.dtype)],
+        shape=(int(shape[0]), int(shape[1])),
         transpose=transpose,
-        corder=corder,
+        chunk_size=chunk_size,
+        target_chunks=target_chunks,
         backend=backend,
-        w0_info=jax.ShapeDtypeStruct(w0.shape, w0.dtype),
-        w1_info=jax.ShapeDtypeStruct(w1.shape, w1.dtype),
+        w_low_info=jax.ShapeDtypeStruct(w_low.shape, w_low.dtype),
+        w_high_info=jax.ShapeDtypeStruct(w_high.shape, w_high.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
         y_info=jax.ShapeDtypeStruct(y.shape, y.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
-        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        chunk_offsets_info=jax.ShapeDtypeStruct(chunk_offsets.shape, chunk_offsets.dtype),
     )
 
 
 jitumv_dt2t_p = XLACustomKernel(
     'jitumv_dt2t_fill',
     doc="""
-Low-level XLA custom-kernel primitive filling per-synapse ``y * w`` values for a
-uniform JITC matrix.
-
-Given the ``indptr`` produced by the JIT-uniform CSR count pass, this primitive
-walks the same deterministic random stream as ``jitu_to_csr``. For every
-generated connection it draws the uniform weight and writes either
-``weight * y[row]`` (``transpose=False``) or ``weight * y[col]``
-(``transpose=True``), preserving the same flat CSR data order.
-"""
+Low-level CUDA primitive filling per-synapse ``sampled_weight * y`` values for a uniform
+JITC (mv) matrix, in the mv-notrans CSR flat order.
+""",
 )
-jitumv_dt2t_p.def_numba_kernel(_jitumv_dt2t_fill_numba_kernel_generator)
-jitumv_dt2t_p.def_cuda_raw_kernel(_jitumv_dt2t_fill_cuda_kernel)
+jitumv_dt2t_p.def_cuda_raw_kernel(_jitumv_dt2t_fill_cuda_kernel, asdefault=True)
+jitumv_dt2t_p.def_numba_kernel(_jitumv_dt2t_fill_numba_kernel)
 jitumv_dt2t_p.def_call(jitumv_dt2t_p_call)
-jitumv_dt2t_p.def_tags('jit_uniform', 'dt2t')
+jitumv_dt2t_p.def_tags('jit_uniform', 'dt2t', 'light_rng')

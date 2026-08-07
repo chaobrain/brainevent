@@ -28,6 +28,7 @@ from brainevent._numba_random import (
     lfsr113_random_integers,
     lfsr128_seed, lfsr128_rand, lfsr128_randn,
     lfsr128_random_integers,
+    light_rng_uniform01, light_rng_normal01, get_numba_light_rng_funcs,
 )
 
 _NUMBA_AVAILABLE = importlib.util.find_spec('numba') is not None
@@ -52,6 +53,48 @@ class TestLFSR88Seed:
         s1 = lfsr88_seed(42)
         s2 = lfsr88_seed(100)
         assert not np.array_equal(s1, s2)
+
+
+class TestLightRNGUniformHash:
+    def test_exact_cuda_reference_values(self):
+        cases = [
+            (42, 0, 0, np.float32(0.2929498553276062)),
+            (42, 3, 7, np.float32(0.548724353313446)),
+            (123, 19, 29, np.float32(0.5329357385635376)),
+            (0, 1, 2, np.float32(0.31099069118499756)),
+            (np.uint32(0xFFFFFFFF), 65535, 123456, np.float32(0.8090267777442932)),
+        ]
+        for seed, row, col, expected in cases:
+            actual = light_rng_uniform01(seed, row, col)
+            assert np.float32(actual) == expected
+
+    @pytest.mark.skipif(not _NUMBA_AVAILABLE, reason='numba is not installed')
+    def test_dispatch_exposes_njit_uniform01(self):
+        funcs = get_numba_light_rng_funcs()
+        assert 'uniform01' in funcs
+        actual = funcs['uniform01'](np.uint32(42), 3, 7)
+        assert np.float32(actual) == np.float32(0.548724353313446)
+
+
+class TestLightRNGNormalHash:
+    def test_cuda_reference_values(self):
+        cases = [
+            (42, 0, 0, np.float32(-0.5447874069213867)),
+            (42, 3, 7, np.float32(0.12243907153606415)),
+            (123, 19, 29, np.float32(0.08265165984630585)),
+            (0, 1, 2, np.float32(-0.4930441081523895)),
+            (np.uint32(0xFFFFFFFF), 65535, 123456, np.float32(0.8743151426315308)),
+        ]
+        for seed, row, col, expected in cases:
+            actual = light_rng_normal01(seed, row, col)
+            assert np.allclose(np.float32(actual), expected, rtol=1e-6, atol=1e-6)
+
+    @pytest.mark.skipif(not _NUMBA_AVAILABLE, reason='numba is not installed')
+    def test_dispatch_exposes_njit_normal01(self):
+        funcs = get_numba_light_rng_funcs()
+        assert 'normal01' in funcs
+        actual = funcs['normal01'](np.uint32(42), 3, 7)
+        assert np.allclose(np.float32(actual), np.float32(0.12243907153606415), rtol=1e-6, atol=1e-6)
 
 
 class TestLFSR88Rand:

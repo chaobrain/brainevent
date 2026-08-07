@@ -24,11 +24,29 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
     jax.config.update('jax_default_matmul_precision', 'highest')
 
 from brainevent._jit_uniform.float import jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p
+from brainevent._jit_uniform._test_util import dense_uniform_reference
 
 platform = jax.default_backend()
 JITU_IMPLEMENTATIONS = tuple(jitu_p.available_backends(platform))
 JITUMV_IMPLEMENTATIONS = tuple(jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(jitumm_p.available_backends(platform))
+CPU_DEVICE = jax.devices('cpu')[0]
+CPU_JITU_IMPLEMENTATIONS = tuple(jitu_p.available_backends('cpu'))
+CPU_JITUMV_IMPLEMENTATIONS = tuple(jitumv_p.available_backends('cpu'))
+CPU_JITUMM_IMPLEMENTATIONS = tuple(jitumm_p.available_backends('cpu'))
+
+requires_cpu_jitu = pytest.mark.skipif(
+    'numba' not in CPU_JITU_IMPLEMENTATIONS,
+    reason='No jitu numba backend registered on CPU',
+)
+requires_cpu_jitumv = pytest.mark.skipif(
+    'numba' not in CPU_JITUMV_IMPLEMENTATIONS,
+    reason='No jitumv numba backend registered on CPU',
+)
+requires_cpu_jitumm = pytest.mark.skipif(
+    'numba' not in CPU_JITUMM_IMPLEMENTATIONS,
+    reason='No jitumm numba backend registered on CPU',
+)
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +73,71 @@ def _sample_cotangent(shape, seed: int):
     return jnp.asarray(rng.randn(*shape).astype(np.float32))
 
 
+def test_jitu_requires_matrix_mode():
+    # mv and mm draw different matrices, so dense materialization must pick one.
+    with pytest.raises(TypeError):
+        jitu(W_LOW, W_HIGH, PROB, SEED, shape=(20, 30))
+
+
+@requires_cpu_jitu
+@pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitu_numba_matches_light_rng_reference(matrix_mode, transpose, corder):
+    shape = (13, 17)
+    with jax.default_device(CPU_DEVICE):
+        actual = jitu(
+            W_LOW, W_HIGH, 0.2, SEED,
+            shape=shape, transpose=transpose, corder=corder,
+            matrix_mode=matrix_mode, backend='numba',
+        )
+    expected = dense_uniform_reference(
+        W_LOW, W_HIGH, 0.2, SEED,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode=matrix_mode,
+    )
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-6, atol=1e-6)
+
+
+@requires_cpu_jitumv
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitumv_numba_matches_light_rng_reference(transpose, corder):
+    shape = (13, 17)
+    vec_size = shape[0] if transpose else shape[1]
+    vector = jnp.linspace(-0.3, 0.7, vec_size, dtype=jnp.float32)
+    with jax.default_device(CPU_DEVICE):
+        actual = jitumv(
+            W_LOW, W_HIGH, 0.2, vector, SEED,
+            shape=shape, transpose=transpose, corder=corder, backend='numba',
+        )
+    dense = dense_uniform_reference(
+        W_LOW, W_HIGH, 0.2, SEED,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode='mv',
+    )
+    expected = dense @ np.asarray(vector)
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
+
+
+@requires_cpu_jitumm
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitumm_numba_matches_light_rng_reference(transpose, corder):
+    shape = (13, 17)
+    b_rows = shape[0] if transpose else shape[1]
+    B = jnp.reshape(jnp.linspace(-0.5, 0.8, b_rows * 3, dtype=jnp.float32), (b_rows, 3))
+    with jax.default_device(CPU_DEVICE):
+        actual = jitumm(
+            W_LOW, W_HIGH, 0.2, B, SEED,
+            shape=shape, transpose=transpose, corder=corder, backend='numba',
+        )
+    dense = dense_uniform_reference(
+        W_LOW, W_HIGH, 0.2, SEED,
+        shape=shape, transpose=transpose, corder=corder, matrix_mode='mm',
+    )
+    expected = dense @ np.asarray(B)
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.skipif(
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
@@ -64,7 +147,8 @@ def _sample_cotangent(shape, seed: int):
 @pytest.mark.parametrize('corder', [True, False])
 def test_jitumv_forward(implementation, shape, corder):
     vector = jnp.asarray(np.random.rand(shape[1]))
-    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, corder=corder, backend=implementation)
+    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, corder=corder, matrix_mode='mv',
+                 backend=implementation)
     out = jitumv(W_LOW, W_HIGH, PROB, vector, SEED, shape=shape, corder=corder, backend=implementation)
     _assert_allclose(out, dense @ vector)
     jax.block_until_ready((vector, dense, out))
@@ -87,6 +171,7 @@ def test_jitumv_transpose_forward(implementation, shape, corder):
         shape=shape,
         transpose=True,
         corder=corder,
+        matrix_mode='mv',
         backend=implementation,
     )
     out = jitumv(
@@ -114,15 +199,12 @@ def test_jitumv_transpose_forward(implementation, shape, corder):
 @pytest.mark.parametrize('corder', [True, False])
 def test_jitumm_forward(implementation, k, shape, corder):
     matrix = jnp.asarray(np.random.rand(shape[1], k))
+    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, corder=corder, matrix_mode='mm',
+                 backend=implementation)
     out = jitumm(W_LOW, W_HIGH, PROB, matrix, SEED, shape=shape, corder=corder, backend=implementation)
-    # Validate against jitumv column-by-column (exact match expected)
-    for j in range(k):
-        expected_col = jitumv(W_LOW, W_HIGH, PROB, matrix[:, j], SEED, shape=shape, corder=corder,
-                              backend=implementation)
-        assert jnp.allclose(out[:, j], expected_col, rtol=1e-4, atol=1e-4), (
-            f"Column {j} mismatch: max_diff={float(jnp.max(jnp.abs(out[:, j] - expected_col)))}"
-        )
-    jax.block_until_ready(out)
+    expected = dense @ matrix
+    _assert_allclose(out, expected)
+    jax.block_until_ready((matrix, dense, out, expected))
 
 
 @pytest.mark.skipif(
@@ -135,6 +217,10 @@ def test_jitumm_forward(implementation, k, shape, corder):
 @pytest.mark.parametrize('corder', [True, False])
 def test_jitumm_transpose_forward(implementation, k, shape, corder):
     matrix = jnp.asarray(np.random.rand(shape[0], k))
+    dense = jitu(
+        W_LOW, W_HIGH, PROB, SEED, shape=shape, transpose=True, corder=corder,
+        matrix_mode='mm', backend=implementation,
+    )
     out = jitumm(
         W_LOW,
         W_HIGH,
@@ -146,16 +232,9 @@ def test_jitumm_transpose_forward(implementation, k, shape, corder):
         corder=corder,
         backend=implementation,
     )
-    # Validate against jitumv column-by-column (exact match expected)
-    for j in range(k):
-        expected_col = jitumv(
-            W_LOW, W_HIGH, PROB, matrix[:, j], SEED,
-            shape=shape, transpose=True, corder=corder, backend=implementation,
-        )
-        assert jnp.allclose(out[:, j], expected_col, rtol=1e-4, atol=1e-4), (
-            f"Column {j} mismatch: max_diff={float(jnp.max(jnp.abs(out[:, j] - expected_col)))}"
-        )
-    jax.block_until_ready(out)
+    expected = dense @ matrix
+    _assert_allclose(out, expected)
+    jax.block_until_ready((matrix, dense, out, expected))
 
 
 @pytest.mark.skipif(
@@ -169,7 +248,8 @@ def test_jitumm_transpose_forward(implementation, k, shape, corder):
 def test_jitumv_jvp(implementation, shape, corder, transpose):
     vec_size = shape[0] if transpose else shape[1]
     vector = jnp.asarray(np.random.rand(vec_size))
-    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, transpose=transpose, corder=corder,
+                 matrix_mode='mv', backend=implementation)
 
     def f_fn(x):
         return jitumv(
@@ -206,7 +286,8 @@ def test_jitumv_jvp(implementation, shape, corder, transpose):
 def test_jitumv_vjp(implementation, shape, corder, transpose):
     vec_size = shape[0] if transpose else shape[1]
     vector = jnp.asarray(np.random.rand(vec_size))
-    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, transpose=transpose, corder=corder,
+                 matrix_mode='mv', backend=implementation)
 
     def f_fn(x):
         return jitumv(
@@ -243,26 +324,22 @@ def test_jitumv_vjp(implementation, shape, corder, transpose):
 def test_jitumm_jvp(implementation, k, shape, corder, transpose):
     mat_rows = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(mat_rows, k))
+    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, transpose=transpose,
+                 corder=corder, matrix_mode='mm', backend=implementation)
 
-    # Validate jitumm JVP against jitumv JVP
-    # (avoids jitu vs jitumm RNG mismatch for corder=False on GPU)
     def f_mm(x):
         return jitumm(W_LOW, W_HIGH, PROB, x, SEED, shape=shape, transpose=transpose, corder=corder,
                       backend=implementation).sum()
 
-    def f_mv(v):
-        return jitumv(W_LOW, W_HIGH, PROB, v, SEED, shape=shape, transpose=transpose, corder=corder,
-                      backend=implementation).sum()
+    def f_dense(x):
+        return (dense @ x).sum()
 
     tangent_mm = jnp.ones_like(x)
-    tangent_mv = jnp.ones(mat_rows)
     out1, jvp1 = jax.jvp(f_mm, (x,), (tangent_mm,))
-    out_mv, jvp_mv = jax.jvp(f_mv, (x[:, 0],), (tangent_mv,))
-    # JVP of sum(M @ B) with tangent=ones is sum(M @ ones_matrix) = k * sum(M @ ones_vector)
-    assert jnp.allclose(jvp1, jvp_mv * k, rtol=1e-4, atol=1e-4), (
-        f"JVP mismatch: jitumm={float(jvp1)}, jitumv*k={float(jvp_mv * k)}"
-    )
-    jax.block_until_ready((x, tangent_mm, tangent_mv, out1, jvp1, out_mv, jvp_mv))
+    out2, jvp2 = jax.jvp(f_dense, (x,), (tangent_mm,))
+    _assert_allclose(out1, out2)
+    _assert_allclose(jvp1, jvp2)
+    jax.block_until_ready((x, dense, tangent_mm, out1, jvp1, out2, jvp2))
 
 
 @pytest.mark.skipif(
@@ -277,28 +354,21 @@ def test_jitumm_jvp(implementation, k, shape, corder, transpose):
 def test_jitumm_vjp(implementation, k, shape, corder, transpose):
     mat_rows = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(mat_rows, k))
+    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, transpose=transpose,
+                 corder=corder, matrix_mode='mm', backend=implementation)
 
-    # Validate jitumm VJP against jitumv VJP column-by-column
-    # (avoids jitu vs jitumm RNG mismatch for corder=False on GPU)
     def f_mm(x):
         return jitumm(W_LOW, W_HIGH, PROB, x, SEED, shape=shape, transpose=transpose, corder=corder,
                       backend=implementation).sum()
 
-    out_mm, (grad_mm,) = jax.value_and_grad(f_mm, argnums=(0,))(x)
+    def f_dense(x):
+        return (dense @ x).sum()
 
-    # jitumv gradient: grad of sum(M @ v) w.r.t. v = M^T @ ones
-    # Each column of grad_mm should match the jitumv gradient
-    def f_mv(v):
-        return jitumv(W_LOW, W_HIGH, PROB, v, SEED, shape=shape, transpose=transpose, corder=corder,
-                      backend=implementation).sum()
-
-    v0 = x[:, 0]
-    _, (grad_mv,) = jax.value_and_grad(f_mv, argnums=(0,))(v0)
-    for j in range(k):
-        assert jnp.allclose(grad_mm[:, j], grad_mv, rtol=1e-4, atol=1e-4), (
-            f"VJP column {j} mismatch: max_diff={float(jnp.max(jnp.abs(grad_mm[:, j] - grad_mv)))}"
-        )
-    jax.block_until_ready((x, out_mm, grad_mm, grad_mv))
+    out1, (grad1,) = jax.value_and_grad(f_mm, argnums=(0,))(x)
+    out2, (grad2,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
+    _assert_allclose(out1, out2)
+    _assert_allclose(grad1, grad2)
+    jax.block_until_ready((x, dense, out1, grad1, out2, grad2))
 
 
 @pytest.mark.skipif(
@@ -352,6 +422,7 @@ def test_jitumv_vjp_w_bounds_match_affine_reference_and_finite_difference(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        matrix_mode='mv',
         backend=implementation,
     )
     C = jitu(
@@ -362,6 +433,7 @@ def test_jitumv_vjp_w_bounds_match_affine_reference_and_finite_difference(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        matrix_mode='mv',
         backend=implementation,
     )
     u_out = U @ vector
@@ -464,10 +536,10 @@ def test_jitumv_vmap_over_vectors(implementation, batch_size, shape, corder):
     results = jax.vmap(f)(vectors)
     assert results.shape == (batch_size, shape[0])
 
-    results_loop = brainstate.transform.for_loop(f, vectors)
-    assert results_loop.shape == (batch_size, shape[0])
-    _assert_allclose(results, results_loop)
-    jax.block_until_ready((vectors, results, results_loop))
+    expected = jitumm(W_LOW, W_HIGH, PROB, jnp.asarray(vectors).T, SEED, shape=shape,
+                      corder=corder, matrix_mode='mm', backend=implementation).T
+    _assert_allclose(results, expected)
+    jax.block_until_ready((vectors, results, expected))
 
 
 @pytest.mark.skipif(
@@ -504,7 +576,7 @@ def test_jitu_vmap_over_wlow(implementation, shape):
     w_lows = brainstate.random.rand(10)
 
     def f(w_low):
-        return jitu(w_low, w_low + 0.5, PROB, SEED, shape=shape, backend=implementation)
+        return jitu(w_low, w_low + 0.5, PROB, SEED, shape=shape, matrix_mode='mv', backend=implementation)
 
     results = jax.vmap(f)(w_lows)
     assert results.shape == (10,) + shape
@@ -525,7 +597,7 @@ def test_jitu_vmap_over_prob(implementation, shape):
     probs = brainstate.random.rand(10) * 0.5
 
     def f(prob):
-        return jitu(W_LOW, W_HIGH, prob, SEED, shape=shape, backend=implementation)
+        return jitu(W_LOW, W_HIGH, prob, SEED, shape=shape, matrix_mode='mv', backend=implementation)
 
     results = jax.vmap(f)(probs)
     assert results.shape == (10,) + shape
@@ -546,7 +618,7 @@ def test_jitu_vmap_over_seed(implementation, shape):
     seeds = brainstate.random.randint(0, 100000, 10)
 
     def f(seed):
-        return jitu(W_LOW, W_HIGH, PROB, seed, shape=shape, backend=implementation)
+        return jitu(W_LOW, W_HIGH, PROB, seed, shape=shape, matrix_mode='mv', backend=implementation)
 
     results = jax.vmap(f)(seeds)
     assert results.shape == (10,) + shape

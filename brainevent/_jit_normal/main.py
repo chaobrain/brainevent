@@ -25,7 +25,7 @@ import numpy as np
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
-from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
+from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitnmv, binary_jitnmm
 from .csr import jitn_to_csr
 from .float import jitn, jitnmv, jitnmm
@@ -35,6 +35,44 @@ __all__ = [
     'JITCNormalR',
     'JITCNormalC',
 ]
+
+
+class _JITCNormalModeView:
+    """Materialization view of a JITC normal matrix for a fixed ``matrix_mode``."""
+    __slots__ = ('_mat', '_mode')
+
+    def __init__(self, mat, mode):
+        self._mat = mat
+        self._mode = mode
+
+    def todense(self):
+        m = self._mat
+        gen_shape, gen_transpose = m._materialize_params()
+        return jitn(
+            m.wloc, m.wscale, m.prob, m.seed,
+            shape=gen_shape, transpose=gen_transpose, corder=m.corder,
+            matrix_mode=self._mode, backend=m.backend,
+        )
+
+    def tocsr(self):
+        m = self._mat
+        gen_shape, gen_transpose = m._materialize_params()
+        if not gen_transpose:
+            return jitn_to_csr(
+                m.wloc, m.wscale, m.prob, m.seed,
+                shape=gen_shape, corder=m.corder, matrix_mode=self._mode, backend=m.backend,
+            )
+        from brainevent._csr import CSR
+        return CSR.fromdense(self.todense())
+
+    def tocsc(self):
+        return self.tocsr().tocsc()
+
+    def tocoo(self):
+        return self.tocsr().tocoo()
+
+    def __repr__(self):
+        return f"{self._mat.__class__.__name__}.{self._mode}"
 
 
 class JITCNormalMatrix(JITCMatrix):
@@ -352,15 +390,20 @@ class JITCNormalMatrix(JITCMatrix):
             >>> csr.shape
             (10, 10)
         """
-        return jitn_to_csr(
-            self.wloc,
-            self.wscale,
-            self.prob,
-            self.seed,
-            shape=self.shape,
-            corder=self.corder,
-            backend=self.backend,
+        raise NotImplementedError(
+            "tocsr() is ambiguous for JITC normal matrices: the mv and mm light "
+            "kernels draw different matrices. Use mat.mv.tocsr() or mat.mm.tocsr()."
         )
+
+    @property
+    def mv(self) -> '_JITCNormalModeView':
+        """Materialization view for the matrix used by matrix-vector products."""
+        return _JITCNormalModeView(self, 'mv')
+
+    @property
+    def mm(self) -> '_JITCNormalModeView':
+        """Materialization view for the matrix used by matrix-matrix products."""
+        return _JITCNormalModeView(self, 'mm')
 
     def dt2t(
         self,
@@ -628,16 +671,14 @@ class JITCNormalR(JITCNormalMatrix):
             >>> dense_matrix = sparse_matrix.todense()
             >>> dense_matrix.shape  # (10, 4)
         """
-        return jitn(
-            self.wloc,
-            self.wscale,
-            self.prob,
-            self.seed,
-            shape=self.shape,
-            transpose=False,
-            corder=self.corder,
-            backend=self.backend,
+        raise NotImplementedError(
+            "todense() is ambiguous for JITC normal matrices: the mv and mm light "
+            "kernels draw different matrices. Use mat.mv.todense() or mat.mm.todense()."
         )
+
+    def _materialize_params(self):
+        """``(shape, transpose)`` whose ``jitn`` generation matches this matrix's matvec."""
+        return self.shape, False
 
     def transpose(self, axes=None) -> 'JITCNormalC':
         """
@@ -1153,16 +1194,14 @@ class JITCNormalC(JITCNormalMatrix):
             >>> dense_matrix = sparse_matrix.todense()
             >>> dense_matrix.shape  # (3, 10)
         """
-        return jitn(
-            self.wloc,
-            self.wscale,
-            self.prob,
-            self.seed,
-            shape=self.shape,
-            transpose=False,
-            corder=self.corder,
-            backend=self.backend,
+        raise NotImplementedError(
+            "todense() is ambiguous for JITC normal matrices: the mv and mm light "
+            "kernels draw different matrices. Use mat.mv.todense() or mat.mm.todense()."
         )
+
+    def _materialize_params(self):
+        """``(shape, transpose)`` whose ``jitn`` generation matches this matrix's matvec."""
+        return self.shape[::-1], True
 
     def transpose(self, axes=None) -> 'JITCNormalR':
         """

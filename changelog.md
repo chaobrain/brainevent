@@ -15,6 +15,15 @@ JVP rules, incomplete compilation-cache keys, order-dependent FFI target
 names, and incorrect `vmap` execution of `numba.cuda` kernels, among
 others.
 
+### Added
+
+- **jax 0.11.x is now a validated version.** The numba XLA FFI bridge raises its
+  validated ceiling (`_MAX_VALIDATED_JAX`) from `0.10` to `0.11`, so installing
+  `brainevent` alongside jax 0.11 no longer emits the "untested jax" `RuntimeWarning`.
+  jaxlib 0.11 reports the same `XLA_FFI_API` version (`0.3`) as 0.10, meaning the
+  hand-mirrored `ffi.h` struct layout is unchanged; the full test suite passes on
+  jax 0.11.0 on both the CPU and CUDA backends. The `jax>=0.8.0` floor is unchanged.
+
 ### Fixed
 
 - **Backend switches now take effect immediately.**
@@ -83,6 +92,19 @@ others.
   bytes.
 - Registering a second primitive under an existing name emits a
   `UserWarning` (the new registration still wins, as before).
+- **`CONTRIBUTING.md` rewritten.** It previously described *BrainPy* and linked to a
+  page that returns HTTP 404. It is now a self-contained `brainevent` guide covering
+  development setup, the test/mypy/pre-commit gates, docs builds, code style, the pull
+  request checklist, and GPU kernel contributions.
+- **`SECURITY.md` rewritten.** Vulnerability reports now go through GitHub private
+  vulnerability reporting or email instead of public issues, and the policy documents
+  supported versions, response targets, and the trust boundary around the runtime
+  C++/CUDA compilation APIs (`load_cpp_inline`, `load_cuda_inline`, and friends).
+- **`CODE_OF_CONDUCT.md` upgraded** from Contributor Covenant 2.1 to 3.0.
+- **`.gitattributes` expanded** to cover the header, reStructuredText, notebook, YAML,
+  TOML and image file types actually present in the tree, with language-aware diff
+  drivers, explicit binary markers, GitHub language-statistics hints, and
+  `export-ignore` rules for development-only infrastructure.
 
 ## [0.1.2] - 2026-07-03
 

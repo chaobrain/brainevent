@@ -396,59 +396,6 @@ DEFINE_CSRMM_T_WARP_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, 
 // FFI Entry Points — Homogeneous Weights
 // =========================================================================
 
-#define FFI_CSRMM_NT_WARP_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)             \
-void binary_csrmm_nt_warp_homo##SUFFIX(                                    \
-    const BE::Tensor weights, const BE::Tensor indices,                    \
-    const BE::Tensor indptr,  const BE::Tensor B,                          \
-    BE::Tensor C,       int64_t stream                                     \
-) {                                                                        \
-    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);             \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                   \
-    int n        = static_cast<int>(B.size(1));                            \
-    int c_blocks = (n + 31) / 32;                                          \
-    int rpb      = CSRMM_WARP_RPB;                                         \
-    int gx       = (m + rpb - 1) / rpb;                                    \
-    if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                    \
-    if (gx < 1) gx = 1;                                                   \
-    dim3 grid(gx, c_blocks);                                               \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
-        _csrmm_nt_warp_homo_kern##SUFFIX<<<grid, rpb * 32, 0, s>>>(       \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
-            static_cast<const int32_t*>(indices.data_ptr()),               \
-            static_cast<const IndptrT*>(indptr.data_ptr()),                \
-            static_cast<const SPIKE_C_T*>(B.data_ptr()),                   \
-            static_cast<WEIGHT_C_T*>(C.data_ptr()),                        \
-            m, n);                                                         \
-    });                                                                    \
-}
-
-#define FFI_CSRMM_NT_BLOCK_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)  \
-void binary_csrmm_nt_block_homo##SUFFIX(                                   \
-    const BE::Tensor weights, const BE::Tensor indices,                    \
-    const BE::Tensor indptr,  const BE::Tensor B,                          \
-    BE::Tensor C,       int64_t stream                                     \
-) {                                                                        \
-    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);             \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                   \
-    int n        = static_cast<int>(B.size(1));                            \
-    int c_blocks = (n + 31) / 32;                                          \
-    int gx       = m;                                                      \
-    if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                    \
-    if (gx < 1) gx = 1;                                                   \
-    dim3 grid(gx, c_blocks);                                               \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
-        _csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(    \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
-            static_cast<const int32_t*>(indices.data_ptr()),               \
-            static_cast<const IndptrT*>(indptr.data_ptr()),                \
-            static_cast<const SPIKE_C_T*>(B.data_ptr()),                   \
-            static_cast<WEIGHT_C_T*>(C.data_ptr()),                        \
-            m, n);                                                         \
-    });                                                                    \
-}
-
 #define FFI_CSRMM_NT_AUTO_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)         \
 void binary_csrmm_nt_auto_homo##SUFFIX(                                         \
     const BE::Tensor weights, const BE::Tensor indices,                         \
@@ -515,59 +462,6 @@ void binary_csrmm_t_warp_homo##SUFFIX(                                     \
 // =========================================================================
 // FFI Entry Points — Heterogeneous Weights
 // =========================================================================
-
-#define FFI_CSRMM_NT_WARP_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)           \
-void binary_csrmm_nt_warp_hetero##SUFFIX(                                  \
-    const BE::Tensor weights, const BE::Tensor indices,                    \
-    const BE::Tensor indptr,  const BE::Tensor B,                          \
-    BE::Tensor C,       int64_t stream                                     \
-) {                                                                        \
-    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);             \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                   \
-    int n        = static_cast<int>(B.size(1));                            \
-    int c_blocks = (n + 31) / 32;                                          \
-    int rpb      = CSRMM_WARP_RPB;                                         \
-    int gx       = (m + rpb - 1) / rpb;                                    \
-    if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                    \
-    if (gx < 1) gx = 1;                                                   \
-    dim3 grid(gx, c_blocks);                                               \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
-        _csrmm_nt_warp_hetero_kern##SUFFIX<<<grid, rpb * 32, 0, s>>>(     \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
-            static_cast<const int32_t*>(indices.data_ptr()),               \
-            static_cast<const IndptrT*>(indptr.data_ptr()),                \
-            static_cast<const SPIKE_C_T*>(B.data_ptr()),                   \
-            static_cast<WEIGHT_C_T*>(C.data_ptr()),                        \
-            m, n);                                                         \
-    });                                                                    \
-}
-
-#define FFI_CSRMM_NT_BLOCK_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
-void binary_csrmm_nt_block_hetero##SUFFIX(                                  \
-    const BE::Tensor weights, const BE::Tensor indices,                     \
-    const BE::Tensor indptr,  const BE::Tensor B,                           \
-    BE::Tensor C,       int64_t stream                                      \
-) {                                                                         \
-    BE_CHECK_CSR_INDICES_INT32(indices);                                    \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);              \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                    \
-    int n        = static_cast<int>(B.size(1));                             \
-    int c_blocks = (n + 31) / 32;                                           \
-    int gx       = m;                                                       \
-    if (gx > CSRMM_MAX_GRID_X) gx = CSRMM_MAX_GRID_X;                     \
-    if (gx < 1) gx = 1;                                                    \
-    dim3 grid(gx, c_blocks);                                                \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                      \
-        _csrmm_nt_block_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(   \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),             \
-            static_cast<const int32_t*>(indices.data_ptr()),                \
-            static_cast<const IndptrT*>(indptr.data_ptr()),                 \
-            static_cast<const SPIKE_C_T*>(B.data_ptr()),                    \
-            static_cast<WEIGHT_C_T*>(C.data_ptr()),                         \
-            m, n);                                                          \
-    });                                                                     \
-}
 
 #define FFI_CSRMM_NT_AUTO_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)       \
 void binary_csrmm_nt_auto_hetero##SUFFIX(                                       \
@@ -637,14 +531,6 @@ void binary_csrmm_t_warp_hetero##SUFFIX(                                   \
 // =========================================================================
 
 // float32 homogeneous
-// @BE binary_csrmm_nt_warp_homo_f32_bool
-FFI_CSRMM_NT_WARP_HOMO(_f32_bool,  float,  int8_t)
-// @BE binary_csrmm_nt_warp_homo_f32_float
-FFI_CSRMM_NT_WARP_HOMO(_f32_float, float,  float)
-// @BE binary_csrmm_nt_block_homo_f32_bool
-FFI_CSRMM_NT_BLOCK_HOMO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
-// @BE binary_csrmm_nt_block_homo_f32_float
-FFI_CSRMM_NT_BLOCK_HOMO(_f32_float, float,  float,  8 * sizeof(float))
 // @BE binary_csrmm_nt_auto_homo_f32_bool
 FFI_CSRMM_NT_AUTO_HOMO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
 // @BE binary_csrmm_nt_auto_homo_f32_float
@@ -689,14 +575,6 @@ FFI_CSRMM_T_WARP_HOMO(_bf16_float, __nv_bfloat16, float)
 // =========================================================================
 
 // float32 heterogeneous
-// @BE binary_csrmm_nt_warp_hetero_f32_bool
-FFI_CSRMM_NT_WARP_HETERO(_f32_bool,  float,  int8_t)
-// @BE binary_csrmm_nt_warp_hetero_f32_float
-FFI_CSRMM_NT_WARP_HETERO(_f32_float, float,  float)
-// @BE binary_csrmm_nt_block_hetero_f32_bool
-FFI_CSRMM_NT_BLOCK_HETERO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
-// @BE binary_csrmm_nt_block_hetero_f32_float
-FFI_CSRMM_NT_BLOCK_HETERO(_f32_float, float,  float,  8 * sizeof(float))
 // @BE binary_csrmm_nt_auto_hetero_f32_bool
 FFI_CSRMM_NT_AUTO_HETERO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
 // @BE binary_csrmm_nt_auto_hetero_f32_float

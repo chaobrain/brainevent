@@ -25,11 +25,14 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import namescope
-from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
+from brainevent._misc import (
+    namescope, _normalize_chunk_size, _normalize_matrix_mode, _MV_STRIDE, _MM_STRIDE,
+)
+from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
-from brainevent._typing import Data, MatrixShape
+from brainevent._typing import Data, MatrixShape, MatrixMode
+from brainevent._op.util import dtype_suffix
 
 __all__ = [
     "jitn",
@@ -39,14 +42,6 @@ __all__ = [
     "jitnmm",
     "jitnmm_p",
 ]
-
-_dtype_sfx = {
-    np.dtype('float16'): '_f16',
-    np.dtype('float32'): '_f32',
-    np.dtype('float64'): '_f64',
-    np.dtype('bfloat16'): '_bf16',
-}
-
 
 def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
     if isinstance(prob, Tracer):
@@ -62,7 +57,7 @@ def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
     return prob_scalar == 0.
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
+@namescope(static_argnames=("shape", "transpose", "corder", "matrix_mode"))
 def jitn(
     w_loc: Data,
     w_scale: Data,
@@ -70,6 +65,7 @@ def jitn(
     seed: int,
     *,
     shape: MatrixShape,
+    matrix_mode: MatrixMode,
     transpose: bool = False,
     corder: bool = True,
     backend: Optional[str] = None,
@@ -166,6 +162,7 @@ def jitn(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        matrix_mode=matrix_mode,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd)
@@ -293,7 +290,7 @@ def jitnmv(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
+@namescope(static_argnames=("shape", "transpose", "corder", "matrix_mode"))
 def jitnmm(
     w_loc: Data,
     w_scale: Data,
@@ -304,6 +301,7 @@ def jitnmm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    matrix_mode: MatrixMode = 'mm',
     backend: Optional[str] = None,
 ) -> Data:
     """JIT normally-distributed matrix-matrix product.
@@ -412,54 +410,96 @@ def jitnmm(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        matrix_mode=matrix_mode,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
 
 
-def _jitn_numba_kernel_generator(corder: bool = True, **kwargs):
+def _jitn_numba_kernel_generator(
+    corder: bool = True,
+    matrix_mode: MatrixMode = 'mv',
+    transpose: bool = False,
+    **kwargs
+):
     import numba
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _lfsr_normal = get_numba_lfsr_normal()
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+    _rng_normal01 = _rng['normal01']
+
+    stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
 
     if corder:
-        # JIT matrix
-        # - JIT matrix shape = [m, n]
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, seed, posts):
             posts[:] = 0.
-            m = posts.shape[0]
-            n = posts.shape[1]
+            n_rows = posts.shape[0]
+            n_cols = posts.shape[1]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            seed0 = seed[0]
-            clen0 = clen[0]
-            for i_row in range(m):
-                state = _lfsr_seed(seed0 + i_row * n)
-                i_col = _lfsr_random_integers(state, 0, clen0 - 1)
-                while i_col < n:
-                    posts[i_row, i_col] = _lfsr_normal(state, w_loc0, w_scale0)
-                    i_col += _lfsr_random_integers(state, 1, clen0 - 1)
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (n_cols + chunk_size - 1) // chunk_size
+            for row in range(n_rows):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= n_cols:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > n_cols:
+                        chunk_end = n_cols
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            col = chunk_start + local_j
+                            n01 = _rng_normal01(seed0, row, col)
+                            posts[row, col] = w_loc0 + n01 * w_scale0
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
 
     else:
-        # JIT matrix
-        # - JIT matrix shape = [m, n]
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, seed, posts):
             posts[:] = 0.
-            m = posts.shape[0]
-            n = posts.shape[1]
+            n_rows = posts.shape[1]
+            n_cols = posts.shape[0]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-            for i_col in range(n):
-                state = _lfsr_seed(seed0 + i_col * m)
-                i_row = _lfsr_random_integers(state, 0, clen0 - 1)
-                while i_row < m:
-                    posts[i_row, i_col] = _lfsr_normal(state, w_loc0, w_scale0)
-                    i_row += _lfsr_random_integers(state, 1, clen0 - 1)
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (n_cols + chunk_size - 1) // chunk_size
+            for row in range(n_rows):
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= n_cols:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > n_cols:
+                        chunk_end = n_cols
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            col = chunk_start + local_j
+                            n01 = _rng_normal01(seed0, row, col)
+                            posts[col, row] = w_loc0 + n01 * w_scale0
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
 
     def run(w_loc, w_scale, clen, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, seed)
@@ -469,25 +509,39 @@ def _jitn_numba_kernel_generator(corder: bool = True, **kwargs):
 
 def _jitn_cuda_kernel(
     corder: bool = True,
+    matrix_mode: MatrixMode = 'mv',
     **kwargs
 ):
     load_cuda_file(
         Path(__file__).parent.joinpath('float_jitn.cu'),
         name='jit_normal_jitn',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
-    variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'jit_normal_jitn.jitn_{variant}{sfx}'
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
+    mode = 'mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'mm_aw_t4'
+    direction = 'notrans' if corder else 'trans'
+    kernel_name = f'jit_normal_jitn.jitn_{mode}_{direction}{sfx}'
+    out_shape = tuple(int(s) for s in kwargs['out_info'].shape)
+    n_rows, n_cols = out_shape if corder else out_shape[::-1]
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
 
     def kernel(w_loc, w_scale, clen, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed)
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            w_loc, w_scale, clen, seed,
+            n_rows=np.int32(n_rows), n_cols=np.int32(n_cols),
+            chunk_size=np.int32(chunk_size),
+        )
 
     return kernel
 
 
-def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs):
-    out = jnp.ones_like(out_info) * w_loc_dot
-    return [out]
+def _jitn_jvp_wlow(
+    w_loc_dot, w_loc, w_scale, clen, seed, *,
+    shape, transpose: bool, corder: bool, backend, **kwargs
+):
+    return jitn_p_call(
+        w_loc_dot, 0., clen, seed, shape=shape, transpose=transpose, corder=corder,
+        matrix_mode=kwargs['matrix_mode'], backend=backend,
+    )
 
 
 def _jitn_jvp_whigh(
@@ -495,7 +549,8 @@ def _jitn_jvp_whigh(
     shape, transpose: bool, corder: bool, backend, **kwargs
 ):
     return jitn_p_call(
-        0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+        0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder,
+        matrix_mode=kwargs['matrix_mode'], backend=backend,
     )
 
 
@@ -507,12 +562,17 @@ def _jitn_transpose(
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
     if ad.is_undefined_primal(w_loc):
-        dwlow = jnp.expand_dims(ct.sum(), axis=0)
+        forward = jitn_p_call(
+            1., 0., clen, seed, shape=shape, transpose=transpose, corder=corder,
+            matrix_mode=kwargs['matrix_mode'], backend=backend,
+        )[0]
+        dwlow = jnp.expand_dims((ct * forward).sum(), axis=0)
         return (dwlow, w_scale, clen, seed)
 
     elif ad.is_undefined_primal(w_scale):
         forward = jitn_p_call(
-            0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+            0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder,
+            matrix_mode=kwargs['matrix_mode'], backend=backend,
         )[0]
         dwscale = jnp.expand_dims((ct * forward).sum(), axis=0)
         return (w_loc, dwscale, clen, seed)
@@ -534,17 +594,19 @@ def _jitn_benchmark_data(*, platform):
         for corder in (True, False):
             w_loc = jnp.ones(1, dtype=dtype)
             w_scale = jnp.ones(1, dtype=dtype) * 0.1
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            clen = jnp.atleast_1d(jnp.asarray(np.ceil(2.0 / prob), dtype=jnp.int32))
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
             configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder,
+                'matrix_mode': 'mv'
             }))
     return configs
 
 
 def jitn_p_call(
-    w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend
+    w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool,
+    matrix_mode: MatrixMode, backend
 ):
     """Dispatch the JIT normal matrix materialisation primitive.
 
@@ -624,6 +686,7 @@ def jitn_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        matrix_mode=_normalize_matrix_mode(matrix_mode),
         backend=backend,
     )
 
@@ -669,46 +732,87 @@ def _jitnmv_numba_kernel_generator(
     **kwargs
 ):
     import numba
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _lfsr_normal = get_numba_lfsr_normal()
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+    _rng_normal01 = _rng['normal01']
+
+    stride = _MV_STRIDE
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
 
     if corder:
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, vector, seed, posts):
-            posts[:] = 0.
-            num_row = posts.shape[0]
-            num_col = vector.shape[0]
+            m = posts.shape[0]
+            k = vector.shape[0]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            seed0 = seed[0]
-            clen0 = clen[0]
-            for i_row in range(num_row):
-                state = _lfsr_seed(seed0 + i_row * num_col)
-                i_col = _lfsr_random_integers(state, 0, clen0 - 1)
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + chunk_size - 1) // chunk_size
+            for row in range(m):
                 out = np.asarray(0., dtype=vector.dtype)
-                while i_col < num_col:
-                    out += vector[i_col] * _lfsr_normal(state, w_loc0, w_scale0)
-                    i_col += _lfsr_random_integers(state, 1, clen0 - 1)
-                posts[i_row] = out
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            col = chunk_start + local_j
+                            n01 = _rng_normal01(seed0, row, col)
+                            out += vector[col] * (w_loc0 + n01 * w_scale0)
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+                posts[row] = out
 
     else:
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, vector, seed, posts):
             posts[:] = 0.
-            num_row = posts.shape[0]
-            num_col = vector.shape[0]
+            k = posts.shape[0]
+            m = vector.shape[0]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-            for i_col in range(num_col):
-                state = _lfsr_seed(seed0 + i_col * num_row)
-                v = vector[i_col]
-                i_row = _lfsr_random_integers(state, 0, clen0 - 1)
-                while i_row < num_row:
-                    posts[i_row] += v * _lfsr_normal(state, w_loc0, w_scale0)
-                    i_row += _lfsr_random_integers(state, 1, clen0 - 1)
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + chunk_size - 1) // chunk_size
+            for row in range(m):
+                v = vector[row]
+                if v == 0.:
+                    continue
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            col = chunk_start + local_j
+                            n01 = _rng_normal01(seed0, row, col)
+                            posts[col] += v * (w_loc0 + n01 * w_scale0)
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
 
     def run(w_loc, w_scale, clen, vector, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
@@ -724,12 +828,14 @@ def _jitnmv_cuda_kernel(
         Path(__file__).parent.joinpath('float_jitnmv.cu'),
         name='jit_normal_jitnmv',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
+    variant = 'notrans' if corder else 'trans'
     kernel_name = f'jit_normal_jitnmv.jitnmv_{variant}{sfx}'
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
 
     def kernel(w_loc, w_scale, clen, vector, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, vector)
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            w_loc, w_scale, clen, seed, vector, chunk_size=np.int32(chunk_size))
 
     return kernel
 
@@ -816,6 +922,7 @@ def _jitnmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            matrix_mode='mm',
             backend=kwargs.get('backend'),
         )
         return r, [1]
@@ -830,6 +937,7 @@ def _jitnmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            matrix_mode='mm',
             backend=kwargs.get('backend'),
         )
         return r, [1]
@@ -849,7 +957,7 @@ def _jitnmv_benchmark_data(*, platform):
         for corder in (True, False):
             w_loc = jnp.ones(1, dtype=dtype)
             w_scale = jnp.ones(1, dtype=dtype) * 0.1
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            clen = jnp.atleast_1d(jnp.asarray(np.ceil(2.0 / prob), dtype=jnp.int32))
             v_size = n_post if not transpose else n_pre
             vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
@@ -1016,56 +1124,90 @@ jitnmv_p.def_benchmark_data(_jitnmv_benchmark_data)
 
 def _jitnmm_numba_kernel_generator(
     corder: bool = True,
+    matrix_mode: MatrixMode = 'mm',
     **kwargs
 ):
     import numba
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _lfsr_normal = get_numba_lfsr_normal()
+    _rng = get_numba_light_rng_funcs()
+    _rng_init = _rng['init']
+    _rng_next = _rng['next']
+    _rng_bounded = _rng['bounded']
+    _rng_initial_q = _rng['initial_q']
+    _rng_normal01 = _rng['normal01']
+
+    stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
 
     if corder:
-        # JIT Matrix @ B
-        # - JIT matrix: [m, k]
-        # - B: [k, n]
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, B, seed, posts):
-            posts[:] = 0.
             m = posts.shape[0]
             n = posts.shape[1]
             k = B.shape[0]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            seed0 = seed[0]
-            clen0 = clen[0]
-            for i_m in range(m):
-                state = _lfsr_seed(seed0 + i_m * k)
-                i_k = _lfsr_random_integers(state, 0, clen0 - 1)
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + chunk_size - 1) // chunk_size
+            for row in range(m):
                 out = np.zeros(n, dtype=B.dtype)
-                while i_k < k:
-                    out += B[i_k] * _lfsr_normal(state, w_loc0, w_scale0)
-                    i_k += _lfsr_random_integers(state, 1, clen0 - 1)
-                posts[i_m] = out
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            col = chunk_start + local_j
+                            n01 = _rng_normal01(seed0, row, col)
+                            out += B[col] * (w_loc0 + n01 * w_scale0)
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
+                posts[row] = out
 
     else:
-        # JIT Matrix @ B
-        # - JIT matrix: [m, k]
-        # - B: [k, n]
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, B, seed, posts):
             posts[:] = 0.
-            m = posts.shape[0]
-            k = B.shape[0]
+            k = posts.shape[0]
+            m = B.shape[0]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            seed0 = seed[0]
-            clen0 = clen[0]
-            for i_k in range(k):
-                state = _lfsr_seed(seed0 + i_k * m)
-                out = B[i_k]
-                i_m = _lfsr_random_integers(state, 0, clen0 - 1)
-                while i_m < m:
-                    posts[i_m] += out * _lfsr_normal(state, w_loc0, w_scale0)
-                    i_m += _lfsr_random_integers(state, 1, clen0 - 1)
+            seed0 = np.uint32(seed[0])
+            cl = np.uint32(clen[0])
+            if cl < np.uint32(2):
+                cl = np.uint32(2)
+            n_chunks = (k + chunk_size - 1) // chunk_size
+            for row in range(m):
+                out = B[row]
+                for chunk_id in range(n_chunks):
+                    chunk_start = chunk_id * chunk_size
+                    if chunk_start >= k:
+                        break
+                    chunk_end = chunk_start + chunk_size
+                    if chunk_end > k:
+                        chunk_end = k
+                    chunk_width = chunk_end - chunk_start
+                    for lane in range(stride):
+                        state = _rng_init(seed0, row, chunk_id, lane)
+                        q, state = _rng_initial_q(state, cl)
+                        local_j = lane + stride * int(q)
+                        while local_j < chunk_width:
+                            col = chunk_start + local_j
+                            n01 = _rng_normal01(seed0, row, col)
+                            posts[col] += out * (w_loc0 + n01 * w_scale0)
+                            state = _rng_next(state)
+                            q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
+                            local_j = lane + stride * int(q)
 
     def run(w_loc, w_scale, clen, B, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, B, seed)
@@ -1075,35 +1217,56 @@ def _jitnmm_numba_kernel_generator(
 
 def _jitnmm_cuda_kernel(
     corder: bool = True,
+    matrix_mode: MatrixMode = 'mm',
     **kwargs
 ):
     load_cuda_file(
         Path(__file__).parent.joinpath('float_jitnmm.cu'),
         name='jit_normal_jitnmm',
     )
-    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
-    variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_normal_jitnmm.jitnmm_{variant}{sfx}'
+    sfx = dtype_suffix(kwargs['w_loc_info'].dtype)
+    prefix = 'jitnmm_mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'jitnmm'
+    variant = 'notrans' if corder else 'trans'
+    kernel_name = f'jit_normal_jitnmm.{prefix}_{variant}{sfx}'
+
+    out_info = kwargs['out_info']
+    B_info = kwargs['B_info']
+    k_walk = int(B_info.shape[0])
+    n = int(B_info.shape[1])
+    if corder:
+        m_ffi, k_ffi = int(out_info.shape[0]), k_walk
+    else:
+        m_ffi, k_ffi = k_walk, int(out_info.shape[0])
+    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
 
     def kernel(w_loc, w_scale, clen, B, seed):
-        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, B)
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
+            w_loc, w_scale, clen, seed, B,
+            m=np.int32(m_ffi), k=np.int32(k_ffi), n=np.int32(n),
+            chunk_size=np.int32(chunk_size),
+        )
 
     return kernel
 
 
 def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
     return jitnmm_p_call(
-        w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+        w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        matrix_mode=kwargs['matrix_mode'], backend=backend,
     )
 
 
 def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
-    return jitnmm_p_call(w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
+    return jitnmm_p_call(
+        w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        matrix_mode=kwargs['matrix_mode'], backend=backend,
+    )
 
 
 def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
     return jitnmm_p_call(
-        w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+        w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder,
+        matrix_mode=kwargs['matrix_mode'], backend=backend,
     )
 
 
@@ -1122,6 +1285,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
             shape=shape,
             transpose=not transpose,
             corder=not corder,
+            matrix_mode=kwargs['matrix_mode'],
             backend=backend,
         )[0]
         return w_loc, w_scale, clen, r, seed
@@ -1132,6 +1296,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
         r = jitnmm_p_call(
             1., 0., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
+            matrix_mode=kwargs['matrix_mode'],
             backend=backend,
         )[0]
         dw_loc = jnp.expand_dims(jnp.sum(r * B), axis=0)
@@ -1143,6 +1308,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
         r = jitnmm_p_call(
             0., 1., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
+            matrix_mode=kwargs['matrix_mode'],
             backend=backend,
         )[0]
         dw_scale = jnp.expand_dims(jnp.sum(r * B), axis=0)
@@ -1167,6 +1333,7 @@ def _batching_axis1(args, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
+        matrix_mode=kwargs['matrix_mode'],
         backend=kwargs.get('backend'),
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
@@ -1197,7 +1364,7 @@ def _jitnmm_benchmark_data(*, platform):
         for corder in (True, False):
             w_loc = jnp.ones(1, dtype=dtype)
             w_scale = jnp.ones(1, dtype=dtype) * 0.1
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            clen = jnp.atleast_1d(jnp.asarray(np.ceil(2.0 / prob), dtype=jnp.int32))
             b_rows = n_post if not transpose else n_pre
             B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
@@ -1206,7 +1373,8 @@ def _jitnmm_benchmark_data(*, platform):
                 BenchmarkConfig(
                     name,
                     (w_loc, w_scale, clen, B, seed),
-                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder,
+                     'matrix_mode': 'mm'}
                 )
             )
     return configs
@@ -1215,7 +1383,8 @@ def _jitnmm_benchmark_data(*, platform):
 def jitnmm_p_call(
     w_loc, w_scale, clen, B, seed, *,
     shape: MatrixShape, transpose: bool, corder: bool,
-    backend
+    matrix_mode: MatrixMode = 'mm',
+    backend: Optional[str] = None,
 ):
     """Dispatch the JIT normal matrix-matrix multiply primitive.
 
@@ -1317,6 +1486,7 @@ def jitnmm_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        matrix_mode=_normalize_matrix_mode(matrix_mode),
         backend=backend,
     )
 

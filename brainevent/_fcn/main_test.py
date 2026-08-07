@@ -21,7 +21,6 @@ os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import functools
 import inspect
-from pathlib import Path
 import numpy as np
 
 import brainstate
@@ -48,12 +47,13 @@ from brainevent._test_util import (
     fcn_matrix,
     ones_like,
 )
-from brainevent import FixedNumPerPost, FixedNumPerPre, BinaryArray
+from brainevent import CSC, CSR, FixedNumPerPost, FixedNumPerPre, BinaryArray
 
-# Every test in this module dispatches to the native ``numba`` backend, which compiles per
-# test and dominates wall-clock. Mark the whole module ``slow`` so the default ``pytest`` run
-# skips it; CI runs it via ``pytest -m ""``.
-pytestmark = pytest.mark.slow
+# The operator tests below dispatch to the native ``numba`` backend, which compiles per test
+# and dominates wall-clock, so each carries ``@pytest.mark.slow`` and the default ``pytest``
+# run skips it; CI runs them via ``pytest -m ""``. The marker is per-test rather than
+# module-wide so the cheap format-conversion and slicing tests further down stay in the
+# default run.
 
 platform = jax.default_backend()
 
@@ -121,6 +121,7 @@ def _remove_event_array(x):
     return x
 
 
+@pytest.mark.slow
 class Test_To_Dense:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -142,6 +143,7 @@ class Test_To_Dense:
         jax.block_until_ready((x, indices, out1, out2, out3, out4))
 
 
+@pytest.mark.slow
 def test_fixed_post_num_conn_tree_flatten_data_only_leaf():
     indices = jnp.array([[0, 1], [1, 2]], dtype=jnp.int32)
     data = jnp.array([1.5], dtype=jnp.float32)
@@ -159,6 +161,7 @@ def test_fixed_post_num_conn_tree_flatten_data_only_leaf():
     assert isinstance(buffers, dict)
 
 
+@pytest.mark.slow
 class Test_Illegal_Slots:
     def test_invalid_indices_rejected_post(self):
         idx = jnp.array([[0, -1, 2, 2], [1, 4, 3, 1], [2, 0, -3, 1]], dtype=jnp.int32)
@@ -226,6 +229,7 @@ class Test_Illegal_Slots:
         jax.block_until_ready((idx, dense, x, v))
 
 
+@pytest.mark.slow
 class Test_Lazy_Csc_Layout:
     def test_default_layout_has_no_csc_mirror(self):
         shape = (3, 4)
@@ -326,6 +330,7 @@ class Test_Lazy_Csc_Layout:
 
 
 
+@pytest.mark.slow
 class Test_Init_Outside_JIT:
     def test_fixed_post_init_rejects_first_construction_inside_jax_jit(self):
         @jax.jit
@@ -353,6 +358,7 @@ class Test_Init_Outside_JIT:
             build()
 
 
+@pytest.mark.slow
 class Test_Operator_Behavior:
     def test_fixed_post_binary_array_operator_behavior(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
@@ -401,6 +407,7 @@ class Test_Operator_Behavior:
 
 
 
+@pytest.mark.slow
 class TestVector:
     def _generate_x(self, shape, require_float=False):
         if isinstance(shape, (tuple, list)):
@@ -605,6 +612,7 @@ class TestVector:
         jax.block_until_ready((indices, y1, y2, y_true))
 
 
+@pytest.mark.slow
 class TestMatrix:
     def _generate_x(self, shape, require_float=False):
         if isinstance(shape, (tuple, list)):
@@ -822,6 +830,7 @@ class TestMatrix:
         jax.block_until_ready((indices, xs, y1, y2, y_true))
 
 
+@pytest.mark.slow
 class Test_dt2t:
     def test_dt2t_signature_aligns_data_representation_contract(self):
         base_sig = inspect.signature(fcn_main_mod.DataRepresentation.dt2t)
@@ -905,6 +914,7 @@ class Test_dt2t:
 # Buffer model + data-only pytree leaf + jit-survives-mirror (CSR/CSC parity)
 # --------------------------------------------------------------------------- #
 
+@pytest.mark.slow
 def test_fcn_buffers_and_build_weight_indices():
     rng = np.random.default_rng(0)
     for cls, rows, upper in ((brainevent.FixedNumPerPre, 6, 5),
@@ -923,6 +933,7 @@ def test_fcn_buffers_and_build_weight_indices():
         assert m3.buffers.get('csc') is not None
 
 
+@pytest.mark.slow
 def test_fcn_pytree_roundtrip_data_only_leaf():
     rng = np.random.default_rng(1)
     idx = jnp.asarray(rng.integers(0, 5, size=(6, 3)).astype(np.int32))
@@ -937,6 +948,7 @@ def test_fcn_pytree_roundtrip_data_only_leaf():
     assert m2.buffers.get('csc') is not None  # mirror carried through aux
 
 
+@pytest.mark.slow
 def test_fcn_jit_plasticity_loop_with_precomputed_mirror():
     rng = np.random.default_rng(2)
     # Distinct columns per row so todense() has one slot per (i, j) and the dense
@@ -980,6 +992,7 @@ def _cases():
             yield cls, data, jnp.asarray(indices), (n_pre, n_post)
 
 
+@pytest.mark.slow
 def test_fcn_matvec_golden():
     rng = np.random.default_rng(7)
     for cls, data, indices, shape in _cases():
@@ -1019,6 +1032,7 @@ def _distinct_indices(rng, rows, upper, n_conn):
     )
 
 
+@pytest.mark.slow
 def test_fcn_unfavorable_matmat_golden():
     rng = np.random.default_rng(3)
     k = 4
@@ -1038,6 +1052,7 @@ def test_fcn_unfavorable_matmat_golden():
             assert jnp.allclose(got_l, ref_l, atol=1e-5), (cls.__name__, 'X@M', str(ev_dtype))
 
 
+@pytest.mark.slow
 def test_fcn_matvec_grad_golden():
     rng = np.random.default_rng(5)
     for cls, data, indices, shape in _hetero_cases():
@@ -1059,6 +1074,7 @@ def test_fcn_matvec_grad_golden():
         assert jnp.allclose(g, g_ref, atol=1e-4), (cls.__name__, 'grad')
 
 
+@pytest.mark.slow
 def test_fcn_plasticity_unfavorable_golden():
     rng = np.random.default_rng(7)
     n_pre, n_post, n_conn = 6, 5, 3
@@ -1088,6 +1104,7 @@ def test_fcn_plasticity_unfavorable_golden():
             assert jnp.allclose(jnp.asarray(up2.todense(), jnp.float32), ref2, atol=1e-5), (cls.__name__, 'on_pre', w_min)
 
 
+@pytest.mark.slow
 def test_fcn_matmat_golden():
     rng = np.random.default_rng(7)
     for cls, data, indices, shape in _cases():
@@ -1107,6 +1124,7 @@ def test_fcn_matmat_golden():
                 assert jnp.allclose(got_l, ref_l, atol=1e-5), (cls.__name__, str(ev), n, 'left')
 
 
+@pytest.mark.slow
 def test_fixed_num_per_post_rmatmul_mirror_path_transposes_indexed_output():
     n_pre, n_post, nbatch = 3, 5, 4
     indices = jnp.array(
@@ -1141,6 +1159,7 @@ def test_fixed_num_per_post_rmatmul_mirror_path_transposes_indexed_output():
     assert jnp.allclose(got, ref, atol=1e-5)
 
 
+@pytest.mark.slow
 def test_fcn_binary_matmat_dispatch_contract():
     dispatch_source = inspect.getsource(fcn_main_mod.FixedNumConn._dispatch)
     assert "_align_binary_matmat_output" in dispatch_source
@@ -1149,6 +1168,7 @@ def test_fcn_binary_matmat_dispatch_contract():
     assert "expected_shape = (self.shape[0], value.shape[1])" in dispatch_source
 
 
+@pytest.mark.slow
 def test_fcn_binary_matmat_output_adapter_contract():
     raw_batch_first = jnp.ones((3, 5))
     raw_neuron_first = jnp.ones((5, 3))
@@ -1162,6 +1182,7 @@ def test_fcn_binary_matmat_output_adapter_contract():
         fcn_main_mod._align_binary_matmat_output(jnp.ones((2, 4)), (3, 5), "pre")
 
 
+@pytest.mark.slow
 def test_fcn_matmat_unfavorable_builds_weight_indices():
     # Unfavorable matmat must build the cached CSC mirror (perm-fused path),
     # exactly as the matvec unfavorable path does. FixedNumPerPre mirrors CSR,
@@ -1177,6 +1198,7 @@ def test_fcn_matmat_unfavorable_builds_weight_indices():
     assert M.buffers.get('csc') is not None
 
 
+@pytest.mark.slow
 def test_fcn_matmat_units():
     rng = np.random.default_rng(10)
     cls, data, indices, shape = next(_cases())
@@ -1188,3 +1210,317 @@ def test_fcn_matmat_units():
     assert u.get_unit(got) == u.mV
     ref = dense @ jnp.asarray(right, jnp.float32)
     assert jnp.allclose(u.get_mantissa(got), ref, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Format conversions: ``todense``, ``tocsr`` and ``tocsc``.
+#
+# All correctness checks route through the dense round-trip, which uses the
+# pure-JAX ``jax.experimental.sparse`` primitives (``coo_todense`` /
+# ``csr_todense``) and therefore needs no compilation-heavy backend -- so these
+# are deliberately *not* marked ``slow`` and run in the default ``pytest`` lane.
+# ---------------------------------------------------------------------------
+
+# Duplicate columns within a row exercise the accumulation semantics shared by
+# ``todense`` and the matmul kernels: row 0 has column ``2`` twice; row 1 has
+# columns ``3`` and ``1`` twice.
+DUP_INDICES = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
+DUP_DATA = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
+
+
+def _make_conn(cls, homo, shape, n_conn, seed=0):
+    """Build a connection of ``cls`` with random structure and values."""
+    pre = shape[0] if cls is FixedNumPerPre else shape[1]
+    n_post = shape[1] if cls is FixedNumPerPre else shape[0]
+    # ``replace=True`` keeps the cheap ``randint`` path (no ``for_loop``); the
+    # duplicate connections it may produce are themselves useful coverage.
+    indices = generate_fixed_conn_num_indices(pre, n_post, n_conn, replace=True)
+    if homo:
+        data = jnp.asarray(1.5, dtype=jnp.float32)
+    else:
+        rng = np.random.default_rng(seed)
+        data = jnp.asarray(rng.standard_normal(indices.shape), dtype=jnp.float32)
+    return cls((data, indices), shape=shape)
+
+
+CONVERSION_CLASSES = [FixedNumPerPre, FixedNumPerPost]
+CONVERSION_SHAPES = [(6, 8), (10, 5)]
+
+
+class TestToDense:
+    @pytest.mark.parametrize('cls', CONVERSION_CLASSES)
+    @pytest.mark.parametrize('shape', CONVERSION_SHAPES)
+    @pytest.mark.parametrize('homo', [True, False])
+    def test_todense_shape(self, cls, shape, homo):
+        conn = _make_conn(cls, homo, shape, n_conn=3)
+        assert conn.todense().shape == shape
+
+
+class TestToCsr:
+    @pytest.mark.parametrize('cls', CONVERSION_CLASSES)
+    @pytest.mark.parametrize('shape', CONVERSION_SHAPES)
+    @pytest.mark.parametrize('homo', [True, False])
+    def test_roundtrip_matches_dense(self, cls, shape, homo):
+        conn = _make_conn(cls, homo, shape, n_conn=4)
+        csr = conn.tocsr()
+        assert isinstance(csr, CSR)
+        assert csr.shape == shape
+        assert allclose(csr.todense(), conn.todense())
+
+    @pytest.mark.parametrize('cls', CONVERSION_CLASSES)
+    def test_metadata(self, cls):
+        shape = (6, 8)
+        conn = _make_conn(cls, homo=False, shape=shape, n_conn=3)
+        csr = conn.tocsr()
+        assert csr.nse == conn.indices.size
+        assert csr.dtype == conn.dtype
+        assert csr.indptr.shape == (shape[0] + 1,)
+
+    @pytest.mark.parametrize('cls', CONVERSION_CLASSES)
+    def test_homogeneous_weight_is_kept_compact(self, cls):
+        conn = _make_conn(cls, homo=True, shape=(6, 8), n_conn=3)
+        csr = conn.tocsr()
+        # A single shared value is preserved rather than materialised per entry.
+        assert csr.data.size == 1
+        assert allclose(csr.todense(), conn.todense())
+
+    @pytest.mark.parametrize('cls', CONVERSION_CLASSES)
+    def test_num_conn_one(self, cls):
+        conn = _make_conn(cls, homo=False, shape=(5, 7), n_conn=1)
+        assert allclose(conn.tocsr().todense(), conn.todense())
+
+    def test_duplicates_preserved_pre(self):
+        conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4))
+        assert allclose(conn.tocsr().todense(), conn.todense())
+
+    def test_duplicates_preserved_post(self):
+        conn = FixedNumPerPost((DUP_DATA, DUP_INDICES), shape=(4, 3))
+        assert allclose(conn.tocsr().todense(), conn.todense())
+
+    def test_units_preserved(self):
+        conn = FixedNumPerPre((DUP_DATA * u.mS, DUP_INDICES), shape=(3, 4))
+        csr = conn.tocsr()
+        assert u.get_unit(csr.data) == u.mS
+        assert u.get_unit(csr.todense()) == u.mS
+        assert allclose(u.get_mantissa(csr.todense()), u.get_mantissa(conn.todense()))
+
+    def test_backend_propagated(self):
+        conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4), backend='numba')
+        assert conn.tocsr().backend == 'numba'
+
+    def test_requires_outside_jit(self):
+        conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4))
+        with pytest.raises(RuntimeError, match='outside'):
+            jax.jit(lambda m: m.tocsr())(conn)
+
+
+class TestToCsc:
+    @pytest.mark.parametrize('cls', CONVERSION_CLASSES)
+    @pytest.mark.parametrize('shape', CONVERSION_SHAPES)
+    @pytest.mark.parametrize('homo', [True, False])
+    def test_roundtrip_matches_dense(self, cls, shape, homo):
+        conn = _make_conn(cls, homo, shape, n_conn=4)
+        csc = conn.tocsc()
+        assert isinstance(csc, CSC)
+        assert csc.shape == shape
+        assert allclose(csc.todense(), conn.todense())
+
+    def test_duplicates_preserved_pre(self):
+        conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4))
+        assert allclose(conn.tocsc().todense(), conn.todense())
+
+    def test_duplicates_preserved_post(self):
+        conn = FixedNumPerPost((DUP_DATA, DUP_INDICES), shape=(4, 3))
+        assert allclose(conn.tocsc().todense(), conn.todense())
+
+    def test_units_preserved(self):
+        conn = FixedNumPerPost((DUP_DATA * u.mV, DUP_INDICES), shape=(4, 3))
+        csc = conn.tocsc()
+        assert u.get_unit(csc.data) == u.mV
+        assert u.get_unit(csc.todense()) == u.mV
+        assert allclose(u.get_mantissa(csc.todense()), u.get_mantissa(conn.todense()))
+
+
+class TestCrossFormatConsistency:
+    @pytest.mark.parametrize('cls', CONVERSION_CLASSES)
+    @pytest.mark.parametrize('homo', [True, False])
+    def test_csr_csc_dense_agree(self, cls, homo):
+        conn = _make_conn(cls, homo, (7, 9), n_conn=3)
+        dense = conn.todense()
+        assert allclose(conn.tocsr().todense(), dense)
+        assert allclose(conn.tocsc().todense(), dense)
+        # Transpose equivalence: CSR of W^T equals CSC of W, array-for-array.
+        assert allclose(conn.tocsr().todense().T, conn.transpose().tocsr().todense())
+        jax.block_until_ready((dense,))
+
+
+# ---------------------------------------------------------------------------
+# Row indexing and slicing: ``__getitem__`` and ``slice_rows``.
+# Dense-reference comparisons only -- no native backend, so not marked ``slow``.
+# ---------------------------------------------------------------------------
+
+
+def _make_perpre(m, n, num_conn, homo=False):
+    rng = np.random.default_rng(0)
+    indices = np.stack(
+        [rng.choice(n, size=num_conn, replace=False) for _ in range(m)]
+    ).astype(np.int32)
+    if homo:
+        data = jnp.array(1.5, dtype=jnp.float32)
+    else:
+        data = jnp.asarray(rng.standard_normal((m, num_conn)).astype(np.float32))
+    conn = FixedNumPerPre((data, jnp.asarray(indices)), shape=(m, n))
+    return conn
+
+
+def _make_perpost(m, n, num_conn, homo=False):
+    rng = np.random.default_rng(1)
+    indices = np.stack(
+        [rng.choice(m, size=num_conn, replace=False) for _ in range(n)]
+    ).astype(np.int32)
+    if homo:
+        data = jnp.array(2.0, dtype=jnp.float32)
+    else:
+        data = jnp.asarray(rng.standard_normal((n, num_conn)).astype(np.float32))
+    conn = FixedNumPerPost((data, jnp.asarray(indices)), shape=(m, n))
+    return conn
+
+
+class TestFixedNumPerPreGetitem:
+
+    @pytest.mark.parametrize('homo', [False, True])
+    def test_single_row(self, homo):
+        conn = _make_perpre(8, 12, 3, homo=homo)
+        dense = conn.todense()
+        r = conn[3]
+        assert r.shape == (12,)
+        assert jnp.allclose(r, dense[3], atol=1e-5)
+
+    @pytest.mark.parametrize('homo', [False, True])
+    def test_multi_and_slice(self, homo):
+        conn = _make_perpre(8, 12, 3, homo=homo)
+        dense = conn.todense()
+        assert jnp.allclose(conn[[1, 4, 6]], np.asarray(dense)[[1, 4, 6]], atol=1e-5)
+        assert jnp.allclose(conn[2:7:2], dense[np.arange(2, 7, 2)], atol=1e-5)
+
+    def test_negative_and_oob(self):
+        conn = _make_perpre(8, 12, 3)
+        dense = conn.todense()
+        assert jnp.allclose(conn[-1], dense[7], atol=1e-5)
+        with pytest.raises(IndexError):
+            _ = conn[8]
+
+
+class TestFixedNumPerPreSliceRows:
+
+    @pytest.mark.parametrize('homo', [False, True])
+    def test_returns_same_type_and_matches_dense(self, homo):
+        conn = _make_perpre(8, 12, 3, homo=homo)
+        dense = conn.todense()
+        sub = conn.slice_rows([1, 3, 5])
+        assert isinstance(sub, FixedNumPerPre)
+        assert sub.shape == (3, 12)
+        assert sub.num_conn == 3
+        assert jnp.allclose(sub.todense(), np.asarray(dense)[[1, 3, 5]], atol=1e-5)
+
+    def test_single_int_is_one_row(self):
+        conn = _make_perpre(8, 12, 3)
+        dense = conn.todense()
+        sub = conn.slice_rows(4)
+        assert isinstance(sub, FixedNumPerPre)
+        assert sub.shape == (1, 12)
+        assert jnp.allclose(sub.todense(), dense[4:5], atol=1e-5)
+
+    def test_jit_safe(self):
+        conn = _make_perpre(8, 12, 3)
+        dense = conn.todense()
+        idx = jnp.array([0, 2, 4], dtype=jnp.int32)
+
+        def f(c, i):
+            return c.slice_rows(i).todense()
+        out = jax.jit(f)(conn, idx)
+        assert jnp.allclose(out, np.asarray(dense)[[0, 2, 4]], atol=1e-5)
+
+
+class TestFixedNumPerPostGetitem:
+
+    @pytest.mark.parametrize('homo', [False, True])
+    def test_single_and_multi_row(self, homo):
+        conn = _make_perpost(10, 7, 4, homo=homo)  # W is (10, 7)
+        dense = conn.todense()
+        assert conn[3].shape == (7,)
+        assert jnp.allclose(conn[3], dense[3], atol=1e-5)
+        assert jnp.allclose(conn[[0, 4, 8]], np.asarray(dense)[[0, 4, 8]], atol=1e-5)
+
+    def test_slice_negative_oob(self):
+        conn = _make_perpost(10, 7, 4)
+        dense = conn.todense()
+        assert jnp.allclose(conn[1:9:3], dense[np.arange(1, 9, 3)], atol=1e-5)
+        assert jnp.allclose(conn[-1], dense[9], atol=1e-5)
+        with pytest.raises(IndexError):
+            _ = conn[10]
+
+
+class TestFixedNumPerPostSliceRows:
+
+    @pytest.mark.parametrize('homo', [False, True])
+    def test_returns_csr_and_matches_dense(self, homo):
+        conn = _make_perpost(10, 7, 4, homo=homo)
+        dense = conn.todense()
+        sub = conn.slice_rows([1, 3, 5])
+        assert isinstance(sub, CSR)
+        assert sub.shape == (3, 7)
+        assert jnp.allclose(sub.todense(), np.asarray(dense)[[1, 3, 5]], atol=1e-5)
+
+    def test_slice_and_single(self):
+        conn = _make_perpost(10, 7, 4)
+        dense = conn.todense()
+        sub = conn.slice_rows(slice(0, 6, 2))
+        assert isinstance(sub, CSR)
+        assert jnp.allclose(sub.todense(), dense[np.arange(0, 6, 2)], atol=1e-5)
+        one = conn.slice_rows(4)
+        assert one.shape == (1, 7)
+        assert jnp.allclose(one.todense(), dense[4:5], atol=1e-5)
+
+
+class TestFcnSliceAD:
+
+    def test_grad_perpre(self):
+        conn = _make_perpre(8, 12, 3)
+        rows = jnp.array([1, 3, 5], dtype=jnp.int32)
+
+        def loss(data):
+            c = FixedNumPerPre((data, conn.indices), shape=conn.shape)
+            return jnp.sum(c[rows] ** 2)
+        g = jax.grad(loss)(conn.data)
+        # finite-difference check on one entry
+        eps = 1e-3
+        d = conn.data
+        d1 = d.at[0, 0].add(eps)
+        d2 = d.at[0, 0].add(-eps)
+        num = (loss(d1) - loss(d2)) / (2 * eps)
+        assert jnp.allclose(g[0, 0], num, atol=1e-2)
+
+    def test_grad_perpost(self):
+        conn = _make_perpost(10, 7, 4)
+        rows = jnp.array([0, 4, 8], dtype=jnp.int32)
+
+        def loss(data):
+            c = FixedNumPerPost((data, conn.indices), shape=conn.shape)
+            return jnp.sum(c[rows] ** 2)
+        g = jax.grad(loss)(conn.data)
+        eps = 1e-3
+        d = conn.data
+        d1 = d.at[0, 0].add(eps)
+        d2 = d.at[0, 0].add(-eps)
+        num = (loss(d1) - loss(d2)) / (2 * eps)
+        assert jnp.allclose(g[0, 0], num, atol=1e-2)
+
+    def test_vmap_perpre(self):
+        conn = _make_perpre(8, 12, 3)
+        dense = conn.todense()
+        batched_rows = jnp.array([[0, 1], [2, 3], [4, 5]], dtype=jnp.int32)
+        out = jax.vmap(lambda r: conn[r])(batched_rows)
+        assert out.shape == (3, 2, 12)
+        assert jnp.allclose(out[0], np.asarray(dense)[[0, 1]], atol=1e-5)
+        assert jnp.allclose(out[2], np.asarray(dense)[[4, 5]], atol=1e-5)

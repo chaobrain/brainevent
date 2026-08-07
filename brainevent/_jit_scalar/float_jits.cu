@@ -14,173 +14,472 @@
 // ==============================================================================
 
 /*
- * float_jits.cu — JIT Scalar Dense Matrix Generation CUDA Kernels
- * ===============================================================
+ * float_jits.cu -- dense light-RNG JIT scalar materialization.
  *
- * Dense matrix generation for JIT scalar connectivity.
- *
- * Operation
- * ---------
- * jits — Dense matrix generation: M[i,j] = w * Bernoulli(prob)
- *
- * Parameters
- * ----------
- * weight : shape (1,), scalar weight for all connections
- * clen   : shape (1,), connection length = 2/prob (float32)
- * seed   : shape (1,), int32 random seed
- *
- * Geometric sampling pattern:
- *   curand_init(seed, thread_id, 0, &state);
- *   unsigned int i = curand(&state) % clen;
- *   while (i < dim) { process(i); i += 1 + (curand(&state) % (clen - 1)); }
- *
- * corder=True  (gather): one thread per output row, writes columns
- * corder=False (scatter): one thread per output column, writes rows
- *
- * Supported weight dtypes: float32, float64, float16, bfloat16.
- *
- * IMPORTANT: All data_ptr() returns are GPU device pointers — NEVER dereference on host.
+ * jits_mv_{notrans,trans}_f32 matches CSR matrix_mode="mv";
+ * jits_mm_aw_t4_{notrans,trans}_f32 matches CSR matrix_mode="mm".
  */
+
+#include <cstdio>
+#include <cstdlib>
 
 #include "cuda_common.h"
 #include "brainevent/common.h"
-#include "curand_common.h"
 
+#define LIGHT_TARGET_CHUNKS 4
+#define AW_T4_GROUP_SIZE 4
+#define AW_T4_GROUPS_PER_WARP 8
 
-// #########################################################################
-// ##  jits — Dense Matrix Generation                                     ##
-// #########################################################################
-
-// =========================================================================
-// corder=true kernel: one thread per row
-// output[i, col] = weight for connected columns, 0 otherwise.
-// =========================================================================
-
-#define DEFINE_JITS_CORDER_TRUE(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W)                    \
-__global__ void _jits_corder_true_kern##SUFFIX(                                              \
-    const WEIGHT_T* __restrict__ weight,                                                     \
-    const float*    __restrict__ clen,                                                       \
-    const int*      __restrict__ seed,                                                       \
-    WEIGHT_T*       __restrict__ output,                                                     \
-    int n_rows, int n_cols                                                                   \
-) {                                                                                          \
-    int row = blockIdx.x * blockDim.x + threadIdx.x;                                         \
-    if (row >= n_rows) return;                                                               \
-    WEIGHT_T w = __ldg(&weight[0]);                                                          \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                         \
-    if (cl < 2) cl = 2;                                                                      \
-    curandStatePhilox4_32_10_t state;                                                        \
-    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)row, 0ULL, &state); \
-    unsigned int col = curand(&state) % cl;                                                  \
-    while (col < (unsigned int)n_cols) {                                                     \
-        output[(size_t)row * n_cols + col] = w;                                              \
-        col += 1 + (curand(&state) % (cl - 1));                                              \
-    }                                                                                        \
+__device__ __forceinline__ unsigned int fast_bounded_u32(
+    unsigned int r,
+    unsigned int bound
+) {
+    return __umulhi(r, bound);
 }
 
-DEFINE_JITS_CORDER_TRUE(_f32,  float,         float,  READ_F32,  WRITE_F32)
-DEFINE_JITS_CORDER_TRUE(_f64,  double,        double, READ_F64,  WRITE_F64)
-DEFINE_JITS_CORDER_TRUE(_f16,  __half,        float,  READ_F16,  WRITE_F16)
-DEFINE_JITS_CORDER_TRUE(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
-
-// =========================================================================
-// corder=false kernel: one thread per column
-// output[row, col] = weight for connected rows.
-// =========================================================================
-
-#define DEFINE_JITS_CORDER_FALSE(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W)                   \
-__global__ void _jits_corder_false_kern##SUFFIX(                                             \
-    const WEIGHT_T* __restrict__ weight,                                                     \
-    const float*    __restrict__ clen,                                                       \
-    const int*      __restrict__ seed,                                                       \
-    WEIGHT_T*       __restrict__ output,                                                     \
-    int n_rows, int n_cols                                                                   \
-) {                                                                                          \
-    int col = blockIdx.x * blockDim.x + threadIdx.x;                                         \
-    if (col >= n_cols) return;                                                               \
-    WEIGHT_T w = __ldg(&weight[0]);                                                          \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                         \
-    if (cl < 2) cl = 2;                                                                      \
-    curandStatePhilox4_32_10_t state;                                                        \
-    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)col, 0ULL, &state); \
-    unsigned int row = curand(&state) % cl;                                                  \
-    while (row < (unsigned int)n_rows) {                                                     \
-        output[(size_t)row * n_cols + col] = w;                                              \
-        row += 1 + (curand(&state) % (cl - 1));                                              \
-    }                                                                                        \
+__device__ __forceinline__ unsigned int mix32(unsigned int x) {
+    x ^= x >> 16;
+    x *= 0x7feb352dU;
+    x ^= x >> 15;
+    x *= 0x846ca68bU;
+    x ^= x >> 16;
+    return x;
 }
 
-DEFINE_JITS_CORDER_FALSE(_f32,  float,         float,  READ_F32,  WRITE_F32)
-DEFINE_JITS_CORDER_FALSE(_f64,  double,        double, READ_F64,  WRITE_F64)
-DEFINE_JITS_CORDER_FALSE(_f16,  __half,        float,  READ_F16,  WRITE_F16)
-DEFINE_JITS_CORDER_FALSE(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
-
-// ---- CUDA: jits corder=true ----
-
-#define FFI_JITS_CORDER_TRUE(SUFFIX, WEIGHT_C_T)               \
-void jits_corder_true##SUFFIX(                                 \
-    const BE::Tensor weight,                                   \
-    const BE::Tensor clen,                                     \
-    const BE::Tensor seed,                                     \
-    BE::Tensor output,                                         \
-    int64_t stream                                             \
-) {                                                            \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
-    int n_rows = static_cast<int>(output.size(0));             \
-    int n_cols = static_cast<int>(output.size(1));             \
-    cudaMemsetAsync(output.data_ptr(), 0,                      \
-        (size_t)n_rows * n_cols * sizeof(WEIGHT_C_T), s);      \
-    int threads = 256;                                         \
-    int blocks = (n_rows + threads - 1) / threads;             \
-    _jits_corder_true_kern##SUFFIX<<<blocks, threads, 0, s>>>( \
-        static_cast<const WEIGHT_C_T*>(weight.data_ptr()),     \
-        static_cast<const float*>(clen.data_ptr()),            \
-        static_cast<const int*>(seed.data_ptr()),              \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),           \
-        n_rows, n_cols                                         \
-    );                                                         \
+__device__ __forceinline__ unsigned int light_rng_init_wpr(
+    unsigned int seed,
+    int row,
+    int chunk_id,
+    int lane
+) {
+    unsigned int x = seed ^ 0xd1b54a35U;
+    x ^= (unsigned int)row * 0x85ebca6bU;
+    x ^= (unsigned int)chunk_id * 0xc2b2ae35U;
+    x ^= (unsigned int)lane * 0x27d4eb2dU;
+    x = mix32(x);
+    return x == 0U ? 0x6d2b79f5U : x;
 }
 
-// @BE jits_corder_true_f32
-FFI_JITS_CORDER_TRUE(_f32, float)
-// @BE jits_corder_true_f64
-FFI_JITS_CORDER_TRUE(_f64, double)
-// @BE jits_corder_true_f16
-FFI_JITS_CORDER_TRUE(_f16, __half)
-// @BE jits_corder_true_bf16
-FFI_JITS_CORDER_TRUE(_bf16, __nv_bfloat16)
-
-// ---- CUDA: jits corder=false ----
-
-#define FFI_JITS_CORDER_FALSE(SUFFIX, WEIGHT_C_T)               \
-void jits_corder_false##SUFFIX(                                 \
-    const BE::Tensor weight,                                    \
-    const BE::Tensor clen,                                      \
-    const BE::Tensor seed,                                      \
-    BE::Tensor output,                                          \
-    int64_t stream                                              \
-) {                                                             \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
-    int n_rows = static_cast<int>(output.size(0));              \
-    int n_cols = static_cast<int>(output.size(1));              \
-    cudaMemsetAsync(output.data_ptr(), 0,                       \
-        (size_t)n_rows * n_cols * sizeof(WEIGHT_C_T), s);       \
-    int threads = 256;                                          \
-    int blocks = (n_cols + threads - 1) / threads;              \
-    _jits_corder_false_kern##SUFFIX<<<blocks, threads, 0, s>>>( \
-        static_cast<const WEIGHT_C_T*>(weight.data_ptr()),      \
-        static_cast<const float*>(clen.data_ptr()),             \
-        static_cast<const int*>(seed.data_ptr()),               \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),            \
-        n_rows, n_cols                                          \
-    );                                                          \
+__device__ __forceinline__ unsigned int light_rng_next(unsigned int* state) {
+    unsigned int x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x == 0U ? 0x6d2b79f5U : x;
+    return *state;
 }
 
-// @BE jits_corder_false_f32
-FFI_JITS_CORDER_FALSE(_f32, float)
-// @BE jits_corder_false_f64
-FFI_JITS_CORDER_FALSE(_f64, double)
-// @BE jits_corder_false_f16
-FFI_JITS_CORDER_FALSE(_f16, __half)
-// @BE jits_corder_false_bf16
-FFI_JITS_CORDER_FALSE(_bf16, __nv_bfloat16)
+__device__ __forceinline__ float hash_scalar01(
+    unsigned int seed,
+    int row,
+    int col
+) {
+    unsigned int h = seed ^ 0xa0761d65U;
+    h ^= (unsigned int)row * 0xe7037ed1U;
+    h ^= (unsigned int)col * 0x8ebc6af1U;
+    h = mix32(h);
+    return (float)(h & 0x00ffffffU) * (1.0f / 16777216.0f);
+}
+
+__device__ __forceinline__ unsigned int stationary_initial_q(
+    unsigned int* state,
+    unsigned int cl
+) {
+    /*
+     * The inter-arrival skip is Uniform{1, ..., cl - 1}.  A stationary
+     * renewal stream must start from the equilibrium residual distribution
+     * P(q = r) = 2 * (cl - 1 - r) / (cl * (cl - 1)), r in [0, cl - 2].
+     * Starting from Uniform{0, ..., cl - 1} creates a chunk-position ramp.
+     */
+    unsigned int n = cl - 1U;
+    while (true) {
+        unsigned int q = fast_bounded_u32(light_rng_next(state), n);
+        unsigned int gate = fast_bounded_u32(light_rng_next(state), n);
+        if (gate < n - q) return q;
+    }
+}
+
+static int default_light_chunk_size(int k) {
+    if (k <= 0) return 1;
+    return (k + LIGHT_TARGET_CHUNKS - 1) / LIGHT_TARGET_CHUNKS;
+}
+
+__global__ void _jits_mv_f32_kern(
+    const float* __restrict__ weight,
+    const int*   __restrict__ clen,
+    const int*   __restrict__ seed,
+    float*       __restrict__ output,
+    int n_rows, int n_cols, int transpose, int chunk_size, int n_chunks
+) {
+    int lane = threadIdx.x & 31;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int row_block = (int)blockIdx.x;
+    int chunk_id = (int)blockIdx.y;
+    int row = row_block * warps_per_block + warp_id;
+    if (row >= n_rows || chunk_id >= n_chunks) return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= n_cols) return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > n_cols) chunk_end = n_cols;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U) return;
+
+    float w = READ_F32(__ldg(&weight[0]));
+
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    if (cl < 2U) cl = 2U;
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
+
+    unsigned int q = stationary_initial_q(&rng, cl);
+    unsigned int local_j = (unsigned int)lane + 32U * q;
+    while (local_j < chunk_width) {
+        int col = chunk_start + (int)local_j;
+        size_t offset = transpose
+            ? ((size_t)col * n_rows + row)
+            : ((size_t)row * n_cols + col);
+        output[offset] = w;
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)lane + 32U * q;
+    }
+}
+
+__global__ void _jits_mm_aw_t4_f32_kern(
+    const float* __restrict__ weight,
+    const int*   __restrict__ clen,
+    const int*   __restrict__ seed,
+    float*       __restrict__ output,
+    int n_rows, int n_cols, int transpose, int chunk_size, int n_chunks
+) {
+    int lane = threadIdx.x & 31;
+    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);
+    int group = lane >> 2;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int chunk_id = (int)blockIdx.y;
+    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;
+    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;
+    if (row >= n_rows || chunk_id >= n_chunks) return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= n_cols) return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > n_cols) chunk_end = n_cols;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U) return;
+
+    float w = READ_F32(__ldg(&weight[0]));
+
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    if (cl < 2U) cl = 2U;
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);
+
+    unsigned int q = stationary_initial_q(&rng, cl);
+    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
+    while (local_j < chunk_width) {
+        int col = chunk_start + (int)local_j;
+        size_t offset = transpose
+            ? ((size_t)col * n_rows + row)
+            : ((size_t)row * n_cols + col);
+        output[offset] = w;
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
+    }
+}
+
+static void launch_jits_mv_f32(
+    const BE::Tensor weight,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int transpose,
+    int chunk_size,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (n_rows <= 0 || n_cols <= 0) return;
+    BE_CUDA_CHECK(cudaMemsetAsync(
+        output.data_ptr(), 0, (size_t)n_rows * n_cols * sizeof(float), s));
+    if (chunk_size <= 0) return;
+
+    int n_chunks = (n_cols + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0) return;
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int row_warp_blocks = (n_rows + warps_per_block - 1) / warps_per_block;
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
+        fprintf(stderr,
+                "jits_mv_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
+                row_warp_blocks, n_chunks);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
+
+    _jits_mv_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float*>(weight.data_ptr()),
+        static_cast<const int*>(clen.data_ptr()),
+        static_cast<const int*>(seed.data_ptr()),
+        static_cast<float*>(output.data_ptr()),
+        n_rows, n_cols, transpose, chunk_size, n_chunks
+    );
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+static void launch_jits_mm_aw_t4_f32(
+    const BE::Tensor weight,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int transpose,
+    int chunk_size,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (n_rows <= 0 || n_cols <= 0) return;
+    BE_CUDA_CHECK(cudaMemsetAsync(
+        output.data_ptr(), 0, (size_t)n_rows * n_cols * sizeof(float), s));
+    if (chunk_size <= 0) return;
+
+    int n_chunks = (n_cols + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0) return;
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int rows_per_block = warps_per_block * AW_T4_GROUPS_PER_WARP;
+    int row_group_blocks = (n_rows + rows_per_block - 1) / rows_per_block;
+    if (row_group_blocks > 2147483647 || n_chunks > 65535) {
+        fprintf(stderr,
+                "jits_mm_aw_t4_f32 grid overflow: row_group_blocks=%d n_chunks=%d\n",
+                row_group_blocks, n_chunks);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, 1U);
+
+    _jits_mm_aw_t4_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float*>(weight.data_ptr()),
+        static_cast<const int*>(clen.data_ptr()),
+        static_cast<const int*>(seed.data_ptr()),
+        static_cast<float*>(output.data_ptr()),
+        n_rows, n_cols, transpose, chunk_size, n_chunks
+    );
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+
+// @BE jits_mv_notrans_f32
+void jits_mv_notrans_f32(
+    const BE::Tensor weight,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
+    int64_t stream
+) {
+    launch_jits_mv_f32(weight, clen, seed, output, n_rows, n_cols, 0, chunk_size, stream);
+}
+
+// @BE jits_mv_trans_f32
+void jits_mv_trans_f32(
+    const BE::Tensor weight,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
+    int64_t stream
+) {
+    launch_jits_mv_f32(weight, clen, seed, output, n_rows, n_cols, 1, chunk_size, stream);
+}
+
+// @BE jits_mm_aw_t4_notrans_f32
+void jits_mm_aw_t4_notrans_f32(
+    const BE::Tensor weight,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
+    int64_t stream
+) {
+    launch_jits_mm_aw_t4_f32(weight, clen, seed, output, n_rows, n_cols, 0, chunk_size, stream);
+}
+
+// @BE jits_mm_aw_t4_trans_f32
+void jits_mm_aw_t4_trans_f32(
+    const BE::Tensor weight,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    BE::Tensor output,
+    int n_rows,
+    int n_cols,
+    int chunk_size,
+    int64_t stream
+) {
+    launch_jits_mm_aw_t4_f32(weight, clen, seed, output, n_rows, n_cols, 1, chunk_size, stream);
+}
+
+#define DEFINE_JITS_MV(SFX, WEIGHT_T, ACC_T, READ_W, WRITE_W)                   \
+__global__ void _jits_mv##SFX##_kern(                                           \
+    const WEIGHT_T* __restrict__ weight,                                        \
+    const int*      __restrict__ clen,                                          \
+    const int*      __restrict__ seed,                                          \
+    WEIGHT_T*       __restrict__ output,                                        \
+    int n_rows, int n_cols, int transpose, int chunk_size, int n_chunks         \
+) {                                                                            \
+    int lane = threadIdx.x & 31;                                                \
+    int warp_id = threadIdx.x >> 5;                                             \
+    int warps_per_block = blockDim.x >> 5;                                      \
+    int row_block = (int)blockIdx.x;                                            \
+    int chunk_id = (int)blockIdx.y;                                             \
+    int row = row_block * warps_per_block + warp_id;                            \
+    if (row >= n_rows || chunk_id >= n_chunks) return;                          \
+    int chunk_start = chunk_id * chunk_size;                                    \
+    if (chunk_start >= n_cols) return;                                          \
+    int chunk_end = chunk_start + chunk_size;                                   \
+    if (chunk_end > n_cols) chunk_end = n_cols;                                 \
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);         \
+    if (chunk_width == 0U) return;                                              \
+    ACC_T w = READ_W(__ldg(&weight[0]));                                        \
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);                            \
+    if (cl < 2U) cl = 2U;                                                       \
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                         \
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);          \
+    unsigned int q = stationary_initial_q(&rng, cl);                            \
+    unsigned int local_j = (unsigned int)lane + 32U * q;                        \
+    while (local_j < chunk_width) {                                             \
+        int col = chunk_start + (int)local_j;                                   \
+        size_t offset = transpose                                               \
+            ? ((size_t)col * n_rows + row)                                      \
+            : ((size_t)row * n_cols + col);                                     \
+        output[offset] = WRITE_W(w);                                            \
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);              \
+        local_j = (unsigned int)lane + 32U * q;                                 \
+    }                                                                           \
+}
+
+#define DEFINE_JITS_MM_AW_T4(SFX, WEIGHT_T, ACC_T, READ_W, WRITE_W)             \
+__global__ void _jits_mm_aw_t4##SFX##_kern(                                     \
+    const WEIGHT_T* __restrict__ weight,                                        \
+    const int*      __restrict__ clen,                                          \
+    const int*      __restrict__ seed,                                          \
+    WEIGHT_T*       __restrict__ output,                                        \
+    int n_rows, int n_cols, int transpose, int chunk_size, int n_chunks         \
+) {                                                                            \
+    int lane = threadIdx.x & 31;                                                \
+    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);                               \
+    int group = lane >> 2;                                                      \
+    int warp_id = threadIdx.x >> 5;                                             \
+    int warps_per_block = blockDim.x >> 5;                                      \
+    int chunk_id = (int)blockIdx.y;                                             \
+    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;                \
+    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;                        \
+    if (row >= n_rows || chunk_id >= n_chunks) return;                          \
+    int chunk_start = chunk_id * chunk_size;                                    \
+    if (chunk_start >= n_cols) return;                                          \
+    int chunk_end = chunk_start + chunk_size;                                   \
+    if (chunk_end > n_cols) chunk_end = n_cols;                                 \
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);         \
+    if (chunk_width == 0U) return;                                              \
+    ACC_T w = READ_W(__ldg(&weight[0]));                                        \
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);                            \
+    if (cl < 2U) cl = 2U;                                                       \
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                         \
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);      \
+    unsigned int q = stationary_initial_q(&rng, cl);                            \
+    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;       \
+    while (local_j < chunk_width) {                                             \
+        int col = chunk_start + (int)local_j;                                   \
+        size_t offset = transpose                                               \
+            ? ((size_t)col * n_rows + row)                                      \
+            : ((size_t)row * n_cols + col);                                     \
+        output[offset] = WRITE_W(w);                                            \
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);              \
+        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;                \
+    }                                                                           \
+}
+
+DEFINE_JITS_MV(_f64, double, double, READ_F64, WRITE_F64)
+DEFINE_JITS_MV(_f16, __half, float, READ_F16, WRITE_F16)
+DEFINE_JITS_MV(_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+
+DEFINE_JITS_MM_AW_T4(_f64, double, double, READ_F64, WRITE_F64)
+DEFINE_JITS_MM_AW_T4(_f16, __half, float, READ_F16, WRITE_F16)
+DEFINE_JITS_MM_AW_T4(_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+
+#define FFI_JITS(NAME, KERNEL, SFX, WEIGHT_T, ROW_GROUPS, TRANSPOSE)             \
+void NAME##SFX(                                                                  \
+    const BE::Tensor weight,                                                     \
+    const BE::Tensor clen,                                                       \
+    const BE::Tensor seed,                                                       \
+    BE::Tensor output,                                                           \
+    int n_rows,                                                                  \
+    int n_cols,                                                                  \
+    int chunk_size,                                                              \
+    int64_t stream                                                               \
+) {                                                                              \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                     \
+    if (n_rows <= 0 || n_cols <= 0) return;                                      \
+    BE_CUDA_CHECK(cudaMemsetAsync(                                               \
+        output.data_ptr(), 0, (size_t)n_rows * n_cols * sizeof(WEIGHT_T), s));   \
+    if (chunk_size <= 0) return;                                                 \
+    int n_chunks = (n_cols + chunk_size - 1) / chunk_size;                       \
+    if (n_chunks <= 0) return;                                                   \
+    int threads = 256;                                                           \
+    int warps_per_block = threads / 32;                                          \
+    int rows_per_block = warps_per_block * ROW_GROUPS;                           \
+    int row_blocks = (n_rows + rows_per_block - 1) / rows_per_block;             \
+    if (row_blocks > 2147483647 || n_chunks > 65535) {                           \
+        fprintf(stderr, #NAME #SFX " grid overflow: row_blocks=%d n_chunks=%d\n", \
+                row_blocks, n_chunks);                                           \
+        abort();                                                                 \
+    }                                                                            \
+    dim3 blocks((unsigned int)row_blocks, (unsigned int)n_chunks, 1U);           \
+    _jits_##KERNEL##SFX##_kern<<<blocks, threads, 0, s>>>(                       \
+        static_cast<const WEIGHT_T*>(weight.data_ptr()),                         \
+        static_cast<const int*>(clen.data_ptr()),                                \
+        static_cast<const int*>(seed.data_ptr()),                                \
+        static_cast<WEIGHT_T*>(output.data_ptr()),                               \
+        n_rows, n_cols, TRANSPOSE, chunk_size, n_chunks                          \
+    );                                                                           \
+    BE_CHECK_KERNEL_LAUNCH();                                                    \
+}
+
+// @BE jits_mv_notrans_f64
+FFI_JITS(jits_mv_notrans, mv, _f64, double, 1, 0)
+// @BE jits_mv_notrans_f16
+FFI_JITS(jits_mv_notrans, mv, _f16, __half, 1, 0)
+// @BE jits_mv_notrans_bf16
+FFI_JITS(jits_mv_notrans, mv, _bf16, __nv_bfloat16, 1, 0)
+
+// @BE jits_mv_trans_f64
+FFI_JITS(jits_mv_trans, mv, _f64, double, 1, 1)
+// @BE jits_mv_trans_f16
+FFI_JITS(jits_mv_trans, mv, _f16, __half, 1, 1)
+// @BE jits_mv_trans_bf16
+FFI_JITS(jits_mv_trans, mv, _bf16, __nv_bfloat16, 1, 1)
+
+// @BE jits_mm_aw_t4_notrans_f64
+FFI_JITS(jits_mm_aw_t4_notrans, mm_aw_t4, _f64, double, AW_T4_GROUPS_PER_WARP, 0)
+// @BE jits_mm_aw_t4_notrans_f16
+FFI_JITS(jits_mm_aw_t4_notrans, mm_aw_t4, _f16, __half, AW_T4_GROUPS_PER_WARP, 0)
+// @BE jits_mm_aw_t4_notrans_bf16
+FFI_JITS(jits_mm_aw_t4_notrans, mm_aw_t4, _bf16, __nv_bfloat16, AW_T4_GROUPS_PER_WARP, 0)
+
+// @BE jits_mm_aw_t4_trans_f64
+FFI_JITS(jits_mm_aw_t4_trans, mm_aw_t4, _f64, double, AW_T4_GROUPS_PER_WARP, 1)
+// @BE jits_mm_aw_t4_trans_f16
+FFI_JITS(jits_mm_aw_t4_trans, mm_aw_t4, _f16, __half, AW_T4_GROUPS_PER_WARP, 1)
+// @BE jits_mm_aw_t4_trans_bf16
+FFI_JITS(jits_mm_aw_t4_trans, mm_aw_t4, _bf16, __nv_bfloat16, AW_T4_GROUPS_PER_WARP, 1)

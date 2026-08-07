@@ -20,7 +20,9 @@ from .binary_indexed import (
     binary_csrmm_indexed, binary_csrmm_indexed_p,
 )
 from .float import csrmv, csrmv_p, csrmm, csrmm_p
+from .hybrid_config import HybridConfig, get_hybrid_config
 from .main import CSR, CSC
+from .initialize import init_csr_config
 from .plasticity_binary import (
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
@@ -45,4 +47,5 @@ __all__ = [
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',
     'csr_slice_rows', 'csr_slice_rows_p',
+    'HybridConfig', 'get_hybrid_config', 'init_csr_config',
 ]

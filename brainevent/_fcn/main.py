@@ -36,6 +36,7 @@ from brainevent._event.binary import BinaryArray
 from brainevent._misc import (
     _coo_todense, COOInfo, fixed_conn_num_csc_structure,
     fixed_conn_num_csr_indptr, normalize_row_index, build_sub_csr,
+    _as_int32_indices,
 )
 from brainevent._typing import ArrayData, Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm
@@ -828,6 +829,12 @@ class FixedNumPerPre(FixedNumConn):
         self.data, self.indices = map(u.math.asarray, args)
         _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedNumPerPre')
         _validate_fixed_conn_indices(self.indices, expected_rows=shape[0], kind='Post-synaptic')
+        # Connection indices are secondary-axis coordinates (post ids) and are
+        # always stored int32; bounds are validated below by
+        # ``_contains_invalid_indices`` so only a dtype coercion is needed here.
+        self.indices = _as_int32_indices(
+            self.indices, shape[1], 'FixedNumPerPre indices', check_values=False
+        )
         if self.data.size != 1 and self.data.shape != self.indices.shape:
             raise ValueError(
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
@@ -1083,6 +1090,12 @@ class FixedNumPerPost(FixedNumConn):
         self.data, self.indices = map(u.math.asarray, args)
         _ensure_fixed_conn_initialized_outside_jit(self.indices, kind='FixedNumPerPost')
         _validate_fixed_conn_indices(self.indices, expected_rows=shape[1], kind='Pre-synaptic')
+        # Connection indices are secondary-axis coordinates (pre ids) and are
+        # always stored int32; bounds are validated below by
+        # ``_contains_invalid_indices`` so only a dtype coercion is needed here.
+        self.indices = _as_int32_indices(
+            self.indices, shape[0], 'FixedNumPerPost indices', check_values=False
+        )
         if self.data.size != 1 and self.data.shape != self.indices.shape:
             raise ValueError(
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "

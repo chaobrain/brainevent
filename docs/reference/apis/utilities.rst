@@ -99,6 +99,7 @@ LFSR functions at kernel-generation time.
    get_numba_lfsr_uniform
    get_numba_lfsr_normal
    get_numba_lfsr_funcs
+   get_numba_light_rng_funcs
 
 
 Benchmarking

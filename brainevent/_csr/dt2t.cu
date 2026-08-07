@@ -308,70 +308,6 @@ DEFINE_DT2T_NT_NZ_THREAD (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 // IMPORTANT: data_ptr() is a GPU pointer — never dereference on the host.
 // =========================================================================
 
-// ---- FFI macro: NT row-thread kernel ----
-#define FFI_DT2T_NT_ROW_THREAD(SUFFIX, WEIGHT_C_T)           \
-void csrmv_dt2t_nt_row_thread##SUFFIX(                       \
-    const BE::Tensor y,       const BE::Tensor w,            \
-    const BE::Tensor indices, const BE::Tensor indptr,       \
-    BE::Tensor output,  int64_t stream                       \
-) {                                                          \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
-    BE_CHECK_CSR_INDICES_INT32(indices);                     \
-    int m     = static_cast<int>(indptr.size(0)) - 1;        \
-    int blocks = (m + 255) / 256;                            \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {        \
-        _dt2t_nt_row_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
-            static_cast<const WEIGHT_C_T*>(y.data_ptr()),    \
-            static_cast<const WEIGHT_C_T*>(w.data_ptr()),    \
-            static_cast<const IndptrT*>(indptr.data_ptr()),  \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()), m); \
-    });                                                      \
-}
-
-// ---- FFI macro: NT row-warp kernel ----
-#define FFI_DT2T_NT_ROW_WARP(SUFFIX, WEIGHT_C_T)             \
-void csrmv_dt2t_nt_row_warp##SUFFIX(                         \
-    const BE::Tensor y,       const BE::Tensor w,            \
-    const BE::Tensor indices, const BE::Tensor indptr,       \
-    BE::Tensor output,  int64_t stream                       \
-) {                                                          \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
-    BE_CHECK_CSR_INDICES_INT32(indices);                     \
-    int m = static_cast<int>(indptr.size(0)) - 1;            \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {        \
-        _dt2t_nt_row_warp_kern##SUFFIX<<<m, 32, 0, s>>>(     \
-            static_cast<const WEIGHT_C_T*>(y.data_ptr()),    \
-            static_cast<const WEIGHT_C_T*>(w.data_ptr()),    \
-            static_cast<const IndptrT*>(indptr.data_ptr()),  \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()), m); \
-    });                                                      \
-}
-
-// ---- FFI macro: NT nz-thread kernel ----
-#define FFI_DT2T_NT_NZ_THREAD(SUFFIX, WEIGHT_C_T)                  \
-void csrmv_dt2t_nt_nz_thread##SUFFIX(                              \
-    const BE::Tensor y,       const BE::Tensor w,                  \
-    const BE::Tensor indices, const BE::Tensor indptr,             \
-    BE::Tensor output,  int64_t stream                             \
-) {                                                                \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
-    BE_CHECK_CSR_INDICES_INT32(indices);                           \
-    int m   = static_cast<int>(indptr.size(0)) - 1;                \
-    int nse = static_cast<int>(w.size(0));                         \
-    /* Each thread processes VEC_SIZE=4 elements */                \
-    const int VEC_SIZE = 4;                                        \
-    const int BLOCK_SIZE = 256;                                    \
-    int total_threads = (nse + VEC_SIZE - 1) / VEC_SIZE;           \
-    int blocks = (total_threads + BLOCK_SIZE - 1) / BLOCK_SIZE;    \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {              \
-        _dt2t_nt_nz_thread_kern##SUFFIX<<<blocks, BLOCK_SIZE, 0, s>>>( \
-            static_cast<const WEIGHT_C_T*>(y.data_ptr()),          \
-            static_cast<const WEIGHT_C_T*>(w.data_ptr()),          \
-            static_cast<const IndptrT*>(indptr.data_ptr()),        \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()), m, nse);  \
-    });                                                            \
-}
-
 // ---- FFI macro: NT auto-dispatch (row_thread / row_warp / nz_thread) ----
 //
 // Dispatch thresholds (tuned for modern NVIDIA GPUs):
@@ -414,12 +350,6 @@ void csrmv_dt2t_nt_auto##SUFFIX(                                                
 // =========================================================================
 
 // ---- Float32 ----
-// @BE csrmv_dt2t_nt_row_thread_f32
-FFI_DT2T_NT_ROW_THREAD(_f32,  float)
-// @BE csrmv_dt2t_nt_row_warp_f32
-FFI_DT2T_NT_ROW_WARP(_f32,   float)
-// @BE csrmv_dt2t_nt_nz_thread_f32
-FFI_DT2T_NT_NZ_THREAD(_f32,  float)
 // @BE csrmv_dt2t_nt_auto_f32
 FFI_DT2T_NT_AUTO(_f32,       float)
 
@@ -566,75 +496,6 @@ DEFINE_DT2T_MM_NT_NZ_THREAD (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16
 //   nse     = w.size(1)            (structural non-zeros per batch element)
 // =========================================================================
 
-// ---- FFI macro: MM NT row-thread kernel ----
-#define FFI_DT2T_MM_NT_ROW_THREAD(SUFFIX, WEIGHT_C_T)              \
-void csrmm_dt2t_nt_row_thread##SUFFIX(                             \
-    const BE::Tensor y,       const BE::Tensor w,                  \
-    const BE::Tensor indices, const BE::Tensor indptr,             \
-    BE::Tensor output,  int64_t stream                             \
-) {                                                                \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
-    BE_CHECK_CSR_INDICES_INT32(indices);                           \
-    int m       = static_cast<int>(indptr.size(0)) - 1;            \
-    int n_batch = static_cast<int>(w.size(0));                     \
-    int nse     = static_cast<int>(w.size(1));                     \
-    dim3 grid((m + 255) / 256, n_batch, 1);                        \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {              \
-        _dt2t_mm_nt_row_thread_kern##SUFFIX<<<grid, 256, 0, s>>>(  \
-            static_cast<const WEIGHT_C_T*>(y.data_ptr()),          \
-            static_cast<const WEIGHT_C_T*>(w.data_ptr()),          \
-            static_cast<const IndptrT*>(indptr.data_ptr()),        \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()), m, nse);  \
-    });                                                            \
-}
-
-// ---- FFI macro: MM NT row-warp kernel ----
-#define FFI_DT2T_MM_NT_ROW_WARP(SUFFIX, WEIGHT_C_T)                \
-void csrmm_dt2t_nt_row_warp##SUFFIX(                               \
-    const BE::Tensor y,       const BE::Tensor w,                  \
-    const BE::Tensor indices, const BE::Tensor indptr,             \
-    BE::Tensor output,  int64_t stream                             \
-) {                                                                \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
-    BE_CHECK_CSR_INDICES_INT32(indices);                           \
-    int m       = static_cast<int>(indptr.size(0)) - 1;            \
-    int n_batch = static_cast<int>(w.size(0));                     \
-    int nse     = static_cast<int>(w.size(1));                     \
-    dim3 grid(m, n_batch, 1);                                      \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {              \
-        _dt2t_mm_nt_row_warp_kern##SUFFIX<<<grid, 32, 0, s>>>(     \
-            static_cast<const WEIGHT_C_T*>(y.data_ptr()),          \
-            static_cast<const WEIGHT_C_T*>(w.data_ptr()),          \
-            static_cast<const IndptrT*>(indptr.data_ptr()),        \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()), m, nse);  \
-    });                                                            \
-}
-
-// ---- FFI macro: MM NT nz-thread kernel ----
-#define FFI_DT2T_MM_NT_NZ_THREAD(SUFFIX, WEIGHT_C_T)               \
-void csrmm_dt2t_nt_nz_thread##SUFFIX(                              \
-    const BE::Tensor y,       const BE::Tensor w,                  \
-    const BE::Tensor indices, const BE::Tensor indptr,             \
-    BE::Tensor output,  int64_t stream                             \
-) {                                                                \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
-    BE_CHECK_CSR_INDICES_INT32(indices);                           \
-    int m       = static_cast<int>(indptr.size(0)) - 1;            \
-    int n_batch = static_cast<int>(w.size(0));                     \
-    int nse     = static_cast<int>(w.size(1));                     \
-    const int VEC_SIZE = 4;                                        \
-    const int BLOCK_SIZE = 256;                                    \
-    int total_threads = (nse + VEC_SIZE - 1) / VEC_SIZE;           \
-    dim3 grid((total_threads + BLOCK_SIZE - 1) / BLOCK_SIZE, n_batch, 1); \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {              \
-        _dt2t_mm_nt_nz_thread_kern##SUFFIX<<<grid, BLOCK_SIZE, 0, s>>>( \
-            static_cast<const WEIGHT_C_T*>(y.data_ptr()),          \
-            static_cast<const WEIGHT_C_T*>(w.data_ptr()),          \
-            static_cast<const IndptrT*>(indptr.data_ptr()),        \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()), m, nse);  \
-    });                                                            \
-}
-
 // ---- FFI macro: MM NT auto-dispatch ----
 // Same avg_nnz thresholds as the csrmv auto dispatch; the batch axis only
 // adds grid-level parallelism and does not change the per-row regime.
@@ -675,12 +536,6 @@ void csrmm_dt2t_nt_auto##SUFFIX(                                                
 // =========================================================================
 
 // ---- Float32 ----
-// @BE csrmm_dt2t_nt_row_thread_f32
-FFI_DT2T_MM_NT_ROW_THREAD(_f32,  float)
-// @BE csrmm_dt2t_nt_row_warp_f32
-FFI_DT2T_MM_NT_ROW_WARP(_f32,   float)
-// @BE csrmm_dt2t_nt_nz_thread_f32
-FFI_DT2T_MM_NT_NZ_THREAD(_f32,  float)
 // @BE csrmm_dt2t_nt_auto_f32
 FFI_DT2T_MM_NT_AUTO(_f32,       float)
 

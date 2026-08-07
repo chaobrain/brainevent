@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 
 import brainstate
 import braintools
@@ -26,13 +27,26 @@ import pytest
 
 import brainevent
 from brainevent import CSR, CSC, BinaryArray
-from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
+from brainevent._csr._test_util import (
+    get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix, small_csr,
+)
+from brainevent._csr.main import (
+    _BinaryTaskWorkspace,
+    _binary_workspace,
+    _binary_workspace_helpers,
+    _binary_task_capacity_from_indptr,
+    _ensure_binary_workspace,
+    _make_binary_task_workspace,
+    _with_binary_workspace,
+)
+from brainevent._test_util import jax_x64_enabled
 
-# Every test in this module dispatches to the native ``numba`` backend (the default backend),
-# which compiles per test and dominates wall-clock. Mark the whole module ``slow`` so the
-# default ``pytest`` run skips it; CI runs it via ``pytest -m ""``. Kernel correctness on the
-# cheap ``jax_raw`` backend is still covered by ``float_test.py`` in the default run.
-pytestmark = pytest.mark.slow
+# The operator tests below dispatch to the native ``numba`` backend (the default backend),
+# which compiles per test and dominates wall-clock, so each carries ``@pytest.mark.slow`` and
+# the default ``pytest`` run skips it; CI runs them via ``pytest -m ""``. Kernel correctness on
+# the cheap ``jax_raw`` backend is still covered by ``float_test.py`` in the default run. The
+# marker is per-test rather than module-wide so the pure-Python structural tests further down
+# (workspace bookkeeping, dtype policy) stay in the default run.
 
 platform = jax.default_backend()
 BINARY_CSRMV_IMPLEMENTATIONS = tuple(brainevent.binary_csrmv_p.available_backends(platform))
@@ -66,6 +80,7 @@ def _make_float_data(homo_w, shape):
     return braintools.init.Normal(0.0, 1.0)(shape)
 
 
+@pytest.mark.slow
 class Test_CSR_BinaryOperator:
     def test_event_homo_bool(self):
         for dat in [1., 2., 3.]:
@@ -128,6 +143,7 @@ class Test_CSR_BinaryOperator:
         jax.block_until_ready((mat, mask))
 
 
+@pytest.mark.slow
 class Test_CSR_FloatVectorOperator:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_csr(self, homo_w):
@@ -242,6 +258,7 @@ class Test_CSR_FloatVectorOperator:
         jax.block_until_ready((x, indptr, indices, w, o1, r1, o2, r2))
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(
     not FLOAT_CSRMM_IMPLEMENTATIONS,
     reason=f'No csrmm implementation on platform={platform}',
@@ -276,6 +293,7 @@ class Test_CSR_FloatMatrixOperator:
         jax.block_until_ready((x, indptr, indices, data, y, y_ref))
 
 
+@pytest.mark.slow
 class Test_CSC_CSR_Conversion:
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -415,6 +433,7 @@ class Test_CSC_CSR_Conversion:
         jax.block_until_ready((matrix, out1, out2))
 
 
+@pytest.mark.slow
 class Test_CSR:
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_todense(self, shape):
@@ -705,6 +724,7 @@ class Test_CSR:
         jax.block_until_ready((xs, r1, g1, r2, g2))
 
 
+@pytest.mark.slow
 class Test_CSR_Event:
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
@@ -995,6 +1015,7 @@ class Test_CSR_Event:
         jax.block_until_ready((r1, g1, r2, g2))
 
 
+@pytest.mark.slow
 class Test_CSC:
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_todense(self, shape):
@@ -1006,6 +1027,7 @@ class Test_CSC:
         jax.block_until_ready((dense,))
 
 
+@pytest.mark.slow
 class Test_diag_add:
     # ``diag_add`` computes ``A + diag(d)`` *exactly*: diagonal entries absent
     # from the sparsity pattern must be inserted, which changes ``indices`` /
@@ -1191,6 +1213,7 @@ class Test_diag_add:
         assert u.math.allclose(new_csr.todense(), expected, atol=1e-6 * u.mV)
 
 
+@pytest.mark.slow
 class Test_solve:
     @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
     def test_csr(self, shape: brainstate.typing.Shape):
@@ -1231,6 +1254,7 @@ import jax.numpy as _jnp
 import brainevent as _be
 
 
+@pytest.mark.slow
 def test_csr_build_weight_indices_and_cache():
     rng = _np.random.default_rng(0)
     dense = (rng.random((4, 5)) > 0.5) * rng.random((4, 5))
@@ -1244,6 +1268,7 @@ def test_csr_build_weight_indices_and_cache():
     assert _jnp.array_equal(applied._weight_indices()[2], perm)
 
 
+@pytest.mark.slow
 def test_csr_lazy_weight_indices():
     rng = _np.random.default_rng(9)
     dense = (rng.random((3, 6)) > 0.5) * rng.random((3, 6))
@@ -1253,6 +1278,7 @@ def test_csr_lazy_weight_indices():
     assert perm.shape == csr.data.shape
 
 
+@pytest.mark.slow
 def test_csr_eager_precompute():
     dense = _jnp.asarray((_np.random.default_rng(1).random((3, 4)) > 0.5) * 1.0, _jnp.float32)
     csr = _be.CSR.fromdense(dense, precompute_weight_indices=True)
@@ -1265,6 +1291,7 @@ def _rand_dense(rng, m, n, p=0.4):
     return _jnp.asarray((rng.random((m, n)) < p) * rng.random((m, n)), _jnp.float32)
 
 
+@pytest.mark.slow
 def test_csr_at_event_matches_dense_without_mirror_cache_by_default():
     # Default/JAX-style routing stays on the direct CSR binary path.
     rng = _np.random.default_rng(3)
@@ -1278,6 +1305,7 @@ def test_csr_at_event_matches_dense_without_mirror_cache_by_default():
     assert csr.buffers.get('csc') is None
 
 
+@pytest.mark.slow
 def test_event_at_csr_favorable_matches_dense():
     # event @ CSR is favorable -> direct event-driven scatter, unchanged.
     rng = _np.random.default_rng(4)
@@ -1290,6 +1318,7 @@ def test_event_at_csr_favorable_matches_dense():
     assert _jnp.allclose(got, ref, atol=1e-5)
 
 
+@pytest.mark.slow
 def test_event_at_csc_matches_dense_without_mirror_cache_by_default():
     # Default/JAX-style routing stays on the direct CSC-as-transposed-CSR path.
     rng = _np.random.default_rng(5)
@@ -1303,6 +1332,7 @@ def test_event_at_csc_matches_dense_without_mirror_cache_by_default():
     assert csc.buffers.get('csr') is None
 
 
+@pytest.mark.slow
 def test_csc_at_event_favorable_matches_dense():
     # CSC @ event is favorable -> direct event-driven scatter, unchanged.
     rng = _np.random.default_rng(6)
@@ -1315,6 +1345,7 @@ def test_csc_at_event_favorable_matches_dense():
     assert _jnp.allclose(got, ref, atol=1e-5)
 
 
+@pytest.mark.slow
 def test_csr_at_event_jit_matches_dense():
     rng = _np.random.default_rng(7)
     m, k = 5, 7
@@ -1328,6 +1359,7 @@ def test_csr_at_event_jit_matches_dense():
 
 # ---- transpose cache hand-off (Phase 6) ----
 
+@pytest.mark.slow
 def test_csr_transpose_hands_off_weight_indices():
     # The CSC-like view of W equals the CSR-like view of W.T, so the cached
     # perm must transfer across transpose with identical values.
@@ -1346,6 +1378,7 @@ def test_csr_transpose_hands_off_weight_indices():
     assert _jnp.allclose(got, ref, atol=1e-5)
 
 
+@pytest.mark.slow
 def test_csc_transpose_hands_off_weight_indices():
     rng = _np.random.default_rng(10)
     m, n = 5, 3
@@ -1357,6 +1390,7 @@ def test_csc_transpose_hands_off_weight_indices():
     assert _jnp.array_equal(perm_csc, perm_csr)
 
 
+@pytest.mark.slow
 def test_csc_eager_precompute():
     rng = _np.random.default_rng(12)
     csc = _be.CSC.fromdense(_rand_dense(rng, 4, 5), precompute_weight_indices=True)
@@ -1365,6 +1399,7 @@ def test_csc_eager_precompute():
 
 # ---- OO plasticity method parity (Phase 8) ----
 
+@pytest.mark.slow
 def test_csr_update_on_pre_method_parity():
     rng = _np.random.default_rng(20)
     csr = _be.CSR.fromdense(_rand_dense(rng, 4, 5))
@@ -1376,6 +1411,7 @@ def test_csr_update_on_pre_method_parity():
     assert _jnp.allclose(got, ref, atol=1e-6)
 
 
+@pytest.mark.slow
 def test_csr_update_on_post_method_parity():
     rng = _np.random.default_rng(21)
     csr = _be.CSR.fromdense(_rand_dense(rng, 4, 5))
@@ -1388,6 +1424,7 @@ def test_csr_update_on_post_method_parity():
     assert _jnp.allclose(got, ref, atol=1e-6)
 
 
+@pytest.mark.slow
 def test_csc_update_on_pre_method_parity():
     rng = _np.random.default_rng(22)
     csc = _be.CSC.fromdense(_rand_dense(rng, 5, 3))
@@ -1399,6 +1436,7 @@ def test_csc_update_on_pre_method_parity():
     assert _jnp.allclose(got, ref, atol=1e-6)
 
 
+@pytest.mark.slow
 def test_csc_update_on_post_method_parity():
     rng = _np.random.default_rng(23)
     csc = _be.CSC.fromdense(_rand_dense(rng, 5, 3))
@@ -1431,6 +1469,7 @@ def _mask(x, dtype):
     return jnp.asarray(x > 0, dtype=dtype) if x.dtype != jnp.bool_ else jnp.asarray(x, dtype=dtype)
 
 
+@pytest.mark.slow
 def test_csr_matmat_golden():
     rng = np.random.default_rng(7)
     for csr in _csr_cases():
@@ -1449,6 +1488,7 @@ def test_csr_matmat_golden():
                 assert jnp.allclose(got_l, ref_l, atol=1e-5), ('M@CSR', str(ev), n)
 
 
+@pytest.mark.slow
 def test_csc_matmat_golden():
     rng = np.random.default_rng(11)
     for csr in _csr_cases():
@@ -1468,6 +1508,7 @@ def test_csc_matmat_golden():
                 assert jnp.allclose(got_l, ref_l, atol=1e-5), ('M@CSC', str(ev), n)
 
 
+@pytest.mark.slow
 def test_csr_matmat_unfavorable_jax_raw_route_skips_weight_indices():
     # jax_raw BinaryArray routing uses the direct CSR structure and workspace.
     # Only explicit cuda_raw uses the mirror indexed route that builds 'csc'.
@@ -1482,6 +1523,7 @@ def test_csr_matmat_unfavorable_jax_raw_route_skips_weight_indices():
     assert 'csr' in csr.buffers.get('binary_workspace', {})
 
 
+@pytest.mark.slow
 def test_csc_matmat_unfavorable_jax_raw_route_skips_weight_indices():
     # jax_raw BinaryArray routing uses the direct CSC structure and workspace.
     # Only explicit cuda_raw uses the mirror indexed route that builds 'csr'.
@@ -1496,6 +1538,7 @@ def test_csc_matmat_unfavorable_jax_raw_route_skips_weight_indices():
     assert 'csc' in csc.buffers.get('binary_workspace', {})
 
 
+@pytest.mark.slow
 def test_csr_matmat_units_and_jit():
     rng = np.random.default_rng(9)
     csr = next(_csr_cases())
@@ -1510,3 +1553,275 @@ def test_csr_matmat_units_and_jit():
     f = jax.jit(lambda d: CSR((d, csr.indices, csr.indptr), shape=csr.shape) @ BinaryArray(M))
     got_jit = f(csr.data)
     assert jnp.allclose(got_jit, ref, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Binary task workspace: capacity accounting, pytree behaviour and the
+# transpose re-keying that keeps a CSR workspace usable after ``.T``.
+# Pure structural bookkeeping -- no kernel compilation, so not marked ``slow``.
+# ---------------------------------------------------------------------------
+
+
+def test_binary_task_capacity_ignores_short_rows():
+    indptr = jnp.array([0, 10, 138, 139], dtype=jnp.int32)
+
+    assert _binary_task_capacity_from_indptr(indptr) == 0
+
+
+def test_binary_task_capacity_counts_heavy_row_chunks():
+    with jax_x64_enabled():
+        indptr = jnp.array([0, 129, 129 + 4096, 129 + 4096 + 4097], dtype=jnp.int64)
+
+        assert _binary_task_capacity_from_indptr(indptr) == 1 + 1 + 2
+
+
+def test_binary_task_capacity_rejects_non_monotonic_indptr():
+    indptr = jnp.array([0, 10, 9], dtype=jnp.int32)
+
+    try:
+        _binary_task_capacity_from_indptr(indptr)
+    except ValueError as exc:
+        assert "non-negative" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for non-monotonic indptr")
+
+
+def test_make_binary_task_workspace_shapes_dtypes_and_pytree():
+    with jax_x64_enabled():
+        indptr = jnp.array([0, 129, 129 + 4097], dtype=jnp.int64)
+
+        workspace = _make_binary_task_workspace(indptr)
+        leaves, treedef = jax.tree_util.tree_flatten(workspace)
+        restored = jax.tree_util.tree_unflatten(treedef, leaves)
+
+        assert isinstance(workspace, _BinaryTaskWorkspace)
+        assert workspace.task_capacity == 3
+        assert workspace.task_begin.shape == (3,)
+        assert workspace.task_end.shape == (3,)
+        assert workspace.status.shape == (2,)
+        assert workspace.task_begin.dtype == indptr.dtype
+        assert workspace.task_end.dtype == indptr.dtype
+        assert workspace.status.dtype == jnp.int32
+        assert len(leaves) == 3
+        assert all(isinstance(leaf, jax.Array) for leaf in leaves)
+        assert restored.task_capacity == workspace.task_capacity
+        assert restored.task_begin.shape == workspace.task_begin.shape
+        assert restored.task_end.shape == workspace.task_end.shape
+        assert restored.status.shape == workspace.status.shape
+
+
+def test_binary_workspace_buffer_is_pytree_leaf_and_hidden_buffer():
+    csr = CSR(
+        (
+            jnp.array([1.0], dtype=jnp.float32),
+            jnp.array([0], dtype=jnp.int32),
+            jnp.array([0, 1], dtype=jnp.int32),
+        ),
+        shape=(1, 1),
+    )
+    workspace = _make_binary_task_workspace(csr.indptr)
+    csr = _with_binary_workspace(csr, "csr", workspace)
+
+    leaves, treedef = jax.tree_util.tree_flatten(csr)
+    restored = jax.tree_util.tree_unflatten(treedef, leaves)
+    restored_workspace = _binary_workspace(restored, "csr")
+
+    assert "binary_workspace" in csr.buffers
+    assert [getattr(leaf, "shape", None) for leaf in leaves] == [
+        csr.data.shape,
+        workspace.task_begin.shape,
+        workspace.task_end.shape,
+        workspace.status.shape,
+    ]
+    assert restored_workspace.task_capacity == workspace.task_capacity
+    assert restored_workspace.status.shape == (2,)
+
+
+def test_binary_workspace_helpers_are_closure_backed():
+    assert _binary_workspace.__closure__ is not None
+    assert _with_binary_workspace.__closure__ is not None
+    assert _ensure_binary_workspace.__closure__ is not None
+    assert _binary_workspace_helpers.__closure__ is None
+
+
+def test_ensure_binary_workspace_reuses_existing_workspace():
+    csr = CSR(
+        (
+            jnp.ones((129,), dtype=jnp.float32),
+            jnp.zeros((129,), dtype=jnp.int32),
+            jnp.array([0, 129], dtype=jnp.int32),
+        ),
+        shape=(1, 1),
+    )
+
+    prepared = _ensure_binary_workspace(csr, "csr", csr.indptr)
+    prepared_again = _ensure_binary_workspace(prepared, "csr", csr.indptr)
+
+    assert prepared is csr
+    assert prepared_again is csr
+    assert "binary_workspace" in csr.buffers
+    first = _binary_workspace(prepared, "csr")
+    second = _binary_workspace(prepared_again, "csr")
+    assert first.task_capacity == 1
+    assert second.task_capacity == first.task_capacity
+    assert second.task_begin is first.task_begin
+
+
+def test_csr_transpose_rekeys_binary_workspace_csc_to_csr():
+    csr = CSR(
+        (
+            jnp.ones((129,), dtype=jnp.float32),
+            jnp.zeros((129,), dtype=jnp.int32),
+            jnp.array([0, 129], dtype=jnp.int32),
+        ),
+        shape=(1, 1),
+    )
+    csc_indptr = jnp.array([0, 129], dtype=jnp.int32)
+    csr = _with_binary_workspace(csr, "csc", _make_binary_task_workspace(csc_indptr))
+
+    csc = csr.T
+
+    assert _binary_workspace(csc, "csr").task_capacity == 1
+
+
+def test_csc_transpose_rekeys_binary_workspace_csr_to_csc():
+    csc = CSR(
+        (
+            jnp.ones((129,), dtype=jnp.float32),
+            jnp.zeros((129,), dtype=jnp.int32),
+            jnp.array([0, 129], dtype=jnp.int32),
+        ),
+        shape=(1, 1),
+    ).T
+    csr_indptr = jnp.array([0, 129], dtype=jnp.int32)
+    csc = _with_binary_workspace(csc, "csr", _make_binary_task_workspace(csr_indptr))
+
+    csr = csc.T
+
+    assert _binary_workspace(csr, "csc").task_capacity == 1
+
+
+# ---------------------------------------------------------------------------
+# Constructor dtype contract: ``indices`` always int32, ``indptr`` int32 unless
+# nnz forces int64. The helper-level policy tests live in ``_misc_test.py``;
+# these exercise it end-to-end through the public CSR/CSC constructors.
+# Pure structural checks -- no kernel compilation, so not marked ``slow``.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cls,shape", [(CSR, (2, 3)), (CSC, (3, 2))])
+def test_constructor_indices_int32_indptr_int32(cls, shape):
+    data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+    indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+    m = cls((data, indices, indptr), shape=shape)
+    assert m.indices.dtype == jnp.int32
+    assert m.indptr.dtype == jnp.int32
+
+
+@pytest.mark.parametrize("cls,shape", [(CSR, (2, 3)), (CSC, (3, 2))])
+def test_constructor_coerces_int64_indices_to_int32(cls, shape):
+    data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+    indices = np.array([0, 2, 1], dtype=np.int64)
+    indptr = np.array([0, 2, 3], dtype=np.int64)
+    m = cls((data, indices, indptr), shape=shape)
+    assert m.indices.dtype == jnp.int32
+    # Small nnz -> indptr resolves to int32 regardless of input width.
+    assert m.indptr.dtype == jnp.int32
+
+
+def test_constructor_explicit_int64_indptr_gated_when_x64_off():
+    data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+    indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+    with pytest.raises(ValueError, match="requires an int64 array"):
+        CSR((data, indices, indptr), shape=(2, 3), indptr_dtype=np.int64)
+    # The failed construction must not have toggled the global config.
+    assert jax.config.jax_enable_x64 is False
+
+
+def test_constructor_explicit_int64_indptr_ok_when_x64_on():
+    with jax_x64_enabled():
+        data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+        m = CSR((data, indices, indptr), shape=(2, 3), indptr_dtype=np.int64)
+        assert m.indices.dtype == jnp.int32
+        assert m.indptr.dtype == jnp.int64
+
+
+# -- Constructor structural validation --------------------------------------
+
+def test_constructor_rejects_non_monotonic_indptr():
+    data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+    indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 3, 2], dtype=jnp.int32)  # decreasing
+    with pytest.raises(ValueError, match="monotonically non-decreasing"):
+        CSR((data, indices, indptr), shape=(2, 3))
+
+
+def test_constructor_rejects_indptr_tail_mismatch():
+    data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+    indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2, 2], dtype=jnp.int32)  # tail != nse (3)
+    with pytest.raises(ValueError, match="must equal the number of"):
+        CSR((data, indices, indptr), shape=(2, 3))
+
+
+def test_constructor_rejects_wrong_indptr_length():
+    data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+    indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 3], dtype=jnp.int32)  # length should be n_rows + 1 = 3
+    with pytest.raises(ValueError, match="indptr length"):
+        CSR((data, indices, indptr), shape=(2, 3))
+
+
+def test_constructor_rejects_nonzero_indptr_head():
+    data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+    indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+    indptr = jnp.array([1, 2, 3], dtype=jnp.int32)  # head != 0
+    with pytest.raises(ValueError, match=r"indptr\[0\] must be 0"):
+        CSR((data, indices, indptr), shape=(2, 3))
+
+
+# -- Structure-preserving paths keep the contract and do not host-readback ---
+
+def test_with_data_preserves_structure_dtype():
+    m = small_csr()
+    m2 = m.with_data(jnp.array([10.0, 20.0, 30.0], dtype=jnp.float32))
+    assert m2.indices.dtype == jnp.int32
+    assert m2.indptr.dtype == jnp.int32
+    np.testing.assert_array_equal(np.asarray(m2.indices), np.asarray(m.indices))
+
+
+def test_transpose_preserves_structure_dtype():
+    m = small_csr()
+    mt = m.transpose()
+    assert isinstance(mt, CSC)
+    assert mt.indices.dtype == jnp.int32
+    assert mt.indptr.dtype == jnp.int32
+
+
+def test_with_data_under_jit_no_host_readback():
+    # A structure-preserving reconstruction under jit must not try to read the
+    # (traced) data on host; indices/indptr remain concrete int32.
+    m = small_csr()
+
+    @jax.jit
+    def scale(data):
+        return m.with_data(data * 2.0).data.sum()
+
+    val = scale(m.data)
+    assert float(val) == pytest.approx(2.0 * float(m.data.sum()))
+
+
+def test_csr_cuda_sources_do_not_cast_indptr_to_int32():
+    # Package-wide invariant over every CSR CUDA source: an int64 indptr must
+    # survive into the kernel signature rather than being narrowed at the
+    # boundary, which would silently corrupt offsets past int32 range.
+    csr_dir = Path(__file__).parent
+    for path in csr_dir.glob('*.cu'):
+        text = path.read_text()
+        assert 'static_cast<const int32_t*>(indptr.data_ptr())' not in text, path.name
+        assert 'const int32_t*  __restrict__ indptr' not in text, path.name
+        assert 'const int32_t*   __restrict__ indptr' not in text, path.name

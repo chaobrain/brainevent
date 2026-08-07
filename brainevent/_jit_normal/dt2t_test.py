@@ -43,6 +43,11 @@ JITN_dt2t_IMPLEMENTATIONS = tuple(jitnmv_dt2t_p.available_backends(platform))
 JITN_dt2t_GPU_IMPLEMENTATIONS = tuple(jitnmv_dt2t_p.available_backends('gpu'))
 X64_ENABLED = bool(jax.config.read('jax_enable_x64'))
 
+requires_dt2t_backend = pytest.mark.skipif(
+    not JITN_dt2t_IMPLEMENTATIONS,
+    reason=f'No jitnmv_dt2t implementation on platform={platform}',
+)
+
 
 def _csr_yw_reference(csr, y, transpose):
     row_ids = jnp.repeat(
@@ -77,7 +82,10 @@ def test_jitnmv_dt2t_matches_csr_reference(implementation, shape, corder, transp
             corder=corder,
             backend=implementation,
         )
-        csr = jitn_to_csr(1.5, 0.2, 0.2, 42, shape=shape, corder=corder, backend=implementation)
+        csr = jitn_to_csr(
+            1.5, 0.2, 0.2, 42,
+            shape=shape, corder=corder, matrix_mode='mv', backend=implementation,
+        )
         expected = _csr_yw_reference(csr, y, transpose)
 
     assert allclose(out, expected)
@@ -113,6 +121,7 @@ def test_jitnmv_dt2t_float64_matches_csr_reference(implementation, corder):
             42,
             shape=shape,
             corder=corder,
+            matrix_mode='mv',
             backend=implementation,
         )
         expected = _csr_yw_reference(csr, y, False)
@@ -174,14 +183,10 @@ def test_jitnmv_dt2t_corder_false_is_repeatable(implementation, transpose):
     assert np.array_equal(np.asarray(out1), np.asarray(out2))
 
 
-@pytest.mark.skipif(
-    not JITN_dt2t_IMPLEMENTATIONS,
-    reason=f'No jitnmv_dt2t implementation on platform={platform}',
-)
+@requires_dt2t_backend
 @pytest.mark.parametrize('implementation', JITN_dt2t_IMPLEMENTATIONS)
-@pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, corder, transpose):
+def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, transpose):
     with jax.default_device(CPU_DEVICE):
         shape = (20, 30)
         y_size = shape[1] if transpose else shape[0]
@@ -191,16 +196,19 @@ def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
         clen = _initialize_conn_length(0.2)
         seed = _initialize_seed(42)
 
-        row_counts = jitn_csr_count_p_call(
-            w0, w1, clen, seed, shape=shape, corder=corder, backend=implementation,
+        chunk_counts = jitn_csr_count_p_call(
+            w0, w1, clen, seed,
+            shape=shape, corder=True, matrix_mode='mv', backend=implementation,
         )[0]
-        indptr = jnp.concatenate(
-            [jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)]
-        )
+        row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32)
+        indptr = jnp.concatenate([jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)])
+        cc = chunk_counts.astype(jnp.int32)
+        chunk_offsets = indptr[:-1, None] + jnp.cumsum(cc, axis=1, dtype=jnp.int32) - cc
         nnz = int(indptr[-1])
 
         indices, weights = jitn_csr_fill_p_call(
-            w0, w1, clen, seed, indptr, nnz, shape=shape, corder=corder, backend=implementation,
+            w0, w1, clen, seed, chunk_offsets, nnz,
+            shape=shape, corder=True, matrix_mode='mv', backend=implementation,
         )
         out = jitnmv_dt2t_p_call(
             w0,
@@ -208,11 +216,10 @@ def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
             clen,
             y,
             seed,
-            indptr,
+            chunk_offsets,
             nnz,
             shape=shape,
             transpose=transpose,
-            corder=corder,
             backend=implementation,
         )[0]
         row_ids = jnp.repeat(
@@ -226,6 +233,7 @@ def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, cord
     jax.block_until_ready((out, expected))
 
 
+@requires_dt2t_backend
 def test_jitnmv_dt2t_units_are_weight_times_y():
     with jax.default_device(CPU_DEVICE):
         out = jitnmv_dt2t(
@@ -373,6 +381,7 @@ def test_jitnmv_dt2t_cuda_matches_cuda_csr_reference(shape, corder, transpose):
             42,
             shape=shape,
             corder=corder,
+            matrix_mode='mv',
             backend='cuda_raw',
         )
         expected = _csr_yw_reference(csr, y, transpose)

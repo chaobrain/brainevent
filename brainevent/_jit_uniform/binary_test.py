@@ -30,12 +30,25 @@ from brainevent._jit_uniform.binary import (
     binary_jitumm,
     binary_jitumm_p,
 )
+from brainevent._jit_uniform._test_util import dense_uniform_reference
 from brainevent._jit_uniform.float import jitumv, jitumm
 from brainevent._test_util import allclose
 
 platform = jax.default_backend()
 JITUMV_IMPLEMENTATIONS = tuple(binary_jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(binary_jitumm_p.available_backends(platform))
+CPU_DEVICE = jax.devices('cpu')[0]
+CPU_JITUMV_IMPLEMENTATIONS = tuple(binary_jitumv_p.available_backends('cpu'))
+CPU_JITUMM_IMPLEMENTATIONS = tuple(binary_jitumm_p.available_backends('cpu'))
+
+requires_cpu_jitumv = pytest.mark.skipif(
+    'numba' not in CPU_JITUMV_IMPLEMENTATIONS,
+    reason='No binary_jitumv numba backend registered on CPU',
+)
+requires_cpu_jitumm = pytest.mark.skipif(
+    'numba' not in CPU_JITUMM_IMPLEMENTATIONS,
+    reason='No binary_jitumm numba backend registered on CPU',
+)
 
 if platform == 'cpu':
     SHAPES = ((20, 30), (100, 50))
@@ -84,6 +97,87 @@ def _sample_matrix(rows: int, cols: int, event_dtype, seed: int):
 def _sample_cotangent(shape, seed: int):
     rng = np.random.RandomState(seed)
     return jnp.asarray(rng.randn(*shape).astype(np.float32))
+
+
+@requires_cpu_jitumv
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+def test_binary_jitumv_numba_matches_light_rng_reference(transpose, corder, event_dtype):
+    shape = (13, 17)
+    seed = 123
+    prob = 0.2
+    w_low = jnp.asarray(-1.5, dtype=jnp.float32)
+    w_high = jnp.asarray(1.5, dtype=jnp.float32)
+    event_size = shape[0] if transpose else shape[1]
+    vector = _sample_vector(event_size, event_dtype, seed + 7)
+    vector_ref = _binary_events(vector, dtype=jnp.float32)
+
+    with jax.default_device(CPU_DEVICE):
+        actual = binary_jitumv(
+            w_low,
+            w_high,
+            prob,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend='numba',
+        )
+    dense = dense_uniform_reference(
+        w_low,
+        w_high,
+        prob,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        matrix_mode='mv',
+    )
+    expected = dense @ np.asarray(vector_ref)
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
+
+
+@requires_cpu_jitumm
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+def test_binary_jitumm_numba_matches_light_rng_reference(transpose, corder, event_dtype):
+    shape = (13, 17)
+    seed = 123
+    prob = 0.2
+    k = 3
+    w_low = jnp.asarray(-1.5, dtype=jnp.float32)
+    w_high = jnp.asarray(1.5, dtype=jnp.float32)
+    rows = shape[0] if transpose else shape[1]
+    matrix = _sample_matrix(rows, k, event_dtype, seed + 11)
+    matrix_ref = _binary_events(matrix, dtype=jnp.float32)
+
+    with jax.default_device(CPU_DEVICE):
+        actual = binary_jitumm(
+            w_low,
+            w_high,
+            prob,
+            matrix,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend='numba',
+        )
+    dense = dense_uniform_reference(
+        w_low,
+        w_high,
+        prob,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        matrix_mode='mm',
+    )
+    expected = dense @ np.asarray(matrix_ref)
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize('implementation', JITUMV_PARAMS)

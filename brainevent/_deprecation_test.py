@@ -21,6 +21,12 @@ Public names retired between v0.0.7 and v0.1.0 must stay *resolvable*:
 renamed names warn and return their replacement; names whose functionality was
 removed raise an :class:`AttributeError` naming the migration path. Normal
 ``import brainevent`` must remain warning-free, and ``__all__`` must be unchanged.
+
+The first half exercises the shim through the public ``brainevent`` surface -- the
+contract users actually depend on. The second half unit-tests
+:func:`brainevent._deprecation.resolve` and :func:`~brainevent._deprecation.public_dir`
+directly against a synthetic namespace, which is what makes the tables testable
+without importing the whole package.
 """
 
 import subprocess
@@ -30,6 +36,7 @@ import warnings
 import pytest
 
 import brainevent
+from brainevent import _deprecation
 
 # old name -> attribute name of the replacement on the brainevent module.
 _RENAMES = {
@@ -116,7 +123,7 @@ def test_fresh_import_emits_no_warning():
 
 
 def test_all_exports_resolve_and_are_stable():
-    assert len(brainevent.__all__) == 161
+    assert len(brainevent.__all__) == 165
     for name in brainevent.__all__:
         assert hasattr(brainevent, name), name
 
@@ -130,3 +137,78 @@ def test_all_v007_removed_names_have_backcompat():
     # Deprecated names stay hidden from the curated public surface.
     for name in covered:
         assert name not in brainevent.__all__
+
+
+# ---------------------------------------------------------------------------
+# Direct unit tests for the resolver, against a synthetic namespace.
+# ---------------------------------------------------------------------------
+
+
+def test_tables_agree_with_the_expectations_asserted_above():
+    # The module tables are the source of truth; _RENAMES / _REMOVED above encode
+    # the same contract independently. Drift between them means one of the two is
+    # stale, so pin them to each other.
+    assert _deprecation.DEPRECATED_RENAMES == _RENAMES
+    assert set(_deprecation.DEPRECATED_REMOVED) == set(_REMOVED)
+
+
+def test_resolve_returns_replacement_from_the_given_namespace():
+    sentinel = object()
+    with pytest.warns(DeprecationWarning, match="use brainevent.BinaryArray instead"):
+        assert _deprecation.resolve("EventArray", {"BinaryArray": sentinel}) is sentinel
+
+
+def test_resolve_uses_the_module_name_in_messages():
+    with pytest.warns(DeprecationWarning, match=r"pkg\.EventArray is deprecated"):
+        _deprecation.resolve("EventArray", {"BinaryArray": None}, module="pkg")
+
+
+def test_resolve_raises_with_migration_message_for_removed_names():
+    with pytest.raises(AttributeError, match="was removed in 0.1.0"):
+        _deprecation.resolve("COO", {})
+
+
+def test_resolve_raises_plain_attributeerror_for_unknown_names():
+    with pytest.raises(AttributeError, match="has no attribute 'not_a_name'"):
+        _deprecation.resolve("not_a_name", {})
+
+
+def test_resolve_does_not_warn_for_removed_or_unknown_names():
+    # Only renames warn; the other two paths raise, and a stray DeprecationWarning
+    # on the way out would be noise the caller cannot act on.
+    for name in ("COO", "not_a_name"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with pytest.raises(AttributeError):
+                _deprecation.resolve(name, {})
+        assert not caught, f"{name}: unexpected {[str(w.message) for w in caught]}"
+
+
+def test_resolve_propagates_keyerror_if_replacement_is_missing():
+    # A typo in DEPRECATED_RENAMES must surface loudly rather than resolving to
+    # None; the empty namespace stands in for a replacement that was never imported.
+    with pytest.warns(DeprecationWarning):
+        with pytest.raises(KeyError):
+            _deprecation.resolve("EventArray", {})
+
+
+def test_resolve_warning_points_at_the_caller():
+    # stacklevel must account for the module __getattr__ frame between user code
+    # and this function, so the warning is attributed to the accessing line.
+    with pytest.warns(DeprecationWarning) as record:
+        brainevent.EventArray
+    assert record[0].filename == __file__
+
+
+def test_public_dir_unions_namespace_with_every_deprecated_alias():
+    listing = _deprecation.public_dir({"BinaryArray": None})
+    assert listing == sorted(listing)
+    assert "BinaryArray" in listing
+    for name in (*_deprecation.DEPRECATED_RENAMES, *_deprecation.DEPRECATED_REMOVED):
+        assert name in listing
+
+
+def test_public_dir_does_not_mutate_the_namespace():
+    namespace = {"BinaryArray": None}
+    _deprecation.public_dir(namespace)
+    assert namespace == {"BinaryArray": None}

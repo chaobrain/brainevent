@@ -40,19 +40,31 @@ def _seed_rng():
     np.random.seed(0x5EED)
 
 
-# ---- jits: transpose symmetry ----
+# ---- jits requires an explicit matrix_mode ----
+
+def test_jits_requires_matrix_mode():
+    # mv and mm draw different matrices, so the dense form is only defined once a
+    # mode is chosen; the bare call must raise.
+    with pytest.raises(TypeError):
+        jits(1.5, 0.1, 123, shape=(20, 30))
+
+
+# ---- jits: transpose symmetry (mode-agnostic identity) ----
 
 @pytest.mark.parametrize("implementation", JITS_IMPLEMENTATIONS)
+@pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('corder', [True, False])
-def test_jits_transpose_symmetry(implementation, transpose, corder):
-    out1 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=transpose, corder=corder, backend=implementation)
-    out2 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=not transpose, corder=not corder, backend=implementation)
+def test_jits_transpose_symmetry(implementation, matrix_mode, transpose, corder):
+    out1 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=transpose, corder=corder,
+                matrix_mode=matrix_mode, backend=implementation)
+    out2 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=not transpose, corder=not corder,
+                matrix_mode=matrix_mode, backend=implementation)
     assert jnp.allclose(out1, out2.T)
     jax.block_until_ready((out1, out2))
 
 
-# ---- Forward: jitsmv (transpose=False) ----
+# ---- Forward: jitsmv (transpose=False) vs the mv dense matrix ----
 
 @pytest.mark.parametrize("implementation", JITSMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 200), (20, 100)])
@@ -60,7 +72,7 @@ def test_jits_transpose_symmetry(implementation, transpose, corder):
 def test_jitsmv_forward(implementation, shape, corder):
     weight, prob, seed = 1.5, 0.1, 1234
     vector = jnp.asarray(np.random.rand(shape[1]))
-    dense = jits(weight, prob, seed, shape=shape, corder=corder, backend=implementation)
+    dense = jits(weight, prob, seed, shape=shape, corder=corder, matrix_mode='mv', backend=implementation)
     out = jitsmv(weight, prob, vector, seed=seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -75,7 +87,7 @@ def test_jitsmv_forward(implementation, shape, corder):
 def test_jitsmv_transpose_forward(implementation, shape, corder):
     weight, prob, seed = 1.5, 0.1, 1234
     vector = jnp.asarray(np.random.rand(shape[0]))
-    dense = jits(weight, prob, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
+    dense = jits(weight, prob, seed, shape=shape, transpose=True, corder=corder, matrix_mode='mv', backend=implementation)
     out = jitsmv(weight, prob, vector, seed=seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -96,7 +108,7 @@ def test_jitsmv_zero_weight(implementation, transpose, corder):
     jax.block_until_ready((v, result, expected))
 
 
-# ---- Forward: jitsmm (transpose=False) ----
+# ---- Forward: jitsmm (transpose=False) vs the mm dense matrix ----
 
 @pytest.mark.parametrize("implementation", JITSMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 200), (20, 100)])
@@ -105,7 +117,7 @@ def test_jitsmv_zero_weight(implementation, transpose, corder):
 def test_jitsmm_forward(implementation, shape, k, corder):
     weight, prob, seed = 1.5, 0.1, 1234
     B = jnp.asarray(np.random.rand(shape[1], k))
-    dense = jits(weight, prob, seed, shape=shape, corder=corder, backend=implementation)
+    dense = jits(weight, prob, seed, shape=shape, corder=corder, matrix_mode='mm', backend=implementation)
     out = jitsmm(weight, prob, B, seed=seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -121,7 +133,7 @@ def test_jitsmm_forward(implementation, shape, k, corder):
 def test_jitsmm_transpose_forward(implementation, shape, k, corder):
     weight, prob, seed = 1.5, 0.1, 1234
     B = jnp.asarray(np.random.rand(shape[0], k))
-    dense = jits(weight, prob, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
+    dense = jits(weight, prob, seed, shape=shape, transpose=True, corder=corder, matrix_mode='mm', backend=implementation)
     out = jitsmm(weight, prob, B, seed=seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -138,7 +150,7 @@ def test_jitsmv_jvp(implementation, shape, corder, transpose):
     weight, prob, seed = 1.5, 0.1, 1234
     vec_size = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(vec_size))
-    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, matrix_mode='mv', backend=implementation)
 
     def f_fn(x, w):
         return jitsmv(w, prob, x, seed=seed, shape=shape, transpose=transpose, corder=corder,
@@ -167,7 +179,7 @@ def test_jitsmv_vjp(implementation, shape, corder, transpose):
     weight, prob, seed = 1.5, 0.1, 1234
     vec_size = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(vec_size))
-    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, matrix_mode='mv', backend=implementation)
 
     def f_fn(x, w):
         return jitsmv(w, prob, x, seed=seed, shape=shape, transpose=transpose, corder=corder,
@@ -196,7 +208,7 @@ def test_jitsmm_jvp(implementation, k, shape, corder, transpose):
     weight, prob, seed = 1.5, 0.1, 1234
     mat_rows = shape[0] if transpose else shape[1]
     X = jnp.asarray(np.random.rand(mat_rows, k))
-    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, matrix_mode='mm', backend=implementation)
 
     def f_fn(X, w):
         return jitsmm(w, prob, X, seed=seed, shape=shape, transpose=transpose, corder=corder,
@@ -226,7 +238,7 @@ def test_jitsmm_vjp(implementation, k, shape, corder, transpose):
     weight, prob, seed = 1.5, 0.1, 1234
     mat_rows = shape[0] if transpose else shape[1]
     X = jnp.asarray(np.random.rand(mat_rows, k))
-    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, matrix_mode='mm', backend=implementation)
 
     def f_fn(X, w):
         return jitsmm(w, prob, X, seed=seed, shape=shape, transpose=transpose, corder=corder,
@@ -244,7 +256,9 @@ def test_jitsmm_vjp(implementation, k, shape, corder, transpose):
     jax.block_until_ready((X, dense, w_arr, out1, vjp_x1, vjp_w1, out2, vjp_x2, vjp_w2))
 
 
-# ---- Batching: jitsmv over vectors ----
+# ---- Batching: jitsmv over vectors == jitsmm (mm mode) ----
+# vmap over the vector axis is a matrix-matrix operation, so it draws the mm
+# (matrix-matrix) matrix, matching jitsmm(matrix_mode='mm').
 
 @pytest.mark.parametrize("implementation", JITSMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('batch_size', [10])
@@ -260,14 +274,13 @@ def test_jitsmv_vmap_over_vectors(implementation, batch_size, shape, corder):
     results = jax.vmap(f)(vectors)
     assert results.shape == (batch_size, shape[0])
 
-    results_loop = brainstate.transform.for_loop(f, vectors)
-    assert results_loop.shape == (batch_size, shape[0])
+    expected = jitsmm(weight, prob, jnp.asarray(vectors).T, seed=seed, shape=shape, corder=corder,
+                      matrix_mode='mm', backend=implementation).T
+    assert jnp.allclose(results, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vectors, results, expected))
 
-    assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
-    jax.block_until_ready((vectors, results, results_loop))
 
-
-# ---- Batching: jitsmv over vectors (transpose) ----
+# ---- Batching: jitsmv over vectors (transpose) == jitsmm (mm) ----
 
 @pytest.mark.parametrize("implementation", JITSMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('batch_size', [10])
@@ -284,11 +297,10 @@ def test_jitsmv_transpose_vmap_over_vectors(implementation, batch_size, shape, c
     results = jax.vmap(f)(vectors)
     assert results.shape == (batch_size, shape[1])
 
-    results_loop = brainstate.transform.for_loop(f, vectors)
-    assert results_loop.shape == (batch_size, shape[1])
-
-    assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
-    jax.block_until_ready((vectors, results, results_loop))
+    expected = jitsmm(weight, prob, jnp.asarray(vectors).T, seed=seed, shape=shape, transpose=True,
+                      corder=corder, matrix_mode='mm', backend=implementation).T
+    assert jnp.allclose(results, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vectors, results, expected))
 
 
 # ---- Batching: jitsmv over weight ----
@@ -388,7 +400,7 @@ def test_jitsmm_vmap_over_weight(implementation, batch_size, k, shape, corder):
     jax.block_until_ready((weights, matrix, results, results_loop))
 
 
-# ---- Batching: jits over weight ----
+# ---- Batching: jits over weight / prob / seed ----
 
 @pytest.mark.parametrize("implementation", JITS_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 50)])
@@ -396,7 +408,7 @@ def test_jits_vmap_over_weight(implementation, shape):
     prob, seed = 0.1, 123
 
     def f(weight):
-        return jits(weight, prob, seed, shape=shape, backend=implementation)
+        return jits(weight, prob, seed, shape=shape, matrix_mode='mv', backend=implementation)
 
     weights = brainstate.random.rand(10)
     results = jax.vmap(f)(weights)
@@ -409,15 +421,13 @@ def test_jits_vmap_over_weight(implementation, shape):
     jax.block_until_ready((weights, results, results_loop))
 
 
-# ---- Batching: jits over prob ----
-
 @pytest.mark.parametrize("implementation", JITS_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 50)])
 def test_jits_vmap_over_prob(implementation, shape):
     weight, seed = 1.5, 123
 
     def f(prob):
-        return jits(weight, prob, seed, shape=shape, backend=implementation)
+        return jits(weight, prob, seed, shape=shape, matrix_mode='mv', backend=implementation)
 
     probs = brainstate.random.rand(10)
     results = jax.vmap(f)(probs)
@@ -430,15 +440,13 @@ def test_jits_vmap_over_prob(implementation, shape):
     jax.block_until_ready((probs, results, results_loop))
 
 
-# ---- Batching: jits over seed ----
-
 @pytest.mark.parametrize("implementation", JITS_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 50)])
 def test_jits_vmap_over_seed(implementation, shape):
     weight, prob = 1.5, 0.1
 
     def f(seed):
-        return jits(weight, prob, seed, shape=shape, backend=implementation)
+        return jits(weight, prob, seed, shape=shape, matrix_mode='mv', backend=implementation)
 
     seeds = brainstate.random.randint(0, 100000, 10)
     results = jax.vmap(f)(seeds)

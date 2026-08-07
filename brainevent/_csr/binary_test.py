@@ -36,13 +36,20 @@ from brainevent._csr.binary import (
     binary_csrmm_p,
     binary_csrmm_p_call,
 )
+import brainevent._csr.binary as binary_mod
 from brainevent._csr.main import _make_binary_task_workspace
-from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
+from brainevent._csr._test_util import (
+    get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix,
+    cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend,
+    shape_of, strip_hybrid_suffix,
+)
+from brainevent._test_util import jax_x64_enabled
 
-# Every test loops over all native backends (incl. ``numba``), which compile per test and
-# dominate wall-clock. Mark the whole module ``slow`` so the default ``pytest`` run skips it;
-# CI runs it via ``pytest -m ""``.
-pytestmark = pytest.mark.slow
+# The backend-sweeping tests below loop over all native backends (incl. ``numba``), which
+# compile per test and dominate wall-clock, so each carries ``@pytest.mark.slow`` and the
+# default ``pytest`` run skips it; CI runs them via ``pytest -m ""``. The marker is per-test
+# rather than module-wide so that cheap tests here (e.g. the backend-name assertions at the
+# bottom) stay in the default run.
 
 platform = jax.default_backend()
 CSRMV_IMPLEMENTATIONS = tuple(binary_csrmv_p.available_backends(platform))
@@ -64,6 +71,7 @@ def _require_implementations(implementations, op_name: str):
         pytest.skip(f'No {op_name} implementation on platform={platform}')
 
 
+@pytest.mark.slow
 def test_binary_csrmv_jax_raw_accepts_workspace_and_preserves_result():
     weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
     indices = jnp.array([0, 1], dtype=jnp.int32)
@@ -87,6 +95,7 @@ def test_binary_csrmv_jax_raw_accepts_workspace_and_preserves_result():
     assert jnp.allclose(got, jnp.array([1.0], dtype=jnp.float32))
 
 
+@pytest.mark.slow
 def test_binary_csrmv_p_call_always_returns_task_outputs():
     weights = jnp.array([1.0], dtype=jnp.float32)
     indices = jnp.array([0], dtype=jnp.int32)
@@ -111,6 +120,7 @@ def test_binary_csrmv_p_call_always_returns_task_outputs():
     assert status.shape == workspace.status.shape
 
 
+@pytest.mark.slow
 def test_binary_csrmm_jax_raw_accepts_workspace_and_preserves_result():
     weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
     indices = jnp.array([0, 1], dtype=jnp.int32)
@@ -134,6 +144,7 @@ def test_binary_csrmm_jax_raw_accepts_workspace_and_preserves_result():
     assert jnp.allclose(got, jnp.array([[1.0, 2.0]], dtype=jnp.float32))
 
 
+@pytest.mark.slow
 def test_binary_csrmm_p_call_always_returns_task_outputs():
     weights = jnp.array([1.0], dtype=jnp.float32)
     indices = jnp.array([0], dtype=jnp.int32)
@@ -158,6 +169,7 @@ def test_binary_csrmm_p_call_always_returns_task_outputs():
     assert status.shape == workspace.status.shape
 
 
+@pytest.mark.slow
 def test_binary_csrmv_benchmark_data_includes_workspace_for_p_call():
     config = next(_binary_csrmv_benchmark_data(platform='cpu'))
 
@@ -174,6 +186,7 @@ def test_binary_csrmv_benchmark_data_includes_workspace_for_p_call():
     assert status.shape == workspace.status.shape
 
 
+@pytest.mark.slow
 def test_binary_csrmm_benchmark_data_includes_workspace_for_p_call():
     config = _binary_csrmm_benchmark_data(platform='cpu')[0]
 
@@ -190,6 +203,7 @@ def test_binary_csrmm_benchmark_data_includes_workspace_for_p_call():
     assert status.shape == workspace.status.shape
 
 
+@pytest.mark.slow
 def test_binary_csrmv_batching_vector_axis_0_uses_csrmm_fast_path(monkeypatch):
     weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
     indices = jnp.array([0, 1], dtype=jnp.int32)
@@ -221,6 +235,7 @@ def test_binary_csrmv_batching_vector_axis_0_uses_csrmm_fast_path(monkeypatch):
     assert out_axes == (1, None, None, None)
 
 
+@pytest.mark.slow
 def test_binary_csrmv_batching_vector_axis_1_uses_csrmm_fast_path(monkeypatch):
     weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
     indices = jnp.array([0, 1], dtype=jnp.int32)
@@ -253,6 +268,7 @@ def test_binary_csrmv_batching_vector_axis_1_uses_csrmm_fast_path(monkeypatch):
     assert out_axes == (1, None, None, None)
 
 
+@pytest.mark.slow
 def test_binary_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
     with _jax_x64_enabled():
         weights = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32)
@@ -274,6 +290,7 @@ def test_binary_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
         assert jnp.allclose(got, jnp.array([3.0, 4.0], dtype=jnp.float32))
 
 
+@pytest.mark.slow
 def test_binary_csrmv_rejects_int64_indices_with_int32_indptr():
     with _jax_x64_enabled():
         weights = jnp.ones(2, dtype=jnp.float32)
@@ -282,7 +299,7 @@ def test_binary_csrmv_rejects_int64_indices_with_int32_indptr():
         events = jnp.ones(2, dtype=bool)
         workspace = _make_binary_task_workspace(indptr)
 
-        with pytest.raises(AssertionError, match="same dtype"):
+        with pytest.raises(AssertionError, match="Indices must be int32"):
             binary_csrmv(
                 weights,
                 indices,
@@ -294,6 +311,7 @@ def test_binary_csrmv_rejects_int64_indices_with_int32_indptr():
             )
 
 
+@pytest.mark.slow
 def test_binary_csrmm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
     with _jax_x64_enabled():
         weights = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32)
@@ -308,6 +326,7 @@ def test_binary_csrmm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
         assert jnp.allclose(got, expected)
 
 
+@pytest.mark.slow
 def test_binary_csrmm_rejects_unsigned_structure_dtype():
     weights = jnp.ones(2, dtype=jnp.float32)
     indices = jnp.array([0, 1], dtype=jnp.uint32)
@@ -315,10 +334,11 @@ def test_binary_csrmm_rejects_unsigned_structure_dtype():
     events = jnp.ones((2, 1), dtype=bool)
     workspace = _make_binary_task_workspace(indptr)
 
-    with pytest.raises(AssertionError, match="signed int32 or int64"):
+    with pytest.raises(AssertionError, match="Indices must be int32"):
         binary_csrmm(weights, indices, indptr, events, shape=(1, 2), backend='jax_raw', workspace=workspace)
 
 
+@pytest.mark.slow
 def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
     with _jax_x64_enabled():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
@@ -345,6 +365,7 @@ def test_binary_csrmv_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
         assert jnp.allclose(got, jnp.array([4.0, 2.0], dtype=jnp.float32))
 
 
+@pytest.mark.slow
 def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
     with _jax_x64_enabled():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
@@ -371,6 +392,7 @@ def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
         assert jnp.allclose(got, jnp.array([1.0, 0.0, 2.0], dtype=jnp.float32))
 
 
+@pytest.mark.slow
 def test_binary_csrmm_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
     with _jax_x64_enabled():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
@@ -398,6 +420,7 @@ def test_binary_csrmm_jax_csr_kernel_homo_bool_casts_indices_to_indptr_dtype():
         assert jnp.allclose(got, expected)
 
 
+@pytest.mark.slow
 def test_binary_csrmm_jax_csr_kernel_hetero_float_transpose():
     with _jax_x64_enabled():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
@@ -482,6 +505,7 @@ def _csr_matrix_api(x, data, indices, indptr, shape, implementation):
     )
 
 
+@pytest.mark.slow
 class TestVectorCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_csr(self, homo_w):
@@ -629,6 +653,7 @@ class TestVectorCSR:
             )
 
 
+@pytest.mark.slow
 class TestBatchingVectorCSR:
     def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         implementation = self._implementation
@@ -842,6 +867,7 @@ class TestBatchingVectorCSR:
         jax.block_until_ready((x, indptr, indices, r1, r2))
 
 
+@pytest.mark.slow
 class TestMatrixCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_matrix_csr(self, homo_w):
@@ -878,6 +904,7 @@ class TestMatrixCSR:
         jax.block_until_ready((matrix, indptr, indices, y2))
 
 
+@pytest.mark.slow
 class TestBatchingMatrixCSR:
     def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         implementation = self._implementation
@@ -1094,3 +1121,232 @@ class TestBatchingMatrixCSR:
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
         jax.block_until_ready((x, indptr, indices, r1, r2))
+
+
+# ---------------------------------------------------------------------------
+# Backend registration. Cheap metadata assertions -- no kernel compilation, so
+# deliberately not marked ``slow``.
+# ---------------------------------------------------------------------------
+
+
+def test_binary_csrmv_gpu_cusparse_backend_names():
+    backends = binary_csrmv_p.available_backends('gpu')
+
+    assert 'cusparse' in backends
+    # Legacy names were removed / renamed.
+    assert 'BCOO_cusparse' not in backends
+    assert 'JAX_cusparse' not in backends
+
+
+def test_binary_csrmm_gpu_cusparse_backend_names():
+    backends = binary_csrmm_p.available_backends('gpu')
+
+    assert 'cusparse' in backends
+    # Legacy names were removed / renamed.
+    assert 'BCOO_cusparse' not in backends
+    assert 'JAX_cusparse' not in backends
+
+
+# ---------------------------------------------------------------------------
+# int64 ``indptr`` policy on the CUDA path.
+#
+# ``indices`` stay int32 (the CUDA ABI is int32-only for coordinates) while
+# ``indptr`` may widen to int64. The generator tests run without a real GPU by
+# stubbing ``load_cuda_file``/``ffi_call``; the ``accepts`` tests need one.
+# Cheap stub-driven checks, so deliberately not marked ``slow``.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    'factory,args,kwargs',
+    [
+        (
+            binary_mod._binary_csrmv_cuda_kernel,
+            (shape_of(jnp.float32), shape_of(jnp.bool_), False),
+            {'outs': [shape_of(jnp.float32)]},
+        ),
+        (
+            binary_mod._binary_csrmm_cuda_kernel,
+            (shape_of(jnp.float32), shape_of(jnp.bool_, (2, 1)), False),
+            {'outs': [shape_of(jnp.float32, (1, 1))]},
+        ),
+    ],
+)
+def test_cuda_kernel_generators_reject_int64_indices_before_loading_cuda(factory, args, kwargs):
+    call_kwargs = cuda_kwargs()
+    call_kwargs.update(kwargs)
+
+    with pytest.raises(TypeError, match="indices with dtype int32"):
+        factory(*args, **call_kwargs)
+
+
+def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
+    ffi_calls = []
+    load_calls = []
+
+    monkeypatch.setattr(binary_mod, "load_cuda_file", lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
+    monkeypatch.setattr(binary_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
+
+    with jax_x64_enabled():
+        indices = jnp.array([0, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2], dtype=jnp.int64)
+        workspace = _make_binary_task_workspace(indptr)
+        task_kwargs = {
+            'task_begin_info': shape_of(workspace.task_begin.dtype, workspace.task_begin.shape),
+            'task_end_info': shape_of(workspace.task_end.dtype, workspace.task_end.shape),
+            'status_info': shape_of(workspace.status.dtype, workspace.status.shape),
+            'task_capacity': workspace.task_capacity,
+        }
+        mv_task_outs = (
+            shape_of(jnp.float32),
+            task_kwargs['task_begin_info'],
+            task_kwargs['task_end_info'],
+            task_kwargs['status_info'],
+        )
+        mm_nt_task_outs = (
+            shape_of(jnp.float32, (1, 1)),
+            task_kwargs['task_begin_info'],
+            task_kwargs['task_end_info'],
+            task_kwargs['status_info'],
+        )
+        mm_t_task_outs = (
+            shape_of(jnp.float32, (2, 1)),
+            task_kwargs['task_begin_info'],
+            task_kwargs['task_end_info'],
+            task_kwargs['status_info'],
+        )
+
+        mv_kernel = binary_mod._binary_csrmv_cuda_kernel(
+            shape_of(jnp.float32, (1,)),
+            shape_of(jnp.bool_, (2,)),
+            False,
+            **{
+                **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mv_task_outs,
+                **task_kwargs,
+            },
+        )
+        mv_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([True, False]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+        mv_t_kernel = binary_mod._binary_csrmv_cuda_kernel(
+            shape_of(jnp.float32, (1,)),
+            shape_of(jnp.bool_, (1,)),
+            True,
+            **{
+                **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mv_task_outs,
+                **task_kwargs,
+            },
+        )
+        mv_t_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([True]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+        mm_nt_kernel = binary_mod._binary_csrmm_cuda_kernel(
+            shape_of(jnp.float32, (2,)),
+            shape_of(jnp.bool_, (2, 1)),
+            False,
+            **{
+                **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mm_nt_task_outs,
+                **task_kwargs,
+            },
+        )
+        mm_nt_kernel(
+            jnp.array([2.0, 3.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([[True], [False]]),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+        mm_t_kernel = binary_mod._binary_csrmm_cuda_kernel(
+            shape_of(jnp.float32, (2,)),
+            shape_of(jnp.float32, (2, 1)),
+            True,
+            **{
+                **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': mm_t_task_outs,
+                **task_kwargs,
+            },
+        )
+        mm_t_kernel(
+            jnp.array([2.0, 3.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([[1.0], [0.0]], dtype=jnp.float32),
+            workspace.task_begin,
+            workspace.task_end,
+            workspace.status,
+        )
+
+    assert [strip_hybrid_suffix(name) for _, name, _ in load_calls] == [
+        'csr_binary_csrmv',
+        'csr_binary_csrmv_hybrid',
+        'csr_binary_csrmm',
+        'csr_binary_csrmm_hybrid',
+    ]
+    assert [strip_hybrid_suffix(call[0]) for call in ffi_calls] == [
+        'csr_binary_csrmv.binary_csrmv_nt_auto_homo_f32_bool',
+        'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid_homo_f32_bool',
+        'csr_binary_csrmm.binary_csrmm_nt_auto_hetero_f32_bool',
+        'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid_hetero_f32_float',
+    ]
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+def test_binary_csrmv_cuda_accepts_int64_indptr(transpose, homo):
+    weights, indices, indptr32 = int64_structure(jnp.int32)
+    indptr64 = indptr32.astype(jnp.int64)
+    data = weights if not homo else jnp.array([2.0], dtype=jnp.float32)
+    vector = jnp.array([True, False], dtype=jnp.bool_) if transpose else jnp.array([True, False, True])
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
+
+    got = binary_csrmv(data, indices, indptr64, vector, shape=(2, 3), transpose=transpose,
+                       backend='cuda_raw', workspace=workspace64)
+    expected = binary_csrmv(data, indices, indptr32, vector, shape=(2, 3), transpose=transpose,
+                            backend='jax_raw', workspace=workspace32)
+
+    assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+def test_binary_csrmm_cuda_accepts_int64_indptr(transpose, homo):
+    weights, indices, indptr32 = int64_structure(jnp.int32)
+    indptr64 = indptr32.astype(jnp.int64)
+    data = weights if not homo else jnp.array([2.0], dtype=jnp.float32)
+    matrix = (
+        jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
+        if transpose else
+        jnp.array([[True, False], [False, True], [True, True]], dtype=jnp.bool_)
+    )
+    workspace64 = _make_binary_task_workspace(indptr64)
+    workspace32 = _make_binary_task_workspace(indptr32)
+
+    got = binary_csrmm(data, indices, indptr64, matrix, shape=(2, 3), transpose=transpose,
+                       backend='cuda_raw', workspace=workspace64)
+    expected = binary_csrmm(data, indices, indptr32, matrix, shape=(2, 3), transpose=transpose,
+                            backend='jax_raw', workspace=workspace32)
+
+    assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)

@@ -26,7 +26,7 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent._error import KernelError
+from brainevent._error import KernelError, KernelRegistrationError
 from brainevent._op.kernix_pipeline import _cache_header_paths
 from brainevent._test_util import requires_gpu
 
@@ -267,3 +267,801 @@ def test_cache_header_paths_cover_injected_headers():
 @requires_gpu
 def test_diagnostics_runs():
     brainevent.print_diagnostics()
+
+
+# ---------------------------------------------------------------------------
+# C++/CPU FFI end-to-end coverage for ``load_cpp_inline``.
+#
+# These were a module-level ``pytest.skip`` on Windows when they lived in their
+# own file; the guard is per-test here so it cannot silently skip the rest of
+# this module.
+# ---------------------------------------------------------------------------
+
+_skip_on_windows = pytest.mark.skipif(
+    platform.platform().startswith("Windows"),
+    reason="Windows is not supported yet.",
+)
+
+ADD_ONE_SRC = r"""
+#include "brainevent/common.h"
+
+void add_one_cpu(const BE::Tensor x, BE::Tensor y) {
+    int n = x.numel();
+    const float* in_ptr = static_cast<const float*>(x.data_ptr());
+    float* out_ptr = static_cast<float*>(y.data_ptr());
+    for (int i = 0; i < n; ++i) {
+        out_ptr[i] = in_ptr[i] + 1.0f;
+    }
+}
+"""
+
+SCALE_SRC = r"""
+#include "brainevent/common.h"
+
+void scale_cpu(const BE::Tensor x, BE::Tensor y) {
+    int n = x.numel();
+    const float* in_ptr = static_cast<const float*>(x.data_ptr());
+    float* out_ptr = static_cast<float*>(y.data_ptr());
+    for (int i = 0; i < n; ++i) {
+        out_ptr[i] = in_ptr[i] * 2.0f;
+    }
+}
+"""
+
+MULTI_OUT_SRC = r"""
+#include "brainevent/common.h"
+
+void split_cpu(const BE::Tensor x,
+               BE::Tensor lo, BE::Tensor hi) {
+    int n = x.numel();
+    int half = n / 2;
+    const float* src = static_cast<const float*>(x.data_ptr());
+    float* lo_ptr = static_cast<float*>(lo.data_ptr());
+    float* hi_ptr = static_cast<float*>(hi.data_ptr());
+    for (int i = 0; i < half; ++i) lo_ptr[i] = src[i];
+    for (int i = 0; i < n - half; ++i) hi_ptr[i] = src[half + i];
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def cpu_add_one_module():
+    return brainevent.load_cpp_inline(
+        name="test_cpu_add_one",
+        cpp_sources=ADD_ONE_SRC,
+        functions=["add_one_cpu"],
+        force_rebuild=True,
+    )
+
+
+@_skip_on_windows
+def test_add_one_cpu_jit(cpu_add_one_module):
+    """CPU kernel works under jax.jit."""
+
+    cpu = jax.devices("cpu")[0]
+
+    @jax.jit
+    def add_one(x):
+        return jax.ffi.ffi_call(
+            "test_cpu_add_one.add_one_cpu",
+            jax.ShapeDtypeStruct(x.shape, x.dtype),
+            vmap_method="broadcast_all",
+        )(x)
+
+    x = jax.device_put(jnp.arange(256, dtype=jnp.float32), cpu)
+    result = add_one(x)
+    expected = np.arange(256, dtype=np.float32) + 1.0
+    np.testing.assert_allclose(np.asarray(result), expected)
+
+
+@_skip_on_windows
+def test_explicit_dict_form():
+    """CPU kernel with explicit dict-form functions."""
+
+    mod = brainevent.load_cpp_inline(
+        name="test_cpu_scale",
+        cpp_sources=SCALE_SRC,
+        functions={"scale_cpu": ["arg", "ret"]},
+        force_rebuild=True,
+    )
+
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32), cpu)
+    result = jax.ffi.ffi_call(
+        "test_cpu_scale.scale_cpu",
+        jax.ShapeDtypeStruct(x.shape, x.dtype),
+        vmap_method="broadcast_all",
+    )(x)
+
+    expected = np.array([2.0, 4.0, 6.0], dtype=np.float32)
+    np.testing.assert_allclose(np.asarray(result), expected)
+
+
+@_skip_on_windows
+def test_multi_output_cpu():
+    """CPU kernel with two output buffers."""
+    mod = brainevent.load_cpp_inline(
+        name="test_cpu_split",
+        cpp_sources=MULTI_OUT_SRC,
+        functions=["split_cpu"],
+        force_rebuild=True,
+    )
+
+    cpu = jax.devices("cpu")[0]
+    n = 256
+    x = jax.device_put(jnp.arange(n, dtype=jnp.float32), cpu)
+
+    lo, hi = jax.ffi.ffi_call(
+        "test_cpu_split.split_cpu",
+        (
+            jax.ShapeDtypeStruct((n // 2,), jnp.float32),
+            jax.ShapeDtypeStruct((n // 2,), jnp.float32),
+        ),
+        vmap_method="broadcast_all",
+    )(x)
+
+    np.testing.assert_allclose(
+        np.asarray(lo), np.arange(n // 2, dtype=np.float32)
+    )
+    np.testing.assert_allclose(
+        np.asarray(hi), np.arange(n // 2, n, dtype=np.float32)
+    )
+
+
+# A CPU kernel that fails a host-side invariant.  ``x.numel()`` is always
+# non-negative, so ``x.numel() < 0`` is always false and the check fires at
+# runtime (the compiler cannot prove it away from the source alone).
+CHECK_FAIL_SRC = r"""
+#include "brainevent/common.h"
+
+void check_fail_cpu(const BE::Tensor x, BE::Tensor y) {
+    BE_CHECK(x.numel() < 0) << "intentional failure: numel=" << x.numel();
+    float* out_ptr = static_cast<float*>(y.data_ptr());
+    out_ptr[0] = 1.0f;  // unreachable
+}
+"""
+
+
+@_skip_on_windows
+def test_host_check_failure_raises_not_aborts():
+    """A failing BE_CHECK surfaces as a Python exception (no SIGABRT)."""
+    mod = brainevent.load_cpp_inline(
+        name="test_cpu_check_fail",
+        cpp_sources=CHECK_FAIL_SRC,
+        functions=["check_fail_cpu"],
+        force_rebuild=True,
+    )
+
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32), cpu)
+
+    with pytest.raises(Exception) as excinfo:
+        result = jax.ffi.ffi_call(
+            "test_cpu_check_fail.check_fail_cpu",
+            jax.ShapeDtypeStruct(x.shape, x.dtype),
+            vmap_method="broadcast_all",
+        )(x)
+        jax.block_until_ready(result)
+
+    # The diagnostic from check.h propagates through the FFI error.
+    message = str(excinfo.value)
+    assert "CHECK FAILED" in message or "intentional failure" in message, message
+
+
+@_skip_on_windows
+def test_process_survives_after_check_failure():
+    """After a check failure, the interpreter is still usable (not aborted)."""
+    mod = brainevent.load_cpp_inline(
+        name="test_cpu_check_fail2",
+        cpp_sources=CHECK_FAIL_SRC.replace("check_fail_cpu", "check_fail_cpu2"),
+        functions=["check_fail_cpu2"],
+        force_rebuild=True,
+    )
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32), cpu)
+
+    with pytest.raises(Exception):
+        jax.block_until_ready(
+            jax.ffi.ffi_call(
+                "test_cpu_check_fail2.check_fail_cpu2",
+                jax.ShapeDtypeStruct(x.shape, x.dtype),
+                vmap_method="broadcast_all",
+            )(x)
+        )
+
+    # Still alive: a normal JAX computation completes after the failure.
+    assert float(jnp.sum(jnp.arange(5.0))) == 10.0
+
+
+# ---------------------------------------------------------------------------
+# CUDA end-to-end coverage for ``load_cuda_inline``: jit, large arrays, module
+# attributes, target registration and multi-output kernels.
+# ---------------------------------------------------------------------------
+
+VADD_CUDA_SRC = r"""
+#include <cuda_runtime.h>
+#include "brainevent/common.h"
+
+__global__ void vector_add_kernel(const float* a, const float* b, float* out, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        out[idx] = a[idx] + b[idx];
+    }
+}
+
+void vector_add(BE::Tensor a, BE::Tensor b,
+                BE::Tensor out, int64_t stream) {
+    int n = a.numel();
+    int threads = 256;
+    int blocks = (n + threads - 1) / threads;
+    vector_add_kernel<<<blocks, threads, 0, (cudaStream_t)stream>>>(
+        static_cast<const float*>(a.data_ptr()),
+        static_cast<const float*>(b.data_ptr()),
+        static_cast<float*>(out.data_ptr()), n);
+    BE_CUDA_CHECK(cudaGetLastError());
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def vadd_module():
+    """Compile the vector_add kernel once for all tests that use it."""
+    return brainevent.load_cuda_inline(
+        name="test_vadd",
+        cuda_sources=VADD_CUDA_SRC,
+        functions={"vector_add": ["arg", "arg", "ret", "stream"]},
+        force_rebuild=True,
+        verbose=True,
+    )
+
+
+@requires_gpu
+def test_jit_vector_add(vadd_module):
+    """Works under @jax.jit."""
+
+    @jax.jit
+    def add_jit(x, y):
+        return jax.ffi.ffi_call(
+            "test_vadd.vector_add",
+            jax.ShapeDtypeStruct(x.shape, x.dtype),
+        )(x, y)
+
+    a = jnp.ones(512, dtype=jnp.float32)
+    b = jnp.ones(512, dtype=jnp.float32) * 3.0
+    result = add_jit(a, b)
+    np.testing.assert_allclose(np.asarray(result), np.full(512, 4.0), rtol=1e-5)
+
+
+@requires_gpu
+def test_large_array(vadd_module):
+    """Works with large arrays (1M elements)."""
+    n = 1_000_000
+    a = jnp.ones(n, dtype=jnp.float32)
+    b = jnp.ones(n, dtype=jnp.float32) * 7.0
+
+    result = jax.ffi.ffi_call(
+        "test_vadd.vector_add",
+        jax.ShapeDtypeStruct((n,), jnp.float32),
+    )(a, b)
+
+    np.testing.assert_allclose(np.asarray(result), np.full(n, 8.0), rtol=1e-5)
+
+
+@requires_gpu
+def test_module_attributes(vadd_module):
+    """CompiledModule exposes expected attributes."""
+    import sys
+    ext = ".dylib" if sys.platform == "darwin" else ".dll" if sys.platform == "win32" else ".so"
+    assert "vector_add" in vadd_module.function_names
+    assert vadd_module.path.endswith(ext)
+
+
+@requires_gpu
+def test_list_registered_targets(vadd_module):
+    """Targets appear in the global registry."""
+    targets = brainevent.list_registered_targets()
+    assert "test_vadd.vector_add" in targets
+
+
+MULTI_OUT_CUDA_SRC = r"""
+#include <cuda_runtime.h>
+#include "brainevent/common.h"
+
+__global__ void split_kernel(const float* x, float* lo, float* hi,
+                             int n, int split) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < split) lo[idx] = x[idx];
+    if (idx < n - split) hi[idx] = x[split + idx];
+}
+
+void min_max(BE::Tensor x, BE::Tensor out_min,
+             BE::Tensor out_max, int64_t stream) {
+    // Simple test: copy first half to out_min, second half to out_max
+    int n = x.numel();
+    int half = n / 2;
+    split_kernel<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
+        static_cast<const float*>(x.data_ptr()),
+        static_cast<float*>(out_min.data_ptr()),
+        static_cast<float*>(out_max.data_ptr()),
+        n, half);
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def multi_out_module():
+    return brainevent.load_cuda_inline(
+        name="test_multi_out",
+        cuda_sources=MULTI_OUT_CUDA_SRC,
+        functions={
+            "min_max": ["arg", "ret", "ret", "stream"],
+        },
+        force_rebuild=True,
+    )
+
+
+@requires_gpu
+def test_two_outputs(multi_out_module):
+    """Function with two output buffers."""
+    n = 256
+    x = jnp.arange(n, dtype=jnp.float32)
+
+    lo, hi = jax.ffi.ffi_call(
+        "test_multi_out.min_max",
+        (
+            jax.ShapeDtypeStruct((n // 2,), jnp.float32),
+            jax.ShapeDtypeStruct((n // 2,), jnp.float32),
+        ),
+    )(x)
+
+    np.testing.assert_allclose(
+        np.asarray(lo), np.arange(n // 2, dtype=np.float32)
+    )
+    np.testing.assert_allclose(
+        np.asarray(hi), np.arange(n // 2, n, dtype=np.float32)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Data-type coverage: bool, int8-64, uint8-64, float16/32/64, bfloat16,
+# complex64/128.
+#
+# Grouped into a class so that the GPU requirement and the x64 autouse fixture
+# stay scoped to these tests. Both were module-level when this lived in its own
+# file; at module level here the fixture would flip ``jax_enable_x64`` on for
+# every other test in this file -- and it deliberately never restores it.
+# ---------------------------------------------------------------------------
+
+COPY_KERNEL_SRC = r"""
+#include <cuda_runtime.h>
+#include "brainevent/common.h"
+
+__global__ void copy_kernel(const char* src, char* dst, int64_t nbytes) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < nbytes) dst[i] = src[i];
+}
+
+// @BE copy_tensor
+void copy_tensor(const BE::Tensor src, BE::Tensor dst, int64_t stream) {
+    int64_t n = src.nbytes();
+    copy_kernel<<<(n + 255) / 256, 256, 0, (cudaStream_t)stream>>>(
+        static_cast<const char*>(src.data_ptr()),
+        static_cast<char*>(dst.data_ptr()), n);
+}
+"""
+
+DISPATCH_ALL_SRC = r"""
+#include <cuda_runtime.h>
+#include "brainevent/common.h"
+
+template <typename T>
+__global__ void add_kernel(const T* a, const T* b, T* out, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) out[idx] = a[idx] + b[idx];
+}
+
+// @BE typed_add
+void typed_add(const BE::Tensor a, const BE::Tensor b,
+               BE::Tensor out, int64_t stream) {
+    int n = a.numel();
+    int threads = 256;
+    int blocks = (n + threads - 1) / threads;
+    auto s = (cudaStream_t)stream;
+
+    BE_DISPATCH_ALL_TYPES(a.dtype(), scalar_t, {
+        add_kernel<scalar_t><<<blocks, threads, 0, s>>>(
+            static_cast<const scalar_t*>(a.data_ptr()),
+            static_cast<const scalar_t*>(b.data_ptr()),
+            static_cast<scalar_t*>(out.data_ptr()), n);
+    });
+}
+"""
+
+MULTI_DTYPE_CUDA_SRC = r"""
+#include <cuda_runtime.h>
+#include "brainevent/common.h"
+
+template <typename T>
+__global__ void add_kernel(const T* a, const T* b, T* out, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) out[idx] = a[idx] + b[idx];
+}
+
+void typed_add(BE::Tensor a, BE::Tensor b,
+               BE::Tensor out, int64_t stream) {
+    int n = a.numel();
+    int threads = 256;
+    int blocks = (n + threads - 1) / threads;
+    auto s = (cudaStream_t)stream;
+
+    // Dispatch on dtype
+    switch (a.dtype()) {
+        case BE::DType::Float32:
+            add_kernel<float><<<blocks, threads, 0, s>>>(
+                static_cast<const float*>(a.data_ptr()),
+                static_cast<const float*>(b.data_ptr()),
+                static_cast<float*>(out.data_ptr()), n);
+            break;
+        case BE::DType::Float64:
+            add_kernel<double><<<blocks, threads, 0, s>>>(
+                static_cast<const double*>(a.data_ptr()),
+                static_cast<const double*>(b.data_ptr()),
+                static_cast<double*>(out.data_ptr()), n);
+            break;
+        default:
+            break;
+    }
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def copy_module():
+    return brainevent.load_cuda_inline(
+        name="test_copy_all_dtypes",
+        cuda_sources=COPY_KERNEL_SRC,
+        force_rebuild=True,
+    )
+
+
+@pytest.fixture(scope="module")
+def dispatch_module():
+    return brainevent.load_cuda_inline(
+        name="test_dispatch_all",
+        cuda_sources=DISPATCH_ALL_SRC,
+        force_rebuild=True,
+    )
+
+
+@pytest.fixture(scope="module")
+def typed_add_module():
+    return brainevent.load_cuda_inline(
+        name="test_typed_add",
+        cuda_sources=MULTI_DTYPE_CUDA_SRC,
+        functions={"typed_add": ["arg", "arg", "ret", "stream"]},
+        force_rebuild=True,
+    )
+
+
+class TestDtypes:
+    """Kernix data-type coverage across the copy, dispatch and typed-add kernels."""
+
+    pytestmark = requires_gpu
+
+    @pytest.fixture(autouse=True)
+    def _enable_x64(self):
+        """Ensure 64-bit types are available for every test in this class."""
+        jax.config.update("jax_enable_x64", True)
+        yield
+        # intentionally do not restore — other test modules may rely on x64
+
+    # -- Copy (byte-level) tests for all dtypes ------------------------------
+
+    @pytest.mark.parametrize("dtype", [
+        "bool",
+        "int8", "int16", "int32", "int64",
+        "uint8", "uint16", "uint32", "uint64",
+        "float16", "float32", "float64",
+        "bfloat16",
+        "complex64", "complex128",
+    ])
+    def test_copy_dtype(self, copy_module, dtype):
+        """Byte-level copy kernel preserves data for all dtypes."""
+        jnp_dtype = getattr(jnp, dtype)
+        n = 64
+
+        if dtype == "bool":
+            x = jnp.array([True, False] * (n // 2), dtype=jnp_dtype)
+        elif dtype.startswith("complex"):
+            real = np.arange(n, dtype=np.float32 if dtype == "complex64" else np.float64)
+            x = jnp.array(real + 1j * real, dtype=jnp_dtype)
+        else:
+            x = jnp.arange(n, dtype=jnp_dtype)
+
+        result = jax.ffi.ffi_call(
+            "test_copy_all_dtypes.copy_tensor",
+            jax.ShapeDtypeStruct(x.shape, x.dtype),
+        )(x)
+
+        np.testing.assert_array_equal(np.asarray(result), np.asarray(x))
+
+    # -- Dispatch macro tests for numeric dtypes -----------------------------
+
+    @pytest.mark.parametrize("dtype", [
+        "int8", "int16", "int32", "int64",
+        "uint8", "uint16", "uint32", "uint64",
+        "float32", "float64",
+    ])
+    def test_dispatch_add(self, dispatch_module, dtype):
+        """BE_DISPATCH_ALL_TYPES correctly dispatches addition."""
+        jnp_dtype = getattr(jnp, dtype)
+        n = 256
+        a = jnp.ones(n, dtype=jnp_dtype) * 3
+        b = jnp.ones(n, dtype=jnp_dtype) * 4
+
+        result = jax.ffi.ffi_call(
+            "test_dispatch_all.typed_add",
+            jax.ShapeDtypeStruct((n,), jnp_dtype),
+        )(a, b)
+
+        expected = np.full(n, 7, dtype=dtype)
+        np.testing.assert_array_equal(np.asarray(result), expected)
+
+    def test_dispatch_add_bool(self, dispatch_module):
+        """BE_DISPATCH_ALL_TYPES handles bool (addition = logical OR)."""
+        n = 64
+        a = jnp.array([True, False, True, False] * (n // 4), dtype=jnp.bool_)
+        b = jnp.array([True, True, False, False] * (n // 4), dtype=jnp.bool_)
+
+        result = jax.ffi.ffi_call(
+            "test_dispatch_all.typed_add",
+            jax.ShapeDtypeStruct((n,), jnp.bool_),
+        )(a, b)
+
+        # bool addition: True + True = True (1+1=2, but bool clips to True)
+        # In C++: bool a + bool b truncates to bool
+        result_np = np.asarray(result)
+        assert result_np.dtype == np.bool_
+
+    # -- Float32/float64 dtype dispatch --------------------------------------
+
+    @pytest.mark.parametrize("dtype", ["float32", "float64"])
+    def test_typed_add(self, typed_add_module, dtype):
+        """Vector addition works for float32 and float64."""
+        jnp_dtype = getattr(jnp, dtype)
+        n = 1024
+        a = jnp.ones(n, dtype=jnp_dtype) * 3.0
+        b = jnp.ones(n, dtype=jnp_dtype) * 4.0
+
+        result = jax.ffi.ffi_call(
+            "test_typed_add.typed_add",
+            jax.ShapeDtypeStruct((n,), jnp_dtype),
+        )(a, b)
+
+        expected = np.full(n, 7.0, dtype=dtype)
+        np.testing.assert_allclose(np.asarray(result), expected, rtol=1e-5)
+
+    def test_2d_tensor(self, typed_add_module):
+        """Works with multi-dimensional tensors."""
+        a = jnp.ones((32, 64), dtype=jnp.float32)
+        b = jnp.full((32, 64), 5.0, dtype=jnp.float32)
+
+        result = jax.ffi.ffi_call(
+            "test_typed_add.typed_add",
+            jax.ShapeDtypeStruct((32, 64), jnp.float32),
+        )(a, b)
+
+        expected = np.full((32, 64), 6.0, dtype=np.float32)
+        np.testing.assert_allclose(np.asarray(result), expected, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Registration-audit regression tests (C++/CPU path).
+#
+# Findings F3, F4, F10 and F12 from the 2026-07-16 operator-registration audit.
+# They exercise *cache-hit* behaviour, so each needs a private cache directory
+# that other tests in the session cannot pre-populate.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_cache(tmp_path):
+    """Point the shared compilation cache at a scratch dir for one test."""
+    old = brainevent.get_cache_dir()
+    brainevent.set_cache_dir(str(tmp_path / "becache"))
+    try:
+        yield
+    finally:
+        brainevent.set_cache_dir(old)
+
+
+# Source defining TWO functions; used to exercise the finding-3 scenario where
+# the same source is loaded first with one function, then with both.
+TWO_FN_SRC = r"""
+#include "brainevent/common.h"
+
+void addf(const BE::Tensor x, BE::Tensor y) {
+    int n = x.numel();
+    const float* i = static_cast<const float*>(x.data_ptr());
+    float* o = static_cast<float*>(y.data_ptr());
+    for (int k = 0; k < n; ++k) o[k] = i[k] + 1.0f;
+}
+
+void addg(const BE::Tensor x, BE::Tensor y) {
+    int n = x.numel();
+    const float* i = static_cast<const float*>(x.data_ptr());
+    float* o = static_cast<float*>(y.data_ptr());
+    for (int k = 0; k < n; ++k) o[k] = i[k] + 100.0f;
+}
+"""
+
+
+@_skip_on_windows
+def test_f3_specs_participate_in_cache_key_e2e(isolated_cache):
+    """F3: same source + a superset ``functions`` mapping must recompile.
+
+    Before the fix the cache key hashed only the user source, so the second load
+    (which needs a ``be_addg`` wrapper) would hit the first load's ``.so`` — which
+    lacks that symbol — and fail with the misleading "Did the compilation
+    succeed?" error.  With specs in the key the two loads get distinct entries.
+    """
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.arange(8, dtype=jnp.float32), cpu)
+
+    # Load 1: only addf (seeds the cache under this name).
+    m1 = brainevent.load_cpp_inline(
+        name="bef3_mod", cpp_sources=TWO_FN_SRC,
+        functions={"addf": ["arg", "ret"]}, auto_register=False,
+    )
+    assert m1.function_names == ["addf"]
+
+    # Load 2: SAME source + name, now with BOTH functions.  Must not cache-hit
+    # the single-function artefact.
+    m2 = brainevent.load_cpp_inline(
+        name="bef3_mod", cpp_sources=TWO_FN_SRC,
+        functions={"addf": ["arg", "ret"], "addg": ["arg", "ret"]},
+        target_prefix="bef3_run",
+    )
+    assert m1.path != m2.path, "specs must change the cache entry (different .so)"
+    assert set(m2.function_names) == {"addf", "addg"}
+
+    # Both wrappers behave correctly.
+    rf = jax.ffi.ffi_call("bef3_run.addf", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    rg = jax.ffi.ffi_call("bef3_run.addg", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(rf), np.arange(8) + 1.0)
+    np.testing.assert_allclose(np.asarray(rg), np.arange(8) + 100.0)
+
+
+HDR_SRC = r"""
+#include "brainevent/common.h"
+#include "bef10_addend.h"
+
+void add_hdr(const BE::Tensor x, BE::Tensor y) {
+    int n = x.numel();
+    const float* i = static_cast<const float*>(x.data_ptr());
+    float* o = static_cast<float*>(y.data_ptr());
+    for (int k = 0; k < n; ++k) o[k] = i[k] + (float)BEF10_ADDEND;
+}
+"""
+
+
+@_skip_on_windows
+def test_f10_extra_include_header_edit_rebuilds(isolated_cache, tmp_path):
+    """F10: editing a header under ``extra_include_paths`` must invalidate cache."""
+    inc = tmp_path / "inc"
+    inc.mkdir()
+    header = inc / "bef10_addend.h"
+    header.write_text("#define BEF10_ADDEND 1\n")
+
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.zeros(4, dtype=jnp.float32), cpu)
+
+    m1 = brainevent.load_cpp_inline(
+        name="bef10_mod", cpp_sources=HDR_SRC, functions=["add_hdr"],
+        extra_include_paths=[str(inc)], target_prefix="bef10_a",
+    )
+    r1 = jax.ffi.ffi_call("bef10_a.add_hdr", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(r1), np.full(4, 1.0))
+
+    # Edit the header contents (no force_rebuild): cache must miss and recompile.
+    header.write_text("#define BEF10_ADDEND 2\n")
+    m2 = brainevent.load_cpp_inline(
+        name="bef10_mod", cpp_sources=HDR_SRC, functions=["add_hdr"],
+        extra_include_paths=[str(inc)], target_prefix="bef10_b",
+    )
+    assert m1.path != m2.path, "header edit must produce a new cache entry"
+    r2 = jax.ffi.ffi_call("bef10_b.add_hdr", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(r2), np.full(4, 2.0))
+
+
+def _src_plus(delta: float) -> str:
+    return (
+        '#include "brainevent/common.h"\n'
+        "void bump(const BE::Tensor x, BE::Tensor y) {\n"
+        "  int n = x.numel();\n"
+        "  const float* i = static_cast<const float*>(x.data_ptr());\n"
+        "  float* o = static_cast<float*>(y.data_ptr());\n"
+        f"  for (int k = 0; k < n; ++k) o[k] = i[k] + {delta}f;\n"
+        "}\n"
+    )
+
+
+@_skip_on_windows
+def test_f12_stem_collision_without_replace_errors(isolated_cache):
+    """F12: a second, different artefact under the same target name → clear error.
+
+    Models two sources that share a file stem (both target ``bef12.bump``).  The
+    error must name BOTH remedies: replace=True and a distinct name/target_prefix.
+    """
+    brainevent.load_cpp_inline(
+        name="bef12", cpp_sources=_src_plus(1.0), functions=["bump"],
+    )
+    with pytest.raises(KernelRegistrationError) as ei:
+        brainevent.load_cpp_inline(
+            name="bef12", cpp_sources=_src_plus(2.0), functions=["bump"],
+        )
+    msg = str(ei.value)
+    assert "replace=True" in msg
+    assert "target_prefix" in msg or "name=" in msg
+
+
+@_skip_on_windows
+def test_f12_replace_refused_deterministically(isolated_cache):
+    """F12/F4: replace=True with changed content raises a clean, actionable error.
+
+    A live re-point cannot be verified on this JAX (probed: the Host registry
+    rejects a differing bundle address; the CUDA registry silently keeps the old
+    handler), so ``replace=True`` refuses deterministically and directs the user
+    to a distinct name — it never silently keeps serving the stale kernel.
+    """
+    brainevent.load_cpp_inline(
+        name="bef12r", cpp_sources=_src_plus(1.0), functions=["bump"],
+    )
+    with pytest.raises(KernelRegistrationError) as ei:
+        brainevent.load_cpp_inline(
+            name="bef12r", cpp_sources=_src_plus(2.0), functions=["bump"],
+            replace=True,
+        )
+    assert "distinct name" in str(ei.value) or "target_prefix" in str(ei.value)
+
+
+@_skip_on_windows
+def test_f4_force_rebuild_new_code_via_distinct_name(isolated_cache):
+    """F4 e2e: force_rebuild refuses to silently serve stale code; a distinct
+    target name reliably dispatches the edited kernel.
+
+    The CPU registry cannot re-point a live target, so the honest outcome is:
+    (1) force_rebuild with changed content under the same name raises (no silent
+    stale dispatch — finding 4 fixed), and (2) the edited kernel runs when
+    registered under a new target name.
+    """
+    cpu = jax.devices("cpu")[0]
+    x = jax.device_put(jnp.zeros(4, dtype=jnp.float32), cpu)
+
+    brainevent.load_cpp_inline(
+        name="bef4", cpp_sources=_src_plus(1.0), functions=["bump"],
+        target_prefix="bef4_v1",
+    )
+    r1 = jax.ffi.ffi_call("bef4_v1.bump", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(r1), np.full(4, 1.0))
+
+    # Edit + force_rebuild under the SAME target prefix → refuses (no silent stale).
+    with pytest.raises(KernelRegistrationError):
+        brainevent.load_cpp_inline(
+            name="bef4", cpp_sources=_src_plus(2.0), functions=["bump"],
+            force_rebuild=True, target_prefix="bef4_v1",
+        )
+
+    # Distinct target prefix → the edited kernel dispatches correctly.
+    brainevent.load_cpp_inline(
+        name="bef4", cpp_sources=_src_plus(2.0), functions=["bump"],
+        target_prefix="bef4_v2",
+    )
+    r2 = jax.ffi.ffi_call("bef4_v2.bump", jax.ShapeDtypeStruct(x.shape, x.dtype),
+                          vmap_method="broadcast_all")(x)
+    np.testing.assert_allclose(np.asarray(r2), np.full(4, 2.0))
