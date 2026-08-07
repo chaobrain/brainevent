@@ -79,16 +79,16 @@ __global__ void _csrmm_nt_warp_homo_kern##SUFFIX(                              \
         IndptrT j = start;                                                         \
         _Pragma("unroll 4")                                                    \
         for (; j + 1 < end; j += 2) {                                          \
-            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);           \
-            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+1] * n + c]);          \
+            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j]   * n + c]);   \
+            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j+1] * n + c]);  \
             acc0 += w * mask0;                                                 \
             acc1 += w * mask1;                                                 \
         }                                                                      \
         for (; j < end; j++) {                                                 \
-            ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);              \
+            ACC_T mask = (ACC_T)IS_ACTIVE(B[(size_t)indices[j] * n + c]);      \
             acc0 += w * mask;                                                  \
         }                                                                      \
-        C[row * n + c] = WRITE_W(acc0 + acc1);                                 \
+        C[(size_t)row * n + c] = WRITE_W(acc0 + acc1);                         \
     }                                                                          \
 }
 
@@ -117,13 +117,13 @@ __global__ void _csrmm_nt_block_homo_kern##SUFFIX(                              
             IndptrT j = start + strip;                                              \
             _Pragma("unroll 4")                                                \
             for (; j + 8 < end; j += 16) {                                     \
-                ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);       \
-                ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+8] * n + c]);      \
+                ACC_T mask0 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j]   * n + c]); \
+                ACC_T mask1 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j+8] * n + c]); \
                 acc0 += w * mask0;                                              \
                 acc1 += w * mask1;                                              \
             }                                                                  \
             for (; j < end; j += 8) {                                           \
-                ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);          \
+                ACC_T mask = (ACC_T)IS_ACTIVE(B[(size_t)indices[j] * n + c]);  \
                 acc0 += w * mask;                                               \
             }                                                                  \
         }                                                                       \
@@ -133,7 +133,7 @@ __global__ void _csrmm_nt_block_homo_kern##SUFFIX(                              
             ACC_T sum = ACC_ZERO;                                               \
             _Pragma("unroll 8")                                                \
             for (int s = 0; s < 8; s++) sum += smem[s * 32 + lane];            \
-            C[row * n + c] = WRITE_W(sum);                                     \
+            C[(size_t)row * n + c] = WRITE_W(sum);                             \
         }                                                                       \
         __syncthreads();                                                        \
     }                                                                           \
@@ -169,16 +169,16 @@ __global__ void _csrmm_nt_warp_hetero_kern##SUFFIX(                             
         IndptrT j = start;                                                           \
         _Pragma("unroll 4")                                                      \
         for (; j + 1 < end; j += 2) {                                            \
-            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);             \
-            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+1] * n + c]);            \
+            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j]   * n + c]);     \
+            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j+1] * n + c]);    \
             acc0 += READ_W(weights[j])   * mask0;                                \
             acc1 += READ_W(weights[j+1]) * mask1;                                \
         }                                                                        \
         for (; j < end; j++) {                                                   \
-            ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);                \
+            ACC_T mask = (ACC_T)IS_ACTIVE(B[(size_t)indices[j] * n + c]);        \
             acc0 += READ_W(weights[j]) * mask;                                   \
         }                                                                        \
-        C[row * n + c] = WRITE_W(acc0 + acc1);                                   \
+        C[(size_t)row * n + c] = WRITE_W(acc0 + acc1);                           \
     }                                                                            \
 }
 
@@ -206,13 +206,13 @@ __global__ void _csrmm_nt_block_hetero_kern##SUFFIX(                            
             IndptrT j = start + strip;                                                \
             _Pragma("unroll 4")                                                  \
             for (; j + 8 < end; j += 16) {                                       \
-                ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);         \
-                ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+8] * n + c]);        \
+                ACC_T mask0 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j]   * n + c]); \
+                ACC_T mask1 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j+8] * n + c]); \
                 acc0 += READ_W(weights[j])   * mask0;                            \
                 acc1 += READ_W(weights[j+8]) * mask1;                            \
             }                                                                    \
             for (; j < end; j += 8) {                                             \
-                ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);            \
+                ACC_T mask = (ACC_T)IS_ACTIVE(B[(size_t)indices[j] * n + c]);    \
                 acc0 += READ_W(weights[j]) * mask;                               \
             }                                                                    \
         }                                                                         \
@@ -222,7 +222,7 @@ __global__ void _csrmm_nt_block_hetero_kern##SUFFIX(                            
             ACC_T sum = ACC_ZERO;                                                 \
             _Pragma("unroll 8")                                                  \
             for (int s = 0; s < 8; s++) sum += smem[s * 32 + lane];              \
-            C[row * n + c] = WRITE_W(sum);                                       \
+            C[(size_t)row * n + c] = WRITE_W(sum);                               \
         }                                                                         \
         __syncthreads();                                                          \
     }                                                                             \
