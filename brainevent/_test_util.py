@@ -17,6 +17,7 @@
 
 
 import random
+from contextlib import contextmanager
 from typing import Union
 
 import brainstate
@@ -38,6 +39,39 @@ requires_gpu = pytest.mark.skipif(
     not _has_gpu(),
     reason="No GPU detected via jax.devices('gpu')",
 )
+
+
+@contextmanager
+def jax_x64_enabled():
+    """Enable JAX 64-bit mode for the duration of the block, then restore it.
+
+    Yields
+    ------
+    None
+        The block runs with ``jax_enable_x64`` set to ``True``.
+
+    Notes
+    -----
+    ``jax_enable_x64`` is global process state, so tests that need int64 ``indptr``
+    or float64 data must restore the previous value even on failure -- otherwise
+    they leak x64 into every later test in the session.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._test_util import jax_x64_enabled
+        >>> with jax_x64_enabled():
+        ...     jnp.array([0, 1], dtype=jnp.int64).dtype
+        dtype('int64')
+    """
+    old_x64 = jax.config.jax_enable_x64
+    jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", old_x64)
 
 
 def generate_fixed_conn_num_indices(

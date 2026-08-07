@@ -154,9 +154,8 @@ branch = false
 omit = [
     "*/_test.py",
     "*_test.py",
-    "brainevent/test_util.py",
     "brainevent/_test_util.py",
-    "brainevent/**/test_util.py",
+    "brainevent/**/_test_util.py",
     "brainevent/_op/benchmark.py",
     "brainevent/pararnn/_benchmark.py",
 ]

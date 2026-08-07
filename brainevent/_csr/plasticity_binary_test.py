@@ -24,12 +24,17 @@ import scipy.sparse as sp
 
 import brainevent
 import brainevent as be
+import brainevent._csr.plasticity_binary as plasticity_mod
 from brainevent._csr.plasticity_binary import (
     update_csr_on_binary_pre,
     update_csr_on_binary_post,
     update_csr_on_binary_pre_p,
     update_csr_on_binary_post_p,
 )
+from brainevent._csr._test_util import (
+    cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
+)
+from brainevent._test_util import jax_x64_enabled
 
 PLATFORM = jax.default_backend()
 PRE_BACKENDS = tuple(update_csr_on_binary_pre_p.available_backends(PLATFORM))
@@ -356,3 +361,137 @@ def test_update_csc_on_binary_pre_no_clip():
     got = csc.with_data(new_w).todense()
     ref = _ref_pre(W, pre_spike, post_trace, None, None)
     assert jnp.allclose(got, jnp.asarray(ref), atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# int64 ``indptr`` policy on the CUDA path.
+#
+# ``indices`` and ``weight_indices`` stay int32 (the CUDA ABI is int32-only for
+# coordinates) while ``indptr`` may widen to int64. The generator tests run
+# without a real GPU by stubbing ``load_cuda_file``/``ffi_call``; the ``accepts``
+# tests need one.
+# ---------------------------------------------------------------------------
+
+
+def test_plasticity_pre_cuda_rejects_int64_indices_before_loading_cuda():
+    with pytest.raises(TypeError, match="indices with dtype int32"):
+        plasticity_mod._csr_on_pre_cuda_kernel(
+            shape_of(jnp.float32),
+            shape_of(jnp.bool_),
+            shape_of(jnp.int64),
+            outs=[shape_of(jnp.float32)],
+            indptr_info=shape_of(jnp.int64),
+        )
+
+
+def test_plasticity_post_cuda_rejects_int64_indices_before_loading_cuda():
+    with pytest.raises(TypeError, match="indices with dtype int32"):
+        plasticity_mod._csr2csc_on_post_cuda_kernel(
+            shape_of(jnp.float32),
+            shape_of(jnp.bool_),
+            shape_of(jnp.int64),
+            outs=[shape_of(jnp.float32)],
+            indptr_info=shape_of(jnp.int64),
+            weight_indices_info=shape_of(jnp.int32),
+        )
+
+
+def test_plasticity_post_cuda_rejects_int64_weight_indices_before_loading_cuda():
+    kwargs = {
+        'outs': [shape_of(jnp.float32)],
+        'indptr_info': shape_of(jnp.int64),
+        'weight_indices_info': shape_of(jnp.int64),
+    }
+
+    with pytest.raises(TypeError, match="weight_indices with dtype int32"):
+        plasticity_mod._csr2csc_on_post_cuda_kernel(
+            shape_of(jnp.float32),
+            shape_of(jnp.bool_),
+            shape_of(jnp.int32),
+            **kwargs,
+        )
+
+
+def test_plasticity_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
+    ffi_calls = []
+    load_calls = []
+
+    monkeypatch.setattr(plasticity_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(plasticity_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
+
+    with jax_x64_enabled():
+        indices = jnp.array([0, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2], dtype=jnp.int64)
+
+        pre_kernel = plasticity_mod._csr_on_pre_cuda_kernel(
+            shape_of(jnp.float32, (2,)),
+            shape_of(jnp.bool_, (1,)),
+            shape_of(jnp.int32, (2,)),
+            outs=[shape_of(jnp.float32, (2,))],
+            indptr_info=shape_of(jnp.int64, (2,)),
+        )
+        pre_kernel(
+            jnp.array([1.0, 2.0]),
+            indices,
+            indptr,
+            jnp.array([True]),
+            jnp.array([0.5, 1.5]),
+        )
+
+        post_kernel = plasticity_mod._csr2csc_on_post_cuda_kernel(
+            shape_of(jnp.float32, (2,)),
+            shape_of(jnp.float32, (2,)),
+            shape_of(jnp.int32, (2,)),
+            outs=[shape_of(jnp.float32, (2,))],
+            indptr_info=shape_of(jnp.int64, (2,)),
+            weight_indices_info=shape_of(jnp.int32, (2,)),
+        )
+        post_kernel(
+            jnp.array([1.0, 2.0]),
+            indices,
+            indptr,
+            jnp.array([0, 1], dtype=jnp.int32),
+            jnp.array([0.5]),
+            jnp.array([1.0, -1.0]),
+        )
+
+    assert [name for _, name in load_calls] == [
+        'csr_plasticity_binary_pre',
+        'csr_plasticity_binary_post',
+    ]
+    assert [call[0] for call in ffi_calls] == [
+        'csr_plasticity_binary_pre.update_csr_on_pre_f32_bool',
+        'csr_plasticity_binary_post.update_csr_on_post_f32_float',
+    ]
+
+
+@requires_gpu_backend
+def test_plasticity_pre_cuda_accepts_int64_indptr():
+    weights, indices, indptr32 = int64_structure(jnp.int32)
+    indptr64 = indptr32.astype(jnp.int64)
+    pre_spike = jnp.array([True, False])
+    post_trace = jnp.array([0.5, 1.5, 2.5], dtype=jnp.float32)
+
+    got = update_csr_on_binary_pre(
+        weights, indices, indptr64, pre_spike, post_trace, shape=(2, 3), backend='cuda_raw'
+    )
+    expected = jnp.array([1.5, 4.5, 3.0, 4.0], dtype=jnp.float32)
+
+    assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+@requires_gpu_backend
+def test_plasticity_post_cuda_accepts_int64_indptr():
+    weights = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1, 0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
+    weight_indices = jnp.array([0, 2, 1, 3], dtype=jnp.int32)
+    pre_trace = jnp.array([0.5, 1.5], dtype=jnp.float32)
+    post_spike = jnp.array([False, True])
+
+    got = update_csr_on_binary_post(
+        weights, indices, indptr, weight_indices, pre_trace, post_spike, shape=(2, 2), backend='cuda_raw'
+    )
+    expected = jnp.array([1.0, 2.5, 3.0, 5.5], dtype=jnp.float32)
+
+    assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
