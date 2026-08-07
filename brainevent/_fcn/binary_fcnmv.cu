@@ -259,37 +259,21 @@ void binary_fcnmv_scatter_hetero##SUFFIX(                                       
 FFI_BS_HOMO  (_bool_f32, float, uint8_t)
 // @BE binary_fcnmv_scatter_hetero_bool_f32
 FFI_BS_HETERO(_bool_f32, float, uint8_t)
-// @BE binary_fcnmv_scatter_homo_float_f32
-FFI_BS_HOMO  (_float_f32, float, float)
-// @BE binary_fcnmv_scatter_hetero_float_f32
-FFI_BS_HETERO(_float_f32, float, float)
 
 // ---- float64 ----
 // @BE binary_fcnmv_scatter_homo_bool_f64
 FFI_BS_HOMO  (_bool_f64, double, uint8_t)
 // @BE binary_fcnmv_scatter_hetero_bool_f64
 FFI_BS_HETERO(_bool_f64, double, uint8_t)
-// @BE binary_fcnmv_scatter_homo_float_f64
-FFI_BS_HOMO  (_float_f64, double, double)
-// @BE binary_fcnmv_scatter_hetero_float_f64
-FFI_BS_HETERO(_float_f64, double, double)
 
 // ---- float16 ----
 // @BE binary_fcnmv_scatter_homo_bool_f16
 FFI_BS_HOMO  (_bool_f16, __half, uint8_t)
 // @BE binary_fcnmv_scatter_hetero_bool_f16
 FFI_BS_HETERO(_bool_f16, __half, uint8_t)
-// @BE binary_fcnmv_scatter_homo_float_f16
-FFI_BS_HOMO  (_float_f16, __half, __half)
-// @BE binary_fcnmv_scatter_hetero_float_f16
-FFI_BS_HETERO(_float_f16, __half, __half)
 
 // ---- bfloat16 ----
 // @BE binary_fcnmv_scatter_homo_bool_bf16
 FFI_BS_HOMO  (_bool_bf16, __nv_bfloat16, uint8_t)
 // @BE binary_fcnmv_scatter_hetero_bool_bf16
 FFI_BS_HETERO(_bool_bf16, __nv_bfloat16, uint8_t)
-// @BE binary_fcnmv_scatter_homo_float_bf16
-FFI_BS_HOMO  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @BE binary_fcnmv_scatter_hetero_float_bf16
-FFI_BS_HETERO(_float_bf16, __nv_bfloat16, __nv_bfloat16)

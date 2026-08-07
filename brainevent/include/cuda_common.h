@@ -52,8 +52,8 @@
  * garbage from inactive/retired lanes (M17).
  *
  * Callers with partial warps MUST mask off out-of-range lanes BEFORE the
- * reduction (pad the inactive lanes with the reduction identity -- 0 for sum,
- * -inf/+inf for max/min -- and let all 32 lanes call the helper), rather than
+ * reduction (pad the inactive lanes with the reduction identity -- 0 for sum
+ * -- and let all 32 lanes call the helper), rather than
  * early-returning. Computing __activemask() INSIDE the helper is intentionally
  * NOT done: it would silently fold over whatever lanes happen to be active and
  * mask the real bug instead of surfacing it.
@@ -62,9 +62,9 @@
 /*
  * NOTE ON FP16/BF16 REDUCTIONS:
  * Reduction helpers are defined for accumulator types (f32/f64), not storage
- * types. fp16/bf16 kernels upcast with READ_F16/READ_BF16 and use float
- * accumulators (ACC_T_F16/ACC_T_BF16), so they intentionally call f32
- * reductions (warp_reduce_*_f32).
+ * types. fp16/bf16 kernels upcast with READ_F16/READ_BF16 and accumulate in
+ * float32, so they intentionally call the f32 reductions
+ * (warp_reduce_sum_f32).
  */
 
 /**
@@ -101,66 +101,6 @@ __device__ __inline__ float warp_reduce_sum_f32(float val) {
 __device__ __inline__ double warp_reduce_sum_f64(double val) {
     for (int offset = 16; offset > 0; offset >>= 1)
         val += __shfl_down_sync(0xffffffff, val, offset);
-    return val;
-}
-
-/**
- * Warp-level max reduction for float32.
- *
- * Reduces a value across all 32 threads in a warp using shuffle-down
- * instructions. The result is valid only in lane 0.
- *
- * @param val  Input value from this thread
- * @return     Maximum of all values across the warp (valid in lane 0 only)
- */
-__device__ __inline__ float warp_reduce_max_f32(float val) {
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val = fmaxf(val, __shfl_down_sync(0xffffffff, val, offset));
-    return val;
-}
-
-/**
- * Warp-level max reduction for float64.
- *
- * Reduces a value across all 32 threads in a warp using shuffle-down
- * instructions. The result is valid only in lane 0.
- *
- * @param val  Input value from this thread
- * @return     Maximum of all values across the warp (valid in lane 0 only)
- */
-__device__ __inline__ double warp_reduce_max_f64(double val) {
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val = fmax(val, __shfl_down_sync(0xffffffff, val, offset));
-    return val;
-}
-
-/**
- * Warp-level min reduction for float32.
- *
- * Reduces a value across all 32 threads in a warp using shuffle-down
- * instructions. The result is valid only in lane 0.
- *
- * @param val  Input value from this thread
- * @return     Minimum of all values across the warp (valid in lane 0 only)
- */
-__device__ __inline__ float warp_reduce_min_f32(float val) {
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val = fminf(val, __shfl_down_sync(0xffffffff, val, offset));
-    return val;
-}
-
-/**
- * Warp-level min reduction for float64.
- *
- * Reduces a value across all 32 threads in a warp using shuffle-down
- * instructions. The result is valid only in lane 0.
- *
- * @param val  Input value from this thread
- * @return     Minimum of all values across the warp (valid in lane 0 only)
- */
-__device__ __inline__ double warp_reduce_min_f64(double val) {
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val = fmin(val, __shfl_down_sync(0xffffffff, val, offset));
     return val;
 }
 
@@ -274,38 +214,6 @@ __device__ __inline__ double warp_reduce_min_f64(double val) {
  */
 #define READ_BF16(x)  __bfloat162float(x)
 #define WRITE_BF16(x) __float2bfloat16(x)
-
-// =========================================================================
-// Accumulator Type Selection
-// =========================================================================
-
-/**
- * Accumulator type for float16 weights.
- *
- * float16 accumulates in float32 for numerical stability.
- */
-#define ACC_T_F16  float
-
-/**
- * Accumulator type for bfloat16 weights.
- *
- * bfloat16 accumulates in float32 for numerical stability.
- */
-#define ACC_T_BF16 float
-
-/**
- * Accumulator type for float32 weights.
- *
- * float32 accumulates natively.
- */
-#define ACC_T_F32  float
-
-/**
- * Accumulator type for float64 weights.
- *
- * float64 accumulates natively.
- */
-#define ACC_T_F64  double
 
 // =========================================================================
 // Zero Constants

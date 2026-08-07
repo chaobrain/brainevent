@@ -525,12 +525,12 @@ def _jitu_cuda_kernel(
 ):
     load_cuda_file(
         Path(__file__).parent.joinpath('float_jitu.cu'),
-        name='float_jitu',
+        name='jit_uniform_jitu',
     )
     sfx = dtype_suffix(kwargs['w_low_info'].dtype)
     mode = 'mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'mm_aw_t4'
     direction = 'notrans' if corder else 'trans'
-    kernel_name = f'float_jitu.jitu_{mode}_{direction}{sfx}'
+    kernel_name = f'jit_uniform_jitu.jitu_{mode}_{direction}{sfx}'
     out_shape = tuple(int(s) for s in kwargs['out_info'].shape)
     n_rows, n_cols = out_shape if corder else out_shape[::-1]
     chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
@@ -1037,11 +1037,11 @@ def _jitumv_cuda_kernel(
 ):
     load_cuda_file(
         Path(__file__).parent.joinpath('float_jitumv.cu'),
-        name='float_jitumv',
+        name='jit_uniform_jitumv',
     )
     sfx = dtype_suffix(kwargs['w_low_info'].dtype)
     variant = 'notrans' if corder else 'trans'
-    kernel_name = f'float_jitumv.jitumv_{variant}{sfx}'
+    kernel_name = f'jit_uniform_jitumv.jitumv_{variant}{sfx}'
     chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
 
     def kernel(w_low, w_high, clen, vector, seed):
@@ -1608,12 +1608,12 @@ def _jitumm_cuda_kernel(
 ):
     load_cuda_file(
         Path(__file__).parent.joinpath('float_jitumm.cu'),
-        name='float_jitumm',
+        name='jit_uniform_jitumm',
     )
     sfx = dtype_suffix(kwargs['w_low_info'].dtype)
     prefix = 'jitumm_mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'jitumm'
     variant = 'notrans' if corder else 'trans'
-    kernel_name = f'float_jitumm.{prefix}_{variant}{sfx}'
+    kernel_name = f'jit_uniform_jitumm.{prefix}_{variant}{sfx}'
 
     out_info = kwargs['out_info']
     B_info = kwargs['B_info']

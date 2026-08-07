@@ -851,17 +851,7 @@ def _binary_fcnmm_sraw_cuda_kernel(
     sfx = dtype_suffix(weight_info.dtype)
     mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
     spike_sfx = '_bool' if is_bool_matrix else '_float'
-    
-    '''
-    if araw :
-        kernel_name = (
-            'fcn_binary_mm.'
-            f'binary_fcnmm_araw{mode_sfx}{spike_sfx}{sfx}'
-        )
-    else sraw:
 
-    '''
-    
     kernel_name = (
         'fcn_binary_mm.'
         f'binary_fcnmm_sraw{mode_sfx}{spike_sfx}{sfx}'
@@ -877,13 +867,13 @@ def _binary_fcnmm_sraw_cuda_kernel(
 def _binary_fcnmm_uses_raw_batch_first(*, transpose, backend, platform=None):
     if not transpose:
         return False
-    if backend in ('cuda_raw', 'SRAW_MM_kernel'):
+    if backend == 'cuda_raw':
         return True
     if backend is None:
         platform = jax.default_backend() if platform is None else platform
         if platform == 'gpu':
             gpu_backend = get_backend('gpu')
-            return gpu_backend in (None, 'cuda_raw', 'SRAW_MM_kernel')
+            return gpu_backend in (None, 'cuda_raw')
     return False
 
 
