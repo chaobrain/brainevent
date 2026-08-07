@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from brainevent._op.kernix_cache import CompilationCache
+from brainevent._op.kernix_toolchain import so_ext
 
 
 # ---------------------------------------------------------------------------
@@ -374,9 +375,12 @@ def test_f15_store_reraises_when_dest_absent(tmp_path, monkeypatch):
     real_replace = os.replace
 
     def deny_publish(a, b):
-        # allow staging into tmp, deny the publish (dest never created)
+        # allow staging into tmp, deny the publish (dest never created).
+        # The published artefact is ``<name><so_ext()>`` -- .so/.dylib/.dll by
+        # platform -- so matching a literal ".so" here would never fire on
+        # macOS or Windows and the publish would quietly succeed.
         name = os.path.basename(str(b))
-        if name.endswith(".so") and ".tmp" not in name:
+        if name.endswith(so_ext()) and ".tmp" not in name:
             raise PermissionError("Access is denied")
         return real_replace(a, b)
 
@@ -409,7 +413,7 @@ def test_f11_concurrent_store_publishes_valid_artifact(tmp_path):
 
     def worker(i: int):
         # Each thread owns a distinct source file with identical content.
-        src = tmp_path / f"build{i}" / "cc.so"
+        src = tmp_path / f"build{i}" / f"cc{so_ext()}"
         src.parent.mkdir(parents=True)
         src.write_bytes(payload)
         try:
@@ -425,7 +429,8 @@ def test_f11_concurrent_store_publishes_valid_artifact(tmp_path):
         t.join()
 
     assert not errors, f"concurrent store raised: {errors}"
-    dest = cache.cache_dir_for("cc", "0123456789abcdef") / "cc.so"
+    # ``store`` publishes as ``<name><so_ext()>``, not as the source file's name.
+    dest = cache.cache_dir_for("cc", "0123456789abcdef") / f"cc{so_ext()}"
     assert dest.exists()
     got = hashlib.sha256(dest.read_bytes()).hexdigest()
     assert got == expected, "published artefact is corrupt/truncated"

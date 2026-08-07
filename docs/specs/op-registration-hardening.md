@@ -161,6 +161,13 @@ GPU, default placement lowers the primitive for `'gpu'` and the call dies with
 tests were originally written against a CPU-only run and passed for that reason;
 a full run on CUDA hardware is what exposed the omission.
 
+The F11/F15 cache tests must derive the artefact name from `so_ext()`. `store`
+publishes as `<name><so_ext()>` — `.so`, `.dylib` or `.dll` by platform — not
+under the source file's name, so a hard-coded `"cc.so"` destination or an
+`endswith(".so")` guard silently does nothing on macOS and Windows: the F15
+guard never fires and the publish succeeds where the test expects a raise.
+Linux CI cannot catch this class of bug at all.
+
 CPU-only runs cannot cover the CUDA paths — every CUDA test is gated behind
 `requires_gpu` and `.cu`/inline-CUDA sources are never compiled unless a GPU
 kernel is lowered. Validation therefore requires a run on CUDA hardware in
