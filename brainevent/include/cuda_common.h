@@ -263,6 +263,19 @@ __host__ __inline__ int be_csrmv_warp_grid(int m) {
 #define BE_CSRMV_WARP_GRID(m) be_csrmv_warp_grid(m)
 
 // =========================================================================
+// Launch Geometry — warp-per-row SpMM
+// =========================================================================
+//
+// SpMM warp kernels map lanes to *columns* (32 columns per warp) and warps to
+// rows, so the row tiling is a separate knob from the CSRMV one above.
+
+/** Maximum grid.x for SpMM warp kernels; 4096 x 128 threads saturates all SMs. */
+#define CSRMM_MAX_GRID_X 4096
+
+/** Rows per block for SpMM warp kernels (4 warps x 32 lanes = 128 threads). */
+#define CSRMM_WARP_RPB 4
+
+// =========================================================================
 // Atomic Add Helpers (with CUDA arch guards)
 // =========================================================================
 

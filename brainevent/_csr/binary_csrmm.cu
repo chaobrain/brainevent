@@ -42,13 +42,6 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
-// Maximum grid.x dimension — caps block count for reduced scheduling overhead.
-// 4096 blocks x 128 threads = 524K threads, saturates all SMs.
-#define CSRMM_MAX_GRID_X 4096
-
-// Rows per block for warp kernels (4 warps x 32 lanes = 128 threads)
-#define CSRMM_WARP_RPB 4
-
 // =========================================================================
 // Homogeneous Weight Kernels (weights.size == 1)
 // =========================================================================

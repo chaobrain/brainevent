@@ -158,6 +158,21 @@ widened by inserting a `(size_t)` cast on the leading factor; the smem strides
 (`smem[strip * 32 + lane]`) were left alone since both factors there are block-bounded
 constants. Full GPU CSR suite: 699 passed.
 
+A tree-wide re-audit then found the same pattern in the JIT connectivity families:
+`chunk_counts[row * n_chunks + chunk_id]` and `chunk_offsets[...]` in
+`_jit_{normal,scalar,uniform}/{csr,dt2t}.cu` (24 sites). `n_chunks` defaults to 4, but
+`chunk_size` is user-settable, so `row * n_chunks` is not bounded by anything the kernel
+controls. Widened the same way. JIT GPU suites: 1512 passed, 4 skipped.
+
+Reachability for both is the same and worth stating plainly: the index only overflows once
+the indexed buffer itself exceeds 2^31 elements, i.e. ≥8.6 GB at 4 bytes (4.3 GB at fp16).
+That is out of reach on a small card and reachable on an 80 GB one. The fix costs nothing
+at runtime — the multiply widens to 64-bit, and none of these sites are in an inner loop —
+so it is worth taking rather than documenting as a limit.
+
+After this pass the only remaining unwidened multiplicative subscripts tree-wide are
+shared-memory strides with a literal `* 32`, bounded by block size by construction.
+
 ## Finding 4 — CSRMV was missing its warp-per-row tier (performance)
 
 ### The defect
@@ -259,6 +274,57 @@ of record.
 - `test_binary_csrmv_cuda_source_keeps_three_dispatch_tiers` — source-level, runs without a
   GPU. Necessary because a two-tier dispatcher is still *correct*, so no numeric test can
   catch the tier being dropped again. Verified to fail against the pre-change source.
+
+## Finding 5 — `float_csrmm.cu` warp kernels kept the unpacked launch shape
+
+`binary_csrmm.cu` and `binary_indexed_csrmm.cu` already launch their warp kernels as
+`CSRMM_WARP_RPB` (4) rows per 128-thread block with a grid-strided loop and a capped
+`grid.x`. `float_csrmm.cu` was never updated to match and still launched
+`<<<dim3(m, c_blocks), 32>>>` — one warp per block — for both its NT and transpose warp
+kernels. Same defect as Finding 4's launch shape, in the file that is otherwise the
+reference implementation.
+
+Measured on sm_86, m = k = 16384, n = 64, float32 homogeneous:
+
+| avg_nnz | `<<<m, 32>>>` (ms) | packed 4/block (ms) | speedup |
+|--------:|-------------------:|--------------------:|--------:|
+| 2 | 0.062 | 0.030 | 2.05x |
+| 4 | 0.055 | 0.031 | 1.77x |
+| 8 | 0.059 | 0.038 | 1.58x |
+| 16 | 0.088 | 0.062 | 1.42x |
+| 32 | 0.142 | 0.111 | 1.28x |
+| 64 | 0.251 | 0.211 | 1.19x |
+
+A win across the entire range the warp tier serves (`avg_nnz <= 64`).
+
+Both kernels were converted to the packed grid-strided form. The row guard becomes
+`continue` rather than `return`, since returning inside a grid-strided loop would abandon
+that warp's remaining rows — the same trap as in Finding 4.
+
+`CSRMM_MAX_GRID_X` and `CSRMM_WARP_RPB` were duplicated verbatim in two `.cu` files;
+rather than add a third copy they were moved to `cuda_common.h` alongside the CSRMV
+geometry and the local definitions deleted.
+
+## Audits that found nothing (recorded so they are not redone)
+
+- **Dynamic shared-memory sizing, tree-wide.** 12 kernels use `extern __shared__`. Every
+  request now matches the largest index the kernel can write. `_fcn/binary_fcnmm.cu` was
+  the one to check closely — it uses the same `(warpid + stride) * 32 + lane` strip
+  indexing that broke CSRMM — and it sizes correctly as
+  `red_off + nwarps * 32 * ACC_SIZE`.
+- **`binary_fcnmm.cu` tree reduction over a non-power-of-two warp count.** The reduction
+  `for (stride = nwarps >> 1; stride > 0; stride >>= 1)` silently drops the top warps if
+  `nwarps` is not a power of two. Not a live bug: all four launch sites hardcode
+  `bsz = 256`, so `nwarps == 8`. Noted because a future block-size change would break it
+  without any test failing.
+- **Dispatch-tier gaps beyond Finding 4.** `dt2t.cu`, `plasticity_binary_on_{pre,post}.cu`
+  and `slice_csr_slice_rows.cu` all already implement three-tier dispatch. The CSRMM
+  `avg_nnz <= 512` two-tier ladders are *not* the Finding 4 defect: for SpMM the two tiers
+  are warp and block (lanes map to columns), which is the right pair.
+- **Warp-reduction convergence** and **`__syncthreads()` divergence**: all flagged kernels
+  verified block- or warp-uniform.
+- **Unguarded fp16/bf16 atomics** in `float_csrmm.cu`: compile fine on sm_75 under CUDA 13;
+  sm_60 is not supported by the toolkit. Not a live bug.
 
 ## Edge cases considered
 

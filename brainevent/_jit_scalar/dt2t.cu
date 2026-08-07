@@ -173,7 +173,7 @@ __global__ void _fill_dt2t_f32_kern(
         seed0, row, chunk_id, lane, cl, chunk_width
     );
     unsigned int lane_offset = warp_exclusive_prefix_u32(lane_count, lane);
-    int base = __ldg(&chunk_offsets[row * n_chunks + chunk_id]) + (int)lane_offset;
+    int base = __ldg(&chunk_offsets[(size_t)row * n_chunks + chunk_id]) + (int)lane_offset;
 
     float w = READ_F32(__ldg(&weight[0]));
     float y_row = TRANSPOSE ? 0.0f : __ldg(&y[row]);
@@ -302,7 +302,7 @@ __global__ void _fill_dt2t##SFX##_kern( \
         seed0, row, chunk_id, lane, cl, chunk_width \
     ); \
     unsigned int lane_offset = warp_exclusive_prefix_u32(lane_count, lane); \
-    int base = __ldg(&chunk_offsets[row * n_chunks + chunk_id]) + (int)lane_offset; \
+    int base = __ldg(&chunk_offsets[(size_t)row * n_chunks + chunk_id]) + (int)lane_offset; \
     ACC_T w = READ_W(__ldg(&weight[0])); \
     ACC_T y_row = TRANSPOSE ? (ACC_T)0 : READ_W(__ldg(&y[row])); \
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane); \
