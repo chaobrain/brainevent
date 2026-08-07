@@ -358,13 +358,13 @@ FFI_CSRMM_NT_WARP_PERM_HETERO(_f32_bool,  float,  int8_t)
 // @BE binary_csrmm_nt_warp_perm_hetero_f32_float
 FFI_CSRMM_NT_WARP_PERM_HETERO(_f32_float, float,  float)
 // @BE binary_csrmm_nt_block_perm_hetero_f32_bool
-FFI_CSRMM_NT_BLOCK_PERM_HETERO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
+FFI_CSRMM_NT_BLOCK_PERM_HETERO(_f32_bool,  float,  int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_block_perm_hetero_f32_float
-FFI_CSRMM_NT_BLOCK_PERM_HETERO(_f32_float, float,  float,  8 * sizeof(float))
+FFI_CSRMM_NT_BLOCK_PERM_HETERO(_f32_float, float,  float,  8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_perm_hetero_f32_bool
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f32_bool,  float,  int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_perm_hetero_f32_float
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f32_float, float,  float,  8 * sizeof(float))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f32_float, float,  float,  8 * 32 * sizeof(float))
 // @BE binary_csrmm_t_warp_perm_hetero_f32_bool
 FFI_CSRMM_T_WARP_PERM_HETERO(_f32_bool,  float,  int8_t)
 // @BE binary_csrmm_t_warp_perm_hetero_f32_float
@@ -372,9 +372,9 @@ FFI_CSRMM_T_WARP_PERM_HETERO(_f32_float, float,  float)
 
 // float64 perm-heterogeneous
 // @BE binary_csrmm_nt_auto_perm_hetero_f64_bool
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f64_bool,  double, int8_t, 8 * sizeof(double))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f64_bool,  double, int8_t, 8 * 32 * sizeof(double))
 // @BE binary_csrmm_nt_auto_perm_hetero_f64_float
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f64_float, double, float,  8 * sizeof(double))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f64_float, double, float,  8 * 32 * sizeof(double))
 // @BE binary_csrmm_t_warp_perm_hetero_f64_bool
 FFI_CSRMM_T_WARP_PERM_HETERO(_f64_bool,  double, int8_t)
 // @BE binary_csrmm_t_warp_perm_hetero_f64_float
@@ -382,9 +382,9 @@ FFI_CSRMM_T_WARP_PERM_HETERO(_f64_float, double, float)
 
 // float16 perm-heterogeneous
 // @BE binary_csrmm_nt_auto_perm_hetero_f16_bool
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f16_bool,  __half, int8_t, 8 * sizeof(float))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f16_bool,  __half, int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_perm_hetero_f16_float
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_f16_float, __half, float,  8 * sizeof(float))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_f16_float, __half, float,  8 * 32 * sizeof(float))
 // @BE binary_csrmm_t_warp_perm_hetero_f16_bool
 FFI_CSRMM_T_WARP_PERM_HETERO(_f16_bool,  __half, int8_t)
 // @BE binary_csrmm_t_warp_perm_hetero_f16_float
@@ -392,9 +392,9 @@ FFI_CSRMM_T_WARP_PERM_HETERO(_f16_float, __half, float)
 
 // bfloat16 perm-heterogeneous
 // @BE binary_csrmm_nt_auto_perm_hetero_bf16_bool
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * sizeof(float))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_perm_hetero_bf16_float
-FFI_CSRMM_NT_AUTO_PERM_HETERO(_bf16_float, __nv_bfloat16, float,  8 * sizeof(float))
+FFI_CSRMM_NT_AUTO_PERM_HETERO(_bf16_float, __nv_bfloat16, float,  8 * 32 * sizeof(float))
 // @BE binary_csrmm_t_warp_perm_hetero_bf16_bool
 FFI_CSRMM_T_WARP_PERM_HETERO(_bf16_bool,  __nv_bfloat16, int8_t)
 // @BE binary_csrmm_t_warp_perm_hetero_bf16_float

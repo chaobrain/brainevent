@@ -21,6 +21,7 @@ import brainstate
 import braintools
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from brainevent._csr.binary import (
@@ -1350,3 +1351,49 @@ def test_binary_csrmm_cuda_accepts_int64_indptr(transpose, homo):
                             backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+# The ``nt_block`` strategy inside ``binary_csrmm_nt_auto_*`` is only selected when
+# ``avg_nnz > 512``; its block reduction stages one accumulator per (strip, lane)
+# pair, i.e. 8 * 32 elements of shared memory. The launch used to request only
+# ``8 * sizeof(ACC_T)`` bytes -- a 32x under-request that overran the block's
+# dynamic shared-memory window. For float32 the overrun happened to stay inside the
+# driver's allocation granularity, but float64 (2048 bytes needed, 64 requested)
+# faulted with CUDA_ERROR_ILLEGAL_ADDRESS.
+_NT_BLOCK_NNZ_PER_ROW = 1024  # > 512 so nt_auto picks the block kernel
+
+
+def _dense_csr_operands(rng, m, k, n, dtype, homo):
+    """Build a CSR/dense pair whose average row length selects the block kernel."""
+    indptr = np.arange(0, (m + 1) * _NT_BLOCK_NNZ_PER_ROW,
+                       _NT_BLOCK_NNZ_PER_ROW, dtype=np.int32)
+    indices = np.concatenate([
+        np.sort(rng.choice(k, _NT_BLOCK_NNZ_PER_ROW, replace=False)).astype(np.int32)
+        for _ in range(m)
+    ])
+    nnz = int(indptr[-1])
+    weights = rng.standard_normal(1 if homo else nnz).astype(dtype)
+    matrix = rng.random((k, n)) < 0.5
+    return weights, indices, indptr, matrix
+
+
+@requires_gpu_backend
+@pytest.mark.slow
+@pytest.mark.parametrize('homo', [False, True])
+def test_binary_csrmm_nt_block_shared_memory_is_large_enough(homo):
+    """float64 ``nt_auto`` must not fault when it routes to the block kernel."""
+    with jax_x64_enabled():
+        rng = np.random.default_rng(0)
+        m, k, n = 32, 2048, 64
+        weights, indices, indptr, matrix = _dense_csr_operands(
+            rng, m, k, n, np.float64, homo
+        )
+        workspace = _make_binary_task_workspace(jnp.asarray(indptr))
+        kwargs = dict(shape=(m, k), transpose=False, workspace=workspace)
+        args = (jnp.asarray(weights), jnp.asarray(indices),
+                jnp.asarray(indptr), jnp.asarray(matrix))
+
+        got = binary_csrmm(*args, backend='cuda_raw', **kwargs)
+        expected = binary_csrmm(*args, backend='jax_raw', **kwargs)
+
+        assert jnp.allclose(got, expected, rtol=1e-10, atol=1e-10)
