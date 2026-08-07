@@ -199,7 +199,7 @@ void csrmv_nt_auto##SUFFIX(                                                     
             _csrmv_nt_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(               \
                 d_w, d_i, d_p, d_v, d_o, m);                                    \
         } else if (avg_nnz < 512) {                                             \
-            _csrmv_nt_warp_kern##SUFFIX<<<BE_CSRMV_WARP_GRID(m), 256, 0, s>>>(  \
+            _csrmv_nt_warp_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(m), 256, 0, s>>>(  \
                 d_w, d_i, d_p, d_v, d_o, m);                                    \
         } else {                                                                \
             _csrmv_nt_block_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(              \
@@ -221,7 +221,7 @@ void csrmv_t_warp##SUFFIX(                                           \
     WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr()); \
     cudaMemsetAsync(d_out, 0, (size_t)k * sizeof(WEIGHT_C_T), s);    \
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                \
-        _csrmv_t_warp_kern##SUFFIX<<<BE_CSRMV_WARP_GRID(m), 256, 0, s>>>( \
+        _csrmv_t_warp_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(m), 256, 0, s>>>( \
             static_cast<const WEIGHT_C_T*>(weights.data_ptr()),      \
             static_cast<const int32_t*>(indices.data_ptr()),         \
             static_cast<const IndptrT*>(indptr.data_ptr()),          \

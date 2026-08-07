@@ -129,7 +129,8 @@ __global__ void _slice_fwd_thread_hetero_kern##SUFFIX(                    \
 //   - __ldg() intrinsic routes read-only loads through texture cache
 //   - Scalar tail handles non-multiple-of-4 remainder elements
 //
-// Grid: (num_selected, 1, 1)   Block: (32, 1, 1)
+// Grid: (BE_WARP_PER_ROW_GRID(num_selected), 1, 1)   Block: (256, 1, 1)
+// i.e. 8 warps (= 8 selected rows) per block, grid-strided over the capped grid.
 // =========================================================================
 
 #define DEFINE_SLICE_FWD_WARP_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
@@ -142,16 +143,19 @@ __global__ void _slice_fwd_warp_homo_kern##SUFFIX(                    \
     WEIGHT_T*       __restrict__ output,                              \
     int m, int n_cols, int num_selected                               \
 ) {                                                                   \
-    int k = blockIdx.x;                                               \
-    if (k >= num_selected) return;                                    \
-    int r = row_indices[k];                                           \
-    if (r < 0 || r >= m) return;                                      \
-    IndptrT start = indptr[r], end = indptr[r + 1];                       \
-    int lane = (int)threadIdx.x;   /* 0..31 */                        \
-    WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;               \
+    int lane      = threadIdx.x & 31;                                 \
+    int warp_id   = threadIdx.x >> 5;                                 \
+    int warps_per = blockDim.x >> 5;                                  \
     WEIGHT_T w = WRITE_W(READ_W(data[0]));                            \
-    for (IndptrT j = start + lane; j < end; j += 32)                      \
-        row_out[indices[j]] = w;                                      \
+    for (int k = blockIdx.x * warps_per + warp_id; k < num_selected;  \
+         k += gridDim.x * warps_per) {                                \
+        int r = row_indices[k];                                       \
+        if (r < 0 || r >= m) continue;                                \
+        IndptrT start = indptr[r], end = indptr[r + 1];               \
+        WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;           \
+        for (IndptrT j = start + lane; j < end; j += 32)              \
+            row_out[indices[j]] = w;                                  \
+    }                                                                 \
 }
 
 #define DEFINE_SLICE_FWD_WARP_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
@@ -164,17 +168,20 @@ __global__ void _slice_fwd_warp_hetero_kern##SUFFIX(                    \
     WEIGHT_T*       __restrict__ output,                                \
     int m, int n_cols, int num_selected                                 \
 ) {                                                                     \
-    int k = blockIdx.x;                                                 \
-    if (k >= num_selected) return;                                      \
-    int r = row_indices[k];                                             \
-    if (r < 0 || r >= m) return;                                        \
-    IndptrT start = indptr[r], end = indptr[r + 1];                         \
-    int lane = (int)threadIdx.x;   /* 0..31 */                          \
-    WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                 \
-    for (IndptrT j = start + lane; j < end; j += 32) {                      \
-        int col = __ldg(&indices[j]);                                   \
-        WEIGHT_T val = WRITE_W(READ_W(__ldg(&data[j])));                \
-        row_out[col] = val;                                             \
+    int lane      = threadIdx.x & 31;                                   \
+    int warp_id   = threadIdx.x >> 5;                                   \
+    int warps_per = blockDim.x >> 5;                                    \
+    for (int k = blockIdx.x * warps_per + warp_id; k < num_selected;    \
+         k += gridDim.x * warps_per) {                                  \
+        int r = row_indices[k];                                         \
+        if (r < 0 || r >= m) continue;                                  \
+        IndptrT start = indptr[r], end = indptr[r + 1];                 \
+        WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;             \
+        for (IndptrT j = start + lane; j < end; j += 32) {              \
+            int col = __ldg(&indices[j]);                               \
+            WEIGHT_T val = WRITE_W(READ_W(__ldg(&data[j])));            \
+            row_out[col] = val;                                         \
+        }                                                               \
     }                                                                   \
 }
 
@@ -273,7 +280,8 @@ __global__ void _slice_grad_thread_kern##SUFFIX(                 \
 // to ct_data[j].  Parallel warp execution hides atomicAdd latency well
 // for medium-to-large rows.
 //
-// Grid: (num_selected, 1, 1)   Block: (32, 1, 1)
+// Grid: (BE_WARP_PER_ROW_GRID(num_selected), 1, 1)   Block: (256, 1, 1)
+// i.e. 8 warps (= 8 selected rows) per block, grid-strided over the capped grid.
 // =========================================================================
 
 #define DEFINE_SLICE_GRAD_WARP(SUFFIX, WEIGHT_T, ATOMIC_ADD_W) \
@@ -286,17 +294,20 @@ __global__ void _slice_grad_warp_kern##SUFFIX(                 \
     WEIGHT_T*       __restrict__ ct_data,                      \
     int m, int n_cols, int num_selected                        \
 ) {                                                            \
-    int k = blockIdx.x;                                        \
-    if (k >= num_selected) return;                             \
-    int r = row_indices[k];                                    \
-    if (r < 0 || r >= m) return;                               \
-    IndptrT start = indptr[r], end = indptr[r + 1];                \
-    int lane = (int)threadIdx.x;                               \
-    const WEIGHT_T* ct_row = ct + (ptrdiff_t)k * n_cols;       \
-    for (IndptrT j = start + lane; j < end; j += 32) {             \
-        int col = __ldg(&indices[j]);                          \
-        WEIGHT_T val = __ldg(&ct_row[col]);                    \
-        ATOMIC_ADD_W(&ct_data[j], val);                        \
+    int lane      = threadIdx.x & 31;                          \
+    int warp_id   = threadIdx.x >> 5;                          \
+    int warps_per = blockDim.x >> 5;                           \
+    for (int k = blockIdx.x * warps_per + warp_id;             \
+         k < num_selected; k += gridDim.x * warps_per) {       \
+        int r = row_indices[k];                                \
+        if (r < 0 || r >= m) continue;                         \
+        IndptrT start = indptr[r], end = indptr[r + 1];        \
+        const WEIGHT_T* ct_row = ct + (ptrdiff_t)k * n_cols;   \
+        for (IndptrT j = start + lane; j < end; j += 32) {     \
+            int col = __ldg(&indices[j]);                      \
+            WEIGHT_T val = __ldg(&ct_row[col]);                \
+            ATOMIC_ADD_W(&ct_data[j], val);                    \
+        }                                                      \
     }                                                          \
 }
 
@@ -411,7 +422,7 @@ void csr_slice_rows_fwd_homo_auto##SUFFIX(                                      
                 d_data, d_indices, d_indptr, d_rows, d_output,                          \
                 m, n_cols, num_selected);                                               \
         } else if (avg_nnz < 512.0f) {                                                  \
-            _slice_fwd_warp_homo_kern##SUFFIX<<<num_selected, 32, 0, s>>>(              \
+            _slice_fwd_warp_homo_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(num_selected), 256, 0, s>>>(              \
                 d_data, d_indices, d_indptr, d_rows, d_output,                          \
                 m, n_cols, num_selected);                                               \
         } else {                                                                        \
@@ -450,7 +461,7 @@ void csr_slice_rows_fwd_hetero_auto##SUFFIX(                                    
                 d_data, d_indices, d_indptr, d_rows, d_output,                          \
                 m, n_cols, num_selected);                                               \
         } else if (avg_nnz < 512.0f) {                                                  \
-            _slice_fwd_warp_hetero_kern##SUFFIX<<<num_selected, 32, 0, s>>>(            \
+            _slice_fwd_warp_hetero_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(num_selected), 256, 0, s>>>(            \
                 d_data, d_indices, d_indptr, d_rows, d_output,                          \
                 m, n_cols, num_selected);                                               \
         } else {                                                                        \
@@ -489,7 +500,7 @@ void csr_slice_rows_grad_auto##SUFFIX(                                          
                 d_ct, d_indices, d_indptr, d_rows, d_ctdata,                           \
                 m, n_cols, num_selected);                                              \
         } else {                                                                       \
-            _slice_grad_warp_kern##SUFFIX<<<num_selected, 32, 0, s>>>(                 \
+            _slice_grad_warp_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(num_selected), 256, 0, s>>>(                 \
                 d_ct, d_indices, d_indptr, d_rows, d_ctdata,                           \
                 m, n_cols, num_selected);                                              \
         }                                                                              \

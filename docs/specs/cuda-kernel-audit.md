@@ -305,6 +305,45 @@ that warp's remaining rows — the same trap as in Finding 4.
 rather than add a third copy they were moved to `cuda_common.h` alongside the CSRMV
 geometry and the local definitions deleted.
 
+## Finding 6 — the last five one-warp-per-block launches
+
+After Findings 4 and 5, five `<<<…, 32>>>` launches remained: the three warp kernels in
+`slice_csr_slice_rows.cu` (forward homo, forward hetero, backward) and the two in
+`dt2t.cu` (`csrmv` and `csrmm` row-warp). All five are the same shape — one row per warp,
+warp-stride over that row's non-zeros, no cross-lane operations — so all five were packed.
+
+Measured on sm_86 (m = 65536, float32) for the streaming-write shape these use:
+
+| avg_nnz | `<<<m, 32>>>` (ms) | packed 8/block (ms) | speedup |
+|--------:|-------------------:|--------------------:|--------:|
+| 8 | 0.077 | 0.031 | 2.50x |
+| 16 | 0.078 | 0.030 | 2.57x |
+| 32 | 0.081 | 0.045 | 1.79x |
+| 64 | 0.110 | 0.074 | 1.48x |
+| 128 | 0.146 | 0.146 | 1.00x |
+| 256 | 0.309 | 0.285 | 1.08x |
+| 512 | 0.565 | 0.711 | **0.80x** |
+
+**This one is not a uniform win.** Packing is 2.5x faster over `avg_nnz` 8–32, ~1.5x at 64,
+parity at 128–256, and roughly 20% *slower* at 512 — with enough work per row the
+one-warp-per-block form's larger grid schedules better than the capped grid-strided one.
+Both kernels' warp tiers serve `avg_nnz` 8–511, so a band near the top of that tier
+regresses slightly. It was taken anyway: real sparse connectivity sits well below 256
+nonzeros per row, so the 2.5x low end dominates in practice.
+
+If that band ever matters, the fix is to select warps-per-block from `avg_nnz` at launch
+rather than fixing it at 8 — deliberately not done here, since it adds a tuning knob for a
+case that has no measured workload behind it.
+
+The `slice` kernels needed one extra care beyond the mechanical rewrite: they carry a
+second guard, `if (r < 0 || r >= m) return`, for out-of-range row indices. Inside a
+grid-strided loop that must become `continue`, or one bad row index would silently drop
+every remaining row assigned to that warp.
+
+`BE_CSRMV_WARP_GRID` was renamed `BE_WARP_PER_ROW_GRID` (and the helper
+`be_csrmv_warp_grid` → `be_warp_per_row_grid`) now that slicing and dt2t share it; the
+CSRMV-specific name would have been misleading.
+
 ## Audits that found nothing (recorded so they are not redone)
 
 - **Dynamic shared-memory sizing, tree-wide.** 12 kernels use `extern __shared__`. Every

@@ -225,7 +225,7 @@ void binary_csrmv_nt_auto_perm_hetero##SUFFIX(                                  
             _csrmv_nt_thread_perm_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(       \
                 d_w, d_i, d_p, d_perm, d_v, d_o, m);                                \
         } else if (avg_nnz < 512) {                                                 \
-            int blocks = BE_CSRMV_WARP_GRID(m);                                     \
+            int blocks = BE_WARP_PER_ROW_GRID(m);                                     \
             _csrmv_nt_warp_perm_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(         \
                 d_w, d_i, d_p, d_perm, d_v, d_o, m);                                \
         } else {                                                                    \
