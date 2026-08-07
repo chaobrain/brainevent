@@ -143,11 +143,28 @@ Completed:
    source files`, exit 0. A local mypy run *with* runtime deps installed reports 204 pre-existing
    errors at lines untouched by this change; that configuration is not the gate.
 
-Still required — **GPU validation cannot be covered by CI**, which is CPU-only with every CUDA test
-gated behind `requires_gpu`. On a CUDA machine, compile each edited module and compare `cuda_raw`
-against `jax_raw`/`numba` for: `binary_csrmv`, `binary_csrmm`, `csrmv`, `csrmm`, `csrmv_dt2t`,
-`csrmm_dt2t`, `csr_slice_rows` (+grad), `binary_fcnmv`, `binary_fcnmm` (homo/hetero × bool/float),
-and the renamed `jitu` / `jitumv` / `jitumm` targets.
+8. **GPU validation** — run on an RTX 3080 Laptop (driver 596.49, CUDA 13.2) with jax 0.11.0 +
+   jaxlib CUDA and nvcc 13.1, after deleting `~/.cache/brainevent/` so every kernel recompiled
+   from source: `pytest brainevent/ -m ""` → **3773 passed, 0 failed, 29 skipped** (27m07s).
+   This exercises the `cuda_raw` backend for every edited module against the `jax_raw` / `numba`
+   reference paths.
+
+### Regression caught during GPU validation
+
+The first GPU run failed 35 CSR tests with `CompilationError` from nvcc. Cause: the initial
+removal pass deleted only the *first* line of each backslash-continued
+`DEFINE_CSRMV_NT_WARP_{HOMO,HETERO}(...)` instantiation in `binary_csrmv.cu`, leaving 16 dangling
+argument fragments such as `READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)` that bound to the
+following instantiation and corrupted it.
+
+Nothing in the CPU pipeline could have caught this — `.cu` sources are never compiled unless a GPU
+kernel is actually lowered, so the 1574-test CPU suite, the annotation cross-check, and the
+macro-definition audit all passed against broken CUDA. The file was reverted and redone with a
+removal pass that follows line continuations, and a dangling-fragment detector was run across all
+45 `.cu` files to confirm no other file was affected.
+
+**Takeaway for future `.cu` edits: any change to these sources must be validated on a GPU.** The
+CPU suite proves nothing about them.
 
 ## Known follow-up (out of scope)
 
