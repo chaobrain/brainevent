@@ -146,6 +146,120 @@ fail to compile below sm_70 / sm_80 — retiring them removes that portability t
 names and their `DEFINE_` macros are present in the `.cu` text; those assertions pin dead
 code and are updated with the removal.
 
+## Finding 3 — CSRMM dense subscripts overflow 32-bit `int` (correctness)
+
+The CSRMM kernels index the dense operands as `B[indices[j] * n + c]` and `C[row * n + c]`.
+Both factors are runtime `int`, so the product is computed in 32-bit and wraps once
+`k * n` (or `m * n`) exceeds 2^31. Demonstrated standalone at `k * n = 2148507648`:
+`int` yields `-2146460672`, `size_t` yields `2148506624` — a wild pointer, not a slow path.
+
+`float_csrmm.cu` had the same exposure. 30 subscripts across the four CSRMM sources were
+widened by inserting a `(size_t)` cast on the leading factor; the smem strides
+(`smem[strip * 32 + lane]`) were left alone since both factors there are block-bounded
+constants. Full GPU CSR suite: 699 passed.
+
+## Finding 4 — CSRMV was missing its warp-per-row tier (performance)
+
+### The defect
+
+`float_csrmv.cu` documents and implements a three-tier row mapping — one thread per row
+below `avg_nnz` 8, one warp per row up to 512, one block per row above. The three binary
+CSRMV sources only had two tiers:
+
+```c
+if (avg_nnz <= 512) { thread-per-row } else { block-per-row }
+```
+
+so every row length from 16 to 512 — the normal range for sparse neural connectivity —
+ran the thread-per-row kernel, where the 32 lanes of a warp each walk a *different* row
+and every `indices[j]` load is uncoalesced.
+
+Git history shows `DEFINE_CSRMV_NT_WARP_HOMO` existed at `da4a812~1`. The predecessor
+cleanup deleted it as unreachable, which was true but was the wrong repair: the dispatcher
+was what needed fixing.
+
+### Measured, on sm_86, m = k = 65536, float32 hetero, bool spikes, 50 iterations
+
+| avg_nnz | thread (ms) | warp (ms) | block (ms) | best |
+|--------:|------------:|----------:|-----------:|:-----|
+| 2 | 0.009 | 0.026 | 0.219 | thread |
+| 8 | 0.017 | 0.034 | 0.278 | thread |
+| 12 | 0.030 | 0.034 | 0.278 | thread |
+| 16 | 0.040 | 0.034 | 0.276 | **warp** |
+| 32 | 0.088 | 0.043 | 0.271 | **warp** |
+| 64 | 0.209 | 0.076 | 0.272 | **warp** |
+| 128 | 0.361 | 0.141 | 0.249 | **warp** |
+| 256 | 0.950 | 0.277 | 0.325 | **warp** |
+| 512 | 1.904 | 0.547 | 0.545 | block |
+
+Up to **3.4x** on the tier that was missing. The crossovers give the thresholds used:
+thread below 16, warp to 512, block above.
+
+### Launch shape: pack warps, don't launch 32-thread blocks
+
+The historical kernel (and `float_csrmv.cu` today) launched `<<<m, 32>>>` — one warp per
+*block*. A block occupies a scheduler slot regardless of size, and an SM caps resident
+blocks, so 32-thread blocks waste 7/8 of each slot. Packing 8 warps into a 256-thread
+grid-strided block instead:
+
+| avg_nnz | `<<<m, 32>>>` (ms) | 8 warps/block (ms) | speedup |
+|--------:|-------------------:|-------------------:|--------:|
+| 8 | 0.111 | 0.034 | 3.31x |
+| 16 | 0.111 | 0.034 | 3.25x |
+| 32 | 0.111 | 0.044 | 2.53x |
+| 64 | 0.160 | 0.076 | 2.11x |
+| 128 | 0.145 | 0.143 | 1.02x |
+| 256 | 0.276 | 0.277 | 1.00x |
+| 512 | 0.545 | 0.550 | 0.99x |
+
+Strictly better at low row lengths, parity above. The same shape applied to the transpose
+atomic-scatter kernel (`csrmv_t_warp`, launched unconditionally): 2.80x at `avg_nnz` 8,
+1.81x at 16, parity through 256, and 0.94x at 512 — net strongly positive.
+
+### Fix
+
+- Added `DEFINE_CSRMV_NT_WARP_{HOMO,HETERO}` to `binary_csrmv.cu` and
+  `DEFINE_CSRMV_NT_WARP_PERM_HETERO` to `binary_indexed_csrmv.cu`, instantiated for all
+  weight/spike dtype pairs (24 new device kernels, **no new `@BE` entry points** — the
+  `nt_auto` wrappers dispatch to them internally).
+- Rewrote all three dispatchers as the three-tier ladder.
+- Converted the two existing `float_csrmv.cu` warp kernels from `<<<m, 32>>>` to the packed
+  grid-strided shape.
+- Added `be_csrmv_warp_grid()` to `cuda_common.h` (shared by all three sources; clamps to
+  `[1, 4096]` so an empty matrix cannot produce a zero-sized grid).
+
+`row` is derived as `blockIdx.x * warps_per + warp_id`, making it **warp-uniform**. That is
+what keeps the `__shfl_down_sync` reduction converged — the M17 precondition documented in
+`cuda_common.h`. A lane-dependent row bound would silently corrupt the reduction.
+
+### Verification
+
+96 configurations through the public API (7 row lengths spanning all three tiers x 3 weight
+dtypes x homo/hetero x bool/float spikes), `cuda_raw` against `jax_raw`:
+
+- float32 and float64: agree to 1e-5 / 1e-12 relative on every tier.
+- float16: differs from `jax_raw` by up to 3e-2 relative — *including on the block tier,
+  which this change does not touch*. Resolved against an exact float64 ground truth: the
+  CUDA path is **10-100x closer to exact** than `jax_raw` in all 8 cases (e.g. 2.4e-4 vs
+  3.8e-2 at `avg_nnz` 1024). The kernels accumulate in float32; the reference accumulates
+  in float16. This is a reference-precision artifact, not a kernel defect.
+
+**End-to-end Python timing could not resolve the improvement on this machine**: JAX host
+dispatch latency floors at ~1.2 ms for this call, well above the 0.03-0.5 ms of kernel time,
+so the API-level A/B returns noise. The standalone CUDA benchmarks above are the measurement
+of record.
+
+### Regression tests
+
+- `test_binary_csrmv_matches_reference_across_dispatch_tiers` — 7 row lengths straddling
+  both thresholds x homo/hetero.
+- `test_binary_csrmv_warp_tier_handles_ragged_and_empty_rows` — empty rows, a row count off
+  the warps-per-block tiling, and wildly varying row lengths; also asserts empty rows are
+  written rather than left uninitialised.
+- `test_binary_csrmv_cuda_source_keeps_three_dispatch_tiers` — source-level, runs without a
+  GPU. Necessary because a two-tier dispatcher is still *correct*, so no numeric test can
+  catch the tier being dropped again. Verified to fail against the pre-change source.
+
 ## Edge cases considered
 
 - **Orphaning a device kernel.** Removing an FFI wrapper can strand the `__global__` kernel
@@ -161,3 +275,22 @@ code and are updated with the removal.
 - **CPU suite proves nothing.** `.cu` sources are never compiled unless a GPU kernel is
   actually lowered. Every change here must be GPU-validated, per the predecessor spec's
   takeaway.
+- **Warp reduction convergence.** The new warp kernels derive `row` from
+  `blockIdx.x * warps_per + warp_id` only. Had the grid-stride bound been lane-dependent,
+  lanes would retire at different trip counts and `__shfl_down_sync` would read from exited
+  lanes. Audited all 6 pre-existing warp-reduction kernels the same way; all are
+  warp-uniform.
+- **Empty rows in the warp kernel.** The thread and block kernels early-return on
+  `start == end`; the warp kernel deliberately does not, because an early `return` inside a
+  grid-strided loop would skip that warp's remaining rows. Instead the inner loop simply
+  does not execute, the reduction yields `ACC_ZERO`, and lane 0 writes it. Covered by the
+  ragged-row test.
+- **Zero-sized grid.** `be_csrmv_warp_grid()` clamps to at least 1. `csrmv_t_warp` has no
+  `avg_nnz` guard, so an `m == 0` matrix would otherwise reach the launch with a
+  zero-sized grid — an invalid configuration. (The pre-change `<<<m, 32>>>` had the same
+  hole; this closes it.)
+- **Threshold asymmetry with `float_csrmv.cu`.** The binary sources switch to the warp tier
+  at `avg_nnz` 16 while `float_csrmv.cu` uses 8. The measured crossover for the binary
+  kernels is between 12 and 16 (0.030 vs 0.034 at 12; 0.040 vs 0.034 at 16). The float
+  threshold was left at 8: converting its warp kernel to the packed shape only makes the
+  warp tier faster, so an unchanged threshold stays on the safe side of the crossover.

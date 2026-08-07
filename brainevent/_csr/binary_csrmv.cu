@@ -67,6 +67,40 @@ __global__ void _csrmv_nt_thread_homo_kern##SUFFIX(                             
     output[row] = WRITE_W(acc);                                                  \
 }
 
+// One warp per row, several warps packed into each block and grid-strided.
+//
+// `row` derives only from blockIdx/threadIdx.x>>5, so it is warp-uniform: every
+// lane of a warp runs the same number of loop trips and reaches WARP_RED
+// together, which is the convergence precondition __shfl_down_sync requires.
+#define DEFINE_CSRMV_NT_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,   \
+                                   READ_W, WRITE_W, WARP_RED, ACC_ZERO)          \
+template <typename IndptrT> \
+__global__ void _csrmv_nt_warp_homo_kern##SUFFIX(                                \
+    const WEIGHT_T* __restrict__ weights,                                        \
+    const int32_t*  __restrict__ indices,                                        \
+    const IndptrT*  __restrict__ indptr,                                         \
+    const SPIKE_T*  __restrict__ vector,                                         \
+    WEIGHT_T*       __restrict__ output,                                         \
+    int m                                                                        \
+) {                                                                              \
+    int lane      = threadIdx.x & 31;                                            \
+    int warp_id   = threadIdx.x >> 5;                                            \
+    int warps_per = blockDim.x >> 5;                                             \
+    ACC_T w = READ_W(weights[0]);                                                \
+    for (int row = blockIdx.x * warps_per + warp_id; row < m;                    \
+         row += gridDim.x * warps_per) {                                         \
+        IndptrT start = indptr[row], end = indptr[row + 1];                      \
+        ACC_T acc = ACC_ZERO;                                                    \
+        _Pragma("unroll 2")                                                      \
+        for (IndptrT j = start + lane; j < end; j += 32) {                       \
+            ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                   \
+            acc += w * mask;                                                     \
+        }                                                                        \
+        acc = WARP_RED(acc);                                                     \
+        if (lane == 0) output[row] = WRITE_W(acc);                               \
+    }                                                                            \
+}
+
 #define DEFINE_CSRMV_NT_BLOCK_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                     READ_W, WRITE_W, WARP_RED, ACC_ZERO)        \
 template <typename IndptrT> \
@@ -134,6 +168,35 @@ __global__ void _csrmv_nt_thread_hetero_kern##SUFFIX(                           
     output[row] = WRITE_W(acc);                                                    \
 }
 
+// See DEFINE_CSRMV_NT_WARP_HOMO for the warp-uniformity argument.
+#define DEFINE_CSRMV_NT_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,   \
+                                     READ_W, WRITE_W, WARP_RED, ACC_ZERO)          \
+template <typename IndptrT> \
+__global__ void _csrmv_nt_warp_hetero_kern##SUFFIX(                                \
+    const WEIGHT_T* __restrict__ weights,                                          \
+    const int32_t*  __restrict__ indices,                                          \
+    const IndptrT*  __restrict__ indptr,                                           \
+    const SPIKE_T*  __restrict__ vector,                                           \
+    WEIGHT_T*       __restrict__ output,                                           \
+    int m                                                                          \
+) {                                                                                \
+    int lane      = threadIdx.x & 31;                                              \
+    int warp_id   = threadIdx.x >> 5;                                              \
+    int warps_per = blockDim.x >> 5;                                               \
+    for (int row = blockIdx.x * warps_per + warp_id; row < m;                      \
+         row += gridDim.x * warps_per) {                                           \
+        IndptrT start = indptr[row], end = indptr[row + 1];                        \
+        ACC_T acc = ACC_ZERO;                                                      \
+        _Pragma("unroll 2")                                                        \
+        for (IndptrT j = start + lane; j < end; j += 32) {                         \
+            ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                     \
+            acc += READ_W(weights[j]) * mask;                                      \
+        }                                                                          \
+        acc = WARP_RED(acc);                                                       \
+        if (lane == 0) output[row] = WRITE_W(acc);                                 \
+    }                                                                              \
+}
+
 #define DEFINE_CSRMV_NT_BLOCK_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                                       READ_W, WRITE_W, WARP_RED, ACC_ZERO)        \
 template <typename IndptrT> \
@@ -183,7 +246,11 @@ DEFINE_CSRMV_NT_THREAD_HOMO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, \
                              READ_F32, WRITE_F32, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HOMO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,  \
                             READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HOMO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,  \
+                            READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HOMO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,  \
+                            READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HOMO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,  \
                             READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 
 // float64 homogeneous
@@ -193,7 +260,11 @@ DEFINE_CSRMV_NT_THREAD_HOMO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,
                              READ_F64, WRITE_F64, 0.0)
 DEFINE_CSRMV_NT_BLOCK_HOMO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,  \
                             READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CSRMV_NT_WARP_HOMO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,  \
+                            READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_CSRMV_NT_BLOCK_HOMO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,  \
+                            READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CSRMV_NT_WARP_HOMO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,  \
                             READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 
 // float16 homogeneous
@@ -203,7 +274,11 @@ DEFINE_CSRMV_NT_THREAD_HOMO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, 
                              READ_F16, WRITE_F16, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HOMO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,  \
                             READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HOMO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,  \
+                            READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HOMO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,  \
+                            READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HOMO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,  \
                             READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 
 // bfloat16 homogeneous
@@ -213,7 +288,11 @@ DEFINE_CSRMV_NT_THREAD_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,
                              READ_BF16, WRITE_BF16, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,  \
                             READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,  \
+                            READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,  \
+                            READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,  \
                             READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 
 // =========================================================================
@@ -227,7 +306,11 @@ DEFINE_CSRMV_NT_THREAD_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,
                                READ_F32, WRITE_F32, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,  \
                               READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,  \
+                              READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,  \
+                              READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,  \
                               READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 
 // float64 heterogeneous
@@ -237,7 +320,11 @@ DEFINE_CSRMV_NT_THREAD_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, doubl
                                READ_F64, WRITE_F64, 0.0)
 DEFINE_CSRMV_NT_BLOCK_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,  \
                               READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CSRMV_NT_WARP_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,  \
+                              READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_CSRMV_NT_BLOCK_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,  \
+                              READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CSRMV_NT_WARP_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,  \
                               READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 
 // float16 heterogeneous
@@ -247,7 +334,11 @@ DEFINE_CSRMV_NT_THREAD_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float
                                READ_F16, WRITE_F16, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,  \
                               READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,  \
+                              READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,  \
+                              READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,  \
                               READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 
 // bfloat16 heterogeneous
@@ -257,7 +348,11 @@ DEFINE_CSRMV_NT_THREAD_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat1
                                READ_BF16, WRITE_BF16, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,  \
                               READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,  \
+                              READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_CSRMV_NT_BLOCK_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,  \
+                              READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,  \
                               READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 
 // =========================================================================
@@ -281,9 +376,13 @@ void binary_csrmv_nt_auto_homo##SUFFIX(                                         
     WEIGHT_C_T*       d_o = static_cast<WEIGHT_C_T*>(output.data_ptr());        \
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                           \
         const IndptrT* d_p = static_cast<const IndptrT*>(indptr.data_ptr());    \
-        if (avg_nnz <= 512) {                                                   \
+        if (avg_nnz < 16) {                                                     \
             int blocks = (m + 255) / 256;                                       \
             _csrmv_nt_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(          \
+                d_w, d_i, d_p, d_v, d_o, m);                                    \
+        } else if (avg_nnz < 512) {                                             \
+            int blocks = BE_CSRMV_WARP_GRID(m);                                 \
+            _csrmv_nt_warp_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(            \
                 d_w, d_i, d_p, d_v, d_o, m);                                    \
         } else {                                                                \
             _csrmv_nt_block_homo_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(         \
@@ -314,9 +413,13 @@ void binary_csrmv_nt_auto_hetero##SUFFIX(                                       
     WEIGHT_C_T*       d_o = static_cast<WEIGHT_C_T*>(output.data_ptr());        \
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                           \
         const IndptrT* d_p = static_cast<const IndptrT*>(indptr.data_ptr());    \
-        if (avg_nnz <= 512) {                                                   \
+        if (avg_nnz < 16) {                                                     \
             int blocks = (m + 255) / 256;                                       \
             _csrmv_nt_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(        \
+                d_w, d_i, d_p, d_v, d_o, m);                                    \
+        } else if (avg_nnz < 512) {                                             \
+            int blocks = BE_CSRMV_WARP_GRID(m);                                 \
+            _csrmv_nt_warp_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(          \
                 d_w, d_i, d_p, d_v, d_o, m);                                    \
         } else {                                                                \
             _csrmv_nt_block_hetero_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(       \

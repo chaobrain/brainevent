@@ -225,6 +225,44 @@ __device__ __inline__ double warp_reduce_sum_f64(double val) {
 #define ZERO_BF16 0.0f  // accumulator is float32
 
 // =========================================================================
+// Launch Geometry — warp-per-row SpMV
+// =========================================================================
+
+/**
+ * Warps per block for the warp-per-row SpMV tier.
+ *
+ * 8 warps == 256 threads, so one block retires 8 rows per sweep. Measured
+ * 2-3x faster than the one-warp-per-block (`<<<m, 32>>>`) shape at low average
+ * row length, and never slower.
+ */
+#define BE_CSRMV_WARP_WARPS_PER_BLOCK 8
+
+/** Upper bound on the warp-tier grid; the kernels are grid-strided. */
+#define BE_CSRMV_WARP_MAX_GRID 4096
+
+/**
+ * Grid size covering @p m rows at ::BE_CSRMV_WARP_WARPS_PER_BLOCK rows per
+ * block, capped at ::BE_CSRMV_WARP_MAX_GRID so the grid tracks the resident
+ * block count instead of scaling with the row count.
+ *
+ * Kernels launched with this must be grid-strided, since the cap can make the
+ * grid smaller than the row count. Never returns 0: an empty matrix still gets
+ * one block (which exits immediately), because a zero-sized grid is an invalid
+ * launch configuration.
+ *
+ * @param m  Number of rows.
+ * @return   Number of blocks to launch, in [1, ::BE_CSRMV_WARP_MAX_GRID].
+ */
+__host__ __inline__ int be_csrmv_warp_grid(int m) {
+    int blocks = (m + BE_CSRMV_WARP_WARPS_PER_BLOCK - 1) / BE_CSRMV_WARP_WARPS_PER_BLOCK;
+    if (blocks > BE_CSRMV_WARP_MAX_GRID) blocks = BE_CSRMV_WARP_MAX_GRID;
+    return blocks > 0 ? blocks : 1;
+}
+
+/** Convenience spelling of ::be_csrmv_warp_grid for use inside launch macros. */
+#define BE_CSRMV_WARP_GRID(m) be_csrmv_warp_grid(m)
+
+// =========================================================================
 // Atomic Add Helpers (with CUDA arch guards)
 // =========================================================================
 

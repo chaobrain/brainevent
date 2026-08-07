@@ -1397,3 +1397,98 @@ def test_binary_csrmm_nt_block_shared_memory_is_large_enough(homo):
         expected = binary_csrmm(*args, backend='jax_raw', **kwargs)
 
         assert jnp.allclose(got, expected, rtol=1e-10, atol=1e-10)
+
+
+# ``binary_csrmv_nt_auto`` picks one of three row-mapping strategies from the
+# average row length: one thread per row below 16, one warp per row up to 512,
+# one block per row above that. The warp tier used to be missing, so rows of
+# moderate length fell to the thread kernel and read ``indices``/``weights``
+# uncoalesced -- measurably slower than a warp-per-row mapping. These row
+# lengths straddle both thresholds so every branch is exercised.
+_CSRMV_TIER_NNZ_PER_ROW = [4, 15, 16, 64, 511, 512, 1024]
+
+
+@requires_gpu_backend
+@pytest.mark.slow
+@pytest.mark.parametrize('nnz_per_row', _CSRMV_TIER_NNZ_PER_ROW)
+@pytest.mark.parametrize('homo', [False, True])
+def test_binary_csrmv_matches_reference_across_dispatch_tiers(nnz_per_row, homo):
+    """Every ``nt_auto`` row-mapping strategy must agree with the reference."""
+    with jax_x64_enabled():
+        rng = np.random.default_rng(nnz_per_row)
+        m, k = 256, 2048
+        indptr = np.arange(0, (m + 1) * nnz_per_row, nnz_per_row, dtype=np.int32)
+        indices = np.concatenate([
+            np.sort(rng.choice(k, nnz_per_row, replace=False)).astype(np.int32)
+            for _ in range(m)
+        ])
+        nnz = int(indptr[-1])
+        weights = rng.standard_normal(1 if homo else nnz).astype(np.float64)
+        vector = rng.random(k) < 0.5
+
+        workspace = _make_binary_task_workspace(jnp.asarray(indptr))
+        kwargs = dict(shape=(m, k), transpose=False, workspace=workspace)
+        args = (jnp.asarray(weights), jnp.asarray(indices),
+                jnp.asarray(indptr), jnp.asarray(vector))
+
+        got = binary_csrmv(*args, backend='cuda_raw', **kwargs)
+        expected = binary_csrmv(*args, backend='jax_raw', **kwargs)
+
+        assert jnp.allclose(got, expected, rtol=1e-10, atol=1e-10)
+
+
+@requires_gpu_backend
+@pytest.mark.slow
+def test_binary_csrmv_warp_tier_handles_ragged_and_empty_rows():
+    """The warp kernel must tolerate empty rows and a row count off the tiling.
+
+    One warp handles one row and the grid is strided, so a row count that is
+    not a multiple of the warps-per-block, mixed with empty and over-long rows,
+    is the case where an off-by-one in the row loop or a divergent lane in the
+    shuffle reduction would show up.
+    """
+    with jax_x64_enabled():
+        rng = np.random.default_rng(7)
+        k = 1024
+        # average stays in the warp tier while individual rows vary wildly
+        row_lengths = np.array([0, 1, 33, 0, 200, 64, 0, 7, 512, 90, 0, 31, 63, 65, 128],
+                               dtype=np.int32)
+        m = row_lengths.size
+        assert 16 <= row_lengths.sum() // m < 512, 'must land in the warp tier'
+        indptr = np.concatenate([[0], np.cumsum(row_lengths)]).astype(np.int32)
+        indices = np.concatenate(
+            [np.sort(rng.choice(k, int(n), replace=False)).astype(np.int32)
+             for n in row_lengths]
+        ).astype(np.int32)
+        weights = rng.standard_normal(int(indptr[-1])).astype(np.float64)
+        vector = rng.random(k) < 0.5
+
+        workspace = _make_binary_task_workspace(jnp.asarray(indptr))
+        kwargs = dict(shape=(m, k), transpose=False, workspace=workspace)
+        args = (jnp.asarray(weights), jnp.asarray(indices),
+                jnp.asarray(indptr), jnp.asarray(vector))
+
+        got = binary_csrmv(*args, backend='cuda_raw', **kwargs)
+        expected = binary_csrmv(*args, backend='jax_raw', **kwargs)
+
+        assert jnp.allclose(got, expected, rtol=1e-10, atol=1e-10)
+        # empty rows must be written, not left uninitialised
+        assert jnp.all(jnp.asarray(got)[row_lengths == 0] == 0.0)
+
+
+def test_binary_csrmv_cuda_source_keeps_three_dispatch_tiers():
+    """``nt_auto`` must keep the warp tier between the thread and block tiers.
+
+    Source-level so it runs without a GPU. A two-tier dispatcher still computes
+    the right answer, so the numeric tests above cannot catch its removal.
+    """
+    from pathlib import Path
+
+    cu = Path(binary_mod.__file__).with_name('binary_csrmv.cu').read_text()
+    for kind in ('homo', 'hetero'):
+        assert f'DEFINE_CSRMV_NT_WARP_{kind.upper()}(' in cu
+        assert f'_csrmv_nt_warp_{kind}_kern' in cu
+    # the three-way ladder itself
+    assert cu.count('if (avg_nnz < 16)') == 2
+    assert cu.count('} else if (avg_nnz < 512) {') == 2
+    assert 'avg_nnz <= 512' not in cu, 'two-tier dispatch came back'
