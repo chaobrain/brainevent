@@ -23,7 +23,18 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent._misc import generate_block_dim, coo2csr
+from brainevent._misc import (
+    _INT32_MAX,
+    _as_indptr,
+    _as_int32_cuda_offsets,
+    _as_int32_indices,
+    _check_compressed_structure,
+    _require_jax_x64_for_int64,
+    _resolve_indptr_dtype,
+    coo2csr,
+    generate_block_dim,
+)
+from brainevent._test_util import jax_x64_enabled
 
 
 class TestCoo2Csr(unittest.TestCase):
@@ -574,3 +585,181 @@ class TestNoBrainstateRuntimeDependency(unittest.TestCase):
             msg=f"subprocess failed.\nstdout={proc.stdout!r}\nstderr={proc.stderr!r}",
         )
         self.assertIn('OK', proc.stdout)
+
+
+# ---------------------------------------------------------------------------
+# The ``indptr`` int64 auto-precision + ``indices`` always-int32 policy.
+#
+# * ``indices`` are secondary-axis coordinates and are *always* int32; int64 (or
+#   out-of-range) coordinates raise rather than widen.
+# * ``indptr``/offset arrays default to int32 and auto-promote to int64 only when
+#   ``nnz`` exceeds the int32 range. Creating an int64 offset array requires
+#   ``jax_enable_x64``; the library raises instead of toggling the global config.
+#
+# Materialising a ``nnz > int32_max`` array is impractical, so the promotion
+# threshold and the x64 gating are exercised here at the helper level; the
+# end-to-end constructor behaviour lives in ``_csr/main_test.py``.
+# ---------------------------------------------------------------------------
+
+
+# -- _resolve_indptr_dtype: auto promotion threshold + explicit requests -----
+
+def test_resolve_auto_picks_int32_within_range():
+    assert _resolve_indptr_dtype(0, "auto") == np.dtype(np.int32)
+    assert _resolve_indptr_dtype(1_000, "auto") == np.dtype(np.int32)
+    assert _resolve_indptr_dtype(_INT32_MAX, "auto") == np.dtype(np.int32)
+
+
+def test_resolve_auto_picks_int64_above_range():
+    assert _resolve_indptr_dtype(_INT32_MAX + 1, "auto") == np.dtype(np.int64)
+    assert _resolve_indptr_dtype(10 * _INT32_MAX, "auto") == np.dtype(np.int64)
+
+
+def test_resolve_explicit_int32_overflows():
+    with pytest.raises(OverflowError, match="exceeds the int32 range"):
+        _resolve_indptr_dtype(_INT32_MAX + 1, np.int32)
+
+
+def test_resolve_explicit_int32_within_range_ok():
+    assert _resolve_indptr_dtype(_INT32_MAX, np.int32) == np.dtype(np.int32)
+
+
+def test_resolve_explicit_int64_honoured():
+    # dtype resolution does not gate on x64; gating is a separate step.
+    assert _resolve_indptr_dtype(10, np.int64) == np.dtype(np.int64)
+
+
+def test_resolve_rejects_unknown_string():
+    with pytest.raises(ValueError, match="indptr_dtype must be"):
+        _resolve_indptr_dtype(10, "float")
+
+
+# -- _require_jax_x64_for_int64: gating without mutating global config ------
+
+def test_require_x64_raises_for_int64_when_disabled():
+    assert jax.config.jax_enable_x64 is False
+    with pytest.raises(ValueError, match="requires an int64 array"):
+        _require_jax_x64_for_int64(np.int64, "test context")
+    # The gate must never toggle the global config.
+    assert jax.config.jax_enable_x64 is False
+
+
+def test_require_x64_allows_int32_when_disabled():
+    # int32 never needs x64.
+    _require_jax_x64_for_int64(np.int32, "test context")
+
+
+def test_require_x64_allows_int64_when_enabled():
+    with jax_x64_enabled():
+        _require_jax_x64_for_int64(np.int64, "test context")
+
+
+# -- _as_int32_indices: indices are always int32 ----------------------------
+
+def test_indices_int32_passthrough():
+    idx = jnp.array([0, 1, 2], dtype=jnp.int32)
+    out = _as_int32_indices(idx, 3, "ctx")
+    assert out.dtype == jnp.int32
+
+
+def test_indices_int64_coerced_when_in_range():
+    idx = np.array([0, 1, 2], dtype=np.int64)
+    out = _as_int32_indices(idx, 3, "ctx")
+    assert out.dtype == jnp.int32
+    np.testing.assert_array_equal(np.asarray(out), [0, 1, 2])
+
+
+def test_indices_negative_raises():
+    idx = np.array([0, -1, 2], dtype=np.int64)
+    with pytest.raises(ValueError, match="must be non-negative"):
+        _as_int32_indices(idx, 3, "ctx")
+
+
+def test_indices_out_of_bounds_raises():
+    idx = np.array([0, 5, 2], dtype=np.int64)
+    with pytest.raises(ValueError, match="out of bounds"):
+        _as_int32_indices(idx, 3, "ctx")
+
+
+def test_indices_non_integer_raises():
+    idx = np.array([0.0, 1.0], dtype=np.float32)
+    with pytest.raises(TypeError, match="must be an integer array"):
+        _as_int32_indices(idx, 3, "ctx")
+
+
+def test_indices_secondary_dim_beyond_int32_raises():
+    idx = np.array([0, 1], dtype=np.int32)
+    with pytest.raises(OverflowError, match="int32-representable"):
+        _as_int32_indices(idx, _INT32_MAX + 2, "ctx")
+
+
+def test_indices_traced_int64_rejected():
+    def f(idx):
+        return _as_int32_indices(idx, 3, "ctx")
+
+    # An int64 tracer only exists when x64 is enabled (otherwise the input is
+    # truncated to int32 before tracing).
+    with jax_x64_enabled():
+        with pytest.raises(TypeError, match="traced int64 array"):
+            jax.jit(f)(jnp.array([0, 1, 2], dtype=jnp.int64))
+
+
+def test_indices_traced_int32_ok_no_host_readback():
+    # Under a tracer only the static dtype is checked; no host value readback.
+    def f(idx):
+        out = _as_int32_indices(idx, 3, "ctx")
+        return out.sum()
+
+    val = jax.jit(f)(jnp.array([0, 1, 2], dtype=jnp.int32))
+    assert int(val) == 3
+
+
+# -- _as_indptr: resolves dtype + gates int64 -------------------------------
+
+def test_as_indptr_small_is_int32():
+    ptr = np.array([0, 2, 3], dtype=np.int64)
+    out = _as_indptr(ptr, 3, "auto", "ctx")
+    assert out.dtype == jnp.int32
+
+
+def test_as_indptr_explicit_int64_gated_when_x64_off():
+    ptr = np.array([0, 2, 3], dtype=np.int64)
+    with pytest.raises(ValueError, match="requires an int64 array"):
+        _as_indptr(ptr, 3, np.int64, "ctx")
+
+
+def test_as_indptr_explicit_int64_ok_when_x64_on():
+    with jax_x64_enabled():
+        ptr = np.array([0, 2, 3], dtype=np.int64)
+        out = _as_indptr(ptr, 3, np.int64, "ctx")
+        assert out.dtype == jnp.int64
+
+
+# -- _as_int32_cuda_offsets: int32-only CUDA/JITC ABI guard -----------------
+
+def test_cuda_offsets_int32_passthrough():
+    off = jnp.array([0, 2, 3], dtype=jnp.int32)
+    out = _as_int32_cuda_offsets(off, "ctx")
+    assert out.dtype == jnp.int32
+
+
+def test_cuda_offsets_int64_raises_not_implemented():
+    with jax_x64_enabled():
+        off = jnp.array([0, 2, 3], dtype=jnp.int64)
+        with pytest.raises(NotImplementedError, match="int32 ABI"):
+            _as_int32_cuda_offsets(off, "ctx")
+
+
+# -- _check_compressed_structure: tracer path skips value checks ------------
+
+def test_check_structure_tracer_skips_value_checks():
+    # A concrete non-monotonic indptr would raise; under a tracer the value
+    # checks are skipped, so no error is raised for the (static) checks.
+    indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+
+    def f(bad_ptr):
+        _check_compressed_structure(indices, bad_ptr, (2, 3), format="csr")
+        return bad_ptr.sum()
+
+    # Non-monotonic values but valid shape/dtype: tracer path must not raise.
+    jax.jit(f)(jnp.array([0, 3, 2], dtype=jnp.int32))

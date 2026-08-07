@@ -28,7 +28,12 @@ from brainevent._csr.dt2t import (
     csrmv_dt2t, cscmv_dt2t, csrmv_dt2t_p,
     csrmm_dt2t, cscmm_dt2t, csrmm_dt2t_p,
 )
-from brainevent._csr.test_util import get_csr
+import brainevent._csr.dt2t as dt2t_mod
+from brainevent._csr._test_util import (
+    get_csr,
+    cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
+)
+from brainevent._test_util import jax_x64_enabled
 
 platform = jax.default_backend()
 CSRMV_dt2t_IMPLEMENTATIONS = tuple(csrmv_dt2t_p.available_backends(platform))
@@ -281,3 +286,64 @@ class TestCSCMMdt2t:
         assert jnp.allclose(csc_result, csr_result, rtol=1e-3, atol=1e-3)
 
         jax.block_until_ready((data, y, indptr, indices, csc_result, csr_result))
+
+
+# ---------------------------------------------------------------------------
+# int64 ``indptr`` policy on the CUDA path.
+#
+# ``indices`` stay int32 (the CUDA ABI is int32-only for coordinates) while
+# ``indptr`` may widen to int64. The generator tests run without a real GPU by
+# stubbing ``load_cuda_file``/``ffi_call``; the ``accepts`` test needs one.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    'factory,args,kwargs',
+    [
+        (
+            dt2t_mod._csrmv_dt2t_cuda_kernel,
+            (False, shape_of(jnp.float32)),
+            {'outs': [shape_of(jnp.float32)]},
+        ),
+    ],
+)
+def test_cuda_kernel_generators_reject_int64_indices_before_loading_cuda(factory, args, kwargs):
+    call_kwargs = cuda_kwargs()
+    call_kwargs.update(kwargs)
+
+    with pytest.raises(TypeError, match="indices with dtype int32"):
+        factory(*args, **call_kwargs)
+
+
+def test_dt2t_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
+    ffi_calls = []
+    load_calls = []
+
+    monkeypatch.setattr(dt2t_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(dt2t_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
+
+    with jax_x64_enabled():
+        indices = jnp.array([0, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2], dtype=jnp.int64)
+
+        dt2t_kernel = dt2t_mod._csrmv_dt2t_cuda_kernel(
+            False,
+            shape_of(jnp.float32, (2,)),
+            **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+        )
+        dt2t_kernel(jnp.array([1.0]), jnp.array([2.0, 3.0]), indices, indptr)
+
+    assert [name for _, name in load_calls] == ['csrmv_dt2t']
+    assert [call[0] for call in ffi_calls] == ['csrmv_dt2t.csrmv_dt2t_nt_auto_f32']
+
+
+@requires_gpu_backend
+def test_dt2t_cuda_accepts_int64_indptr():
+    weights, indices, indptr32 = int64_structure(jnp.int32)
+    indptr64 = indptr32.astype(jnp.int64)
+    y = jnp.array([1.0, 2.0], dtype=jnp.float32)
+
+    got = csrmv_dt2t(y, weights, indices, indptr64, shape=(2, 3), backend='cuda_raw')
+    expected = csrmv_dt2t(y, weights, indices, indptr32, shape=(2, 3), backend='jax_raw')
+
+    assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)

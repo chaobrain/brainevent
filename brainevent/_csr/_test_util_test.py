@@ -24,7 +24,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brainevent._csr.test_util import (
+from brainevent._csr._test_util import (
     get_csr,
     vector_csr,
     matrix_csr,

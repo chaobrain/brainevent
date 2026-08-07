@@ -25,8 +25,13 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+import brainevent._csr.float as float_mod
 from brainevent._csr.float import csrmv, csrmv_p, csrmm, csrmm_p
-from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
+from brainevent._csr._test_util import (
+    get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix,
+    cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
+)
+from brainevent._test_util import jax_x64_enabled
 
 platform = jax.default_backend()
 CSRMV_IMPLEMENTATIONS = tuple(csrmv_p.available_backends(platform))
@@ -361,3 +366,114 @@ class TestFloatCSRMM:
         assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
 
         jax.block_until_ready((x, indptr, indices, w, o1, r1, o2, r2))
+
+
+# ---------------------------------------------------------------------------
+# int64 ``indptr`` policy on the CUDA path.
+#
+# ``indices`` stay int32 (the CUDA ABI is int32-only for coordinates) while
+# ``indptr`` may widen to int64. The generator tests run without a real GPU by
+# stubbing ``load_cuda_file``/``ffi_call``; the ``accepts`` tests need one.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    'factory,args,kwargs',
+    [
+        (
+            float_mod._csrmv_cuda_kernel,
+            (shape_of(jnp.float32), False),
+            {'outs': [shape_of(jnp.float32)]},
+        ),
+        (
+            float_mod._csrmm_cuda_kernel,
+            (shape_of(jnp.float32), False),
+            {'outs': [shape_of(jnp.float32, (1, 1))]},
+        ),
+    ],
+)
+def test_cuda_kernel_generators_reject_int64_indices_before_loading_cuda(factory, args, kwargs):
+    call_kwargs = cuda_kwargs()
+    call_kwargs.update(kwargs)
+
+    with pytest.raises(TypeError, match="indices with dtype int32"):
+        factory(*args, **call_kwargs)
+
+
+def test_float_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
+    ffi_calls = []
+    load_calls = []
+
+    monkeypatch.setattr(float_mod, "load_cuda_file", lambda path, name: load_calls.append((path, name)))
+    monkeypatch.setattr(float_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
+
+    with jax_x64_enabled():
+        indices = jnp.array([0, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2], dtype=jnp.int64)
+
+        mv_kernel = float_mod._csrmv_cuda_kernel(
+            shape_of(jnp.float32, (1,)),
+            False,
+            **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+        )
+        mv_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([1.0, 3.0], dtype=jnp.float64),
+        )
+
+        mm_kernel = float_mod._csrmm_cuda_kernel(
+            shape_of(jnp.float32, (1,)),
+            True,
+            **{
+                **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+                'outs': [shape_of(jnp.float32, (2, 1))],
+            },
+        )
+        mm_kernel(
+            jnp.array([2.0], dtype=jnp.float32),
+            indices,
+            indptr,
+            jnp.array([[1.0], [3.0]], dtype=jnp.float32),
+        )
+
+    assert [name for _, name in load_calls] == ['csr_float_csrmv', 'csr_float_csrmm']
+    assert [call[0] for call in ffi_calls] == [
+        'csr_float_csrmv.csrmv_nt_auto_f32',
+        'csr_float_csrmm.csrmm_t_warp_homo_f32',
+    ]
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+def test_float_csrmv_cuda_accepts_int64_indptr(transpose, homo):
+    weights, indices, indptr32 = int64_structure(jnp.int32)
+    indptr64 = indptr32.astype(jnp.int64)
+    data = weights if not homo else jnp.array([2.0], dtype=jnp.float32)
+    vector = jnp.array([1.0, 2.0], dtype=jnp.float32) if transpose else jnp.array([1.0, 2.0, 3.0])
+
+    got = csrmv(data, indices, indptr64, vector, shape=(2, 3), transpose=transpose, backend='cuda_raw')
+    expected = csrmv(data, indices, indptr32, vector, shape=(2, 3), transpose=transpose, backend='jax_raw')
+
+    assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+def test_float_csrmm_cuda_accepts_int64_indptr(transpose, homo):
+    weights, indices, indptr32 = int64_structure(jnp.int32)
+    indptr64 = indptr32.astype(jnp.int64)
+    data = weights if not homo else jnp.array([2.0], dtype=jnp.float32)
+    matrix = (
+        jnp.array([[1.0, 0.5], [2.0, 1.5]], dtype=jnp.float32)
+        if transpose else
+        jnp.array([[1.0, 0.5], [2.0, 1.5], [3.0, 2.5]], dtype=jnp.float32)
+    )
+
+    got = csrmm(data, indices, indptr64, matrix, shape=(2, 3), transpose=transpose, backend='cuda_raw')
+    expected = csrmm(data, indices, indptr32, matrix, shape=(2, 3), transpose=transpose, backend='jax_raw')
+
+    assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
