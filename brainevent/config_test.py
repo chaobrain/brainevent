@@ -24,6 +24,8 @@ remaining, otherwise-untested controls: Numba parallel/thread state, LFSR
 algorithm selection, and the global per-platform backend map.
 """
 
+from unittest import mock
+
 import pytest
 
 import brainevent
@@ -159,3 +161,46 @@ def test_all_names_are_resolvable_attributes():
     # Every promised public name must actually exist on the module.
     for name in config.__all__:
         assert hasattr(config, name), name
+
+
+# ---------------------------------------------------------------------------
+# F1 -- ``set_backend`` / ``clear_backends`` only clear JAX caches when the
+# effective value actually changes (D1).
+# ---------------------------------------------------------------------------
+
+
+def test_f1_set_backend_and_clear_backends_are_idempotent_about_cache_clearing():
+    """A no-op ``set_backend``/``clear_backends`` call must not touch JAX caches.
+
+    Pre-fix, ``set_backend``/``clear_backends`` called ``jax.clear_caches()``
+    unconditionally on every call (or not at all -- finding #1), so either a
+    genuine backend switch went unnoticed by already-compiled call sites, or
+    every call -- including a harmless repeat of the same value -- paid the
+    cost of a global cache wipe. Post-fix, the cache is cleared exactly once
+    per *effective* change and not at all for a redundant call with the same
+    value.
+    """
+    with mock.patch('jax.clear_caches') as clear_caches:
+        # First call actually changes 'cpu': None -> 'numba' -> must clear.
+        config.set_backend('cpu', 'numba')
+        assert clear_caches.call_count == 1
+
+        # Repeating the same value is a no-op -> must NOT clear again.
+        config.set_backend('cpu', 'numba')
+        assert clear_caches.call_count == 1
+
+        # A genuine change to a different value -> clears again.
+        config.set_backend('cpu', 'warp')
+        assert clear_caches.call_count == 2
+
+        # Setting backend=None on a platform that has no override is a no-op.
+        config.set_backend('gpu', None)
+        assert clear_caches.call_count == 2
+
+        # clear_backends() while backends are set actually clears -> clears.
+        config.clear_backends()
+        assert clear_caches.call_count == 3
+
+        # clear_backends() again on an already-empty map is a no-op.
+        config.clear_backends()
+        assert clear_caches.call_count == 3

@@ -273,6 +273,65 @@ def test_l2_jaxinfo_to_warpinfo_normal_ndim_ok():
 
 
 # ---------------------------------------------------------------------------
+# F2 -- ``defjvp`` must reject a JVP-rule-count / input-count mismatch instead
+# of silently truncating via ``zip`` (finding #2, D7).
+# ---------------------------------------------------------------------------
+
+
+def test_f2_defjvp_rejects_mismatched_rule_count():
+    """One JVP rule for a two-input primitive raises ``ValueError``.
+
+    Pre-fix, ``zip(jvp_rules, tangents)`` silently truncated to the
+    shorter sequence, so a forgotten rule meant that input's tangent
+    contribution was dropped without warning -- an incorrect gradient with
+    no error at all (finding #2). Post-fix, an arity mismatch is checked
+    explicitly before the ``zip`` and raises immediately, naming the
+    primitive.
+    """
+    prim = Primitive('f2_two_input_mismatch')
+    prim.multiple_results = False
+    prim.def_impl(lambda x, y: x * y)
+    prim.def_abstract_eval(
+        lambda x, y: jax.core.ShapedArray(jnp.broadcast_shapes(x.shape, y.shape), x.dtype)
+    )
+
+    # Only one rule registered for a two-input primitive -- a forgotten rule.
+    defjvp(prim, lambda t, x, y: t * y)
+
+    def call(x, y):
+        return prim.bind(x, y)
+
+    x = jnp.asarray(3.0)
+    y = jnp.asarray(5.0)
+    with pytest.raises(ValueError, match="f2_two_input_mismatch"):
+        jax.jvp(call, (x, y), (jnp.asarray(1.0), jnp.asarray(0.0)))
+
+
+def test_f2_defjvp_with_correct_arity_matches_jacfwd():
+    """Two rules for a two-input primitive differentiate correctly.
+
+    Guards against the F2 arity check being over-strict: a correctly
+    sized rule list must still produce the exact analytic Jacobian.
+    """
+    prim = Primitive('f2_two_input_ok')
+    prim.multiple_results = False
+    prim.def_impl(lambda x, y: x * y)
+    prim.def_abstract_eval(
+        lambda x, y: jax.core.ShapedArray(jnp.broadcast_shapes(x.shape, y.shape), x.dtype)
+    )
+
+    defjvp(prim, lambda t, x, y: t * y, lambda t, x, y: t * x)
+
+    def call(x, y):
+        return prim.bind(x, y)
+
+    x = jnp.asarray(3.0)
+    y = jnp.asarray(5.0)
+    dx, dy = jax.jacfwd(call, argnums=(0, 1))(x, y)
+    assert float(dx) == pytest.approx(5.0)  # d/dx (x*y) = y
+    assert float(dy) == pytest.approx(3.0)  # d/dy (x*y) = x
+
+# ---------------------------------------------------------------------------
 # Kernel-name suffix helpers
 #
 # ``dtype_suffix`` / ``spike_suffix`` encode the naming contract between the

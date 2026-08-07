@@ -20,6 +20,7 @@ XLACustomKernel instances are created. It avoids importing brainevent
 internals to prevent circular dependencies.
 """
 
+import warnings
 from typing import Dict, List, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,7 +47,29 @@ def register_primitive(name: str, primitive: 'XLACustomKernel'):
         The unique name of the primitive.
     primitive : XLACustomKernel
         The ``XLACustomKernel`` instance to register.
+
+    Warns
+    -----
+    UserWarning
+        If *name* is already present in the registry. The new instance
+        still overwrites the old one (registry consumers such as the CLI,
+        benchmarks, and tag queries only ever see the most recently
+        registered instance for a given name) -- this warning exists so a
+        genuine naming collision is not silently invisible, while keeping
+        the overwrite behavior that tests relying on module reloads depend
+        on.
     """
+    if name in _PRIMITIVE_REGISTRY:
+        warnings.warn(
+            f"A primitive named '{name}' is already registered in the "
+            f"global registry; the previous 'XLACustomKernel' instance for "
+            f"'{name}' is being overwritten. Both underlying JAX primitives "
+            f"remain functional, but registry consumers (CLI, benchmarks, "
+            f"tag queries) will now only see the newest instance. Use a "
+            f"unique name if this is unintentional.",
+            UserWarning,
+            stacklevel=3,
+        )
     _PRIMITIVE_REGISTRY[name] = primitive
 
 

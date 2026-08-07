@@ -23,7 +23,7 @@ import jax
 from jax.interpreters import batching, ad, mlir
 
 from brainevent._compatible_import import Primitive, apply_primitive
-from brainevent._error import KernelFallbackExhaustedError
+from brainevent._error import KernelCompilationError, KernelFallbackExhaustedError
 from brainevent._registry import register_primitive
 from brainevent._typing import KernelGenerator
 from brainevent.config import get_backend
@@ -122,8 +122,12 @@ class XLACustomKernel:
     You can override this by calling ``set_default(platform, backend)`` or by
     passing ``asdefault=True`` when registering a kernel.
 
-    If a kernel fails, the error message shows alternative backends available
-    for the platform and how to switch to them.
+    If kernel *construction or lowering* fails -- i.e. ``kernel_generator``
+    raises, or the returned kernel callable raises while being traced into
+    the lowering -- the error message shows alternative backends available
+    for the platform and how to switch to them. Runtime faults that occur
+    *inside* an already-lowered kernel during XLA execution happen outside
+    Python's control at that point and are not wrapped this way.
 
     Instance attributes:
 
@@ -192,6 +196,20 @@ class XLACustomKernel:
         self._tags: set = set()
         # benchmark data generator function
         self._benchmark_data_fn: Optional[Callable] = None
+
+        # Register an eager friendly-error stub lowering for every known
+        # platform up front (F6).  Without this, a platform that never gets
+        # a real kernel has *no* lowering registered at all (def_kernel only
+        # registers one the first time a kernel targets that platform), so
+        # users see JAX's raw "MLIR translation rule ... not found" instead
+        # of the actionable KernelFallbackExhaustedError.  These stubs are
+        # intentionally NOT added to ``_registered_platforms``: that set
+        # gates def_kernel's one-time *real* lowering registration, so the
+        # first def_kernel() call for a platform still installs its own
+        # lowering (see _register_fallback_lowering below).
+        for _platform in ('cpu', 'gpu', 'tpu'):
+            self._register_stub_lowering(_platform)
+
         # Auto-register in global registry
         register_primitive(name, self)
 
@@ -269,7 +287,13 @@ class XLACustomKernel:
 
         Raises
         ------
-        AssertionError
+        TypeError
+            If an extra keyword argument's value is not hashable.  JAX
+            primitive params (everything in ``**kwargs`` here) are part of
+            the ``bind`` cache key, so an unhashable value would otherwise
+            surface as a raw ``TypeError: unhashable type`` deep inside
+            JAX's tracing machinery.
+        ValueError
             If the number of results returned by the primitive does not
             match the number of output specifications.
 
@@ -296,9 +320,24 @@ class XLACustomKernel:
             >>> # After registering kernels...
             >>> out = kernel(x, outs=[jax.ShapeDtypeStruct((10,), jnp.float32)])  # doctest: +SKIP
         """
+        for _key, _value in kwargs.items():
+            try:
+                hash(_value)
+            except TypeError as exc:
+                raise TypeError(
+                    f"Extra keyword argument '{_key}'={_value!r} passed to "
+                    f"primitive '{self.name}' must be hashable, but got "
+                    f"unhashable type {type(_value).__name__!r}. JAX binds "
+                    f"primitive keyword arguments as part of the trace cache "
+                    f"key, so unhashable values (e.g. a list) must be "
+                    f"converted to a hashable equivalent (e.g. a tuple) "
+                    f"before calling."
+                ) from exc
+
         flat_outs, tree_def = abstract_arguments(outs)
         r = self.primitive.bind(*ins, **kwargs, outs=tuple(flat_outs))
-        assert len(r) == len(flat_outs), 'The number of outputs does not match the expected.'
+        if len(r) != len(flat_outs):
+            raise ValueError('The number of outputs does not match the expected.')
         return tree_def.unflatten(r)
 
     def def_kernel(
@@ -334,7 +373,7 @@ class XLACustomKernel:
 
         Raises
         ------
-        AssertionError
+        TypeError
             If *backend* or *platform* is not a string, or if *kg* is not
             callable.
 
@@ -346,9 +385,12 @@ class XLACustomKernel:
         set_default : Change the default backend for a platform after
             registration.
         """
-        assert isinstance(backend, str), f'The `backend` should be a string, but got {type(backend)}.'
-        assert isinstance(platform, str), f'The `platform` should be a string, but got {type(platform)}.'
-        assert callable(kg), f'The `kg` should be a callable, but got {type(kg)}.'
+        if not isinstance(backend, str):
+            raise TypeError(f'The `backend` should be a string, but got {type(backend)}.')
+        if not isinstance(platform, str):
+            raise TypeError(f'The `platform` should be a string, but got {type(platform)}.')
+        if not callable(kg):
+            raise TypeError(f'The `kg` should be a callable, but got {type(kg)}.')
 
         # Create kernel entry
         entry = KernelEntry(
@@ -373,6 +415,57 @@ class XLACustomKernel:
             self._register_fallback_lowering(platform)
             self._registered_platforms.add(platform)
 
+    def _register_stub_lowering(self, platform: str):
+        """Register a friendly-error stub lowering for a platform with no kernel yet.
+
+        Installs an MLIR lowering for *platform* whose Python function
+        unconditionally raises :class:`KernelFallbackExhaustedError` naming
+        the primitive, the platform, and (read live from ``self._kernels``
+        at raise time) any platforms that already have at least one kernel
+        registered. This makes the "no kernel for this platform" failure
+        mode actionable from the very first ``__init__`` call, instead of
+        only after some *other* platform's first kernel happens to trigger
+        JAX's lowering-registration path.
+
+        Parameters
+        ----------
+        platform : str
+            The platform to install the stub for (``'cpu'``, ``'gpu'``, or
+            ``'tpu'``).
+
+        Notes
+        -----
+        ``mlir.register_lowering`` overwrites any existing entry for the
+        same ``(primitive, platform)`` pair rather than erroring or
+        stacking -- this is relied upon here: when :meth:`def_kernel`
+        registers the first *real* kernel for *platform*, it calls
+        :meth:`_register_fallback_lowering`, which re-registers the
+        lowering for that platform and silently replaces this stub. No
+        unregistration step is needed.
+        """
+
+        def stub_fn(*args, **kwargs):
+            """Unconditionally raise a friendly error naming the primitive/platform."""
+            available_platforms = sorted(p for p, ks in self._kernels.items() if ks)
+            msg = (
+                f"No kernels registered for platform '{platform}' in "
+                f"primitive '{self.name}'."
+            )
+            if available_platforms:
+                msg += (
+                    f" Kernels are registered for platform(s): "
+                    f"{available_platforms}. Run on one of those platforms, "
+                    f"or register a kernel for '{platform}' via "
+                    f"def_kernel() / def_numba_kernel() / def_pallas_kernel() "
+                    f"/ etc."
+                )
+            else:
+                msg += " No kernels have been registered for any platform yet."
+            raise KernelFallbackExhaustedError(msg)
+
+        lower = mlir.lower_fun(stub_fn, multiple_results=True)
+        mlir.register_lowering(self.primitive, lower, platform=platform)
+
     def _register_fallback_lowering(self, platform: str):
         """Register a MLIR lowering function that dispatches to the default backend.
 
@@ -392,6 +485,12 @@ class XLACustomKernel:
         KernelFallbackExhaustedError
             If no kernels are registered for the platform, or if the
             explicitly requested backend is not available.
+        KernelCompilationError
+            If the resolved backend's ``kernel_generator`` raises while
+            constructing the kernel, or the returned kernel callable raises
+            while being traced into the lowering. The original exception is
+            chained (``raise ... from exc``) and the message lists the
+            backends available for *platform* and how to switch to one.
         """
 
         def fallback_kernel_fn(*args, **kwargs):
@@ -454,8 +553,35 @@ class XLACustomKernel:
                 check_warp_installed()
 
             entry = kernels[backend_to_use]
-            kernel = entry.kernel_generator(**kwargs)
-            return kernel(*args)
+
+            def _construction_error_suffix() -> str:
+                """Build the "here are your alternatives" tail of the error message."""
+                available = self.available_backends(platform)
+                return (
+                    f" Available backend(s) for platform '{platform}': {available}. "
+                    f"Switch with backend='<name>' on this call, or "
+                    f"{self.name}.set_default('{platform}', '<name>') / "
+                    f"brainevent.set_backend('{platform}', '<name>') to change "
+                    f"the default."
+                )
+
+            try:
+                kernel = entry.kernel_generator(**kwargs)
+            except Exception as exc:
+                raise KernelCompilationError(
+                    f"Backend '{backend_to_use}' failed to construct a kernel "
+                    f"for primitive '{self.name}' on platform '{platform}': "
+                    f"{type(exc).__name__}: {exc}." + _construction_error_suffix()
+                ) from exc
+
+            try:
+                return kernel(*args)
+            except Exception as exc:
+                raise KernelCompilationError(
+                    f"Backend '{backend_to_use}' failed while lowering "
+                    f"primitive '{self.name}' on platform '{platform}': "
+                    f"{type(exc).__name__}: {exc}." + _construction_error_suffix()
+                ) from exc
 
         # Register the lowering with JAX
         lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
@@ -585,7 +711,7 @@ class XLACustomKernel:
 
         Raises
         ------
-        AssertionError
+        ValueError
             If *platform* is not ``'gpu'`` or ``'tpu'``.
 
         See Also
@@ -606,7 +732,8 @@ class XLACustomKernel:
             >>> kernel = XLACustomKernel('my_op')
             >>> kernel.def_pallas_kernel('gpu', my_pallas_gen, asdefault=True)  # doctest: +SKIP
         """
-        assert platform in ['gpu', 'tpu'], f'The `platform` should be either `gpu` or `tpu`, but got {platform}.'
+        if platform not in ['gpu', 'tpu']:
+            raise ValueError(f'The `platform` should be either `gpu` or `tpu`, but got {platform}.')
         self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)
 
     def def_cuda_raw_kernel(
@@ -698,6 +825,23 @@ class XLACustomKernel:
             platform.
         defaults : Property returning all default backends.
 
+        Notes
+        -----
+        Backend selection happens inside this primitive's MLIR lowering
+        function, and JAX caches lowered/compiled executables independently
+        of the default-backend setting. If this call actually *changes*
+        the effective default for *platform*, it calls
+        ``jax.clear_caches()`` so already-compiled call sites recompile
+        with the new default on their next invocation; setting the same
+        value it already has is a no-op and does not clear caches.
+
+        Like :func:`brainevent.set_backend`, this is a **setup-time,
+        single-threaded** control -- call it before the hot loop, not
+        concurrently from multiple threads while other work is compiling.
+        For thread-safe, per-call backend selection use the ``backend=``
+        keyword argument on the primitive call itself, which is a bind
+        parameter and therefore part of the cache key.
+
         Examples
         --------
         .. code-block:: python
@@ -715,7 +859,9 @@ class XLACustomKernel:
                 f"Backend '{backend}' not registered for platform '{platform}'. "
                 f"Available: {available}"
             )
-        self._defaults[platform] = backend
+        if self._defaults.get(platform) != backend:
+            self._defaults[platform] = backend
+            jax.clear_caches()
 
     def get_default(self, platform: str) -> Optional[str]:
         """Get the current default backend for a platform.

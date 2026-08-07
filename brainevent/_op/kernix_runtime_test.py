@@ -10,16 +10,44 @@ from brainevent._op import kernix_runtime as kr
 from brainevent._error import KernelLoadError, KernelRegistrationError
 
 
-def test_dlopen_failure_wrapped(monkeypatch):
+def test_dlopen_failure_wrapped(monkeypatch, tmp_path):
+    """A load failure of an *existing* .so yields the cu12/LD_LIBRARY_PATH hint.
+
+    The file must exist so the missing-artefact branch (finding 19) does not
+    fire — here the artefact is present but a dependent runtime is missing.
+    """
+    so = tmp_path / "present.so"
+    so.write_bytes(b"\x7fELF")  # exists, but CDLL is patched to fail below
+
     def boom(path):
         raise OSError("libcudart.so.12: cannot open shared object file: No such file or directory")
     monkeypatch.setattr(kr.ctypes, "CDLL", boom)
     with pytest.raises(KernelLoadError) as ei:
-        kr.CompiledModule("/tmp/does-not-exist.so", ["f"])
+        kr.CompiledModule(str(so), ["f"])
     msg = str(ei.value)
     assert "E-LOAD" in msg
-    assert "/tmp/does-not-exist.so" in msg
+    assert str(so) in msg
     assert "LD_LIBRARY_PATH" in msg
+
+
+def test_missing_so_reports_disappeared_not_cu12(monkeypatch):
+    """F19: a vanished cache artefact reports 'missing', not the cu12 hint.
+
+    If the .so disappears between lookup() and CDLL (e.g. clear_cache() from
+    another process), dlopen's 'cannot open shared object file' otherwise
+    matches the cu12 'missing CUDA runtime' branch and misdirects the user.
+    """
+    def boom(path):
+        raise OSError("cannot open shared object file: No such file or directory")
+    monkeypatch.setattr(kr.ctypes, "CDLL", boom)
+    with pytest.raises(KernelLoadError) as ei:
+        kr.CompiledModule("/tmp/nonexistent-vanished-abc123.so", ["f"])
+    msg = str(ei.value)
+    assert "E-LOAD-MISSING" in msg
+    assert "cleared concurrently" in msg
+    # Must NOT misattribute to a missing CUDA runtime.
+    assert "LD_LIBRARY_PATH" not in msg
+    assert "CUDA runtime" not in msg
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +84,23 @@ class _FakeModule:
         return self._functions[name]
 
 
+class _FakeContentModule(_FakeModule):
+    """A fake module whose *content* identity is explicit (finding 4).
+
+    Two instances may share a ``path`` but differ in ``content_hash`` — modelling
+    an edited-and-rebuilt kernel that republishes to the same cache path with
+    different bytes.
+    """
+
+    def __init__(self, so_path: str, functions, content_hash: str):
+        super().__init__(so_path, functions)
+        self._content_hash = str(content_hash)
+
+    @property
+    def content_hash(self) -> str:
+        return self._content_hash
+
+
 @pytest.fixture
 def clean_registry(monkeypatch):
     """Isolate the module-global registries and count real FFI registrations.
@@ -77,6 +122,7 @@ def clean_registry(monkeypatch):
     monkeypatch.setattr(kr.jax.ffi, "pycapsule", fake_pycapsule)
     monkeypatch.setattr(kr, "_LIVE_MODULES", {}, raising=False)
     monkeypatch.setattr(kr, "_REGISTERED_TARGETS", set(), raising=False)
+    monkeypatch.setattr(kr, "_REGISTRATION_KEYS", {}, raising=False)
     return calls
 
 
@@ -173,6 +219,151 @@ def test_m5_different_func_same_name_raises(clean_registry):
     kr.register_ffi_target("fn.noop", mod, "noop", platform="cpu")
     with pytest.raises(KernelRegistrationError):
         kr.register_ffi_target("fn.noop", mod, "other", platform="cpu")
+
+
+# ---------------------------------------------------------------------------
+# F4 -- content-hash registration identity + replace semantics
+# ---------------------------------------------------------------------------
+
+def test_f4_content_hash_distinguishes_same_path(clean_registry):
+    """Same path + different content_hash → treated as a *different* module.
+
+    This is the core of finding 4: force_rebuild republishes to the same cache
+    path, so identity must key on the ``.so`` bytes, not the path.
+    """
+    calls = clean_registry
+    a = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:aaaa")
+    b = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:bbbb")
+
+    kr.register_ffi_target("t.k", a, "k", platform="cpu")
+    # Different content under the same name, no replace → refuse (not a no-op).
+    with pytest.raises(KernelRegistrationError):
+        kr.register_ffi_target("t.k", b, "k", platform="cpu")
+    assert calls == ["t.k"]
+
+
+def test_f4_refuse_message_names_both_remedies(clean_registry):
+    """The refusal must name BOTH remedies: replace=True and a distinct name."""
+    a = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:aaaa")
+    b = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:bbbb")
+    kr.register_ffi_target("t.k", a, "k", platform="cpu")
+    with pytest.raises(KernelRegistrationError) as ei:
+        kr.register_ffi_target("t.k", b, "k", platform="cpu")
+    msg = str(ei.value)
+    assert "replace=True" in msg
+    assert "target_prefix" in msg or "name=" in msg
+
+
+def test_f4_replace_refused_deterministically(clean_registry):
+    """replace=True with changed content is REFUSED on every platform.
+
+    A live re-point cannot be verified on this JAX: the CPU/Host registry raises
+    on a differing bundle address, and the CUDA registry accepts a duplicate but
+    silently keeps the old handler.  Blindly re-registering would therefore
+    report success on CUDA while the stale kernel keeps executing (audit finding
+    4).  So brainevent refuses deterministically *without* calling jax, and the
+    behaviour does not depend on the ``platform`` argument.
+    """
+    for platform in ("cpu", "CUDA"):
+        calls = clean_registry  # fresh isolation is per-test; reuse container
+        target = f"det.{platform}"
+        a = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:aaaa")
+        b = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:bbbb")
+
+        kr.register_ffi_target(target, a, "k", platform=platform)
+        n_after_first = len(calls)
+        with pytest.raises(KernelRegistrationError) as ei:
+            kr.register_ffi_target(target, b, "k", platform=platform, replace=True)
+        msg = str(ei.value)
+        assert "distinct name" in msg or "target_prefix" in msg
+        # jax.ffi.register_ffi_target must NOT be attempted a second time.
+        assert len(calls) == n_after_first
+        # The original keep-alive and identity are untouched.
+        assert kr._LIVE_MODULES[target] == [a]
+        assert kr._REGISTRATION_KEYS[target] == kr._registration_key(a, "k", platform)
+
+
+def test_f4_replace_same_content_is_noop(clean_registry):
+    """replace=True with identical content must not re-register."""
+    calls = clean_registry
+    a = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:aaaa")
+    kr.register_ffi_target("t.k", a, "k", platform="cpu")
+    kr.register_ffi_target("t.k", a, "k", platform="cpu", replace=True)
+    assert calls == ["t.k"]
+
+
+def test_f4_real_module_content_hash_reads_bytes(tmp_path):
+    """CompiledModule.content_hash is a stable hash of the .so bytes."""
+    so = tmp_path / "m.so"
+    so.write_bytes(b"\x7fELF-some-bytes")
+    # Build a CompiledModule without dlopen by bypassing __init__ machinery:
+    mod = object.__new__(kr.CompiledModule)
+    mod._so_path = str(so)
+    mod._content_hash = None
+    h1 = mod.content_hash
+    assert h1.startswith("sha256:")
+    assert mod.content_hash == h1  # memoised
+    # A different-bytes file yields a different hash.
+    so2 = tmp_path / "m2.so"
+    so2.write_bytes(b"\x7fELF-other-bytes")
+    mod2 = object.__new__(kr.CompiledModule)
+    mod2._so_path = str(so2)
+    mod2._content_hash = None
+    assert mod2.content_hash != h1
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM -- content_id overrides the .so byte hash for registration identity
+# ---------------------------------------------------------------------------
+
+def test_content_id_reregistration_with_different_bytes_is_noop(clean_registry):
+    """(a) Same ``content_id``, different ``.so`` bytes -> idempotent no-op.
+
+    Compilers are non-deterministic (they embed build paths/timestamps), so a
+    ``force_rebuild`` of UNCHANGED source can produce different ``.so`` bytes
+    even though nothing about the kernel actually changed. Keying the
+    equivalence check on the caller-supplied deterministic cache key
+    (``content_id``) instead of the ``.so`` byte hash makes that rebuild an
+    idempotent no-op rather than a spurious ``KernelRegistrationError``.
+    """
+    calls = clean_registry
+    m1 = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:aaaa")
+    m2 = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:bbbb")  # different bytes
+
+    kr.register_ffi_target("cid.k", m1, "k", platform="cpu", content_id="key:abc")
+    # Different .so bytes, but the SAME content_id -> must be a no-op, not raise.
+    kr.register_ffi_target("cid.k", m2, "k", platform="cpu", content_id="key:abc")
+
+    assert calls == ["cid.k"], "equivalent content_id re-registration must not re-call FFI"
+    assert kr._LIVE_MODULES["cid.k"] == [m1], "the second (equivalent) module must not be appended"
+
+
+def test_content_id_change_raises(clean_registry):
+    """(b) A genuinely different ``content_id`` under the same target name raises."""
+    calls = clean_registry
+    m1 = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:aaaa")
+    m2 = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:bbbb")
+
+    kr.register_ffi_target("cid.change", m1, "k", platform="cpu", content_id="key:abc")
+    with pytest.raises(KernelRegistrationError):
+        kr.register_ffi_target("cid.change", m2, "k", platform="cpu", content_id="key:def")
+    assert calls == ["cid.change"]
+
+
+def test_no_content_id_still_uses_byte_hash(clean_registry):
+    """(c) Omitting ``content_id`` preserves the pre-existing byte-hash-keyed
+    behavior: same path, different ``content_hash``, no ``content_id`` ->
+    raises (not a no-op). Guards against the ``content_id`` addition changing
+    default behavior for callers that do not pass it.
+    """
+    calls = clean_registry
+    m1 = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:aaaa")
+    m2 = _FakeContentModule("/tmp/lib.so", ["k"], content_hash="sha256:bbbb")
+
+    kr.register_ffi_target("cid.default", m1, "k", platform="cpu")
+    with pytest.raises(KernelRegistrationError):
+        kr.register_ffi_target("cid.default", m2, "k", platform="cpu")
+    assert calls == ["cid.default"]
 
 
 # ---------------------------------------------------------------------------

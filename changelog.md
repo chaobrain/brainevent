@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A hardening pass over the custom-operator registration machinery
+(`brainevent._op`), fixing the 19 defects catalogued in the 2026-07-16
+operator-registration audit (`dev/2026-07-16-op-registration-audit.md`):
+stale backend dispatch after runtime backend switches, silently dropped
+JVP rules, incomplete compilation-cache keys, order-dependent FFI target
+names, and incorrect `vmap` execution of `numba.cuda` kernels, among
+others.
+
 ### Added
 
 - **jax 0.11.x is now a validated version.** The numba XLA FFI bridge raises its
@@ -16,8 +24,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hand-mirrored `ffi.h` struct layout is unchanged; the full test suite passes on
   jax 0.11.0 on both the CPU and CUDA backends. The `jax>=0.8.0` floor is unchanged.
 
+### Fixed
+
+- **Backend switches now take effect immediately.**
+  `XLACustomKernel.set_default`, `brainevent.config.set_backend`, and
+  `clear_backends` invalidate JAX's dispatch and executable caches
+  (`jax.clear_caches()`) whenever the effective setting changes.
+  Previously, eager calls and warm `jax.jit` functions kept executing the
+  previously selected backend. Note the invalidation is process-global:
+  the next call of every jitted function recompiles.
+- **`defjvp` rejects mismatched rule arity.** Registering a number of JVP
+  rules different from the primitive's number of inputs now raises
+  `ValueError` at differentiation time instead of silently dropping
+  trailing gradients (previously `zip` truncation produced wrong, silent
+  results). A multi-result JVP rule returning a bare array instead of a
+  sequence now raises `TypeError`. One latent in-tree mismatch
+  (`binary_fcnmm_p`: four rules for three inputs) was corrected.
+- **`vmap` over `numba.cuda` kernels computes correct results.** Batched
+  calls now execute one kernel launch per batch slice with the kernel's
+  original launch configuration, instead of reusing the launch grid of
+  the unbatched shape over folded buffers (which silently corrupted any
+  kernel that couples rows, e.g. stencils and reductions). Kernels wrapped
+  with an explicit `grid=` cannot be batched; combining `grid=` with
+  `vmap_method=` raises `ValueError` at wrap time. Only one `vmap` level is
+  supported: nested `vmap` now raises a clear error instead of returning
+  uninitialized memory for all but the first slice.
+- **Compilation-cache keys cover everything that affects codegen.** The
+  kernix (inline C++/CUDA) cache key now includes the resolved
+  `FunctionSpec`s and the content of user-provided extra include headers
+  (key schema v2 — old cache entries are recompiled once, not misused).
+  The `numba` CPU FFI memo no longer keys on array shapes, so one kernel
+  serves all shapes of the same dtype signature.
+- **FFI target names are content-derived.** CPU and CUDA numba kernels
+  register under a fingerprint of the kernel's bytecode, constants,
+  closure values, and referenced globals rather than a process-order
+  counter, making `jax.export` artifacts stable across processes. Kernels
+  whose content cannot be fingerprinted deterministically fall back to
+  per-process counter names.
+- Unknown, packed sub-byte (`S1`–`S4`, `U1`–`U4`, `F4E2M1FN`), and FP8
+  buffer dtypes now raise a descriptive `ValueError` instead of being
+  reinterpreted as raw bytes; `bfloat16` is rejected explicitly on the
+  numba paths. XLA FFI extension chains are walked fully, and FFI error
+  objects are destroyed after use.
+- CUDA output buffers for kernels that accumulate are zero-filled on
+  XLA's stream (previously uninitialized memory could leak into results).
+  Transient CUDA probe failures no longer permanently disable the
+  `numba.cuda` backend for the process.
+- Kernel construction/compile failures during lowering now raise
+  `KernelCompilationError` (with the original exception as `__cause__`
+  and the remaining registered backends listed); calling a kernel on a
+  platform with no registered backend raises
+  `KernelFallbackExhaustedError` naming the platforms that are
+  registered. Both are exported from `brainevent`.
+
 ### Changed
 
+- **Re-registering an FFI target with different content now raises
+  `KernelRegistrationError` on every platform** (including
+  `load_cuda_inline(..., replace=True)` / `force_rebuild=True` with
+  changed source). Live re-pointing of an already-registered XLA FFI
+  target is not supported by JAX (CPU raises; CUDA silently keeps the old
+  handler), so brainevent refuses deterministically instead of silently
+  dispatching stale code — register under a new `name=` to iterate on a
+  kernel within one process. Re-registration of *unchanged* source (e.g.
+  `force_rebuild=True` twice) is an idempotent no-op: registration identity
+  is the deterministic compilation cache key, not the compiler's output
+  bytes.
+- Registering a second primitive under an existing name emits a
+  `UserWarning` (the new registration still wins, as before).
 - **`CONTRIBUTING.md` rewritten.** It previously described *BrainPy* and linked to a
   page that returns HTTP 404. It is now a self-contained `brainevent` guide covering
   development setup, the test/mypy/pre-commit gates, docs builds, code style, the pull

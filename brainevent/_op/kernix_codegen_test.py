@@ -1189,5 +1189,5 @@ def test_duplicate_registration_different_module_raises():
 
     brainevent.register_ffi_target("test_dup_conflict.noop", mod, "noop")
 
-    with pytest.raises(KernelRegistrationError, match="already registered to a different"):
+    with pytest.raises(KernelRegistrationError, match="already registered to different"):
         brainevent.register_ffi_target("test_dup_conflict.noop", mod2, "noop")

@@ -1169,7 +1169,7 @@ binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)
 
-binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)
+binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix)
 binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
 binary_fcnmm_p.def_batching_rule(_binary_fcnmm_batching)
 binary_fcnmm_p.def_call(binary_fcnmm_p_call)

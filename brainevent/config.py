@@ -243,6 +243,27 @@ def set_backend(platform: str, backend: Optional[str]):
     get_backend : Query the current global backend for a platform.
     clear_backends : Clear all global backend defaults.
 
+    Notes
+    -----
+    Backend selection is resolved inside each primitive's MLIR lowering
+    function, and JAX caches lowered/compiled executables (both the eager
+    dispatch cache and the ``jit`` compilation cache) keyed on primitive +
+    abstract values, **not** on the global backend setting. If this call
+    actually changes the effective value for *platform*, it therefore calls
+    ``jax.clear_caches()`` so that already-compiled call sites pick up the
+    new backend on their next invocation (at the cost of forcing
+    recompilation everywhere on next use). Calling ``set_backend`` with the
+    value it already has is a no-op and does **not** clear caches.
+
+    This makes ``set_backend`` a **setup-time, single-threaded** control:
+    it is intended to be called before the hot loop / before other threads
+    start compiling, not toggled concurrently from multiple threads while
+    other work is in flight (``jax.clear_caches()`` is process-global).
+    For per-call, thread-safe backend selection, pass ``backend=<name>``
+    directly to the primitive call instead -- it is a bind parameter and
+    therefore part of the cache key, so it composes safely with concurrent
+    dispatch.
+
     Examples
     --------
     .. code-block:: python
@@ -258,9 +279,14 @@ def set_backend(platform: str, backend: Optional[str]):
     if isinstance(backend, str) and backend == '':
         raise ValueError("backend cannot be an empty string.")
     if backend is None:
+        changed = platform in _global_backends
         _global_backends.pop(platform, None)
     else:
+        changed = _global_backends.get(platform) != backend
         _global_backends[platform] = backend
+    if changed:
+        import jax
+        jax.clear_caches()
 
 
 def get_backend(platform: str) -> Optional[str]:
@@ -307,6 +333,16 @@ def clear_backends():
     set_backend : Set the global backend for a platform.
     get_backend : Query the current global backend for a platform.
 
+    Notes
+    -----
+    Like :func:`set_backend`, this invalidates JAX's lowering/compilation
+    caches (via ``jax.clear_caches()``) so that call sites already compiled
+    under the old global backends pick up the reverted per-primitive
+    defaults -- but only when there was something to clear: if no global
+    backend was set for any platform, this is a no-op and does not touch
+    JAX's caches. This is a setup-time, single-threaded control; see
+    :func:`set_backend` for the concurrency caveat.
+
     Examples
     --------
     .. code-block:: python
@@ -317,7 +353,10 @@ def clear_backends():
         >>> brainevent.get_backend('gpu') is None
         True
     """
-    _global_backends.clear()
+    if _global_backends:
+        _global_backends.clear()
+        import jax
+        jax.clear_caches()
 
 
 # ──────────────────────────────────────────────────────────────────────

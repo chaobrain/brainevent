@@ -18,16 +18,19 @@ import enum
 import importlib.util
 import os
 import re
+import sys
 import threading
 import traceback
 from ctypes import c_void_p, c_int, c_int32, c_int64, c_uint32, c_size_t, c_char_p, POINTER, Structure, CFUNCTYPE
-from typing import Callable, Dict, Sequence, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
 import jax
 import ml_dtypes
 import numpy as np
 
+from .ffi_naming import kernel_content_fingerprint
 from .util import OutType, abstract_arguments
+from brainevent._error import KernelRegistrationError
 
 __all__ = [
     'numba_kernel',
@@ -35,9 +38,26 @@ __all__ = [
 
 numba_installed = importlib.util.find_spec('numba') is not None
 _NUMBA_CPU_FFI_HANDLES: Dict[str, object] = {}
-# Maps a kernel/shape/dtype signature to an already-registered FFI target name so
-# repeated eager calls reuse one registration instead of leaking one per call (H1).
+# Maps a kernel-identity/dtype signature to an already-registered FFI target name
+# so repeated eager calls reuse one registration instead of leaking one per call
+# (H1). Shapes are deliberately excluded from the key (F8): the callback
+# re-derives shapes at run time from ``buf_ptr.dims``, so keying on them would
+# mint (and immortalize) one target per distinct call shape.
 _NUMBA_CPU_FFI_TARGETS: Dict[tuple, str] = {}
+# Maps a registered target *name* to the content fingerprint of the kernel
+# currently registered under it (or ``None`` for a counter-fallback name whose
+# kernel could not be fingerprinted). Lets a fresh registration attempt for the
+# same content reuse the name without re-registering with XLA (safe across
+# module reloads), while a name collision between two *different* fingerprints
+# (an astronomically unlikely sha256 collision) raises instead of silently
+# rebinding the target to a different kernel (F14).
+_NUMBA_CPU_FFI_NAME_FINGERPRINTS: Dict[str, Optional[str]] = {}
+# Pins kernel objects that were memoized in ``_NUMBA_CPU_FFI_TARGETS`` via the
+# fingerprint-reuse path.  Those kernels have no handler of their own (they
+# share the first registration's handler), so without this pin the kernel
+# could be garbage-collected and its ``id`` recycled by a *different* kernel,
+# which would then wrongly hit the memo and dispatch to the old handler.
+_NUMBA_CPU_FFI_KERNEL_PINS: Dict[int, object] = {}
 _FFI_CALLBACK_COUNTER = 0
 # Serializes target registration (trace/lowering time, distinct from execution).
 _REGISTRATION_LOCK = threading.Lock()
@@ -298,6 +318,15 @@ class XLA_FFI_Error_Create_Args(Structure):
     ]
 
 
+class XLA_FFI_Error_Destroy_Args(Structure):
+    """ctypes struct for arguments to ``XLA_FFI_Error_Destroy``."""
+    _fields_ = [
+        ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("error", c_void_p),  # XLA_FFI_Error*
+    ]
+
+
 class XLA_FFI_Stream_Get_Args(Structure):
     """ctypes struct for arguments to ``XLA_FFI_Stream_Get``."""
     _fields_ = [
@@ -326,6 +355,7 @@ class XLA_FFI_DeviceOrdinal_Get_Args(Structure):
 
 # Function-pointer signatures for the API entries these bridges actually call.
 XLA_FFI_Error_Create_Func = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_Error_Create_Args))
+XLA_FFI_Error_Destroy_Func = CFUNCTYPE(None, POINTER(XLA_FFI_Error_Destroy_Args))
 XLA_FFI_Stream_Get_Func = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_Stream_Get_Args))
 XLA_FFI_DeviceOrdinal_Get_Func = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_DeviceOrdinal_Get_Args))
 
@@ -334,10 +364,10 @@ class XLA_FFI_Api(Structure):
     """ctypes view of the XLA FFI API dispatch table (jaxlib ``c_api.h``).
 
     Every ``_XLA_FFI_API_STRUCT_FIELD`` entry is a function pointer, so the
-    table can be modelled as a flat sequence of pointers.  The two entries this
-    bridge invokes (``XLA_FFI_Error_Create`` and ``XLA_FFI_Stream_Get``) are
-    typed as :class:`ctypes.CFUNCTYPE`; the rest are opaque ``c_void_p`` of the
-    same width so the field offsets stay exact.
+    table can be modelled as a flat sequence of pointers.  The entries this
+    bridge invokes (``XLA_FFI_Error_Create``, ``XLA_FFI_Error_Destroy`` and
+    ``XLA_FFI_Stream_Get``) are typed as :class:`ctypes.CFUNCTYPE`; the rest are
+    opaque ``c_void_p`` of the same width so the field offsets stay exact.
     """
     _fields_ = [
         ("struct_size", c_size_t),
@@ -346,7 +376,7 @@ class XLA_FFI_Api(Structure):
         ("internal_api", c_void_p),
         ("XLA_FFI_Error_Create", XLA_FFI_Error_Create_Func),
         ("XLA_FFI_Error_GetMessage", c_void_p),
-        ("XLA_FFI_Error_Destroy", c_void_p),
+        ("XLA_FFI_Error_Destroy", XLA_FFI_Error_Destroy_Func),
         ("XLA_FFI_Handler_Register", c_void_p),
         ("XLA_FFI_Stream_Get", XLA_FFI_Stream_Get_Func),
         ("XLA_FFI_Type_Register", c_void_p),
@@ -402,6 +432,40 @@ def make_ffi_error(api_ptr, code, message: str):
     return api.XLA_FFI_Error_Create(ctypes.byref(args))
 
 
+def _destroy_xla_ffi_error(api, err_ptr) -> None:
+    """Destroy an ``XLA_FFI_Error*`` obtained from a failed API call.
+
+    XLA FFI error objects are heap-allocated by the framework and must be
+    explicitly released via ``XLA_FFI_Error_Destroy``; leaving them undestroyed
+    leaks one error object per failed lookup (F19).  Guards against a null
+    ``XLA_FFI_Error_Destroy`` function pointer (older jaxlib may not populate
+    every table entry) and swallows any failure while destroying — the
+    original error being reported to the caller matters more than a clean
+    teardown of this best-effort cleanup.
+
+    Parameters
+    ----------
+    api : XLA_FFI_Api
+        The dereferenced API dispatch table.
+    err_ptr : int or None
+        The ``XLA_FFI_Error*`` value to destroy; a falsy value is a no-op.
+    """
+    if not err_ptr:
+        return
+    destroy_fn = api.XLA_FFI_Error_Destroy
+    if not destroy_fn:
+        return
+    try:
+        args = XLA_FFI_Error_Destroy_Args(
+            struct_size=ctypes.sizeof(XLA_FFI_Error_Destroy_Args),
+            extension_start=None,
+            error=err_ptr,
+        )
+        destroy_fn(ctypes.byref(args))
+    except Exception:  # noqa: BLE001 - best-effort cleanup only
+        pass
+
+
 def get_xla_stream(api_ptr, ctx) -> int:
     """Return the CUDA stream XLA assigned to this FFI call.
 
@@ -442,6 +506,7 @@ def get_xla_stream(api_ptr, ctx) -> int:
     )
     err = api.XLA_FFI_Stream_Get(ctypes.byref(args))
     if err:
+        _destroy_xla_ffi_error(api, err)
         raise RuntimeError('XLA_FFI_Stream_Get reported an error while resolving the CUDA stream.')
     # ``stream`` may legitimately be 0 (the default stream); only a hard lookup
     # failure (signalled by *err*) is an error.  Normalise None -> 0.
@@ -485,6 +550,7 @@ def get_device_ordinal(api_ptr, ctx):
         )
         err = fn(ctypes.byref(args))
         if err or args.device_ordinal < 0:
+            _destroy_xla_ffi_error(api, err)
             return None
         return int(args.device_ordinal)
     except Exception:  # noqa: BLE001 - ordinal is best-effort; fall back to current device
@@ -511,22 +577,65 @@ _XLA_FFI_DTYPE_TO_NUMPY = {
     18: np.dtype(np.complex128),  # C128
 }
 
+# XLA FFI dtype codes that are known to the ``XLA_FFI_DataType`` enum but this
+# bridge deliberately refuses to interpret, mapped to a human-readable reason
+# (L18).  Two families are explicitly called out rather than left to the
+# generic "unknown code" branch, because a wrong guess here is dangerous in a
+# specific way:
+#
+# - Packed sub-byte integer/float types (S1/U1, S2/U2, S4/U4, F4E2M1FN) pack
+#   more than one logical element per byte.  ``ml_dtypes``/numpy report
+#   ``itemsize == 1`` for these (or cannot represent them at all), so a byte
+#   count computed as ``size * dtype.itemsize`` in :func:`_numpy_from_buffer`
+#   would be silently wrong (typically too large), producing an
+#   out-of-bounds read past the end of the real buffer.
+# - FP8 codes are byte-exact (1 byte/element) so an incorrect mapping would
+#   not read out of bounds, but would silently reinterpret the bits under the
+#   wrong float format.  Rejecting them is safer than an accidental
+#   byte-exact "success" that returns numerically wrong results.
+#
+# (from xla/ffi/api/c_api.h XLA_FFI_DataType)
+_XLA_FFI_DTYPE_REJECTED = {
+    30: 'S1: packed sub-byte signed 1-bit integer',
+    26: 'S2: packed sub-byte signed 2-bit integer',
+    21: 'S4: packed sub-byte signed 4-bit integer',
+    31: 'U1: packed sub-byte unsigned 1-bit integer',
+    27: 'U2: packed sub-byte unsigned 2-bit integer',
+    22: 'U4: packed sub-byte unsigned 4-bit integer',
+    32: 'F4E2M1FN: packed sub-byte 4-bit float',
+    19: 'F8E5M2: 8-bit float',
+    29: 'F8E3M4: 8-bit float',
+    28: 'F8E4M3: 8-bit float',
+    20: 'F8E4M3FN: 8-bit float',
+    23: 'F8E4M3B11FNUZ: 8-bit float',
+    24: 'F8E5M2FNUZ: 8-bit float',
+    25: 'F8E4M3FNUZ: 8-bit float',
+    33: 'F8E8M0FNU: 8-bit float (exponent-only)',
+}
+
 
 def resolve_buffer_dtype(dtype_code: int, fallback: np.dtype) -> np.dtype:
     """Resolve an XLA FFI dtype enum to a numpy dtype.
 
-    Distinguishes a *known-but-unsupported* dtype code (raise, never silently
-    reinterpret the bytes) from an *unknown* code (use the caller's abstract
-    fallback).  Replaces ``dict.get(code, fallback)``, which returned the stored
-    ``None`` instead of *fallback* when a code was present-but-unmapped.
+    Every code not present in the supported-dtype table now raises — a code
+    absent from the table has no guaranteed byte layout in this bridge, and
+    silently substituting the trace-time *fallback* dtype risks
+    misinterpreting the buffer's bytes (L18).  This is most dangerous for
+    packed sub-byte types (``int4``/``int2``/``int1``/``F4E2M1FN``): numpy
+    reports their itemsize as a full byte, so a fallback would compute too
+    large a byte count in :func:`_numpy_from_buffer` and read past the end of
+    the real buffer.  Codes known to correspond to a packed sub-byte or FP8
+    format are rejected with an explicit, named reason; any other unmapped
+    code is rejected with a generic "unrecognized" message.
 
     Parameters
     ----------
     dtype_code : int
         ``XLA_FFI_Buffer.dtype`` value (an ``XLA_FFI_DataType`` enum).
     fallback : numpy.dtype
-        Dtype to use when *dtype_code* is not in the table (the abstract dtype
-        JAX assigned to the buffer).
+        The trace-time (abstract) dtype JAX assigned to the buffer.  No longer
+        used to resolve the dtype; retained only to name it in the raised
+        error message for debugging context.
 
     Returns
     -------
@@ -535,17 +644,41 @@ def resolve_buffer_dtype(dtype_code: int, fallback: np.dtype) -> np.dtype:
 
     Raises
     ------
-    TypeError
-        If *dtype_code* is known to the table but maps to no numpy dtype.
+    ValueError
+        If *dtype_code* is a packed sub-byte or FP8 code this bridge refuses
+        to interpret, or is not recognized at all.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import numpy as np
+        >>> resolve_buffer_dtype(11, np.dtype(np.float32))  # F32
+        dtype('float32')
+
+        >>> resolve_buffer_dtype(21, np.dtype(np.float32))  # S4 (packed)
+        Traceback (most recent call last):
+            ...
+        ValueError: XLA FFI buffer dtype code 21 (S4: packed sub-byte signed 4-bit integer) is not supported by the numba FFI bridge...
     """
     if dtype_code in _XLA_FFI_DTYPE_TO_NUMPY:
-        resolved = _XLA_FFI_DTYPE_TO_NUMPY[dtype_code]
-        if resolved is None:
-            raise TypeError(
-                f'XLA FFI dtype code {dtype_code} has no numpy representation in this build.'
-            )
-        return resolved
-    return np.dtype(fallback)
+        return _XLA_FFI_DTYPE_TO_NUMPY[dtype_code]
+    reason = _XLA_FFI_DTYPE_REJECTED.get(dtype_code)
+    if reason is not None:
+        raise ValueError(
+            f'XLA FFI buffer dtype code {dtype_code} ({reason}) is not supported by the '
+            f'numba FFI bridge (trace-time dtype was {np.dtype(fallback)}). Packed sub-byte '
+            f'and FP8 formats have no safe byte-layout mapping to a numpy dtype here; '
+            f'reinterpreting the bytes under a fallback dtype could read out of bounds or '
+            f'silently return wrong values.'
+        )
+    raise ValueError(
+        f'Unrecognized XLA FFI buffer dtype code {dtype_code} (trace-time dtype was '
+        f'{np.dtype(fallback)}). The numba FFI bridge has no mapping for this code and '
+        f'refuses to guess its byte layout by falling back to the trace-time dtype; please '
+        f'file an issue at https://github.com/chaobrain/brainevent/issues if this dtype '
+        f'should be supported.'
+    )
 
 
 def _numpy_from_buffer(data_ptr, shape, dtype):
@@ -583,27 +716,81 @@ def _numpy_from_buffer(data_ptr, shape, dtype):
     return np.frombuffer(raw, dtype=dtype).reshape(shape)
 
 
+def _report_unreportable_ffi_error(name: str, exc: BaseException) -> None:
+    """Loudly warn that a kernel exception could not be reported to XLA.
+
+    :func:`make_ffi_error` returns ``None`` when the call frame's API table
+    pointer is unavailable — but ``None`` is exactly what a *successful*
+    typed FFI callback returns. In that (should-be-unreachable-in-practice)
+    case, an exception would otherwise be silently swallowed and XLA would
+    treat the call as Ok, handing the caller uninitialized or stale output
+    with no error raised at all (F19). Since the normal error-reporting path
+    is unavailable, this writes directly to file descriptor 2 rather than
+    relying on Python-level ``sys.stderr`` (which may itself be redirected or
+    broken in whatever unusual state got us here).
+
+    Parameters
+    ----------
+    name : str
+        The FFI target name of the kernel that raised.
+    exc : BaseException
+        The exception the kernel callback caught.
+    """
+    message = (
+        f"\n{'!' * 78}\n"
+        f"brainevent FATAL: numba CPU FFI kernel {name!r} raised "
+        f"{type(exc).__name__}: {exc}, but the XLA FFI API table pointer was "
+        f"unavailable, so this error could NOT be reported to XLA. XLA will "
+        f"treat this call as successful (Ok status) and the caller may "
+        f"receive uninitialized or stale output with NO error raised.\n"
+        f"{'!' * 78}\n"
+    )
+    try:
+        os.write(2, message.encode('utf-8', errors='replace'))
+    except Exception:  # noqa: BLE001 - fd 2 itself is unavailable; last resort
+        try:
+            print(message, file=sys.stderr)
+        except Exception:  # noqa: BLE001 - nothing else can be done
+            pass
+
+
 # The typed FFI callback signature: void* fn(XLA_FFI_CallFrame*)
 _FFI_CALLBACK_TYPE = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_CallFrame))
 
 
 class NumbaCpuFfiHandler:
-    """Typed FFI handler that bridges XLA's typed FFI protocol to a numba kernel."""
+    """Typed FFI handler that bridges XLA's typed FFI protocol to a numba kernel.
+
+    Notes
+    -----
+    Input/output *shapes* are intentionally not stored: the callback derives
+    the runtime shape of every buffer from ``XLA_FFI_Buffer.dims`` on each
+    call, so a per-registration shape would be dead weight and, worse, would
+    encourage keying registrations on shape (which leaks one target per
+    distinct call shape — audit finding 8). ``input_dtypes``/``output_dtypes``
+    *are* still stored: they are folded into error messages raised by
+    :func:`resolve_buffer_dtype` for debugging context.
+
+    The instance self-pins into the module-level :data:`_NUMBA_CPU_FFI_HANDLES`
+    registry as the last step of construction (audit finding 7): XLA's target
+    registry is process-global and permanent once ``register_ffi_target``
+    returns, but nothing about that registration keeps this handler (and its
+    ctypes trampoline) alive on its own. Without the self-pin, a directly
+    constructed handler that goes out of scope leaves XLA holding a dangling
+    function pointer — a later ``ffi_call`` to *name* is a use-after-free, not
+    a catchable Python error.
+    """
 
     def __init__(
         self,
         name: str,
         kernel,
-        input_shapes: Tuple[Tuple[int, ...], ...],
         input_dtypes: Tuple[np.dtype, ...],
-        output_shapes: Tuple[Tuple[int, ...], ...],
         output_dtypes: Tuple[np.dtype, ...],
     ):
         self.name = name
         self.kernel = kernel
-        self.input_shapes = input_shapes
         self.input_dtypes = input_dtypes
-        self.output_shapes = output_shapes
         self.output_dtypes = output_dtypes
 
         # Create the ctypes callback - must be stored as an attribute to prevent GC
@@ -614,14 +801,25 @@ class NumbaCpuFfiHandler:
         capsule = jax.ffi.pycapsule(ctypes.cast(self._callback, c_void_p).value)
         jax.ffi.register_ffi_target(name, capsule, platform="cpu")
 
+        # Self-pin (F7): from this point XLA holds a raw function pointer into
+        # ``self._callback``; nothing may allow ``self`` to be collected while
+        # that registration is live. Pinning here — rather than relying solely
+        # on the module-level factory below — makes registration and lifetime
+        # inseparable even for direct construction (as the test suite itself
+        # does). Re-pinning the same name to the same handler is idempotent.
+        _NUMBA_CPU_FFI_HANDLES[name] = self
+
     def _ffi_callback(self, call_frame_ptr):
         """Typed FFI callback matching XLA_FFI_Handler signature."""
         try:
             call_frame = call_frame_ptr.contents
 
-            # Check for metadata query extension
+            # Check for a metadata query extension. XLA chains extension nodes
+            # via ``.next``; a future jaxlib that prepends another extension
+            # ahead of Metadata would break a handshake that only inspected
+            # ``extension_start`` itself (F19), so walk the whole chain.
             ext_ptr = call_frame.extension_start
-            if ext_ptr:
+            while ext_ptr:
                 ext = ext_ptr.contents
                 if ext.type == int(XLA_FFI_Extension_Type.Metadata):
                     metadata_ext = ctypes.cast(
@@ -632,6 +830,7 @@ class NumbaCpuFfiHandler:
                     metadata.api_version.minor_version = XLA_FFI_API_MINOR
                     metadata.traits = 0  # not command-buffer-compatible
                     return None  # success
+                ext_ptr = ext.next
 
             # Extract input buffers
             n_inputs = call_frame.args.size
@@ -666,6 +865,12 @@ class NumbaCpuFfiHandler:
                 api_ptr = call_frame_ptr.contents.api
             except Exception:
                 api_ptr = None
+            if not api_ptr:
+                # make_ffi_error(None, ...) returns None below -- XLA's Ok
+                # status. This branch should be unreachable in practice (XLA
+                # always populates the call frame's API pointer), but if it
+                # ever happens, fail loudly instead of silently.
+                _report_unreportable_ffi_error(self.name, exc)
             return make_ffi_error(
                 api_ptr,
                 XLA_FFI_Error_Code.INTERNAL,
@@ -701,6 +906,28 @@ def _register_numba_cpu_ffi_target(
     output_shapes: Tuple[Tuple[int, ...], ...],
     output_dtypes: Tuple[np.dtype, ...],
 ):
+    """Register (or reuse) the FFI target for *kernel*, returning its name and output types.
+
+    Two independent caches are layered here:
+
+    1. A fast in-process memo keyed on ``(id(kernel), input_dtypes,
+       output_dtypes)`` (F8 — shapes are deliberately excluded: the callback
+       re-derives shapes at run time from ``buf_ptr.dims``, so keying on them
+       would mint one target per distinct call shape and leak entries
+       forever). This is the hot path for repeated eager calls.
+    2. A content-derived name (F14): ``brainevent_numba_ffi_{fingerprint}``
+       where *fingerprint* is :func:`kernel_content_fingerprint`. Two
+       textually identical kernels — including a freshly redefined function
+       after a module reload — produce the same name and reuse the existing
+       registration *without* re-registering with XLA. A name collision
+       between two *different* fingerprints (a sha256 collision, astronomically
+       unlikely) raises :class:`KernelRegistrationError` rather than silently
+       rebinding the target to a different kernel. When the kernel closes over
+       a value with no deterministic byte representation,
+       :func:`kernel_content_fingerprint` returns ``None`` and this falls back
+       to the previous per-process counter scheme for that kernel only —
+       correctness is unaffected, only cross-process/name stability is lost.
+    """
     global _FFI_CALLBACK_COUNTER
 
     if not numba_installed:
@@ -716,26 +943,52 @@ def _register_numba_cpu_ffi_target(
     # handler, leaking one handler (and ctypes callback) per call (H1).  The
     # cached handler keeps *kernel* alive, so ``id(kernel)`` cannot be recycled
     # while the entry lives.
-    signature = (id(kernel), input_shapes, input_dtypes, output_shapes, output_dtypes)
+    signature = (id(kernel), input_dtypes, output_dtypes)
     with _REGISTRATION_LOCK:
         cached_name = _NUMBA_CPU_FFI_TARGETS.get(signature)
         if cached_name is not None:
             return cached_name, out_types
 
-        target_name = f'brainevent_numba_ffi_{_FFI_CALLBACK_COUNTER}'
-        _FFI_CALLBACK_COUNTER += 1
+        fingerprint = kernel_content_fingerprint(kernel)
+        if fingerprint is not None:
+            target_name = f'brainevent_numba_ffi_{fingerprint}'
+            existing_fingerprint = _NUMBA_CPU_FFI_NAME_FINGERPRINTS.get(target_name)
+            if existing_fingerprint is not None:
+                if existing_fingerprint == fingerprint:
+                    # Same content already registered under this name (e.g. a
+                    # module reload re-ran this call site with a freshly
+                    # defined but byte-identical kernel) -- reuse without
+                    # touching XLA's registry again.  Pin *this* kernel object:
+                    # the shared handler keeps only the FIRST kernel alive, and
+                    # the memo entry below is keyed on this kernel's ``id``.
+                    _NUMBA_CPU_FFI_KERNEL_PINS[id(kernel)] = kernel
+                    _NUMBA_CPU_FFI_TARGETS[signature] = target_name
+                    return target_name, out_types
+                raise KernelRegistrationError(
+                    f'FFI target name {target_name!r} is already registered for a kernel '
+                    f'with a different content fingerprint ({existing_fingerprint!r} != '
+                    f'{fingerprint!r}). This is a sha256 collision between two distinct '
+                    f'kernel contents and should be astronomically unlikely; if it happens, '
+                    f'please report it at https://github.com/chaobrain/brainevent/issues.'
+                )
+        else:
+            # Unserializable closure/global (e.g. a captured object with no
+            # deterministic byte representation): fall back to a per-process
+            # unique counter name for this kernel only. This loses
+            # cross-process name stability (jax.export of this specific
+            # kernel is not portable) but never correctness.
+            target_name = f'brainevent_numba_ffi_{_FFI_CALLBACK_COUNTER}'
+            _FFI_CALLBACK_COUNTER += 1
 
         handler = NumbaCpuFfiHandler(
             name=target_name,
             kernel=kernel,
-            input_shapes=input_shapes,
             input_dtypes=input_dtypes,
-            output_shapes=output_shapes,
             output_dtypes=output_dtypes,
         )
-
-        # Keep the handler alive to prevent GC of ctypes callback.
-        _NUMBA_CPU_FFI_HANDLES[target_name] = handler
+        # NumbaCpuFfiHandler.__init__ already self-pins into
+        # _NUMBA_CPU_FFI_HANDLES (F7); nothing further to do here for lifetime.
+        _NUMBA_CPU_FFI_NAME_FINGERPRINTS[target_name] = fingerprint
         _NUMBA_CPU_FFI_TARGETS[signature] = target_name
 
     return target_name, out_types
@@ -779,7 +1032,7 @@ def numba_kernel(
     ------
     ImportError
         If Numba is not installed.
-    AssertionError
+    TypeError
         If *kernel* is not a Numba CPU dispatcher.
 
     Notes
