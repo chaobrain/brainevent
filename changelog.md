@@ -5,106 +5,336 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-08
 
-A hardening pass over the custom-operator registration machinery
-(`brainevent._op`), fixing the 19 defects catalogued in the 2026-07-16
-operator-registration audit (`dev/2026-07-16-op-registration-audit.md`):
-stale backend dispatch after runtime backend switches, silently dropped
-JVP rules, incomplete compilation-cache keys, order-dependent FFI target
-names, and incorrect `vmap` execution of `numba.cuda` kernels, among
-others.
+A correctness release spanning three layers of the stack.
+
+*Data structures.* The just-in-time-connectivity (JITC) families now draw **the
+same matrix on CPU and GPU**: the `numba` kernels were rebuilt on the CUDA
+light-RNG walk, replacing the LFSR generators that silently produced different
+connectivity per platform. The compressed-sparse representations validate their
+structure at construction and support `int64` `indptr` for matrices whose `nnz`
+exceeds the `int32` range, and a first-class `Dense` representation joins the
+data-representation family (#179).
+
+*Operator machinery.* A hardening pass over `brainevent._op` fixes the 19
+defects catalogued in the 2026-07-16 operator-registration audit
+(`dev/2026-07-16-op-registration-audit.md`): stale backend dispatch after runtime
+backend switches, silently dropped JVP rules, incomplete compilation-cache keys,
+order-dependent FFI target names, and incorrect `vmap` execution of `numba.cuda`
+kernels, among others (#187).
+
+*CUDA kernels.* A scan of the whole `.cu` tree fixes an out-of-bounds
+shared-memory request that aborted the CUDA context for `float64`
+`binary_csrmm`, widens 54 index expressions that wrapped past `INT32_MAX`,
+restores the missing warp-per-row CSRMV dispatch tier (up to 3.4× on the row
+lengths typical of sparse connectivity), and retires 154 unreachable kernel
+entry points (#185, #188).
+
+The retired `pararnn` subpackage is removed (#177).
+
+**Requirements:** Python ≥ 3.11, `jax` ≥ 0.8.0 (validated through 0.11.x),
+`brainunit` ≥ 0.0.8, `numpy` ≥ 2.0. (The `jax` ≥ 0.8 and `numpy` ≥ 2.0 floors
+were raised during `0.1.2` by #171; the `0.1.2` notes below understate them.)
+
+### ⚠️ Breaking changes & migration
+
+| Old usage | New usage |
+| --- | --- |
+| `mat.todense()` / `.tocsr()` / `.tocsc()` / `.tocoo()` on any `JITCScalarR`/`C`, `JITCNormalR`/`C`, `JITCUniformR`/`C` | `mat.mv.todense()` (the matrix behind `mat @ vector`) or `mat.mm.todense()` (the matrix behind `mat @ matrix`); the bare calls now raise `NotImplementedError` |
+| `jits(w, prob, seed, shape=...)` / `jitn(...)` / `jitu(...)` | `matrix_mode='mv'` or `matrix_mode='mm'` is now a **required** keyword |
+| `numba`-backend JITC results computed with `0.1.x` | values change: the CPU kernels now draw the CUDA matrix. Re-record any CPU golden outputs; seeds are not portable across `0.1.x` → `0.2.0` |
+| `CSR(...)` / `CSC(...)` with malformed `indices` / `indptr` | now raises `TypeError` / `ValueError` / `OverflowError` at construction instead of failing later inside a kernel |
+| `CSR.fromdense(..., index_dtype=jnp.int64)` | raises — `indices` are always `int32`; use `indptr_dtype=` to control offset precision |
+| `load_cuda_inline(..., replace=True)` / `force_rebuild=True` with *changed* source in a live process | raises `KernelRegistrationError`; register under a new `name=` to iterate on a kernel within one process (see _Changed_) |
+| Explicit CUDA entry points `binary_csrm{v,m}_{nt_thread,nt_warp,nt_block,t_warp}_*`, `csr_slice_rows_{thread,warp,block}_*`, `binary_fcnmm_araw_*`, `binary_fcnmv_scatter_*_float_*`, `dt2t_{row_thread,row_warp,nz_thread}_*` | the auto-dispatching wrappers (`*_nt_auto*`, `*_hybrid`), which select the same device kernels internally |
+| `import brainevent.pararnn` | removed, with no replacement |
+
+Three of these deserve a note.
+
+**JITC CPU/GPU parity changes CPU numbers.** In `0.1.x` the `numba` kernels
+generated connectivity with an LFSR stream while the `cuda_raw` kernels used the
+light-RNG chunk/lane walk, so the *same* `(prob, seed, shape)` described a
+different matrix on each platform. The `numba` kernels now reproduce the CUDA
+walk exactly, so a model moved between CPU and GPU keeps its connectivity — but
+CPU results recorded against `0.1.x` will not reproduce. Only the drawn matrix
+changed; the operator semantics did not.
+
+**`mv` and `mm` are genuinely different matrices.** The light kernels walk 32
+lanes for matrix-vector and 4 threads (AW-T4) for matrix-matrix, and the stride
+is part of the drawn matrix. Bare materialization was therefore ambiguous and
+silently returned the mv matrix even when the caller was about to use `mm`; it
+now raises, and the `mat.mv` / `mat.mm` views select explicitly.
+
+**The removed CUDA entry points were already unreachable from Python.** A
+reachability pass over every `// @BE` annotation against every kernel-name
+template in the package found that no Python path could name them; the
+`__global__` kernels behind the auto-dispatched families are retained and still
+launched internally.
 
 ### Added
 
-- **jax 0.11.x is now a validated version.** The numba XLA FFI bridge raises its
-  validated ceiling (`_MAX_VALIDATED_JAX`) from `0.10` to `0.11`, so installing
-  `brainevent` alongside jax 0.11 no longer emits the "untested jax" `RuntimeWarning`.
-  jaxlib 0.11 reports the same `XLA_FFI_API` version (`0.3`) as 0.10, meaning the
-  hand-mirrored `ffi.h` struct layout is unchanged; the full test suite passes on
-  jax 0.11.0 on both the CPU and CUDA backends. The `jax>=0.8.0` floor is unchanged.
+- **`Dense` — an explicit dense data representation (`brainevent.Dense`).** The
+  dense counterpart to `CSR` / `CSC` / `FixedNumPerPre` / `FixedNumPerPost`,
+  holding the full weight matrix as its single pytree leaf while exposing the
+  same representation contract: unit-aware `data`, `shape`, `backend`, named
+  `buffers`, event-driven binary matmul dispatch (`@` with `BinaryArray` /
+  `BitPackedBinary`), and the `update_dense_on_binary_pre` / `_post` plasticity
+  helpers. It is a registered pytree, so it passes through `jax.jit` in the same
+  style as the sparse families.
+- **`int64` `indptr` support for `CSR` / `CSC`.** The constructors and
+  `CSR.fromdense` take `indptr_dtype`: `"auto"` (default) keeps `int32` and
+  promotes to `int64` only when `nnz` exceeds the `int32` range; an explicit
+  `int32` raises `OverflowError` rather than truncating. `int64` offsets require
+  `jax_enable_x64` — the library refuses with an actionable error instead of
+  toggling the global config on your behalf, since JAX would otherwise silently
+  downcast. `indices` stay `int32` in every case: they are secondary-axis
+  coordinates bounded by the matrix dimension, so widening them would cost
+  bandwidth for nothing.
+- **Tunable CSR hybrid CUDA scheduler (`HybridConfig`, `get_hybrid_config`,
+  `init_csr_config`).** The four hybrid kernels (`binary_csrmv_hybrid.cu`,
+  `binary_csrmm_hybrid.cu`, and their `binary_indexed_*` siblings) expose
+  `block_size`, `fixed_scatter_blocks`, `tpr_threshold`, and `task_nnz` as
+  `-DBE_HYBRID_*` compile-time constants. `init_csr_config()` benchmarks
+  candidate configurations by compiling the *production* kernel and persists the
+  winner per GPU model to `<cache_dir>/csr_hybrid_config.json`; later processes
+  pick it up through `get_hybrid_config()`. Resolution order is
+  `$BRAINEVENT_CSR_HYBRID_CONFIG` (a JSON object, for CI and one-off overrides)
+  → the per-`device_kind` entry in the cache file → the defaults baked into the
+  `.cu` sources. The same function sizes the host-side task workspace, so the
+  compiled `.so` and the Python allocation can no longer drift apart.
+  `init_csr_config` is GPU-only, never runs automatically, and must not be
+  called inside a JIT closure.
+- **`'cublas'` GPU backend for `binary_densemv` / `binary_densemm`.** A cuBLAS
+  dense path (`float32` weights, `bool` spikes) alongside the event-driven
+  `cuda_raw` default and the `jax_raw` reference; useful as a dense-throughput
+  baseline at high spike rates. `libcublas` is located in the installed `nvidia`
+  CUDA Python packages at load time.
+- **`mat.mv` / `mat.mm` materialization views on every JITC family.** Each view
+  exposes `todense` / `tocsr` / `tocsc` / `tocoo` for the matrix that mode
+  actually uses. For column-oriented matrices (`JITCScalarC` and siblings) the
+  view also applies the swapped generation shape, so the dense form matches the
+  matvec — the light kernels' `chunk_size` depends on `shape[1]`, which made the
+  old direct materialization shape-inconsistent.
+- **`numba` CPU kernels for the JITC CSR and `dt2t` paths.** `jits_csr_count` /
+  `jits_csr_fill` and their `jitn_*` / `jitu_*` siblings, plus the fused
+  `jitsmv_dt2t` / `jitnmv_dt2t` / `jitumv_dt2t` fill primitives, previously had
+  CUDA-only backends; `.tocsr()` and the eligibility-trace operators now run on
+  CPU.
+- **Light-RNG helpers in the numba random utilities** — `light_rng_uniform01`,
+  `light_rng_normal01`, and `get_numba_light_rng_funcs()`, the CUDA-compatible
+  `(seed, row, col)` weight hashes and the njit dispatch table backing the
+  kernels above. Listed in the *Utilities* API reference.
+- **`matrix_mode` on the JITC CSR materialization entry points** (`jits_to_csr`,
+  `jitn_to_csr`, `jitu_to_csr`, defaulting to `'mv'`).
+- **jax 0.11.x is now a validated version (#182).** The numba XLA FFI bridge
+  raises its validated ceiling (`_MAX_VALIDATED_JAX`) from `0.10` to `0.11`, so
+  installing `brainevent` alongside jax 0.11 no longer emits the "untested jax"
+  `RuntimeWarning`. jaxlib 0.11 reports the same `XLA_FFI_API` version (`0.3`) as
+  0.10, meaning the hand-mirrored `ffi.h` struct layout is unchanged; the full
+  test suite passes on jax 0.11.0 on both the CPU and CUDA backends. The
+  `jax>=0.8.0` floor is unchanged.
 
 ### Fixed
 
-- **Backend switches now take effect immediately.**
+- **`binary_csrmm` no longer aborts the CUDA context with `float64` weights
+  (#188).** The CSRMM non-transpose block kernels stage one accumulator per
+  `(strip, lane)` pair — 8 strips × 32 lanes — but requested only
+  `8 * sizeof(ACC_T)` bytes of dynamic shared memory, a 32× under-request. The
+  1 KiB overrun of the 32-bit instantiations goes unnoticed on sm_86 because the
+  per-block shared-memory window is rounded up; `float64` needs 2 KiB and faults,
+  so `binary_csrmm` with `float64` weights and `avg_nnz > 512` (where `nt_auto`
+  selects the block kernel) died with `CUDA_ERROR_ILLEGAL_ADDRESS`. Fixed across
+  26 instantiations in `binary_csrmm.cu` and `binary_indexed_csrmm.cu`.
+- **CSRMM and JIT index arithmetic no longer wraps past `INT32_MAX` (#188).**
+  The CSRMM kernels computed `B[indices[j] * n + c]` and `C[row * n + c]` in
+  32-bit arithmetic; since `B` is usually a `bool`/`int8` event matrix, 2 GiB of
+  allocation is enough to cross the boundary and read out of bounds. The JIT
+  connectivity families had the same defect in
+  `chunk_counts[row * n_chunks + chunk_id]`, reachable once the indexed buffer
+  passes ~8.6 GB. Widened 30 CSRMM subscripts and 24 JIT chunk sites to
+  `size_t`. Shared-memory subscripts with a literal `* 32` are deliberately
+  unchanged — they are bounded by the block size.
+- **Backend switches now take effect immediately (#187).**
   `XLACustomKernel.set_default`, `brainevent.config.set_backend`, and
   `clear_backends` invalidate JAX's dispatch and executable caches
-  (`jax.clear_caches()`) whenever the effective setting changes.
-  Previously, eager calls and warm `jax.jit` functions kept executing the
-  previously selected backend. Note the invalidation is process-global:
-  the next call of every jitted function recompiles.
-- **`defjvp` rejects mismatched rule arity.** Registering a number of JVP
-  rules different from the primitive's number of inputs now raises
-  `ValueError` at differentiation time instead of silently dropping
-  trailing gradients (previously `zip` truncation produced wrong, silent
-  results). A multi-result JVP rule returning a bare array instead of a
-  sequence now raises `TypeError`. One latent in-tree mismatch
-  (`binary_fcnmm_p`: four rules for three inputs) was corrected.
-- **`vmap` over `numba.cuda` kernels computes correct results.** Batched
-  calls now execute one kernel launch per batch slice with the kernel's
-  original launch configuration, instead of reusing the launch grid of
-  the unbatched shape over folded buffers (which silently corrupted any
-  kernel that couples rows, e.g. stencils and reductions). Kernels wrapped
-  with an explicit `grid=` cannot be batched; combining `grid=` with
-  `vmap_method=` raises `ValueError` at wrap time. Only one `vmap` level is
-  supported: nested `vmap` now raises a clear error instead of returning
-  uninitialized memory for all but the first slice.
-- **Compilation-cache keys cover everything that affects codegen.** The
-  kernix (inline C++/CUDA) cache key now includes the resolved
-  `FunctionSpec`s and the content of user-provided extra include headers
-  (key schema v2 — old cache entries are recompiled once, not misused).
-  The `numba` CPU FFI memo no longer keys on array shapes, so one kernel
-  serves all shapes of the same dtype signature.
-- **FFI target names are content-derived.** CPU and CUDA numba kernels
-  register under a fingerprint of the kernel's bytecode, constants,
-  closure values, and referenced globals rather than a process-order
-  counter, making `jax.export` artifacts stable across processes. Kernels
-  whose content cannot be fingerprinted deterministically fall back to
-  per-process counter names.
-- Unknown, packed sub-byte (`S1`–`S4`, `U1`–`U4`, `F4E2M1FN`), and FP8
-  buffer dtypes now raise a descriptive `ValueError` instead of being
-  reinterpreted as raw bytes; `bfloat16` is rejected explicitly on the
-  numba paths. XLA FFI extension chains are walked fully, and FFI error
-  objects are destroyed after use.
-- CUDA output buffers for kernels that accumulate are zero-filled on
-  XLA's stream (previously uninitialized memory could leak into results).
-  Transient CUDA probe failures no longer permanently disable the
-  `numba.cuda` backend for the process.
+  (`jax.clear_caches()`) whenever the effective setting changes. Previously,
+  eager calls and warm `jax.jit` functions kept executing the previously selected
+  backend. Note the invalidation is process-global: the next call of every jitted
+  function recompiles.
+- **`defjvp` rejects mismatched rule arity (#187).** Registering a number of JVP
+  rules different from the primitive's number of inputs now raises `ValueError`
+  at differentiation time instead of silently dropping trailing gradients
+  (previously `zip` truncation produced wrong, silent results). A multi-result
+  JVP rule returning a bare array instead of a sequence now raises `TypeError`.
+  One latent in-tree mismatch (`binary_fcnmm_p`: four rules for three inputs) was
+  corrected.
+- **`vmap` over `numba.cuda` kernels computes correct results (#187).** Batched
+  calls now execute one kernel launch per batch slice with the kernel's original
+  launch configuration, instead of reusing the launch grid of the unbatched shape
+  over folded buffers (which silently corrupted any kernel that couples rows,
+  e.g. stencils and reductions). Kernels wrapped with an explicit `grid=` cannot
+  be batched; combining `grid=` with `vmap_method=` raises `ValueError` at wrap
+  time. Only one `vmap` level is supported: nested `vmap` now raises a clear
+  error instead of returning uninitialized memory for all but the first slice.
+- **Compilation-cache keys cover everything that affects codegen (#187).** The
+  kernix (inline C++/CUDA) cache key now includes the resolved `FunctionSpec`s
+  and the content of user-provided extra include headers (key schema v2 — old
+  cache entries are recompiled once, not misused). The `numba` CPU FFI memo no
+  longer keys on array shapes, so one kernel serves all shapes of the same dtype
+  signature.
+- **FFI target names are content-derived (#187).** CPU and CUDA numba kernels
+  register under a fingerprint of the kernel's bytecode, constants, closure
+  values, and referenced globals rather than a process-order counter, making
+  `jax.export` artifacts stable across processes. Kernels whose content cannot be
+  fingerprinted deterministically fall back to per-process counter names.
+- Unknown, packed sub-byte (`S1`–`S4`, `U1`–`U4`, `F4E2M1FN`), and FP8 buffer
+  dtypes now raise a descriptive `ValueError` instead of being reinterpreted as
+  raw bytes; `bfloat16` is rejected explicitly on the numba paths. XLA FFI
+  extension chains are walked fully, and FFI error objects are destroyed after
+  use (#187).
+- CUDA output buffers for kernels that accumulate are zero-filled on XLA's stream
+  (previously uninitialized memory could leak into results). Transient CUDA probe
+  failures no longer permanently disable the `numba.cuda` backend for the process
+  (#187).
 - Kernel construction/compile failures during lowering now raise
-  `KernelCompilationError` (with the original exception as `__cause__`
-  and the remaining registered backends listed); calling a kernel on a
-  platform with no registered backend raises
-  `KernelFallbackExhaustedError` naming the platforms that are
-  registered. Both are exported from `brainevent`.
+  `KernelCompilationError` (with the original exception as `__cause__` and the
+  remaining registered backends listed); calling a kernel on a platform with no
+  registered backend raises `KernelFallbackExhaustedError` naming the platforms
+  that are registered. Both are exported from `brainevent` (#187).
+
+### Performance
+
+- **Restored the warp-per-row CSRMV tier (#188).** `float_csrmv.cu` documents a
+  three-tier row mapping (thread / warp / block), but the three binary CSRMV
+  dispatchers only had two — every row length from 16 to 512, the normal range
+  for sparse neural connectivity, ran the thread-per-row kernel, where the 32
+  lanes of a warp each walk a different row and every `indices[j]` load is
+  uncoalesced. Measured on sm_86 (m = k = 65536, f32 hetero, bool spikes),
+  thread vs warp: 0.088 vs 0.043 ms at `avg_nnz` 32, 0.209 vs 0.076 at 64, 0.950
+  vs 0.277 at 256. Thresholds follow the crossovers: thread below 16, warp to
+  512, block above.
+- **Packed every one-warp-per-block launch into 256-thread grid-strided blocks
+  (#188).** A block holds a scheduler slot regardless of its size, so
+  `<<<m, 32>>>` wasted 7/8 of it. Applied to the CSRMV warp kernels (3.3× at
+  `avg_nnz` 8, 2.5× at 32, parity from 128), the `float_csrmm` warp kernels
+  (2.05× at 2, 1.19× at 64), and the `csr_slice_rows` / `dt2t` row-warp kernels.
+  The last group is not a uniform win: it gains 2.5× below `avg_nnz` 32 and
+  regresses ~20% near 512, which was taken deliberately because real sparse
+  connectivity sits well below 256 non-zeros per row. No `<<<..., 32>>>` launch
+  remains in the tree.
 
 ### Changed
 
+- **JITC `numba` kernels rebuilt on the CUDA light-RNG walk (#179).** The dense,
+  matvec, matmat, CSR, and `dt2t` generators across `_jit_scalar`, `_jit_normal`,
+  and `_jit_uniform` now share the CUDA `light_rng_init_wpr` /
+  `stationary_initial_q` initialization, lane strides, and chunking, and sample
+  weights with the same `(seed, row, col)` hash, so `numba` and `cuda_raw`
+  materialize bit-identical matrices. See the *Breaking changes* note above.
+- **`CSR` / `CSC` validate their structure at construction (#179).** `indices`
+  must be integral, non-negative, in bounds for the secondary axis, and are
+  coerced to `int32`; `indptr` must be 1-D, `int32`/`int64`, of length *primary
+  dimension + 1*, start at `0`, be monotonically non-decreasing, and end at
+  `nnz`. Value checks are host-side and therefore skipped under tracers, where
+  only the static dtype and shape invariants are enforced. Structure-preserving
+  paths (`with_data`, `transpose`, `apply`, `tree_unflatten`, data-only binary
+  ops) reuse the already-validated structure, so they add no host readback inside
+  `jax.jit` / `jax.vmap`.
+- **`FixedNumPerPre` / `FixedNumPerPost` coerce their connection indices to
+  `int32`** (#179), matching the compressed-sparse families; bounds are still
+  validated by the existing invalid-index check.
 - **Re-registering an FFI target with different content now raises
-  `KernelRegistrationError` on every platform** (including
-  `load_cuda_inline(..., replace=True)` / `force_rebuild=True` with
-  changed source). Live re-pointing of an already-registered XLA FFI
-  target is not supported by JAX (CPU raises; CUDA silently keeps the old
-  handler), so brainevent refuses deterministically instead of silently
-  dispatching stale code — register under a new `name=` to iterate on a
-  kernel within one process. Re-registration of *unchanged* source (e.g.
-  `force_rebuild=True` twice) is an idempotent no-op: registration identity
-  is the deterministic compilation cache key, not the compiler's output
-  bytes.
-- Registering a second primitive under an existing name emits a
-  `UserWarning` (the new registration still wins, as before).
-- **`CONTRIBUTING.md` rewritten.** It previously described *BrainPy* and linked to a
-  page that returns HTTP 404. It is now a self-contained `brainevent` guide covering
-  development setup, the test/mypy/pre-commit gates, docs builds, code style, the pull
-  request checklist, and GPU kernel contributions.
-- **`SECURITY.md` rewritten.** Vulnerability reports now go through GitHub private
-  vulnerability reporting or email instead of public issues, and the policy documents
-  supported versions, response targets, and the trust boundary around the runtime
-  C++/CUDA compilation APIs (`load_cpp_inline`, `load_cuda_inline`, and friends).
-- **`CODE_OF_CONDUCT.md` upgraded** from Contributor Covenant 2.1 to 3.0.
-- **`.gitattributes` expanded** to cover the header, reStructuredText, notebook, YAML,
-  TOML and image file types actually present in the tree, with language-aware diff
-  drivers, explicit binary markers, GitHub language-statistics hints, and
-  `export-ignore` rules for development-only infrastructure.
+  `KernelRegistrationError` on every platform (#187)** (including
+  `load_cuda_inline(..., replace=True)` / `force_rebuild=True` with changed
+  source). Live re-pointing of an already-registered XLA FFI target is not
+  supported by JAX (CPU raises; CUDA silently keeps the old handler), so
+  brainevent refuses deterministically instead of silently dispatching stale code
+  — register under a new `name=` to iterate on a kernel within one process.
+  Re-registration of *unchanged* source (e.g. `force_rebuild=True` twice) is an
+  idempotent no-op: registration identity is the deterministic compilation cache
+  key, not the compiler's output bytes.
+- Registering a second primitive under an existing name emits a `UserWarning`
+  (the new registration still wins, as before) (#187).
+- **Duplicated internals consolidated (#183).** The dtype→CUDA-suffix table had
+  31 verbatim copies across 22 files and now lives in `_op/util.py` as
+  `dtype_suffix()` / `spike_suffix()` (the lenient `'_f32'` fallback is preserved,
+  documented, and tested). The JIT families' `_normalize_chunk_size`,
+  `_normalize_matrix_mode`, `_MV_STRIDE` / `_MM_STRIDE`, `_is_static_zero`,
+  `_n_chunks`, and `_mode_infix` move to `_misc.py`, and `MatrixMode` to
+  `_typing.py`. This duplication was the riskiest kind: `chunk_size` participates
+  in the RNG stream keying, so a divergent default would not raise — it would
+  silently make one operator draw a different connectivity matrix than its
+  siblings.
+- **CSR binary task capacity is single-sourced (#179).** The host-side workspace
+  sizing moved out of `_csr/main.py` into `hybrid_config.hybrid_task_capacity`,
+  the same function that emits the kernel's compile flags.
+- The three `_jit_uniform` FFI module names are prefixed `jit_uniform_*` to match
+  `_jit_scalar` and `_jit_normal` (#185); the registry is process-global and
+  unprefixed names risked a `KernelRegistrationError` clobber. The
+  `XLACustomKernel` primitive names are deliberately unchanged.
+- **`CONTRIBUTING.md` rewritten (#182).** It previously described *BrainPy* and
+  linked to a page that returns HTTP 404. It is now a self-contained `brainevent`
+  guide covering development setup, the test/mypy/pre-commit gates, docs builds,
+  code style, the pull request checklist, and GPU kernel contributions.
+- **`SECURITY.md` rewritten (#182).** Vulnerability reports now go through GitHub
+  private vulnerability reporting or email instead of public issues, and the
+  policy documents supported versions, response targets, and the trust boundary
+  around the runtime C++/CUDA compilation APIs (`load_cpp_inline`,
+  `load_cuda_inline`, and friends).
+- **`CODE_OF_CONDUCT.md` upgraded** from Contributor Covenant 2.1 to 3.0 (#182).
+- **`.gitattributes` expanded** to cover the header, reStructuredText, notebook,
+  YAML, TOML and image file types actually present in the tree, with
+  language-aware diff drivers, explicit binary markers, GitHub
+  language-statistics hints, and `export-ignore` rules for development-only
+  infrastructure (#182).
+
+### Removed
+
+- **The `brainevent.pararnn` subpackage (#177).** The parallel-RNN training
+  module — diagonal GRU/LSTM cells, the Newton solver, the parallel-prefix
+  reduce, and their fused CUDA kernels — is deleted along with its tests and
+  benchmark. It was never re-exported from `brainevent/__init__.py` and nothing
+  else in the package imported it, so the top-level API is unaffected;
+  `import brainevent.pararnn` no longer resolves.
+- **154 unreachable CUDA entry points (#185, #188).** Every `// @BE` annotation
+  costs a generated XLA FFI wrapper, an nvcc compile, and a registration at first
+  lowering, whether or not Python can name it. Two reachability passes removed
+  102 and then 52 entry points — the explicit `_nt_thread` / `_nt_warp` /
+  `_nt_block` and `t_warp` CSR families, the `csr_slice_rows` tier wrappers, the
+  `binary_fcnmm_araw_*` family, the float `binary_fcnmv_scatter_*` variants, and
+  the `dt2t` tier wrappers. Device kernels reachable through an `_auto`
+  dispatcher were kept; the genuinely orphaned ones went with their wrappers,
+  which also retired a below-sm_70 compile trap (`atomicAdd` called directly on
+  `__half*` / `__nv_bfloat16*` instead of the arch-guarded helpers).
+- **Orphan headers and dead helpers (#185, #183).**
+  `include/brainevent/attrs.h` (a self-declared placeholder) and
+  `include/curand_common.h` (no `.cu` file uses cuRAND) are deleted, along with
+  the unused `cuda_common.h` symbols `warp_reduce_max/min_f32/f64` and `ACC_T_*`.
+  On the Python side, nine never-called `_misc.py` helpers (~412 lines: the
+  block-sparse subsystem, `_coordinate_index_dtype`, and the `is_known_type`
+  duplicate), the never-registered `_csrmv_dt2t_transpose_rule`, the phantom
+  `'SRAW_MM_kernel'` backend string, and 24 unused imports are removed.
+
+### Internal
+
+- **Every test is now co-located with the module it tests (#184, #186).** Rule 11
+  of `AGENTS.md` — each module `foo.py` keeps its tests in a sibling
+  `foo_test.py`, no `tests/` directory and no `test_*.py` prefix — is applied to
+  the remaining violations: `_csr/test_util.py` (which matched pytest's default
+  collection glob) is renamed `_csr/_test_util.py`, and eleven orphan test files
+  are merged or split into their target modules. The only shipping-code change is
+  that the `__getattr__` deprecation shim moves from `__init__.py` to a new
+  `brainevent/_deprecation.py`, storing rename targets as name strings resolved
+  against a caller-supplied namespace rather than live objects; public behaviour
+  is unchanged. Three module-level `pytestmark = pytest.mark.slow` declarations
+  became per-item decorators, which would otherwise have dropped 152 fast tests
+  out of the default lane.
+- `CLAUDE.md` is renamed `AGENTS.md`, with a `CLAUDE.md` stub importing it for
+  backward compatibility (#181).
+- Bumped `mypy` from 2.1.0 to 2.3.0 (#175).
+- Test-suite fixes for the new CSR initialization module (#180).
+
 
 ## [0.1.2] - 2026-07-03
 
