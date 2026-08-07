@@ -29,11 +29,13 @@
  * These kernels assume a single homogeneous weight shared across all non-zeros.
  * Heterogeneous (per-entry) weights are handled by a separate code path.
  *
- * Kernel Variants:
- *   - csrmm_nt_warp_homo_{f32,f64,f16,bf16}  : one warp per (row, col_strip)
- *   - csrmm_nt_block_homo_{f32,f64,f16,bf16} : one block per (row, col_strip)
+ * Entry Points:
  *   - csrmm_nt_auto_homo_{f32,f64,f16,bf16}  : auto-selects warp/block
  *   - csrmm_t_warp_homo_{f32,f64,f16,bf16}   : transpose scatter
+ *
+ * The non-transpose entry point dispatches internally to one of two device
+ * kernels: one warp per (row, col_strip), or one block per (row, col_strip).
+ * Those kernels are not exported individually.
  *
  * Performance (NT mode, homo weights, 10K×10K @ 2% density, n=128):
  *   - cuda backend: 1.19-1.34ms (8.4-9.5× faster than cuSPARSE)
@@ -185,52 +187,6 @@ DEFINE_CSRMM_T_WARP_HOMO(_bf16,   __nv_bfloat16, float, READ_BF16, WRITE_BF16, \
 // FFI Entry Point Macros - Homogeneous
 // =========================================================================
 
-#define FFI_CSRMM_NT_WARP_HOMO(SUFFIX, WEIGHT_C_T)            \
-void csrmm_nt_warp_homo##SUFFIX(                              \
-    const BE::Tensor weights, const BE::Tensor indices,       \
-    const BE::Tensor indptr,  const BE::Tensor B,             \
-    BE::Tensor C,       int64_t stream                  \
-) {                                                           \
-    BE_CHECK_CSR_INDICES_INT32(indices);                      \
-    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream); \
-    int m           = static_cast<int>(indptr.size(0)) - 1;   \
-    int n           = static_cast<int>(B.size(1));            \
-    int c_blocks    = (n + 31) / 32;                          \
-    dim3 grid(m, c_blocks);                                   \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {         \
-        _csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>( \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()), \
-            static_cast<const int32_t*>(indices.data_ptr()),  \
-            static_cast<const IndptrT*>(indptr.data_ptr()),   \
-            static_cast<const WEIGHT_C_T*>(B.data_ptr()),     \
-            static_cast<WEIGHT_C_T*>(C.data_ptr()),           \
-            m, n);                                            \
-    });                                                       \
-}
-
-#define FFI_CSRMM_NT_BLOCK_HOMO(SUFFIX, WEIGHT_C_T, SHM_SIZE)      \
-void csrmm_nt_block_homo##SUFFIX(                                  \
-    const BE::Tensor weights, const BE::Tensor indices,            \
-    const BE::Tensor indptr,  const BE::Tensor B,                  \
-    BE::Tensor C,       int64_t stream                       \
-) {                                                                \
-    BE_CHECK_CSR_INDICES_INT32(indices);                           \
-    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);      \
-    int m           = static_cast<int>(indptr.size(0)) - 1;        \
-    int n           = static_cast<int>(B.size(1));                 \
-    int c_blocks    = (n + 31) / 32;                               \
-    dim3 grid(m, c_blocks);                                        \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {              \
-        _csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),    \
-            static_cast<const int32_t*>(indices.data_ptr()),       \
-            static_cast<const IndptrT*>(indptr.data_ptr()),        \
-            static_cast<const WEIGHT_C_T*>(B.data_ptr()),          \
-            static_cast<WEIGHT_C_T*>(C.data_ptr()),                \
-            m, n);                                                 \
-    });                                                            \
-}
-
 #define FFI_CSRMM_NT_AUTO_HOMO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                    \
 void csrmm_nt_auto_homo##SUFFIX(                                                \
     const BE::Tensor weights, const BE::Tensor indices,                         \
@@ -290,37 +246,21 @@ void csrmm_t_warp_homo##SUFFIX(                                             \
 // FFI Instantiations - Homogeneous
 // =========================================================================
 
-// @BE csrmm_nt_warp_homo_f32
-FFI_CSRMM_NT_WARP_HOMO(_f32, float)
-// @BE csrmm_nt_block_homo_f32
-FFI_CSRMM_NT_BLOCK_HOMO(_f32, float, 8 * 32 * sizeof(float))
 // @BE csrmm_nt_auto_homo_f32
 FFI_CSRMM_NT_AUTO_HOMO(_f32, float, 8 * 32 * sizeof(float))
 // @BE csrmm_t_warp_homo_f32
 FFI_CSRMM_T_WARP_HOMO(_f32, float)
 
-// @BE csrmm_nt_warp_homo_f64
-FFI_CSRMM_NT_WARP_HOMO(_f64, double)
-// @BE csrmm_nt_block_homo_f64
-FFI_CSRMM_NT_BLOCK_HOMO(_f64, double, 8 * 32 * sizeof(double))
 // @BE csrmm_nt_auto_homo_f64
 FFI_CSRMM_NT_AUTO_HOMO(_f64, double, 8 * 32 * sizeof(double))
 // @BE csrmm_t_warp_homo_f64
 FFI_CSRMM_T_WARP_HOMO(_f64, double)
 
-// @BE csrmm_nt_warp_homo_f16
-FFI_CSRMM_NT_WARP_HOMO(_f16, __half)
-// @BE csrmm_nt_block_homo_f16
-FFI_CSRMM_NT_BLOCK_HOMO(_f16, __half, 8 * 32 * sizeof(float))
 // @BE csrmm_nt_auto_homo_f16
 FFI_CSRMM_NT_AUTO_HOMO(_f16, __half, 8 * 32 * sizeof(float))
 // @BE csrmm_t_warp_homo_f16
 FFI_CSRMM_T_WARP_HOMO(_f16, __half)
 
-// @BE csrmm_nt_warp_homo_bf16
-FFI_CSRMM_NT_WARP_HOMO(_bf16, __nv_bfloat16)
-// @BE csrmm_nt_block_homo_bf16
-FFI_CSRMM_NT_BLOCK_HOMO(_bf16, __nv_bfloat16, 8 * 32 * sizeof(float))
 // @BE csrmm_nt_auto_homo_bf16
 FFI_CSRMM_NT_AUTO_HOMO(_bf16, __nv_bfloat16, 8 * 32 * sizeof(float))
 // @BE csrmm_t_warp_homo_bf16
