@@ -845,11 +845,16 @@ def test_indexed_mm_cuda_kernel_selects_perm_names():
 
     from pathlib import Path
     cu = Path(mod.__file__).with_name("binary_indexed_csrmm.cu").read_text()
-    assert "DEFINE_CSRMM_T_WARP_PERM_HETERO" in cu
+    # ``nt_auto_perm`` is the only exported permuted entry point: it dispatches
+    # internally to the warp and block device kernels, which therefore stay.
     assert "DEFINE_CSRMM_NT_WARP_PERM_HETERO" in cu
     assert "DEFINE_CSRMM_NT_BLOCK_PERM_HETERO" in cu
-    assert "binary_csrmm_t_warp_perm_hetero_f32_bool" in cu
     assert "binary_csrmm_nt_auto_perm_hetero_f32_bool" in cu
+    # The transpose route moved to the hybrid kernels, so the permuted
+    # ``t_warp`` family has no caller and must not come back.
+    assert "DEFINE_CSRMM_T_WARP_PERM_HETERO" not in cu
+    assert "FFI_CSRMM_T_WARP_PERM_HETERO" not in cu
+    assert "binary_csrmm_t_warp_perm_hetero" not in cu
 
 
 def test_import_brainevent_needs_no_nvcc():

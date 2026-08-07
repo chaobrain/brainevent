@@ -139,28 +139,6 @@ __global__ void _csrmm_nt_block_homo_kern##SUFFIX(                              
     }                                                                           \
 }
 
-#define DEFINE_CSRMM_T_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                  READ_W, WRITE_W, ACC_ZERO)                  \
-template <typename IndptrT> \
-__global__ void _csrmm_t_warp_homo_kern##SUFFIX(                              \
-    const WEIGHT_T* __restrict__ weights,                                     \
-    const int32_t*  __restrict__ indices,                                     \
-    const IndptrT*  __restrict__ indptr,                                      \
-    const SPIKE_T*  __restrict__ B,                                           \
-    WEIGHT_T*       __restrict__ C,                                           \
-    int m, int n                                                              \
-) {                                                                           \
-    int row       = blockIdx.x;                                               \
-    int col_start = blockIdx.y * 32;                                          \
-    int c         = col_start + (int)threadIdx.x;                             \
-    if (row >= m || c >= n) return;                                           \
-    if (!IS_ACTIVE(B[row * n + c])) return;                                  \
-    IndptrT start = indptr[row], end = indptr[row + 1];                          \
-    WEIGHT_T w_out = weights[0];                                              \
-    for (IndptrT j = start; j < end; j++) {                                       \
-        atomicAdd(&C[indices[j] * n + c], w_out);                            \
-    }                                                                         \
-}
 
 // =========================================================================
 // Heterogeneous Weight Kernels (weights.size == nnz)
@@ -250,27 +228,6 @@ __global__ void _csrmm_nt_block_hetero_kern##SUFFIX(                            
     }                                                                             \
 }
 
-#define DEFINE_CSRMM_T_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                    READ_W, WRITE_W, ACC_ZERO)                  \
-template <typename IndptrT> \
-__global__ void _csrmm_t_warp_hetero_kern##SUFFIX(                              \
-    const WEIGHT_T* __restrict__ weights,                                       \
-    const int32_t*  __restrict__ indices,                                       \
-    const IndptrT*  __restrict__ indptr,                                        \
-    const SPIKE_T*  __restrict__ B,                                             \
-    WEIGHT_T*       __restrict__ C,                                             \
-    int m, int n                                                                \
-) {                                                                             \
-    int row       = blockIdx.x;                                                 \
-    int col_start = blockIdx.y * 32;                                            \
-    int c         = col_start + (int)threadIdx.x;                               \
-    if (row >= m || c >= n) return;                                             \
-    if (!IS_ACTIVE(B[row * n + c])) return;                                    \
-    IndptrT start = indptr[row], end = indptr[row + 1];                            \
-    for (IndptrT j = start; j < end; j++) {                                         \
-        atomicAdd(&C[indices[j] * n + c], weights[j]);                         \
-    }                                                                           \
-}
 
 // =========================================================================
 // Kernel Instantiations — Homogeneous Weights
@@ -285,10 +242,6 @@ DEFINE_CSRMM_NT_BLOCK_HOMO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, \
                             READ_F32, WRITE_F32, 0.0f)
 DEFINE_CSRMM_NT_BLOCK_HOMO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, \
                             READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_T_WARP_HOMO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,   \
-                          READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_T_WARP_HOMO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,   \
-                          READ_F32, WRITE_F32, 0.0f)
 
 // float64 homogeneous
 DEFINE_CSRMM_NT_WARP_HOMO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, \
@@ -299,10 +252,6 @@ DEFINE_CSRMM_NT_BLOCK_HOMO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, 
                             READ_F64, WRITE_F64, 0.0)
 DEFINE_CSRMM_NT_BLOCK_HOMO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, \
                             READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_T_WARP_HOMO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,   \
-                          READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_T_WARP_HOMO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,   \
-                          READ_F64, WRITE_F64, 0.0)
 
 // float16 homogeneous
 DEFINE_CSRMM_NT_WARP_HOMO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, \
@@ -313,10 +262,6 @@ DEFINE_CSRMM_NT_BLOCK_HOMO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, \
                             READ_F16, WRITE_F16, 0.0f)
 DEFINE_CSRMM_NT_BLOCK_HOMO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, \
                             READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_T_WARP_HOMO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,   \
-                          READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_T_WARP_HOMO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,   \
-                          READ_F16, WRITE_F16, 0.0f)
 
 // bfloat16 homogeneous
 DEFINE_CSRMM_NT_WARP_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, \
@@ -327,10 +272,6 @@ DEFINE_CSRMM_NT_BLOCK_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, 
                             READ_BF16, WRITE_BF16, 0.0f)
 DEFINE_CSRMM_NT_BLOCK_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, \
                             READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_T_WARP_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,   \
-                          READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_T_WARP_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,   \
-                          READ_BF16, WRITE_BF16, 0.0f)
 
 // =========================================================================
 // Kernel Instantiations — Heterogeneous Weights
@@ -345,10 +286,6 @@ DEFINE_CSRMM_NT_BLOCK_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, 
                               READ_F32, WRITE_F32, 0.0f)
 DEFINE_CSRMM_NT_BLOCK_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, \
                               READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_T_WARP_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,   \
-                            READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_T_WARP_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,   \
-                            READ_F32, WRITE_F32, 0.0f)
 
 // float64 heterogeneous
 DEFINE_CSRMM_NT_WARP_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, \
@@ -359,10 +296,6 @@ DEFINE_CSRMM_NT_BLOCK_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double
                               READ_F64, WRITE_F64, 0.0)
 DEFINE_CSRMM_NT_BLOCK_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, \
                               READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_T_WARP_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,   \
-                            READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_T_WARP_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,   \
-                            READ_F64, WRITE_F64, 0.0)
 
 // float16 heterogeneous
 DEFINE_CSRMM_NT_WARP_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, \
@@ -373,10 +306,6 @@ DEFINE_CSRMM_NT_BLOCK_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,
                               READ_F16, WRITE_F16, 0.0f)
 DEFINE_CSRMM_NT_BLOCK_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, \
                               READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_T_WARP_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,   \
-                            READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_T_WARP_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,   \
-                            READ_F16, WRITE_F16, 0.0f)
 
 // bfloat16 heterogeneous
 DEFINE_CSRMM_NT_WARP_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, \
@@ -387,10 +316,6 @@ DEFINE_CSRMM_NT_BLOCK_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16
                               READ_BF16, WRITE_BF16, 0.0f)
 DEFINE_CSRMM_NT_BLOCK_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, \
                               READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_T_WARP_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,   \
-                            READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_T_WARP_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,   \
-                            READ_BF16, WRITE_BF16, 0.0f)
 
 // =========================================================================
 // FFI Entry Points — Homogeneous Weights
@@ -434,30 +359,6 @@ void binary_csrmm_nt_auto_homo##SUFFIX(                                         
     });                                                                         \
 }
 
-#define FFI_CSRMM_T_WARP_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)              \
-void binary_csrmm_t_warp_homo##SUFFIX(                                     \
-    const BE::Tensor weights, const BE::Tensor indices,                    \
-    const BE::Tensor indptr,  const BE::Tensor B,                          \
-    BE::Tensor C,       int64_t stream                                     \
-) {                                                                        \
-    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);             \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                   \
-    int n        = static_cast<int>(B.size(1));                            \
-    int k        = static_cast<int>(C.size(0));                            \
-    int c_blocks = (n + 31) / 32;                                          \
-    dim3 grid(m, c_blocks);                                                \
-    WEIGHT_C_T* d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
-    cudaMemsetAsync(d_c, 0, (size_t)k * n * sizeof(WEIGHT_C_T), s);       \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
-        _csrmm_t_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(              \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
-            static_cast<const int32_t*>(indices.data_ptr()),               \
-            static_cast<const IndptrT*>(indptr.data_ptr()),                \
-            static_cast<const SPIKE_C_T*>(B.data_ptr()),                   \
-            d_c, m, n);                                                    \
-    });                                                                    \
-}
 
 // =========================================================================
 // FFI Entry Points — Heterogeneous Weights
@@ -501,30 +402,6 @@ void binary_csrmm_nt_auto_hetero##SUFFIX(                                       
     });                                                                         \
 }
 
-#define FFI_CSRMM_T_WARP_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)            \
-void binary_csrmm_t_warp_hetero##SUFFIX(                                   \
-    const BE::Tensor weights, const BE::Tensor indices,                    \
-    const BE::Tensor indptr,  const BE::Tensor B,                          \
-    BE::Tensor C,       int64_t stream                                     \
-) {                                                                        \
-    BE_CHECK_CSR_INDICES_INT32(indices);                                   \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);             \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                   \
-    int n        = static_cast<int>(B.size(1));                            \
-    int k        = static_cast<int>(C.size(0));                            \
-    int c_blocks = (n + 31) / 32;                                          \
-    dim3 grid(m, c_blocks);                                                \
-    WEIGHT_C_T* d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
-    cudaMemsetAsync(d_c, 0, (size_t)k * n * sizeof(WEIGHT_C_T), s);       \
-    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                     \
-        _csrmm_t_warp_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(            \
-            static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
-            static_cast<const int32_t*>(indices.data_ptr()),               \
-            static_cast<const IndptrT*>(indptr.data_ptr()),                \
-            static_cast<const SPIKE_C_T*>(B.data_ptr()),                   \
-            d_c, m, n);                                                    \
-    });                                                                    \
-}
 
 // =========================================================================
 // FFI Instantiations — Homogeneous Weights
@@ -535,40 +412,24 @@ void binary_csrmm_t_warp_hetero##SUFFIX(                                   \
 FFI_CSRMM_NT_AUTO_HOMO(_f32_bool,  float,  int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_homo_f32_float
 FFI_CSRMM_NT_AUTO_HOMO(_f32_float, float,  float,  8 * 32 * sizeof(float))
-// @BE binary_csrmm_t_warp_homo_f32_bool
-FFI_CSRMM_T_WARP_HOMO(_f32_bool,  float,  int8_t)
-// @BE binary_csrmm_t_warp_homo_f32_float
-FFI_CSRMM_T_WARP_HOMO(_f32_float, float,  float)
 
 // float64 homogeneous
 // @BE binary_csrmm_nt_auto_homo_f64_bool
 FFI_CSRMM_NT_AUTO_HOMO(_f64_bool,  double, int8_t, 8 * 32 * sizeof(double))
 // @BE binary_csrmm_nt_auto_homo_f64_float
 FFI_CSRMM_NT_AUTO_HOMO(_f64_float, double, float,  8 * 32 * sizeof(double))
-// @BE binary_csrmm_t_warp_homo_f64_bool
-FFI_CSRMM_T_WARP_HOMO(_f64_bool,  double, int8_t)
-// @BE binary_csrmm_t_warp_homo_f64_float
-FFI_CSRMM_T_WARP_HOMO(_f64_float, double, float)
 
 // float16 homogeneous
 // @BE binary_csrmm_nt_auto_homo_f16_bool
 FFI_CSRMM_NT_AUTO_HOMO(_f16_bool,  __half, int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_homo_f16_float
 FFI_CSRMM_NT_AUTO_HOMO(_f16_float, __half, float,  8 * 32 * sizeof(float))
-// @BE binary_csrmm_t_warp_homo_f16_bool
-FFI_CSRMM_T_WARP_HOMO(_f16_bool,  __half, int8_t)
-// @BE binary_csrmm_t_warp_homo_f16_float
-FFI_CSRMM_T_WARP_HOMO(_f16_float, __half, float)
 
 // bfloat16 homogeneous
 // @BE binary_csrmm_nt_auto_homo_bf16_bool
 FFI_CSRMM_NT_AUTO_HOMO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_homo_bf16_float
 FFI_CSRMM_NT_AUTO_HOMO(_bf16_float, __nv_bfloat16, float,  8 * 32 * sizeof(float))
-// @BE binary_csrmm_t_warp_homo_bf16_bool
-FFI_CSRMM_T_WARP_HOMO(_bf16_bool,  __nv_bfloat16, int8_t)
-// @BE binary_csrmm_t_warp_homo_bf16_float
-FFI_CSRMM_T_WARP_HOMO(_bf16_float, __nv_bfloat16, float)
 
 // =========================================================================
 // FFI Instantiations — Heterogeneous Weights
@@ -579,37 +440,21 @@ FFI_CSRMM_T_WARP_HOMO(_bf16_float, __nv_bfloat16, float)
 FFI_CSRMM_NT_AUTO_HETERO(_f32_bool,  float,  int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_hetero_f32_float
 FFI_CSRMM_NT_AUTO_HETERO(_f32_float, float,  float,  8 * 32 * sizeof(float))
-// @BE binary_csrmm_t_warp_hetero_f32_bool
-FFI_CSRMM_T_WARP_HETERO(_f32_bool,  float,  int8_t)
-// @BE binary_csrmm_t_warp_hetero_f32_float
-FFI_CSRMM_T_WARP_HETERO(_f32_float, float,  float)
 
 // float64 heterogeneous
 // @BE binary_csrmm_nt_auto_hetero_f64_bool
 FFI_CSRMM_NT_AUTO_HETERO(_f64_bool,  double, int8_t, 8 * 32 * sizeof(double))
 // @BE binary_csrmm_nt_auto_hetero_f64_float
 FFI_CSRMM_NT_AUTO_HETERO(_f64_float, double, float,  8 * 32 * sizeof(double))
-// @BE binary_csrmm_t_warp_hetero_f64_bool
-FFI_CSRMM_T_WARP_HETERO(_f64_bool,  double, int8_t)
-// @BE binary_csrmm_t_warp_hetero_f64_float
-FFI_CSRMM_T_WARP_HETERO(_f64_float, double, float)
 
 // float16 heterogeneous
 // @BE binary_csrmm_nt_auto_hetero_f16_bool
 FFI_CSRMM_NT_AUTO_HETERO(_f16_bool,  __half, int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_hetero_f16_float
 FFI_CSRMM_NT_AUTO_HETERO(_f16_float, __half, float,  8 * 32 * sizeof(float))
-// @BE binary_csrmm_t_warp_hetero_f16_bool
-FFI_CSRMM_T_WARP_HETERO(_f16_bool,  __half, int8_t)
-// @BE binary_csrmm_t_warp_hetero_f16_float
-FFI_CSRMM_T_WARP_HETERO(_f16_float, __half, float)
 
 // bfloat16 heterogeneous
 // @BE binary_csrmm_nt_auto_hetero_bf16_bool
 FFI_CSRMM_NT_AUTO_HETERO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * 32 * sizeof(float))
 // @BE binary_csrmm_nt_auto_hetero_bf16_float
 FFI_CSRMM_NT_AUTO_HETERO(_bf16_float, __nv_bfloat16, float,  8 * 32 * sizeof(float))
-// @BE binary_csrmm_t_warp_hetero_bf16_bool
-FFI_CSRMM_T_WARP_HETERO(_bf16_bool,  __nv_bfloat16, int8_t)
-// @BE binary_csrmm_t_warp_hetero_bf16_float
-FFI_CSRMM_T_WARP_HETERO(_bf16_float, __nv_bfloat16, float)
