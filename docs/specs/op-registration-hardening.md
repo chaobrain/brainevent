@@ -154,6 +154,13 @@ an `isolated_cache` fixture pointing the compilation cache at a scratch
 directory. Without it, another test in the session can pre-populate the cache
 and the test passes for the wrong reason.
 
+The F1/F17 probes register kernels for `'cpu'` only. Their input arrays must be
+committed with `jax.device_put(..., jax.devices('cpu')[0])`: on a machine with a
+GPU, default placement lowers the primitive for `'gpu'` and the call dies with
+`KernelFallbackExhaustedError` before the behaviour under test is reached. These
+tests were originally written against a CPU-only run and passed for that reason;
+a full run on CUDA hardware is what exposed the omission.
+
 CPU-only runs cannot cover the CUDA paths — every CUDA test is gated behind
 `requires_gpu` and `.cu`/inline-CUDA sources are never compiled unless a GPU
 kernel is lowered. Validation therefore requires a run on CUDA hardware in

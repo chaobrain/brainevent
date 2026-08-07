@@ -137,7 +137,9 @@ def test_f1_eager_backend_switch_and_per_call_override():
 
     # Explicit dtype: the declared f32 outs must match the kernel's output
     # even when another test module has left ``jax_enable_x64`` on.
-    x = jnp.arange(4, dtype=jnp.float32)
+    # Committed to CPU: only 'cpu' kernels are registered above, so on a machine
+    # with a GPU the default placement would lower for 'gpu' and exhaust fallbacks.
+    x = jax.device_put(jnp.arange(4, dtype=jnp.float32), jax.devices('cpu')[0])
     outs = [jax.ShapeDtypeStruct((4,), jnp.float32)]
 
     def run():
@@ -201,7 +203,9 @@ def test_f1_jit_warm_function_picks_up_switch_after_set_default():
     def f(x):
         return prim(x, outs=outs)[0]
 
-    x = jnp.arange(4, dtype=jnp.float32)  # explicit dtype: robust under x64 leakage
+    # Explicit dtype: robust under x64 leakage. Committed to CPU so the jitted
+    # call lowers for 'cpu' (the only platform with kernels) on a GPU machine.
+    x = jax.device_put(jnp.arange(4, dtype=jnp.float32), jax.devices('cpu')[0])
     try:
         # Warm/compile with the initial default ('backend_a').
         np.testing.assert_allclose(np.asarray(jax.block_until_ready(f(x))), np.arange(4.0) + 1.0)
@@ -238,7 +242,9 @@ def test_f1_second_primitive_already_compiled_sees_global_switch():
     def f(x):
         return prim_a(x, outs=outs)[0]
 
-    x = jnp.arange(4, dtype=jnp.float32)  # explicit dtype: robust under x64 leakage
+    # Explicit dtype: robust under x64 leakage. Committed to CPU so the jitted
+    # call lowers for 'cpu' (the only platform with kernels) on a GPU machine.
+    x = jax.device_put(jnp.arange(4, dtype=jnp.float32), jax.devices('cpu')[0])
     try:
         # Warm-compile prim_a's call site with its default ('backend_a').
         np.testing.assert_allclose(np.asarray(jax.block_until_ready(f(x))), np.arange(4.0) + 1.0)
@@ -328,7 +334,10 @@ def test_f17_kernel_generator_failure_is_wrapped_with_alternatives():
     prim.def_kernel('bad', 'cpu', lambda **kwargs: (_ for _ in ()).throw(RuntimeError('boom')))
     prim.def_kernel('good', 'cpu', _offset_kernel_generator(1.0))
 
-    x = jnp.arange(4.0)
+    # Committed to CPU: both kernels are registered for 'cpu' only, so on a
+    # machine with a GPU the default placement would lower for 'gpu' and raise
+    # KernelFallbackExhaustedError before the generator is ever invoked.
+    x = jax.device_put(jnp.arange(4, dtype=jnp.float32), jax.devices('cpu')[0])
     with pytest.raises(KernelCompilationError) as excinfo:
         jax.block_until_ready(
             prim(x, outs=[jax.ShapeDtypeStruct((4,), jnp.float32)], backend='bad')
