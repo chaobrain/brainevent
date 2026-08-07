@@ -33,6 +33,7 @@ from brainevent._fcn.binary import (
     binary_fcnmm,
     binary_fcnmm_p,
 )
+from brainevent._error import KernelCompilationError
 from brainevent._misc import fixed_conn_num_to_csc
 from brainevent._test_util import generate_fixed_conn_num_indices
 
@@ -212,8 +213,14 @@ def test_ell_binary_matvec_forward_matches_reference(implementation, homo_w, tra
 
     if implementation == 'cuda_raw' and not transpose:
         # The CUDA row-gather matvec was removed; W @ s goes through the
-        # perm-fused CSR kernel instead.
-        with pytest.raises((NotImplementedError, ValueError), match='row-gather'):
+        # perm-fused CSR kernel instead. The kernel-construction failure is
+        # wrapped in ``KernelCompilationError`` (the original ``NotImplementedError``
+        # is preserved as ``__cause__`` and its text in the message), so accept
+        # both the wrapper and the bare exception.
+        with pytest.raises(
+            (KernelCompilationError, NotImplementedError, ValueError),
+            match='row-gather',
+        ):
             binary_fcnmv(weights, indices, events, shape=shape, transpose=transpose, backend=implementation)
         return
 
