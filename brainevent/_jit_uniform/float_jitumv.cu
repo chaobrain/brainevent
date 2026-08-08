@@ -16,7 +16,7 @@
 /*
  * float_jitumv.cu -- dense-vector light-RNG WPR chunk backend.
  *
- * The generated row-major matrix is identical to CSR matrix_mode="mv" and
+ * The generated row-major matrix is identical to the CSR one and to
  * binary_jitumv, but the right operand is a dense float vector rather than a
  * packed event mask.
  */

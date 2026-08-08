@@ -66,17 +66,10 @@ def _seed_rng():
 
 # ---- Forward: jitnmv (matrix @ vector, transpose=False) ----
 
-def test_jitn_requires_matrix_mode():
-    # mv and mm draw different matrices, so dense materialization must pick one.
-    with pytest.raises(TypeError):
-        jitn(1.5, 0.15, 0.1, 123, shape=(20, 30))
-
-
 @requires_cpu_jitn
-@pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('corder', [True, False])
-def test_jitn_numba_matches_light_rng_reference(matrix_mode, transpose, corder):
+def test_jitn_numba_matches_light_rng_reference(transpose, corder):
     shape = (13, 17)
     w_loc = jnp.asarray(1.5, dtype=jnp.float32)
     w_scale = jnp.asarray(0.15, dtype=jnp.float32)
@@ -85,11 +78,11 @@ def test_jitn_numba_matches_light_rng_reference(matrix_mode, transpose, corder):
         actual = jitn(
             w_loc, w_scale, prob, seed,
             shape=shape, transpose=transpose, corder=corder,
-            matrix_mode=matrix_mode, backend='numba',
+            backend='numba',
         )
     expected = dense_normal_reference(
         w_loc, w_scale, prob, seed,
-        shape=shape, transpose=transpose, corder=corder, matrix_mode=matrix_mode,
+        shape=shape, transpose=transpose, corder=corder,
     )
     assert np.allclose(np.asarray(actual), expected, rtol=5e-6, atol=5e-6)
 
@@ -111,7 +104,7 @@ def test_jitnmv_numba_matches_light_rng_reference(transpose, corder):
         )
     dense = dense_normal_reference(
         w_loc, w_scale, prob, seed,
-        shape=shape, transpose=transpose, corder=corder, matrix_mode='mv',
+        shape=shape, transpose=transpose, corder=corder,
     )
     expected = dense @ np.asarray(vector)
     assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
@@ -134,21 +127,20 @@ def test_jitnmm_numba_matches_light_rng_reference(transpose, corder):
         )
     dense = dense_normal_reference(
         w_loc, w_scale, prob, seed,
-        shape=shape, transpose=transpose, corder=corder, matrix_mode='mm',
+        shape=shape, transpose=transpose, corder=corder,
     )
     expected = dense @ np.asarray(B)
     assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS)
-@pytest.mark.parametrize('matrix_mode', ['mv', 'mm'])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('corder', [True, False])
-def test_jitn_transpose_symmetry(implementation, matrix_mode, transpose, corder):
+def test_jitn_transpose_symmetry(implementation, transpose, corder):
     out1 = jitn(1.5, 0.15, 0.1, 123, shape=(100, 50), transpose=transpose,
-                corder=corder, matrix_mode=matrix_mode, backend=implementation)
+                corder=corder, backend=implementation)
     out2 = jitn(1.5, 0.15, 0.1, 123, shape=(100, 50), transpose=not transpose,
-                corder=not corder, matrix_mode=matrix_mode, backend=implementation)
+                corder=not corder, backend=implementation)
     assert jnp.allclose(out1, out2.T)
     jax.block_until_ready((out1, out2))
 
@@ -160,7 +152,7 @@ def test_jitnmv_forward(implementation, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     vector = jnp.asarray(np.random.rand(shape[1]))
     dense = jitn(w_loc, w_scale, prob, seed, shape=shape, corder=corder,
-                 matrix_mode='mv', backend=implementation)
+                 backend=implementation)
     out = jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ vector
     print(out - expected)
@@ -177,7 +169,7 @@ def test_jitnmv_transpose_forward(implementation, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     vector = jnp.asarray(np.random.rand(shape[0]))
     dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=True,
-                 corder=corder, matrix_mode='mv', backend=implementation)
+                 corder=corder, backend=implementation)
     out = jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -194,7 +186,7 @@ def test_jitnmm_forward(implementation, k, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     B = jnp.asarray(np.random.rand(shape[1], k))
     dense = jitn(w_loc, w_scale, prob, seed, shape=shape, corder=corder,
-                 matrix_mode='mm', backend=implementation)
+                 backend=implementation)
     out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -211,7 +203,7 @@ def test_jitnmm_transpose_forward(implementation, k, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     B = jnp.asarray(np.random.rand(shape[0], k))
     dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=True,
-                 corder=corder, matrix_mode='mm', backend=implementation)
+                 corder=corder, backend=implementation)
     out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -286,7 +278,7 @@ def test_jitnmm_jvp(implementation, k, shape, corder, transpose):
     mat_rows = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(mat_rows, k))
     dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose,
-                 corder=corder, matrix_mode='mm', backend=implementation)
+                 corder=corder, backend=implementation)
 
     def f_mm(x):
         return jitnmm(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder,
@@ -315,7 +307,7 @@ def test_jitnmm_vjp(implementation, k, shape, corder, transpose):
     mat_rows = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(mat_rows, k))
     dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose,
-                 corder=corder, matrix_mode='mm', backend=implementation)
+                 corder=corder, backend=implementation)
 
     def f_mm(x):
         return jitnmm(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder,
@@ -348,7 +340,7 @@ def test_jitnmv_vmap_over_vectors(implementation, batch_size, shape, corder):
     assert results.shape == (batch_size, shape[0])
 
     expected = jitnmm(w_loc, w_scale, prob, jnp.asarray(vectors).T, seed, shape=shape,
-                      corder=corder, matrix_mode='mm', backend=implementation).T
+                      corder=corder, backend=implementation).T
     assert jnp.allclose(results, expected, rtol=1e-4, atol=1e-4)
     jax.block_until_ready((vectors, results, expected))
 
@@ -371,7 +363,7 @@ def test_jitnmv_transpose_vmap_over_vectors(implementation, batch_size, shape, c
     assert results.shape == (batch_size, shape[1])
 
     expected = jitnmm(w_loc, w_scale, prob, jnp.asarray(vectors).T, seed, shape=shape,
-                      transpose=True, corder=corder, matrix_mode='mm', backend=implementation).T
+                      transpose=True, corder=corder, backend=implementation).T
     assert jnp.allclose(results, expected, rtol=1e-4, atol=1e-4)
     jax.block_until_ready((vectors, results, expected))
 
@@ -482,7 +474,7 @@ def test_jitn_vmap_over_wloc(implementation, shape):
     w_scale, prob, seed = 0.1, 0.1, 123
 
     def f(w_loc):
-        return jitn(w_loc, w_scale, prob, seed, shape=shape, matrix_mode='mv', backend=implementation)
+        return jitn(w_loc, w_scale, prob, seed, shape=shape, backend=implementation)
 
     w_locs = brainstate.random.rand(10)
     results = jax.vmap(f)(w_locs)
@@ -503,7 +495,7 @@ def test_jitn_vmap_over_prob(implementation, shape):
     w_loc, w_scale, seed = 1.5, 0.1, 123
 
     def f(prob):
-        return jitn(w_loc, w_scale, prob, seed, shape=shape, matrix_mode='mv', backend=implementation)
+        return jitn(w_loc, w_scale, prob, seed, shape=shape, backend=implementation)
 
     probs = brainstate.random.rand(10)
     results = jax.vmap(f)(probs)
@@ -524,7 +516,7 @@ def test_jitn_vmap_over_seed(implementation, shape):
     w_loc, w_scale, prob = 1.5, 0.1, 0.1
 
     def f(seed):
-        return jitn(w_loc, w_scale, prob, seed, shape=shape, matrix_mode='mv', backend=implementation)
+        return jitn(w_loc, w_scale, prob, seed, shape=shape, backend=implementation)
 
     seeds = brainstate.random.randint(0, 100000, 10)
     results = jax.vmap(f)(seeds)
@@ -775,3 +767,156 @@ def test_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, transpose):
         f"w_scale loss grad mismatch: AD={float(grad1[0])}, FD={float(grad_fd)}"
     )
     jax.block_until_ready((B, target, w_scale_arr, grad1))
+
+
+# ---- One matrix: vmap over vectors agrees with a loop, and with the numpy walk ----
+# ``vmap(jitnmv)`` forwards to ``jitnmm``; before unification the two drew
+# different matrices, so this equality did not hold.
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30)])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_vmap_jitnmv_matches_loop(implementation, shape, transpose, corder):
+    prob, seed, batch = 0.2, 123, 5
+    k = shape[0] if transpose else shape[1]
+    vectors = np.random.randn(batch, k).astype(np.float32)
+
+    def f(v):
+        return jitnmv(1.5, 0.15, prob, v, seed, shape=shape,
+                   transpose=transpose, corder=corder, backend=implementation)
+
+    batched = jax.vmap(f)(jnp.asarray(vectors))
+    looped = jnp.stack([f(jnp.asarray(vectors[i])) for i in range(batch)])
+    assert jnp.allclose(batched, looped, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((batched, looped))
+
+
+@pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(13, 17), (33, 33), (7, 5)])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitn_matches_numpy_reference(implementation, shape, transpose, corder):
+    # An independent pure-numpy replay of the 32-lane walk -- this pins the drawn
+    # matrix itself, not merely the agreement of the kernels with each other.
+    prob, seed = 0.2, 123
+    actual = np.asarray(jitn(1.5, 0.15, prob, seed, shape=shape, transpose=transpose,
+                         corder=corder, backend=implementation))
+    expected = dense_normal_reference(1.5, 0.15, prob, seed, shape=shape,
+                       transpose=transpose, corder=corder)
+    assert np.array_equal(actual != 0, expected != 0)
+    assert np.allclose(actual, expected, rtol=1e-4, atol=1e-4)
+
+
+# ---- Public interface: back to the v0.1.2 parameter lists ----
+# ``matrix_mode`` was a 0.2.0-only keyword; with one matrix it is gone, and these
+# signatures must again be exactly the ones v0.1.2 shipped.
+
+@pytest.mark.parametrize('fn,expected', [
+    (jitn, ('w_loc, w_scale', 'prob', 'seed', 'shape', 'transpose', 'corder', 'backend')),
+    (jitnmv, ('w_loc, w_scale', 'prob', 'vector', 'seed', 'shape', 'transpose', 'corder', 'backend')),
+    (jitnmm, ('w_loc, w_scale', 'prob', 'B', 'seed', 'shape', 'transpose', 'corder', 'backend')),
+])
+def test_public_signature_matches_0_1_2(fn, expected):
+    import inspect
+    assert tuple(inspect.signature(fn).parameters) == tuple(
+        p.strip() for part in expected for p in part.split(',')
+    )
+
+
+# ---- The drawn matrix depends only on the generated matrix's geometry ----
+# ``chunk_size`` splits the *walked* dimension, never the caller's ``shape[1]``.
+# The two ``(shape, transpose)`` pairs below describe the same matrix, so they
+# must draw it identically -- this is what lets the matrix classes materialize
+# with their own shape instead of a swapped one.
+
+@pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(12, 20), (33, 33), (7, 5), (64, 3)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_generation_is_shape_pair_independent(implementation, shape, corder):
+    m, n = shape
+    prob, seed = 0.2, 123
+    a = jitn(1.5, 0.15, prob, seed, shape=(m, n), transpose=False,
+          corder=corder, backend=implementation)
+    b = jitn(1.5, 0.15, prob, seed, shape=(n, m), transpose=True,
+          corder=corder, backend=implementation)
+    assert np.array_equal(np.asarray(a), np.asarray(b))
+
+
+# ---- numba (CPU) and cuda_raw (GPU) must draw the *same* matrix ----
+# The two backends reimplement the light-RNG walk independently; the whole point
+# of the shared chunk/lane keying is that they agree bit for bit. Skipped unless
+# both backends are actually available on this machine.
+
+@pytest.mark.parametrize('shape', [(12, 20), (33, 33), (7, 5), (100, 250)])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_numba_and_cuda_draw_the_same_matrix(shape, transpose, corder):
+    if 'numba' not in jitn_p.available_backends('cpu') or 'cuda_raw' not in jitn_p.available_backends('gpu'):
+        pytest.skip('needs both a CPU numba backend and a CUDA device')
+    prob, seed = 0.2, 123
+    with jax.default_device(jax.devices('cpu')[0]):
+        cpu = np.asarray(jitn(1.5, 0.15, prob, seed, shape=shape, transpose=transpose,
+                          corder=corder, backend='numba'))
+    with jax.default_device(jax.devices('cuda')[0]):
+        gpu = np.asarray(jitn(1.5, 0.15, prob, seed, shape=shape, transpose=transpose,
+                          corder=corder, backend='cuda_raw'))
+    # The *structure* is bit-exact: it comes from the shared chunk/lane walk.
+    assert np.array_equal(cpu != 0, gpu != 0)
+    # The *weights* are not, and cannot be: the Acklam probit is a rational
+    # expression whose float32 evaluation order differs between numba (x86) and
+    # nvcc (PTX). Measured worst case is 1 ULP on 2 of ~5000 non-zeros.
+    assert np.allclose(cpu, gpu, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize('shape', [(20, 30), (33, 33)])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_numba_and_cuda_matvec_agree(shape, transpose, corder):
+    if 'numba' not in jitnmv_p.available_backends('cpu') or 'cuda_raw' not in jitnmv_p.available_backends('gpu'):
+        pytest.skip('needs both a CPU numba backend and a CUDA device')
+    prob, seed = 0.2, 123
+    k = shape[0] if transpose else shape[1]
+    v = np.random.rand(k).astype(np.float32)
+    with jax.default_device(jax.devices('cpu')[0]):
+        cpu = np.asarray(jitnmv(1.5, 0.15, prob, jnp.asarray(v), seed, shape=shape,
+                            transpose=transpose, corder=corder, backend='numba'))
+    with jax.default_device(jax.devices('cuda')[0]):
+        gpu = np.asarray(jitnmv(1.5, 0.15, prob, jnp.asarray(v), seed, shape=shape,
+                            transpose=transpose, corder=corder, backend='cuda_raw'))
+    # same matrix, so only the float summation order may differ
+    assert np.allclose(cpu, gpu, rtol=1e-5, atol=1e-5)
+
+
+# ---- The ``notrans`` and ``trans`` CUDA entry points draw ONE matrix ----
+# They are separate kernels: ``notrans`` gathers (``acc += w * v[j]`` into
+# ``output[row]``), ``trans`` scatters (``atomic_add(output[j], w * v[row])``).
+# For the same seeded/walked dimensions they must replay the same stream, so one
+# computes ``M @ v`` and the other ``M.T @ u`` for the *same* M. Recover M from
+# each by feeding unit vectors and compare.
+#
+#   notrans entry:  jitnmv(shape=(a, b), transpose=False, corder=True )   -> M @ v
+#   trans   entry:  jitnmv(shape=(b, a), transpose=False, corder=False)   -> M.T @ u
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(12, 20), (17, 9), (33, 33)])
+def test_notrans_and_trans_kernels_draw_one_matrix(implementation, shape):
+    a, b = shape
+    prob, seed = 0.2, 123
+    eye_b = np.eye(b, dtype=np.float32)
+    eye_a = np.eye(a, dtype=np.float32)
+    via_notrans = np.stack(
+        [np.asarray(jitnmv(1.5, 0.15, prob, jnp.asarray(eye_b[j]), seed, shape=(a, b),
+                       transpose=False, corder=True, backend=implementation))
+         for j in range(b)], axis=1)
+    via_trans = np.stack(
+        [np.asarray(jitnmv(1.5, 0.15, prob, jnp.asarray(eye_a[i]), seed, shape=(b, a),
+                       transpose=False, corder=False, backend=implementation))
+         for i in range(a)], axis=1).T
+    assert via_notrans.shape == via_trans.shape == (a, b)
+    assert np.array_equal(via_notrans != 0, via_trans != 0)
+    assert np.allclose(via_notrans, via_trans, rtol=1e-5, atol=1e-5)
+    # and it is the matrix the materialization operator writes out
+    materialized = np.asarray(jitn(1.5, 0.15, prob, seed, shape=(a, b), transpose=False,
+                              corder=True, backend=implementation))
+    assert np.allclose(via_notrans, materialized, rtol=1e-5, atol=1e-5)

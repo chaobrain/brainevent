@@ -24,6 +24,7 @@ from brainevent._data import _initialize_conn_length, _initialize_seed
 from brainevent._jit_normal.binary import (
     binary_jitnmv,
     binary_jitnmv_p,
+    binary_jitnmm,
     binary_jitnmm_p,
     binary_jitnmm_p_call,
 )
@@ -125,7 +126,7 @@ def test_binary_jitnmv_numba_matches_light_rng_reference(transpose, corder, even
         )
     dense = dense_normal_reference(
         w_loc, w_scale, prob, seed,
-        shape=shape, transpose=transpose, corder=corder, matrix_mode='mv',
+        shape=shape, transpose=transpose, corder=corder,
     )
     expected = dense @ vector_ref
     assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
@@ -151,7 +152,7 @@ def test_binary_jitnmm_numba_matches_light_rng_reference(transpose, corder, even
         )
     dense = dense_normal_reference(
         w_loc[0], w_scale[0], prob, seed,
-        shape=shape, transpose=transpose, corder=corder, matrix_mode='mm',
+        shape=shape, transpose=transpose, corder=corder,
     )
     expected = dense @ matrix_ref
     assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
@@ -736,3 +737,84 @@ def test_binary_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, trans
     grad2 = jax.grad(loss_ref)(w_scale_arr)
     assert allclose(grad1, grad2, rtol=2e-2, atol=2e-2)
     jax.block_until_ready((B, target, w_scale_arr, grad1, grad2))
+
+
+# ---- One matrix: matmat is n independent matvecs, and vmap agrees with a loop ----
+# Regression guards for the pre-unification defects: ``binary_jitnmm`` drew the
+# AW-T4 matrix while ``binary_jitnmv`` drew the 32-lane one, so both
+# ``binary_jitnmm(...)[:, c]`` and ``vmap(binary_jitnmv)`` silently disagreed
+# with a plain loop over ``binary_jitnmv``.
+
+@pytest.mark.parametrize("implementation", JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (33, 33)])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_binary_jitnmm_batch1_matches_binary_jitnmv(implementation, shape, transpose, corder):
+    prob, seed = 0.2, 123
+    k = shape[0] if transpose else shape[1]
+    spikes = np.random.rand(k, 1) < 0.5
+    mm = binary_jitnmm(1.5, 0.15, prob, jnp.asarray(spikes), seed, shape=shape,
+                    transpose=transpose, corder=corder, backend=implementation)
+    mv = binary_jitnmv(1.5, 0.15, prob, jnp.asarray(spikes[:, 0]), seed, shape=shape,
+                    transpose=transpose, corder=corder, backend=implementation)
+    assert allclose(mm[:, 0], mv, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((mm, mv))
+
+
+@pytest.mark.parametrize("implementation", JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30)])
+@pytest.mark.parametrize('n', [1, 4, 33])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_binary_jitnmm_columns_are_independent_mvs(implementation, shape, n, transpose, corder):
+    prob, seed = 0.2, 123
+    k = shape[0] if transpose else shape[1]
+    spikes = np.random.rand(k, n) < 0.5
+    mm = binary_jitnmm(1.5, 0.15, prob, jnp.asarray(spikes), seed, shape=shape,
+                    transpose=transpose, corder=corder, backend=implementation)
+    for c in range(n):
+        mv = binary_jitnmv(1.5, 0.15, prob, jnp.asarray(spikes[:, c]), seed, shape=shape,
+                        transpose=transpose, corder=corder, backend=implementation)
+        assert allclose(mm[:, c], mv, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready(mm)
+
+
+@pytest.mark.parametrize("implementation", JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30)])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_vmap_binary_jitnmv_matches_loop(implementation, shape, transpose, corder):
+    prob, seed, batch = 0.2, 123, 5
+    k = shape[0] if transpose else shape[1]
+    spikes = np.random.rand(batch, k) < 0.5
+
+    def f(v):
+        return binary_jitnmv(1.5, 0.15, prob, v, seed, shape=shape,
+                          transpose=transpose, corder=corder, backend=implementation)
+
+    batched = jax.vmap(f)(jnp.asarray(spikes))
+    looped = jnp.stack([f(jnp.asarray(spikes[i])) for i in range(batch)])
+    assert allclose(batched, looped, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((batched, looped))
+
+
+# ---- Same check on the event-driven path ----
+# ``binary_jitnmv``'s notrans/trans kernels must replay the same stream too.
+
+@pytest.mark.parametrize("implementation", JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', [(12, 20), (17, 9)])
+def test_binary_notrans_and_trans_kernels_draw_one_matrix(implementation, shape):
+    a, b = shape
+    prob, seed = 0.2, 123
+    eye_b = np.eye(b, dtype=bool)
+    eye_a = np.eye(a, dtype=bool)
+    via_notrans = np.stack(
+        [np.asarray(binary_jitnmv(1.5, 0.15, prob, jnp.asarray(eye_b[j]), seed, shape=(a, b),
+                              transpose=False, corder=True, backend=implementation))
+         for j in range(b)], axis=1)
+    via_trans = np.stack(
+        [np.asarray(binary_jitnmv(1.5, 0.15, prob, jnp.asarray(eye_a[i]), seed, shape=(b, a),
+                              transpose=False, corder=False, backend=implementation))
+         for i in range(a)], axis=1).T
+    assert np.array_equal(via_notrans != 0, via_trans != 0)
+    assert np.allclose(via_notrans, via_trans, rtol=1e-5, atol=1e-5)

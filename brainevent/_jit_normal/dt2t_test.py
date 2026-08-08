@@ -84,7 +84,7 @@ def test_jitnmv_dt2t_matches_csr_reference(implementation, shape, corder, transp
         )
         csr = jitn_to_csr(
             1.5, 0.2, 0.2, 42,
-            shape=shape, corder=corder, matrix_mode='mv', backend=implementation,
+            shape=shape, corder=corder, backend=implementation,
         )
         expected = _csr_yw_reference(csr, y, transpose)
 
@@ -121,7 +121,6 @@ def test_jitnmv_dt2t_float64_matches_csr_reference(implementation, corder):
             42,
             shape=shape,
             corder=corder,
-            matrix_mode='mv',
             backend=implementation,
         )
         expected = _csr_yw_reference(csr, y, False)
@@ -198,7 +197,7 @@ def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, tran
 
         chunk_counts = jitn_csr_count_p_call(
             w0, w1, clen, seed,
-            shape=shape, corder=True, matrix_mode='mv', backend=implementation,
+            shape=shape, corder=True, backend=implementation,
         )[0]
         row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32)
         indptr = jnp.concatenate([jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)])
@@ -208,7 +207,7 @@ def test_jitnmv_dt2t_fill_generates_y_times_weight_directly(implementation, tran
 
         indices, weights = jitn_csr_fill_p_call(
             w0, w1, clen, seed, chunk_offsets, nnz,
-            shape=shape, corder=True, matrix_mode='mv', backend=implementation,
+            shape=shape, corder=True, backend=implementation,
         )
         out = jitnmv_dt2t_p_call(
             w0,
@@ -381,10 +380,19 @@ def test_jitnmv_dt2t_cuda_matches_cuda_csr_reference(shape, corder, transpose):
             42,
             shape=shape,
             corder=corder,
-            matrix_mode='mv',
             backend='cuda_raw',
         )
         expected = _csr_yw_reference(csr, y, transpose)
 
     assert allclose(out, expected)
     jax.block_until_ready((out, expected))
+
+
+# ---- Public interface: back to the v0.1.2 parameter list ----
+
+def test_dt2t_signature_matches_0_1_2():
+    import inspect
+    params = tuple(inspect.signature(jitnmv_dt2t).parameters)
+    assert params == tuple(p.strip() for p in 'w_loc, w_scale'.split(',')) + (
+        'prob', 'y', 'seed', 'shape', 'transpose', 'corder', 'backend',
+    )

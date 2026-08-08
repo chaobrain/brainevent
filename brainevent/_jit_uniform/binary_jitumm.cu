@@ -18,7 +18,7 @@
  *
  * MM = repeated MV: each column is an independent MV.
  *   - packed layout: [n][ceil(k/32)] column-major bitmask.
- *   - Grid 3D: (row_group_blocks, n_chunks, n).
+ *   - Grid 3D: (row_warp_blocks, n_chunks, n).
  *   - One warp = 8 independent 4-thread (row, chunk_id, col) slices.
  *
  * Both notrans (notrans) and trans (trans) are provided.
@@ -31,9 +31,6 @@
 
 #include "cuda_common.h"
 #include "brainevent/common.h"
-
-#define AW_T4_GROUP_SIZE 4
-#define AW_T4_GROUPS_PER_WARP 8
 
 // =========================================================================
 // Bit-packed active check
@@ -110,22 +107,6 @@ __device__ __forceinline__ unsigned int stationary_initial_q(
     }
 }
 
-__device__ __forceinline__ float group4_reduce_sum_f32(float value, int group)
-{
-    unsigned int mask = 0xFU << (group * AW_T4_GROUP_SIZE);
-    value += __shfl_down_sync(mask, value, 2, AW_T4_GROUP_SIZE);
-    value += __shfl_down_sync(mask, value, 1, AW_T4_GROUP_SIZE);
-    return value;
-}
-
-__device__ __forceinline__ double group4_reduce_sum_f64(double value, int group)
-{
-    unsigned int mask = 0xFU << (group * AW_T4_GROUP_SIZE);
-    value += __shfl_down_sync(mask, value, 2, AW_T4_GROUP_SIZE);
-    value += __shfl_down_sync(mask, value, 1, AW_T4_GROUP_SIZE);
-    return value;
-}
-
 // #########################################################################
 // ##  Pack Kernel - column-major layout -> packed[n][ceil(k/32)]         ##
 // #########################################################################
@@ -159,7 +140,7 @@ __global__ void _pack_kern(
 // ##  Y[row, col] = sum_j w(row,j) * active(B[j, col])                  ##
 // #########################################################################
 
-#define DEFINE_NOTRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD, GROUP_REDUCE) \
+#define DEFINE_NOTRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD, WARP_REDUCE) \
 __global__ void _notrans##SFX##_kern(                                          \
     const WEIGHT_T *__restrict__ w_low,                                        \
     const WEIGHT_T *__restrict__ w_high,                                       \
@@ -170,14 +151,12 @@ __global__ void _notrans##SFX##_kern(                                          \
     int m, int k, int n, int n_words, int chunk_size, int n_chunks)            \
 {                                                                              \
     int lane = threadIdx.x & 31;                                                \
-    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);                               \
-    int group = lane >> 2;                                                      \
     int warp_id = threadIdx.x >> 5;                                             \
     int warps_per_block = blockDim.x >> 5;                                      \
     int chunk_id = (int)blockIdx.y;                                             \
     int col = (int)blockIdx.z;                                                  \
-    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;                \
-    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;                        \
+    int row_block = (int)blockIdx.x;                \
+    int row = row_block * warps_per_block + warp_id;                        \
     if (row >= m || chunk_id >= n_chunks || col >= n) return;                   \
     int chunk_start = chunk_id * chunk_size;                                    \
     if (chunk_start >= k) return;                                               \
@@ -190,10 +169,10 @@ __global__ void _notrans##SFX##_kern(                                          \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                            \
     if (cl < 2U) cl = 2U;                                                       \
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                         \
-    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);      \
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);      \
     const uint32_t *packed_col = packed + (size_t)col * n_words;                \
     unsigned int q = stationary_initial_q(&rng, cl);                            \
-    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;       \
+    unsigned int local_j = (unsigned int)lane + 32U * q;       \
     ACC_T acc = (ACC_T)0;                                                       \
     while (local_j < chunk_width) {                                             \
         int j = chunk_start + (int)local_j;                                     \
@@ -202,10 +181,10 @@ __global__ void _notrans##SFX##_kern(                                          \
             acc += wlo + (ACC_T)u01 * range;                                    \
         }                                                                       \
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);              \
-        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;                \
+        local_j = (unsigned int)lane + 32U * q;                \
     }                                                                           \
-    ACC_T row_acc = GROUP_REDUCE(acc, group);                                   \
-    if (sub_lane == 0) ATOMIC_ADD(&output[(size_t)row * n + col], row_acc);     \
+    ACC_T row_acc = WARP_REDUCE(acc);                                   \
+    if (lane == 0) ATOMIC_ADD(&output[(size_t)row * n + col], row_acc);     \
 }
 
 // #########################################################################
@@ -224,14 +203,12 @@ __global__ void _trans##SFX##_kern(                                            \
     int m, int k, int n, int n_words, int chunk_size, int n_chunks)            \
 {                                                                              \
     int lane = threadIdx.x & 31;                                                \
-    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);                               \
-    int group = lane >> 2;                                                      \
     int warp_id = threadIdx.x >> 5;                                             \
     int warps_per_block = blockDim.x >> 5;                                      \
     int chunk_id = (int)blockIdx.y;                                             \
     int col = (int)blockIdx.z;                                                  \
-    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;                \
-    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;                        \
+    int row_block = (int)blockIdx.x;                \
+    int row = row_block * warps_per_block + warp_id;                        \
     if (row >= m || chunk_id >= n_chunks || col >= n) return;                   \
     const uint32_t *packed_col = packed + (size_t)col * n_words;                \
     if (!IS_ACTIVE_PACKED(packed_col, row)) return;                             \
@@ -246,23 +223,23 @@ __global__ void _trans##SFX##_kern(                                            \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                            \
     if (cl < 2U) cl = 2U;                                                       \
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                         \
-    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);      \
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);      \
     unsigned int q = stationary_initial_q(&rng, cl);                            \
-    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;       \
+    unsigned int local_j = (unsigned int)lane + 32U * q;       \
     while (local_j < chunk_width) {                                             \
         int j = chunk_start + (int)local_j;                                     \
         float u01 = hash_uniform01(seed0, row, j);                              \
         ACC_T w = wlo + (ACC_T)u01 * range;                                     \
         ATOMIC_ADD(&output[(size_t)j * n + col], w);                           \
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);              \
-        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;                \
+        local_j = (unsigned int)lane + 32U * q;                \
     }                                                                           \
 }
 
-DEFINE_NOTRANS(_f32,  float,         float,  READ_F32,  atomic_add_f32,  group4_reduce_sum_f32)
-DEFINE_NOTRANS(_f64,  double,        double, READ_F64,  atomic_add_f64,  group4_reduce_sum_f64)
-DEFINE_NOTRANS(_f16,  __half,        float,  READ_F16,  atomic_add_f16,  group4_reduce_sum_f32)
-DEFINE_NOTRANS(_bf16, __nv_bfloat16, float,  READ_BF16, atomic_add_bf16, group4_reduce_sum_f32)
+DEFINE_NOTRANS(_f32,  float,         float,  READ_F32,  atomic_add_f32,  warp_reduce_sum_f32)
+DEFINE_NOTRANS(_f64,  double,        double, READ_F64,  atomic_add_f64,  warp_reduce_sum_f64)
+DEFINE_NOTRANS(_f16,  __half,        float,  READ_F16,  atomic_add_f16,  warp_reduce_sum_f32)
+DEFINE_NOTRANS(_bf16, __nv_bfloat16, float,  READ_BF16, atomic_add_bf16, warp_reduce_sum_f32)
 
 DEFINE_TRANS(_f32,  float,         float,  READ_F32,  atomic_add_f32)
 DEFINE_TRANS(_f64,  double,        double, READ_F64,  atomic_add_f64)
@@ -315,13 +292,12 @@ void NAME##SFX(                                                               \
     if (n_chunks <= 0) return;                                                \
     int threads = 256;                                                        \
     int warps_per_block = threads / 32;                                       \
-    int rows_per_block = warps_per_block * AW_T4_GROUPS_PER_WARP;             \
-    int row_group_blocks = (m + rows_per_block - 1) / rows_per_block;         \
-    if (row_group_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {     \
+    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;         \
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {     \
         fprintf(stderr, #NAME #SFX " grid overflow\n");                      \
         abort();                                                              \
     }                                                                         \
-    dim3 blocks((unsigned int)row_group_blocks,                               \
+    dim3 blocks((unsigned int)row_warp_blocks,                               \
                 (unsigned int)n_chunks,                                       \
                 (unsigned int)n);                                             \
     _##KERNEL##SFX##_kern<<<blocks, threads, 0, s>>>(                         \

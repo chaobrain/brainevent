@@ -26,6 +26,8 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
 
 import brainevent
 from brainevent._jit_uniform.binary import binary_jitumv, binary_jitumm
+from brainevent._jit_uniform.float import jitu, jitumv, jitumm
+from brainevent._jit_uniform.csr import jitu_to_csr
 from brainevent._jit_uniform.csr import jitu_csr_count_p
 from brainevent._test_util import allclose, gen_events
 from brainevent._typing import MatrixShape
@@ -174,8 +176,8 @@ class Test_JITC_Operator_Behavior:
     def test_jitc_uniform_r_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCUniformR((-1.5, 1.5, 0.1, 123), shape=shape, corder=corder)
-        dense_mv = mat.mv.todense()
-        dense_mm = mat.mm.todense()
+        dense_mv = mat.todense()
+        dense_mm = mat.todense()
 
         left_vec = gen_events(shape[0], asbool=False).value
         right_vec = gen_events(shape[1], asbool=False).value
@@ -201,8 +203,8 @@ class Test_JITC_Operator_Behavior:
     def test_jitc_uniform_c_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCUniformC((-1.5, 1.5, 0.1, 123), shape=shape, corder=corder)
-        dense_mv = mat.mv.todense()
-        dense_mm = mat.mm.todense()
+        dense_mv = mat.todense()
+        dense_mm = mat.todense()
 
         left_vec = gen_events(shape[0], asbool=False).value
         right_vec = gen_events(shape[1], asbool=False).value
@@ -228,8 +230,8 @@ class Test_JITC_Operator_Behavior:
     def test_jitc_uniform_r_transpose_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCUniformR((-1.5, 1.5, 0.1, 123), shape=shape, corder=corder).T
-        dense_mv = mat.mv.todense()
-        dense_mm = mat.mm.todense()
+        dense_mv = mat.todense()
+        dense_mm = mat.todense()
 
         left_vec = jnp.asarray(np.random.rand(shape[1]))
         right_vec = jnp.asarray(np.random.rand(shape[0]))
@@ -255,8 +257,8 @@ class Test_JITC_Operator_Behavior:
     def test_jitc_uniform_c_transpose_operator_behavior(self, corder):
         shape = (20, 30)
         mat = brainevent.JITCUniformC((-1.5, 1.5, 0.1, 123), shape=shape, corder=corder).T
-        dense_mv = mat.mv.todense()
-        dense_mm = mat.mm.todense()
+        dense_mv = mat.todense()
+        dense_mm = mat.todense()
 
         left_vec = jnp.asarray(np.random.rand(shape[1]))
         right_vec = jnp.asarray(np.random.rand(shape[0]))
@@ -285,7 +287,7 @@ class Test_JITC_Operator_Behavior:
         shape = (20, 30)
         weight = 2.1 * u.mV
         mat = cls((-weight, weight, 0.2, 123), shape=shape)
-        dense_mv = mat.mv.todense()
+        dense_mv = mat.todense()
 
         right_vec = jnp.asarray(np.random.rand(shape[1]))
         left_vec = jnp.asarray(np.random.rand(shape[0]))
@@ -294,18 +296,12 @@ class Test_JITC_Operator_Behavior:
         r2 = dense_mv @ right_vec
         r3 = left_vec @ mat
         r4 = left_vec @ dense_mv
-        assert u.math.allclose(
-            r1,
-            r2,
-            rtol=1e-4,
-            atol=1e-4 * u.get_unit(r2),
-        )
-        assert u.math.allclose(
-            r3,
-            r4,
-            rtol=1e-4,
-            atol=1e-4 * u.get_unit(r4),
-        )
+        # Compare unit and mantissa separately: mixing a dimensionless ``rtol`` with a
+        # unit-carrying ``atol`` trips saiunit's ``allclose``; the operator preserves mV.
+        assert u.get_unit(r1) == u.get_unit(r2)
+        assert u.get_unit(r3) == u.get_unit(r4)
+        assert allclose(u.get_mantissa(r1), u.get_mantissa(r2), rtol=1e-4, atol=1e-4)
+        assert allclose(u.get_mantissa(r3), u.get_mantissa(r4), rtol=1e-4, atol=1e-4)
         jax.block_until_ready((right_vec, left_vec))
 
 
@@ -317,10 +313,10 @@ class Test_JITC_To_Dense:
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
 
-        out1 = jitcr.mv.todense()
-        out2 = jitcc.mv.todense().T
-        out3 = jitcr.T.mv.todense().T
-        out4 = jitcc.T.mv.todense()
+        out1 = jitcr.todense()
+        out2 = jitcc.todense().T
+        out3 = jitcr.T.todense().T
+        out4 = jitcc.T.todense()
         assert allclose(out1, out2)
         assert allclose(out1, out3)
         assert allclose(out1, out4)
@@ -335,8 +331,8 @@ class Test_JITC_To_Dense:
         (shapes[1], True, 0., 1.),
     ])
     def test_vjp(self, shape, corder, wlow, whigh):
-        base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).mv.todense()
-        mask = brainevent.JITCUniformR((1.0, 1.0, 0.1, 123), shape=shape, corder=corder).mv.todense()
+        base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
+        mask = brainevent.JITCUniformR((1.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
 
         def f_dense_vjp(wlow, whigh):
             res = base * (whigh - wlow) + mask * wlow
@@ -357,7 +353,7 @@ class Test_JITC_To_Dense:
 
         def f_jitc_vjp(wlow, whigh):
             mat = brainevent.JITCUniformR((wlow, whigh, 0.1, 123), shape=shape, corder=corder)
-            return mat.mv.todense()
+            return mat.todense()
 
         primals, f_vjp2 = jax.vjp(f_jitc_vjp, wlow, whigh)
         jitc_wlow_grad, jitc_whigh_grad = f_vjp2(ct)
@@ -377,8 +373,8 @@ class Test_JITC_To_Dense:
         (shapes[1], True, 0., 1.),
     ])
     def test_jvp(self, shape, corder, wlow, whigh):
-        base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).mv.todense()
-        mask = brainevent.JITCUniformR((1.0, 1.0, 0.1, 123), shape=shape, corder=corder).mv.todense()
+        base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
+        mask = brainevent.JITCUniformR((1.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
         tagents = (brainstate.random.random(), brainstate.random.random())
 
         def f_dense_jvp(wlow, whigh):
@@ -387,7 +383,7 @@ class Test_JITC_To_Dense:
 
         def f_jitc_jvp(wlow, whigh):
             mat = brainevent.JITCUniformR((wlow, whigh, 0.1, 123), shape=shape, corder=corder)
-            return mat.mv.todense()
+            return mat.todense()
 
         primals1, true_grad = jax.jvp(f_dense_jvp, (wlow, whigh), tagents)
         primals2, jitc_grad = jax.jvp(f_jitc_jvp, (wlow, whigh), tagents)
@@ -402,8 +398,8 @@ class Test_JITC_To_Dense:
         (shapes[1], True, 0., 1., 1.),
     ])
     def test_jvp_wlow(self, shape, corder, wlow, whigh, dwlow):
-        base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).mv.todense()
-        mask = brainevent.JITCUniformR((1.0, 1.0, 0.1, 123), shape=shape, corder=corder).mv.todense()
+        base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
+        mask = brainevent.JITCUniformR((1.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
 
         def f_dense_jvp(wlow):
             res = base * (whigh - wlow) + mask * wlow
@@ -415,7 +411,7 @@ class Test_JITC_To_Dense:
 
         def f_jitc_jvp(wlow):
             mat = brainevent.JITCUniformR((wlow, whigh, 0.1, 123), shape=shape, corder=corder)
-            return mat.mv.todense()
+            return mat.todense()
 
         primals2, jitc_grad = jax.jvp(f_jitc_jvp, (wlow,), (dwlow,))
         assert allclose(true_grad, jitc_grad)
@@ -428,8 +424,8 @@ class Test_JITC_To_Dense:
         (shapes[1], True, 0., 1., 1.),
     ])
     def test_jvp_whigh(self, shape, corder, wlow, whigh, dw_high):
-        base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).mv.todense()
-        mask = brainevent.JITCUniformR((1.0, 1.0, 0.1, 123), shape=shape, corder=corder).mv.todense()
+        base = brainevent.JITCUniformR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
+        mask = brainevent.JITCUniformR((1.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
 
         def f_dense_jvp(whigh):
             res = base * (whigh - wlow) + mask * wlow
@@ -441,7 +437,7 @@ class Test_JITC_To_Dense:
 
         def f_jitc_jvp(whigh):
             mat = brainevent.JITCUniformR((wlow, whigh, 0.1, 123), shape=shape, corder=corder)
-            return mat.mv.todense()
+            return mat.todense()
 
         primals2, jitc_grad = jax.jvp(f_jitc_jvp, (whigh,), (dw_high,))
         assert allclose(true_grad, jitc_grad)
@@ -456,11 +452,11 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((-0.1, 0.1, 0.2, 123), shape=shape, corder=corder)
 
-        csr = mat.mv.tocsr()
+        csr = mat.tocsr()
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == shape
         # Converting to CSR and back to dense must reproduce the dense matrix.
-        assert allclose(csr.todense(), mat.mv.todense())
+        assert allclose(csr.todense(), mat.todense())
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
@@ -469,10 +465,10 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((-0.1, 0.1, 0.2, 123), shape=shape, corder=corder).T
 
-        csr = mat.mv.tocsr()
+        csr = mat.tocsr()
         assert isinstance(csr, brainevent.CSR)
         assert csr.shape == mat.shape
-        assert allclose(csr.todense(), mat.mv.todense())
+        assert allclose(csr.todense(), mat.todense())
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
@@ -481,7 +477,7 @@ class Test_JITC_To_CSR:
         shape = (20, 30)
         mat = cls((-0.1, 0.1, 0.2, 123), shape=shape, corder=corder)
 
-        csr = mat.mv.tocsr()
+        csr = mat.tocsr()
         indptr = np.asarray(csr.indptr)
         indices = np.asarray(csr.indices)
         assert indptr.shape == (shape[0] + 1,)
@@ -502,28 +498,24 @@ class Test_JITC_To_CSR:
         weight = 2.1 * u.mV
         mat = cls((-weight, weight, 0.2, 123), shape=shape)
 
-        csr = mat.mv.tocsr()
-        dense = mat.mv.todense()
+        csr = mat.tocsr()
+        dense = mat.todense()
         assert isinstance(csr, brainevent.CSR)
         assert u.get_unit(csr.data) == u.get_unit(dense)
         assert u.math.allclose(csr.todense(), dense)
         jax.block_until_ready((csr.data, csr.indices, csr.indptr))
 
 
-class Test_JITC_Ambiguous_Materialization:
+class Test_JITC_Materialization:
     @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
-    def test_bare_materialization_raises(self, cls):
+    def test_all_materializations_agree(self, cls):
+        # There is one matrix, so every materialization route works and they agree.
         mat = cls((-0.1, 0.1, 0.2, 123), shape=(8, 6))
-        with pytest.raises(NotImplementedError):
-            mat.todense()
-        with pytest.raises(NotImplementedError):
-            mat.tocsr()
-        with pytest.raises(NotImplementedError):
-            mat.tocsc()
-        with pytest.raises(NotImplementedError):
-            mat.tocoo()
-        assert mat.mv.todense().shape == mat.shape
-        assert mat.mm.todense().shape == mat.shape
+        dense = mat.todense()
+        assert dense.shape == mat.shape
+        assert allclose(mat.tocsr().todense(), dense)
+        assert allclose(mat.tocsc().todense(), dense)
+        assert allclose(mat.tocoo().todense(), dense)
 
 
 @requires_csr_backend
@@ -534,14 +526,13 @@ class Test_JITC_Materialization_Matches_Binary:
         shape = (20, 30)
         mat = cls((-0.1, 0.5, 0.2, 123), shape=shape, corder=corder)
 
-        dense = mat.mv.todense()
-        csr = mat.mv.tocsr()
+        dense = mat.todense()
+        csr = mat.tocsr()
         spike = gen_events(dense.shape[1], asbool=False).value
 
-        gen_shape, gen_transpose = mat._materialize_params()
         out_binary = binary_jitumv(
             mat.wlow, mat.whigh, mat.prob, spike, mat.seed,
-            shape=gen_shape, transpose=gen_transpose, corder=mat.corder,
+            shape=mat.shape, transpose=False, corder=mat.corder,
         )
 
         assert allclose(dense @ spike, out_binary, rtol=1e-4, atol=1e-4)
@@ -554,14 +545,13 @@ class Test_JITC_Materialization_Matches_Binary:
         shape = (20, 30)
         mat = cls((-0.1, 0.5, 0.2, 123), shape=shape, corder=corder)
 
-        dense = mat.mm.todense()
-        csr = mat.mm.tocsr()
+        dense = mat.todense()
+        csr = mat.tocsr()
         spikes = gen_events((dense.shape[1], k), asbool=False).value
 
-        gen_shape, gen_transpose = mat._materialize_params()
         out_binary = binary_jitumm(
             mat.wlow, mat.whigh, mat.prob, spikes, mat.seed,
-            shape=gen_shape, transpose=gen_transpose, corder=mat.corder,
+            shape=mat.shape, transpose=False, corder=mat.corder,
         )
 
         assert allclose(dense @ spikes, out_binary, rtol=1e-4, atol=1e-4)
@@ -641,3 +631,125 @@ class Test_JITC_Uniform_Data_API:
     #     out_mm = mat @ B
     #     assert allclose(out_mm, jnp.zeros_like(out_mm))
     #     jax.block_until_ready((dense, vec, out_mv, B, out_mm))
+
+
+# ---- The dense form must be the matvec's matrix ----
+# ``chunk_size`` is derived from the *walked* dimension, so the matrix depends
+# only on the generated matrix's own geometry: the column-oriented classes can
+# materialize with their own shape and still agree with ``mat @ v``.
+
+@pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+@pytest.mark.parametrize('corder', [True, False])
+def test_todense_matches_matmul(cls, corder):
+    shape = (12, 20)
+    mat = cls((-1.5, 1.5, 0.3, 42), shape=shape, corder=corder)
+    v = jnp.asarray(np.random.rand(shape[1]).astype(np.float32))
+    assert allclose(mat @ v, mat.todense() @ v, rtol=1e-4, atol=1e-4)
+
+
+@requires_csr_backend
+class Test_Notrans_Trans_Dense_CSR_Cross_Check:
+    """One matrix, five independent producers of the same two products.
+
+    The ``notrans`` and ``trans`` CUDA entry points are *separate kernels* --
+    ``notrans`` gathers (``acc += w * v[j]`` into ``output[row]``), ``trans``
+    scatters (``atomic_add(output[j], w * v[row])``). They are required to
+    replay the same ``(seed, row, chunk_id, lane)`` stream, so for one matrix
+    ``M`` of shape ``(a, b)``:
+
+    * the ``notrans`` entry computes ``M @ v``   -- ``jit*mv(shape=(a, b), corder=True)``
+    * the ``trans``   entry computes ``M.T @ u`` -- ``jit*mv(shape=(b, a), corder=False)``
+
+    Both products are then recomputed from the two *materializations* --
+    ``todense()`` and ``tocsr()`` -- and from the matrix recovered by feeding
+    unit vectors through each kernel. Every route must agree.
+    """
+
+    SHAPES = [(12, 20), (17, 9), (33, 33)]
+
+    @staticmethod
+    def _matrix():
+        return None
+
+    @pytest.mark.parametrize('shape', SHAPES)
+    def test_kernels_and_materializations_agree(self, shape):
+        a, b = shape
+        w, prob, seed = (-1.5, 1.5), 0.2, 123
+        v = jnp.asarray(np.random.rand(b).astype(np.float32))   # for M @ v
+        u = jnp.asarray(np.random.rand(a).astype(np.float32))   # for M.T @ u
+
+        # --- the two kernels, each through its own entry point ---------------
+        y_notrans = jitumv(*w, prob, v, seed, shape=(a, b), transpose=False, corder=True)
+        y_trans = jitumv(*w, prob, u, seed, shape=(b, a), transpose=False, corder=False)
+        assert y_notrans.shape == (a,)
+        assert y_trans.shape == (b,)
+
+        # --- the same matrix, materialized two ways --------------------------
+        dense = jitu(*w, prob, seed, shape=(a, b), transpose=False, corder=True)
+        csr = jitu_to_csr(*w, prob, seed, shape=(a, b), corder=True)
+        assert allclose(csr.todense(), dense)
+
+        # --- and recovered from each kernel by unit vectors ------------------
+        eye_b, eye_a = np.eye(b, dtype=np.float32), np.eye(a, dtype=np.float32)
+        rec_notrans = np.stack(
+            [np.asarray(jitumv(*w, prob, jnp.asarray(eye_b[j]), seed, shape=(a, b),
+                           transpose=False, corder=True)) for j in range(b)], axis=1)
+        rec_trans = np.stack(
+            [np.asarray(jitumv(*w, prob, jnp.asarray(eye_a[i]), seed, shape=(b, a),
+                           transpose=False, corder=False)) for i in range(a)], axis=1).T
+
+        # every route describes one matrix
+        assert np.array_equal(rec_notrans != 0, rec_trans != 0)
+        assert allclose(rec_notrans, rec_trans, rtol=1e-5, atol=1e-5)
+        assert allclose(rec_notrans, np.asarray(dense), rtol=1e-5, atol=1e-5)
+        assert allclose(rec_notrans, np.asarray(csr.todense()), rtol=1e-5, atol=1e-5)
+
+        # --- the same *operation*, cross-checked across all producers --------
+        assert allclose(y_notrans, dense @ v, rtol=1e-4, atol=1e-4)
+        assert allclose(y_notrans, csr @ v, rtol=1e-4, atol=1e-4)
+        assert allclose(y_trans, u @ dense, rtol=1e-4, atol=1e-4)
+        assert allclose(y_trans, u @ csr, rtol=1e-4, atol=1e-4)
+        jax.block_until_ready((y_notrans, y_trans, dense, csr.data))
+
+    @pytest.mark.parametrize('shape', SHAPES)
+    @pytest.mark.parametrize('k', [1, 4])
+    def test_matmat_kernels_and_materializations_agree(self, shape, k):
+        a, b = shape
+        w, prob, seed = (-1.5, 1.5), 0.2, 123
+        B = jnp.asarray(np.random.rand(b, k).astype(np.float32))
+        U = jnp.asarray(np.random.rand(a, k).astype(np.float32))
+
+        y_notrans = jitumm(*w, prob, B, seed, shape=(a, b), transpose=False, corder=True)
+        y_trans = jitumm(*w, prob, U, seed, shape=(b, a), transpose=False, corder=False)
+
+        dense = jitu(*w, prob, seed, shape=(a, b), transpose=False, corder=True)
+        csr = jitu_to_csr(*w, prob, seed, shape=(a, b), corder=True)
+
+        assert allclose(y_notrans, dense @ B, rtol=1e-4, atol=1e-4)
+        assert allclose(y_notrans, csr @ B, rtol=1e-4, atol=1e-4)
+        assert allclose(y_trans, dense.T @ U, rtol=1e-4, atol=1e-4)
+        assert allclose(y_trans, csr.todense().T @ U, rtol=1e-4, atol=1e-4)
+        jax.block_until_ready((y_notrans, y_trans))
+
+    @pytest.mark.parametrize('shape', SHAPES)
+    def test_event_driven_kernels_agree(self, shape):
+        a, b = shape
+        w, prob, seed = (-1.5, 1.5), 0.2, 123
+        spikes_b = jnp.asarray(np.random.rand(b) < 0.5)
+        spikes_a = jnp.asarray(np.random.rand(a) < 0.5)
+
+        y_notrans = binary_jitumv(*w, prob, spikes_b, seed, shape=(a, b),
+                              transpose=False, corder=True)
+        y_trans = binary_jitumv(*w, prob, spikes_a, seed, shape=(b, a),
+                            transpose=False, corder=False)
+
+        dense = jitu(*w, prob, seed, shape=(a, b), transpose=False, corder=True)
+        csr = jitu_to_csr(*w, prob, seed, shape=(a, b), corder=True)
+        fv = spikes_b.astype(dense.dtype)
+        fu = spikes_a.astype(dense.dtype)
+
+        assert allclose(y_notrans, dense @ fv, rtol=1e-4, atol=1e-4)
+        assert allclose(y_notrans, csr @ fv, rtol=1e-4, atol=1e-4)
+        assert allclose(y_trans, fu @ dense, rtol=1e-4, atol=1e-4)
+        assert allclose(y_trans, fu @ csr, rtol=1e-4, atol=1e-4)
+        jax.block_until_ready((y_notrans, y_trans))

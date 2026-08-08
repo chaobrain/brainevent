@@ -1,9 +1,18 @@
+"""Pure-numpy reference implementation of the uniform-weight JITC connectivity.
+
+Self-contained on purpose: each ``_jit_*`` package carries its own copy of the
+light-RNG walk so a divergence *between* packages cannot hide behind a shared
+helper.
+"""
+
 import math
 
 import numpy as np
 
-MV_STRIDE = 32
-MM_STRIDE = 4
+# One warp = one (row, chunk) task, one lane per residue class: local_j = lane + 32 * q.
+LANE_STRIDE = 32
+# The walked dimension is split into this many chunks; chunk_id keys the RNG.
+TARGET_CHUNKS = 4
 
 
 def _u32(x):
@@ -60,14 +69,6 @@ def hash_uniform01(seed, row, col):
     return np.float32((h & _u32(0x00FFFFFF)) * np.float32(1.0 / 16777216.0))
 
 
-def stride_for_mode(matrix_mode):
-    if matrix_mode == 'mv':
-        return MV_STRIDE
-    if matrix_mode == 'mm':
-        return MM_STRIDE
-    raise ValueError(f"matrix_mode must be 'mv' or 'mm', got {matrix_mode!r}.")
-
-
 def conn_length(prob):
     prob = float(prob)
     if prob == 0.0:
@@ -75,11 +76,12 @@ def conn_length(prob):
     return max(2, int(math.ceil(2.0 / prob)))
 
 
-def default_chunk_size(n_cols, target_chunks=4):
-    return max(1, (int(n_cols) + int(target_chunks) - 1) // int(target_chunks))
+def default_chunk_size(walk_length):
+    """Chunk width: the walked dimension split into TARGET_CHUNKS pieces."""
+    return max(1, (int(walk_length) + TARGET_CHUNKS - 1) // TARGET_CHUNKS)
 
 
-def iter_edges(seed, clen, n_rows, n_cols, *, corder, stride, chunk_size=None):
+def iter_edges(seed, clen, n_rows, n_cols, *, corder, stride=LANE_STRIDE, chunk_size=None):
     seed0 = _u32(seed)
     cl = _u32(max(2, int(clen)))
     cs = default_chunk_size(n_cols) if chunk_size is None else int(chunk_size)
@@ -104,7 +106,7 @@ def iter_edges(seed, clen, n_rows, n_cols, *, corder, stride, chunk_size=None):
                     local_j = lane + int(stride) * int(q)
 
 
-def dense_uniform_reference(w_low, w_high, prob, seed, *, shape, transpose=False, corder=True, matrix_mode='mv'):
+def dense_uniform_reference(w_low, w_high, prob, seed, *, shape, transpose=False, corder=True):
     out_shape = tuple(reversed(shape)) if transpose else tuple(shape)
     n_rows, n_cols = out_shape if corder else tuple(reversed(out_shape))
     dtype = np.result_type(np.asarray(w_low), np.asarray(w_high), np.float32)
@@ -114,10 +116,9 @@ def dense_uniform_reference(w_low, w_high, prob, seed, *, shape, transpose=False
     wlo = np.asarray(w_low, dtype=dtype).item()
     whi = np.asarray(w_high, dtype=dtype).item()
     span = whi - wlo
-    stride = stride_for_mode(matrix_mode)
-    chunk_size = default_chunk_size(shape[1])
+    chunk_size = default_chunk_size(n_cols)
     for out_row, out_col, rng_row, rng_col in iter_edges(
-        seed, conn_length(prob), n_rows, n_cols, corder=corder, stride=stride, chunk_size=chunk_size
+        seed, conn_length(prob), n_rows, n_cols, corder=corder, chunk_size=chunk_size
     ):
         out[out_row, out_col] = wlo + np.asarray(hash_uniform01(seed, rng_row, rng_col), dtype=dtype) * span
     return out
