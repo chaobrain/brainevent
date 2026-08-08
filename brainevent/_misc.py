@@ -22,7 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.sparse import coo_todense_p
 
-from ._typing import MatrixShape, Data, Index, MatrixMode
+from ._typing import MatrixShape, Data, Index
 from ._compatible_import import Tracer
 
 
@@ -30,96 +30,90 @@ from ._compatible_import import Tracer
 
 _INT32_MAX = np.iinfo(np.int32).max
 
-#: Residue-class stride of the light-RNG walk. The ``mv`` kernels mirror the
-#: 32-lane CUDA kernels; the ``mm`` (AW-T4) kernels mirror the 4-thread CUDA
-#: kernels. The stride is part of the drawn matrix, so ``matrix_mode='mv'`` and
-#: ``matrix_mode='mm'`` sample *different* connectivity -- exactly as on CUDA.
-_MV_STRIDE = 32
-_MM_STRIDE = 4
+#: Residue-class stride of the light-RNG walk: one warp owns one
+#: ``(row, chunk_id)`` task and each of its 32 lanes owns one residue class
+#: (``local_j = lane + 32 * q``). The numba kernels mirror the CUDA ones.
+_LANE_STRIDE = 32
 
 
-def _normalize_matrix_mode(matrix_mode: MatrixMode) -> MatrixMode:
-    """Validate the ``mv``/``mm`` materialization mode.
+#: The light-RNG walk is split into this many chunks along the walked
+#: dimension. It is a fixed property of the connectivity, not a tunable: the
+#: chunk index keys the RNG stream, so two operators that chunk differently
+#: draw different matrices.
+_TARGET_CHUNKS = 4
 
-    ``mv`` uses the 32-lane kernels (matching ``jit*mv`` and the mv CSR
-    materialization); ``mm`` uses the 4-thread AW-T4 kernels (matching
-    ``jit*mm`` and the mm CSR materialization). The two draw *different*
-    connectivity matrices on CUDA, so the mode must be chosen explicitly by
-    the caller.
+
+def _walk_length(shape, transpose: bool, corder: bool) -> int:
+    """Length of the dimension the light-RNG walk runs over.
+
+    Every JITC kernel seeds a stream per ``(row, chunk_id, lane)`` and walks one
+    dimension of the *generated* matrix. Which dimension that is follows from
+    the operator's parameters alone: ``transpose`` decides the logical matrix's
+    orientation, then ``corder`` decides which of its two axes is seeded and
+    which is walked.
 
     Parameters
     ----------
-    matrix_mode : {'mv', 'mm'}
-        The requested materialization mode.
+    shape : tuple of int
+        The operator's logical matrix shape, as passed by the caller.
+    transpose : bool
+        Whether the operator produces the transposed matrix.
+    corder : bool
+        ``True`` selects the notrans generation (seed by row, walk columns),
+        ``False`` the trans one (seed by column, walk rows).
 
     Returns
     -------
-    matrix_mode : {'mv', 'mm'}
-        The validated mode, unchanged.
-
-    Raises
-    ------
-    ValueError
-        If *matrix_mode* is neither ``'mv'`` nor ``'mm'``.
+    walk_length : int
+        Number of positions the walk covers before chunking.
 
     See Also
     --------
-    _normalize_chunk_size : The companion RNG-stream keying helper.
+    _chunk_size : Chunk width derived from this length.
+
+    Notes
+    -----
+    Keying the chunk width off this length rather than off ``shape[1]`` is what
+    makes the drawn matrix depend only on the *generated* matrix's geometry.
+    Two calls that describe the same matrix through different
+    ``(shape, transpose)`` pairs -- as ``mat @ v`` and ``mat.todense()`` do for
+    the column-oriented classes -- then agree by construction.
     """
-    if matrix_mode not in ('mv', 'mm'):
-        raise ValueError(f"matrix_mode must be 'mv' or 'mm', got {matrix_mode!r}.")
-    return matrix_mode
+    n_rows, n_cols = (int(shape[1]), int(shape[0])) if transpose else (int(shape[0]), int(shape[1]))
+    return n_cols if corder else n_rows
 
 
-def _normalize_chunk_size(n_cols, chunk_size, target_chunks=4):
-    """Chunk width for the light-RNG connectivity walk.
+def _chunk_size(walk_length: int) -> int:
+    """Chunk width of the light-RNG connectivity walk.
 
-    ``chunk_size`` participates in the RNG stream keying, so every operator
-    that must draw the *same* matrix — the float operators, the binary
-    operators, and the CSR materialization of a given ``_jit_*`` family — has
-    to chunk identically. They all default to
-    ``ceil(shape[1] / target_chunks)`` with ``target_chunks=4``.
+    ``chunk_size`` participates in the RNG stream keying, so every operator that
+    must draw the *same* matrix -- the float operators, the binary operators,
+    the CSR materialization and ``dt2t`` of a given ``_jit_*`` family -- has to
+    chunk identically. They all split the walked dimension into
+    ``_TARGET_CHUNKS`` pieces.
 
     Parameters
     ----------
-    n_cols : int
-        Number of columns of the logical connectivity matrix (``shape[1]``).
-    chunk_size : int or None
-        Explicit chunk width. When ``None``, derived from *n_cols* and
-        *target_chunks*.
-    target_chunks : int, optional
-        Number of chunks to split *n_cols* into when *chunk_size* is ``None``.
-        Default is 4.
+    walk_length : int
+        Length of the walked dimension, from :func:`_walk_length`.
 
     Returns
     -------
     chunk_size : int
         The resolved, strictly positive chunk width.
 
-    Raises
-    ------
-    ValueError
-        If *target_chunks* or the resolved *chunk_size* is not positive.
+    See Also
+    --------
+    _walk_length : Which dimension is walked.
+    _n_chunks : Number of chunks a walk length splits into.
 
     Notes
     -----
     This helper is deliberately shared rather than duplicated per family: a
-    divergent default would not raise, it would silently make one operator
-    draw a *different* connectivity matrix than its siblings.
-
-    See Also
-    --------
-    _normalize_matrix_mode : Validates the companion ``mv``/``mm`` mode.
+    divergent chunking would not raise, it would silently make one operator
+    draw a different connectivity matrix than its siblings.
     """
-    if chunk_size is None:
-        target_chunks = int(target_chunks)
-        if target_chunks <= 0:
-            raise ValueError("target_chunks must be positive")
-        chunk_size = max(1, (int(n_cols) + target_chunks - 1) // target_chunks)
-    chunk_size = int(chunk_size)
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
-    return chunk_size
+    return max(1, cdiv(int(walk_length), _TARGET_CHUNKS))
 
 
 def _is_static_zero(value) -> bool:
@@ -155,7 +149,7 @@ def _n_chunks(n_cols: int, chunk_size: int) -> int:
     n_cols : int
         Number of columns to cover. Non-positive values yield zero chunks.
     chunk_size : int
-        Chunk width, as resolved by :func:`_normalize_chunk_size`.
+        Chunk width, as resolved by :func:`_chunk_size`.
 
     Returns
     -------
@@ -167,26 +161,6 @@ def _n_chunks(n_cols: int, chunk_size: int) -> int:
     cdiv : The underlying ceiling-division helper.
     """
     return 0 if n_cols <= 0 else cdiv(int(n_cols), int(chunk_size))
-
-
-def _mode_infix(matrix_mode: MatrixMode) -> str:
-    """CSR kernel infix: ``''`` for mv (plain), ``'_mm_aw_t4'`` for mm.
-
-    Parameters
-    ----------
-    matrix_mode : {'mv', 'mm'}
-        The materialization mode.
-
-    Returns
-    -------
-    infix : str
-        The substring spliced into the generated CSR kernel symbol name.
-
-    See Also
-    --------
-    _normalize_matrix_mode : Validates *matrix_mode*.
-    """
-    return '' if _normalize_matrix_mode(matrix_mode) == 'mv' else '_mm_aw_t4'
 
 
 def _normalize_dtype(dtype):

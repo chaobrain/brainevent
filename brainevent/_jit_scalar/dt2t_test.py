@@ -78,7 +78,7 @@ def test_jitsmv_dt2t_matches_csr_reference(implementation, shape, corder, transp
         shape=shape, transpose=transpose, corder=corder, backend=implementation,
     )
     # dt2t materializes the mv matrix, so the reference is the mv CSR.
-    csr = jits_to_csr(1.5, 0.2, 123, shape=shape, corder=corder, matrix_mode='mv', backend=implementation)
+    csr = jits_to_csr(1.5, 0.2, 123, shape=shape, corder=corder, backend=implementation)
     expected = _csr_yw_reference(csr, y, transpose)
 
     assert allclose(out, expected)
@@ -106,7 +106,7 @@ def test_jitsmv_dt2t_dtypes(implementation, dtype, tol, transpose):
         shape=shape, transpose=transpose, corder=True, backend=implementation,
     )
     assert out.dtype == dtype
-    csr = jits_to_csr(w, 0.2, 123, shape=shape, corder=True, matrix_mode='mv', backend=implementation)
+    csr = jits_to_csr(w, 0.2, 123, shape=shape, corder=True, backend=implementation)
     expected = _csr_yw_reference(csr, y, transpose)
     assert allclose(out, expected, rtol=tol, atol=tol)
     jax.block_until_ready((out, expected))
@@ -168,7 +168,7 @@ def test_jitsmv_dt2t_fused_fill_generates_y_times_weight(implementation, transpo
     seed = jnp.asarray([123], dtype=jnp.int32)
 
     chunk_counts = jits_csr_count_p_call(
-        w, clen, seed, shape=shape, corder=True, matrix_mode='mv', backend=implementation,
+        w, clen, seed, shape=shape, corder=True, backend=implementation,
     )[0]
     row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32)
     indptr = jnp.concatenate([jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(row_counts, dtype=jnp.int32)])
@@ -178,7 +178,7 @@ def test_jitsmv_dt2t_fused_fill_generates_y_times_weight(implementation, transpo
 
     # Raw (unsorted) fill in the same walk order the fused kernel uses.
     indices, weights = jits_csr_fill_p_call(
-        w, clen, seed, chunk_offsets, nnz, shape=shape, corder=True, matrix_mode='mv', backend=implementation,
+        w, clen, seed, chunk_offsets, nnz, shape=shape, corder=True, backend=implementation,
     )
     out = jitsmv_dt2t_p_call(
         w, clen, y, seed, chunk_offsets, nnz,
@@ -245,3 +245,13 @@ def test_jits_matrix_dt2t_uses_init_parameters(implementation, cls, corder, tran
     )
     assert allclose(out, expected)
     jax.block_until_ready((out, expected))
+
+
+# ---- Public interface: back to the v0.1.2 parameter list ----
+
+def test_dt2t_signature_matches_0_1_2():
+    import inspect
+    params = tuple(inspect.signature(jitsmv_dt2t).parameters)
+    assert params == tuple(p.strip() for p in 'weight'.split(',')) + (
+        'prob', 'y', 'seed', 'shape', 'transpose', 'corder', 'backend',
+    )

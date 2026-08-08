@@ -41,8 +41,6 @@ were raised during `0.1.2` by #171; the `0.1.2` notes below understate them.)
 
 | Old usage | New usage |
 | --- | --- |
-| `mat.todense()` / `.tocsr()` / `.tocsc()` / `.tocoo()` on any `JITCScalarR`/`C`, `JITCNormalR`/`C`, `JITCUniformR`/`C` | `mat.mv.todense()` (the matrix behind `mat @ vector`) or `mat.mm.todense()` (the matrix behind `mat @ matrix`); the bare calls now raise `NotImplementedError` |
-| `jits(w, prob, seed, shape=...)` / `jitn(...)` / `jitu(...)` | `matrix_mode='mv'` or `matrix_mode='mm'` is now a **required** keyword |
 | `numba`-backend JITC results computed with `0.1.x` | values change: the CPU kernels now draw the CUDA matrix. Re-record any CPU golden outputs; seeds are not portable across `0.1.x` → `0.2.0` |
 | `CSR(...)` / `CSC(...)` with malformed `indices` / `indptr` | now raises `TypeError` / `ValueError` / `OverflowError` at construction instead of failing later inside a kernel |
 | `CSR.fromdense(..., index_dtype=jnp.int64)` | raises — `indices` are always `int32`; use `indptr_dtype=` to control offset precision |
@@ -50,7 +48,7 @@ were raised during `0.1.2` by #171; the `0.1.2` notes below understate them.)
 | Explicit CUDA entry points `binary_csrm{v,m}_{nt_thread,nt_warp,nt_block,t_warp}_*`, `csr_slice_rows_{thread,warp,block}_*`, `binary_fcnmm_araw_*`, `binary_fcnmv_scatter_*_float_*`, `dt2t_{row_thread,row_warp,nz_thread}_*` | the auto-dispatching wrappers (`*_nt_auto*`, `*_hybrid`), which select the same device kernels internally |
 | `import brainevent.pararnn` | removed, with no replacement |
 
-Three of these deserve a note.
+Two of these deserve a note.
 
 **JITC CPU/GPU parity changes CPU numbers.** In `0.1.x` the `numba` kernels
 generated connectivity with an LFSR stream while the `cuda_raw` kernels used the
@@ -59,12 +57,6 @@ different matrix on each platform. The `numba` kernels now reproduce the CUDA
 walk exactly, so a model moved between CPU and GPU keeps its connectivity — but
 CPU results recorded against `0.1.x` will not reproduce. Only the drawn matrix
 changed; the operator semantics did not.
-
-**`mv` and `mm` are genuinely different matrices.** The light kernels walk 32
-lanes for matrix-vector and 4 threads (AW-T4) for matrix-matrix, and the stride
-is part of the drawn matrix. Bare materialization was therefore ambiguous and
-silently returned the mv matrix even when the caller was about to use `mm`; it
-now raises, and the `mat.mv` / `mat.mm` views select explicitly.
 
 **The removed CUDA entry points were already unreachable from Python.** A
 reachability pass over every `// @BE` annotation against every kernel-name
@@ -110,12 +102,6 @@ launched internally.
   `cuda_raw` default and the `jax_raw` reference; useful as a dense-throughput
   baseline at high spike rates. `libcublas` is located in the installed `nvidia`
   CUDA Python packages at load time.
-- **`mat.mv` / `mat.mm` materialization views on every JITC family.** Each view
-  exposes `todense` / `tocsr` / `tocsc` / `tocoo` for the matrix that mode
-  actually uses. For column-oriented matrices (`JITCScalarC` and siblings) the
-  view also applies the swapped generation shape, so the dense form matches the
-  matvec — the light kernels' `chunk_size` depends on `shape[1]`, which made the
-  old direct materialization shape-inconsistent.
 - **`numba` CPU kernels for the JITC CSR and `dt2t` paths.** `jits_csr_count` /
   `jits_csr_fill` and their `jitn_*` / `jitu_*` siblings, plus the fused
   `jitsmv_dt2t` / `jitnmv_dt2t` / `jitumv_dt2t` fill primitives, previously had
@@ -125,8 +111,6 @@ launched internally.
   `light_rng_normal01`, and `get_numba_light_rng_funcs()`, the CUDA-compatible
   `(seed, row, col)` weight hashes and the njit dispatch table backing the
   kernels above. Listed in the *Utilities* API reference.
-- **`matrix_mode` on the JITC CSR materialization entry points** (`jits_to_csr`,
-  `jitn_to_csr`, `jitu_to_csr`, defaulting to `'mv'`).
 - **jax 0.11.x is now a validated version (#182).** The numba XLA FFI bridge
   raises its validated ceiling (`_MAX_VALIDATED_JAX`) from `0.10` to `0.11`, so
   installing `brainevent` alongside jax 0.11 no longer emits the "untested jax"
@@ -136,6 +120,31 @@ launched internally.
   `jax>=0.8.0` floor is unchanged.
 
 ### Fixed
+
+- **Every JITC kernel now draws one connectivity matrix.** The light-RNG walk
+  assigns each thread a residue class `local_j = lane + STRIDE * q`, keyed by
+  `(seed, row, chunk_id, lane)`. The matrix-matrix kernels used a 4-thread
+  (AW-T4) grouping with `STRIDE = 4`, so both the stream keys and the residue
+  classes differed from the 32-lane matrix-vector kernels — `jitsmm` and
+  `jitsmv` sampled *different* matrices from the same `(weight, prob, seed,
+  shape, corder)`. All matmat kernels are now warp-per-`(row, chunk, col)` with
+  `STRIDE = 32`, so `jits`, `jitsmv`, `jitsmm`, `binary_jitsmv`,
+  `binary_jitsmm`, `jits_to_csr` and `jitsmv_dt2t` (and their `jitn*` / `jitu*`
+  siblings) produce a bit-identical matrix on every backend. Four defects
+  disappear with it:
+  - `vmap(jitsmv)` disagreed with a Python loop over `jitsmv`, because the
+    batching rule forwards to `jitsmm`. Same on the binary path
+    (`vmap(binary_jitsmv)`), and in all three families.
+  - The `numba` `jitsmm` kernel hard-coded the 4-thread stride while the CUDA
+    kernel honoured the caller's request, so the two backends disagreed.
+  - Gradient (JVP/transpose) rules for the binary matmat operators delegated to
+    the float matmat operator, inheriting the same divergence.
+  - `todense()` on `JITCScalarC` / `JITCNormalC` / `JITCUniformC` drew a
+    different matrix than `mat @ v`. The chunk width keyed the RNG stream but
+    was derived from the caller's `shape[1]`, so the two `(shape, transpose)`
+    pairs that describe one column-oriented matrix chunked differently. It is
+    now derived from the *walked* dimension instead, which both pairs share, so
+    the drawn matrix depends only on the generated matrix's own geometry.
 
 - **`binary_csrmm` no longer aborts the CUDA context with `float64` weights
   (#188).** The CSRMM non-transpose block kernels stage one accumulator per
@@ -259,10 +268,9 @@ launched internally.
 - **Duplicated internals consolidated (#183).** The dtype→CUDA-suffix table had
   31 verbatim copies across 22 files and now lives in `_op/util.py` as
   `dtype_suffix()` / `spike_suffix()` (the lenient `'_f32'` fallback is preserved,
-  documented, and tested). The JIT families' `_normalize_chunk_size`,
-  `_normalize_matrix_mode`, `_MV_STRIDE` / `_MM_STRIDE`, `_is_static_zero`,
-  `_n_chunks`, and `_mode_infix` move to `_misc.py`, and `MatrixMode` to
-  `_typing.py`. This duplication was the riskiest kind: `chunk_size` participates
+  documented, and tested). The JIT families' `_chunk_size`, `_walk_length`,
+  `_LANE_STRIDE`, `_is_static_zero` and `_n_chunks` move to `_misc.py`. This
+  duplication was the riskiest kind: the chunk width participates
   in the RNG stream keying, so a divergent default would not raise — it would
   silently make one operator draw a different connectivity matrix than its
   siblings.

@@ -24,13 +24,11 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import (
-    namescope, _normalize_chunk_size, _normalize_matrix_mode, _MV_STRIDE, _MM_STRIDE,
-)
+from brainevent._misc import namescope, _chunk_size, _walk_length, _LANE_STRIDE
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
-from brainevent._typing import Data, MatrixShape, MatrixMode
+from brainevent._typing import Data, MatrixShape
 from brainevent._op.util import dtype_suffix
 
 __all__ = [
@@ -42,24 +40,18 @@ __all__ = [
     "jitsmm_p",
 ]
 
-@namescope(static_argnames=("shape", "transpose", "corder", "matrix_mode"))
+@namescope(static_argnames=("shape", "transpose", "corder"))
 def jits(
     weight: Data,
     prob: float,
     seed: int,
     *,
     shape: MatrixShape,
-    matrix_mode: MatrixMode,
     transpose: bool = False,
     corder: bool = True,
     backend: Optional[str] = None,
 ) -> Data:
     r"""Generate a homogeneous sparse random matrix on-the-fly.
-
-    ``matrix_mode`` (``'mv'`` or ``'mm'``) is **required**: the mv and mm light
-    kernels draw different matrices on CUDA, so the dense form is only well
-    defined once a mode is chosen. ``mat.mv.todense()`` / ``mat.mm.todense()``
-    pick these for you.
 
     This function creates a sparse random matrix where all non-zero values are set
     to the same homogeneous weight. Instead of storing the full matrix in memory,
@@ -149,7 +141,6 @@ def jits(
         shape=shape,
         transpose=transpose,
         corder=corder,
-        matrix_mode=matrix_mode,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd)
@@ -269,7 +260,7 @@ def jitsmv(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder", "matrix_mode"))
+@namescope(static_argnames=("shape", "transpose", "corder"))
 def jitsmm(
     weight: Data,
     prob: float,
@@ -279,7 +270,6 @@ def jitsmm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
-    matrix_mode: MatrixMode = 'mm',
     backend: Optional[str] = None,
 ) -> Data:
     r"""
@@ -377,7 +367,6 @@ def jitsmm(
         shape=shape,
         transpose=transpose,
         corder=corder,
-        matrix_mode=matrix_mode,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
@@ -385,7 +374,6 @@ def jitsmm(
 
 def _jitc_homo_matrix_numba_kernel(
     corder: bool = True,
-    matrix_mode: MatrixMode = 'mv',
     transpose: bool = False,
     **kwargs
 ):
@@ -395,15 +383,12 @@ def _jitc_homo_matrix_numba_kernel(
     The connectivity is regenerated with the same ``light_rng`` chunk/lane walk
     as the CUDA kernel in ``float_jits.cu``, so the numba and CUDA backends
     materialize a bit-identical matrix. As on CUDA, ``corder`` selects the
-    ``notrans``/``trans`` write layout while the ``matrix_mode`` (``'mv'`` /
-    ``'mm'``) selects the residue-class stride (32 / 4).
+    ``notrans``/``trans`` write layout; the residue-class stride is always 32.
 
     Parameters
     ----------
     corder : bool, default=True
         Selects the notrans (``True``) / trans (``False``) generation orientation.
-    matrix_mode : {'mv', 'mm'}
-        Selects the light-RNG stride (mv=32, mm=4); the two draw different matrices.
     transpose : bool
         Whether the primitive output is transposed (only affects the output shape;
         the write layout is governed by ``corder``, matching the CUDA dispatch).
@@ -423,11 +408,11 @@ def _jitc_homo_matrix_numba_kernel(
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
 
-    stride = _MV_STRIDE if _normalize_matrix_mode(matrix_mode) == 'mv' else _MM_STRIDE
+    stride = _LANE_STRIDE
     # ``chunk_size`` keys the RNG stream and follows the CUDA/CSR convention
-    # (chunk over ``shape[1]`` with ``target_chunks=4``); ``n_chunks`` is derived
-    # from the walk dimension inside the kernel, as CUDA does.
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    # (the walked dimension split into 4 chunks); ``n_chunks`` is derived from
+    # that dimension inside the kernel, as CUDA does.
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], transpose, corder))
 
     if corder:
         # notrans: seed by output row, walk output columns, write posts[row, col].
@@ -500,7 +485,6 @@ def _jitc_homo_matrix_numba_kernel(
 
 def _jits_cuda_kernel(
     corder: bool = True,
-    matrix_mode: MatrixMode = 'mv',
     **kwargs
 ):
     load_cuda_file(
@@ -508,18 +492,17 @@ def _jits_cuda_kernel(
         name='jit_scalar_jits',
     )
     sfx = dtype_suffix(kwargs['weight_info'].dtype)
-    mode = 'mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'mm_aw_t4'
     # ``corder`` selects the kernel (as in binary.py); the write layout is baked
     # into notrans/trans and the output shape encodes ``transpose``.
     direction = 'notrans' if corder else 'trans'
-    kernel_name = f'jit_scalar_jits.jits_{mode}_{direction}{sfx}'
+    kernel_name = f'jit_scalar_jits.jits_{direction}{sfx}'
     # The kernel always seeds by row and walks n_cols (notrans writes row-major,
     # trans writes transposed). Choose (n_rows, n_cols) so the filled output has
     # ``out_info``'s shape and the drawn matrix matches jitsmv/jitsmm — hence
     # chunk over shape[1], identical to the vector/matrix kernels.
     out_shape = tuple(int(s) for s in kwargs['out_info'].shape)
     n_rows, n_cols = out_shape if corder else out_shape[::-1]
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
 
     def kernel(weight, clen, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
@@ -557,7 +540,7 @@ def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, *, shape, trans
     """
     return jits_p_call(
         weight_dot, clen, seed, shape=shape, transpose=transpose, corder=corder,
-        matrix_mode=kwargs['matrix_mode'], backend=kwargs['backend'],
+        backend=kwargs['backend'],
     )
 
 
@@ -599,7 +582,7 @@ def _jitc_homo_matrix_transpose(ct, weight, clen, seed, *, shape, transpose: boo
     if ad.is_undefined_primal(weight):
         forward = jits_p_call(
             1., clen, seed, shape=shape, transpose=transpose, corder=corder,
-            matrix_mode=kwargs['matrix_mode'], backend=kwargs['backend'],
+            backend=kwargs['backend'],
         )[0]
         dw = jnp.expand_dims((ct * forward).sum(), axis=0)
         return (dw, clen, seed)
@@ -639,8 +622,7 @@ def _jitc_homo_matrix_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
-            matrix_mode=kwargs['matrix_mode'],
-            backend=kwargs['backend'],
+                backend=kwargs['backend'],
         )[0]
         weight = args[0]
         axis = axes[0]
@@ -677,8 +659,7 @@ def _jits_benchmark_data(*, platform):
                 BenchmarkConfig(
                     name,
                     (weight, clen, seed),
-                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder,
-                     'matrix_mode': 'mv'}
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
                 )
             )
     return configs
@@ -692,7 +673,6 @@ def jits_p_call(
     shape,
     transpose: bool,
     corder: bool,
-    matrix_mode: MatrixMode,
     backend: Optional[str] = None,
 ):
     r"""
@@ -762,7 +742,6 @@ def jits_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
-        matrix_mode=_normalize_matrix_mode(matrix_mode),
         backend=backend,
     )
 
@@ -833,8 +812,8 @@ def _jitsmv_numba_kernel(
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
 
-    stride = _MV_STRIDE
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    stride = _LANE_STRIDE
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
 
     if corder:
         # notrans: m = output rows, k = vector length (walk); gather w * v[j].
@@ -923,7 +902,7 @@ def _jitsmv_cuda_kernel(
     # only sets the output shape (m/k are derived from the tensor sizes).
     variant = 'notrans' if corder else 'trans'
     kernel_name = f'jit_scalar_jitsmv.jitsmv_{variant}{sfx}'
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
 
     def kernel(weight, clen, vector, seed, _):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
@@ -1096,7 +1075,6 @@ def _jitsmv_batching(
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
-            matrix_mode='mm',
             backend=kwargs['backend'],
         )
         return r, [1]
@@ -1110,7 +1088,6 @@ def _jitsmv_batching(
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
-            matrix_mode='mm',
             backend=kwargs['backend'],
         )
         return r, [1]
@@ -1325,8 +1302,8 @@ def _jitsmm_numba_kernel(
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
 
-    stride = _MM_STRIDE
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    stride = _LANE_STRIDE
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
 
     if corder:
         # notrans: Y = M @ B. m = output rows, k = B rows (walk), n = columns.
@@ -1402,7 +1379,6 @@ def _jitsmm_numba_kernel(
 
 def _jitsmm_cuda_kernel(
     corder: bool = True,
-    matrix_mode: MatrixMode = 'mm',
     **kwargs
 ):
     load_cuda_file(
@@ -1410,11 +1386,8 @@ def _jitsmm_cuda_kernel(
         name='jit_scalar_jitsmm',
     )
     sfx = dtype_suffix(kwargs['weight_info'].dtype)
-    # 'mm' -> AW-T4 (4-thread) kernels (native matmat); 'mv' -> 32-lane kernels
-    # (draw the same matrix as jitsmv, used by vmap(jitsmv)).
-    prefix = 'jitsmm_mv' if _normalize_matrix_mode(matrix_mode) == 'mv' else 'jitsmm'
     variant = 'notrans' if corder else 'trans'
-    kernel_name = f'jit_scalar_jitsmm.{prefix}_{variant}{sfx}'
+    kernel_name = f'jit_scalar_jitsmm.jitsmm_{variant}{sfx}'
 
     out_info = kwargs['out_info']
     B_info = kwargs['B_info']
@@ -1425,7 +1398,7 @@ def _jitsmm_cuda_kernel(
         m_ffi, k_ffi = int(out_info.shape[0]), k_walk
     else:
         m_ffi, k_ffi = k_walk, int(out_info.shape[0])
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
 
     def kernel(weight, clen, B, seed, _):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
@@ -1462,7 +1435,7 @@ def _jitsmm_jvp_w(w_dot, weight, clen, B, seed, _, *, shape, transpose, corder, 
     """
     return jitsmm_p_call(
         w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
-        matrix_mode=kwargs['matrix_mode'], backend=kwargs['backend'],
+        backend=kwargs['backend'],
     )
 
 
@@ -1492,7 +1465,7 @@ def _jitsmm_jvp_B(B_dot, weight, clen, B, seed, _, *, shape, transpose, corder, 
     """
     return jitsmm_p_call(
         weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder,
-        matrix_mode=kwargs['matrix_mode'], backend=kwargs['backend'],
+        backend=kwargs['backend'],
     )
 
 
@@ -1543,8 +1516,7 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
             shape=shape,
             transpose=not transpose,
             corder=not corder,
-            matrix_mode=kwargs['matrix_mode'],
-            backend=kwargs['backend'],
+                backend=kwargs['backend'],
         )[0]
 
         return weight, clen, r, seed, _
@@ -1558,8 +1530,7 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
             shape=shape,
             transpose=not transpose,
             corder=not corder,
-            matrix_mode=kwargs['matrix_mode'],
-            backend=kwargs['backend'],
+                backend=kwargs['backend'],
         )[0]
         dw = jnp.expand_dims(jnp.sum(r * B), axis=0)
         return dw, clen, B, seed, _
@@ -1604,7 +1575,6 @@ def _batching_axis1(args, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
-        matrix_mode=kwargs['matrix_mode'],
         backend=kwargs['backend'],
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
@@ -1675,8 +1645,7 @@ def _jitsmm_benchmark_data(*, platform):
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
             configs.append(BenchmarkConfig(name, (weight, clen, B, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder,
-                'matrix_mode': 'mm'
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
             }))
     return configs
 
@@ -1690,7 +1659,6 @@ def jitsmm_p_call(
     shape: MatrixShape,
     transpose: bool,
     corder: bool,
-    matrix_mode: MatrixMode = 'mm',
     backend: Optional[str] = None,
 ):
     r"""
@@ -1776,7 +1744,6 @@ def jitsmm_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
-        matrix_mode=_normalize_matrix_mode(matrix_mode),
         TITLE_SIZE=B.shape[1],  # Assuming B is [k, n], we want to process n columns at once
         backend=backend,
     )

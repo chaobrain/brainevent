@@ -1,4 +1,4 @@
-"""Pure-numpy reference implementation of the uniform-weight JITC connectivity.
+"""Pure-numpy reference implementation of the scalar-weight JITC connectivity.
 
 Self-contained on purpose: each ``_jit_*`` package carries its own copy of the
 light-RNG walk so a divergence *between* packages cannot hide behind a shared
@@ -106,19 +106,18 @@ def iter_edges(seed, clen, n_rows, n_cols, *, corder, stride=LANE_STRIDE, chunk_
                     local_j = lane + int(stride) * int(q)
 
 
-def dense_uniform_reference(w_low, w_high, prob, seed, *, shape, transpose=False, corder=True):
+def dense_scalar_reference(weight, prob, seed, *, shape, transpose=False, corder=True):
+    """The dense matrix ``jits`` must produce, computed independently in numpy."""
     out_shape = tuple(reversed(shape)) if transpose else tuple(shape)
     n_rows, n_cols = out_shape if corder else tuple(reversed(out_shape))
-    dtype = np.result_type(np.asarray(w_low), np.asarray(w_high), np.float32)
+    dtype = np.result_type(np.asarray(weight), np.float32)
     out = np.zeros(out_shape, dtype=dtype)
     if float(prob) == 0.0:
         return out
-    wlo = np.asarray(w_low, dtype=dtype).item()
-    whi = np.asarray(w_high, dtype=dtype).item()
-    span = whi - wlo
+    w = np.asarray(weight, dtype=dtype).item()
     chunk_size = default_chunk_size(n_cols)
-    for out_row, out_col, rng_row, rng_col in iter_edges(
+    for out_row, out_col, _, _ in iter_edges(
         seed, conn_length(prob), n_rows, n_cols, corder=corder, chunk_size=chunk_size
     ):
-        out[out_row, out_col] = wlo + np.asarray(hash_uniform01(seed, rng_row, rng_col), dtype=dtype) * span
+        out[out_row, out_col] = w
     return out

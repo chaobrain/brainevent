@@ -24,7 +24,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import namescope, _normalize_chunk_size, _MV_STRIDE, _MM_STRIDE
+from brainevent._misc import namescope, _chunk_size, _walk_length, _LANE_STRIDE
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
@@ -330,11 +330,11 @@ def _jitsmv_numba_kernel(
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
 
-    stride = _MV_STRIDE
-    # ``chunk_size`` keys the RNG stream and must match the CUDA path (which
-    # chunks over ``shape[1]`` with ``target_chunks=4``); ``n_chunks`` is then
-    # derived from the walk dimension ``k`` inside the kernel, as CUDA does.
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    stride = _LANE_STRIDE
+    # ``chunk_size`` keys the RNG stream and must match the CUDA path: both
+    # split the *walked* dimension into 4 chunks; ``n_chunks`` is then derived
+    # from that dimension inside the kernel, as CUDA does.
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
     is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
@@ -442,7 +442,7 @@ def _binary_jitsmv_cuda_kernel(
     # float/CSR convention so the drawn matrix is identical across operators.
     k = int(vector_info.shape[0])
     n_words = (k + 31) // 32
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
     # bool/int8 spikes are active when non-zero; float spikes when > 0.
     is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
@@ -863,11 +863,11 @@ def _jitsmm_numba_kernel(
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
 
-    stride = _MM_STRIDE
-    # Same chunk keying as the mv kernel and the CUDA path (chunk over
-    # ``shape[1]`` with ``target_chunks=4``); the mm walk just uses a stride of 4
-    # (AW-T4) instead of 32, which is what makes the mm matrix differ from mv.
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    stride = _LANE_STRIDE
+    # Same chunk keying and 32-lane walk as the matvec kernel and the CUDA path
+    # (the walked dimension split into 4 chunks), so matmat and matvec draw the
+    # same matrix.
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
     is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
@@ -967,10 +967,9 @@ def _binary_jitsmm_cuda_kernel(
         name='jit_scalar_binary_jitsmm',
     )
     wt_sfx = dtype_suffix(kwargs['weight_info'].dtype)
-    # Same dispatch as the mv kernel: ``corder`` picks notrans/trans.  ``binary_jitsmm``
-    # always uses the AW-T4 (mm) kernels, so its drawn matrix differs from the mv
-    # (32-lane) one -- gradients therefore delegate to ``float.jitsmm`` (mm mode) and
-    # CSR materialization must use the matching mm mode.
+    # Same dispatch as the matvec kernel: ``corder`` picks notrans/trans.  The
+    # matmat kernels replay the same 32-lane walk, so gradients delegating to
+    # ``float.jitsmm`` and CSR materialization all see one matrix.
     variant = 'notrans' if corder else 'trans'
     kernel_name = f'jit_scalar_binary_jitsmm.{variant}{wt_sfx}'
 
@@ -978,7 +977,7 @@ def _binary_jitsmm_cuda_kernel(
     k_pack = int(B_info.shape[0])          # rows of B == the packed (spike) dimension
     n = int(B_info.shape[1])               # independent columns processed together
     n_words = (k_pack + 31) // 32
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
     # notrans: output has m rows and walks k = B-rows; trans swaps the two roles.
     if corder:
         m_ffi, k_ffi = int(out_info.shape[0]), k_pack

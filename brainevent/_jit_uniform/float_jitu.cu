@@ -16,8 +16,10 @@
 /*
  * float_jitu.cu -- dense light-RNG JIT uniform materialization.
  *
- * jitu_mv_f32 matches CSR matrix_mode="mv"; jitu_mm_aw_t4_f32 matches CSR
- * matrix_mode="mm". The public transpose flag selects notrans/trans output.
+ * One warp owns one (row, chunk_id) task and each lane owns one residue
+ * class (local_j = lane + 32 * q), so the drawn matrix is the one every
+ * other JITC uniform kernel -- matvec, matmat and CSR -- generates.
+ * The public transpose flag selects notrans/trans output.
  */
 
 #include <cstdio>
@@ -27,9 +29,6 @@
 #include "brainevent/common.h"
 
 #define LIGHT_TARGET_CHUNKS 4
-#define AW_T4_GROUP_SIZE 4
-#define AW_T4_GROUPS_PER_WARP 8
-
 __device__ __forceinline__ unsigned int fast_bounded_u32(
     unsigned int r,
     unsigned int bound
@@ -104,8 +103,8 @@ static int default_light_chunk_size(int k) {
     return (k + LIGHT_TARGET_CHUNKS - 1) / LIGHT_TARGET_CHUNKS;
 }
 
-#define DEFINE_JITU_MV(SFX, WEIGHT_T, ACC_T, READ_W, WRITE_W)                   \
-__global__ void _jitu_mv##SFX##_kern(                                           \
+#define DEFINE_JITU(SFX, WEIGHT_T, ACC_T, READ_W, WRITE_W)                   \
+__global__ void _jitu##SFX##_kern(                                           \
     const WEIGHT_T* __restrict__ w_low,                                         \
     const WEIGHT_T* __restrict__ w_high,                                        \
     const int*      __restrict__ clen,                                          \
@@ -147,62 +146,13 @@ __global__ void _jitu_mv##SFX##_kern(                                           
     }                                                                           \
 }
 
-#define DEFINE_JITU_MM_AW_T4(SFX, WEIGHT_T, ACC_T, READ_W, WRITE_W)             \
-__global__ void _jitu_mm_aw_t4##SFX##_kern(                                     \
-    const WEIGHT_T* __restrict__ w_low,                                         \
-    const WEIGHT_T* __restrict__ w_high,                                        \
-    const int*      __restrict__ clen,                                          \
-    const int*      __restrict__ seed,                                          \
-    WEIGHT_T*       __restrict__ output,                                        \
-    int n_rows, int n_cols, int transpose, int chunk_size, int n_chunks         \
-) {                                                                            \
-    int lane = threadIdx.x & 31;                                                \
-    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);                               \
-    int group = lane >> 2;                                                      \
-    int warp_id = threadIdx.x >> 5;                                             \
-    int warps_per_block = blockDim.x >> 5;                                      \
-    int chunk_id = (int)blockIdx.y;                                             \
-    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;                \
-    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;                        \
-    if (row >= n_rows || chunk_id >= n_chunks) return;                          \
-    int chunk_start = chunk_id * chunk_size;                                    \
-    if (chunk_start >= n_cols) return;                                          \
-    int chunk_end = chunk_start + chunk_size;                                   \
-    if (chunk_end > n_cols) chunk_end = n_cols;                                 \
-    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);         \
-    if (chunk_width == 0U) return;                                              \
-    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                       \
-    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                              \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                            \
-    if (cl < 2U) cl = 2U;                                                       \
-    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                         \
-    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);      \
-    unsigned int q = stationary_initial_q(&rng, cl);                            \
-    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;       \
-    while (local_j < chunk_width) {                                             \
-        int col = chunk_start + (int)local_j;                                   \
-        float u01 = hash_uniform01(seed0, row, col);                            \
-        ACC_T w = wlo + (ACC_T)u01 * range;                                     \
-        size_t offset = transpose                                               \
-            ? ((size_t)col * n_rows + row)                                      \
-            : ((size_t)row * n_cols + col);                                     \
-        output[offset] = WRITE_W(w);                                            \
-        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);              \
-        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;                \
-    }                                                                           \
-}
+DEFINE_JITU(_f32,  float,         float,  READ_F32,  WRITE_F32)
+DEFINE_JITU(_f64,  double,        double, READ_F64,  WRITE_F64)
+DEFINE_JITU(_f16,  __half,        float,  READ_F16,  WRITE_F16)
+DEFINE_JITU(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 
-DEFINE_JITU_MV(_f32,  float,         float,  READ_F32,  WRITE_F32)
-DEFINE_JITU_MV(_f64,  double,        double, READ_F64,  WRITE_F64)
-DEFINE_JITU_MV(_f16,  __half,        float,  READ_F16,  WRITE_F16)
-DEFINE_JITU_MV(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 
-DEFINE_JITU_MM_AW_T4(_f32,  float,         float,  READ_F32,  WRITE_F32)
-DEFINE_JITU_MM_AW_T4(_f64,  double,        double, READ_F64,  WRITE_F64)
-DEFINE_JITU_MM_AW_T4(_f16,  __half,        float,  READ_F16,  WRITE_F16)
-DEFINE_JITU_MM_AW_T4(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
-
-#define FFI_JITU(NAME, KERNEL, SFX, WEIGHT_T, ROW_GROUPS, TRANSPOSE)             \
+#define FFI_JITU(NAME, SFX, WEIGHT_T, TRANSPOSE)             \
 void NAME##SFX(                                                                  \
     const BE::Tensor w_low,                                                      \
     const BE::Tensor w_high,                                                     \
@@ -223,15 +173,14 @@ void NAME##SFX(                                                                 
     if (n_chunks <= 0) return;                                                   \
     int threads = 256;                                                           \
     int warps_per_block = threads / 32;                                          \
-    int rows_per_block = warps_per_block * ROW_GROUPS;                           \
-    int row_blocks = (n_rows + rows_per_block - 1) / rows_per_block;             \
-    if (row_blocks > 2147483647 || n_chunks > 65535) {                           \
-        fprintf(stderr, #NAME #SFX " grid overflow: row_blocks=%d n_chunks=%d\n", \
-                row_blocks, n_chunks);                                           \
+    int row_warp_blocks = (n_rows + warps_per_block - 1) / warps_per_block;             \
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535) {                           \
+        fprintf(stderr, #NAME #SFX " grid overflow: row_warp_blocks=%d n_chunks=%d\n", \
+                row_warp_blocks, n_chunks);                                           \
         abort();                                                                 \
     }                                                                            \
-    dim3 blocks((unsigned int)row_blocks, (unsigned int)n_chunks, 1U);           \
-    _jitu_##KERNEL##SFX##_kern<<<blocks, threads, 0, s>>>(                       \
+    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);           \
+    _jitu##SFX##_kern<<<blocks, threads, 0, s>>>(                       \
         static_cast<const WEIGHT_T*>(w_low.data_ptr()),                          \
         static_cast<const WEIGHT_T*>(w_high.data_ptr()),                         \
         static_cast<const int*>(clen.data_ptr()),                                \
@@ -242,38 +191,20 @@ void NAME##SFX(                                                                 
     BE_CHECK_KERNEL_LAUNCH();                                                    \
 }
 
-// @BE jitu_mv_notrans_f32
-FFI_JITU(jitu_mv_notrans, mv, _f32, float, 1, 0)
-// @BE jitu_mv_notrans_f64
-FFI_JITU(jitu_mv_notrans, mv, _f64, double, 1, 0)
-// @BE jitu_mv_notrans_f16
-FFI_JITU(jitu_mv_notrans, mv, _f16, __half, 1, 0)
-// @BE jitu_mv_notrans_bf16
-FFI_JITU(jitu_mv_notrans, mv, _bf16, __nv_bfloat16, 1, 0)
+// @BE jitu_notrans_f32
+FFI_JITU(jitu_notrans, _f32, float, 0)
+// @BE jitu_notrans_f64
+FFI_JITU(jitu_notrans, _f64, double, 0)
+// @BE jitu_notrans_f16
+FFI_JITU(jitu_notrans, _f16, __half, 0)
+// @BE jitu_notrans_bf16
+FFI_JITU(jitu_notrans, _bf16, __nv_bfloat16, 0)
 
-// @BE jitu_mv_trans_f32
-FFI_JITU(jitu_mv_trans, mv, _f32, float, 1, 1)
-// @BE jitu_mv_trans_f64
-FFI_JITU(jitu_mv_trans, mv, _f64, double, 1, 1)
-// @BE jitu_mv_trans_f16
-FFI_JITU(jitu_mv_trans, mv, _f16, __half, 1, 1)
-// @BE jitu_mv_trans_bf16
-FFI_JITU(jitu_mv_trans, mv, _bf16, __nv_bfloat16, 1, 1)
-
-// @BE jitu_mm_aw_t4_notrans_f32
-FFI_JITU(jitu_mm_aw_t4_notrans, mm_aw_t4, _f32, float, AW_T4_GROUPS_PER_WARP, 0)
-// @BE jitu_mm_aw_t4_notrans_f64
-FFI_JITU(jitu_mm_aw_t4_notrans, mm_aw_t4, _f64, double, AW_T4_GROUPS_PER_WARP, 0)
-// @BE jitu_mm_aw_t4_notrans_f16
-FFI_JITU(jitu_mm_aw_t4_notrans, mm_aw_t4, _f16, __half, AW_T4_GROUPS_PER_WARP, 0)
-// @BE jitu_mm_aw_t4_notrans_bf16
-FFI_JITU(jitu_mm_aw_t4_notrans, mm_aw_t4, _bf16, __nv_bfloat16, AW_T4_GROUPS_PER_WARP, 0)
-
-// @BE jitu_mm_aw_t4_trans_f32
-FFI_JITU(jitu_mm_aw_t4_trans, mm_aw_t4, _f32, float, AW_T4_GROUPS_PER_WARP, 1)
-// @BE jitu_mm_aw_t4_trans_f64
-FFI_JITU(jitu_mm_aw_t4_trans, mm_aw_t4, _f64, double, AW_T4_GROUPS_PER_WARP, 1)
-// @BE jitu_mm_aw_t4_trans_f16
-FFI_JITU(jitu_mm_aw_t4_trans, mm_aw_t4, _f16, __half, AW_T4_GROUPS_PER_WARP, 1)
-// @BE jitu_mm_aw_t4_trans_bf16
-FFI_JITU(jitu_mm_aw_t4_trans, mm_aw_t4, _bf16, __nv_bfloat16, AW_T4_GROUPS_PER_WARP, 1)
+// @BE jitu_trans_f32
+FFI_JITU(jitu_trans, _f32, float, 1)
+// @BE jitu_trans_f64
+FFI_JITU(jitu_trans, _f64, double, 1)
+// @BE jitu_trans_f16
+FFI_JITU(jitu_trans, _f16, __half, 1)
+// @BE jitu_trans_bf16
+FFI_JITU(jitu_trans, _bf16, __nv_bfloat16, 1)

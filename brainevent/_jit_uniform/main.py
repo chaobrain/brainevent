@@ -37,44 +37,6 @@ __all__ = [
 ]
 
 
-class _JITCUniformModeView:
-    """Materialization view of a JITC uniform matrix for a fixed ``matrix_mode``."""
-    __slots__ = ('_mat', '_mode')
-
-    def __init__(self, mat, mode):
-        self._mat = mat
-        self._mode = mode
-
-    def todense(self):
-        m = self._mat
-        gen_shape, gen_transpose = m._materialize_params()
-        return jitu(
-            m.wlow, m.whigh, m.prob, m.seed,
-            shape=gen_shape, transpose=gen_transpose, corder=m.corder,
-            matrix_mode=self._mode, backend=m.backend,
-        )
-
-    def tocsr(self):
-        m = self._mat
-        gen_shape, gen_transpose = m._materialize_params()
-        if not gen_transpose:
-            return jitu_to_csr(
-                m.wlow, m.whigh, m.prob, m.seed,
-                shape=gen_shape, corder=m.corder, matrix_mode=self._mode, backend=m.backend,
-            )
-        from brainevent._csr import CSR
-        return CSR.fromdense(self.todense())
-
-    def tocsc(self):
-        return self.tocsr().tocsc()
-
-    def tocoo(self):
-        return self.tocsr().tocoo()
-
-    def __repr__(self):
-        return f"{self._mat.__class__.__name__}.{self._mode}"
-
-
 class JITCUniformMatrix(JITCMatrix):
     """
     Base class for Just-In-Time Connectivity Uniform Distribution matrices.
@@ -371,26 +333,16 @@ class JITCUniformMatrix(JITCMatrix):
 
     def tocsr(self):
         """
-        Bare CSR materialization is ambiguous for light uniform matrices.
-
-        The mv and mm light kernels draw different matrices. Use
-        ``mat.mv.tocsr()`` or ``mat.mm.tocsr()`` to pick the matrix that matches
-        the operation being checked.
+        Materialize the connectivity directly as a :class:`~brainevent.CSR`.
 
         Returns
         -------
         CSR
-            This method always raises before returning.
-
-        Raises
-        ------
-        NotImplementedError
-            Always raised; use ``mat.mv.tocsr()`` or ``mat.mm.tocsr()``.
+            The same logical matrix :meth:`todense` returns, in CSR format.
 
         See Also
         --------
-        mv : Materialization view for matrix-vector kernels.
-        mm : Materialization view for matrix-matrix kernels.
+        todense : Materialize the matrix as a dense array.
         JITCUniformR.transpose : Switch between row- and column-oriented forms.
 
         Notes
@@ -407,24 +359,14 @@ class JITCUniformMatrix(JITCMatrix):
 
             >>> from brainevent import JITCUniformR
             >>> mat = JITCUniformR((0.1, 0.5, 0.2, 42), shape=(10, 10))
-            >>> csr = mat.mv.tocsr()
+            >>> csr = mat.tocsr()
             >>> csr.shape
             (10, 10)
         """
-        raise NotImplementedError(
-            "tocsr() is ambiguous for JITC uniform matrices: the mv and mm light "
-            "kernels draw different matrices. Use mat.mv.tocsr() or mat.mm.tocsr()."
+        return jitu_to_csr(
+            self.wlow, self.whigh, self.prob, self.seed,
+            shape=self.shape, corder=self.corder, backend=self.backend,
         )
-
-    @property
-    def mv(self) -> '_JITCUniformModeView':
-        """Materialization view for the matrix used by matrix-vector products."""
-        return _JITCUniformModeView(self, 'mv')
-
-    @property
-    def mm(self) -> '_JITCUniformModeView':
-        """Materialization view for the matrix used by matrix-matrix products."""
-        return _JITCUniformModeView(self, 'mm')
 
     def dt2t(
         self,
@@ -628,7 +570,7 @@ class JITCUniformR(JITCUniformMatrix):
         >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
 
         # Convert to the matrix used by matrix-vector products
-        >>> dense_matrix = uniform_matrix.mv.todense()
+        >>> dense_matrix = uniform_matrix.todense()
         >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
         >>> # each non-zero element is uniformly distributed between 0.1 and 0.5
 
@@ -678,21 +620,12 @@ class JITCUniformR(JITCUniformMatrix):
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
-        Bare dense materialization is ambiguous for light uniform matrices.
-
-        The mv and mm light kernels draw different matrices. Use
-        ``mat.mv.todense()`` or ``mat.mm.todense()`` to pick the matrix that
-        matches the operation being checked.
+        Materialize the connectivity as a dense array.
 
         Returns
         -------
         Union[jax.Array, u.Quantity]
-            This method always raises before returning.
-
-        Raises
-        ------
-        NotImplementedError
-            Always raised; use ``mat.mv.todense()`` or ``mat.mm.todense()``.
+            The dense form of the matrix this instance represents.
 
         See Also
         --------
@@ -716,18 +649,16 @@ class JITCUniformR(JITCUniformMatrix):
             >>> from brainevent import JITCUniformR
             >>>
             >>> mat = JITCUniformR((0.1, 0.5, 0.2, 42), shape=(4, 6))
-            >>> dense = mat.mv.todense()
+            >>> dense = mat.todense()
             >>> dense.shape
             (4, 6)
         """
-        raise NotImplementedError(
-            "todense() is ambiguous for JITC uniform matrices: the mv and mm light "
-            "kernels draw different matrices. Use mat.mv.todense() or mat.mm.todense()."
+        return jitu(
+            self.wlow, self.whigh, self.prob, self.seed,
+            shape=self.shape, transpose=False, corder=self.corder,
+            backend=self.backend,
         )
 
-    def _materialize_params(self):
-        """``(shape, transpose)`` whose ``jitu`` generation matches this matrix's matvec."""
-        return self.shape, False
 
     def transpose(self, axes=None) -> 'JITCUniformC':
         """
@@ -1193,7 +1124,7 @@ class JITCUniformC(JITCUniformMatrix):
         >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
 
         # Convert to the matrix used by matrix-vector products
-        >>> dense_matrix = uniform_matrix.mv.todense()
+        >>> dense_matrix = uniform_matrix.todense()
         >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
         >>> # each non-zero element is uniformly distributed between 0.1 and 0.5
 
@@ -1254,21 +1185,12 @@ class JITCUniformC(JITCUniformMatrix):
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
-        Bare dense materialization is ambiguous for light uniform matrices.
-
-        The mv and mm light kernels draw different matrices. Use
-        ``mat.mv.todense()`` or ``mat.mm.todense()`` to pick the matrix that
-        matches the operation being checked.
+        Materialize the connectivity as a dense array.
 
         Returns
         -------
         Union[jax.Array, u.Quantity]
-            This method always raises before returning.
-
-        Raises
-        ------
-        NotImplementedError
-            Always raised; use ``mat.mv.todense()`` or ``mat.mm.todense()``.
+            The dense form of the matrix this instance represents.
 
         See Also
         --------
@@ -1291,18 +1213,16 @@ class JITCUniformC(JITCUniformMatrix):
             >>> from brainevent import JITCUniformC
             >>>
             >>> mat = JITCUniformC((0.1, 0.5, 0.2, 42), shape=(3, 10))
-            >>> dense = mat.mv.todense()
+            >>> dense = mat.todense()
             >>> dense.shape
             (3, 10)
         """
-        raise NotImplementedError(
-            "todense() is ambiguous for JITC uniform matrices: the mv and mm light "
-            "kernels draw different matrices. Use mat.mv.todense() or mat.mm.todense()."
+        return jitu(
+            self.wlow, self.whigh, self.prob, self.seed,
+            shape=self.shape, transpose=False, corder=self.corder,
+            backend=self.backend,
         )
 
-    def _materialize_params(self):
-        """``(shape, transpose)`` whose ``jitu`` generation matches this matrix's matvec."""
-        return self.shape[::-1], True
 
     def transpose(self, axes=None) -> 'JITCUniformR':
         """

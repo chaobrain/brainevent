@@ -14,11 +14,18 @@
 // ==============================================================================
 
 /*
- * float_jitsmm.cu -- dense-matrix light-RNG backends.
+ * float_jitsmm.cu -- dense-matrix light-RNG matmat backends.
  *
- * jitsmm_notrans/trans_f32 use the AW-T4 MM random stream and match CSR
- * matrix_mode="mm".  jitsmm_mv_notrans/trans_f32 use the MV random stream
- * column-by-column and are only used by vmap(jitsmv).
+ * MM = repeated MV: each column of B is an independent MV over the *same*
+ * matrix.  One warp owns one (row, chunk_id, col) task and each lane owns one
+ * residue class:
+ *
+ *   local_j = lane + 32 * q
+ *
+ * The connection stream is keyed by (seed, row, chunk_id, lane) with lane in
+ * [0, 32) and stride 32, exactly as in float_jitsmv.cu -- the two draw the same
+ * matrix.  Only the grid's z-dimension over columns distinguishes this file
+ * from the matvec one.
  */
 
 #include <cstdio>
@@ -26,9 +33,6 @@
 
 #include "cuda_common.h"
 #include "brainevent/common.h"
-
-#define AW_T4_GROUP_SIZE 4
-#define AW_T4_GROUPS_PER_WARP 8
 
 __device__ __forceinline__ unsigned int fast_bounded_u32(
     unsigned int r,
@@ -99,21 +103,7 @@ __device__ __forceinline__ unsigned int stationary_initial_q(
     }
 }
 
-__device__ __forceinline__ float group4_reduce_sum_f32(float value, int group) {
-    unsigned int mask = 0xFU << (group * AW_T4_GROUP_SIZE);
-    value += __shfl_down_sync(mask, value, 2, AW_T4_GROUP_SIZE);
-    value += __shfl_down_sync(mask, value, 1, AW_T4_GROUP_SIZE);
-    return value;
-}
-
-__device__ __forceinline__ double group4_reduce_sum_f64(double value, int group) {
-    unsigned int mask = 0xFU << (group * AW_T4_GROUP_SIZE);
-    value += __shfl_down_sync(mask, value, 2, AW_T4_GROUP_SIZE);
-    value += __shfl_down_sync(mask, value, 1, AW_T4_GROUP_SIZE);
-    return value;
-}
-
-__global__ void _mv_notrans_f32_kern(
+__global__ void _notrans_f32_kern(
     const float* __restrict__ weight,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
@@ -160,7 +150,7 @@ __global__ void _mv_notrans_f32_kern(
     }
 }
 
-__global__ void _mv_trans_f32_kern(
+__global__ void _trans_f32_kern(
     const float* __restrict__ weight,
     const int*   __restrict__ clen,
     const int*   __restrict__ seed,
@@ -204,285 +194,6 @@ __global__ void _mv_trans_f32_kern(
     }
 }
 
-__global__ void _mm_notrans_f32_kern(
-    const float* __restrict__ weight,
-    const int*   __restrict__ clen,
-    const int*   __restrict__ seed,
-    const float* __restrict__ B,
-    float*       __restrict__ output,
-    int m, int k, int n, int chunk_size, int n_chunks
-) {
-    int lane = threadIdx.x & 31;
-    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);
-    int group = lane >> 2;
-    int warp_id = threadIdx.x >> 5;
-    int warps_per_block = blockDim.x >> 5;
-    int chunk_id = (int)blockIdx.y;
-    int col_b = (int)blockIdx.z;
-    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;
-    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;
-    if (row >= m || chunk_id >= n_chunks || col_b >= n) return;
-
-    int chunk_start = chunk_id * chunk_size;
-    if (chunk_start >= k) return;
-    int chunk_end = chunk_start + chunk_size;
-    if (chunk_end > k) chunk_end = k;
-    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
-    if (chunk_width == 0U) return;
-
-    float w = READ_F32(__ldg(&weight[0]));
-
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);
-    if (cl < 2U) cl = 2U;
-    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
-    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);
-
-    unsigned int q = stationary_initial_q(&rng, cl);
-    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
-    float acc = 0.0f;
-    while (local_j < chunk_width) {
-        int j = chunk_start + (int)local_j;
-        acc += w * READ_F32(__ldg(&B[(size_t)j * n + col_b]));
-        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
-        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
-    }
-
-    float row_acc = group4_reduce_sum_f32(acc, group);
-    if (sub_lane == 0) {
-        atomic_add_f32(&output[(size_t)row * n + col_b], row_acc);
-    }
-}
-
-__global__ void _mm_trans_f32_kern(
-    const float* __restrict__ weight,
-    const int*   __restrict__ clen,
-    const int*   __restrict__ seed,
-    const float* __restrict__ B,
-    float*       __restrict__ output,
-    int m, int k, int n, int chunk_size, int n_chunks
-) {
-    int lane = threadIdx.x & 31;
-    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);
-    int group = lane >> 2;
-    int warp_id = threadIdx.x >> 5;
-    int warps_per_block = blockDim.x >> 5;
-    int chunk_id = (int)blockIdx.y;
-    int col_b = (int)blockIdx.z;
-    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;
-    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;
-    if (row >= m || chunk_id >= n_chunks || col_b >= n) return;
-
-    float v = READ_F32(__ldg(&B[(size_t)row * n + col_b]));
-    if (v == 0.0f) return;
-
-    int chunk_start = chunk_id * chunk_size;
-    if (chunk_start >= k) return;
-    int chunk_end = chunk_start + chunk_size;
-    if (chunk_end > k) chunk_end = k;
-    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
-    if (chunk_width == 0U) return;
-
-    float w = READ_F32(__ldg(&weight[0]));
-
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);
-    if (cl < 2U) cl = 2U;
-    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
-    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);
-
-    unsigned int q = stationary_initial_q(&rng, cl);
-    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
-    while (local_j < chunk_width) {
-        int j = chunk_start + (int)local_j;
-        atomic_add_f32(&output[(size_t)j * n + col_b], w * v);
-        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
-        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;
-    }
-}
-
-static void launch_mv_notrans_f32(
-    const BE::Tensor weight,
-    const BE::Tensor clen,
-    const BE::Tensor seed,
-    const BE::Tensor B,
-    BE::Tensor output,
-    int m, int k, int n, int chunk_size,
-    int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    if (m <= 0 || n <= 0) return;
-    BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr(), 0, (size_t)m * n * sizeof(float), s));
-    if (k <= 0 || chunk_size <= 0) return;
-
-    int n_chunks = (k + chunk_size - 1) / chunk_size;
-    if (n_chunks <= 0) return;
-
-    int threads = 256;
-    int warps_per_block = threads / 32;
-    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
-        fprintf(stderr,
-                "jitsmm_mv_notrans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
-                row_warp_blocks, n_chunks, n);
-        abort();
-    }
-    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n);
-
-    _mv_notrans_f32_kern<<<blocks, threads, 0, s>>>(
-        static_cast<const float*>(weight.data_ptr()),
-        static_cast<const int*>(clen.data_ptr()),
-        static_cast<const int*>(seed.data_ptr()),
-        static_cast<const float*>(B.data_ptr()),
-        static_cast<float*>(output.data_ptr()),
-        m, k, n, chunk_size, n_chunks
-    );
-    BE_CHECK_KERNEL_LAUNCH();
-}
-
-static void launch_mv_trans_f32(
-    const BE::Tensor weight,
-    const BE::Tensor clen,
-    const BE::Tensor seed,
-    const BE::Tensor B,
-    BE::Tensor output,
-    int m, int k, int n, int chunk_size,
-    int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    if (k <= 0 || n <= 0) return;
-    BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr(), 0, (size_t)k * n * sizeof(float), s));
-    if (m <= 0 || chunk_size <= 0) return;
-
-    int n_chunks = (k + chunk_size - 1) / chunk_size;
-    if (n_chunks <= 0) return;
-
-    int threads = 256;
-    int warps_per_block = threads / 32;
-    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
-        fprintf(stderr,
-                "jitsmm_mv_trans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
-                row_warp_blocks, n_chunks, n);
-        abort();
-    }
-    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n);
-
-    _mv_trans_f32_kern<<<blocks, threads, 0, s>>>(
-        static_cast<const float*>(weight.data_ptr()),
-        static_cast<const int*>(clen.data_ptr()),
-        static_cast<const int*>(seed.data_ptr()),
-        static_cast<const float*>(B.data_ptr()),
-        static_cast<float*>(output.data_ptr()),
-        m, k, n, chunk_size, n_chunks
-    );
-    BE_CHECK_KERNEL_LAUNCH();
-}
-
-static void launch_mm_notrans_f32(
-    const BE::Tensor weight,
-    const BE::Tensor clen,
-    const BE::Tensor seed,
-    const BE::Tensor B,
-    BE::Tensor output,
-    int m, int k, int n, int chunk_size,
-    int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    if (m <= 0 || n <= 0) return;
-    BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr(), 0, (size_t)m * n * sizeof(float), s));
-    if (k <= 0 || chunk_size <= 0) return;
-
-    int n_chunks = (k + chunk_size - 1) / chunk_size;
-    if (n_chunks <= 0) return;
-
-    int threads = 256;
-    int warps_per_block = threads / 32;
-    int rows_per_block = warps_per_block * AW_T4_GROUPS_PER_WARP;
-    int row_group_blocks = (m + rows_per_block - 1) / rows_per_block;
-    if (row_group_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
-        fprintf(stderr,
-                "jitsmm_notrans_f32 grid overflow: row_group_blocks=%d n_chunks=%d n=%d\n",
-                row_group_blocks, n_chunks, n);
-        abort();
-    }
-    dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, (unsigned int)n);
-
-    _mm_notrans_f32_kern<<<blocks, threads, 0, s>>>(
-        static_cast<const float*>(weight.data_ptr()),
-        static_cast<const int*>(clen.data_ptr()),
-        static_cast<const int*>(seed.data_ptr()),
-        static_cast<const float*>(B.data_ptr()),
-        static_cast<float*>(output.data_ptr()),
-        m, k, n, chunk_size, n_chunks
-    );
-    BE_CHECK_KERNEL_LAUNCH();
-}
-
-static void launch_mm_trans_f32(
-    const BE::Tensor weight,
-    const BE::Tensor clen,
-    const BE::Tensor seed,
-    const BE::Tensor B,
-    BE::Tensor output,
-    int m, int k, int n, int chunk_size,
-    int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    if (k <= 0 || n <= 0) return;
-    BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr(), 0, (size_t)k * n * sizeof(float), s));
-    if (m <= 0 || chunk_size <= 0) return;
-
-    int n_chunks = (k + chunk_size - 1) / chunk_size;
-    if (n_chunks <= 0) return;
-
-    int threads = 256;
-    int warps_per_block = threads / 32;
-    int rows_per_block = warps_per_block * AW_T4_GROUPS_PER_WARP;
-    int row_group_blocks = (m + rows_per_block - 1) / rows_per_block;
-    if (row_group_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
-        fprintf(stderr,
-                "jitsmm_trans_f32 grid overflow: row_group_blocks=%d n_chunks=%d n=%d\n",
-                row_group_blocks, n_chunks, n);
-        abort();
-    }
-    dim3 blocks((unsigned int)row_group_blocks, (unsigned int)n_chunks, (unsigned int)n);
-
-    _mm_trans_f32_kern<<<blocks, threads, 0, s>>>(
-        static_cast<const float*>(weight.data_ptr()),
-        static_cast<const int*>(clen.data_ptr()),
-        static_cast<const int*>(seed.data_ptr()),
-        static_cast<const float*>(B.data_ptr()),
-        static_cast<float*>(output.data_ptr()),
-        m, k, n, chunk_size, n_chunks
-    );
-    BE_CHECK_KERNEL_LAUNCH();
-}
-
-// @BE jitsmm_mv_notrans_f32
-void jitsmm_mv_notrans_f32(
-    const BE::Tensor weight,
-    const BE::Tensor clen,
-    const BE::Tensor seed,
-    const BE::Tensor B,
-    BE::Tensor output,
-    int m, int k, int n, int chunk_size,
-    int64_t stream
-) {
-    launch_mv_notrans_f32(weight, clen, seed, B, output, m, k, n, chunk_size, stream);
-}
-
-// @BE jitsmm_mv_trans_f32
-void jitsmm_mv_trans_f32(
-    const BE::Tensor weight,
-    const BE::Tensor clen,
-    const BE::Tensor seed,
-    const BE::Tensor B,
-    BE::Tensor output,
-    int m, int k, int n, int chunk_size,
-    int64_t stream
-) {
-    launch_mv_trans_f32(weight, clen, seed, B, output, m, k, n, chunk_size, stream);
-}
-
 // @BE jitsmm_notrans_f32
 void jitsmm_notrans_f32(
     const BE::Tensor weight,
@@ -493,7 +204,34 @@ void jitsmm_notrans_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mm_notrans_f32(weight, clen, seed, B, output, m, k, n, chunk_size, stream);
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (m <= 0 || n <= 0) return;
+    BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr(), 0, (size_t)m * n * sizeof(float), s));
+    if (k <= 0 || chunk_size <= 0) return;
+
+    int n_chunks = (k + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0) return;
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
+        fprintf(stderr,
+                "jitsmm_notrans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
+                row_warp_blocks, n_chunks, n);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n);
+
+    _notrans_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float*>(weight.data_ptr()),
+        static_cast<const int*>(clen.data_ptr()),
+        static_cast<const int*>(seed.data_ptr()),
+        static_cast<const float*>(B.data_ptr()),
+        static_cast<float*>(output.data_ptr()),
+        m, k, n, chunk_size, n_chunks
+    );
+    BE_CHECK_KERNEL_LAUNCH();
 }
 
 // @BE jitsmm_trans_f32
@@ -506,52 +244,79 @@ void jitsmm_trans_f32(
     int m, int k, int n, int chunk_size,
     int64_t stream
 ) {
-    launch_mm_trans_f32(weight, clen, seed, B, output, m, k, n, chunk_size, stream);
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (k <= 0 || n <= 0) return;
+    BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr(), 0, (size_t)k * n * sizeof(float), s));
+    if (m <= 0 || chunk_size <= 0) return;
+
+    int n_chunks = (k + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0) return;
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
+        fprintf(stderr,
+                "jitsmm_trans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
+                row_warp_blocks, n_chunks, n);
+        abort();
+    }
+    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n);
+
+    _trans_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float*>(weight.data_ptr()),
+        static_cast<const int*>(clen.data_ptr()),
+        static_cast<const int*>(seed.data_ptr()),
+        static_cast<const float*>(B.data_ptr()),
+        static_cast<float*>(output.data_ptr()),
+        m, k, n, chunk_size, n_chunks
+    );
+    BE_CHECK_KERNEL_LAUNCH();
 }
 
-#define DEFINE_JITSMM_MV_NOTRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD, WARP_REDUCE) \
-__global__ void _mv_notrans##SFX##_kern(                                                \
-    const WEIGHT_T* __restrict__ weight,                                                \
-    const int*      __restrict__ clen,                                                  \
-    const int*      __restrict__ seed,                                                  \
-    const WEIGHT_T* __restrict__ B,                                                     \
-    WEIGHT_T*       __restrict__ output,                                                \
-    int m, int k, int n, int chunk_size, int n_chunks                                   \
-) {                                                                                    \
-    int lane = threadIdx.x & 31;                                                        \
-    int warp_id = threadIdx.x >> 5;                                                     \
-    int warps_per_block = blockDim.x >> 5;                                              \
-    int row_block = (int)blockIdx.x;                                                    \
-    int chunk_id = (int)blockIdx.y;                                                     \
-    int col_b = (int)blockIdx.z;                                                        \
-    int row = row_block * warps_per_block + warp_id;                                    \
-    if (row >= m || chunk_id >= n_chunks || col_b >= n) return;                         \
-    int chunk_start = chunk_id * chunk_size;                                            \
-    if (chunk_start >= k) return;                                                       \
-    int chunk_end = chunk_start + chunk_size;                                           \
-    if (chunk_end > k) chunk_end = k;                                                   \
-    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);                 \
-    if (chunk_width == 0U) return;                                                      \
-    ACC_T w = READ_W(__ldg(&weight[0]));                                                \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                    \
-    if (cl < 2U) cl = 2U;                                                               \
-    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                                 \
-    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);                  \
-    unsigned int q = stationary_initial_q(&rng, cl);                                    \
-    unsigned int local_j = (unsigned int)lane + 32U * q;                                \
-    ACC_T acc = (ACC_T)0;                                                               \
-    while (local_j < chunk_width) {                                                     \
-        int j = chunk_start + (int)local_j;                                             \
-        acc += w * READ_W(__ldg(&B[(size_t)j * n + col_b]));                            \
-        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);                      \
-        local_j = (unsigned int)lane + 32U * q;                                         \
-    }                                                                                   \
-    ACC_T row_acc = WARP_REDUCE(acc);                                                   \
-    if (lane == 0) ATOMIC_ADD(&output[(size_t)row * n + col_b], row_acc);               \
+#define DEFINE_JITSMM_NOTRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD, WARP_REDUCE) \
+__global__ void _notrans##SFX##_kern(                                               \
+    const WEIGHT_T* __restrict__ weight,                                            \
+    const int*      __restrict__ clen,                                              \
+    const int*      __restrict__ seed,                                              \
+    const WEIGHT_T* __restrict__ B,                                                 \
+    WEIGHT_T*       __restrict__ output,                                            \
+    int m, int k, int n, int chunk_size, int n_chunks                               \
+) {                                                                                \
+    int lane = threadIdx.x & 31;                                                    \
+    int warp_id = threadIdx.x >> 5;                                                 \
+    int warps_per_block = blockDim.x >> 5;                                          \
+    int row_block = (int)blockIdx.x;                                                \
+    int chunk_id = (int)blockIdx.y;                                                 \
+    int col_b = (int)blockIdx.z;                                                    \
+    int row = row_block * warps_per_block + warp_id;                                \
+    if (row >= m || chunk_id >= n_chunks || col_b >= n) return;                     \
+    int chunk_start = chunk_id * chunk_size;                                        \
+    if (chunk_start >= k) return;                                                   \
+    int chunk_end = chunk_start + chunk_size;                                       \
+    if (chunk_end > k) chunk_end = k;                                               \
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);             \
+    if (chunk_width == 0U) return;                                                  \
+    ACC_T w = READ_W(__ldg(&weight[0]));                                            \
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                \
+    if (cl < 2U) cl = 2U;                                                           \
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                             \
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);              \
+    unsigned int q = stationary_initial_q(&rng, cl);                                \
+    unsigned int local_j = (unsigned int)lane + 32U * q;                            \
+    ACC_T acc = (ACC_T)0;                                                           \
+    while (local_j < chunk_width) {                                                 \
+        int j = chunk_start + (int)local_j;                                         \
+        acc += w * READ_W(__ldg(&B[(size_t)j * n + col_b]));                        \
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);                  \
+        local_j = (unsigned int)lane + 32U * q;                                     \
+    }                                                                               \
+    ACC_T row_acc = WARP_REDUCE(acc);                                               \
+    if (lane == 0) ATOMIC_ADD(&output[(size_t)row * n + col_b], row_acc);           \
 }
 
-#define DEFINE_JITSMM_MV_TRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD)        \
-__global__ void _mv_trans##SFX##_kern(                                          \
+#define DEFINE_JITSMM_TRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD)           \
+__global__ void _trans##SFX##_kern(                                             \
     const WEIGHT_T* __restrict__ weight,                                        \
     const int*      __restrict__ clen,                                          \
     const int*      __restrict__ seed,                                          \
@@ -590,108 +355,15 @@ __global__ void _mv_trans##SFX##_kern(                                          
     }                                                                           \
 }
 
-#define DEFINE_JITSMM_MM_NOTRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD, GROUP_REDUCE) \
-__global__ void _mm_notrans##SFX##_kern(                                                \
-    const WEIGHT_T* __restrict__ weight,                                                \
-    const int*      __restrict__ clen,                                                  \
-    const int*      __restrict__ seed,                                                  \
-    const WEIGHT_T* __restrict__ B,                                                     \
-    WEIGHT_T*       __restrict__ output,                                                \
-    int m, int k, int n, int chunk_size, int n_chunks                                   \
-) {                                                                                    \
-    int lane = threadIdx.x & 31;                                                        \
-    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);                                       \
-    int group = lane >> 2;                                                              \
-    int warp_id = threadIdx.x >> 5;                                                     \
-    int warps_per_block = blockDim.x >> 5;                                              \
-    int chunk_id = (int)blockIdx.y;                                                     \
-    int col_b = (int)blockIdx.z;                                                        \
-    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;                        \
-    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;                                \
-    if (row >= m || chunk_id >= n_chunks || col_b >= n) return;                         \
-    int chunk_start = chunk_id * chunk_size;                                            \
-    if (chunk_start >= k) return;                                                       \
-    int chunk_end = chunk_start + chunk_size;                                           \
-    if (chunk_end > k) chunk_end = k;                                                   \
-    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);                 \
-    if (chunk_width == 0U) return;                                                      \
-    ACC_T w = READ_W(__ldg(&weight[0]));                                                \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                    \
-    if (cl < 2U) cl = 2U;                                                               \
-    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                                 \
-    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);              \
-    unsigned int q = stationary_initial_q(&rng, cl);                                    \
-    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;               \
-    ACC_T acc = (ACC_T)0;                                                               \
-    while (local_j < chunk_width) {                                                     \
-        int j = chunk_start + (int)local_j;                                             \
-        acc += w * READ_W(__ldg(&B[(size_t)j * n + col_b]));                            \
-        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);                      \
-        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;                        \
-    }                                                                                   \
-    ACC_T row_acc = GROUP_REDUCE(acc, group);                                           \
-    if (sub_lane == 0) ATOMIC_ADD(&output[(size_t)row * n + col_b], row_acc);           \
-}
+DEFINE_JITSMM_NOTRANS(_f64, double, double, READ_F64, atomic_add_f64, warp_reduce_sum_f64)
+DEFINE_JITSMM_NOTRANS(_f16, __half, float, READ_F16, atomic_add_f16, warp_reduce_sum_f32)
+DEFINE_JITSMM_NOTRANS(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, warp_reduce_sum_f32)
 
-#define DEFINE_JITSMM_MM_TRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD)        \
-__global__ void _mm_trans##SFX##_kern(                                          \
-    const WEIGHT_T* __restrict__ weight,                                        \
-    const int*      __restrict__ clen,                                          \
-    const int*      __restrict__ seed,                                          \
-    const WEIGHT_T* __restrict__ B,                                             \
-    WEIGHT_T*       __restrict__ output,                                        \
-    int m, int k, int n, int chunk_size, int n_chunks                           \
-) {                                                                            \
-    int lane = threadIdx.x & 31;                                                \
-    int sub_lane = lane & (AW_T4_GROUP_SIZE - 1);                               \
-    int group = lane >> 2;                                                      \
-    int warp_id = threadIdx.x >> 5;                                             \
-    int warps_per_block = blockDim.x >> 5;                                      \
-    int chunk_id = (int)blockIdx.y;                                             \
-    int col_b = (int)blockIdx.z;                                                \
-    int warp_task = (int)blockIdx.x * warps_per_block + warp_id;                \
-    int row = warp_task * AW_T4_GROUPS_PER_WARP + group;                        \
-    if (row >= m || chunk_id >= n_chunks || col_b >= n) return;                 \
-    ACC_T v = READ_W(__ldg(&B[(size_t)row * n + col_b]));                       \
-    if (v == (ACC_T)0) return;                                                  \
-    int chunk_start = chunk_id * chunk_size;                                    \
-    if (chunk_start >= k) return;                                               \
-    int chunk_end = chunk_start + chunk_size;                                   \
-    if (chunk_end > k) chunk_end = k;                                           \
-    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);         \
-    if (chunk_width == 0U) return;                                              \
-    ACC_T w = READ_W(__ldg(&weight[0]));                                        \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                            \
-    if (cl < 2U) cl = 2U;                                                       \
-    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                         \
-    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, sub_lane);      \
-    unsigned int q = stationary_initial_q(&rng, cl);                            \
-    unsigned int local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;       \
-    while (local_j < chunk_width) {                                             \
-        int j = chunk_start + (int)local_j;                                     \
-        ATOMIC_ADD(&output[(size_t)j * n + col_b], w * v);                      \
-        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);              \
-        local_j = (unsigned int)sub_lane + AW_T4_GROUP_SIZE * q;                \
-    }                                                                           \
-}
+DEFINE_JITSMM_TRANS(_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_JITSMM_TRANS(_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_JITSMM_TRANS(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 
-DEFINE_JITSMM_MV_NOTRANS(_f64, double, double, READ_F64, atomic_add_f64, warp_reduce_sum_f64)
-DEFINE_JITSMM_MV_NOTRANS(_f16, __half, float, READ_F16, atomic_add_f16, warp_reduce_sum_f32)
-DEFINE_JITSMM_MV_NOTRANS(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, warp_reduce_sum_f32)
-
-DEFINE_JITSMM_MV_TRANS(_f64, double, double, READ_F64, atomic_add_f64)
-DEFINE_JITSMM_MV_TRANS(_f16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_JITSMM_MV_TRANS(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-
-DEFINE_JITSMM_MM_NOTRANS(_f64, double, double, READ_F64, atomic_add_f64, group4_reduce_sum_f64)
-DEFINE_JITSMM_MM_NOTRANS(_f16, __half, float, READ_F16, atomic_add_f16, group4_reduce_sum_f32)
-DEFINE_JITSMM_MM_NOTRANS(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, group4_reduce_sum_f32)
-
-DEFINE_JITSMM_MM_TRANS(_f64, double, double, READ_F64, atomic_add_f64)
-DEFINE_JITSMM_MM_TRANS(_f16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_JITSMM_MM_TRANS(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-
-#define FFI_JITSMM(NAME, KERNEL, SFX, WEIGHT_T, ROW_GROUPS, OUT_ROWS)          \
+#define FFI_JITSMM(NAME, KERNEL, SFX, WEIGHT_T, OUT_ROWS)                      \
 void NAME##SFX(                                                                \
     const BE::Tensor weight,                                                   \
     const BE::Tensor clen,                                                     \
@@ -710,13 +382,12 @@ void NAME##SFX(                                                                \
     if (n_chunks <= 0) return;                                                 \
     int threads = 256;                                                         \
     int warps_per_block = threads / 32;                                        \
-    int rows_per_block = warps_per_block * ROW_GROUPS;                         \
-    int row_blocks = (m + rows_per_block - 1) / rows_per_block;                \
-    if (row_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {            \
+    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;         \
+    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {       \
         fprintf(stderr, #NAME #SFX " grid overflow\n");                       \
         abort();                                                               \
     }                                                                          \
-    dim3 blocks((unsigned int)row_blocks, (unsigned int)n_chunks, (unsigned int)n); \
+    dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n); \
     _##KERNEL##SFX##_kern<<<blocks, threads, 0, s>>>(                          \
         static_cast<const WEIGHT_T*>(weight.data_ptr()),                       \
         static_cast<const int*>(clen.data_ptr()),                              \
@@ -728,30 +399,16 @@ void NAME##SFX(                                                                \
     BE_CHECK_KERNEL_LAUNCH();                                                  \
 }
 
-// @BE jitsmm_mv_notrans_f64
-FFI_JITSMM(jitsmm_mv_notrans, mv_notrans, _f64, double, 1, m)
-// @BE jitsmm_mv_notrans_f16
-FFI_JITSMM(jitsmm_mv_notrans, mv_notrans, _f16, __half, 1, m)
-// @BE jitsmm_mv_notrans_bf16
-FFI_JITSMM(jitsmm_mv_notrans, mv_notrans, _bf16, __nv_bfloat16, 1, m)
-
-// @BE jitsmm_mv_trans_f64
-FFI_JITSMM(jitsmm_mv_trans, mv_trans, _f64, double, 1, k)
-// @BE jitsmm_mv_trans_f16
-FFI_JITSMM(jitsmm_mv_trans, mv_trans, _f16, __half, 1, k)
-// @BE jitsmm_mv_trans_bf16
-FFI_JITSMM(jitsmm_mv_trans, mv_trans, _bf16, __nv_bfloat16, 1, k)
-
 // @BE jitsmm_notrans_f64
-FFI_JITSMM(jitsmm_notrans, mm_notrans, _f64, double, AW_T4_GROUPS_PER_WARP, m)
+FFI_JITSMM(jitsmm_notrans, notrans, _f64, double, m)
 // @BE jitsmm_notrans_f16
-FFI_JITSMM(jitsmm_notrans, mm_notrans, _f16, __half, AW_T4_GROUPS_PER_WARP, m)
+FFI_JITSMM(jitsmm_notrans, notrans, _f16, __half, m)
 // @BE jitsmm_notrans_bf16
-FFI_JITSMM(jitsmm_notrans, mm_notrans, _bf16, __nv_bfloat16, AW_T4_GROUPS_PER_WARP, m)
+FFI_JITSMM(jitsmm_notrans, notrans, _bf16, __nv_bfloat16, m)
 
 // @BE jitsmm_trans_f64
-FFI_JITSMM(jitsmm_trans, mm_trans, _f64, double, AW_T4_GROUPS_PER_WARP, k)
+FFI_JITSMM(jitsmm_trans, trans, _f64, double, k)
 // @BE jitsmm_trans_f16
-FFI_JITSMM(jitsmm_trans, mm_trans, _f16, __half, AW_T4_GROUPS_PER_WARP, k)
+FFI_JITSMM(jitsmm_trans, trans, _f16, __half, k)
 // @BE jitsmm_trans_bf16
-FFI_JITSMM(jitsmm_trans, mm_trans, _bf16, __nv_bfloat16, AW_T4_GROUPS_PER_WARP, k)
+FFI_JITSMM(jitsmm_trans, trans, _bf16, __nv_bfloat16, k)

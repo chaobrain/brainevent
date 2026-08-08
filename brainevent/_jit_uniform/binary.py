@@ -29,7 +29,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from .float import _normalize_chunk_size, _MV_STRIDE, _MM_STRIDE, jitumv_p_call, jitumm_p_call
+from .float import _chunk_size, _walk_length, _LANE_STRIDE, jitumv_p_call, jitumm_p_call
 from brainevent._op.util import dtype_suffix
 
 __all__ = [
@@ -323,8 +323,8 @@ def _jitumv_numba_kernel_generator(
     _rng_initial_q = _rng['initial_q']
     _rng_uniform01 = _rng['uniform01']
 
-    stride = _MV_STRIDE
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    stride = _LANE_STRIDE
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
     is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
@@ -428,7 +428,7 @@ def _binary_jitumv_cuda_kernel(
     kernel_name = f'jit_uniform_binary_jitumv.{variant}{wt_sfx}'
     k = int(vector_info.shape[0])
     n_words = (k + 31) // 32
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
     is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(w_low, w_high, clen, vector, seed):
@@ -914,8 +914,8 @@ def _jitumm_numba_kernel_generator(
     _rng_initial_q = _rng['initial_q']
     _rng_uniform01 = _rng['uniform01']
 
-    stride = _MM_STRIDE
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    stride = _LANE_STRIDE
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
     is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
@@ -1027,7 +1027,7 @@ def _binary_jitumm_cuda_kernel(
     k_pack = int(B_info.shape[0])
     n = int(B_info.shape[1])
     n_words = (k_pack + 31) // 32
-    chunk_size = _normalize_chunk_size(int(kwargs['shape'][1]), None)
+    chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
     if corder:
         m_ffi, k_ffi = int(out_info.shape[0]), k_pack
     else:
@@ -1139,7 +1139,7 @@ def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, cord
     """
     return jitumm_p_call(
         w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder,
-        matrix_mode='mm', backend=kwargs['backend'],
+        backend=kwargs['backend'],
     )
 
 
@@ -1210,7 +1210,6 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             shape=shape,
             transpose=not transpose,
             corder=not corder,
-            matrix_mode='mm',
             backend=kwargs['backend'],
         )[0]
 

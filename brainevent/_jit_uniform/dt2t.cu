@@ -16,10 +16,10 @@
 /*
  * dt2t.cu -- direct light JIT-uniform y*w materialization.
  *
- * This file mirrors the MV CSR row/chunk generator in csr.cu.  Fill receives
+ * This file mirrors the CSR row/chunk generator in csr.cu.  Fill receives
  * exclusive per-(row, chunk) offsets and writes sampled_weight * y[row] for
  * notrans mode or sampled_weight * y[col] for trans mode in the same
- * flat CSR data order as jitu_to_csr(..., matrix_mode="mv").data.
+ * flat CSR data order as jitu_to_csr(...).data.
  */
 
 #include <cstdio>
