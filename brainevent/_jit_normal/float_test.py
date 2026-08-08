@@ -26,6 +26,7 @@ if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is
 
 from brainevent._jit_normal.float import jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p
 from brainevent._jit_normal._test_util import dense_normal_reference
+from brainevent._test_util import requires_gpu
 
 platform = jax.default_backend()
 JITN_IMPLEMENTATIONS = tuple(jitn_p.available_backends(platform))
@@ -851,6 +852,7 @@ def test_generation_is_shape_pair_independent(implementation, shape, corder):
 @pytest.mark.parametrize('shape', [(12, 20), (33, 33), (7, 5), (100, 250)])
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('corder', [True, False])
+@requires_gpu
 def test_numba_and_cuda_draw_the_same_matrix(shape, transpose, corder):
     if 'numba' not in jitn_p.available_backends('cpu') or 'cuda_raw' not in jitn_p.available_backends('gpu'):
         pytest.skip('needs both a CPU numba backend and a CUDA device')
@@ -872,6 +874,7 @@ def test_numba_and_cuda_draw_the_same_matrix(shape, transpose, corder):
 @pytest.mark.parametrize('shape', [(20, 30), (33, 33)])
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('corder', [True, False])
+@requires_gpu
 def test_numba_and_cuda_matvec_agree(shape, transpose, corder):
     if 'numba' not in jitnmv_p.available_backends('cpu') or 'cuda_raw' not in jitnmv_p.available_backends('gpu'):
         pytest.skip('needs both a CPU numba backend and a CUDA device')
