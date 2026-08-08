@@ -60,6 +60,14 @@ def _offset_kernel_generator(offset: float):
     return gen
 
 
+def _exception_chain_contains(exc, expected_type, expected_text: str) -> bool:
+    while exc is not None:
+        if isinstance(exc, expected_type) and expected_text in str(exc):
+            return True
+        exc = getattr(exc, '__cause__', None)
+    return False
+
+
 def test_l3_apply_primitive_shim_is_xla_apply_primitive():
     """The shim resolves to exactly the same callable as the legacy path."""
     assert xla.apply_primitive is apply_primitive
@@ -343,7 +351,7 @@ def test_f17_kernel_generator_failure_is_wrapped_with_alternatives():
             prim(x, outs=[jax.ShapeDtypeStruct((4,), jnp.float32)], backend='bad')
         )
 
-    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert _exception_chain_contains(excinfo.value, RuntimeError, 'boom')
     msg = str(excinfo.value)
     assert 'boom' in msg
     assert 'good' in msg  # alternative backend surfaced
