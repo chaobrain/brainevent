@@ -19,6 +19,16 @@ Binary matrix-vector / matrix-matrix multiplication.
    binary_csrmm
    binary_csrmm_p
 
+Binary multiplication with a fused weight gather (indexed weights).
+
+.. autosummary::
+   :toctree: generated/
+
+   binary_csrmv_indexed
+   binary_csrmv_indexed_p
+   binary_csrmm_indexed
+   binary_csrmm_indexed_p
+
 Float matrix-vector / matrix-matrix multiplication.
 
 .. autosummary::
@@ -44,13 +54,8 @@ Plasticity operations.
    update_csr_on_binary_pre_p
    update_csr_on_binary_post
    update_csr_on_binary_post_p
-
-Sparse linear solver.
-
-.. autosummary::
-   :toctree: generated/
-
-   csr_solve
+   update_csc_on_binary_pre
+   update_csc_on_binary_post
 
 Row slicing.
 
@@ -73,16 +78,6 @@ Dense-matrix @ binary-vector / binary-matrix.
    binary_densemv_p
    binary_densemm
    binary_densemm_p
-
-Indexed binary operations.
-
-.. autosummary::
-   :toctree: generated/
-
-   indexed_binary_densemv
-   indexed_binary_densemv_p
-   indexed_binary_densemm
-   indexed_binary_densemm_p
 
 Plasticity operations.
 
@@ -198,3 +193,12 @@ Float matrix-vector / matrix-matrix multiplication.
    fcnmm
    fcnmv_dt2t
    fcnmm_dt2t
+
+Plasticity operations.
+
+.. autosummary::
+   :toctree: generated/
+
+   update_fixed_pre_conn_on_binary_post
+   update_fixed_post_conn_on_binary_pre
+   fcn_plasticity_row_p

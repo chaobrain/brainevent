@@ -18,7 +18,7 @@ Custom Kernel
 
 
 CPU Kernel via Numba
--------------------
+--------------------
 
 .. autosummary::
    :toctree: generated/
@@ -46,6 +46,7 @@ GPU Kernel via CUDA Source
    load_cuda_file
    load_cuda_dir
 
+
 CPU Kernel via C++ Source
 -------------------------
 
@@ -54,6 +55,20 @@ CPU Kernel via C++ Source
 
    load_cpp_inline
    load_cpp_file
+   normalize_tokens
+
+
+Compiler Backends
+-----------------
+
+.. autosummary::
+   :toctree: generated/
+   :template: classtemplate.rst
+
+   CompilerBackend
+   CPPBackend
+   CUDABackend
+   HIPBackend
 
 
 Runtime
@@ -70,6 +85,17 @@ Runtime
 
    register_ffi_target
    list_registered_targets
+
+
+Primitive Registry
+------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   get_registry
+   get_all_primitive_names
+   get_primitives_by_tags
 
 
 Cache Utilities
@@ -95,11 +121,5 @@ Diagnostics
 Exceptions
 ----------
 
-.. autosummary::
-   :toctree: generated/
-   :template: classtemplate.rst
-
-   BrainEventError
-   CompilationError
-   KernelToolchainError
-   KernelRegistrationError
+Kernel construction, compilation and dispatch raise the exceptions documented in
+:doc:`errors`.

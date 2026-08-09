@@ -50,8 +50,8 @@ Fixed-degree structure
 ----------------------
 
 Many biological networks have a **fixed number** of connections per neuron rather than a
-fixed probability. :class:`~brainevent.FixedPreNumConn` and
-:class:`~brainevent.FixedPostNumConn` encode exactly that, which is both more biologically
+fixed probability. :class:`~brainevent.FixedNumPerPre` and
+:class:`~brainevent.FixedNumPerPost` encode exactly that, which is both more biologically
 faithful and more memory-predictable than a probabilistic format when the degree is known.
 
 

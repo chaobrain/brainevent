@@ -37,8 +37,8 @@ Which connectivity format should I use?
 
 - Explicit, reusable sparsity → :class:`~brainevent.CSR` / :class:`~brainevent.CSC`.
 - Large random connectivity → JITC (memory independent of synapse count).
-- Fixed number of connections per neuron → :class:`~brainevent.FixedPreNumConn` /
-  :class:`~brainevent.FixedPostNumConn`.
+- Fixed number of connections per neuron → :class:`~brainevent.FixedNumPerPre` /
+  :class:`~brainevent.FixedNumPerPost`.
 
 See :doc:`/how-to/data-structures/choosing-a-sparse-format` and :doc:`sparse-formats`.
 

@@ -35,16 +35,20 @@ connectivity structures. The operation is event-driven in every case:
    weights = jnp.ones((5, 3))
    out_dense = spikes @ weights
 
-   # CSR sparse matrix
+   # CSR sparse matrix — one synapse per pre-synaptic neuron
+   data = jnp.arange(1, 6, dtype=jnp.float32)
+   indices = jnp.array([0, 1, 2, 0, 1])
+   indptr = jnp.arange(6)
    csr = brainevent.CSR((data, indices, indptr), shape=(5, 3))
    out_csr = spikes @ csr
 
    # Just-in-time connectivity — never materialises the full matrix
-   jitc = brainevent.JITCScalarR(num_pre=5, num_post=3, prob=0.5, weight=0.2, seed=0)
+   jitc = brainevent.JITCScalarR(0.2, 0.5, 0, shape=(5, 3))   # weight, prob, seed
    out_jitc = spikes @ jitc
 
-   # Fixed fan-out connectivity
-   fixed = brainevent.FixedPostNumConn(num_pre=5, num_post=3, conn_num=2, weight=0.5, seed=0)
+   # Fixed fan-out — two post-synaptic targets per pre-synaptic neuron
+   conn = jnp.array([[0, 1], [1, 2], [0, 2], [1, 0], [2, 1]])
+   fixed = brainevent.FixedNumPerPre(jnp.full((5, 2), 0.5), conn, shape=(5, 3))
    out_fixed = spikes @ fixed
 
 

@@ -24,9 +24,9 @@ Core components
 ---------------
 
 **1. Event representation**
-  :class:`~brainevent.BinaryArray` represents binary spike events. Indexed variants
-  (:class:`~brainevent.IndexedBinary1d`, :class:`~brainevent.IndexedBinary2d`) store only the
-  indices of active events.
+  :class:`~brainevent.BinaryArray` represents binary spike events. Compressed variants
+  (:class:`~brainevent.BitPackedBinary`, :class:`~brainevent.CompactBinary`) store the same
+  events as packed bits, the latter also carrying the compacted active indices.
 
 **2. Sparse data structures**
   Sparse matrix formats optimized for event-driven products:
@@ -42,8 +42,9 @@ Core components
 
 **4. Fixed connectivity patterns**
   Biologically realistic fixed-degree connectivity:
-  :class:`~brainevent.FixedPreNumConn` (fixed number of pre-synaptic connections) and
-  :class:`~brainevent.FixedPostNumConn` (fixed number of post-synaptic connections).
+  :class:`~brainevent.FixedNumPerPost` (fixed number of pre-synaptic connections per
+  post-synaptic neuron) and :class:`~brainevent.FixedNumPerPre` (fixed number of
+  post-synaptic connections per pre-synaptic neuron).
 
 **5. Custom kernel framework**
   An extensible system for high-performance custom operators — Numba (CPU), Numba-CUDA and

@@ -15,6 +15,7 @@ Data Representation
    :template: classtemplate.rst
 
    DataRepresentation
+   Dense
 
 
 CSR / CSC (Compressed Sparse Row / Column)
@@ -38,6 +39,7 @@ JITC Base
    :template: classtemplate.rst
 
    JITCMatrix
+   JITCScalarMatrix
 
 
 JITC Scalar
@@ -85,5 +87,5 @@ Fixed Connectivity
    :template: classtemplate.rst
 
    FixedNumConn
-   FixedPreNumConn
-   FixedPostNumConn
+   FixedNumPerPre
+   FixedNumPerPost

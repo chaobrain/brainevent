@@ -14,7 +14,6 @@ Base
    :template: classtemplate.rst
 
    EventRepresentation
-   IndexedEventRepresentation
 
 
 Binary Events
@@ -25,15 +24,14 @@ Binary Events
    :template: classtemplate.rst
 
    BinaryArray
+   BitPackedBinary
+   CompactBinary
 
 
-Indexed Events
---------------
+Bit Packing
+-----------
 
 .. autosummary::
    :toctree: generated/
-   :template: classtemplate.rst
 
-   IndexedBinary1d
-   IndexedBinary2d
-
+   bitpack
