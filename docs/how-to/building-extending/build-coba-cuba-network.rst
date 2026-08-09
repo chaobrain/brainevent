@@ -18,16 +18,25 @@ excitatory and inhibitory groups with opposite-sign weights gives a balanced net
 
    import brainevent
    import brainunit as u
+   import jax
    import jax.numpy as jnp
 
    n_exc, n_inh = 3200, 800
    num = n_exc + n_inh
+   conn_num = 80   # post-synaptic targets per pre-synaptic neuron
 
    # Fixed fan-out connectivity, excitatory (+) and inhibitory (-)
-   exc_conn = brainevent.FixedPostNumConn(num_pre=n_exc, num_post=num,
-                                          conn_num=80, weight=0.6 * u.mS, seed=1)
-   inh_conn = brainevent.FixedPostNumConn(num_pre=n_inh, num_post=num,
-                                          conn_num=80, weight=-6.7 * u.mS, seed=2)
+   key_e, key_i = jax.random.split(jax.random.key(0))
+   exc_conn = brainevent.FixedNumPerPre(
+       jnp.full((n_exc, conn_num), 0.6) * u.mS,
+       jax.random.randint(key_e, (n_exc, conn_num), 0, num),
+       shape=(n_exc, num),
+   )
+   inh_conn = brainevent.FixedNumPerPre(
+       jnp.full((n_inh, conn_num), -6.7) * u.mS,
+       jax.random.randint(key_i, (n_inh, conn_num), 0, num),
+       shape=(n_inh, num),
+   )
 
    def synaptic_input(spikes):
        spk = brainevent.BinaryArray(spikes)
@@ -36,8 +45,9 @@ excitatory and inhibitory groups with opposite-sign weights gives a balanced net
 
 Because the spike vector is a :class:`~brainevent.BinaryArray`, only neurons that fired this
 step contribute work — the cost scales with the spike count, not the network size. Swap
-``FixedPostNumConn`` for a :class:`~brainevent.JITCScalarR` to scale to networks too large to
-store explicitly (see :doc:`/how-to/data-structures/jit-connectivity-large-networks`).
+:class:`~brainevent.FixedNumPerPre` for a :class:`~brainevent.JITCScalarR` to scale to
+networks too large to store explicitly (see
+:doc:`/how-to/data-structures/jit-connectivity-large-networks`).
 
 
 Full models (COBA & CUBA)

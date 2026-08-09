@@ -5,6 +5,131 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-09
+
+A follow-up to `0.2.0` that removes the mv/mm split from the just-in-time
+connectivity (JITC) families, restores the daily JAX compatibility matrix to
+green, and brings the API reference back in sync with the public surface.
+
+*JITC.* `0.2.0` exposed the fact that the mv and mm light kernels drew
+*different* connectivity for the same `(prob, seed, shape)` by making the
+difference explicit: a required `matrix_mode` keyword and `mat.mv` / `mat.mm`
+materialization views. `0.2.1` removes the difference instead. Every JITC entry
+point — scalar, normal and uniform, float and binary, dense, CSR and `dt2t` —
+now draws the 32-lane mv matrix on every backend, so `matrix_mode` and the two
+views are gone and `todense()` / `tocsr()` / `tocsc()` / `tocoo()` are
+unambiguous again. Signatures return to their `0.1.2` shape (#190).
+
+*Compatibility.* The Daily CI matrix now pins `0.10.0` alongside `0.8.0` and
+`0.9.0`, and the operator test that broke on pinned JAX ≤ 0.9 has been made
+independent of JAX's traceback-filtering behaviour.
+
+**Requirements:** unchanged from `0.2.0` — Python ≥ 3.11, `jax` ≥ 0.8.0
+(validated through 0.11.x), `brainunit` ≥ 0.0.8, `numpy` ≥ 2.0.
+
+### ⚠️ Breaking changes & migration
+
+`0.2.0` shipped the mv/mm split to PyPI, so the removal below is a breaking
+change for code written against that release. Code written against `0.1.2` or
+earlier needs no changes.
+
+| `0.2.0` usage | `0.2.1` usage |
+| --- | --- |
+| `jits(w, prob, seed, shape=..., matrix_mode='mv')`, and likewise `jitn` / `jitu` | drop the keyword: `jits(w, prob, seed, shape=...)` |
+| `jitsmm(..., matrix_mode='mm')`, `jitnmm`, `jitumm`, `binary_jitsmm`, `binary_jitnmm`, `binary_jitumm` | drop the keyword |
+| `mat.mv.todense()` / `mat.mm.todense()` (and `.tocsr()`, `.tocsc()`, `.tocoo()`) | `mat.todense()` / `mat.tocsr()` / `mat.tocsc()` / `mat.tocoo()` |
+| `from brainevent._typing import MatrixMode` | removed; there is no mode to annotate |
+
+**Matrix-matrix JITC results recorded with `0.2.0` change.** The mm kernels
+drew a 4-lane residue-class matrix; they now draw the 32-lane mv matrix, so
+`jitsmm` / `jitnmm` / `jitumm` and their `binary_*` counterparts return
+different — not merely reordered — values for the same `(weight, prob, seed,
+shape, corder)`. Matrix-vector results are bit-identical to `0.2.0`. Re-record
+any golden outputs captured from an mm path; as in `0.2.0`, seeds are not
+portable across the change.
+
+The upside is the invariant that motivated the work: for a given `(weight,
+prob, seed, shape, corder)`, `jits`, `jitsmv`, `jitsmm`, `binary_jitsmv`,
+`binary_jitsmm`, `jits_to_csr` and `jitsmv_dt2t` — and the `jitn` / `jitu`
+equivalents — now materialize one matrix, identically on `numba` and
+`cuda_raw`. A model that moves between the matrix-vector and matrix-matrix
+paths, or between CPU and GPU, keeps its connectivity.
+
+### Changed
+
+- **JITC connectivity is mode-free.** `matrix_mode` is removed from every public
+  and internal JITC entry point, and the mm generation path is folded onto the
+  mv walk (`_LANE_STRIDE` = 32) in both the `numba` kernels and the CUDA
+  sources (#190).
+- **`todense()` / `tocsr()` / `tocsc()` / `tocoo()` work directly** on
+  `JITCScalarR`/`C`, `JITCNormalR`/`C` and `JITCUniformR`/`C` again. In `0.2.0`
+  they raised `NotImplementedError` and directed callers to `mat.mv` / `mat.mm`.
+- **Daily CI covers every supported JAX minor.** The `jax-version` matrix is
+  `[ "0.8.0", "0.9.0", "0.10.0", "" ]`; the empty entry continues to track the
+  newest release.
+
+### Fixed
+
+- **Daily CI Tests failed on the pinned-JAX legs.**
+  `test_f17_kernel_generator_failure_is_wrapped_with_alternatives` asserted that
+  the kernel-generator exception was the *direct* `__cause__` of the raised
+  `KernelCompilationError`. `jax._src.traceback_util.api_boundary` splices a
+  synthetic frame (`UnfilteredStackTrace` on JAX 0.10,
+  `JaxStackTraceBeforeTransformation` on 0.8/0.9) into the cause chain,
+  demoting the real cause by one level; whether it does so depends on the
+  default `jax_traceback_filtering` mode, which differs across JAX minors. The
+  assertion now walks the whole chain, so it holds regardless of how many frames
+  JAX inserts. Library behaviour was correct throughout — only the test was
+  over-specific.
+
+### Removed
+
+- `matrix_mode` keyword, the `mat.mv` / `mat.mm` materialization views, the
+  `MatrixMode` type alias, and the `NotImplementedError` guards that the split
+  required (#190).
+- The mm-specific CUDA generation kernels and their `numba` counterparts: the
+  JITC `.cu` sources shed 3,439 lines against 468 added, since one drawn matrix
+  needs one walk.
+
+### Documentation
+
+- **API reference re-synchronized with `brainevent.__all__`.** 41 stale
+  `autosummary` entries were removed — symbols retired in `0.2.0`
+  (`csr_solve`, `IndexedBinary1d` / `IndexedBinary2d`,
+  `IndexedEventRepresentation`, `indexed_binary_dense*`, `binary_array_index`,
+  `BenchmarkReport`, `register_cuda_kernels`) and 30 `lfsr*` / `get_numba_*`
+  helpers that live in a private module and never resolved. 44 public exports
+  gained a reference page, among them `BitPackedBinary`, `CompactBinary`,
+  `bitpack`, `Dense`, `binary_csrm{v,m}_indexed`, the CSC and fixed-connectivity
+  plasticity operators, the `CompilerBackend` hierarchy, the primitive-registry
+  accessors and the hybrid-CSR scheduling knobs.
+- **Exception hierarchy documented in one place.** `BrainEventError` and its
+  nineteen subclasses now appear in `errors.rst`, grouped by subtree and
+  preceded by the inheritance tree; `operator.rst` cross-references it instead
+  of documenting four of them separately.
+- **Two broken snippets fixed.** The quickstart and the E/I-network how-to
+  constructed `JITCScalarR` and `FixedPostNumConn` from `num_pre=` / `num_post=`
+  / `conn_num=` / `weight=` / `seed=` keywords that these constructors have not
+  accepted since at least `0.1.2`, so both raised `TypeError` as written; the
+  quickstart also built a `CSR` from undefined names. Both are rewritten against
+  the real constructors and were executed end to end.
+- **Deprecated aliases replaced throughout the prose docs and tutorials.**
+  `FixedPreNumConn` → `FixedNumPerPost` and `FixedPostNumConn` →
+  `FixedNumPerPre` (the mapping is crossed) across the explanation pages,
+  how-to guides and the two data-structure notebooks; the removed
+  `IndexedBinary1d` / `IndexedBinary2d` give way to `BitPackedBinary` /
+  `CompactBinary`.
+- `docs/specs/release-0.2.1.md` records the CI root cause and the reference audit.
+
+### Internal
+
+- `brainevent/__init___test.py` guards the reference against future drift: every
+  `autosummary` entry must resolve on its `currentmodule`, every name in
+  `brainevent.__all__` and `brainevent.config.__all__` must be documented exactly
+  once, and deprecated aliases must stay undocumented.
+- The full suite was re-run against pinned `jax` 0.8.0, 0.9.0 and 0.10.x before
+  release.
+
 ## [0.2.0] - 2026-08-08
 
 A correctness release spanning three layers of the stack.
@@ -817,6 +942,9 @@ replacement. Recommended updates:
 
 ## Version Comparison Links
 
+- [0.2.1](https://github.com/chaobrain/brainevent/compare/v0.2.0...v0.2.1)
+- [0.2.0](https://github.com/chaobrain/brainevent/compare/v0.1.2...v0.2.0)
+- [0.1.2](https://github.com/chaobrain/brainevent/compare/v0.1.1...v0.1.2)
 - [0.1.1](https://github.com/chaobrain/brainevent/compare/v0.1.0...v0.1.1)
 - [0.1.0](https://github.com/chaobrain/brainevent/compare/v0.0.7...v0.1.0)
 - [0.0.7](https://github.com/chaobrain/brainevent/compare/v0.0.6...v0.0.7)

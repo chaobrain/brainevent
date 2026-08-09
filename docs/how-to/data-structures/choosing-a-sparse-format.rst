@@ -28,8 +28,8 @@ Decision guide
      - Connectivity is random with a fixed probability, and you want to **never materialise**
        the matrix — it is regenerated on the fly from a seed.
      - You need to inspect, mutate, or learn individual weights.
-   * - **Fixed fan-in/out** (:class:`~brainevent.FixedPreNumConn`,
-       :class:`~brainevent.FixedPostNumConn`)
+   * - **Fixed fan-in/out** (:class:`~brainevent.FixedNumPerPre`,
+       :class:`~brainevent.FixedNumPerPost`)
      - Each neuron has a fixed *number* of connections (biologically common), and you want
        that structure encoded directly.
      - Connection counts vary per neuron, or you need an explicit weight matrix.
@@ -41,7 +41,7 @@ Rule of thumb
 - **Explicit and reusable** → ``CSR``/``CSC``.
 - **Random and huge** → ``JITC*`` (memory cost is independent of density; see
   :doc:`jit-connectivity-large-networks`).
-- **Fixed degree per neuron** → ``FixedPreNumConn`` / ``FixedPostNumConn``.
+- **Fixed degree per neuron** → ``FixedNumPerPre`` / ``FixedNumPerPost``.
 
 Every format multiplies the same way against a :class:`~brainevent.BinaryArray`, so you can
 swap formats without changing the surrounding code:

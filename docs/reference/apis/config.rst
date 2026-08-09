@@ -36,3 +36,14 @@ Global Backend Selection
    set_backend
    get_backend
    clear_backends
+
+
+CUDA Toolchain Controls
+-----------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   set_compute_capability
+   get_compute_capability
+   prefer_system_nvcc
