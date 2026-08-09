@@ -75,8 +75,3 @@ Seed = Union[int, np.ndarray, jax.Array]
 
 # Represents a random key for Pallas, which is a tuple of four uint32 values.
 PallasRandomKey = Tuple[jnp.uint32, jnp.uint32, jnp.uint32, jnp.uint32]  # uint32, 4
-
-# Materialization mode for the JIT-connectivity kernels. ``'mv'`` selects the
-# 32-lane kernels, ``'mm'`` the 4-thread AW-T4 kernels. The two draw *different*
-# connectivity matrices on CUDA, so the mode is always explicit.
-MatrixMode = Literal['mv', 'mm']

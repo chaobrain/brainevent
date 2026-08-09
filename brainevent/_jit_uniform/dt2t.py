@@ -20,7 +20,7 @@ Direct per-synapse ``y * w`` generation for uniform-weight just-in-time
 connectivity (JITC) matrices, on the light-RNG (mv) kernels.
 
 :func:`jitumv_dt2t` returns one value per generated structural non-zero in
-canonical CSR flat order (the same order as ``jitu_to_csr(..., matrix_mode='mv')``),
+canonical CSR flat order (the same order as ``jitu_to_csr``),
 namely ``sampled_weight * y[row]`` (``transpose=False``) or ``sampled_weight * y[col]``
 (``transpose=True``).  It always materializes the mv matrix.
 
@@ -45,7 +45,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
 from .csr import jitu_to_csr
-from .float import _normalize_chunk_size, _MV_STRIDE
+from .float import _chunk_size, _walk_length, _LANE_STRIDE
 from brainevent._op.util import dtype_suffix
 
 __all__ = [
@@ -98,7 +98,7 @@ def jitumv_dt2t(
     # the materialized structure and is deterministic.
     csr = jitu_to_csr(
         w_low, w_high, prob, seed,
-        shape=shape, corder=corder, matrix_mode='mv', backend=backend,
+        shape=shape, corder=corder, backend=backend,
     )
     indptr = csr.indptr
     nnz = int(indptr[-1])
@@ -122,8 +122,6 @@ def jitumv_dt2t(
 def _jitumv_dt2t_fill_cuda_kernel(
     shape: MatrixShape,
     transpose: bool,
-    chunk_size: Optional[int] = None,
-    target_chunks: int = 4,
     **kwargs,
 ):
     load_cuda_file(Path(__file__).parent.joinpath('dt2t.cu'), name='jit_uniform_dt2t')
@@ -131,7 +129,7 @@ def _jitumv_dt2t_fill_cuda_kernel(
     direction = 'trans' if transpose else 'notrans'
     kernel_name = f'jit_uniform_dt2t.fill_{direction}{sfx}'
     n_cols = int(shape[1])
-    chunk_size_value = _normalize_chunk_size(n_cols, chunk_size, target_chunks)
+    chunk_size_value = _chunk_size(_walk_length(shape, False, True))
 
     def kernel(w_low, w_high, clen, y, seed, chunk_offsets):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(
@@ -145,8 +143,6 @@ def _jitumv_dt2t_fill_cuda_kernel(
 def _jitumv_dt2t_fill_numba_kernel(
     shape: MatrixShape,
     transpose: bool,
-    chunk_size: Optional[int] = None,
-    target_chunks: int = 4,
     **kwargs,
 ):
     """Numba CPU fused ``dt2t`` fill mirroring ``dt2t.cu``."""
@@ -158,9 +154,9 @@ def _jitumv_dt2t_fill_numba_kernel(
     _rng_initial_q = _rng['initial_q']
     _rng_uniform01 = _rng['uniform01']
 
-    stride = _MV_STRIDE
+    stride = _LANE_STRIDE
     k = int(shape[1])
-    cs_val = _normalize_chunk_size(k, chunk_size, target_chunks)
+    cs_val = _chunk_size(_walk_length(shape, False, True))
 
     if transpose:
         @numba.njit(fastmath=True)
@@ -249,8 +245,6 @@ def jitumv_dt2t_p_call(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    chunk_size: Optional[int] = None,
-    target_chunks: int = 4,
     backend: Optional[str] = None,
 ):
     """Fused ``dt2t`` fill over the mv-notrans structure (``chunk_offsets`` is the
@@ -279,8 +273,6 @@ def jitumv_dt2t_p_call(
         outs=[jax.ShapeDtypeStruct((int(nnz),), y.dtype)],
         shape=(int(shape[0]), int(shape[1])),
         transpose=transpose,
-        chunk_size=chunk_size,
-        target_chunks=target_chunks,
         backend=backend,
         w_low_info=jax.ShapeDtypeStruct(w_low.shape, w_low.dtype),
         w_high_info=jax.ShapeDtypeStruct(w_high.shape, w_high.dtype),

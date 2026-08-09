@@ -37,55 +37,6 @@ __all__ = [
 ]
 
 
-class _JITCScalarModeView:
-    """Materialization view of a JITC scalar matrix for a fixed ``matrix_mode``.
-
-    The mv (32-lane) and mm (4-thread AW-T4) light kernels draw *different*
-    matrices on CUDA, so ``todense()`` / ``tocsr()`` on the matrix itself are
-    ambiguous and raise.  ``mat.mv`` / ``mat.mm`` return this view, whose
-    ``todense`` / ``tocsr`` / ``tocsc`` / ``tocoo`` materialize the specific matrix
-    that ``mat @ vector`` (mv) or ``mat @ matrix`` (mm) uses.
-    """
-    __slots__ = ('_mat', '_mode')
-
-    def __init__(self, mat, mode):
-        self._mat = mat
-        self._mode = mode
-
-    def todense(self):
-        m = self._mat
-        gen_shape, gen_transpose = m._materialize_params()
-        return jits(
-            m.weight, m.prob, m.seed,
-            shape=gen_shape, transpose=gen_transpose, corder=m.corder,
-            matrix_mode=self._mode, backend=m.backend,
-        )
-
-    def tocsr(self):
-        m = self._mat
-        gen_shape, gen_transpose = m._materialize_params()
-        if not gen_transpose:
-            # jits_to_csr materializes CSR of jits(shape, transpose=False, corder).
-            return jits_to_csr(
-                m.weight, m.prob, m.seed,
-                shape=gen_shape, corder=m.corder, matrix_mode=self._mode, backend=m.backend,
-            )
-        # The transposed generation (column-oriented matrices) has no direct CSR
-        # kernel; go through the dense form (chunk_size makes the drawn matrix
-        # shape-dependent, so we must use the matvec-consistent generation shape).
-        from brainevent._csr import CSR
-        return CSR.fromdense(self.todense())
-
-    def tocsc(self):
-        return self.tocsr().tocsc()
-
-    def tocoo(self):
-        return self.tocsr().tocoo()
-
-    def __repr__(self):
-        return f"{self._mat.__class__.__name__}.{self._mode}"
-
-
 class JITCScalarMatrix(JITCMatrix):
     """
     Base class for Just-In-Time Connectivity Scalar-weight matrices.
@@ -395,22 +346,10 @@ class JITCScalarMatrix(JITCMatrix):
             >>> csr.shape
             (10, 10)
         """
-        raise NotImplementedError(
-            "tocsr() is ambiguous for JITC scalar matrices: the mv and mm light "
-            "kernels draw different matrices. Use mat.mv.tocsr() or mat.mm.tocsr()."
+        return jits_to_csr(
+            self.weight, self.prob, self.seed,
+            shape=self.shape, corder=self.corder, backend=self.backend,
         )
-
-    @property
-    def mv(self) -> '_JITCScalarModeView':
-        """Materialization view (``todense``/``tocsr``/``tocsc``/``tocoo``) for the
-        mv (matrix-vector) matrix — the one used by ``mat @ vector``."""
-        return _JITCScalarModeView(self, 'mv')
-
-    @property
-    def mm(self) -> '_JITCScalarModeView':
-        """Materialization view (``todense``/``tocsr``/``tocsc``/``tocoo``) for the
-        mm (matrix-matrix) matrix — the one used by ``mat @ matrix``."""
-        return _JITCScalarModeView(self, 'mm')
 
     def dt2t(
         self,
@@ -709,14 +648,12 @@ class JITCScalarR(JITCScalarMatrix):
             >>> dense_matrix = sparse_matrix.todense()
             >>> dense_matrix.shape  # (10, 4)
         """
-        raise NotImplementedError(
-            "todense() is ambiguous for JITC scalar matrices: the mv and mm light "
-            "kernels draw different matrices. Use mat.mv.todense() or mat.mm.todense()."
+        return jits(
+            self.weight, self.prob, self.seed,
+            shape=self.shape, transpose=False, corder=self.corder,
+            backend=self.backend,
         )
 
-    def _materialize_params(self):
-        """``(shape, transpose)`` whose ``jits`` generation matches this matrix's matvec."""
-        return self.shape, False
 
     def transpose(self, axes=None) -> 'JITCScalarC':
         """
@@ -1211,19 +1148,12 @@ class JITCScalarC(JITCScalarMatrix):
             >>> dense_matrix = sparse_matrix.todense()
             >>> dense_matrix.shape  # (3, 10)
         """
-        raise NotImplementedError(
-            "todense() is ambiguous for JITC scalar matrices: the mv and mm light "
-            "kernels draw different matrices. Use mat.mv.todense() or mat.mm.todense()."
+        return jits(
+            self.weight, self.prob, self.seed,
+            shape=self.shape, transpose=False, corder=self.corder,
+            backend=self.backend,
         )
 
-    def _materialize_params(self):
-        """``(shape, transpose)`` whose ``jits`` generation matches this matrix's matvec.
-
-        ``JITCScalarC`` evaluates ``mat @ v`` as ``jitsmv(shape[::-1], transpose=True)``,
-        so its dense form must use that swapped generation shape — the light kernels'
-        ``chunk_size`` depends on ``shape[1]``, so the matrix is shape-dependent.
-        """
-        return self.shape[::-1], True
 
     def transpose(self, axes=None) -> 'JITCScalarR':
         """
