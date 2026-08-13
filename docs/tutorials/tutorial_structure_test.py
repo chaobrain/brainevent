@@ -24,6 +24,43 @@ TARGET_NOTEBOOKS = (
     DOCS_ROOT / "tutorials" / "data-structures" / "03_jit_connectivity.ipynb",
 )
 
+REQUIRED_NOTEBOOK_HEADINGS = {
+    "tutorials/data-structures/02_sparse_matrices.ipynb": (
+        "# CSR and CSC Sparse Matrices",
+        "## Why Use Sparse Connectivity Data?",
+        "## COO Input, CSR Storage, and CSC Storage",
+        "## Constructing CSR and CSC Data",
+        "## Combining Sparse Data with Binary Events",
+        "## Memory, Correctness, and Performance",
+        "## Build a Sparse Event-Driven Network",
+        "## Inspect the Connectivity Structure",
+        "## Choosing CSR or CSC",
+        "## Summary and Next Steps",
+    ),
+    "tutorials/data-structures/04_fixed_connections.ipynb": (
+        "# Fixed Connection Count Structures",
+        "## Why Fix the Number of Connections?",
+        "## Fixed Fan-Out with FixedNumPerPre",
+        "## Fixed Fan-In with FixedNumPerPost",
+        "## Combining Fixed Connectivity with Binary Events",
+        "## Build a Fixed-Degree Network",
+        "## Memory and Performance Characteristics",
+        "## Choosing Fan-In or Fan-Out Constraints",
+        "## Summary and Next Steps",
+    ),
+    "tutorials/data-structures/03_jit_connectivity.ipynb": (
+        "# Just-in-Time Connection Matrices",
+        "## Why Generate Connections Just in Time?",
+        "## Homogeneous-Weight JIT Connectivity",
+        "## Normally Distributed JIT Connectivity",
+        "## Uniformly Distributed JIT Connectivity",
+        "## Memory and Performance Trade-offs",
+        "## Build a Large Random Network",
+        "## Row- and Column-Oriented Connectivity",
+        "## Summary and Next Steps",
+    ),
+}
+
 RETIRED_NOTEBOOKS = (
     DOCS_ROOT / "tutorials" / "data-structures" / "01_eventarray_basics.ipynb",
     DOCS_ROOT / "tutorials" / "data-structures" / "05_synaptic_plasticity.ipynb",
@@ -146,6 +183,18 @@ def test_target_notebooks_are_valid_notebook_v4_documents() -> None:
     for path in TARGET_NOTEBOOKS:
         notebook = nbformat.read(path, as_version=4)
         nbformat.validate(notebook)
+
+
+def test_data_notebooks_follow_the_approved_heading_map() -> None:
+    """Require every mapped Data heading in the approved teaching order."""
+    for relative_path, required_headings in REQUIRED_NOTEBOOK_HEADINGS.items():
+        notebook = nbformat.read(DOCS_ROOT / relative_path, as_version=4)
+        markdown = "\n".join(
+            cell.source for cell in notebook.cells if cell.cell_type == "markdown"
+        )
+        positions = [markdown.find(heading) for heading in required_headings]
+        _require(all(position >= 0 for position in positions), f"Missing heading in {relative_path}")
+        _require(positions == sorted(positions), f"Heading order changed in {relative_path}")
 
 
 def test_custom_operator_tutorials_match_the_approved_baseline() -> None:
