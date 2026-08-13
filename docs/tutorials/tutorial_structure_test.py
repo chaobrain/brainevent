@@ -197,6 +197,15 @@ def test_data_notebooks_follow_the_approved_heading_map() -> None:
         _require(positions == sorted(positions), f"Heading order changed in {relative_path}")
 
 
+def test_binary_event_tutorial_uses_raw_values_for_general_array_operations() -> None:
+    """Keep general reductions and logic outside BinaryArray's focused API."""
+    path = DOCS_ROOT / "tutorials" / "events" / "binary-events.ipynb"
+    source = _read(path)
+    unsupported_forms = ("events_2d.sum(", "event_a & event_b", "event_a | event_b")
+    offenders = [form for form in unsupported_forms if form in source]
+    _require(not offenders, f"Unsupported BinaryArray operations remain: {offenders}")
+
+
 def test_custom_operator_tutorials_match_the_approved_baseline() -> None:
     """Prevent any change to Custom operators during this restructure."""
     root = DOCS_ROOT / "tutorials" / "custom-operators"

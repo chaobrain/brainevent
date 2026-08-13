@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Tutorials Data/Events Restructure Specification
 
 **Status:** Approved design
