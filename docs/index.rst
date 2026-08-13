@@ -31,12 +31,19 @@ Where to go next
 
       Install ``brainevent`` and run your first event-driven computation in 60 seconds.
 
-   .. grid-item-card:: 📘 Tutorials
+   .. grid-item-card:: 📘 Data tutorials
       :link: tutorials/data-structures/index
       :link-type: doc
 
-      Learning-oriented, step-by-step notebooks — from event arrays to writing your own
-      custom kernels.
+      Learn how BrainEvent stores or generates sparse connectivity with CSR/CSC,
+      fixed-count, and just-in-time structures.
+
+   .. grid-item-card:: ⚡ Events tutorials
+      :link: tutorials/events/index
+      :link-type: doc
+
+      Learn how binary events drive computation, time-series processing, and synaptic
+      updates.
 
    .. grid-item-card:: 🛠️ How-to Guides
       :link: how-to/data-structures/index
@@ -72,12 +79,14 @@ Where to go next
 
    getting-started/installation
    getting-started/quickstart
+   getting-started/getting-started-with-brainevent
 
 .. toctree::
    :hidden:
    :caption: Tutorials
 
    tutorials/data-structures/index
+   tutorials/events/index
    tutorials/custom-operators/index
 
 .. toctree::

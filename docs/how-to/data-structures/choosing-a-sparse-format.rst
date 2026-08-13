@@ -68,5 +68,6 @@ is faster. When in doubt, benchmark both with
 .. seealso::
 
    :doc:`/tutorials/data-structures/02_sparse_matrices` and
-   :doc:`/tutorials/data-structures/03_jit_connectivity` walk through each format
-   interactively.
+   :doc:`/tutorials/data-structures/03_jit_connectivity` walk through explicit and
+   generated formats interactively. See
+   :doc:`/tutorials/data-structures/04_fixed_connections` for fixed fan-in and fan-out.

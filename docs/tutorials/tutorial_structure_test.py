@@ -83,8 +83,12 @@ def test_top_level_navigation_exposes_getting_started_data_events_and_custom() -
     _require(data in index, f"Missing navigation entry: {data}")
     _require(events in index, f"Missing navigation entry: {events}")
     _require(custom in index, f"Missing navigation entry: {custom}")
+    navigation = index[index.index(".. toctree::") :]
     _require(
-        index.index(getting_started) < index.index(data) < index.index(events) < index.index(custom),
+        navigation.index(getting_started)
+        < navigation.index(data)
+        < navigation.index(events)
+        < navigation.index(custom),
         "Getting Started, Data, Events, and Custom operators are out of order",
     )
 

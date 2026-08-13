@@ -5,7 +5,7 @@ Plasticity rules update synaptic weights in response to spikes. ``brainevent`` p
 event-driven plasticity operators that touch only the weights connected to neurons that
 actually fired — the same sparsity principle as the matrix products. This guide shows when
 to reach for each operator; the full, runnable derivation is in
-:doc:`/tutorials/data-structures/05_synaptic_plasticity`.
+:doc:`/tutorials/events/synaptic-plasticity`.
 
 
 Pre- vs post-synaptic updates

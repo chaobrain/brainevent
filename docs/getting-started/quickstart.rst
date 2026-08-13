@@ -74,11 +74,17 @@ Next steps
 .. grid:: 1 2 2 2
    :gutter: 2
 
-   .. grid-item-card:: Learn step by step
+   .. grid-item-card:: Learn connectivity data
       :link: /tutorials/data-structures/index
       :link-type: doc
 
-      Work through the tutorial notebooks.
+      Compare explicit, fixed-count, and generated connectivity structures.
+
+   .. grid-item-card:: Learn event-driven operations
+      :link: /tutorials/events/index
+      :link-type: doc
+
+      Work from binary event representation to event-triggered updates.
 
    .. grid-item-card:: Solve a specific task
       :link: /how-to/data-structures/index
