@@ -10,7 +10,6 @@
 
 ## Global Constraints
 
-- Do not push or create a pull request.
 - Do not build HTML or execute notebook cells.
 - Do not modify or remove COBA, local-preview, generated-static, or unrelated user changes.
 - Display the page as `Quickstart`; retain the `getting-started/quickstart` docname.
@@ -69,7 +68,19 @@
 - [ ] Ensure every approved notebook has the exact force/120 metadata.
 - [ ] Ensure no Custom operators notebook declares an executing mode.
 
-### Task 6: Verify without push, PR, notebook execution, or HTML
+### Task 6: Add opt-in local navigation
+
+**Files:**
+- Create: `docs/local_preview.py`
+- Create: `docs/local_preview_test.py`
+- Modify: `docs/conf.py`
+
+- [ ] Test exact environment activation and URL classification first.
+- [ ] Test generated anchor rewriting and Sphinx callback boundaries.
+- [ ] Preserve production base settings when local mode is disabled.
+- [ ] Register the build-finished rewriter only in local mode.
+
+### Task 7: Verify without notebook execution or HTML
 
 **Files:**
 - Test: `docs/tutorials/tutorial_structure_test.py`
@@ -80,4 +91,3 @@
 - [ ] Validate all source notebooks with nbformat without executing cells.
 - [ ] Scan active sources for the retired document path and globally numbered tutorial titles.
 - [ ] Report changed files, edge cases, and user-run HTML checks without pushing or creating a PR.
-

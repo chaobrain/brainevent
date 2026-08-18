@@ -27,11 +27,15 @@
 #
 
 import os
+import shutil
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.abspath('../'))
 
-import shutil
+from local_preview import local_preview_enabled, rewrite_built_html  # noqa: E402
+
+local_preview = local_preview_enabled()
 
 shutil.rmtree('_build', ignore_errors=True)
 shutil.rmtree('reference/apis/generated', ignore_errors=True)
@@ -45,7 +49,7 @@ copyright = '2024, brainevent'
 author = 'BrainX Ecosystem'
 
 # The full version, including alpha/beta/rc tags
-import brainevent
+import brainevent  # noqa: E402
 
 release = brainevent.__version__
 
@@ -70,7 +74,8 @@ extensions = [
     'brainx_sphinx_header',
 ]
 
-html_baseurl = 'https://brainx.chaobrain.com/brainevent/'
+html_baseurl = '' if local_preview else 'https://brainx.chaobrain.com/brainevent/'
+brainx_inject_base = not local_preview
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
@@ -136,3 +141,9 @@ html_theme_options = {
 autodoc_default_options = {
     'exclude-members': '....,default_rng',
 }
+
+
+def setup(app):
+    """Register local-preview navigation rewriting when explicitly enabled."""
+    if local_preview:
+        app.connect('build-finished', rewrite_built_html)

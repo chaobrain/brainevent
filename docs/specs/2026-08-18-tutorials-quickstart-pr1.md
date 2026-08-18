@@ -25,8 +25,9 @@ The pull request includes the tutorial information architecture, the Data and
 Events notebook migration, the Quickstart merge, and the static tests that lock
 the navigation and selected notebook-execution scope.
 
-It excludes the Brette 2007 COBA example, local-preview HTML rewriting,
-generated static assets, and HTML build output.
+It excludes the Brette 2007 COBA example, generated static assets, and HTML
+build output. It includes an opt-in local-preview mode so reviewers can keep
+BrainEvent navigation inside a locally rendered HTML tree.
 
 ## Quickstart Source and Content
 
@@ -91,6 +92,17 @@ Each uses:
 
 All other notebooks, including Custom operators, remain non-executing.
 
+## Local Preview Navigation
+
+When `BRAINEVENT_DOCS_LOCAL=1`, clear the hosted BrainEvent base URL, disable
+shared-header base injection, and rewrite generated BrainEvent documentation
+links to paths relative to the containing HTML page. GitHub, DOI, publication,
+third-party, and other BrainX-project links remain external.
+
+Without that exact environment value, production retains
+`https://brainx.chaobrain.com/brainevent/` as `html_baseurl` and keeps shared
+base injection enabled.
+
 ## Acceptance Criteria
 
 1. Installation and Quickstart are the only Getting Started navigation entries.
@@ -102,5 +114,6 @@ All other notebooks, including Custom operators, remain non-executing.
 6. Exactly the six approved notebooks declare forced build-time execution.
 7. Tutorial structure tests, execution-scope tests, notebook validation, and
    Ruff pass without building HTML or executing notebook cells.
-8. No push, PR creation, or HTML build is performed during implementation.
-
+8. Local-preview tests exceed 90% focused coverage and prove production mode is
+   unchanged.
+9. No HTML build is performed during implementation.
