@@ -6,7 +6,7 @@ operations whose work is driven by active events. Regular array computations app
 as correctness or performance baselines.
 
 If you are brand new, start with
-:doc:`/getting-started/getting-started-with-brainevent`. For connectivity storage and
+:doc:`/getting-started/quickstart`. For connectivity storage and
 generation, use the :doc:`Data tutorials </tutorials/data-structures/index>`.
 
 .. toctree::

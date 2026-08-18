@@ -16,7 +16,7 @@ DOCS_ROOT = REPO_ROOT / "docs"
 BASELINE_COMMIT = "7a4d5fc"
 
 TARGET_NOTEBOOKS = (
-    DOCS_ROOT / "getting-started" / "getting-started-with-brainevent.ipynb",
+    DOCS_ROOT / "getting-started" / "quickstart.ipynb",
     DOCS_ROOT / "tutorials" / "events" / "binary-events.ipynb",
     DOCS_ROOT / "tutorials" / "events" / "synaptic-plasticity.ipynb",
     DOCS_ROOT / "tutorials" / "data-structures" / "02_sparse_matrices.ipynb",
@@ -62,8 +62,14 @@ REQUIRED_NOTEBOOK_HEADINGS = {
 }
 
 RETIRED_NOTEBOOKS = (
+    DOCS_ROOT / "getting-started" / "getting-started-with-brainevent.ipynb",
     DOCS_ROOT / "tutorials" / "data-structures" / "01_eventarray_basics.ipynb",
     DOCS_ROOT / "tutorials" / "data-structures" / "05_synaptic_plasticity.ipynb",
+)
+
+RETIRED_INTRODUCTORY_SOURCES = (
+    DOCS_ROOT / "getting-started" / "quickstart.rst",
+    DOCS_ROOT / "getting-started" / "getting-started-with-brainevent.ipynb",
 )
 
 
@@ -108,26 +114,82 @@ def test_target_documents_exist_and_retired_documents_are_removed() -> None:
     _require(not remaining, f"Retired notebooks still present: {remaining}")
 
 
+def test_quickstart_is_the_only_introductory_lesson_source() -> None:
+    """Preserve the Quickstart docname while rejecting duplicate lessons."""
+    quickstart = DOCS_ROOT / "getting-started" / "quickstart.ipynb"
+    remaining = [
+        str(path.relative_to(REPO_ROOT))
+        for path in RETIRED_INTRODUCTORY_SOURCES
+        if path.exists()
+    ]
+    _require(quickstart.is_file(), "Missing executable Quickstart notebook")
+    _require(not remaining, f"Superseded introductory sources remain: {remaining}")
+
+
 def test_top_level_navigation_exposes_getting_started_data_events_and_custom() -> None:
     """Require the approved navigation groups in learning order."""
     index = _read(DOCS_ROOT / "index.rst")
-    getting_started = "getting-started/getting-started-with-brainevent"
+    installation = "getting-started/installation"
+    quickstart = "getting-started/quickstart"
+    retired_getting_started = "getting-started/getting-started-with-brainevent"
     data = "tutorials/data-structures/index"
     events = "tutorials/events/index"
     custom = "tutorials/custom-operators/index"
 
-    _require(getting_started in index, f"Missing navigation entry: {getting_started}")
+    _require(installation in index, f"Missing navigation entry: {installation}")
+    _require(quickstart in index, f"Missing navigation entry: {quickstart}")
+    _require(
+        retired_getting_started not in index,
+        f"Retired navigation entry remains: {retired_getting_started}",
+    )
     _require(data in index, f"Missing navigation entry: {data}")
     _require(events in index, f"Missing navigation entry: {events}")
     _require(custom in index, f"Missing navigation entry: {custom}")
     navigation = index[index.index(".. toctree::") :]
     _require(
-        navigation.index(getting_started)
+        navigation.index(installation)
+        < navigation.index(quickstart)
         < navigation.index(data)
         < navigation.index(events)
         < navigation.index(custom),
-        "Getting Started, Data, Events, and Custom operators are out of order",
+        "Installation, Quickstart, Data, Events, and Custom operators are out of order",
     )
+
+
+def test_quickstart_teaches_one_complete_first_computation() -> None:
+    """Require a compact runnable path without duplicating Data chapters."""
+    path = DOCS_ROOT / "getting-started" / "quickstart.ipynb"
+    notebook = nbformat.read(path, as_version=4)
+    markdown = "\n".join(
+        cell.source for cell in notebook.cells if cell.cell_type == "markdown"
+    )
+    code = "\n".join(cell.source for cell in notebook.cells if cell.cell_type == "code")
+    headings = (
+        "# Quickstart",
+        "## What BrainEvent Computes",
+        "## Why Event-Driven Computation?",
+        "## Import BrainEvent",
+        "## Create and Visualize Binary Events",
+        "## Run Your First Event-Driven Matrix Multiplication",
+        "## Use BrainEvent with JAX Transformations",
+        "## Summary and Next Steps",
+    )
+    positions = [markdown.find(heading) for heading in headings]
+    _require(all(position >= 0 for position in positions), "Quickstart heading is missing")
+    _require(positions == sorted(positions), "Quickstart headings are out of order")
+    for marker in ("events @ weights", "jnp.allclose", "jax.jit"):
+        _require(marker in code, f"Quickstart computation marker is missing: {marker}")
+    for target in (
+        "../tutorials/data-structures/index.rst",
+        "../tutorials/events/index.rst",
+        "../tutorials/custom-operators/index.rst",
+    ):
+        _require(target in markdown, f"Quickstart next-step link is missing: {target}")
+    for duplicated_structure in ("JITCScalarR(", "FixedNumPerPre(", "CSR(("):
+        _require(
+            duplicated_structure not in code,
+            f"Quickstart duplicates a Data construction: {duplicated_structure}",
+        )
 
 
 def test_data_and_events_toctrees_have_the_approved_order() -> None:

@@ -4,7 +4,12 @@ orphan: true
 
 # Tutorials Data/Events Restructure Specification
 
-**Status:** Approved design
+**Status:** Superseded for the introductory path
+
+The Data/Events migration remains the historical basis for this work, but its
+separate Getting Started notebook is superseded by
+`2026-08-18-tutorials-quickstart-pr1.md`. The final navigation preserves one
+executable `Quickstart` lesson.
 
 **Date:** 2026-08-13
 

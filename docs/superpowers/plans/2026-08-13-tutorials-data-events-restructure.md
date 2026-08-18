@@ -4,6 +4,11 @@ orphan: true
 
 # Tutorials Data/Events Restructure Implementation Plan
 
+> **Superseded for the introductory path:** The final Quickstart merge and
+> execution scope are defined in
+> `2026-08-18-tutorials-quickstart-pr1.md`. This plan remains as the historical
+> record for the Data/Events migration only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Reorganize BrainEvent tutorials into unnumbered Data, Events, and unchanged Custom operators learning paths, with a separate Getting Started notebook.

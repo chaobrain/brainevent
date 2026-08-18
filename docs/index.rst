@@ -79,7 +79,6 @@ Where to go next
 
    getting-started/installation
    getting-started/quickstart
-   getting-started/getting-started-with-brainevent
 
 .. toctree::
    :hidden:
