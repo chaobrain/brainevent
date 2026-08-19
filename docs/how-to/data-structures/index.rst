@@ -2,9 +2,10 @@ Working with data structures
 ============================
 
 Task-oriented recipes for picking and using ``brainevent``'s event and sparse data
-structures. Each guide assumes you already know the basics (see the
-:doc:`tutorials </tutorials/data-structures/index>`) and want to accomplish one
-concrete thing.
+structures. Each guide assumes you already know the basics from the
+:doc:`Data tutorials </tutorials/data-structures/index>` or
+:doc:`Events tutorials </tutorials/events/index>` and want to accomplish one concrete
+thing.
 
 .. toctree::
    :maxdepth: 1
