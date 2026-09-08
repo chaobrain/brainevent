@@ -248,6 +248,31 @@ class FixedNumConn(DataRepresentation):
         self.backend = backend
         super().__init__(*args, shape=shape, buffers=buffers)
 
+    def sum(self, axis=None):
+        """Return the sum of all logically represented matrix entries.
+
+        Parameters
+        ----------
+        axis : int, sequence of int, or None, optional
+            Axis or axes to reduce. Only ``None`` is currently supported.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Scalar sum of every fixed connection. A homogeneous size-one
+            value is counted once per represented connection.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``axis`` is not ``None``.
+        """
+        if axis is not None:
+            raise NotImplementedError(
+                f'{type(self).__name__}.sum with axis is not implemented.'
+            )
+        return self._sum_data()
+
     # ------------------------------------------------------------------ #
     # Orientation hooks (override per subclass; replace the old ``axis`` flag)
     # ------------------------------------------------------------------ #
@@ -719,7 +744,26 @@ class FixedNumConn(DataRepresentation):
         raise NotImplementedError
 
     def apply(self, fn):
-        """Apply ``fn`` to the value buffer while keeping connectivity structure."""
+        """Apply a function while keeping the connectivity structure.
+
+        Parameters
+        ----------
+        fn : callable
+            Function applied once to ``self.data``. It may change dtype or
+            physical unit but must preserve the physical buffer shape.
+
+        Returns
+        -------
+        FixedNumConn
+            Same concrete fixed-connection representation with transformed
+            values.
+
+        Raises
+        ------
+        ValueError
+            If the transformed value buffer does not have the same shape as
+            ``self.data``.
+        """
         return self._unitary_op(fn)
 
     def __abs__(self):
@@ -1003,7 +1047,10 @@ class FixedNumPerPre(FixedNumConn):
         return self._rebuild_with_data(new.reshape(self.data.shape))
 
     def _unitary_op(self, op):
-        return FixedNumPerPre(op(self.data), self.indices, shape=self.shape, backend=self.backend, buffers=self.buffers)
+        return FixedNumPerPre(
+            self._apply_data(op), self.indices, shape=self.shape,
+            backend=self.backend, buffers=self.buffers,
+        )
 
     def _binary_op(self, other, op):
         if isinstance(other, u.sparse.SparseMatrix):
@@ -1272,7 +1319,7 @@ class FixedNumPerPost(FixedNumConn):
         return self._rebuild_with_data(new)
 
     def _unitary_op(self, op):
-        return FixedNumPerPost((op(self.data), self.indices), shape=self.shape,
+        return FixedNumPerPost((self._apply_data(op), self.indices), shape=self.shape,
                                backend=self.backend, buffers=self.buffers)
 
     def _binary_op(self, other, op):

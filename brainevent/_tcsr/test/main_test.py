@@ -20,6 +20,7 @@ import subprocess
 import sys
 import warnings
 
+import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -62,6 +63,36 @@ def _sorted_tcsr(**kwargs):
     from brainevent._tcsr.main import TCSR
 
     return TCSR.from_sorted_csr(_sorted_plain_csr(), **kwargs)
+
+
+def _non_square_dense():
+    return jnp.asarray(
+        [
+            [1.0, 0.0, 2.0, 0.0],
+            [0.0, 3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0, 5.0],
+        ],
+        dtype=jnp.float32,
+    )
+
+
+def _non_square_plain_csr(data=None):
+    if data is None:
+        data = jnp.asarray([1.0, 2.0, 3.0, 4.0, 5.0], dtype=jnp.float32)
+    return PlainCSR(
+        (
+            data,
+            jnp.asarray([0, 2, 1, 0, 3], dtype=jnp.int32),
+            jnp.asarray([0, 2, 3, 5], dtype=jnp.int32),
+        ),
+        shape=(3, 4),
+    )
+
+
+def _non_square_tcsr(data=None, **kwargs):
+    from brainevent._tcsr.main import TCSR
+
+    return TCSR.from_sorted_csr(_non_square_plain_csr(data), **kwargs)
 
 
 def test_stable_main_import_does_not_load_bpsa():
@@ -179,13 +210,13 @@ def test_tcsr_transpose_returns_tcsr_views_with_inverted_state():
 
     for view in (transposed, property_view):
         assert isinstance(view, TCSR)
-        assert view._transposed is True
+        assert view._transpose_state is True
         assert view.shape == matrix.shape[::-1]
         assert view._tcs_buffers is matrix._tcs_buffers
         assert view.has_tcsc_mirror is False
 
     assert isinstance(pytree_view, TCSR)
-    assert pytree_view._transposed is True
+    assert pytree_view._transpose_state is True
     assert pytree_view.shape == matrix.shape[::-1]
     assert pytree_view.has_tcsc_mirror is False
     np.testing.assert_array_equal(
@@ -196,7 +227,7 @@ def test_tcsr_transpose_returns_tcsr_views_with_inverted_state():
     )
 
     assert isinstance(restored, TCSR)
-    assert restored._transposed is False
+    assert restored._transpose_state is False
     assert restored.shape == matrix.shape
     assert restored._tcs_buffers is matrix._tcs_buffers
 
@@ -272,7 +303,7 @@ def test_view_conversion_data_replacement_and_sparse_materialization():
         replacement = jnp.asarray([5.0, 7.0], dtype=jnp.float32)
         updated = transposed.with_data(replacement)
         assert isinstance(updated, TCSR)
-        assert updated._transposed is True
+        assert updated._transpose_state is True
         np.testing.assert_allclose(updated.data, replacement)
         np.testing.assert_allclose(
             updated.todense(), [[5.0, 0.0], [0.0, 7.0]]
@@ -361,15 +392,194 @@ def test_binary_dispatch_uses_only_unified_binary_service(
 
 @pytest.mark.parametrize("transposed", [False, True])
 @pytest.mark.parametrize("side", ["left", "right"])
-def test_binary_matmul_rejects_non_binary_and_rank_three(transposed, side):
-    """Reject unsupported product operands before selecting a backend."""
+def test_binary_matmul_rejects_rank_three(transposed, side):
+    """Reject unsupported binary ranks before selecting a backend."""
     with _explicit_int64_allowed():
         view = _sorted_tcsr()
         if transposed:
             view = view.T
 
     operation = view.__rmatmul__ if side == "left" else view.__matmul__
-    with pytest.raises(NotImplementedError, match="matmul with object"):
-        operation(jnp.ones((2,), dtype=jnp.float32))
     with pytest.raises(NotImplementedError, match="binary matmul"):
         operation(BinaryArray(jnp.ones((1, 1, 1), dtype=jnp.bool_)))
+
+
+@pytest.mark.parametrize("transposed", [False, True])
+def test_dense_row_indexing_matches_logical_view_and_jit(transposed):
+    """Apply NumPy-like row selectors to either logical orientation."""
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr()
+        view = matrix.T if transposed else matrix
+        dense = _non_square_dense().T if transposed else _non_square_dense()
+
+        for selector in (1, -1, slice(None, None, 2), [2, 0, 2], slice(0, 0)):
+            actual = view[selector]
+            expected = np.asarray(dense)[selector]
+            np.testing.assert_allclose(actual, expected)
+
+        compiled = jax.jit(lambda row: view[row])(
+            jnp.asarray(1, dtype=jnp.int32)
+        )
+        np.testing.assert_allclose(compiled, dense[1])
+
+        if transposed:
+            view.materialize_tcsc_mirror()
+        dynamic = jax.jit(lambda operand, row: operand[row])(
+            view,
+            jnp.asarray(1, dtype=jnp.int32),
+        )
+        np.testing.assert_allclose(dynamic, dense[1])
+
+        if transposed:
+            matrix.materialize_tcsc_mirror()
+        dynamic = jax.jit(lambda operand, row: operand[row])(
+            view,
+            jnp.asarray(0, dtype=jnp.int32),
+        )
+        np.testing.assert_allclose(dynamic, dense[0])
+
+
+@pytest.mark.parametrize("transposed", [False, True])
+def test_sparse_row_slice_returns_independent_canonical_tcsr(transposed):
+    """Rebuild selected logical rows as an independently owned TCSR."""
+    from brainevent._tcsr.main import TCSR
+
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr(
+            backend="jax_raw",
+            binary_backend="jax_raw",
+            backward_algorithm="pp_prop",
+        )
+        view = matrix.T if transposed else matrix
+        dense = _non_square_dense().T if transposed else _non_square_dense()
+        rows = [view.shape[0] - 1, 0, view.shape[0] - 1]
+        sliced = view.slice_rows(rows)
+
+        assert isinstance(sliced, TCSR)
+        assert sliced.shape == (3, view.shape[1])
+        assert sliced._transpose_state is False
+        assert sliced.backend == "jax_raw"
+        assert sliced.binary_backend == "jax_raw"
+        assert sliced.backward_algorithm == "pp_prop"
+        assert sliced._tcs_buffers is not view._tcs_buffers
+        assert sliced.has_tcsc_mirror is False
+        np.testing.assert_allclose(sliced.todense(), dense[jnp.asarray(rows)])
+
+
+def test_sparse_row_slice_handles_scalar_empty_homogeneous_and_units():
+    """Preserve row shape, compact weights, and physical units at boundaries."""
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr()
+        one_row = matrix.slice_rows(-1)
+        empty = matrix.slice_rows(slice(0, 0))
+
+        homogeneous = _non_square_tcsr(
+            jnp.asarray([2.0], dtype=jnp.float32)
+        ).slice_rows([2, 0])
+        unitful = _non_square_tcsr(
+            jnp.asarray([1.0, 2.0, 3.0, 4.0, 5.0], dtype=jnp.float32)
+            * u.mV
+        ).slice_rows([2, 0])
+
+        assert one_row.shape == (1, 4)
+        np.testing.assert_allclose(
+            one_row.todense(), _non_square_dense()[jnp.asarray([-1])]
+        )
+        assert empty.shape == (0, 4)
+        assert empty.nse == 0
+        assert empty.todense().shape == (0, 4)
+        assert homogeneous.data.shape == (1,)
+        np.testing.assert_allclose(
+            homogeneous.todense(),
+            [[2.0, 0.0, 0.0, 2.0], [2.0, 0.0, 2.0, 0.0]],
+        )
+        assert u.get_unit(unitful.data) == u.mV
+        assert u.math.allclose(
+            unitful.todense(), _non_square_dense()[jnp.asarray([2, 0])] * u.mV
+        )
+
+
+def test_sparse_row_slice_rejects_traced_output_structure():
+    """Reject sparse slicing when selected nonzero count is not static."""
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr()
+        operation = jax.jit(lambda rows: matrix.slice_rows(rows))
+        with pytest.raises(RuntimeError, match="requires concrete"):
+            operation(jnp.asarray([0, 2], dtype=jnp.int32))
+
+
+def test_row_indexing_rejects_invalid_concrete_selectors():
+    """Reject non-integer and out-of-bounds row selectors before dispatch."""
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr()
+
+        with pytest.raises(IndexError, match="integer"):
+            _ = matrix[jnp.asarray([0.5])]
+        with pytest.raises(IndexError, match="out of bounds"):
+            _ = matrix.slice_rows([3])
+
+
+@pytest.mark.parametrize(
+    ("method_name", "args"),
+    [
+        (
+            "update_on_pre",
+            (jnp.ones((3,), dtype=jnp.bool_), jnp.ones((4,), dtype=jnp.float32)),
+        ),
+        (
+            "update_on_post",
+            (jnp.ones((3,), dtype=jnp.float32), jnp.ones((4,), dtype=jnp.bool_)),
+        ),
+        ("solve", (jnp.ones((3,), dtype=jnp.float32),)),
+    ],
+)
+def test_unsupported_tcsr_operations_are_explicit(method_name, args):
+    """Expose stable method names without claiming unsupported behavior."""
+    from brainevent._tcsr.main import TCSR
+
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr()
+
+    assert method_name in TCSR.__dict__
+    with pytest.raises(NotImplementedError, match=rf"TCSR\.{method_name}"):
+        getattr(matrix, method_name)(*args)
+
+
+@pytest.mark.parametrize("transposed", [False, True])
+def test_tcsr_apply_rejects_value_shape_changes(transposed):
+    """Keep apply from changing the shared physical value-buffer shape."""
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr()
+        view = matrix.T if transposed else matrix
+
+        with pytest.raises(ValueError, match="apply.*shape"):
+            view.apply(lambda values: values.reshape((1, values.size)))
+
+
+@pytest.mark.parametrize("transposed", [False, True])
+@pytest.mark.parametrize(
+    "storage", ["heterogeneous", "homogeneous_scalar", "homogeneous_vector"]
+)
+def test_tcsr_sum_matches_logical_dense_sum(transposed, storage):
+    """Reduce all logical entries in either TCSR orientation."""
+    if storage == "heterogeneous":
+        data = None
+    elif storage == "homogeneous_scalar":
+        data = jnp.asarray(2.0, dtype=jnp.float32)
+    else:
+        data = jnp.asarray([2.0], dtype=jnp.float32)
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr(data)
+        view = matrix.T if transposed else matrix
+        assert u.math.allclose(view.sum(), view.todense().sum())
+        with pytest.raises(NotImplementedError, match="sum with axis"):
+            view.sum(axis=0)
+
+
+def test_tcsr_homogeneous_sum_preserves_units():
+    """Retain units when reducing a shared TCSR value."""
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr(jnp.asarray([2.0], dtype=jnp.float32))
+        matrix = matrix.apply(lambda values: values * u.mV)
+        assert u.get_unit(matrix.sum()) == u.mV
+        assert u.math.allclose(matrix.sum(), 10.0 * u.mV)

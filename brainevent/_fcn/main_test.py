@@ -1524,3 +1524,76 @@ class TestFcnSliceAD:
         assert out.shape == (3, 2, 12)
         assert jnp.allclose(out[0], np.asarray(dense)[[0, 1]], atol=1e-5)
         assert jnp.allclose(out[2], np.asarray(dense)[[4, 5]], atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("cls", "indices", "shape"),
+    [
+        (
+            FixedNumPerPre,
+            jnp.asarray([[0, 2], [0, 1]], dtype=jnp.int32),
+            (2, 3),
+        ),
+        (
+            FixedNumPerPost,
+            jnp.asarray([[0, 1], [1, 0], [0, 1]], dtype=jnp.int32),
+            (2, 3),
+        ),
+    ],
+)
+def test_fixed_num_apply_rejects_value_shape_changes(cls, indices, shape):
+    """Keep apply from switching heterogeneous storage to homogeneous."""
+    data = jnp.arange(indices.size, dtype=jnp.float32).reshape(indices.shape)
+    matrix = cls((data, indices), shape=shape)
+
+    with pytest.raises(ValueError, match="apply.*shape"):
+        matrix.apply(lambda values: values.reshape(-1)[:1])
+
+
+@pytest.mark.parametrize(
+    ("cls", "indices", "shape"),
+    [
+        (
+            FixedNumPerPre,
+            jnp.asarray([[0, 2], [0, 1]], dtype=jnp.int32),
+            (2, 3),
+        ),
+        (
+            FixedNumPerPost,
+            jnp.asarray([[0, 1], [1, 0], [0, 1]], dtype=jnp.int32),
+            (2, 3),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "storage", ["heterogeneous", "homogeneous_scalar", "homogeneous_vector"]
+)
+def test_fixed_num_sum_matches_logical_dense_sum(
+    cls, indices, shape, storage
+):
+    """Sum all represented fixed connections for both storage modes."""
+    if storage == "heterogeneous":
+        data = jnp.arange(indices.size, dtype=jnp.float32).reshape(indices.shape)
+    elif storage == "homogeneous_scalar":
+        data = jnp.asarray(2.0, dtype=jnp.float32)
+    else:
+        data = jnp.asarray([2.0], dtype=jnp.float32)
+    matrix = cls((data, indices), shape=shape)
+
+    assert u.math.allclose(matrix.sum(), matrix.todense().sum())
+    with pytest.raises(NotImplementedError, match="sum with axis"):
+        matrix.sum(axis=0)
+
+
+def test_fixed_num_homogeneous_sum_preserves_units():
+    """Retain units when reducing a shared fixed-connection value."""
+    matrix = FixedNumPerPre(
+        (
+            jnp.asarray([2.0], dtype=jnp.float32) * u.mV,
+            jnp.asarray([[0, 2], [0, 1]], dtype=jnp.int32),
+        ),
+        shape=(2, 3),
+    )
+
+    assert u.get_unit(matrix.sum()) == u.mV
+    assert u.math.allclose(matrix.sum(), 8.0 * u.mV)

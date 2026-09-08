@@ -1353,6 +1353,41 @@ def test_binary_csrmm_cuda_accepts_int64_indptr(transpose, homo):
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
 
+@requires_gpu_backend
+@pytest.mark.parametrize("event_dtype", [jnp.int8, jnp.uint8, jnp.float64])
+def test_binary_csrmm_cuda_normalizes_numeric_events_to_bool_abi(event_dtype):
+    """Route non-native numeric MM events through the boolean CUDA ABI."""
+    with jax.enable_x64():
+        data = jnp.array([2.0], dtype=jnp.float32)
+        indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+        matrix = jnp.array([[1, 0], [0, 1]], dtype=event_dtype)
+        workspace = _make_binary_task_workspace(indptr)
+
+        got = binary_csrmm(
+            data,
+            indices,
+            indptr,
+            matrix,
+            shape=(2, 3),
+            transpose=True,
+            backend="cuda_raw",
+            workspace=workspace,
+        )
+        expected = binary_csrmm(
+            data,
+            indices,
+            indptr,
+            matrix,
+            shape=(2, 3),
+            transpose=True,
+            backend="jax_raw",
+            workspace=workspace,
+        )
+
+    np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
 # The ``nt_block`` strategy inside ``binary_csrmm_nt_auto_*`` is only selected when
 # ``avg_nnz > 512``; its block reduction stages one accumulator per (strip, lane)
 # pair, i.e. 8 * 32 elements of shared memory. The launch used to request only

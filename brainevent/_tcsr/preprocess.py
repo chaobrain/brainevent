@@ -45,7 +45,6 @@ __all__ = [
 
 
 _TILE_SIZE = 8192
-_MAX_ROW_NNZ = np.iinfo(np.int32).max
 
 
 @dataclass(frozen=True)
@@ -169,7 +168,7 @@ def build_tcsr_structure(
     rows, cols = int(csr.shape[0]), int(csr.shape[1])
     indices_np = np.asarray(jax.device_get(csr.indices))
     row_ptr = np.ascontiguousarray(jax.device_get(csr.indptr), dtype=np.int64)
-    if np.any(np.diff(row_ptr) > _MAX_ROW_NNZ):
+    if np.any(np.diff(row_ptr) > np.iinfo(np.int32).max):
         raise ValueError(
             "TCSR tile offsets require each CSR row to fit int32"
         )
