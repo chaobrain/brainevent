@@ -11,6 +11,20 @@ import pytest
 from brainevent._tcsr.sddmm import sddmm
 
 
+@pytest.fixture(autouse=True)
+def _enable_x64():
+    """Enable x64 while exercising float64 SDDMM contracts."""
+    previous_explicit = jax.config.jax_explicit_x64_dtypes
+    previous_x64 = jax.config.jax_enable_x64
+    jax.config.update("jax_explicit_x64_dtypes", "allow")
+    jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", previous_x64)
+        jax.config.update("jax_explicit_x64_dtypes", previous_explicit)
+
+
 def _recording_ffi_call(calls):
     """Return an FFI stand-in recording the selected target."""
 

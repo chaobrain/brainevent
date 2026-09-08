@@ -27,6 +27,12 @@ from brainevent._csr.main import CSR as PlainCSR
 from brainevent._event import BinaryArray
 
 
+requires_gpu_backend = pytest.mark.skipif(
+    not any(device.platform == "gpu" for device in jax.devices()),
+    reason="requires a JAX GPU backend",
+)
+
+
 @contextmanager
 def _explicit_int64_allowed():
     previous_explicit = jax.config.jax_explicit_x64_dtypes
@@ -553,6 +559,7 @@ def test_cuda_raw_weight_transpose_routes_to_sampled_gradient(
     np.testing.assert_array_equal(result[0], expected_gradient)
 
 
+@requires_gpu_backend
 @pytest.mark.parametrize("rank", ["mv", "mm"])
 @pytest.mark.parametrize("backward_algorithm", ["pp_prop", "bptt"])
 @pytest.mark.parametrize("transpose", [True, False])
@@ -813,6 +820,7 @@ def test_tile_kernel_rejects_unsupported_dtypes_before_cuda_load(
         )
 
 
+@requires_gpu_backend
 @pytest.mark.parametrize("weight_dtype", [jnp.float32, jnp.float64])
 @pytest.mark.parametrize("event_dtype", [jnp.bool_, jnp.int8, jnp.float32])
 @pytest.mark.parametrize("homogeneous", [False, True])
@@ -888,6 +896,7 @@ def test_cuda_tile_mm_matches_dense_across_f64_subtile_boundaries(
     np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
 
 
+@requires_gpu_backend
 def test_cuda_tile_mm_f64_bptt_weight_gradient_matches_dense_reference() -> None:
     """Differentiate the f64 TileMM path across the 4096-column split."""
     from brainevent._tcsr import binary
