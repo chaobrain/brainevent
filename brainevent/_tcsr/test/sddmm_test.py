@@ -113,23 +113,23 @@ def test_sddmm_package_owns_formal_api_used_by_binary():
         (
             "tcsr_sddmv_dweight_binary",
             jnp.bool_,
-            "sddmv.cu",
-            "tcsr_sddmv",
-            "tcsr_sddmv.tcsr_sddmv_dweight_binary_f32_bool_t",
+            "sddmv_binary.cu",
+            "tcsr_sddmv_binary",
+            "tcsr_sddmv_binary.tcsr_sddmv_dweight_binary_f32_bool_t",
         ),
         (
             "tcsr_sddmv_dweight_binary",
             jnp.float32,
-            "sddmv.cu",
-            "tcsr_sddmv",
-            "tcsr_sddmv.tcsr_sddmv_dweight_binary_f32_float_t",
+            "sddmv_binary.cu",
+            "tcsr_sddmv_binary",
+            "tcsr_sddmv_binary.tcsr_sddmv_dweight_binary_f32_float_t",
         ),
         (
             "tcsr_sddmv_dweight_float",
             jnp.float32,
-            "sddmv.cu",
-            "tcsr_sddmv",
-            "tcsr_sddmv.tcsr_sddmv_dweight_float_f32_t",
+            "sddmv_float.cu",
+            "tcsr_sddmv_float",
+            "tcsr_sddmv_float.tcsr_sddmv_dweight_float_f32_t",
         ),
     ),
 )
@@ -151,7 +151,8 @@ def test_formal_sddmm_api_registers_owned_cuda_target(
 
     monkeypatch.setattr(sddmm, "_SDDMM_BINARY_CUDA_MODULE", None)
     monkeypatch.setattr(sddmm, "_SDDMM_FLOAT_CUDA_MODULE", None)
-    monkeypatch.setattr(sddmm, "_SDDMV_CUDA_MODULE", None)
+    monkeypatch.setattr(sddmm, "_SDDMV_BINARY_CUDA_MODULE", None)
+    monkeypatch.setattr(sddmm, "_SDDMV_FLOAT_CUDA_MODULE", None)
     monkeypatch.setattr(sddmm, "load_cuda_file", fake_load_cuda_file)
     monkeypatch.setattr(jax.ffi, "ffi_call", _recording_ffi_call(calls))
 

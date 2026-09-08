@@ -32,9 +32,20 @@ __all__ = [
 
 _SUPPORTED_BATCHES = frozenset((4, 8, 16, 32, 64, 128, 256, 512))
 _TILE_SIZE = 8192
+_F32 = jnp.dtype(jnp.float32)
+_F64 = jnp.dtype(jnp.float64)
+_BINARY_TARGET_SUFFIXES = {
+    (_F32, jnp.dtype(jnp.bool_)): ("f32", "bool"),
+    (_F32, _F32): ("f32", "float"),
+    (_F64, jnp.dtype(jnp.bool_)): ("f64", "bool"),
+    (_F64, jnp.dtype(jnp.int8)): ("f64", "int8"),
+    (_F64, _F32): ("f64", "float"),
+    (_F64, _F64): ("f64", "double"),
+}
 _SDDMM_BINARY_CUDA_MODULE = None
 _SDDMM_FLOAT_CUDA_MODULE = None
-_SDDMV_CUDA_MODULE = None
+_SDDMV_BINARY_CUDA_MODULE = None
+_SDDMV_FLOAT_CUDA_MODULE = None
 
 
 def tcsr_sddmm_dweight_binary(
@@ -49,16 +60,18 @@ def tcsr_sddmm_dweight_binary(
 ) -> jax.Array:
     """Compute heterogeneous CSR-slot gradients from binary events.
 
-    Treat floating event values as active exactly when they are positive. The
+    Treat numeric event values as active exactly when they are positive. The
     operation consumes CSR structure directly and supports only the direct
     transposed binary CSRMM orientation.
 
     Parameters
     ----------
     events : jax.Array
-        Boolean or float32 event matrix with shape ``(batch, rows)``.
+        Event matrix with shape ``(batch, rows)``. Float32 cotangents accept
+        bool or float32 events. Float64 cotangents accept bool, int8, float32,
+        or float64 events.
     ct : jax.Array
-        Float32 cotangent matrix with shape ``(batch, cols)``.
+        Float32 or float64 cotangent matrix with shape ``(batch, cols)``.
     indices : jax.Array
         Int32 CSR column indices with shape ``(nnz,)``.
     indptr : jax.Array
@@ -74,7 +87,7 @@ def tcsr_sddmm_dweight_binary(
     Returns
     -------
     jax.Array
-        Float32 gradient values with shape ``(nnz,)`` in CSR-slot order.
+        Gradient values with shape ``(nnz,)`` and the same dtype as ``ct``.
 
     Raises
     ------
@@ -112,10 +125,14 @@ def tcsr_sddmm_dweight_binary(
             raise ValueError(f"{name} must be rank {rank}")
 
     event_dtype = jnp.dtype(events.dtype)
-    if event_dtype not in (jnp.dtype(jnp.bool_), jnp.dtype(jnp.float32)):
-        raise TypeError("events dtype must be bool or float32")
-    if jnp.dtype(ct.dtype) != jnp.dtype(jnp.float32):
-        raise TypeError("ct dtype must be float32")
+    ct_dtype = jnp.dtype(ct.dtype)
+    target_suffixes = _BINARY_TARGET_SUFFIXES.get((ct_dtype, event_dtype))
+    if target_suffixes is None:
+        raise TypeError(
+            "unsupported binary (ct, events) dtype pair; expected "
+            "(float32, bool|float32) or "
+            "(float64, bool|int8|float32|float64)"
+        )
     if jnp.dtype(indices.dtype) != jnp.dtype(jnp.int32):
         raise TypeError("indices dtype must be int32")
     if jnp.dtype(indptr.dtype) not in (
@@ -155,7 +172,7 @@ def tcsr_sddmm_dweight_binary(
             f"{expected_offsets_shape}; got {tile_offsets.shape}"
         )
 
-    event_suffix = "bool" if event_dtype == jnp.dtype(jnp.bool_) else "float"
+    value_suffix, event_suffix = target_suffixes
     global _SDDMM_BINARY_CUDA_MODULE
     if _SDDMM_BINARY_CUDA_MODULE is None:
         _SDDMM_BINARY_CUDA_MODULE = load_cuda_file(
@@ -164,11 +181,11 @@ def tcsr_sddmm_dweight_binary(
         )
     target = (
         "tcsr_sddmm_binary."
-        f"tcsr_sddmm_dweight_binary_f32_{event_suffix}_t"
+        f"tcsr_sddmm_dweight_binary_{value_suffix}_{event_suffix}_t"
     )
     phases = (batch + 127) // 128
     output_info = (
-        jax.ShapeDtypeStruct((indices.size,), jnp.float32),
+        jax.ShapeDtypeStruct((indices.size,), ct_dtype),
         jax.ShapeDtypeStruct((phases, rows, 4), jnp.uint32),
     )
     dweight, _ = jax.ffi.ffi_call(
@@ -195,9 +212,9 @@ def tcsr_sddmm_dweight_float(
     Parameters
     ----------
     B : jax.Array
-        Float32 eligibility values with shape ``(batch, rows)``.
+        Float32 or float64 eligibility values with shape ``(batch, rows)``.
     ct : jax.Array
-        Float32 cotangents with shape ``(batch, cols)``.
+        Cotangents with shape ``(batch, cols)`` and the same dtype as ``B``.
     indices : jax.Array
         Int32 global targets in TileCSR slot order. CUDA does not consume this
         operand; it validates slot alignment at the Python boundary.
@@ -213,7 +230,7 @@ def tcsr_sddmm_dweight_float(
     Returns
     -------
     jax.Array
-        Float32 weight gradients with shape ``(nnz,)``.
+        Weight gradients with shape ``(nnz,)`` and the same dtype as ``B``.
 
     Raises
     ------
@@ -226,7 +243,8 @@ def tcsr_sddmm_dweight_float(
     -----
     The standalone CUDA kernel supports fixed batches 4 through 512. It uses
     global ``B != 0`` masks to enumerate active positions while preserving
-    each complete signed float32 B value in the sampled product.
+    each complete signed B value in the sampled product. Mixed float32 and
+    float64 inputs are not supported.
 
     Examples
     --------
@@ -271,10 +289,11 @@ def tcsr_sddmm_dweight_float(
         if value.ndim != rank:
             raise ValueError(f"{name} must be rank {rank}")
 
-    if jnp.dtype(B.dtype) != jnp.dtype(jnp.float32):
-        raise TypeError("B dtype must be float32")
-    if jnp.dtype(ct.dtype) != jnp.dtype(jnp.float32):
-        raise TypeError("ct dtype must be float32")
+    value_dtype = jnp.dtype(B.dtype)
+    if value_dtype not in (_F32, _F64):
+        raise TypeError("B dtype must be float32 or float64")
+    if jnp.dtype(ct.dtype) != value_dtype:
+        raise TypeError("B and ct dtypes must match float32 or float64")
     if jnp.dtype(indices.dtype) != jnp.dtype(jnp.int32):
         raise TypeError("indices dtype must be int32")
     if jnp.dtype(indptr.dtype) not in (
@@ -322,14 +341,15 @@ def tcsr_sddmm_dweight_float(
     phases = (batch + 127) // 128
     row_chunks = (rows + 127) // 128
     output_info = (
-        jax.ShapeDtypeStruct(indices.shape, jnp.float32),
+        jax.ShapeDtypeStruct(indices.shape, value_dtype),
         jax.ShapeDtypeStruct((phases, rows, 4), jnp.uint32),
         jax.ShapeDtypeStruct((rows,), jnp.uint8),
         jax.ShapeDtypeStruct((phases, row_chunks), jnp.uint16),
         jax.ShapeDtypeStruct((phases, row_chunks, 128), jnp.uint8),
     )
     dweight, _, _, _, _ = jax.ffi.ffi_call(
-        "tcsr_sddmm_float.tcsr_sddmm_dweight_float_f32_t",
+        "tcsr_sddmm_float.tcsr_sddmm_dweight_float_"
+        f"{'f32' if value_dtype == _F32 else 'f64'}_t",
         output_info,
         input_layouts=[(0, 1), (0, 1), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0, 1, 2), (0,), (0, 1), (0, 1, 2)],
@@ -352,9 +372,11 @@ def tcsr_sddmv_dweight_binary(
     Parameters
     ----------
     event : jax.Array
-        Boolean or float32 source events with shape ``(rows,)``.
+        Source events with shape ``(rows,)``. Float32 cotangents accept bool or
+        float32 events. Float64 cotangents accept bool, int8, float32, or
+        float64 events.
     ct : jax.Array
-        Float32 cotangent values with shape ``(cols,)``.
+        Float32 or float64 cotangent values with shape ``(cols,)``.
     indices : jax.Array
         Int32 CSR column indices with shape ``(nnz,)``. The CUDA ABI does not
         consume this operand; it validates slot alignment at the Python edge.
@@ -370,7 +392,7 @@ def tcsr_sddmv_dweight_binary(
     Returns
     -------
     jax.Array
-        Float32 gradients with shape ``(nnz,)`` in TileCSR slot order.
+        Gradients with shape ``(nnz,)`` and the same dtype as ``ct``.
 
     Raises
     ------
@@ -410,10 +432,14 @@ def tcsr_sddmv_dweight_binary(
             raise ValueError(f"{name} must be rank {rank}")
 
     event_dtype = jnp.dtype(event.dtype)
-    if event_dtype not in (jnp.dtype(jnp.bool_), jnp.dtype(jnp.float32)):
-        raise TypeError("event dtype must be bool or float32")
-    if jnp.dtype(ct.dtype) != jnp.dtype(jnp.float32):
-        raise TypeError("ct dtype must be float32")
+    ct_dtype = jnp.dtype(ct.dtype)
+    target_suffixes = _BINARY_TARGET_SUFFIXES.get((ct_dtype, event_dtype))
+    if target_suffixes is None:
+        raise TypeError(
+            "unsupported binary (ct, event) dtype pair; expected "
+            "(float32, bool|float32) or "
+            "(float64, bool|int8|float32|float64)"
+        )
     if jnp.dtype(indices.dtype) != jnp.dtype(jnp.int32):
         raise TypeError("indices dtype must be int32")
     if jnp.dtype(indptr.dtype) not in (
@@ -443,20 +469,21 @@ def tcsr_sddmv_dweight_binary(
             f"{expected_offsets_shape}; got {tile_offsets.shape}"
         )
 
-    global _SDDMV_CUDA_MODULE
-    if _SDDMV_CUDA_MODULE is None:
-        _SDDMV_CUDA_MODULE = load_cuda_file(
-            Path(__file__).with_name("sddmv.cu"),
-            name="tcsr_sddmv",
+    global _SDDMV_BINARY_CUDA_MODULE
+    if _SDDMV_BINARY_CUDA_MODULE is None:
+        _SDDMV_BINARY_CUDA_MODULE = load_cuda_file(
+            Path(__file__).with_name("sddmv_binary.cu"),
+            name="tcsr_sddmv_binary",
         )
-    suffix = "bool" if event_dtype == jnp.dtype(jnp.bool_) else "float"
+    value_suffix, event_suffix = target_suffixes
     output_info = (
-        jax.ShapeDtypeStruct(local_targets.shape, jnp.float32),
+        jax.ShapeDtypeStruct(local_targets.shape, ct_dtype),
         jax.ShapeDtypeStruct(event.shape, jnp.int32),
         jax.ShapeDtypeStruct((1,), jnp.int32),
     )
     dweight, _, _ = jax.ffi.ffi_call(
-        f"tcsr_sddmv.tcsr_sddmv_dweight_binary_f32_{suffix}_t",
+        "tcsr_sddmv_binary."
+        f"tcsr_sddmv_dweight_binary_{value_suffix}_{event_suffix}_t",
         output_info,
         input_layouts=[(0,), (0,), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0,), (0,)],
@@ -479,9 +506,10 @@ def tcsr_sddmv_dweight_float(
     Parameters
     ----------
     event : jax.Array
-        Float32 source eligibility values with shape ``(rows,)``.
+        Float32 or float64 source eligibility values with shape ``(rows,)``.
     ct : jax.Array
-        Float32 cotangent values with shape ``(cols,)``.
+        Cotangent values with shape ``(cols,)`` and the same dtype as
+        ``event``.
     indices : jax.Array
         Int32 CSR targets. The CUDA ABI uses this operand only for Python-side
         slot-alignment validation.
@@ -497,7 +525,8 @@ def tcsr_sddmv_dweight_float(
     Returns
     -------
     jax.Array
-        Float32 values ``event[row] * ct[target]`` in TileCSR slot order.
+        Values ``event[row] * ct[target]`` in TileCSR slot order, with the same
+        dtype as ``event``.
 
     Raises
     ------
@@ -536,10 +565,11 @@ def tcsr_sddmv_dweight_float(
         if value.ndim != rank:
             raise ValueError(f"{name} must be rank {rank}")
 
-    if jnp.dtype(event.dtype) != jnp.dtype(jnp.float32):
-        raise TypeError("event dtype must be float32")
-    if jnp.dtype(ct.dtype) != jnp.dtype(jnp.float32):
-        raise TypeError("ct dtype must be float32")
+    value_dtype = jnp.dtype(event.dtype)
+    if value_dtype not in (_F32, _F64):
+        raise TypeError("event dtype must be float32 or float64")
+    if jnp.dtype(ct.dtype) != value_dtype:
+        raise TypeError("event and ct dtypes must match float32 or float64")
     if jnp.dtype(indices.dtype) != jnp.dtype(jnp.int32):
         raise TypeError("indices dtype must be int32")
     if jnp.dtype(indptr.dtype) not in (
@@ -569,19 +599,20 @@ def tcsr_sddmv_dweight_float(
             f"{expected_offsets_shape}; got {tile_offsets.shape}"
         )
 
-    global _SDDMV_CUDA_MODULE
-    if _SDDMV_CUDA_MODULE is None:
-        _SDDMV_CUDA_MODULE = load_cuda_file(
-            Path(__file__).with_name("sddmv.cu"),
-            name="tcsr_sddmv",
+    global _SDDMV_FLOAT_CUDA_MODULE
+    if _SDDMV_FLOAT_CUDA_MODULE is None:
+        _SDDMV_FLOAT_CUDA_MODULE = load_cuda_file(
+            Path(__file__).with_name("sddmv_float.cu"),
+            name="tcsr_sddmv_float",
         )
     output_info = (
-        jax.ShapeDtypeStruct(local_targets.shape, jnp.float32),
+        jax.ShapeDtypeStruct(local_targets.shape, value_dtype),
         jax.ShapeDtypeStruct(event.shape, jnp.int32),
         jax.ShapeDtypeStruct((1,), jnp.int32),
     )
     dweight, _, _ = jax.ffi.ffi_call(
-        "tcsr_sddmv.tcsr_sddmv_dweight_float_f32_t",
+        "tcsr_sddmv_float.tcsr_sddmv_dweight_float_"
+        f"{'f32' if value_dtype == _F32 else 'f64'}_t",
         output_info,
         input_layouts=[(0,), (0,), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0,), (0,)],

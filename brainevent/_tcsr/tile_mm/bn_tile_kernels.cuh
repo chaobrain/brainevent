@@ -10,7 +10,7 @@ namespace bn_tile
 {
 
   constexpr int kTileSize = 8192;
-  constexpr int kSharedBytes = kTileSize * sizeof(float);
+  constexpr int kSharedBytes = 32 * 1024;
   constexpr int kExtractBlockSize = 256;
   constexpr int kWarpsPerBlock = kExtractBlockSize / 32;
   constexpr int kSegmentsPerWarp = 16;
@@ -150,31 +150,44 @@ namespace bn_tile
     }
   }
 
-  template <bool Homogeneous>
+  template <typename ValueT, bool Homogeneous>
   __global__ void scatter_kernel(
-      const float *__restrict__ values,
+      const ValueT *__restrict__ values,
       const uint16_t *__restrict__ local_targets,
       const int64_t *__restrict__ row_ptr,
       const int32_t *__restrict__ tile_offsets,
       const int32_t *__restrict__ active_rows,
       const int32_t *__restrict__ status,
-      float *__restrict__ output_bn,
+      ValueT *__restrict__ output_bn,
       int rows,
       int cols,
-      int tile_count)
+      int metadata_tile_count)
   {
     constexpr int kBlockSize = 512;
     constexpr int kGroupSize = 16;
     constexpr int kPipelineDepth = 4;
     constexpr int kGroups = kBlockSize / kGroupSize;
-    extern __shared__ float tile_output[];
+    constexpr int kComputeTileSize = kSharedBytes / sizeof(ValueT);
+    constexpr int kSubtilesPerMetadata = kTileSize / kComputeTileSize;
+    static_assert(
+        kTileSize % kComputeTileSize == 0,
+        "compute tile must divide the metadata tile");
+    static_assert(
+        kSubtilesPerMetadata == 1 || kSubtilesPerMetadata == 2,
+        "TileMM supports only float32 and float64 values");
+    extern __shared__ unsigned char tile_output_bytes[];
+    ValueT *tile_output = reinterpret_cast<ValueT *>(tile_output_bytes);
     const int batch_col = blockIdx.y;
-    const int tile = blockIdx.x;
-    const int tile_begin = tile * kTileSize;
-    const int tile_elements = min(kTileSize, cols - tile_begin);
-    for (int local = threadIdx.x; local < kTileSize; local += kBlockSize)
+    const int compute_tile = blockIdx.x;
+    const int metadata_tile = compute_tile / kSubtilesPerMetadata;
+    const int metadata_subtile = compute_tile % kSubtilesPerMetadata;
+    const int local_tile_begin = metadata_subtile * kComputeTileSize;
+    const int tile_begin = compute_tile * kComputeTileSize;
+    const int tile_elements = min(kComputeTileSize, cols - tile_begin);
+    for (int local = threadIdx.x; local < kComputeTileSize;
+         local += kBlockSize)
     {
-      tile_output[local] = 0.0F;
+      tile_output[local] = ValueT(0);
     }
     __syncthreads();
     const int active_count = min(
@@ -182,8 +195,8 @@ namespace bn_tile
     const int32_t *selected = active_rows + static_cast<size_t>(batch_col) * rows;
     const int group = threadIdx.x / kGroupSize;
     const int lane = threadIdx.x & (kGroupSize - 1);
-    const int boundaries = tile_count + 1;
-    float homogeneous_value = 0.0F;
+    const int boundaries = metadata_tile_count + 1;
+    ValueT homogeneous_value = ValueT(0);
     if (Homogeneous)
     {
       homogeneous_value = values[0];
@@ -201,10 +214,38 @@ namespace bn_tile
         if (index < active_count)
         {
           const int row = selected[index];
-          const size_t offset = static_cast<size_t>(row) * boundaries + tile;
+          const size_t offset =
+              static_cast<size_t>(row) * boundaries + metadata_tile;
           descriptor_rows[stage] = row;
-          begins[stage] = tile_offsets[offset];
-          ends[stage] = tile_offsets[offset + 1];
+          int begin = tile_offsets[offset];
+          int end = tile_offsets[offset + 1];
+          if (kSubtilesPerMetadata == 2)
+          {
+            int midpoint = begin;
+            if (lane == 0)
+            {
+              int low = begin;
+              int high = end;
+              const int64_t row_begin = row_ptr[row];
+              while (low < high)
+              {
+                const int middle = low + (high - low) / 2;
+                if (local_targets[row_begin + middle] < kComputeTileSize)
+                  low = middle + 1;
+                else
+                  high = middle;
+              }
+              midpoint = low;
+            }
+            midpoint = __shfl_sync(
+                __activemask(), midpoint, 0, kGroupSize);
+            if (metadata_subtile == 0)
+              end = midpoint;
+            else
+              begin = midpoint;
+          }
+          begins[stage] = begin;
+          ends[stage] = end;
         }
         else
         {
@@ -224,27 +265,29 @@ namespace bn_tile
              offset += kGroupSize)
         {
           const int64_t entry = row_begin + offset;
-          const float value = Homogeneous ? homogeneous_value : values[entry];
-          atomicAdd(&tile_output[local_targets[entry]], value);
+          const int local =
+              static_cast<int>(local_targets[entry]) - local_tile_begin;
+          const ValueT value = Homogeneous ? homogeneous_value : values[entry];
+          atomicAdd(&tile_output[local], value);
         }
       }
     }
     __syncthreads();
-    float *output = output_bn + static_cast<size_t>(batch_col) * cols;
+    ValueT *output = output_bn + static_cast<size_t>(batch_col) * cols;
     for (int local = threadIdx.x; local < tile_elements; local += kBlockSize)
     {
       output[tile_begin + local] = tile_output[local];
     }
   }
 
-  template <bool Homogeneous>
+  template <typename ValueT, bool Homogeneous>
   inline cudaError_t launch_impl(
-      const float *values,
+      const ValueT *values,
       const uint16_t *local_targets,
       const int64_t *row_ptr,
       const int32_t *tile_offsets,
       const int8_t *spike_bn,
-      float *output_bn,
+      ValueT *output_bn,
       int32_t *active_rows,
       void *workspace,
       int rows,
@@ -282,26 +325,30 @@ namespace bn_tile
     if (result != cudaSuccess)
       return result;
     result = cudaFuncSetAttribute(
-        scatter_kernel<Homogeneous>,
+        scatter_kernel<ValueT, Homogeneous>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         kSharedBytes);
     if (result != cudaSuccess)
       return result;
-    const int tile_count = (cols + kTileSize - 1) / kTileSize;
-    scatter_kernel<Homogeneous>
-        <<<dim3(tile_count, batch), 512, kSharedBytes, stream>>>(
-        values, local_targets, row_ptr, tile_offsets, active_rows, status,
-        output_bn, rows, cols, tile_count);
+    constexpr int kComputeTileSize = kSharedBytes / sizeof(ValueT);
+    const int metadata_tile_count = (cols + kTileSize - 1) / kTileSize;
+    const int compute_tile_count =
+        (cols + kComputeTileSize - 1) / kComputeTileSize;
+    scatter_kernel<ValueT, Homogeneous>
+        <<<dim3(compute_tile_count, batch), 512, kSharedBytes, stream>>>(
+            values, local_targets, row_ptr, tile_offsets, active_rows, status,
+            output_bn, rows, cols, metadata_tile_count);
     return cudaGetLastError();
   }
 
+  template <typename ValueT>
   inline cudaError_t launch(
-      const float *values,
+      const ValueT *values,
       const uint16_t *local_targets,
       const int64_t *row_ptr,
       const int32_t *tile_offsets,
       const int8_t *spike_bn,
-      float *output_bn,
+      ValueT *output_bn,
       int32_t *active_rows,
       void *workspace,
       int rows,
@@ -309,18 +356,19 @@ namespace bn_tile
       int batch,
       cudaStream_t stream)
   {
-    return launch_impl<false>(
+    return launch_impl<ValueT, false>(
         values, local_targets, row_ptr, tile_offsets, spike_bn, output_bn,
         active_rows, workspace, rows, cols, batch, stream);
   }
 
+  template <typename ValueT>
   inline cudaError_t launch_homo(
-      const float *values,
+      const ValueT *values,
       const uint16_t *local_targets,
       const int64_t *row_ptr,
       const int32_t *tile_offsets,
       const int8_t *spike_bn,
-      float *output_bn,
+      ValueT *output_bn,
       int32_t *active_rows,
       void *workspace,
       int rows,
@@ -328,7 +376,7 @@ namespace bn_tile
       int batch,
       cudaStream_t stream)
   {
-    return launch_impl<true>(
+    return launch_impl<ValueT, true>(
         values, local_targets, row_ptr, tile_offsets, spike_bn, output_bn,
         active_rows, workspace, rows, cols, batch, stream);
   }

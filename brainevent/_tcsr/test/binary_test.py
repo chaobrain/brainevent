@@ -64,6 +64,43 @@ def _dense_weight():
     )
 
 
+def _recording_tile_ffi_call(calls):
+    """Return an FFI stand-in that records TileMM calls."""
+
+    def ffi_call(target, out_info, **ffi_kwargs):
+        def invoke(*args, **attrs):
+            calls.append((target, out_info, ffi_kwargs, args, attrs))
+            return tuple(
+                jnp.zeros(info.shape, dtype=info.dtype) for info in out_info
+            )
+
+        return invoke
+
+    return ffi_call
+
+
+def _tile_kernel_metadata(weight_size, event_dtype, weight_dtype):
+    """Build abstract metadata for a direct two-row TileMM call."""
+    task_info = jax.ShapeDtypeStruct((1,), jnp.int64)
+    status_info = jax.ShapeDtypeStruct((2,), jnp.int32)
+    return (
+        jax.ShapeDtypeStruct((weight_size,), weight_dtype),
+        jax.ShapeDtypeStruct((2, 2), event_dtype),
+        {
+            "shape": (2, 3),
+            "mirror_enabled": False,
+            "indices_info": jax.ShapeDtypeStruct((3,), jnp.int32),
+            "indptr_info": jax.ShapeDtypeStruct((3,), jnp.int64),
+            "outs": (
+                jax.ShapeDtypeStruct((2, 3), weight_dtype),
+                task_info,
+                task_info,
+                status_info,
+            ),
+        },
+    )
+
+
 @pytest.mark.parametrize("rank", [1, 2])
 def test_direct_binary_placeholder_preserves_int64_with_x64_disabled(
     rank: int,
@@ -625,3 +662,275 @@ def test_cuda_raw_sampled_weight_gradient_matches_dense_reference(
     else:
         expected = np.sum(ct_values[row_ids, :] * activity[indices, :], axis=1)
     np.testing.assert_allclose(actual, expected)
+
+
+@pytest.mark.parametrize("weight_dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("event_dtype", [jnp.bool_, jnp.int8, jnp.float32])
+@pytest.mark.parametrize("homogeneous", [False, True])
+def test_tile_kernel_routes_supported_dtypes_to_canonical_int8(
+    monkeypatch: pytest.MonkeyPatch,
+    weight_dtype,
+    event_dtype,
+    homogeneous: bool,
+) -> None:
+    """Select the weight ABI while passing only canonical int8 spikes."""
+    from brainevent._tcsr import binary
+
+    loads = []
+    calls = []
+    monkeypatch.setattr(
+        binary,
+        "load_cuda_file",
+        lambda path, name, **kwargs: loads.append((path, name, kwargs)),
+    )
+    monkeypatch.setattr(
+        binary.jax.ffi,
+        "ffi_call",
+        _recording_tile_ffi_call(calls),
+    )
+
+    with _explicit_int64_allowed():
+        weight_size = 1 if homogeneous else 3
+        weight_info, event_info, kwargs = _tile_kernel_metadata(
+            weight_size, event_dtype, weight_dtype
+        )
+        kernel = binary._binary_csrmm_tile_cuda_kernel(
+            weight_info,
+            event_info,
+            True,
+            **kwargs,
+        )
+        weights = jnp.arange(1, weight_size + 1, dtype=weight_dtype)
+        events = jnp.asarray([[1, 0], [-1, 2]], dtype=event_dtype)
+        task_begin = jnp.zeros((1,), dtype=jnp.int64)
+        task_end = jnp.zeros((1,), dtype=jnp.int64)
+        status = jnp.zeros((2,), dtype=jnp.int32)
+        kernel(
+            weights,
+            jnp.asarray([0, 2, 1], dtype=jnp.int32),
+            jnp.asarray([0, 2, 3], dtype=jnp.int64),
+            events,
+            task_begin,
+            task_end,
+            status,
+            jnp.asarray([0, 2, 1], dtype=jnp.uint16),
+            jnp.asarray([[0, 2], [0, 1]], dtype=jnp.int32),
+            jnp.asarray([], dtype=jnp.int64),
+        )
+
+    suffix = "f32" if weight_dtype == jnp.float32 else "f64"
+    homo = "_homo" if homogeneous else ""
+    assert len(loads) == 1
+    assert calls[0][0] == (
+        f"tcsr_binary_csrmm_tile.binary_csrmm_tile{homo}_{suffix}"
+    )
+    assert calls[0][1][0].dtype == jnp.dtype(weight_dtype)
+    spike_bn = calls[0][3][4]
+    assert spike_bn.dtype == jnp.int8
+    np.testing.assert_array_equal(spike_bn, np.asarray(events) > 0)
+
+
+def test_mapped_homogeneous_tile_kernel_uses_f64_and_canonical_int8(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Apply the same f64 and spike contract to mapped homogeneous MV."""
+    from brainevent._tcsr import binary
+
+    calls = []
+    monkeypatch.setattr(binary, "load_cuda_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        binary.jax.ffi,
+        "ffi_call",
+        _recording_tile_ffi_call(calls),
+    )
+
+    with _explicit_int64_allowed():
+        task_info = jax.ShapeDtypeStruct((1,), jnp.int64)
+        status_info = jax.ShapeDtypeStruct((2,), jnp.int32)
+        kernel = binary._binary_csrmm_indexed_cuda_kernel(
+            jax.ShapeDtypeStruct((1,), jnp.float64),
+            jax.ShapeDtypeStruct((2, 2), jnp.int8),
+            False,
+            shape=(3, 2),
+            mirror_enabled=True,
+            indices_info=jax.ShapeDtypeStruct((3,), jnp.int32),
+            indptr_info=jax.ShapeDtypeStruct((3,), jnp.int64),
+            outs=(
+                jax.ShapeDtypeStruct((3, 2), jnp.float64),
+                task_info,
+                task_info,
+                status_info,
+            ),
+        )
+        kernel(
+            jnp.asarray([2.0], dtype=jnp.float64),
+            jnp.asarray([0, 2, 1], dtype=jnp.int32),
+            jnp.asarray([0, 2, 3], dtype=jnp.int64),
+            jnp.asarray([[1, 0], [-1, 2]], dtype=jnp.int8),
+            jnp.zeros((1,), dtype=jnp.int64),
+            jnp.zeros((1,), dtype=jnp.int64),
+            jnp.zeros((2,), dtype=jnp.int32),
+            jnp.asarray([0, 2, 1], dtype=jnp.uint16),
+            jnp.asarray([[0, 2], [0, 1]], dtype=jnp.int32),
+            jnp.asarray([0, 1, 2], dtype=jnp.int64),
+        )
+
+    assert calls[0][0].endswith("binary_csrmm_tile_homo_f64")
+    assert calls[0][1][0].dtype == jnp.float64
+    assert calls[0][3][4].dtype == jnp.int8
+    np.testing.assert_array_equal(calls[0][3][4], [[1, 0], [0, 1]])
+
+
+@pytest.mark.parametrize(
+    ("weight_dtype", "event_dtype", "error"),
+    [
+        (jnp.float16, jnp.bool_, "float32 or float64"),
+        (jnp.float32, jnp.int16, "bool, int8, or floating-point"),
+    ],
+)
+def test_tile_kernel_rejects_unsupported_dtypes_before_cuda_load(
+    monkeypatch: pytest.MonkeyPatch,
+    weight_dtype,
+    event_dtype,
+    error: str,
+) -> None:
+    """Reject unsupported TileMM dtypes before compiling CUDA."""
+    from brainevent._tcsr import binary
+
+    def unexpected_load(*args, **kwargs):
+        raise AssertionError("CUDA must not load for unsupported dtypes")
+
+    monkeypatch.setattr(binary, "load_cuda_file", unexpected_load)
+    weight_info, event_info, kwargs = _tile_kernel_metadata(
+        3, event_dtype, weight_dtype
+    )
+    with pytest.raises(TypeError, match=error):
+        binary._binary_csrmm_tile_cuda_kernel(
+            weight_info,
+            event_info,
+            True,
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize("weight_dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("event_dtype", [jnp.bool_, jnp.int8, jnp.float32])
+@pytest.mark.parametrize("homogeneous", [False, True])
+def test_cuda_tile_mm_matches_dense_across_f64_subtile_boundaries(
+    weight_dtype,
+    event_dtype,
+    homogeneous: bool,
+) -> None:
+    """Compute boundary-heavy TileMM cases in both supported precisions."""
+    from brainevent._tcsr import binary
+    from brainevent._tcsr.main import TCSR
+
+    indices_np = np.asarray(
+        [4095, 4096, 4096, 8191, 8192, 8200, 0, 4096, 8192],
+        dtype=np.int32,
+    )
+    indptr_np = np.asarray([0, 6, 9], dtype=np.int64)
+    slot_values = np.asarray(
+        [0.5, 1.0, -2.0, 3.0, 4.0, -1.5, 2.0, -0.25, 1.25]
+    )
+    raw_events = np.asarray([[1, 0], [0, 2], [-1, 3], [0, 0]])
+    if event_dtype == jnp.bool_:
+        raw_events = raw_events > 0
+
+    with _explicit_int64_allowed():
+        data = (
+            jnp.asarray([1.25], dtype=weight_dtype)
+            if homogeneous
+            else jnp.asarray(slot_values, dtype=weight_dtype)
+        )
+        source = PlainCSR(
+            (
+                data,
+                jnp.asarray(indices_np, dtype=jnp.int32),
+                jnp.asarray(indptr_np, dtype=jnp.int64),
+            ),
+            shape=(2, 8201),
+        )
+        matrix = TCSR.from_sorted_csr(source, binary_backend="cuda_raw")
+        buffers = matrix._tcs_buffers
+        events = jnp.asarray(raw_events, dtype=event_dtype)
+
+        def operation(values, spikes):
+            return binary.binary_csrmm(
+                values,
+                matrix._tcsr_indices,
+                matrix._tcsr_indptr,
+                spikes,
+                shape=matrix.shape,
+                workspace=buffers.tcsr_workspace,
+                local_targets=buffers.tcsr_local_targets,
+                tile_offsets=buffers.tcsr_tile_offsets,
+                buffers=buffers,
+                transpose=True,
+                backend="cuda_raw",
+            )
+
+        actual = jax.jit(operation)(data, events)
+
+    dense = np.zeros((2, 8201), dtype=np.dtype(weight_dtype))
+    values_np = (
+        np.full(indices_np.shape, 1.25, dtype=np.dtype(weight_dtype))
+        if homogeneous
+        else slot_values.astype(np.dtype(weight_dtype))
+    )
+    for row in range(2):
+        begin, end = indptr_np[row : row + 2]
+        np.add.at(dense[row], indices_np[begin:end], values_np[begin:end])
+    expected = (np.asarray(raw_events) > 0).astype(dense.dtype) @ dense
+
+    assert actual.dtype == jnp.dtype(weight_dtype)
+    tolerance = 1e-12 if weight_dtype == jnp.float64 else 1e-6
+    np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+
+
+def test_cuda_tile_mm_f64_bptt_weight_gradient_matches_dense_reference() -> None:
+    """Differentiate the f64 TileMM path across the 4096-column split."""
+    from brainevent._tcsr import binary
+    from brainevent._tcsr.main import TCSR
+
+    with _explicit_int64_allowed():
+        indices = jnp.asarray([4095, 4096, 8192, 4096], dtype=jnp.int32)
+        indptr = jnp.asarray([0, 3, 4], dtype=jnp.int64)
+        data = jnp.asarray([0.5, 1.0, -2.0, 3.0], dtype=jnp.float64)
+        source = PlainCSR((data, indices, indptr), shape=(2, 8193))
+        matrix = TCSR.from_sorted_csr(source, binary_backend="cuda_raw")
+        buffers = matrix._tcs_buffers
+        events = jnp.asarray(
+            [[1, 0], [0, 2], [-1, 3], [1, 1]], dtype=jnp.int8
+        )
+        cotangent = jnp.arange(4 * 8193, dtype=jnp.float64).reshape(4, 8193)
+
+        def loss(values):
+            output = binary.binary_csrmm(
+                values,
+                matrix._tcsr_indices,
+                matrix._tcsr_indptr,
+                events,
+                shape=matrix.shape,
+                workspace=buffers.tcsr_workspace,
+                local_targets=buffers.tcsr_local_targets,
+                tile_offsets=buffers.tcsr_tile_offsets,
+                buffers=buffers,
+                transpose=True,
+                backend="cuda_raw",
+            )
+            return jnp.vdot(output, cotangent)
+
+        actual = jax.jit(jax.grad(loss))(data)
+
+    active = np.asarray(events) > 0
+    expected = np.asarray(
+        [
+            np.sum(active[:, 0] * np.asarray(cotangent)[:, 4095]),
+            np.sum(active[:, 0] * np.asarray(cotangent)[:, 4096]),
+            np.sum(active[:, 0] * np.asarray(cotangent)[:, 8192]),
+            np.sum(active[:, 1] * np.asarray(cotangent)[:, 4096]),
+        ],
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)

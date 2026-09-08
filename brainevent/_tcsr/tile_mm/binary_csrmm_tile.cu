@@ -16,7 +16,7 @@
 #include "brainevent/common.h"
 #include "bn_tile.cuh"
 
-template <bool Homogeneous>
+template <typename ValueT, BE::DType ValueDType, bool Homogeneous>
 void binary_csrmm_tile_impl(
     const BE::Tensor values,
     const BE::Tensor row_ptr,
@@ -28,11 +28,21 @@ void binary_csrmm_tile_impl(
     BE::Tensor workspace,
     int64_t stream)
 {
-    const char *operation = Homogeneous
-                                ? "binary_csrmm_tile_homo_f32"
-                                : "binary_csrmm_tile_f32";
-    BE_CHECK(values.dtype() == BE::DType::Float32)
-        << operation << " expects float32 values";
+    const char *operation;
+    if (ValueDType == BE::DType::Float64)
+    {
+        operation = Homogeneous
+                        ? "binary_csrmm_tile_homo_f64"
+                        : "binary_csrmm_tile_f64";
+    }
+    else
+    {
+        operation = Homogeneous
+                        ? "binary_csrmm_tile_homo_f32"
+                        : "binary_csrmm_tile_f32";
+    }
+    BE_CHECK(values.dtype() == ValueDType)
+        << operation << " received an invalid values dtype";
     BE_CHECK(row_ptr.dtype() == BE::DType::Int64)
         << operation << " expects int64 row_ptr";
     BE_CHECK(local_targets.dtype() == BE::DType::UInt16)
@@ -41,8 +51,8 @@ void binary_csrmm_tile_impl(
         << operation << " expects int32 tile_offsets";
     BE_CHECK(spike_bn.dtype() == BE::DType::Int8)
         << operation << " expects int8 spike_bn";
-    BE_CHECK(output_bn.dtype() == BE::DType::Float32)
-        << operation << " expects float32 output_bn";
+    BE_CHECK(output_bn.dtype() == ValueDType)
+        << operation << " output dtype must match values";
     BE_CHECK(active_rows.dtype() == BE::DType::Int32)
         << operation << " expects int32 active_rows";
     BE_CHECK(workspace.dtype() == BE::DType::Int32)
@@ -85,14 +95,16 @@ void binary_csrmm_tile_impl(
     BE_CHECK(workspace.size(0) == batch && workspace.size(1) == 2 + chunks)
         << operation << " workspace shape mismatch";
 
-    const auto launch = Homogeneous ? bn_tile::launch_homo : bn_tile::launch;
+    const auto launch = Homogeneous
+                            ? bn_tile::launch_homo<ValueT>
+                            : bn_tile::launch<ValueT>;
     BE_CUDA_CHECK(launch(
-        values.data_ptr<const float>(),
+        values.data_ptr<const ValueT>(),
         local_targets.data_ptr<const uint16_t>(),
         row_ptr.data_ptr<const int64_t>(),
         tile_offsets.data_ptr<const int32_t>(),
         spike_bn.data_ptr<const int8_t>(),
-        output_bn.data_ptr<float>(),
+        output_bn.data_ptr<ValueT>(),
         active_rows.data_ptr<int32_t>(),
         workspace.data_ptr(),
         rows,
@@ -113,7 +125,7 @@ void binary_csrmm_tile_f32(
     BE::Tensor workspace,
     int64_t stream)
 {
-    binary_csrmm_tile_impl<false>(
+    binary_csrmm_tile_impl<float, BE::DType::Float32, false>(
         values, row_ptr, local_targets, tile_offsets, spike_bn, output_bn,
         active_rows, workspace, stream);
 }
@@ -130,7 +142,41 @@ void binary_csrmm_tile_homo_f32(
     BE::Tensor workspace,
     int64_t stream)
 {
-    binary_csrmm_tile_impl<true>(
+    binary_csrmm_tile_impl<float, BE::DType::Float32, true>(
+        values, row_ptr, local_targets, tile_offsets, spike_bn, output_bn,
+        active_rows, workspace, stream);
+}
+
+// @BE binary_csrmm_tile_f64 arg arg arg arg arg ret ret ret stream
+void binary_csrmm_tile_f64(
+    const BE::Tensor values,
+    const BE::Tensor row_ptr,
+    const BE::Tensor local_targets,
+    const BE::Tensor tile_offsets,
+    const BE::Tensor spike_bn,
+    BE::Tensor output_bn,
+    BE::Tensor active_rows,
+    BE::Tensor workspace,
+    int64_t stream)
+{
+    binary_csrmm_tile_impl<double, BE::DType::Float64, false>(
+        values, row_ptr, local_targets, tile_offsets, spike_bn, output_bn,
+        active_rows, workspace, stream);
+}
+
+// @BE binary_csrmm_tile_homo_f64 arg arg arg arg arg ret ret ret stream
+void binary_csrmm_tile_homo_f64(
+    const BE::Tensor values,
+    const BE::Tensor row_ptr,
+    const BE::Tensor local_targets,
+    const BE::Tensor tile_offsets,
+    const BE::Tensor spike_bn,
+    BE::Tensor output_bn,
+    BE::Tensor active_rows,
+    BE::Tensor workspace,
+    int64_t stream)
+{
+    binary_csrmm_tile_impl<double, BE::DType::Float64, true>(
         values, row_ptr, local_targets, tile_offsets, spike_bn, output_bn,
         active_rows, workspace, stream);
 }

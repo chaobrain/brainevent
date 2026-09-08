@@ -67,6 +67,32 @@ _workspace_task_operands = workspace_operands
 _workspace_from_task_operands = workspace_from_operands
 
 
+def _tile_weight_suffix(weight_dtype, event_dtype) -> str:
+    """Validate TileMM dtypes and return the exact weight ABI suffix."""
+    weight_dtype = jnp.dtype(weight_dtype)
+    if weight_dtype == jnp.dtype(jnp.float32):
+        suffix = "f32"
+    elif weight_dtype == jnp.dtype(jnp.float64):
+        suffix = "f64"
+    else:
+        raise TypeError(
+            f"TCSR CUDA tile MM requires float32 or float64 data, got "
+            f"{weight_dtype}"
+        )
+
+    event_dtype = jnp.dtype(event_dtype)
+    if not (
+        event_dtype == jnp.dtype(jnp.bool_)
+        or event_dtype == jnp.dtype(jnp.int8)
+        or jnp.issubdtype(event_dtype, jnp.floating)
+    ):
+        raise TypeError(
+            "TCSR CUDA tile MM events must be bool, int8, or floating-point, "
+            f"got {event_dtype}"
+        )
+    return suffix
+
+
 def _tile_task_operands(
     local_targets,
     tile_offsets,
@@ -1213,10 +1239,9 @@ def _binary_csrmm_indexed_cuda_kernel(
         kwargs['indices_info'], kwargs['indptr_info']
     )
     if weight_info.size == 1:
-        if jnp.dtype(weight_info.dtype) != jnp.dtype(jnp.float32):
-            raise TypeError(
-                "TCSR CUDA tile MM requires float32 homogeneous data"
-            )
+        weight_suffix = _tile_weight_suffix(
+            weight_info.dtype, vector_info.dtype
+        )
         if jnp.dtype(kwargs['indptr_info'].dtype) != jnp.dtype(jnp.int64):
             raise TypeError("TCSR CUDA tile MM currently requires int64 indptr")
         rows, cols = kwargs['shape'][::-1]
@@ -1230,7 +1255,7 @@ def _binary_csrmm_indexed_cuda_kernel(
             allow_cuda_graph=False,
         )
         ffi_outs = (
-            jax.ShapeDtypeStruct((batch, cols), jnp.float32),
+            jax.ShapeDtypeStruct((batch, cols), weight_info.dtype),
             jax.ShapeDtypeStruct((batch, rows), jnp.int32),
             jax.ShapeDtypeStruct(
                 (batch, 2 + chunk_count), jnp.int32
@@ -1250,13 +1275,10 @@ def _binary_csrmm_indexed_cuda_kernel(
             permutation,
         ):
             del indices, permutation
-            spike_bn = (
-                events_nb.T.astype(jnp.int8)
-                if vector_info.dtype == jnp.bool_
-                else (events_nb.T > 0).astype(jnp.int8)
-            )
+            spike_bn = (events_nb.T > 0).astype(jnp.int8)
             output_bn, _, _ = jax.ffi.ffi_call(
-                "tcsr_binary_csrmm_tile.binary_csrmm_tile_homo_f32",
+                "tcsr_binary_csrmm_tile.binary_csrmm_tile_homo_"
+                f"{weight_suffix}",
                 ffi_outs,
             )(
                 weights,
@@ -1344,10 +1366,7 @@ def _binary_csrmm_tile_cuda_kernel(
             transpose,
             **kwargs,
         )
-    if jnp.dtype(weight_info.dtype) != jnp.dtype(jnp.float32):
-        raise TypeError(
-            f"TCSR CUDA tile MM requires float32 data, got {weight_info.dtype}"
-        )
+    weight_suffix = _tile_weight_suffix(weight_info.dtype, vector_info.dtype)
     if jnp.dtype(kwargs['indptr_info'].dtype) != jnp.dtype(jnp.int64):
         raise TypeError("TCSR CUDA tile MM currently requires int64 indptr")
     nnz = kwargs['indices_info'].size
@@ -1375,14 +1394,14 @@ def _binary_csrmm_tile_cuda_kernel(
         allow_cuda_graph=False,
     )
     ffi_outs = (
-        jax.ShapeDtypeStruct((batch, cols), jnp.float32),
+        jax.ShapeDtypeStruct((batch, cols), weight_info.dtype),
         jax.ShapeDtypeStruct((batch, rows), jnp.int32),
         jax.ShapeDtypeStruct((batch, 2 + chunk_count), jnp.int32),
     )
     ffi_target = (
-        "tcsr_binary_csrmm_tile.binary_csrmm_tile_homo_f32"
+        f"tcsr_binary_csrmm_tile.binary_csrmm_tile_homo_{weight_suffix}"
         if is_homogeneous
-        else "tcsr_binary_csrmm_tile.binary_csrmm_tile_f32"
+        else f"tcsr_binary_csrmm_tile.binary_csrmm_tile_{weight_suffix}"
     )
 
     def kernel(
@@ -1398,11 +1417,7 @@ def _binary_csrmm_tile_cuda_kernel(
         permutation,
     ):
         del indices
-        spike_bn = (
-            B.astype(jnp.int8)
-            if vector_info.dtype == jnp.bool_
-            else (B > 0).astype(jnp.int8)
-        )
+        spike_bn = (B > 0).astype(jnp.int8)
         output_bn, _, _ = jax.ffi.ffi_call(
             ffi_target,
             ffi_outs,
@@ -1700,7 +1715,7 @@ def binary_csrmm_p_call(
     B : jax.Array
         Dense event matrix. Shape ``(batch, shape[0])`` in BN layout when
         ``transpose=True`` or ``(shape[1], batch)`` in NB layout when
-        ``transpose=False``. Dtype may be boolean or floating-point.
+        ``transpose=False``. Dtype may be boolean, int8, or floating-point.
     shape : tuple of int
         Two-element tuple ``(m, k)`` giving the logical shape of the
         sparse matrix.
