@@ -261,7 +261,7 @@ def test_float_dispatch_uses_canonical_storage_and_computation_flag(
     def fake_float(data, indices, indptr, operand, **kwargs):
         calls.append((data, indices, indptr, operand, kwargs))
         out_rows = kwargs["shape"][1 if kwargs["transpose"] else 0]
-        shape = (out_rows,) if operand.ndim == 1 else (out_rows, operand.shape[1])
+        shape = (out_rows,) if operand.ndim == 1 else (operand.shape[0], out_rows)
         return jnp.zeros(shape, dtype=jnp.float32)
 
     monkeypatch.setattr(float_ops, "csrmv", fake_float)
@@ -281,12 +281,14 @@ def test_float_dispatch_uses_canonical_storage_and_computation_flag(
     np.testing.assert_array_equal(data, view._canonical_data)
     assert indices is view._tcsr_indices
     assert indptr is view._tcsr_indptr
+    assert kwargs.pop("local_targets") is view._tcs_buffers.tcsr_local_targets
+    assert kwargs.pop("tile_offsets") is view._tcs_buffers.tcsr_tile_offsets
     assert kwargs == {
         "shape": view._base_shape,
         "transpose": transposed if side == "right" else not transposed,
         "backend": "sentinel",
     }
-    expected_operand = operand.T if side == "left" and rank == 2 else operand
+    expected_operand = operand.T if side == "right" and rank == 2 else operand
     np.testing.assert_array_equal(service_operand, expected_operand)
     expected_shape = (
         (view.shape[1],) if side == "left" else (view.shape[0],)

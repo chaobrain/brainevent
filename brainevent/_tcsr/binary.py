@@ -605,8 +605,17 @@ def _csrmv_jvp_v(
     physical_shape = shape if transpose else shape[::-1]
     physical_data = data if transpose or data.shape[0] == 1 else data[permutation]
     return (
-        csrmv(physical_data, indices, indptr, v_dot, shape=physical_shape, transpose=True,
-              backend=_grad_backend(kwargs['backend'], csrmv_p)),
+        csrmv(
+            physical_data,
+            indices,
+            indptr,
+            v_dot,
+            shape=physical_shape,
+            local_targets=local_targets,
+            tile_offsets=tile_offsets,
+            transpose=True,
+            backend=_grad_backend(kwargs['backend'], csrmv_p),
+        ),
         jnp.zeros_like(task_begin),
         jnp.zeros_like(task_end),
         jnp.zeros_like(status),
@@ -685,9 +694,17 @@ def _csrmv_transpose_rule(
                 if transpose or data.shape[0] == 1
                 else data[permutation]
             )
-            ct_events = csrmv(physical_data, indices, indptr, ct,
-                              shape=physical_shape, transpose=False,
-                              backend=_grad_backend(kwargs['backend'], csrmv_p))
+            ct_events = csrmv(
+                physical_data,
+                indices,
+                indptr,
+                ct,
+                shape=physical_shape,
+                local_targets=local_targets,
+                tile_offsets=tile_offsets,
+                transpose=False,
+                backend=_grad_backend(kwargs['backend'], csrmv_p),
+            )
         return (
             data,
             indices,
@@ -1488,18 +1505,20 @@ def _csrmm_jvp_B(
 ):
     physical_shape = shape if transpose else shape[::-1]
     physical_data = data if transpose or data.shape[0] == 1 else data[permutation]
-    physical_B = B_dot.T if transpose else B_dot
+    physical_B = B_dot if transpose else B_dot.T
     tangent = csrmm(
         physical_data,
         indices,
         indptr,
         physical_B,
         shape=physical_shape,
+        local_targets=local_targets,
+        tile_offsets=tile_offsets,
         transpose=True,
         backend=_grad_backend(kwargs['backend'], csrmm_p),
     )
     return (
-        tangent.T if transpose else tangent,
+        tangent if transpose else tangent.T,
         jnp.zeros_like(task_begin),
         jnp.zeros_like(task_end),
         jnp.zeros_like(status),
@@ -1532,17 +1551,19 @@ def _csrmm_transpose_rule(
     if ad.is_undefined_primal(B):
         physical_shape = shape if transpose else shape[::-1]
         physical_data = data if transpose or data.shape[0] == 1 else data[permutation]
-        physical_ct = ct.T if transpose else ct
+        physical_ct = ct if transpose else ct.T
         dB = csrmm(
             physical_data,
             indices,
             indptr,
             physical_ct,
             shape=physical_shape,
+            local_targets=local_targets,
+            tile_offsets=tile_offsets,
             transpose=False,
             backend=_grad_backend(kwargs['backend'], csrmm_p),
         )
-        dB = dB.T if transpose else dB
+        dB = dB if transpose else dB.T
         return (
             data,
             indices,

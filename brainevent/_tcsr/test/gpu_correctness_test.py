@@ -639,12 +639,24 @@ def test_gpu_binary_object_jit_and_vmap_match_direct_mm() -> None:
     ("backend", "reverse", "rank", "homogeneous", "value_dtype"),
     [
         ("cuda_raw", True, 1, False, np.float32),
+        ("cuda_raw", True, 1, True, np.float64),
+        ("cuda_raw", False, 1, False, np.float64),
+        ("cuda_raw", False, 1, True, np.float32),
+        ("cuda_raw", True, 2, False, np.float64),
+        ("cuda_raw", True, 2, True, np.float32),
+        ("cuda_raw", False, 2, False, np.float32),
         ("cuda_raw", False, 2, True, np.float64),
         ("jax_raw", True, 2, True, np.float64),
         ("jax_raw", False, 1, False, np.float32),
     ],
     ids=(
         "cuda-left-mv-heterogeneous-f32",
+        "cuda-left-mv-homogeneous-f64",
+        "cuda-right-mv-heterogeneous-f64",
+        "cuda-right-mv-homogeneous-f32",
+        "cuda-left-mm-heterogeneous-f64",
+        "cuda-left-mm-homogeneous-f32",
+        "cuda-right-mm-heterogeneous-f32",
         "cuda-right-mm-homogeneous-f64",
         "jax-left-mm-homogeneous-f64",
         "jax-right-mv-heterogeneous-f32",
@@ -893,3 +905,190 @@ def test_gpu_tcsr_float_mv_mm_preserve_weight_units(backend: str) -> None:
         backend=f"TCSR {backend}",
         operation="unitful float MM",
     )
+
+
+@pytest.mark.parametrize("neurons", [4095, 4096, 8191, 8192, 8193])
+@pytest.mark.parametrize("value_dtype", [np.float32, np.float64])
+def test_gpu_tcsr_float_crosses_compute_and_metadata_tile_boundaries(
+    value_dtype: Any,
+    neurons: int,
+) -> None:
+    """Cover exact compute/metadata tile dimensions and sparse edge cases."""
+    shape = (4, neurons)
+    probes = [value for value in (0, 4095, 4096, 8191, 8192) if value < neurons]
+    probes.extend((neurons - 1, neurons - 1))
+    host_indices = np.sort(np.asarray(probes, dtype=np.int32))
+    row_one_end = host_indices.size - 2
+    host_indptr = np.asarray(
+        [0, 0, row_one_end, row_one_end + 1, host_indices.size],
+        dtype=np.int64,
+    )
+    host_data = np.linspace(-1.0, 1.0, host_indices.size, dtype=value_dtype)
+    with jax.enable_x64():
+        data = jnp.asarray(host_data)
+        indices = jnp.asarray(host_indices)
+        indptr = jnp.asarray(host_indptr)
+        sparse = _float_matrix(data, indices, indptr, shape, backend="cuda_raw")
+        operands = (
+            (jnp.linspace(-0.5, 0.5, shape[0], dtype=data.dtype), True),
+            (jnp.linspace(-0.5, 0.5, shape[1], dtype=data.dtype), False),
+            (
+                jnp.arange(_BATCH_SIZE * shape[0], dtype=data.dtype).reshape(
+                    _BATCH_SIZE, shape[0]
+                ) / 7,
+                True,
+            ),
+            (
+                jnp.arange(shape[1] * _BATCH_SIZE, dtype=data.dtype).reshape(
+                    shape[1], _BATCH_SIZE
+                ) / 11,
+                False,
+            ),
+        )
+        results = []
+        for operand, reverse in operands:
+            actual = _float_product(sparse, operand, reverse=reverse)
+            expected = _csr_reference(
+                data,
+                indices,
+                indptr,
+                operand,
+                shape=shape,
+                reverse=reverse,
+                binary=False,
+            )
+            results.append((actual, expected))
+        jax.block_until_ready([actual for actual, _ in results])
+
+    for actual, expected in results:
+        _assert_matches(
+            actual,
+            expected,
+            backend="TCSR cuda_raw",
+            operation=f"float tile boundaries {np.dtype(value_dtype).name}",
+        )
+    assert sparse.has_tcsc_mirror is False
+
+
+@pytest.mark.parametrize("rows", [4095, 4096, 4097])
+def test_gpu_tcsr_float_crosses_4096_row_chunks(rows: int) -> None:
+    """Accumulate right-side MV and MM at exact 4096-row chunk boundaries."""
+    shape = (rows, 17)
+    host_indices = np.arange(shape[0], dtype=np.int32) % shape[1]
+    host_indptr = np.arange(shape[0] + 1, dtype=np.int64)
+    with jax.enable_x64():
+        data = jnp.asarray([0.75], dtype=jnp.float32)
+        indices = jnp.asarray(host_indices)
+        indptr = jnp.asarray(host_indptr)
+        sparse = _float_matrix(data, indices, indptr, shape, backend="cuda_raw")
+        vector = jnp.linspace(-1.0, 1.0, shape[1], dtype=jnp.float32)
+        matrix = jnp.broadcast_to(vector[:, None], (shape[1], _BATCH_SIZE))
+        actual_mv = sparse @ vector
+        actual_mm = sparse @ matrix
+        jax.block_until_ready((actual_mv, actual_mm))
+
+    for actual, operand in ((actual_mv, vector), (actual_mm, matrix)):
+        expected = _csr_reference(
+            data,
+            indices,
+            indptr,
+            operand,
+            shape=shape,
+            reverse=False,
+            binary=False,
+        )
+        _assert_matches(
+            actual,
+            expected,
+            backend="TCSR cuda_raw",
+            operation="float 4096-row chunk",
+        )
+    assert sparse.has_tcsc_mirror is False
+
+
+def test_gpu_tcsr_float_zero_nnz_returns_zero_in_four_directions() -> None:
+    """Return initialized BN outputs without launching sparse work."""
+    shape = (3, 5)
+    with jax.enable_x64():
+        data = jnp.asarray([], dtype=jnp.float32)
+        indices = jnp.asarray([], dtype=jnp.int32)
+        indptr = jnp.zeros(shape[0] + 1, dtype=jnp.int64)
+        sparse = _float_matrix(data, indices, indptr, shape, backend="cuda_raw")
+        operands = (
+            (jnp.ones(shape[0], dtype=jnp.float32), True),
+            (jnp.ones(shape[1], dtype=jnp.float32), False),
+            (jnp.ones((_BATCH_SIZE, shape[0]), dtype=jnp.float32), True),
+            (jnp.ones((shape[1], _BATCH_SIZE), dtype=jnp.float32), False),
+        )
+        results = [
+            _float_product(sparse, operand, reverse=reverse)
+            for operand, reverse in operands
+        ]
+        jax.block_until_ready(results)
+
+    for result in results:
+        np.testing.assert_array_equal(result, np.zeros(result.shape, result.dtype))
+    assert sparse.has_tcsc_mirror is False
+
+
+def test_gpu_tcsr_float_accepts_65536_entries_in_one_row() -> None:
+    """Use int32 tile offsets beyond the former uint16 row limit."""
+    shape = (1, 8193)
+    host_indices = np.sort(
+        np.arange(65536, dtype=np.int64) % shape[1]
+    ).astype(np.int32)
+    host_data = np.linspace(-0.25, 0.25, host_indices.size, dtype=np.float32)
+    with jax.enable_x64():
+        data = jnp.asarray(host_data)
+        indices = jnp.asarray(host_indices)
+        indptr = jnp.asarray([0, host_indices.size], dtype=jnp.int64)
+        sparse = _float_matrix(data, indices, indptr, shape, backend="cuda_raw")
+        vector = jnp.linspace(-1.0, 1.0, shape[1], dtype=jnp.float32)
+        actual = sparse @ vector
+        jax.block_until_ready(actual)
+
+    expected = _csr_reference(
+        data,
+        indices,
+        indptr,
+        vector,
+        shape=shape,
+        reverse=False,
+        binary=False,
+    )
+    _assert_matches(
+        actual,
+        expected,
+        backend="TCSR cuda_raw",
+        operation="float 65536-entry row",
+    )
+    assert sparse.has_tcsc_mirror is False
+
+
+@pytest.mark.parametrize("value_dtype", [jnp.float16, jnp.bfloat16])
+def test_gpu_tcsr_float_small_dtypes_use_bn_jax_fallback(value_dtype: Any) -> None:
+    """Preserve mixed TCSR index dtypes in the f16 and bf16 fallback."""
+    shape = (3, 5)
+    with jax.enable_x64():
+        data = jnp.asarray([1.0, -2.0, 0.5, 3.0], dtype=value_dtype)
+        indices = jnp.asarray([0, 4, 2, 3], dtype=jnp.int32)
+        indptr = jnp.asarray([0, 2, 3, 4], dtype=jnp.int64)
+        sparse = _float_matrix(data, indices, indptr, shape, backend="cuda_raw")
+        dense = _jax_dense_from_csr(data, indices, indptr, shape)
+        left = jnp.arange(_BATCH_SIZE * shape[0], dtype=value_dtype).reshape(
+            _BATCH_SIZE, shape[0]
+        )
+        right = jnp.arange(shape[1] * _BATCH_SIZE, dtype=value_dtype).reshape(
+            shape[1], _BATCH_SIZE
+        )
+        results = (
+            (left[0] @ sparse, left[0] @ dense),
+            (sparse @ right[:, 0], dense @ right[:, 0]),
+            (left @ sparse, left @ dense),
+            (sparse @ right, dense @ right),
+        )
+        jax.block_until_ready(results)
+
+    for actual, expected in results:
+        np.testing.assert_allclose(actual, expected, rtol=2e-2, atol=2e-2)
+    assert sparse.has_tcsc_mirror is False

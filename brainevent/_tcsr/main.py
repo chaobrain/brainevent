@@ -1252,21 +1252,25 @@ class TCSR(TiledCompressedSparseData):
                 self._tcsr_indptr,
                 other,
                 shape=self._base_shape,
+                local_targets=self._tcs_buffers.tcsr_local_targets,
+                tile_offsets=self._tcs_buffers.tcsr_tile_offsets,
                 transpose=transpose,
                 backend=self.backend,
             )
         if other.ndim == 2:
-            operand = other.T if reverse else other
+            operand = other if reverse else other.T
             result = float_ops.csrmm(
                 data,
                 self._tcsr_indices,
                 self._tcsr_indptr,
                 operand,
                 shape=self._base_shape,
+                local_targets=self._tcs_buffers.tcsr_local_targets,
+                tile_offsets=self._tcs_buffers.tcsr_tile_offsets,
                 transpose=transpose,
                 backend=self.backend,
             )
-            return result.T if reverse else result
+            return result if reverse else result.T
         raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def __matmul__(self, other: Any) -> Data:
