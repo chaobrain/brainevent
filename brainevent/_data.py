@@ -57,6 +57,25 @@ class DataRepresentation(u.sparse.SparseMatrix):
         """Dict of all registered buffer names to their current values."""
         return {name: getattr(self, name, None) for name in self._buffer_registry}
 
+    def _apply_data(self, fn):
+        """Apply ``fn`` while preserving the physical data-buffer shape."""
+        data = fn(self.data)
+        expected_shape = getattr(self.data, 'shape', None)
+        actual_shape = getattr(data, 'shape', None)
+        if actual_shape != expected_shape:
+            raise ValueError(
+                f'{type(self).__name__}.apply must preserve data shape; '
+                f'expected {expected_shape}, got {actual_shape}'
+            )
+        return data
+
+    def _sum_data(self):
+        """Sum represented entries, expanding a homogeneous shared value."""
+        result = self.data.sum()
+        if int(self.data.size) == 1:
+            result = result * self.nse
+        return result
+
     # ------------------------------------------------------------------ #
     # Common-API contract
     #

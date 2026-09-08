@@ -1750,6 +1750,25 @@ def test_constructor_explicit_int64_indptr_ok_when_x64_on():
         assert m.indptr.dtype == jnp.int64
 
 
+@pytest.mark.parametrize("cls,shape", [(CSR, (2, 3)), (CSC, (3, 2))])
+def test_structure_rebuild_preserves_explicit_int64_indptr(cls, shape):
+    with jax_x64_enabled():
+        data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 3], dtype=jnp.int64)
+        m = cls((data, indices, indptr), shape=shape, indptr_dtype=np.int64)
+        leaves, treedef = jax.tree_util.tree_flatten(m)
+
+        rebuilt = (
+            m.with_data(m.data),
+            m.apply(lambda values: values),
+            m.transpose(),
+            jax.tree_util.tree_unflatten(treedef, leaves),
+        )
+        for result in rebuilt:
+            assert result.indptr.dtype == jnp.int64
+
+
 # -- Constructor structural validation --------------------------------------
 
 def test_constructor_rejects_non_monotonic_indptr():
@@ -1825,3 +1844,60 @@ def test_csr_cuda_sources_do_not_cast_indptr_to_int32():
         assert 'static_cast<const int32_t*>(indptr.data_ptr())' not in text, path.name
         assert 'const int32_t*  __restrict__ indptr' not in text, path.name
         assert 'const int32_t*   __restrict__ indptr' not in text, path.name
+
+
+@pytest.mark.parametrize("cls,shape", [(CSR, (2, 3)), (CSC, (3, 2))])
+def test_compressed_apply_rejects_value_shape_changes(cls, shape):
+    """Keep apply from changing the physical sparse-value representation."""
+    matrix = cls(
+        (
+            jnp.asarray([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32),
+            jnp.asarray([0, 2, 0, 1], dtype=jnp.int32),
+            jnp.asarray([0, 2, 4], dtype=jnp.int32),
+        ),
+        shape=shape,
+    )
+
+    with pytest.raises(ValueError, match="apply.*shape"):
+        matrix.apply(lambda values: values.reshape((2, 2)))
+
+
+@pytest.mark.parametrize("cls,shape", [(CSR, (2, 3)), (CSC, (3, 2))])
+@pytest.mark.parametrize(
+    "storage", ["heterogeneous", "homogeneous_scalar", "homogeneous_vector"]
+)
+def test_compressed_sum_matches_logical_dense_sum(cls, shape, storage):
+    """Sum represented values rather than only the physical data buffer."""
+    if storage == "heterogeneous":
+        data = jnp.asarray([1.0, -2.0, 3.0, 4.0], dtype=jnp.float32)
+    elif storage == "homogeneous_scalar":
+        data = jnp.asarray(2.0, dtype=jnp.float32)
+    else:
+        data = jnp.asarray([2.0], dtype=jnp.float32)
+    matrix = cls(
+        (
+            data,
+            jnp.asarray([0, 2, 0, 1], dtype=jnp.int32),
+            jnp.asarray([0, 2, 4], dtype=jnp.int32),
+        ),
+        shape=shape,
+    )
+
+    assert u.math.allclose(matrix.sum(), matrix.todense().sum())
+    with pytest.raises(NotImplementedError, match="sum with axis"):
+        matrix.sum(axis=0)
+
+
+def test_compressed_homogeneous_sum_preserves_units():
+    """Retain the shared value's physical unit in logical reduction."""
+    matrix = CSR(
+        (
+            jnp.asarray([2.0], dtype=jnp.float32) * u.mV,
+            jnp.asarray([0, 2, 0, 1], dtype=jnp.int32),
+            jnp.asarray([0, 2, 4], dtype=jnp.int32),
+        ),
+        shape=(2, 3),
+    )
+
+    assert u.get_unit(matrix.sum()) == u.mV
+    assert u.math.allclose(matrix.sum(), 8.0 * u.mV)

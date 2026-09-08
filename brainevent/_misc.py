@@ -994,7 +994,9 @@ def coo_to_csc_index(
 
             unique_post_ids, count = jnp.unique(indices, return_counts=True)
             post_count = jnp.zeros(n_post, dtype=offset_dtype)
-            post_count = post_count.at[unique_post_ids].set(count)
+            post_count = post_count.at[unique_post_ids].set(
+                jnp.asarray(count, dtype=offset_dtype)
+            )
 
             indptr_new = jnp.insert(post_count.cumsum(), 0, 0)
             indptr_new = jnp.asarray(indptr_new, dtype=offset_dtype)

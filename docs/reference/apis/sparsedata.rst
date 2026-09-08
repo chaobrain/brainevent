@@ -18,8 +18,8 @@ Data Representation
    Dense
 
 
-CSR / CSC (Compressed Sparse Row / Column)
--------------------------------------------
+CSR / CSC / TCSR
+----------------
 
 .. autosummary::
    :toctree: generated/
@@ -28,6 +28,7 @@ CSR / CSC (Compressed Sparse Row / Column)
 
    CSR
    CSC
+   TCSR
 
 
 JITC Base
