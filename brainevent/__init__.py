@@ -32,6 +32,7 @@ from ._csr import (
     csr_slice_rows, csr_slice_rows_p,
     HybridConfig, get_hybrid_config, init_csr_config,
 )
+from ._tcsr import TCSR
 from ._data import (
     DataRepresentation,
     JITCMatrix,
@@ -156,8 +157,8 @@ __all__ = [
     # --- representing sparse data --- #
     'DataRepresentation',
 
-    # --- CSR --- #
-    'CSR', 'CSC',
+    # --- CSR / TCSR --- #
+    'CSR', 'CSC', 'TCSR',
     'binary_csrmv', 'binary_csrmv_p',
     'binary_csrmv_indexed', 'binary_csrmv_indexed_p',
     'binary_csrmm', 'binary_csrmm_p',

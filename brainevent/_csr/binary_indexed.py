@@ -98,8 +98,8 @@ def binary_csrmv_indexed(
         Pointer array of the traversed structure.  Shape ``(shape[0] + 1,)``.
     perm : jax.Array or numpy.ndarray
         Permutation mapping structural slot ``j`` to the canonical weight
-        index ``perm[j]``.  Shape ``(nse,)`` with the same integer dtype as
-        ``indices``.
+        index ``perm[j]``. Shape ``(nse,)`` with the same dtype as
+        ``indptr`` (int32 or int64).
     v : jax.Array, numpy.ndarray, or brainunit.Quantity
         Dense event vector.  Shape ``(shape[0],)`` when ``transpose=True`` or
         ``(shape[1],)`` when ``transpose=False``.  Boolean or floating dtype.
@@ -643,7 +643,8 @@ def binary_csrmm_indexed(
         Pointer array of the traversed structure, shape ``(shape[0] + 1,)``.
     perm : jax.Array or numpy.ndarray
         Permutation mapping structural slot ``j`` to canonical weight index
-        ``perm[j]``, shape ``(nse,)``, same integer dtype as ``indices``.
+        ``perm[j]``, shape ``(nse,)``, same dtype as ``indptr`` (int32 or
+        int64).
     B : jax.Array, numpy.ndarray, or brainunit.Quantity
         Dense event matrix.  Shape ``(shape[0], n)`` when ``transpose=True`` or
         ``(shape[1], n)`` when ``transpose=False``.  Boolean or floating dtype.

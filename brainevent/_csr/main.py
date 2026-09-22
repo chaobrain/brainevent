@@ -285,14 +285,15 @@ class CompressedSparseData(DataRepresentation):
         structure-producing paths reuse a structure that was validated at its
         original construction, so they skip the host-side structure check and
         avoid a tracer host readback under ``jax.jit`` / ``jax.vmap``. ``indptr``
-        keeps its existing precision (``indptr_dtype="auto"`` re-resolves the
-        same dtype from the static ``nnz``).
+        keeps its existing precision by forwarding its dtype to the
+        constructor.
         """
         return cls(
             (data, indices, indptr),
             shape=shape,
             backend=backend,
             buffers=buffers,
+            indptr_dtype=indptr.dtype,
             check_structure=False,
         )
 
@@ -322,6 +323,31 @@ class CompressedSparseData(DataRepresentation):
             The dtype of ``self.data``.
         """
         return self.data.dtype
+
+    def sum(self, axis=None):
+        """Return the sum of all logically represented matrix entries.
+
+        Parameters
+        ----------
+        axis : int, sequence of int, or None, optional
+            Axis or axes to reduce. Only ``None`` is currently supported.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Scalar sum of every represented sparse entry. A homogeneous
+            size-one value is counted once per stored entry.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``axis`` is not ``None``.
+        """
+        if axis is not None:
+            raise NotImplementedError(
+                f'{type(self).__name__}.sum with axis is not implemented.'
+            )
+        return self._sum_data()
 
     def tree_flatten(self):
         """
@@ -1305,6 +1331,12 @@ class CSR(CompressedSparseData):
         CSR
             A new CSR matrix with transformed data.
 
+        Raises
+        ------
+        ValueError
+            If the transformed value buffer does not have the same shape as
+            ``self.data``.
+
         Examples
         --------
         .. code-block:: python
@@ -1312,7 +1344,7 @@ class CSR(CompressedSparseData):
             squared = csr.apply(lambda x: x ** 2)
         """
         return CSR._from_parts(
-            fn(self.data), self.indices, self.indptr,
+            self._apply_data(fn), self.indices, self.indptr,
             shape=self.shape,
             buffers=self.buffers,
             backend=self.backend,
@@ -2210,13 +2242,19 @@ class CSC(CompressedSparseData):
         CSC
             A new CSC matrix with transformed data.
 
+        Raises
+        ------
+        ValueError
+            If the transformed value buffer does not have the same shape as
+            ``self.data``.
+
         Examples
         --------
         .. code-block:: python
 
             squared = csc.apply(lambda x: x ** 2)
         """
-        return CSC._from_parts(fn(self.data), self.indices, self.indptr,
+        return CSC._from_parts(self._apply_data(fn), self.indices, self.indptr,
                                shape=self.shape, buffers=self.buffers, backend=self.backend)
 
     def _weight_indices(self):

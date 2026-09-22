@@ -31,8 +31,8 @@
  * Python API parameters:
  *   weights  -- 1-D heterogeneous weight array (length == nnz), canonical order
  *   indices  -- column indices of CSR non-zeros (int32, length == nnz)
- *   indptr   -- row pointer array (int32, length == m+1)
- *   perm     -- permutation mapping slot j -> canonical weight index (int32)
+ *   indptr   -- row pointer array (int32 or int64, length == m+1)
+ *   perm     -- permutation mapping slot j -> canonical weight index (same dtype as indptr)
  *   B        -- dense input matrix (bool/int8 or float, shape [m, n] or [k, n])
  *   C        -- dense output matrix (same dtype as weights, shape [m, n] or [k, n])
  *   stream   -- CUDA stream handle (int64)
@@ -55,7 +55,7 @@ __global__ void _csrmm_nt_warp_perm_hetero_kern##SUFFIX(                        
     const WEIGHT_T* __restrict__ weights,                                            \
     const int32_t*  __restrict__ indices,                                            \
     const IndptrT*  __restrict__ indptr,                                             \
-    const int32_t*  __restrict__ perm,                                               \
+    const IndptrT*  __restrict__ perm,                                               \
     const SPIKE_T*  __restrict__ B,                                                  \
     WEIGHT_T*       __restrict__ C,                                                  \
     int m, int n                                                                     \
@@ -94,7 +94,7 @@ __global__ void _csrmm_nt_block_perm_hetero_kern##SUFFIX(                       
     const WEIGHT_T* __restrict__ weights,                                             \
     const int32_t*  __restrict__ indices,                                             \
     const IndptrT*  __restrict__ indptr,                                              \
-    const int32_t*  __restrict__ perm,                                                \
+    const IndptrT*  __restrict__ perm,                                                \
     const SPIKE_T*  __restrict__ B,                                                   \
     WEIGHT_T*       __restrict__ C,                                                   \
     int m, int n                                                                      \
@@ -191,6 +191,11 @@ void binary_csrmm_nt_auto_perm_hetero##SUFFIX(                                  
     const BE::Tensor B,       BE::Tensor C,       int64_t stream                \
 ) {                                                                             \
     BE_CHECK_CSR_INDICES_INT32(indices);                                        \
+    if (perm.dtype() != indptr.dtype()) {                                       \
+        fprintf(stderr, "[be] indexed CSR CUDA kernels require perm dtype (%s) to match indptr dtype (%s)\\n", \
+                BE::dtype_name(perm.dtype()), BE::dtype_name(indptr.dtype())); \
+        abort();                                                                  \
+    }                                                                             \
     cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                  \
     int m        = static_cast<int>(indptr.size(0)) - 1;                        \
     int n        = static_cast<int>(B.size(1));                                 \
@@ -199,11 +204,11 @@ void binary_csrmm_nt_auto_perm_hetero##SUFFIX(                                  
     int c_blocks = (n + 31) / 32;                                               \
     const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
     const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr());    \
-    const int32_t*    d_perm = static_cast<const int32_t*>(perm.data_ptr());    \
     const SPIKE_C_T*  d_b = static_cast<const SPIKE_C_T*>(B.data_ptr());        \
     WEIGHT_C_T*       d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
     BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                           \
         const IndptrT* d_p = static_cast<const IndptrT*>(indptr.data_ptr());    \
+        const IndptrT* d_perm = static_cast<const IndptrT*>(perm.data_ptr());   \
         if (avg_nnz <= 512) {                                                   \
             int rpb = CSRMM_WARP_RPB;                                           \
             int gx  = (m + rpb - 1) / rpb;                                      \

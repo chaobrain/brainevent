@@ -561,6 +561,21 @@ def _binary_csrmv_cusparse_kernel(
     return kernel
 
 
+def _cuda_event_abi(dtype):
+    """Return the CUDA event suffix and whether positive-value casting is needed."""
+    dtype = jnp.dtype(dtype)
+    if dtype == jnp.dtype(jnp.bool_):
+        return "_bool", False
+    if dtype == jnp.dtype(jnp.float32):
+        return "_float", False
+    if jnp.issubdtype(dtype, jnp.integer) or jnp.issubdtype(dtype, jnp.floating):
+        return "_bool", True
+    raise TypeError(
+        "CSR CUDA binary events must be boolean, integer, or floating-point, "
+        f"got {dtype}"
+    )
+
+
 def _binary_csrmv_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -573,8 +588,7 @@ def _binary_csrmv_cuda_kernel(
     is_homo = (weight_info.size == 1)
     homo_suffix = '_homo' if is_homo else '_hetero'
 
-    # Spike type suffix
-    spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
+    spk_suffix, normalize_events = _cuda_event_abi(vector_info.dtype)
 
     # Weight dtype suffix
     wt_sfx = dtype_suffix(weight_info.dtype)
@@ -591,6 +605,8 @@ def _binary_csrmv_cuda_kernel(
         kernel_name = f'{_mod}.binary_csrmv_wat_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
+            if normalize_events:
+                vector = vector > 0
             return jax.ffi.ffi_call(
                 kernel_name,
                 kwargs['outs'],
@@ -615,6 +631,8 @@ def _binary_csrmv_cuda_kernel(
         kernel_name = f'csr_binary_csrmv.binary_csrmv_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
+            if normalize_events:
+                vector = vector > 0
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
             return math_out, task_begin, task_end, status
 
@@ -1241,8 +1259,7 @@ def _binary_csrmm_cuda_kernel(
 ):
     _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
 
-    # Spike type suffix
-    spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
+    spk_suffix, normalize_events = _cuda_event_abi(vector_info.dtype)
 
     # Weight dtype suffix
     wt_sfx = dtype_suffix(weight_info.dtype)
@@ -1269,6 +1286,8 @@ def _binary_csrmm_cuda_kernel(
         kernel_name = f'{_mod}.binary_csrmm_sraw_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, B, task_begin, task_end, status):
+            if normalize_events:
+                B = B > 0
             output, task_begin_out, task_end_out, status_out = jax.ffi.ffi_call(
                 kernel_name,
                 out_info,
@@ -1294,6 +1313,8 @@ def _binary_csrmm_cuda_kernel(
         kernel_name = f'csr_binary_csrmm.binary_csrmm_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, B, task_begin, task_end, status):
+            if normalize_events:
+                B = B > 0
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
             return math_out, task_begin, task_end, status
 

@@ -17,6 +17,7 @@
 
 
 import unittest
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -127,6 +128,23 @@ def test_csc_to_csr_index_roundtrip():
     np.testing.assert_array_equal(np.asarray(back_indices), indices)
     # perm composition returns to identity over the canonical CSR order.
     np.testing.assert_array_equal(np.asarray(perm)[np.asarray(perm2)], np.arange(len(perm)))
+
+
+def test_csc_to_csr_index_x64_uses_offset_dtype_for_scatter_counts():
+    """Avoid narrowing warnings when x64 counts feed int32 CSR offsets."""
+    from brainevent._misc import csc_to_csr_index
+
+    with jax.enable_x64(), warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        indptr, indices, permutation = csc_to_csr_index(
+            jnp.asarray([0, 1, 2, 3], dtype=jnp.int32),
+            jnp.asarray([1, 0, 1], dtype=jnp.int32),
+            shape=(2, 3),
+        )
+
+    assert indptr.dtype == jnp.int32
+    assert indices.dtype == jnp.int32
+    assert permutation.dtype == jnp.int32
 
 
 class TestCsrToCscIndexMethods(unittest.TestCase):

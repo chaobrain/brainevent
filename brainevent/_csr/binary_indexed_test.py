@@ -857,6 +857,18 @@ def test_indexed_mm_cuda_kernel_selects_perm_names():
     assert "binary_csrmm_t_warp_perm_hetero" not in cu
 
 
+def test_nontransposed_raw_cuda_perm_uses_indptr_dtype():
+    from pathlib import Path
+
+    csr_dir = Path(binary_indexed_mod.__file__).parent
+    for filename in ("binary_indexed_csrmv.cu", "binary_indexed_csrmm.cu"):
+        source = (csr_dir / filename).read_text()
+        assert "const IndptrT*  __restrict__ perm" in source
+        assert "static_cast<const IndptrT*>(perm.data_ptr())" in source
+        assert "perm.dtype() != indptr.dtype()" in source
+        assert "const int32_t*  __restrict__ perm" not in source
+
+
 def test_import_brainevent_needs_no_nvcc():
     # Importing the module must not compile CUDA (load_cuda_file is lazy).
     import importlib
