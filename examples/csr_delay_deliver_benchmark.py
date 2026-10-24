@@ -21,6 +21,8 @@ a ``lax.scan`` delivers the spikes of that step, reads slot ``t % L`` and
 clears it. Variants:
 
 - ``deliver/<backend>``: ``csr_delay_deliver`` with that backend;
+- ``layout/<backend>``: ``csr_delay_deliver_layout`` on a precomputed
+  :class:`CSRDelayLayout` (built once, outside the timed loop);
 - ``jax_event``: event-driven pure JAX (compact active rows with a fixed
   capacity, gather their edges, one scatter-add), as in brainpy.state;
 - ``none``: no delivery (cost of the scan, ring read and clear only);
@@ -41,7 +43,10 @@ import jax.numpy as jnp
 import numpy as np
 
 import brainevent
-from brainevent import BinaryArray, CSR, csr_delay_deliver, csr_delay_deliver_p
+from brainevent import (
+    BinaryArray, CSR, CSRDelayLayout, csr_delay_deliver, csr_delay_deliver_layout,
+    csr_delay_deliver_layout_p, csr_delay_deliver_p,
+)
 
 
 def build_network(n, k, n_slots, seed=0):
@@ -76,7 +81,7 @@ def make_runner(variant, n, n_slots, scalar_delay, row_cap=None, max_len=None):
     """Return ``run(net, spike_train)``; the network arrays are jit arguments (no constant folding)."""
 
     def deliver(net, ring, spikes, t):
-        csr, dl = net
+        csr, dl, layout = net
         w, idx, ipt = csr.data, csr.indices, csr.indptr
         if variant == 'none':
             return ring
@@ -85,7 +90,9 @@ def make_runner(variant, n, n_slots, scalar_delay, row_cap=None, max_len=None):
         if variant == 'scalar':
             y = BinaryArray(spikes) @ csr
             return ring.at[(t + scalar_delay) % n_slots].add(y)
-        backend = variant.split('/')[1]
+        kind, backend = variant.split('/')
+        if kind == 'layout':
+            return csr_delay_deliver_layout(ring, spikes, layout, t, backend=backend)
         return csr_delay_deliver(ring, spikes, w, idx, ipt, dl, t, shape=(n, n), backend=backend)
 
     @jax.jit
@@ -131,13 +138,17 @@ def main():
 
     platform = jax.default_backend()
     if args.variants is None:
-        variants = [f'deliver/{b}' for b in csr_delay_deliver_p.available_backends(platform)] + ['jax_event', 'scalar', 'none']
+        variants = ([f'deliver/{b}' for b in csr_delay_deliver_p.available_backends(platform)]
+                    + [f'layout/{b}' for b in csr_delay_deliver_layout_p.available_backends(platform)]
+                    + ['jax_event', 'scalar', 'none'])
     else:
         variants = args.variants
 
     weights, indices, indptr, delays = build_network(args.n, args.k, args.slots)
+    layout = CSRDelayLayout.build(jnp.asarray(weights), indices, indptr, delays, n_slots=args.slots,
+                                  shape=(args.n, args.n))
     net = (CSR((jnp.asarray(weights), jnp.asarray(indices), jnp.asarray(indptr)), shape=(args.n, args.n)),
-           jnp.asarray(delays))
+           jnp.asarray(delays), layout)
     print(f'# brainevent {brainevent.__version__}, jax {jax.__version__}, platform {platform}, '
           f'N={args.n}, K={args.k}, nse={indices.size}, L={args.slots}, steps={args.steps}')
     print('| rate | ' + ' | '.join(variants) + ' |')

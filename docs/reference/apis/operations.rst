@@ -74,6 +74,9 @@ Per-edge-delay spike delivery into an arrival ring.
 
    csr_delay_deliver
    csr_delay_deliver_p
+   CSRDelayLayout
+   csr_delay_deliver_layout
+   csr_delay_deliver_layout_p
 
 
 Dense Operations

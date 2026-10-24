@@ -147,36 +147,46 @@ in-place clear); `lax.optimization_barrier((out, ring))` between the read
 and the clear removes both copies. The harness uses it, and users writing
 such loops should too.
 
-Results (per-step time, best of several runs; RTX 3090; CPU numbers on one
-pinned core, `JAX_PLATFORMS=cpu taskset -c 0`; jax 0.12.0, float32 hetero
-weights, 15 625 000 edges):
+Results (per-step time, best of several runs; RTX 3090, shared with
+another job; CPU numbers on one pinned core, `JAX_PLATFORMS=cpu taskset -c
+0`; jax 0.12.0, float32 hetero weights, 15 625 000 edges). The
+`layout/<backend>` columns use the precomputed `CSRDelayLayout`
+(`2026-10-24-csr-delay-layout.md`).
 
 GPU
 
-| rate | csr_delay_deliver cuda_raw | jax_raw scatter | jax_event | scalar `BinaryArray @ CSR` | none |
+| rate | deliver cuda_raw | layout cuda_raw | scalar `BinaryArray @ CSR` | none | layout / scalar |
 |---|---|---|---|---|---|
-| 1% | 0.040 ms | 2.40 ms | 0.197 ms | 0.024 ms | 0.008 ms |
-| 2% | 0.060 ms | 2.40 ms | 0.298 ms | 0.029 ms | 0.007 ms |
-| 5% | 0.131 ms | 2.40 ms | 0.613 ms | 0.041 ms | 0.007 ms |
+| 1% | 0.042 ms | 0.031 ms | 0.030 ms | 0.010 ms | 1.03x |
+| 2% | 0.065 ms | 0.038 ms | 0.032 ms | 0.009 ms | 1.19x |
+| 5% | 0.136 ms | 0.060 ms | 0.047 ms | 0.008 ms | 1.28x |
+
+Earlier run of the other variants (same harness): `jax_raw` scatter
+2.40 ms at every rate; `jax_event` 0.197 / 0.298 / 0.613 ms at 1 / 2 / 5 %.
 
 CPU (one core)
 
-| rate | csr_delay_deliver numba | jax_raw scatter | jax_event | scalar `BinaryArray @ CSR` | none |
+| rate | deliver numba | layout numba | scalar `BinaryArray @ CSR` | none | numba / scalar |
 |---|---|---|---|---|---|
-| 1% | 0.727 ms | 63.9 ms | 0.864 ms | 0.954 ms | 0.008 ms |
-| 2% | 1.326 ms | 63.6 ms | 1.426 ms | 1.079 ms | 0.008 ms |
-| 5% | 2.903 ms | 65.1 ms | 3.865 ms | 1.552 ms | 0.008 ms |
+| 1% | 0.379 ms | 0.379 ms | 0.792 ms | 0.007 ms | 0.48x |
+| 2% | 0.723 ms | 0.722 ms | 0.950 ms | 0.007 ms | 0.76x |
+| 5% | 1.735 ms | 1.726 ms | 1.411 ms | 0.007 ms | 1.23x |
+
+Earlier run: `jax_raw` scatter about 64 ms; `jax_event` 0.864 / 1.426 /
+3.865 ms at 1 / 2 / 5 %.
 
 Reading:
 
-- GPU: the fused kernel is 4.7-5x faster than the event-driven JAX
-  scatter and 18-60x faster than `jax_raw`, but still 1.7-3.2x the scalar
-  baseline. The remaining gap is the atomics themselves: the scalar path
-  adds into a 50 KB vector that stays in L2, the delayed path into a 10 MB
-  ring that does not fit the 6 MB L2 of the 3090.
-- CPU: `numba` is 1.1-1.3x faster than `jax_event`; relative to the scalar
-  baseline it is 0.76x at 1 %, 1.2x at 2 % and 1.9x at 5 % (random writes
-  into a 10 MB ring, as the issue noted). `jax_raw` visits every edge every step
-  and is only a reference / AD backend.
+- GPU: the row-major kernel adds each edge into a random slot of a 10 MB
+  ring that does not fit the 6 MB L2 of the 3090; random sector traffic
+  caps it at 1.4-2.9x the scalar baseline. The delay-major layout
+  processes all active rows delay by delay, so concurrent writes share one
+  50 KB ring row; it is within 1.5x of the scalar baseline at every rate.
+- CPU: the numba kernel indexes with unsigned integers (numba otherwise
+  checks for negative indices on every access, which blocks vectorisation),
+  computes slots without branches and accumulates in the ring dtype. It is
+  within 1.5x of the scalar baseline at every rate; the layout gives the
+  same CPU time. `jax_raw` visits every edge every step and is only a
+  reference / AD backend.
 - The checksum of all arrivals agrees across `cuda_raw`, `numba`,
-  `jax_raw` and `jax_event` (printed by the script).
+  `jax_raw`, the layout variants and `jax_event` (printed by the script).

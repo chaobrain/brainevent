@@ -20,6 +20,7 @@ from .binary_indexed import (
     binary_csrmm_indexed, binary_csrmm_indexed_p,
 )
 from .delay import csr_delay_deliver, csr_delay_deliver_p
+from .delay_layout import CSRDelayLayout, csr_delay_deliver_layout, csr_delay_deliver_layout_p
 from .float import csrmv, csrmv_p, csrmm, csrmm_p
 from .hybrid_config import HybridConfig, get_hybrid_config
 from .main import CSR, CSC
@@ -51,5 +52,6 @@ __all__ = [
     'csr_apply_on_pre', 'csr_apply_on_post',
     'csr_slice_rows', 'csr_slice_rows_p',
     'csr_delay_deliver', 'csr_delay_deliver_p',
+    'CSRDelayLayout', 'csr_delay_deliver_layout', 'csr_delay_deliver_layout_p',
     'HybridConfig', 'get_hybrid_config', 'init_csr_config',
 ]

@@ -546,6 +546,24 @@ def csr_delay_deliver_p_call(
         >>> out[1]
         Array([0., 2.], dtype=float32)
     """
+    operands, infos = _normalize_operands(ring, events, data, indices, indptr, delays, t, shape=shape)
+    return csr_delay_deliver_p(
+        *operands,
+        outs=[jax.ShapeDtypeStruct(operands[0].shape, operands[0].dtype)],
+        shape=tuple(int(s) for s in shape),
+        weighted=bool(weighted),
+        backend=backend,
+        **infos,
+    )
+
+
+def _normalize_operands(ring, events, data, indices, indptr, delays, t, *, shape):
+    """Validate and normalise the operands of a delay-delivery primitive.
+
+    Returns the operands ``(ring, events, data, indices, indptr, delays, t)``
+    as arrays (scalar data reshaped to ``(1,)``, scalar delays broadcast)
+    and the ``*_info`` keyword parameters of the primitive.
+    """
     shape = tuple(int(s) for s in shape)
     assert len(shape) == 2, f'shape must be (n_pre, n_post); got {shape}.'
     n_pre, n_post = shape
@@ -586,12 +604,7 @@ def csr_delay_deliver_p_call(
         raise TypeError(f't must be an integer scalar; got dtype {t.dtype}.')
     assert t.ndim == 0, f't must be a scalar; got shape {t.shape}.'
 
-    return csr_delay_deliver_p(
-        ring, events, data, indices, indptr, delays, t,
-        outs=[jax.ShapeDtypeStruct(ring.shape, ring.dtype)],
-        shape=shape,
-        weighted=bool(weighted),
-        backend=backend,
+    return (ring, events, data, indices, indptr, delays, t), dict(
         ring_info=jax.ShapeDtypeStruct(ring.shape, ring.dtype),
         events_info=jax.ShapeDtypeStruct(events.shape, events.dtype),
         weight_info=jax.ShapeDtypeStruct(data.shape, data.dtype),
