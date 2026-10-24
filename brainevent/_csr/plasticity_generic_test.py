@@ -247,3 +247,29 @@ def test_top_level_exports():
     assert brainevent.csr_apply_on_pre is csr_apply_on_pre
     assert brainevent.csr_apply_on_post is csr_apply_on_post
     assert 'csr_apply_on_pre' in brainevent.__all__ and 'csr_apply_on_post' in brainevent.__all__
+
+
+@pytest.mark.parametrize('on_pre', [True, False])
+def test_nan_neuron_values_on_inactive_edges_do_not_leak(on_pre):
+    # Inactive edges see NaN neuron values: they stay bit-identical and the
+    # output is finite. (Gradients through ``rule`` follow the documented
+    # ``jnp.where`` semantics and are not covered.)
+    csr, rows, cols, state, pre_spike, post_spike, pre_vals, post_vals = _problem(4)
+    fn = csr_apply_on_pre if on_pre else csr_apply_on_post
+    spike = pre_spike if on_pre else post_spike
+    active_units = np.asarray(spike) != 0
+    if on_pre:
+        pre_vals = {'x': jnp.where(jnp.asarray(active_units), pre_vals['x'], jnp.nan)}
+        active = active_units[rows]
+    else:
+        post_vals = {'y': jnp.where(jnp.asarray(active_units), post_vals['y'], jnp.nan)}
+        active = active_units[cols]
+
+    def run(params):
+        return fn(stdp_rule, state, csr.indices, csr.indptr, spike,
+                  pre_vals=pre_vals, post_vals=post_vals, params=params, shape=SHAPE)
+
+    new = run(PARAMS)
+    for k in state:
+        assert np.array_equal(np.asarray(new[k])[~active], np.asarray(state[k])[~active])
+        assert np.isfinite(np.asarray(new[k])).all()

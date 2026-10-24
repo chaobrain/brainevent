@@ -30,7 +30,9 @@ from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
 from brainevent._op import load_cuda_file
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask
+from brainevent._op.util import (
+    cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask, select_active,
+)
 
 __all__ = [
     'binary_densemv', 'binary_densemv_p',
@@ -67,6 +69,162 @@ def _load_dense_cublas_file():
 
 _EVENT_FASTMATH = NUMBA_EVENT_FASTMATH
 _numba_event_mask = numba_event_mask
+
+
+# ==============================================================================
+# Inactive-event isolation for library / dense-product backends
+# ==============================================================================
+#
+# Event-driven kernels (numba, cuda_raw) skip inactive events, so a NaN/Inf
+# weight that only meets inactive events never reaches the output. Backends
+# that evaluate a dense product (``jax_raw``, ``cublas``) would compute
+# ``w * 0 = NaN`` instead; they select before multiplying
+# (docs/specs/2026-10-24-inactive-row-nan-isolation.md).
+
+
+def _mask_inactive(weights, spikes, *, axis: int):
+    """Zero the weights that only meet inactive events (vector events).
+
+    Parameters
+    ----------
+    weights : jax.Array
+        Two-dimensional weight matrix.
+    spikes : jax.Array
+        One-dimensional event vector indexed by ``weights`` axis ``axis``.
+    axis : int
+        ``0`` if events index the rows of ``weights``, ``1`` for the columns.
+
+    Returns
+    -------
+    masked : jax.Array
+        ``where(active, weights, 0)`` broadcast along ``axis``.
+    """
+    active = event_active(spikes)
+    active = active[:, None] if axis == 0 else active[None, :]
+    return select_active(active, weights)
+
+
+def _nonfinite_isolated_matmul(a, factor, active):
+    """Compute ``a @ factor`` where inactive ``factor`` entries contribute ``0``.
+
+    ``a @ factor`` with a 0 factor gives ``NaN`` for ``a = NaN/±Inf``; this
+    path is exact for any ``a``. The finite part is one matrix product; the
+    non-finite entries of ``a`` are accounted for with indicator products, so a
+    non-finite weight reaches ``out[i, j]`` only through an active event:
+    ``NaN`` if any NaN weight meets an active event, ``±Inf`` (or ``NaN`` for
+    ``+Inf - Inf``) from infinite weights times the event sign.
+
+    Parameters
+    ----------
+    a : jax.Array
+        Weights, shape ``(m, k)``; may contain NaN/±Inf.
+    factor : jax.Array
+        Event factor (activity mask or event value), shape ``(k, n)``, in the
+        dtype of ``a``.
+    active : jax.Array
+        Boolean activity of the events, shape ``(k, n)``.
+
+    Returns
+    -------
+    out : jax.Array
+        Shape ``(m, n)``.
+    """
+    dtype = a.dtype
+    finite = jnp.isfinite(a)
+    out = select_active(finite, a) @ factor
+    act = active.astype(dtype)
+    pos = (active & (factor > 0)).astype(dtype)
+    neg = (active & (factor < 0)).astype(dtype)
+    is_pinf = (a == jnp.inf).astype(dtype)
+    is_ninf = (a == -jnp.inf).astype(dtype)
+    pinf_hit = (is_pinf @ pos + is_ninf @ neg) > 0
+    ninf_hit = (is_pinf @ neg + is_ninf @ pos) > 0
+    nan_hit = (jnp.isnan(a).astype(dtype) @ act) > 0
+    out = out + jnp.where(pinf_hit, jnp.inf, 0.).astype(dtype)
+    out = out + jnp.where(ninf_hit, -jnp.inf, 0.).astype(dtype)
+    return jnp.where(nan_hit, jnp.nan, out).astype(dtype)
+
+
+def _guard_nonfinite(out, exact, *operands):
+    """Return the fast dense product ``out``, or ``exact(*operands)`` if it is not finite.
+
+    In a dense product ``out[i, j] = sum_k a[i, k] * f[k, j]`` every weight
+    ``a[i, k]`` meets an event in every output column, and a non-finite weight
+    gives a non-finite term whether the event is active or not (``NaN * x``,
+    ``Inf * 0 = NaN``, ``Inf * x = ±Inf``), which stays non-finite in the sum.
+    A finite ``out`` therefore proves that every weight is finite, in which case
+    ``finite * 0 = 0`` makes the fast product exact. Otherwise the exact select
+    path is evaluated. The check reads only the output, so the common (finite)
+    case costs one reduction over ``out`` and a branch.
+
+    Parameters
+    ----------
+    out : jax.Array
+        Result of the fast product (plain matmul or library call).
+    exact : callable
+        ``exact(*operands)``: the select-based result, same shape and dtype.
+    *operands : jax.Array
+        Operands passed to ``exact``.
+
+    Returns
+    -------
+    result : jax.Array
+        ``out`` if it is finite, else ``exact(*operands)``.
+    """
+    # Branch order matters for speed: with the passthrough as the *true*
+    # branch, XLA GPU spends ~0.7 ms per call on a cuBLAS-FFI matvec result
+    # (measured on an RTX 3090); the passthrough as the false branch costs
+    # ~10 us.
+    return jax.lax.cond(jnp.any(~jnp.isfinite(out)), exact, lambda *_: out, *operands)
+
+
+def _exact_dense_mv(weights, spikes, *, transpose: bool, weighted: bool):
+    """Select-exact dense event matvec: mask the weights of inactive events.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        ``(m, k)`` if not ``transpose`` else ``(k, n)``.
+    spikes : jax.Array
+        Events, shape ``(k,)``.
+    transpose : bool
+        Compute ``spikes @ weights`` instead of ``weights @ spikes``.
+    weighted : bool
+        Multiply by the event value instead of the activity mask.
+
+    Returns
+    -------
+    out : jax.Array
+        Shape ``(n,)`` if ``transpose`` else ``(m,)``.
+    """
+    s = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
+    if transpose:
+        return s @ _mask_inactive(weights, spikes, axis=0)
+    return _mask_inactive(weights, spikes, axis=1) @ s
+
+
+def _exact_dense_mm(weights, spikes, *, transpose: bool, weighted: bool):
+    """Select-exact dense event matmul for weights that may be non-finite.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        ``(m, k)`` if not ``transpose`` else ``(k, m)``.
+    spikes : jax.Array
+        Events, shape ``(k, n)``.
+    transpose : bool
+        Contract ``weights`` axis 0 instead of axis 1.
+    weighted : bool
+        Multiply by the event value instead of the activity mask.
+
+    Returns
+    -------
+    out : jax.Array
+        Shape ``(m, n)``.
+    """
+    a = weights.T if transpose else weights
+    factor = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
+    return _nonfinite_isolated_matmul(a, factor, event_active(spikes))
 
 
 # ==============================================================================
@@ -268,12 +426,17 @@ def _binary_densemv_jax_kernel(
     weighted: bool = False,
     **kwargs,
 ):
-    def kernel(weights, spikes):
+    def product(weights, spikes):
         s = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
-        if transpose:
-            return s @ weights,
-        else:
-            return weights @ s,
+        return s @ weights if transpose else weights @ s
+
+    def exact(weights, spikes):
+        # Select, never multiply by 0: a NaN/Inf weight meeting an inactive
+        # event must not reach the output.
+        return _exact_dense_mv(weights, spikes, transpose=transpose, weighted=weighted)
+
+    def kernel(weights, spikes):
+        return _guard_nonfinite(product(weights, spikes), exact, weights, spikes),
 
     return kernel
 
@@ -329,8 +492,17 @@ def _binary_densemv_cublas_kernel(
     suffix = 't' if transpose else 'nt'
     kernel_name = f'dense_binary_cublas.binary_densemv_cublas_{suffix}_f32_bool'
 
+    def exact(weights, spikes):
+        return _exact_dense_mv(weights, spikes, transpose=transpose, weighted=False)
+
+    def product(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))[0]
+
     def kernel(weights, spikes):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))
+        # cuBLAS multiplies every weight by its 0/1 event. A non-finite result
+        # takes the masked jnp path (the dense product is again
+        # dispatched to cuBLAS by XLA).
+        return [_guard_nonfinite(product(weights, spikes), exact, weights, spikes)]
 
     return kernel
 
@@ -361,10 +533,12 @@ def _binary_densemv_transpose_rule(ct, weights, spikes, *, transpose, weighted=F
         if type(ct) is ad.Zero:
             return ad.Zero(weights), spikes
         s = event_factor(spikes, dtype=ct.dtype, weighted=weighted)
+        # Select: the cotangent of an inactive event's weights is exactly 0,
+        # even where ``ct`` is NaN/Inf.
         if transpose:
-            ct_weights = jnp.outer(s, ct)
+            ct_weights = _mask_inactive(jnp.outer(s, ct), spikes, axis=0)
         else:
-            ct_weights = jnp.outer(ct, s)
+            ct_weights = _mask_inactive(jnp.outer(ct, s), spikes, axis=1)
         return ct_weights, spikes
 
 
@@ -776,11 +950,12 @@ def _binary_densemm_transpose_rule(ct, weights, spikes, *, transpose, weighted=F
             ct_events = weights @ ct
             return weights, ct_events.astype(spikes.aval.dtype)
         else:
-            # ct_weights: active(spikes)[k,n] @ ct.T[n,m] -> [k,m]
+            # ct_weights[k,m] = sum_n f(spikes)[k,n] ct[m,n] = (ct[m,n] @ f(spikes).T[n,k]).T,
+            # computed by the event operation itself so inactive events select 0.
             if type(ct) is ad.Zero:
                 return ad.Zero(weights), spikes
-            ct_weights = event_factor(spikes, dtype=ct.dtype, weighted=weighted) @ ct.T
-            return ct_weights, spikes
+            ct_weights = binary_densemm(ct, spikes.T, transpose=False, backend=kwargs['backend'], weighted=weighted)
+            return ct_weights.T, spikes
     else:
         # weights[m,k] @ spikes[k,n] -> out[m,n]
         if ad.is_undefined_primal(spikes):
@@ -1053,16 +1228,20 @@ def _binary_densemm_jax_kernel(
     weighted: bool = False,
     **kwargs
 ):
-    if transpose:
-        def run(weights, spikes):
-            s = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
-            return [weights.T @ s]
-        return run
-    else:
-        def run(weights, spikes):
-            s = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
-            return [weights @ s]
-        return run
+    def product(weights, spikes):
+        s = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
+        return (weights.T if transpose else weights) @ s
+
+    def exact(weights, spikes):
+        return _exact_dense_mm(weights, spikes, transpose=transpose, weighted=weighted)
+
+    def run(weights, spikes):
+        # A matmul cannot select per batch column (masking ``weights`` only
+        # isolates rows inactive in every column); non-finite results take the
+        # exact select path.
+        return [_guard_nonfinite(product(weights, spikes), exact, weights, spikes)]
+
+    return run
 
 
 def _binary_densemm_cuda_kernel(
@@ -1151,8 +1330,16 @@ def _binary_densemm_cublas_kernel(
     suffix = 't' if transpose else 'nt'
     kernel_name = f'dense_binary_cublas.binary_densemm_cublas_{suffix}_f32_bool'
 
+    def product(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))[0]
+
+    def exact(weights, spikes):
+        return _exact_dense_mm(weights, spikes, transpose=transpose, weighted=False)
+
     def kernel(weights, spikes):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))
+        # A GEMM multiplies every weight by its 0/1 event and cannot select per
+        # batch column; non-finite results take the exact select path.
+        return [_guard_nonfinite(product(weights, spikes), exact, weights, spikes)]
 
     return kernel
 

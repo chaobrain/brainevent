@@ -472,3 +472,43 @@ def test_cuda_event_abi_weighted_errors():
         cuda_event_abi(jnp.float32, weighted=True)
     with pytest.raises(TypeError, match='Weighted CUDA events'):
         cuda_event_abi(jnp.complex64, weighted=True, value_dtype=jnp.float32)
+
+
+class TestSelectActive:
+    def test_discards_nonfinite_inactive_values(self):
+        from brainevent._op.util import select_active
+        values = jnp.array([1.5, jnp.nan, jnp.inf, -jnp.inf], dtype=jnp.float32)
+        active = jnp.array([True, False, False, False])
+        out = select_active(active, values)
+        assert out.dtype == jnp.float32
+        np.testing.assert_array_equal(np.asarray(out), [1.5, 0.0, 0.0, 0.0])
+
+    def test_active_nonfinite_propagates_and_broadcasts(self):
+        from brainevent._op.util import select_active
+        values = jnp.array([[jnp.nan, 2.0], [3.0, jnp.inf]])
+        out = select_active(jnp.array([[True], [False]]), values)
+        assert np.isnan(np.asarray(out)[0, 0])
+        np.testing.assert_array_equal(np.asarray(out)[1], [0.0, 0.0])
+
+
+class TestActiveSum:
+    @pytest.mark.parametrize('events, expected', [
+        (jnp.array([False, True, True]), 5.0),
+        (jnp.array([0.0, 2.0, -1.0]), 5.0),       # binary: value ignored, NaN/negatives active
+        (jnp.array([0, 0, 0], jnp.int8), 0.0),
+    ])
+    def test_binary_selects_active(self, events, expected):
+        from brainevent._op.util import active_sum
+        r = jnp.array([jnp.nan, 2.0, 3.0])
+        assert float(active_sum(r, events)) == expected
+
+    def test_weighted_multiplies_value_and_skips_zero(self):
+        from brainevent._op.util import active_sum
+        r = jnp.array([jnp.inf, 2.0, 3.0])
+        assert float(active_sum(r, jnp.array([0.0, 1.0, -1.0]), weighted=True)) == -1.0
+
+    def test_nan_event_is_active(self):
+        from brainevent._op.util import active_sum
+        r = jnp.array([1.0, 2.0])
+        assert np.isnan(float(active_sum(r, jnp.array([jnp.nan, 0.0]), weighted=True)))
+        assert float(active_sum(r, jnp.array([jnp.nan, 0.0]))) == 1.0

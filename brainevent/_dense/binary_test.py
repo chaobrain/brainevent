@@ -750,3 +750,170 @@ def test_dense_weighted_gpu_large(backend, w_dtype, transpose):
         got = np.asarray(jnp.asarray(got, jnp.float32) if w_dtype == 'bfloat16' else got, dtype=np.float64)
         rel = np.linalg.norm(got - r) / np.linalg.norm(r)
         assert rel < tol, f'relative error {rel}'
+
+
+# ==============================================================================
+# Inactive events contribute exactly zero (NaN/Inf weight isolation)
+# ==============================================================================
+#
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md: a NaN/Inf weight that
+# only meets inactive events must not reach the output, on every backend.
+
+_BAD_VALUES = [pytest.param(np.nan, id='nan'), pytest.param(np.inf, id='inf'),
+               pytest.param(-np.inf, id='-inf')]
+_EVENT_KINDS = ['bool', 'float', 'weighted']
+# Event values: active entries are 2, -1, 0.5, 1; rows 1, 3, 5 and 6 are inactive.
+_MV_EVENTS = np.array([2., 0., -1., 0., 0.5, 0., 0., 1.])
+# Batch columns: row 1 is inactive everywhere; row 2 is active in column 0 only.
+_MM_EVENTS = np.array([
+    [2., 1., 0.],
+    [0., 0., 0.],
+    [-1., 0., 0.],
+    [0., 0.5, 1.],
+    [0.5, 0., 2.],
+    [0., 3., 0.],
+])
+
+
+def _nan_events(values, kind):
+    """Return ``(events, weighted)`` for one event kind."""
+    if kind == 'bool':
+        return jnp.asarray(values != 0), False
+    return jnp.asarray(values, dtype=jnp.float32), kind == 'weighted'
+
+
+def _select_reference(w_k, values, weighted):
+    """``sum_k where(active[k], w_k[k] * f[k], 0)`` in float64 (NaN-exact).
+
+    ``w_k`` has the event dimension first (``(k, out)``); ``values`` is ``(k,)``
+    or ``(k, batch)``. Returns ``(out,)`` or ``(out, batch)``.
+    """
+    w_k = np.asarray(w_k, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+    active = values != 0
+    factor = values if weighted else np.ones_like(values)
+    with np.errstate(invalid='ignore'):
+        if values.ndim == 1:
+            terms = w_k * factor[:, None]
+            return np.where(active[:, None], terms, 0.).sum(0)
+        terms = w_k[:, :, None] * factor[:, None, :]
+        return np.where(active[:, None, :], terms, 0.).sum(0)
+
+
+@pytest.mark.parametrize('backend', DENSEMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', _EVENT_KINDS)
+@pytest.mark.parametrize('bad', _BAD_VALUES)
+def test_densemv_nonfinite_weights_on_inactive_events_are_isolated(backend, transpose, kind, bad):
+    rng = np.random.default_rng(0)
+    k, n = _MV_EVENTS.shape[0], 5
+    w_k = rng.standard_normal((k, n))
+    w_k[_MV_EVENTS == 0] = bad
+    events, weighted = _nan_events(_MV_EVENTS, kind)
+    weights = jnp.asarray(w_k if transpose else w_k.T, dtype=jnp.float32)
+    out = binary_densemv(weights, events, transpose=transpose, backend=backend, weighted=weighted)
+    out = np.asarray(out)
+    assert np.all(np.isfinite(out)), out
+    np.testing.assert_allclose(out, _select_reference(w_k, _MV_EVENTS, weighted), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('backend', DENSEMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', _EVENT_KINDS)
+@pytest.mark.parametrize('bad', _BAD_VALUES)
+def test_densemm_nonfinite_weights_on_inactive_events_are_isolated(backend, transpose, kind, bad):
+    rng = np.random.default_rng(1)
+    k, m = _MM_EVENTS.shape[0], 4
+    w_k = rng.standard_normal((k, m))
+    w_k[1] = bad  # inactive in every batch column
+    w_k[2] = bad  # active in column 0 only: columns 1 and 2 must stay finite
+    events, weighted = _nan_events(_MM_EVENTS, kind)
+    weights = jnp.asarray(w_k if transpose else w_k.T, dtype=jnp.float32)
+    out = binary_densemm(weights, events, transpose=transpose, backend=backend, weighted=weighted)
+    out = np.asarray(out)
+    ref = _select_reference(w_k, _MM_EVENTS, weighted)
+    assert np.all(np.isfinite(out[:, 1:])), out
+    assert not np.all(np.isfinite(out[:, 0]))  # the active row-2 term propagates
+    np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5, equal_nan=True)
+
+
+@pytest.mark.parametrize('backend', DENSEMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', _EVENT_KINDS)
+def test_densemv_nan_weight_on_active_event_propagates(backend, transpose, kind):
+    rng = np.random.default_rng(2)
+    k, n = _MV_EVENTS.shape[0], 5
+    w_k = rng.standard_normal((k, n))
+    w_k[0, 1] = np.nan  # row 0 is active
+    w_k[1] = np.nan  # row 1 is inactive
+    events, weighted = _nan_events(_MV_EVENTS, kind)
+    weights = jnp.asarray(w_k if transpose else w_k.T, dtype=jnp.float32)
+    out = np.asarray(binary_densemv(weights, events, transpose=transpose, backend=backend, weighted=weighted))
+    assert np.isnan(out[1])
+    assert np.all(np.isfinite(np.delete(out, 1)))
+    np.testing.assert_allclose(out, _select_reference(w_k, _MV_EVENTS, weighted),
+                               rtol=1e-5, atol=1e-5, equal_nan=True)
+
+
+@pytest.mark.parametrize('backend', DENSEMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', _EVENT_KINDS)
+def test_densemv_weight_cotangent_of_inactive_events_is_exactly_zero(backend, transpose, kind):
+    rng = np.random.default_rng(3)
+    k, n = _MV_EVENTS.shape[0], 5
+    events, weighted = _nan_events(_MV_EVENTS, kind)
+    w_k = rng.standard_normal((k, n))
+    weights = jnp.asarray(w_k if transpose else w_k.T, dtype=jnp.float32)
+    ct = rng.standard_normal(n)
+    ct[2] = np.nan
+    _, vjp = jax.vjp(
+        lambda w: binary_densemv(w, events, transpose=transpose, backend=backend, weighted=weighted),
+        weights,
+    )
+    (g,) = vjp(jnp.asarray(ct, dtype=jnp.float32))
+    g_k = np.asarray(g if transpose else g.T)
+    factor = _MV_EVENTS if weighted else (_MV_EVENTS != 0).astype(float)
+    inactive = _MV_EVENTS == 0
+    assert np.all(g_k[inactive] == 0.)
+    np.testing.assert_allclose(g_k[~inactive], np.outer(factor, ct)[~inactive],
+                               rtol=1e-5, atol=1e-5, equal_nan=True)
+
+
+@pytest.mark.parametrize('backend', DENSEMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', _EVENT_KINDS)
+def test_densemm_weight_cotangent_of_inactive_events_is_exactly_zero(backend, transpose, kind):
+    rng = np.random.default_rng(4)
+    k, m = _MM_EVENTS.shape[0], 4
+    events, weighted = _nan_events(_MM_EVENTS, kind)
+    w_k = rng.standard_normal((k, m))
+    weights = jnp.asarray(w_k if transpose else w_k.T, dtype=jnp.float32)
+    ct = rng.standard_normal((m, _MM_EVENTS.shape[1]))
+    ct[1, 1] = np.nan  # batch column 1: rows 0, 3, 5 active
+    _, vjp = jax.vjp(
+        lambda w: binary_densemm(w, events, transpose=transpose, backend=backend, weighted=weighted),
+        weights,
+    )
+    (g,) = vjp(jnp.asarray(ct, dtype=jnp.float32))
+    g_k = np.asarray(g if transpose else g.T)  # (k, m)
+    # dW[k, i] = sum_j where(active[k, j], f[k, j] * ct[i, j], 0)
+    ref = _select_reference(ct.T, _MM_EVENTS.T, weighted).T
+    np.testing.assert_allclose(g_k, ref, rtol=1e-5, atol=1e-5, equal_nan=True)
+    assert np.all(g_k[1] == 0.)  # row 1 is inactive everywhere
+    assert np.all(np.isfinite(g_k[[2, 4]]))  # rows 2, 4 are inactive in column 1
+
+
+@pytest.mark.parametrize('backend', DENSEMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+def test_densemv_vmap_isolates_nonfinite_weights(backend, transpose):
+    # vmap over events routes through binary_densemm (one column per batch row).
+    rng = np.random.default_rng(5)
+    k, n = _MM_EVENTS.shape[0], 4
+    w_k = rng.standard_normal((k, n))
+    w_k[2] = np.nan
+    weights = jnp.asarray(w_k if transpose else w_k.T, dtype=jnp.float32)
+    events = jnp.asarray(_MM_EVENTS.T != 0)  # (batch, k)
+    out = jax.vmap(lambda e: binary_densemv(weights, e, transpose=transpose, backend=backend))(events)
+    ref = _select_reference(w_k, _MM_EVENTS, False).T
+    np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5, equal_nan=True)
+    assert np.all(np.isfinite(np.asarray(out)[1:]))

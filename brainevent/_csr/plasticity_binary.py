@@ -30,7 +30,7 @@ from brainevent._op import XLACustomKernel, numba_kernel
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent._op import load_cuda_file
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, select_active
 from .binary import _EVENT_FASTMATH, _numba_event_mask
 
 __all__ = [
@@ -305,8 +305,9 @@ def _csr_on_pre_jax_kernel(
             total_repeat_length=nse,
         )
         active = event_active(pre_spike[row_ids])
-        delta = jnp.where(active, post_trace[indices], jnp.zeros_like(post_trace[indices]))
-        return [weight + delta]
+        # Select the old weight (not ``weight + 0``) so inactive edges stay
+        # bit-identical, including ``-0.0``, whatever the trace holds.
+        return [jnp.where(active, weight + post_trace[indices], weight)]
 
     return kernel
 
@@ -487,7 +488,7 @@ def _csr_on_pre_transpose_rule(ct, weight, indices, indptr, pre_spike, post_trac
             row_ids = _csr_row_ids(indptr, shape[0], indices.shape[0])
             active = event_active(pre_spike)[row_ids]
             ct_trace = jax.ops.segment_sum(
-                jnp.where(active, ct, jnp.zeros_like(ct)), indices, num_segments=shape[1],
+                select_active(active, ct), indices, num_segments=shape[1],
             ).astype(post_trace.aval.dtype)
     return ct_weight, indices, indptr, pre_spike, ct_trace
 
@@ -811,8 +812,10 @@ def _csr2csc_on_post_jax_kernel(
             total_repeat_length=nse,
         )
         active = event_active(post_spike[col_ids])
-        delta = jnp.where(active, pre_trace[indices], jnp.zeros_like(pre_trace[indices]))
-        return [weight.at[weight_indices].add(delta)]
+        # ``weight_indices`` is a permutation, so ``set`` writes each edge once;
+        # selecting the old value keeps inactive edges bit-identical.
+        old = weight[weight_indices]
+        return [weight.at[weight_indices].set(jnp.where(active, old + pre_trace[indices], old))]
 
     return kernel
 
@@ -1008,7 +1011,7 @@ def _csr2csc_on_post_transpose_rule(ct, weight, indices, indptr, weight_indices,
             active = event_active(post_spike)[col_ids]
             ct_slot = ct[weight_indices]
             ct_trace = jax.ops.segment_sum(
-                jnp.where(active, ct_slot, jnp.zeros_like(ct_slot)), indices, num_segments=shape[0],
+                select_active(active, ct_slot), indices, num_segments=shape[0],
             ).astype(pre_trace.aval.dtype)
     return ct_weight, indices, indptr, weight_indices, ct_trace, post_spike
 

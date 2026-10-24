@@ -44,6 +44,8 @@ __all__ = [
     'dtype_suffix',
     'event_active',
     'event_factor',
+    'select_active',
+    'active_sum',
     'EventABI',
     'cuda_event_abi',
 ]
@@ -164,6 +166,15 @@ def event_factor(x, *, dtype, weighted: bool = False) -> jax.Array:
     See Also
     --------
     event_active : The boolean activity mask.
+    select_active : NaN-safe alternative to multiplying by the mask.
+
+    Notes
+    -----
+    Multiplying by the mask is not NaN-safe: ``0 * NaN`` and ``0 * Inf`` are
+    ``NaN``, so an inactive event would still see a non-finite weight or
+    cotangent. Inactive events must contribute exactly zero
+    (``2026-10-24-inactive-row-nan-isolation.md``); use :func:`select_active`
+    or :func:`active_sum` wherever the other operand can be non-finite.
 
     Examples
     --------
@@ -180,6 +191,89 @@ def event_factor(x, *, dtype, weighted: bool = False) -> jax.Array:
     if weighted:
         return jax.numpy.asarray(x).astype(dtype)
     return event_active(x).astype(dtype)
+
+
+def select_active(active, values) -> jax.Array:
+    """Return ``values`` where ``active`` and an exact ``0`` elsewhere.
+
+    Inactive events must contribute exactly zero, whatever the weight or
+    cotangent they would multiply. ``where`` selects, so a NaN/Inf in an
+    inactive entry is discarded, whereas ``mask * values`` would propagate it.
+
+    Parameters
+    ----------
+    active : jax.Array
+        Boolean activity, broadcastable against ``values``.
+    values : jax.Array
+        Values computed for every entry.
+
+    Returns
+    -------
+    jax.Array
+        ``jnp.where(active, values, 0)`` with the dtype of ``values``.
+
+    See Also
+    --------
+    event_active : The boolean activity mask.
+    active_sum : Sum of a product over the active events only.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._op.util import select_active
+        >>> select_active(jnp.array([True, False]), jnp.array([1.5, jnp.nan])).tolist()
+        [1.5, 0.0]
+    """
+    values = jax.numpy.asarray(values)
+    return jax.numpy.where(active, values, jax.numpy.zeros((), dtype=values.dtype))
+
+
+def active_sum(r, events, *, weighted: bool = False) -> jax.Array:
+    """Sum ``r`` (times the event value) over the active events only.
+
+    Scalar weight-parameter cotangents are ``<r, f(events)>`` with
+    ``r = basis^T ct``. The reduction selects the active entries
+    (``events != 0``), so an inactive event contributes exactly ``0`` even when
+    ``r`` is NaN/Inf there.
+
+    Parameters
+    ----------
+    r : jax.Array
+        Per-event values, same shape as ``events``.
+    events : jax.Array
+        Event operand of the forward product.
+    weighted : bool, optional
+        ``False`` (default): active events contribute ``r`` (binary events).
+        ``True``: they contribute ``r * events`` (float / weighted events).
+
+    Returns
+    -------
+    jax.Array
+        Scalar sum over the active entries.
+
+    See Also
+    --------
+    select_active : Elementwise selection on activity.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._op.util import active_sum
+        >>> r = jnp.array([jnp.nan, 2.0, 3.0])
+        >>> float(active_sum(r, jnp.array([False, True, True])))
+        5.0
+
+        >>> float(active_sum(r, jnp.array([0.0, 1.0, -1.0]), weighted=True))
+        -1.0
+    """
+    if weighted:
+        events = jax.numpy.asarray(events)
+        return jax.numpy.sum(select_active(events != 0, r * events))
+    return jax.numpy.sum(select_active(event_active(events), r))
 
 
 #: Numba ``fastmath`` flags for event kernels. ``nnan``/``ninf`` are excluded

@@ -32,7 +32,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, active_sum, dtype_suffix, event_active
 
 __all__ = [
     "jitn",
@@ -42,6 +42,9 @@ __all__ = [
     "jitnmm",
     "jitnmm_p",
 ]
+
+
+
 
 def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
     if isinstance(prob, Tracer):
@@ -885,7 +888,7 @@ def _jitnmv_transpose_rules(
             shape=shape, transpose=not transpose, corder=not corder,
             backend=backend,
         )[0]
-        dw_loc = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        dw_loc = jnp.expand_dims(active_sum(r, vector, weighted=True), axis=0)
         return dw_loc, w_scale, clen, vector, seed
     elif ad.is_undefined_primal(w_scale):
         # M = (w_loc + w_scale * Z) * mask
@@ -897,7 +900,7 @@ def _jitnmv_transpose_rules(
             shape=shape, transpose=not transpose, corder=not corder,
             backend=backend,
         )[0]
-        dw_scale = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        dw_scale = jnp.expand_dims(active_sum(r, vector, weighted=True), axis=0)
         return w_loc, dw_scale, clen, vector, seed
     else:
         raise NotImplementedError(
@@ -1161,7 +1164,11 @@ def _jitnmm_numba_kernel_generator(
                         while local_j < chunk_width:
                             col = chunk_start + local_j
                             n01 = _rng_normal01(seed0, row, col)
-                            out += B[col] * (w_loc0 + n01 * w_scale0)
+                            w = w_loc0 + n01 * w_scale0
+                            for c in range(n):
+                                b = B[col, c]
+                                if b != 0.:  # zero events are skipped (never ``0 * w``)
+                                    out[c] += b * w
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -1173,6 +1180,7 @@ def _jitnmm_numba_kernel_generator(
             posts[:] = 0.
             k = posts.shape[0]
             m = B.shape[0]
+            n = posts.shape[1]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
             seed0 = np.uint32(seed[0])
@@ -1199,7 +1207,11 @@ def _jitnmm_numba_kernel_generator(
                         while local_j < chunk_width:
                             col = chunk_start + local_j
                             n01 = _rng_normal01(seed0, row, col)
-                            posts[col] += out * (w_loc0 + n01 * w_scale0)
+                            w = w_loc0 + n01 * w_scale0
+                            for c in range(n):
+                                b = out[c]
+                                if b != 0.:  # zero events are skipped (never ``0 * w``)
+                                    posts[col, c] += b * w
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -1293,7 +1305,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
             shape=shape, transpose=not transpose, corder=not corder,
             backend=backend,
         )[0]
-        dw_loc = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        dw_loc = jnp.expand_dims(active_sum(r, B, weighted=True), axis=0)
         return dw_loc, w_scale, clen, B, seed
     elif ad.is_undefined_primal(w_scale):
         # M = (w_loc + w_scale * Z) * mask
@@ -1304,7 +1316,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
             shape=shape, transpose=not transpose, corder=not corder,
             backend=backend,
         )[0]
-        dw_scale = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        dw_scale = jnp.expand_dims(active_sum(r, B, weighted=True), axis=0)
         return w_loc, dw_scale, clen, B, seed
     else:
         raise NotImplementedError(

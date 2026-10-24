@@ -30,7 +30,7 @@ from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule,
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
 from .float import _chunk_size, _walk_length, _LANE_STRIDE, jitumv_p_call, jitumm_p_call
-from brainevent._op.util import dtype_suffix, event_active
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, active_sum, dtype_suffix, event_active
 
 __all__ = [
     "binary_jitumv",
@@ -329,7 +329,7 @@ def _jitumv_numba_kernel_generator(
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
 
     if corder:
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(w_low, w_high, clen, vector, seed, posts):
             m = posts.shape[0]
             k = vector.shape[0]
@@ -366,7 +366,7 @@ def _jitumv_numba_kernel_generator(
                             local_j = lane + stride * int(q)
                 posts[row] = out
     else:
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(w_low, w_high, clen, vector, seed, posts):
             posts[:] = 0.
             k = posts.shape[0]
@@ -608,34 +608,38 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
         )[0]
 
     if needs_w_low or needs_w_high:
+        # ``dL/dw_high = <ct, U @ x> = <U^T ct, x>`` and
+        # ``dL/dw_low = <(C - U)^T ct, x>``: reduce over the events and *select*
+        # the active ones, so an inactive event contributes exactly 0 even where
+        # ``ct`` is NaN/Inf (``ct * 0`` would leak).
         ones = jnp.ones((1,), dtype=ct.dtype)
         zeros = jnp.zeros((1,), dtype=ct.dtype)
-        high_basis = binary_jitumv_p_call(
+        u_row = jitumv_p_call(
             zeros,
             ones,
             clen,
-            vector,
+            ct,
             seed,
             shape=shape,
-            transpose=transpose,
-            corder=corder,
+            transpose=not transpose,
+            corder=not corder,
             backend=kwargs['backend'],
         )[0]
         if needs_w_low:
-            count_basis = binary_jitumv_p_call(
+            c_row = jitumv_p_call(
                 ones,
                 ones,
                 clen,
-                vector,
+                ct,
                 seed,
                 shape=shape,
-                transpose=transpose,
-                corder=corder,
+                transpose=not transpose,
+                corder=not corder,
                 backend=kwargs['backend'],
             )[0]
-            dw_low = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
+            dw_low = jnp.expand_dims(active_sum(c_row - u_row, vector), axis=0)
         if needs_w_high:
-            dw_high = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
+            dw_high = jnp.expand_dims(active_sum(u_row, vector), axis=0)
 
     if needs_vector or needs_w_low or needs_w_high:
         return dw_low, dw_high, clen, d_vector, seed
@@ -916,7 +920,7 @@ def _jitumm_numba_kernel_generator(
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
 
     if corder:
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(w_low, w_high, clen, B, seed, posts):
             m = posts.shape[0]
             n = posts.shape[1]
@@ -956,7 +960,7 @@ def _jitumm_numba_kernel_generator(
                             local_j = lane + stride * int(q)
                 posts[row] = out
     else:
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(w_low, w_high, clen, B, seed, posts):
             posts[:] = 0.
             k = posts.shape[0]
@@ -1208,34 +1212,38 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
         )[0]
 
     if needs_w_low or needs_w_high:
+        # ``dL/dw_high = <ct, U @ x> = <U^T ct, x>`` and
+        # ``dL/dw_low = <(C - U)^T ct, x>``: reduce over the events and *select*
+        # the active ones, so an inactive event contributes exactly 0 even where
+        # ``ct`` is NaN/Inf (``ct * 0`` would leak).
         ones = jnp.ones((1,), dtype=ct.dtype)
         zeros = jnp.zeros((1,), dtype=ct.dtype)
-        high_basis = binary_jitumm_p_call(
+        u_row = jitumm_p_call(
             zeros,
             ones,
             clen,
-            B,
+            ct,
             seed,
             shape=shape,
-            transpose=transpose,
-            corder=corder,
+            transpose=not transpose,
+            corder=not corder,
             backend=kwargs['backend'],
         )[0]
         if needs_w_low:
-            count_basis = binary_jitumm_p_call(
+            c_row = jitumm_p_call(
                 ones,
                 ones,
                 clen,
-                B,
+                ct,
                 seed,
                 shape=shape,
-                transpose=transpose,
-                corder=corder,
+                transpose=not transpose,
+                corder=not corder,
                 backend=kwargs['backend'],
             )[0]
-            dw_low = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
+            dw_low = jnp.expand_dims(active_sum(c_row - u_row, B), axis=0)
         if needs_w_high:
-            dw_high = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
+            dw_high = jnp.expand_dims(active_sum(u_row, B), axis=0)
 
     if needs_B or needs_w_low or needs_w_high:
         return dw_low, dw_high, clen, dB, seed

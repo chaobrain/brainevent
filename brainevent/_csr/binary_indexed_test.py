@@ -1460,3 +1460,156 @@ def test_indexed_cuda_generators_select_weighted_abi(monkeypatch, homo):
         event_arg = args[3] if homo else args[4]
         assert event_arg.dtype == jnp.float32
         np.testing.assert_array_equal(np.asarray(event_arg), np.full(ev_shape, 4.0))
+
+
+# ---------------------------------------------------------------------------
+# Inactive events contribute exactly zero, whatever the weight (NaN/Inf).
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md
+# ---------------------------------------------------------------------------
+
+from brainevent._csr._test_util import (  # noqa: E402
+    EVENT_KINDS, NONFINITE_VALUES, assert_select_reference, homo_ct_case, inactive_nonfinite_case,
+)
+
+
+def _nonfinite_indexed_operands(case, seed=0):
+    """Store the CSR-order weights of ``case`` permuted: ``data[perm[j]]`` is slot ``j``."""
+    nse = case.indices.size
+    if case.data.size == 1:
+        return jnp.asarray(case.data), jnp.zeros(nse, jnp.int32)
+    perm = np.random.default_rng(seed).permutation(nse).astype(np.int32)
+    data = np.empty_like(case.data)
+    data[perm] = case.data
+    return jnp.asarray(data), jnp.asarray(perm)
+
+
+def _indexed_call(case, shape, transpose, backend, mm, data=None):
+    stored, perm = _nonfinite_indexed_operands(case)
+    data = stored if data is None else data
+    indptr = jnp.asarray(case.indptr)
+    op = binary_csrmm_indexed if mm else binary_csrmv_indexed
+    return op(
+        data, jnp.asarray(case.indices), indptr, perm, case.events, shape=shape,
+        workspace=_make_binary_task_workspace(indptr), transpose=transpose,
+        backend=backend, weighted=case.weighted,
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MV_BACKENDS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('bad', tuple(NONFINITE_VALUES))
+def test_indexed_mv_inactive_nonfinite_weights_contribute_zero(backend, transpose, homo, kind, bad):
+    shape = (7, 6)
+    case = inactive_nonfinite_case(10, *shape, transpose=transpose, homo=homo, kind=kind, bad=bad)
+    assert_select_reference(_indexed_call(case, shape, transpose, backend, mm=False), case)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MM_BACKENDS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('bad', tuple(NONFINITE_VALUES))
+def test_indexed_mm_inactive_nonfinite_weights_contribute_zero(backend, transpose, homo, kind, bad):
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        11, *shape, transpose=transpose, homo=homo, kind=kind, bad=bad, n_batch=4,
+    )
+    assert_select_reference(_indexed_call(case, shape, transpose, backend, mm=True), case)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MM_BACKENDS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+def test_indexed_mm_nonfinite_weight_isolated_per_event_column(backend, transpose, kind):
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        12, *shape, transpose=transpose, homo=False, kind=kind, bad='nan', n_batch=4, partial=True,
+    )
+    assert_select_reference(_indexed_call(case, shape, transpose, backend, mm=True), case)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MV_BACKENDS)
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('mm', [False, True])
+def test_indexed_inactive_nonfinite_weights_heavy_rows(backend, homo, kind, mm):
+    if mm and backend not in _IDX_MM_BACKENDS:
+        pytest.skip(f'{backend} has no indexed csrmm kernel')
+    shape = (4, 300)
+    case = inactive_nonfinite_case(
+        13, *shape, transpose=True, homo=homo, kind=kind, bad='nan',
+        n_batch=3 if mm else None, heavy_row_nnz=200,
+    )
+    assert_select_reference(_indexed_call(case, shape, True, backend, mm=mm), case)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MV_BACKENDS)
+@pytest.mark.parametrize('transpose', [False, True])
+def test_indexed_active_nan_weight_still_propagates(backend, transpose):
+    shape = (7, 6)
+    case = inactive_nonfinite_case(14, *shape, transpose=transpose, homo=False, kind='bool', bad='nan')
+    e = int(np.flatnonzero(case.active[:, 0])[0])
+    data = case.data.copy()
+    data[e] = np.nan
+    out = np.asarray(_indexed_call(case._replace(data=data), shape, transpose, backend, mm=False))
+    target = case.indices[e] if transpose else int(np.searchsorted(case.indptr, e, side='right') - 1)
+    assert np.isnan(out[target])
+    assert np.isfinite(out).any()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MV_BACKENDS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('mm', [False, True])
+def test_indexed_weight_cotangent_of_inactive_entries_is_exact_zero(backend, transpose, kind, mm):
+    if mm and backend not in _IDX_MM_BACKENDS:
+        pytest.skip(f'{backend} has no indexed csrmm kernel')
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        15, *shape, transpose=transpose, homo=False, kind=kind, bad='nan',
+        n_batch=3 if mm else None,
+    )
+    case = case._replace(data=np.where(np.isfinite(case.data), case.data, 1.0).astype(np.float32))
+    stored, perm = _nonfinite_indexed_operands(case)
+
+    def f(d):
+        return _indexed_call(case, shape, transpose, backend, mm=mm, data=d)
+
+    out, vjp = jax.vjp(f, stored)
+    (ct_stored,) = vjp(jnp.full_like(out, jnp.nan))
+    ct_slot = np.asarray(ct_stored)[np.asarray(perm)]
+    inactive = case.inactive_edge
+    assert inactive.any() and (~inactive).any()
+    np.testing.assert_array_equal(ct_slot[inactive], 0.0)
+    assert np.isnan(ct_slot[~inactive]).all()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MV_BACKENDS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('mm', [False, True])
+def test_indexed_homo_weight_cotangent_ignores_nan_on_idle_outputs(backend, transpose, kind, mm):
+    if mm and backend not in _IDX_MM_BACKENDS:
+        pytest.skip(f'{backend} has no indexed csrmm kernel')
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        16, *shape, transpose=transpose, homo=True, kind=kind, bad='nan', n_batch=3 if mm else None,
+    )
+    ct, expected = homo_ct_case(case, transpose)
+
+    def f(d):
+        return _indexed_call(case, shape, transpose, backend, mm=mm, data=d)
+
+    _, vjp = jax.vjp(f, jnp.ones(1, jnp.float32))
+    (ct_w,) = vjp(ct)
+    assert np.isfinite(expected)
+    np.testing.assert_allclose(np.asarray(ct_w), [expected], rtol=1e-5)

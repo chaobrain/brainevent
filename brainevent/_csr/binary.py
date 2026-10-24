@@ -42,7 +42,9 @@ from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from .float import csrmv, csrmm, csrmv_p, csrmm_p
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask
+from brainevent._op.util import (
+    cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask, select_active,
+)
 
 __all__ = [
     'binary_csrmv',
@@ -209,7 +211,9 @@ def binary_csrmv(
     sparse--dense product, it skips columns (or rows, when transposed)
     for which the corresponding entry in ``v`` is inactive (``False`` or
     ``0``; negative values and NaN are active).  This yields significant speed-ups when the event vector is
-    sparse.
+    sparse.  Inactive events contribute exactly ``0`` on every backend, even
+    when the weights they would multiply are NaN or +-Inf, and the weight
+    cotangent of such entries is exactly ``0``.
 
     Mathematically, the non-transposed operation computes:
 
@@ -340,7 +344,10 @@ def binary_csrmm(
     Notes
     -----
     The operation is *event-driven*: entries of ``B`` that are inactive
-    (``False`` or ``0``; negative values and NaN are active) are skipped.  Custom JVP and transpose rules
+    (``False`` or ``0``; negative values and NaN are active) are skipped, so
+    they contribute exactly ``0`` on every backend even against NaN/+-Inf
+    weights, and the weight cotangent of such entries is exactly ``0``.
+    Custom JVP and transpose rules
     are provided for automatic differentiation.
 
     Mathematically, the non-transposed operation computes:
@@ -408,6 +415,101 @@ _numba_event_mask = numba_event_mask
 def _numba_weighted_events(x):
     """Cast float16/bfloat16 weighted events to float32 for numba (exact)."""
     return x.astype(jnp.float32) if _numba_event_mask(x.dtype) else x
+
+
+def _event_contrib(w, x, *, dtype, weighted: bool) -> jax.Array:
+    """Per-entry contribution of an event to a weighted sum, by selection.
+
+    Returns ``where(x != 0, w * f(x), 0)`` with ``f(x) = 1`` (binary) or
+    ``f(x) = x`` (weighted). Inactive events contribute exactly ``0`` even
+    when ``w`` is NaN or +-Inf: the weight is selected away, never multiplied
+    by a 0/1 mask (``NaN * 0`` is NaN).
+
+    Parameters
+    ----------
+    w : jax.Array
+        Weights, broadcastable to ``x``.
+    x : jax.Array
+        Event values (any boolean, integer or floating dtype).
+    dtype : dtype_like
+        Output dtype.
+    weighted : bool
+        Multiply by the event value (``WeightedArray``) instead of its mask.
+
+    Returns
+    -------
+    jax.Array
+        The contributions, with the broadcast shape of ``w`` and ``x``.
+    """
+    w = jnp.asarray(w).astype(dtype)
+    value = w * x.astype(dtype) if weighted else w
+    return select_active(event_active(x), value)
+
+
+def _event_ct(events, ct, *, weighted: bool) -> jax.Array:
+    """Weight cotangent ``where(active, f(x) * ct, 0)`` of a per-entry product.
+
+    ``events`` and ``ct`` are already gathered per stored entry. Inactive
+    entries get exactly ``0`` even if ``ct`` is NaN or +-Inf.
+
+    Parameters
+    ----------
+    events : jax.Array
+        Event value of every stored entry.
+    ct : jax.Array
+        Output cotangent of every stored entry.
+    weighted : bool
+        Value-weighted events.
+
+    Returns
+    -------
+    jax.Array
+        The weight cotangent of every stored entry, in ``ct.dtype``.
+    """
+    value = events.astype(ct.dtype) * ct if weighted else ct
+    return select_active(event_active(events), value)
+
+
+def _entry_weight_ct(events, ct, row, col, *, transpose: bool, weighted: bool) -> jax.Array:
+    """Exact per-entry weight cotangent of a CSR event product, by selection.
+
+    Entry ``e`` reads the event of unit ``row(e)`` (``transpose``) or
+    ``col(e)`` and writes output ``col(e)`` or ``row(e)``. The result is
+    ``sum_b where(active[unit, b], f(x[unit, b]) * ct[out, b], 0)``: an event
+    that is inactive in a batch column contributes exactly ``0`` there, even
+    where ``ct`` is NaN/Inf.
+
+    Parameters
+    ----------
+    events : jax.Array
+        ``(n_ev,)`` or ``(n_ev, n)`` events.
+    ct : jax.Array
+        ``(n_out,)`` or ``(n_out, n)`` output cotangent.
+    row, col : jax.Array
+        COO coordinates of the stored entries.
+    transpose : bool
+        Product direction.
+    weighted : bool
+        Value-weighted events.
+
+    Returns
+    -------
+    jax.Array
+        ``(nse,)`` weight cotangent in ``ct.dtype``.
+    """
+    unit, out = (row, col) if transpose else (col, row)
+    values = _event_ct(events[unit], ct[out], weighted=weighted)
+    return values if values.ndim == 1 else jnp.sum(values, axis=1)
+
+
+def _homo_count_output(count, w, dtype):
+    """Scale exact active-event counts by a homogeneous weight, by selection.
+
+    Outputs that received no active event (``count == 0``) stay exactly ``0``
+    even for a NaN/Inf weight. Only valid for binary events, whose unit-weight
+    product is an exact count (weighted event sums may cancel to ``0``).
+    """
+    return select_active(count != 0, count * w.astype(dtype))
 
 
 def _csrmv_numba_weighted(homo: bool, transpose: bool):
@@ -661,10 +763,9 @@ def _binary_csrmv_jax_kernel(
                 jnp.diff(indptr),
                 total_repeat_length=nse,
             )
-            v_row = vector[row_ids]
-            events = event_factor(v_row, dtype=out_dtype, weighted=weighted)
             w = weights[0] if is_homo else weights
-            math_out = jnp.zeros(k, dtype=out_dtype).at[indices].add(w * events)
+            contrib = _event_contrib(w, vector[row_ids], dtype=out_dtype, weighted=weighted)
+            math_out = jnp.zeros(k, dtype=out_dtype).at[indices].add(contrib)
             return math_out, task_begin, task_end, status
     else:
         def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
@@ -673,10 +774,9 @@ def _binary_csrmv_jax_kernel(
                 jnp.diff(indptr),
                 total_repeat_length=nse,
             )
-            v_col = vector[indices]
-            events = event_factor(v_col, dtype=out_dtype, weighted=weighted)
             w = weights[0] if is_homo else weights
-            math_out = jnp.zeros(m, dtype=out_dtype).at[row_ids].add(w * events)
+            contrib = _event_contrib(w, vector[indices], dtype=out_dtype, weighted=weighted)
+            math_out = jnp.zeros(m, dtype=out_dtype).at[row_ids].add(contrib)
             return math_out, task_begin, task_end, status
 
     return kernel
@@ -689,24 +789,48 @@ def _binary_csrmv_cusparse_kernel(
     transpose: bool,
     **kwargs,
 ):
-    """cuSPARSE-backed binary CSR SpMV kernel via ``jax.experimental.sparse`` (GPU only)."""
+    """cuSPARSE-backed binary CSR SpMV kernel via ``jax.experimental.sparse`` (GPU only).
+
+    cuSPARSE multiplies every stored weight by its event factor, which leaks a
+    NaN/Inf weight through an inactive event (``NaN * 0``). A homogeneous
+    weight with binary events scales the exact active-event count by
+    selection. Otherwise cuSPARSE runs unchanged when every weight is finite
+    (``0 * w`` is then exact) and any NaN/Inf weight takes the select-based
+    ``jax_raw`` product via ``lax.cond``.
+    """
     import jax.experimental.sparse as jsparse
     m, k = shape
     is_homo = (weight_info.size == 1)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
     weighted = kwargs.get('weighted', False)
+    # Exact select-based fallback for non-finite weights.
+    select_kernel = _binary_csrmv_jax_kernel(weight_info, vector_info, shape, transpose, **kwargs)
 
     def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
         events = event_factor(vector, dtype=out_dtype, weighted=weighted)
-        indices = indices.astype(indptr.dtype) if indices.dtype != indptr.dtype else indices
-        if is_homo:
+        cast_indices = indices.astype(indptr.dtype) if indices.dtype != indptr.dtype else indices
+        if is_homo and not weighted:
             data = jnp.ones(nse, dtype=out_dtype)
-            mat = jsparse.CSR((data, indices, indptr), shape=(m, k))
-            math_out = jsparse.csr_matvec(mat, events, transpose=transpose) * weights[0].astype(out_dtype)
-            return math_out, task_begin, task_end, status
-        mat = jsparse.CSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
-        math_out = jsparse.csr_matvec(mat, events, transpose=transpose)
+            mat = jsparse.CSR((data, cast_indices, indptr), shape=(m, k))
+            count = jsparse.csr_matvec(mat, events, transpose=transpose)
+            # ``count`` is an exact active-event count: select instead of
+            # ``0 * w`` so a NaN/Inf weight leaves idle outputs exactly 0.
+            return _homo_count_output(count, weights[0], out_dtype), task_begin, task_end, status
+
+        def library_product(weights):
+            data = jnp.broadcast_to(weights, (nse,)).astype(out_dtype)
+            mat = jsparse.CSR((data, cast_indices, indptr), shape=(m, k))
+            return jsparse.csr_matvec(mat, events, transpose=transpose)
+
+        def select_product(weights):
+            return select_kernel(weights, indices, indptr, vector, task_begin, task_end, status)[0]
+
+        # Masking the operand per call costs a full O(nse) row-id expansion
+        # (several times the SpMV); the finiteness check is one reduction.
+        math_out = jax.lax.cond(
+            jnp.all(jnp.isfinite(weights)), library_product, select_product, weights,
+        )
         return math_out, task_begin, task_end, status
 
     return kernel
@@ -857,25 +981,38 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, task_begin, task_en
         if type(ct) is ad.Zero:
             ct_values = ad.Zero(data)
         else:
+            weighted = kwargs.get('weighted', False)
+            row, col = _csr_to_coo(indices, indptr)
             if data.aval.shape[0] == 1:  # scalar
-                ct_values = binary_csrmv_p_call(
-                    jnp.ones(1, dtype=data.aval.dtype),
-                    indices,
-                    indptr,
-                    events,
-                    shape=shape,
-                    transpose=transpose,
-                    backend=kwargs['backend'],
-                    workspace=workspace,
-                    weighted=kwargs.get('weighted', False),
-                )[0]
-                ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
+
+                def unit_product(ct):
+                    r = binary_csrmv_p_call(
+                        jnp.ones(1, dtype=data.aval.dtype),
+                        indices,
+                        indptr,
+                        events,
+                        shape=shape,
+                        transpose=transpose,
+                        backend=kwargs['backend'],
+                        workspace=workspace,
+                        weighted=weighted,
+                    )[0]
+                    return jnp.inner(ct, r)
+
+                def select_sum(ct):
+                    return jnp.sum(_entry_weight_ct(events, ct, row, col, transpose=transpose, weighted=weighted))
+
+                # ``ct * 0`` is exact for a finite cotangent; a NaN/Inf one
+                # takes the per-entry select so it cannot leak through an
+                # output that received only inactive events.
+                ct_values = jax.lax.cond(
+                    jnp.all(jnp.isfinite(ct)), unit_product, select_sum, ct,
+                ).astype(data.aval.dtype).reshape(*data.aval.shape)
             else:  # heterogeneous values
-                row, col = _csr_to_coo(indices, indptr)
-                # Binary: the forward multiplies by the activity mask, never the raw
-                # event value. Weighted: it multiplies by the value.
-                ev = event_factor(events, dtype=ct.dtype, weighted=kwargs.get('weighted', False))
-                ct_values = ev[row] * ct[col] if transpose else ev[col] * ct[row]
+                # Binary: the forward selects the weight of active events. Weighted:
+                # it multiplies by the value. Inactive entries get exactly 0, by
+                # selection, even for a NaN/Inf output cotangent.
+                ct_values = _entry_weight_ct(events, ct, row, col, transpose=transpose, weighted=weighted)
         return ct_values, indices, indptr, events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
 
 
@@ -1366,10 +1503,9 @@ def _binary_csrmm_jax_kernel(
                 jnp.diff(indptr),
                 total_repeat_length=nse,
             )
-            B_rows = B[row_ids]  # [nse, n]
-            events = event_factor(B_rows, dtype=out_dtype, weighted=weighted)
             w = weights[0] if is_homo else weights[:, None]
-            math_out = jnp.zeros((k, n), dtype=out_dtype).at[indices].add(w * events)
+            contrib = _event_contrib(w, B[row_ids], dtype=out_dtype, weighted=weighted)  # [nse, n]
+            math_out = jnp.zeros((k, n), dtype=out_dtype).at[indices].add(contrib)
             return math_out, task_begin, task_end, status
     else:
         def kernel(weights, indices, indptr, B, task_begin, task_end, status):
@@ -1378,10 +1514,9 @@ def _binary_csrmm_jax_kernel(
                 jnp.diff(indptr),
                 total_repeat_length=nse,
             )
-            B_rows = B[indices]  # [nse, n]
-            events = event_factor(B_rows, dtype=out_dtype, weighted=weighted)
             w = weights[0] if is_homo else weights[:, None]
-            math_out = jnp.zeros((m, n), dtype=out_dtype).at[row_ids].add(w * events)
+            contrib = _event_contrib(w, B[indices], dtype=out_dtype, weighted=weighted)  # [nse, n]
+            math_out = jnp.zeros((m, n), dtype=out_dtype).at[row_ids].add(contrib)
             return math_out, task_begin, task_end, status
 
     return kernel
@@ -1394,24 +1529,43 @@ def _binary_csrmm_cusparse_kernel(
     transpose: bool,
     **kwargs,
 ):
-    """cuSPARSE-backed binary CSR SpMM kernel via ``jax.experimental.sparse`` (GPU only)."""
+    """cuSPARSE-backed binary CSR SpMM kernel via ``jax.experimental.sparse`` (GPU only).
+
+    Activity varies per batch column, so one masked operand cannot serve
+    every column. A homogeneous weight with binary events scales the exact
+    active-event counts by selection. Otherwise cuSPARSE runs unchanged when
+    every weight is finite (``0 * w`` is then exact) and any NaN/Inf weight
+    takes the select-based ``jax_raw`` product via ``lax.cond``.
+    """
     import jax.experimental.sparse as jsparse
     m, k = shape
     is_homo = (weight_info.size == 1)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
     weighted = kwargs.get('weighted', False)
+    # Exact select-based fallback for non-finite weights.
+    select_kernel = _binary_csrmm_jax_kernel(weight_info, vector_info, shape, transpose, **kwargs)
 
     def kernel(weights, indices, indptr, B, task_begin, task_end, status):
         events = event_factor(B, dtype=out_dtype, weighted=weighted)
-        indices = indices.astype(indptr.dtype) if indices.dtype != indptr.dtype else indices
-        if is_homo:
+        cast_indices = indices.astype(indptr.dtype) if indices.dtype != indptr.dtype else indices
+        if is_homo and not weighted:
             data = jnp.ones(nse, dtype=out_dtype)
-            mat = jsparse.CSR((data, indices, indptr), shape=(m, k))
-            math_out = jsparse.csr_matmat(mat, events, transpose=transpose) * weights[0].astype(out_dtype)
-            return math_out, task_begin, task_end, status
-        mat = jsparse.CSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
-        math_out = jsparse.csr_matmat(mat, events, transpose=transpose)
+            mat = jsparse.CSR((data, cast_indices, indptr), shape=(m, k))
+            count = jsparse.csr_matmat(mat, events, transpose=transpose)
+            return _homo_count_output(count, weights[0], out_dtype), task_begin, task_end, status
+
+        def library_product(weights):
+            data = jnp.broadcast_to(weights, (nse,)).astype(out_dtype)
+            mat = jsparse.CSR((data, cast_indices, indptr), shape=(m, k))
+            return jsparse.csr_matmat(mat, events, transpose=transpose)
+
+        def select_product(weights):
+            return select_kernel(weights, indices, indptr, B, task_begin, task_end, status)[0]
+
+        math_out = jax.lax.cond(
+            jnp.all(jnp.isfinite(weights)), library_product, select_product, weights,
+        )
         return math_out, task_begin, task_end, status
 
     return kernel
@@ -1520,7 +1674,6 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, task_begin, task_end, st
     assert not ad.is_undefined_primal(indptr)
 
     ct = ct[0]
-    workspace = _workspace_from_task_operands(kwargs['task_capacity'], task_begin, task_end, status)
     if ad.is_undefined_primal(B):
         # dB is dense/float cotangent data, so the float CSRMM path needs no binary workspace.
         dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose,
@@ -1528,29 +1681,51 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, task_begin, task_end, st
         return data, indices, indptr, dB, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
     else:
         B = jnp.asarray(B)
+        weighted = kwargs.get('weighted', False)
+        row, col = _csr_to_coo(indices, indptr)
+        d_data = _csrmm_entry_weight_ct(B, ct, row, col, transpose=transpose, weighted=weighted)
         if data.aval.shape[0] == 1:  # scalar
-            r = binary_csrmm_p_call(
-                jnp.ones(1, dtype=data.aval.dtype),
-                indices,
-                indptr,
-                B,
-                workspace,
-                shape=shape,
-                transpose=transpose,
-                backend=kwargs['backend'],
-                weighted=kwargs.get('weighted', False),
-            )[0]
-            return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
-        else:
-            row, col = _csr_to_coo(indices, indptr)
-            # Binary: the forward multiplies by the activity mask, never the raw
-            # event value. Weighted: it multiplies by the value.
-            B_factor = event_factor(B, dtype=ct.dtype, weighted=kwargs.get('weighted', False))
-            if transpose:
-                d_data = sddmm_coo_indices(B_factor, ct.T, row, col).data
-            else:
-                d_data = sddmm_coo_indices(B_factor, ct.T, col, row).data
-            return d_data, indices, indptr, B, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
+            d_data = jnp.sum(d_data).reshape(*data.aval.shape)
+        d_data = d_data.astype(data.aval.dtype)
+        return d_data, indices, indptr, B, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
+
+
+def _csrmm_entry_weight_ct(B, ct, row, col, *, transpose: bool, weighted: bool) -> jax.Array:
+    """Per-entry weight cotangent of a CSR event mat-mat product.
+
+    A finite cotangent uses the fused SDDMM ``sum_b f(B[unit, b]) * ct[out, b]``
+    (``0 * ct`` is exact there); a NaN/Inf cotangent takes the per-column
+    select of :func:`_entry_weight_ct`, so it cannot leak through an event that
+    is inactive in that batch column.
+
+    Parameters
+    ----------
+    B : jax.Array
+        ``(n_ev, n)`` events.
+    ct : jax.Array
+        ``(n_out, n)`` output cotangent.
+    row, col : jax.Array
+        COO coordinates of the stored entries.
+    transpose : bool
+        Product direction.
+    weighted : bool
+        Value-weighted events.
+
+    Returns
+    -------
+    jax.Array
+        ``(nse,)`` weight cotangent in ``ct.dtype``.
+    """
+    unit, out = (row, col) if transpose else (col, row)
+
+    def sddmm(ct):
+        B_factor = event_factor(B, dtype=ct.dtype, weighted=weighted)
+        return sddmm_coo_indices(B_factor, ct.T, unit, out).data
+
+    def select(ct):
+        return _entry_weight_ct(B, ct, row, col, transpose=transpose, weighted=weighted)
+
+    return jax.lax.cond(jnp.all(jnp.isfinite(ct)), sddmm, select, ct)
 
 
 def _csrmm_batching(args, axes, **kwargs):

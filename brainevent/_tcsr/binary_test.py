@@ -1564,3 +1564,211 @@ def test_cuda_weighted_heavy_rows_grads(homogeneous, op):
             op_fn, dense_fn, matrix.data, x,
             mode="weighted", rtol=1e-3, atol=1e-3, check_vmap=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# Inactive events contribute exactly zero (NaN/Inf weight isolation,
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md): NaN/±Inf weights
+# placed only on entries whose event is inactive must not reach the output,
+# and the weight cotangent of an inactive event is exactly zero even when the
+# output cotangent is NaN/Inf. Active entries keep IEEE semantics.
+# ---------------------------------------------------------------------------
+
+_ISOLATION_KINDS = ["bool", "float", "int8", "weighted"]
+_BAD_CYCLE = (np.nan, np.inf, -np.inf)
+
+
+def _isolation_events(op, shape, kind, seed=0, batch=_BATCH):
+    """Sparse events plus the poison set of event indices.
+
+    Returns ``(x, xb, poison)`` where ``x`` has the native layout of ``op``,
+    ``xb`` is the ``(batch, n_event)`` view of ``x`` and ``poison`` lists event
+    indices whose weights may be poisoned: indices inactive in every batch
+    and, for matrix ops, indices active only in batch 0 (so batch 0 sees the
+    poison through an active event while the other batches must not).
+    """
+    rows, cols = shape
+    n_event = rows if op in ("vm", "mr") else cols
+    n_batch = batch if op in ("mm", "mr") else 1
+    rng = np.random.RandomState(seed)
+    active = rng.rand(n_batch, n_event) < 0.2
+    inactive_all = np.arange(0, n_event, 3)
+    active[:, inactive_all] = False
+    poison = list(inactive_all)
+    if n_batch > 1:
+        batch0_only = np.arange(1, n_event, 7)
+        active[:, batch0_only] = False
+        active[0, batch0_only] = True
+        poison += list(batch0_only)
+    values = rng.choice(np.asarray([2.0, -1.0, 0.5]), size=active.shape)
+    xb = np.where(active, values, 0.0)
+    if kind == "bool":
+        xb = active
+    elif kind == "int8":
+        xb = xb.astype(np.int8)  # 0.5 -> 0 would change activity
+        xb = np.where(active & (xb == 0), 1, xb).astype(np.int8)
+    else:
+        xb = xb.astype(np.float32)
+    x = xb[0] if op in ("vm", "mv") else (xb if op == "mr" else xb.T)
+    return jnp.asarray(x), xb, np.asarray(sorted(set(poison)))
+
+
+def _isolation_wrap(kind, x):
+    return WeightedArray(x) if kind == "weighted" else BinaryArray(x)
+
+
+def _isolation_factor(kind, xb, backward_algorithm="bptt"):
+    """Per-event factor multiplying the weights (forward or weight cotangent)."""
+    if kind == "weighted" or (backward_algorithm == "pp_prop" and kind != "int8"):
+        return xb.astype(np.float64)
+    return (xb != 0).astype(np.float64)
+
+
+def _isolation_slots(matrix, op):
+    """Canonical slot -> (event index, output index) for the logical op."""
+    indptr = np.asarray(matrix._tcsr_indptr)
+    indices = np.asarray(matrix._tcsr_indices)
+    row_ids = np.repeat(np.arange(indptr.size - 1), np.diff(indptr))
+    if op in ("vm", "mr"):
+        return row_ids, indices
+    return indices, row_ids
+
+
+def _isolation_reference(op, matrix, data, xb, kind):
+    """Select-based dense reference: inactive (batch, event) pairs add 0."""
+    ev, out = _isolation_slots(matrix, op)
+    rows, cols = matrix.shape
+    n_out = cols if op in ("vm", "mr") else rows
+    data = np.asarray(data, dtype=np.float64)
+    w = np.broadcast_to(data, ev.shape) if data.size == 1 else data
+    active = xb != 0
+    factor = _isolation_factor(kind, xb)
+    result = np.zeros((xb.shape[0], n_out), dtype=np.float64)
+    with np.errstate(invalid="ignore", over="ignore"):
+        for b in range(xb.shape[0]):
+            sel = active[b, ev]
+            np.add.at(result[b], out[sel], factor[b, ev[sel]] * w[sel])
+    if op in ("vm", "mv"):
+        return result[0]
+    return result if op == "mr" else result.T
+
+
+def _poisoned_data(matrix, op, poison, weights):
+    """Canonical data with NaN/±Inf on every slot of a poisoned event."""
+    if weights.startswith("homo"):
+        bad = {"homo-nan": np.nan, "homo-inf": np.inf, "homo-neginf": -np.inf}[weights]
+        return jnp.asarray([bad], dtype=matrix.data.dtype)
+    ev, _ = _isolation_slots(matrix, op)
+    data = np.asarray(matrix.data).copy()
+    slots = np.flatnonzero(np.isin(ev, poison))
+    assert slots.size > 0
+    data[slots] = np.resize(np.asarray(_BAD_CYCLE, data.dtype), slots.size)
+    return jnp.asarray(data)
+
+
+def _check_isolation_forward(binary_backend, weights, op, kind, *, shape=_SHAPE, **tcsr_kwargs):
+    homogeneous = weights.startswith("homo")
+    with _explicit_int64_allowed():
+        matrix = _tcsr(binary_backend, homogeneous, shape=shape, **tcsr_kwargs)
+        x, xb, poison = _isolation_events(op, shape, kind)
+        data = _poisoned_data(matrix, op, poison, weights)
+        got = np.asarray(_apply(op, matrix.with_data(data), _isolation_wrap(kind, x)))
+        expected = _isolation_reference(op, matrix, data, xb, kind)
+    if op in ("vm", "mv") and not homogeneous:
+        assert np.all(np.isfinite(got)), "inactive NaN/Inf weight reached the output"
+    np.testing.assert_allclose(got, expected, rtol=1e-4, atol=1e-4, equal_nan=True)
+
+
+@pytest.mark.parametrize("binary_backend", _backend_params(binary_csrmm_p))
+@pytest.mark.parametrize("weights", ["hetero", "homo-nan", "homo-inf", "homo-neginf"])
+@pytest.mark.parametrize("op", ["vm", "mv", "mr", "mm"])
+@pytest.mark.parametrize("kind", _ISOLATION_KINDS)
+def test_tcsr_inactive_nan_inf_weights_do_not_propagate(binary_backend, weights, op, kind):
+    """Forward: inactive events add exactly 0 whatever their weights are."""
+    _check_isolation_forward(binary_backend, weights, op, kind)
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize("op", ["vm", "mv", "mr", "mm"])
+@pytest.mark.parametrize("kind", _ISOLATION_KINDS)
+def test_cuda_inactive_nan_inf_weights_heavy_rows(op, kind):
+    """Heavy rows/columns route through the hybrid task (block) kernels."""
+    _check_isolation_forward(
+        "cuda_raw", "hetero", op, kind,
+        shape=(300, 9000), heavy_rows=(3, 7, 200), heavy_cols=(11, 4000),
+    )
+
+
+@pytest.mark.parametrize("binary_backend", _backend_params(binary_csrmv_p))
+@pytest.mark.parametrize("kind", _ISOLATION_KINDS)
+def test_tcsr_active_nan_weight_still_propagates(binary_backend, kind):
+    """Regression guard: an active event times a NaN weight stays NaN."""
+    with _explicit_int64_allowed():
+        matrix = _tcsr(binary_backend, False)
+        x, xb, _ = _isolation_events("vm", _SHAPE, kind)
+        row = int(np.flatnonzero(xb[0])[0])
+        indptr = np.asarray(matrix._tcsr_indptr)
+        indices = np.asarray(matrix._tcsr_indices)
+        assert indptr[row + 1] > indptr[row]
+        data = np.asarray(matrix.data).copy()
+        data[indptr[row]] = np.nan
+        got = np.asarray(_apply("vm", matrix.with_data(jnp.asarray(data)), _isolation_wrap(kind, x)))
+    assert np.isnan(got[indices[indptr[row]]])
+    assert np.isfinite(np.delete(got, indices[indptr[row]])).all()
+
+
+def _check_isolation_weight_cotangent(binary_backend, homogeneous, op, kind, backward_algorithm, bad):
+    with _explicit_int64_allowed():
+        matrix = _tcsr(binary_backend, homogeneous, backward_algorithm=backward_algorithm)
+        x, xb, _ = _isolation_events(op, _SHAPE, kind)
+        ev, out = _isolation_slots(matrix, op)
+        active = xb != 0
+        # Output (batch, o) reached by an active event of that batch.
+        rows, cols = _SHAPE
+        n_out = cols if op in ("vm", "mr") else rows
+        reached = np.zeros((xb.shape[0], n_out), bool)
+        for b in range(xb.shape[0]):
+            reached[b, out[active[b, ev]]] = True
+        rng = np.random.RandomState(7)
+        ct_b = rng.normal(size=reached.shape)
+        ct_b[~reached] = bad  # only inactive events ever meet these entries
+        assert (~reached).any()
+        ct = ct_b[0] if op in ("vm", "mv") else (ct_b if op == "mr" else ct_b.T)
+        ct = jnp.asarray(ct, dtype=matrix.data.dtype)
+
+        def f(data):
+            return _apply(op, matrix.with_data(data), _isolation_wrap(kind, x))
+
+        _, vjp = jax.vjp(f, matrix.data)
+        (got,) = vjp(ct)
+        got = np.asarray(got)
+    factor = _isolation_factor(kind, xb, backward_algorithm)
+    slot = np.zeros(ev.shape, np.float64)
+    for b in range(xb.shape[0]):
+        sel = active[b, ev]
+        slot[sel] += factor[b, ev[sel]] * ct_b[b, out[sel]]
+    expected = slot.sum(keepdims=True) if homogeneous else slot
+    assert np.all(np.isfinite(got)), "NaN/Inf cotangent leaked into an inactive weight"
+    if not homogeneous:
+        inactive_slots = ~active[:, ev].any(axis=0)
+        assert np.all(got[inactive_slots] == 0)
+    np.testing.assert_allclose(got, expected, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("binary_backend", _backend_params(binary_csrmm_p))
+@pytest.mark.parametrize("homogeneous", [False, True], ids=["hetero", "homo"])
+@pytest.mark.parametrize("op", ["vm", "mv", "mr", "mm"])
+@pytest.mark.parametrize(
+    "kind,backward_algorithm",
+    [("bool", "bptt"), ("float", "bptt"), ("bool", "pp_prop"),
+     ("float", "pp_prop"), ("weighted", "bptt")],
+)
+@pytest.mark.parametrize("bad", [np.nan, np.inf], ids=["nan", "inf"])
+def test_tcsr_inactive_weight_cotangent_is_exactly_zero(
+    binary_backend, homogeneous, op, kind, backward_algorithm, bad
+):
+    """Weight cotangent selects on activity: a NaN/Inf output cotangent that
+    only meets inactive events leaves their weight cotangent exactly 0."""
+    _check_isolation_weight_cotangent(
+        binary_backend, homogeneous, op, kind, backward_algorithm, bad
+    )

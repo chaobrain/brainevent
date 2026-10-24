@@ -684,3 +684,82 @@ def test_half_precision_jax_raw_and_numba_rejects(dtype):
     if 'numba' in BACKENDS:
         with pytest.raises(brainevent.KernelCompilationError, match='float32/float64'):
             csr_delay_deliver(*args, shape=(1, 2), backend='numba')
+
+
+# ---------------------------------------------------------------------------
+# Inactive rows add nothing, whatever the weight (NaN/Inf).
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md
+# ---------------------------------------------------------------------------
+
+def _nonfinite_delay_problem(homo, bad, weighted, seed=21):
+    n_pre, n_post, n_slots = 8, 5, 4
+    w, indices, indptr, delays = make_csr(n_pre, n_post, 4, n_slots, seed=seed)
+    events = make_events(n_pre, 'float32', seed=seed)
+    events[1::2] = 0.0
+    events[0::2] = np.where(events[0::2] == 0, 2.0, events[0::2])
+    rows = np.repeat(np.arange(n_pre), np.diff(indptr))
+    inactive = events[rows] == 0
+    bad_value = {'nan': np.nan, '+inf': np.inf, '-inf': -np.inf}[bad]
+    if homo:
+        data = np.array([bad_value], np.float32)
+    else:
+        data = w.copy()
+        data[inactive] = bad_value
+    ev = jnp.asarray(events) if weighted else jnp.asarray(events != 0)
+    ring = np.random.default_rng(seed).normal(size=(n_slots, n_post)).astype(np.float32)
+    return ring, ev, data, indices, indptr, delays, rows, inactive, (n_pre, n_post)
+
+
+@pytest.mark.parametrize('backend', BACKENDS)
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('bad', ['nan', '+inf', '-inf'])
+def test_inactive_rows_with_nonfinite_weights_add_nothing(backend, homo, weighted, bad):
+    ring, ev, data, indices, indptr, delays, rows, inactive, shape = _nonfinite_delay_problem(homo, bad, weighted)
+    t = 3
+    out = np.asarray(csr_delay_deliver(
+        jnp.asarray(ring), ev, jnp.asarray(data), jnp.asarray(indices), jnp.asarray(indptr),
+        jnp.asarray(delays), t, shape=shape, weighted=weighted, backend=backend,
+    ), np.float64)
+    expected = np.array(ring, np.float64)
+    x = np.asarray(ev, np.float64)
+    w = np.broadcast_to(np.asarray(data, np.float64), indices.shape)
+    for e in np.flatnonzero(~inactive):
+        f = x[rows[e]] if weighted else 1.0
+        expected[(t + delays[e]) % ring.shape[0], indices[e]] += w[e] * f
+    if not homo:
+        assert np.isfinite(out).all()
+    np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('backend', BACKENDS)
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_weight_cotangent_of_inactive_rows_is_exact_zero(backend, homo, weighted):
+    ring, ev, data, indices, indptr, delays, rows, inactive, shape = _nonfinite_delay_problem(False, 'nan', weighted)
+    data = jnp.asarray(np.where(np.isfinite(data), data, 1.0).astype(np.float32))
+    if homo:
+        data = data[:1]
+        # Only inactive edges see a NaN cotangent: the homo cotangent stays finite.
+        inactive_slots = np.zeros(ring.shape, bool)
+        inactive_slots[(3 + delays[inactive]) % ring.shape[0], indices[inactive]] = True
+        active_slots = np.zeros(ring.shape, bool)
+        active_slots[(3 + delays[~inactive]) % ring.shape[0], indices[~inactive]] = True
+        ct = np.where(inactive_slots & ~active_slots, np.nan, 1.0).astype(np.float32)
+    else:
+        ct = np.full(ring.shape, np.nan, np.float32)
+
+    def f(d):
+        return csr_delay_deliver(
+            jnp.asarray(ring), ev, d, jnp.asarray(indices), jnp.asarray(indptr),
+            jnp.asarray(delays), 3, shape=shape, weighted=weighted, backend=backend,
+        )
+
+    _, vjp = jax.vjp(f, data)
+    (ct_data,) = vjp(jnp.asarray(ct))
+    ct_data = np.asarray(ct_data)
+    if homo:
+        assert np.isfinite(ct_data).all()
+    else:
+        np.testing.assert_array_equal(ct_data[inactive], 0.0)
+        assert np.isnan(ct_data[~inactive]).all()

@@ -30,7 +30,7 @@ from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule,
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
 from .float import jitsmv_p_call, jitsmm_p_call
-from brainevent._op.util import dtype_suffix, event_active, event_factor
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, active_sum, dtype_suffix, event_active
 
 __all__ = [
     "binary_jitsmv",
@@ -338,7 +338,7 @@ def _jitsmv_numba_kernel(
 
     if corder:
         # notrans: m = output rows, k = vector length (walk dimension).
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(weight, clen, vector, seed, posts):
             m = posts.shape[0]
             k = vector.shape[0]
@@ -369,11 +369,13 @@ def _jitsmv_numba_kernel(
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
-                posts[row] = acc * weight0
+                # Select, never ``0 * w``: a row with no active event is exactly 0
+                # even for a NaN/Inf weight.
+                posts[row] = acc * weight0 if acc != 0. else 0.
 
     else:
         # trans: m = vector length (active-event rows), k = output length (walk).
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(weight, clen, vector, seed, posts):
             posts[:] = 0.
             k = posts.shape[0]
@@ -578,8 +580,9 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpo
             corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        # Binary events contribute their activity mask, never their raw value (#198).
-        dw = jnp.sum(row * event_factor(vector, dtype=row.dtype), keepdims=True).reshape(weight.aval.shape)
+        # Binary events contribute their activity mask, never their raw value (#198);
+        # inactive events are selected out, never multiplied by 0.
+        dw = active_sum(row, vector).reshape(weight.aval.shape)
         return dw, clen, vector, seed, _
     else:
         raise NotImplementedError(
@@ -865,7 +868,7 @@ def _jitsmm_numba_kernel(
     if corder:
         # notrans: Y = M @ B. m = output rows, k = B rows (walk dimension), n = cols.
         # The connectivity of a row is drawn once and reused across all n columns.
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(weight, clen, B, seed, posts):
             m = posts.shape[0]
             n = posts.shape[1]
@@ -898,11 +901,13 @@ def _jitsmm_numba_kernel(
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
-                posts[row] = out * weight0
+                # Select per column, never ``0 * w`` (NaN/Inf weight isolation).
+                for col in range(n):
+                    posts[row, col] = out[col] * weight0 if out[col] != 0. else 0.
     else:
         # trans: Y = M^T @ B. m = B rows (active-event rows), k = output rows (walk).
         # For active B[row, col], scatter ``w`` to every connected output row.
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(weight, clen, B, seed, posts):
             posts[:] = 0.
             k = posts.shape[0]
@@ -1109,8 +1114,9 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
             corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        # Binary events contribute their activity mask, never their raw value (#198).
-        dw = jnp.sum(r * event_factor(B, dtype=r.dtype), keepdims=True).reshape(weight.aval.shape)
+        # Binary events contribute their activity mask, never their raw value (#198);
+        # inactive events are selected out, never multiplied by 0.
+        dw = active_sum(r, B).reshape(weight.aval.shape)
         return dw, clen, B, seed, _
 
     else:

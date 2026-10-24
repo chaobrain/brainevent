@@ -277,3 +277,110 @@ def test_dense_plasticity_transpose_rejects_spikes_and_zero_ct(prim):
     und[trace_pos] = ad.UndefinedPrimal(jax.typeof(args[trace_pos]))
     out = rule([ad.Zero(jax.typeof(W))], *und, backend=None)
     assert type(out[0]) is ad.Zero and type(out[trace_pos]) is ad.Zero
+
+
+# --------------------------------------------------------------------------- #
+# Inactive events leave their edges bit-identical (NaN trace isolation)
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md
+# --------------------------------------------------------------------------- #
+
+_ISO_SPIKES = np.array([2., 0., -1., 0., 0.5, 0.])  # rows 1, 3, 5 inactive
+_ISO_KINDS = ['bool', 'float32']
+
+
+def _iso_spikes(kind):
+    return jnp.asarray(_ISO_SPIKES != 0 if kind == 'bool' else _ISO_SPIKES, dtype=jnp.dtype(kind))
+
+
+def _iso_inputs(n_spike, n_trace, bad):
+    rng = np.random.default_rng(11)
+    weight = rng.standard_normal((n_spike, n_trace)).astype(np.float32)
+    weight[1, 0] = -0.0  # ``-0. + 0.`` would flip the sign bit
+    trace = rng.standard_normal(n_trace).astype(np.float32)
+    trace[[0, 2]] = bad
+    return weight, trace
+
+
+def _bits(x):
+    return np.asarray(x, dtype=np.float32).view(np.uint32)
+
+
+def _expected_update(weight, trace, active):
+    with np.errstate(invalid='ignore'):
+        return np.where(active[:, None], weight + trace[None, :], weight)
+
+
+_ISO_BAD = [pytest.param(np.nan, id='nan'), pytest.param(np.inf, id='inf')]
+
+
+@pytest.mark.parametrize('backend', PRE_BACKENDS)
+@pytest.mark.parametrize('kind', _ISO_KINDS)
+@pytest.mark.parametrize('bad', _ISO_BAD)
+def test_dense_on_pre_inactive_rows_unchanged_with_nonfinite_trace(backend, kind, bad):
+    weight, trace = _iso_inputs(_ISO_SPIKES.size, 5, bad)
+    spikes = _iso_spikes(kind)
+    out = np.asarray(update_dense_on_binary_pre(jnp.asarray(weight), spikes, jnp.asarray(trace), backend=backend))
+    active = _ISO_SPIKES != 0
+    np.testing.assert_array_equal(_bits(out[~active]), _bits(weight[~active]))
+    np.testing.assert_array_equal(out, _expected_update(weight, trace, active))  # active rows: NaN/Inf propagate
+
+
+@pytest.mark.parametrize('backend', POST_BACKENDS)
+@pytest.mark.parametrize('kind', _ISO_KINDS)
+@pytest.mark.parametrize('bad', _ISO_BAD)
+def test_dense_on_post_inactive_columns_unchanged_with_nonfinite_trace(backend, kind, bad):
+    weight_t, trace = _iso_inputs(_ISO_SPIKES.size, 5, bad)
+    weight = weight_t.T  # (n_pre, n_post); the post spikes index the columns
+    spikes = _iso_spikes(kind)
+    out = np.asarray(update_dense_on_binary_post(jnp.asarray(weight), jnp.asarray(trace), spikes, backend=backend))
+    active = _ISO_SPIKES != 0
+    np.testing.assert_array_equal(_bits(out[:, ~active]), _bits(weight[:, ~active]))
+    np.testing.assert_array_equal(out, _expected_update(weight_t, trace, active).T)
+
+
+@pytest.mark.parametrize('backend', PRE_BACKENDS)
+def test_dense_on_pre_vmap_over_weights_isolates_nan_trace(backend):
+    weight, trace = _iso_inputs(_ISO_SPIKES.size, 5, np.nan)
+    batch = np.stack([weight, weight + 1.])
+    spikes = _iso_spikes('bool')
+    out = jax.vmap(lambda w: update_dense_on_binary_pre(w, spikes, jnp.asarray(trace), backend=backend))(
+        jnp.asarray(batch))
+    active = _ISO_SPIKES != 0
+    for b in range(2):
+        np.testing.assert_array_equal(_bits(np.asarray(out[b])[~active]), _bits(batch[b][~active]))
+
+
+@pytest.mark.parametrize('backend', POST_BACKENDS)
+def test_dense_on_post_vmap_over_weights_isolates_nan_trace(backend):
+    weight_t, trace = _iso_inputs(_ISO_SPIKES.size, 5, np.nan)
+    batch = np.stack([weight_t.T, weight_t.T + 1.])
+    spikes = _iso_spikes('bool')
+    out = jax.vmap(lambda w: update_dense_on_binary_post(w, jnp.asarray(trace), spikes, backend=backend))(
+        jnp.asarray(batch))
+    active = _ISO_SPIKES != 0
+    for b in range(2):
+        np.testing.assert_array_equal(_bits(np.asarray(out[b])[:, ~active]), _bits(batch[b][:, ~active]))
+
+
+@pytest.mark.parametrize('backend', PRE_BACKENDS)
+def test_dense_on_pre_trace_cotangent_ignores_inactive_rows(backend):
+    weight, trace = _iso_inputs(_ISO_SPIKES.size, 5, 0.5)
+    spikes = _iso_spikes('float32')
+    ct = np.ones_like(weight)
+    ct[1] = np.nan  # inactive row
+    _, vjp = jax.vjp(lambda t: update_dense_on_binary_pre(jnp.asarray(weight), spikes, t, backend=backend),
+                     jnp.asarray(trace))
+    (g,) = vjp(jnp.asarray(ct))
+    np.testing.assert_allclose(np.asarray(g), np.full(5, float((_ISO_SPIKES != 0).sum())))
+
+
+@pytest.mark.parametrize('backend', POST_BACKENDS)
+def test_dense_on_post_trace_cotangent_ignores_inactive_columns(backend):
+    weight_t, trace = _iso_inputs(_ISO_SPIKES.size, 5, 0.5)
+    spikes = _iso_spikes('float32')
+    ct = np.ones_like(weight_t.T)
+    ct[:, 3] = np.nan  # inactive column
+    _, vjp = jax.vjp(lambda t: update_dense_on_binary_post(jnp.asarray(weight_t.T), t, spikes, backend=backend),
+                     jnp.asarray(trace))
+    (g,) = vjp(jnp.asarray(ct))
+    np.testing.assert_allclose(np.asarray(g), np.full(5, float((_ISO_SPIKES != 0).sum())))

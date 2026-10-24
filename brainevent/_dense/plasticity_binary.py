@@ -28,7 +28,7 @@ from brainevent._op import (
 )
 from brainevent._op import load_cuda_file
 from brainevent.config import get_numba_parallel
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, select_active
 from brainevent._dense.binary import _EVENT_FASTMATH, _numba_event_mask
 
 __all__ = [
@@ -197,8 +197,10 @@ def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
 
 def _dense_on_pre_jax_kernel(**kwargs):
     def kernel(weight, spike, trace):
-        s = event_factor(spike, dtype=weight.dtype)
-        return [weight + jnp.outer(s, trace)]
+        # Select, never ``weight + m * trace``: inactive rows stay bit-identical
+        # whatever the trace holds (NaN/Inf, and ``-0.`` keeps its sign).
+        active = event_active(spike)
+        return [jnp.where(active[:, None], weight + trace[None, :], weight)]
 
     return kernel
 
@@ -308,9 +310,10 @@ def _dense_on_pre_transpose_rule(ct, weight, pre_spike, post_trace, **kwargs):
         if type(ct) is ad.Zero:
             ct_trace = ad.Zero(post_trace.aval)
         else:
-            # out = W + outer(m, trace)  =>  ct_trace = m @ ct
-            m = event_factor(pre_spike, dtype=ct.dtype)
-            ct_trace = (m @ ct).astype(post_trace.aval.dtype)
+            # out = W + outer(m, trace)  =>  ct_trace = sum of ct over active rows
+            # (select, so a NaN cotangent on an inactive row does not leak).
+            m = event_active(pre_spike)[:, None]
+            ct_trace = jnp.sum(select_active(m, ct), axis=0).astype(post_trace.aval.dtype)
     return ct_weight, pre_spike, ct_trace
 
 
@@ -332,9 +335,8 @@ def _update_dense_pre_benchmark_data(*, platform):
 def _dense_on_pre_batching(args, axes, **kwargs):
     if axes == (0, None, None):
         weight, pre_spike, post_trace = args
-        mask = event_factor(pre_spike, dtype=weight.dtype)
-        update = mask[:, None] * post_trace[None, :]
-        return [weight + update[None, :, :]], [0]
+        active = event_active(pre_spike)[None, :, None]
+        return [jnp.where(active, weight + post_trace[None, None, :], weight)], [0]
     return general_batching_rule(update_dense_on_binary_pre_p, args, axes, **kwargs)
 
 
@@ -534,8 +536,9 @@ def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
 
 def _dense_on_post_jax_kernel(**kwargs):
     def kernel(weight, trace, spike):
-        s = event_factor(spike, dtype=weight.dtype)
-        return [weight + jnp.outer(trace, s)]
+        # Select: inactive columns stay bit-identical whatever the trace holds.
+        active = event_active(spike)
+        return [jnp.where(active[None, :], weight + trace[:, None], weight)]
 
     return kernel
 
@@ -640,18 +643,17 @@ def _dense_on_post_transpose_rule(ct, weight, pre_trace, post_spike, **kwargs):
         if type(ct) is ad.Zero:
             ct_trace = ad.Zero(pre_trace.aval)
         else:
-            # out = W + outer(trace, m)  =>  ct_trace = ct @ m
-            m = event_factor(post_spike, dtype=ct.dtype)
-            ct_trace = (ct @ m).astype(pre_trace.aval.dtype)
+            # out = W + outer(trace, m)  =>  ct_trace = sum of ct over active columns
+            m = event_active(post_spike)[None, :]
+            ct_trace = jnp.sum(select_active(m, ct), axis=1).astype(pre_trace.aval.dtype)
     return ct_weight, ct_trace, post_spike
 
 
 def _dense_on_post_batching(args, axes, **kwargs):
     if axes == (0, None, None):
         weight, pre_trace, post_spike = args
-        mask = event_factor(post_spike, dtype=weight.dtype)
-        update = pre_trace[:, None] * mask[None, :]
-        return [weight + update[None, :, :]], [0]
+        active = event_active(post_spike)[None, None, :]
+        return [jnp.where(active, weight + pre_trace[None, :, None], weight)], [0]
     return general_batching_rule(update_dense_on_binary_post_p, args, axes, **kwargs)
 
 

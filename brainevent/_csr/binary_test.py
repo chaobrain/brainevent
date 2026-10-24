@@ -1965,3 +1965,206 @@ def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis):
         axes, shape=(1, 2), transpose=False, backend="jax_raw", weighted=True,
     )
     assert seen == [True]
+
+
+# ---------------------------------------------------------------------------
+# Inactive events contribute exactly zero, whatever the weight (NaN/Inf).
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md
+# ---------------------------------------------------------------------------
+
+from brainevent._csr._test_util import (  # noqa: E402
+    EVENT_KINDS, NONFINITE_VALUES, assert_select_reference, homo_ct_case, inactive_nonfinite_case,
+)
+
+
+def _nonfinite_mv(case, shape, transpose, backend):
+    indptr = jnp.asarray(case.indptr)
+    return binary_csrmv(
+        jnp.asarray(case.data), jnp.asarray(case.indices), indptr, case.events,
+        shape=shape, workspace=_make_binary_task_workspace(indptr),
+        transpose=transpose, backend=backend, weighted=case.weighted,
+    )
+
+
+def _nonfinite_mm(case, shape, transpose, backend):
+    indptr = jnp.asarray(case.indptr)
+    return binary_csrmm(
+        jnp.asarray(case.data), jnp.asarray(case.indices), indptr, case.events,
+        shape=shape, workspace=_make_binary_task_workspace(indptr),
+        transpose=transpose, backend=backend, weighted=case.weighted,
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('bad', tuple(NONFINITE_VALUES))
+def test_binary_csrmv_inactive_nonfinite_weights_contribute_zero(backend, transpose, homo, kind, bad):
+    shape = (7, 6)
+    case = inactive_nonfinite_case(0, *shape, transpose=transpose, homo=homo, kind=kind, bad=bad)
+    assert_select_reference(_nonfinite_mv(case, shape, transpose, backend), case)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('bad', tuple(NONFINITE_VALUES))
+def test_binary_csrmm_inactive_nonfinite_weights_contribute_zero(backend, transpose, homo, kind, bad):
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        1, *shape, transpose=transpose, homo=homo, kind=kind, bad=bad, n_batch=4,
+    )
+    assert_select_reference(_nonfinite_mm(case, shape, transpose, backend), case)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+def test_binary_csrmm_nonfinite_weight_isolated_per_event_column(backend, transpose, kind):
+    # A NaN weight whose event is active in some columns only: the other
+    # columns stay exact (cuSPARSE included: it falls back to the select path).
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        2, *shape, transpose=transpose, homo=False, kind=kind, bad='nan', n_batch=4, partial=True,
+    )
+    assert np.isnan(case.reference).any() and np.isfinite(case.reference).any()
+    assert_select_reference(_nonfinite_mm(case, shape, transpose, backend), case)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('mm', [False, True])
+def test_binary_csr_inactive_nonfinite_weights_heavy_rows(backend, homo, kind, mm):
+    # Rows longer than the hybrid thread-per-row threshold (CUDA task path).
+    shape = (4, 300)
+    case = inactive_nonfinite_case(
+        3, *shape, transpose=True, homo=homo, kind=kind, bad='nan',
+        n_batch=3 if mm else None, heavy_row_nnz=200,
+    )
+    fn = _nonfinite_mm if mm else _nonfinite_mv
+    if mm and backend not in CSRMM_IMPLEMENTATIONS:
+        pytest.skip(f'{backend} has no csrmm kernel')
+    assert_select_reference(fn(case, shape, True, backend), case)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('mm', [False, True])
+def test_binary_csr_active_nan_weight_still_propagates(backend, transpose, mm):
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        4, *shape, transpose=transpose, homo=False, kind='bool', bad='nan',
+        n_batch=3 if mm else None,
+    )
+    data = case.data.copy()
+    e = int(np.flatnonzero(case.active[:, 0])[0])
+    data[e] = np.nan
+    case = case._replace(data=data)
+    out = np.asarray((_nonfinite_mm if mm else _nonfinite_mv)(case, shape, transpose, backend))
+    target = case.indices[e] if transpose else int(np.searchsorted(case.indptr, e, side='right') - 1)
+    assert np.isnan(out[target] if not mm else out[target, 0])
+    assert np.isfinite(out).sum() > 0
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('mm', [False, True])
+def test_binary_csr_weight_cotangent_of_inactive_entries_is_exact_zero(backend, transpose, kind, mm):
+    # A NaN output cotangent must not leak into the weight cotangent of an
+    # entry whose event is inactive (select, not ``ct * 0``).
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        5, *shape, transpose=transpose, homo=False, kind=kind, bad='nan',
+        n_batch=3 if mm else None,
+    )
+    data = np.where(np.isfinite(case.data), case.data, 1.0).astype(np.float32)
+    indptr = jnp.asarray(case.indptr)
+    ws = _make_binary_task_workspace(indptr)
+    op = binary_csrmm if mm else binary_csrmv
+
+    def f(d):
+        return op(d, jnp.asarray(case.indices), indptr, case.events, shape=shape, workspace=ws,
+                  transpose=transpose, backend=backend, weighted=case.weighted)
+
+    out, vjp = jax.vjp(f, jnp.asarray(data))
+    (ct_w,) = vjp(jnp.full_like(out, jnp.nan))
+    ct_w = np.asarray(ct_w)
+    inactive = case.inactive_edge
+    assert inactive.any() and (~inactive).any()
+    np.testing.assert_array_equal(ct_w[inactive], 0.0)
+    assert np.isnan(ct_w[~inactive]).all()
+
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('kind', EVENT_KINDS)
+@pytest.mark.parametrize('mm', [False, True])
+def test_binary_csr_homo_weight_cotangent_ignores_nan_on_idle_outputs(backend, transpose, kind, mm):
+    # A NaN output cotangent at an output that received only inactive events
+    # must not reach the homogeneous weight cotangent (``inner(ct, r)`` with
+    # ``r == 0`` there would be NaN).
+    if mm and backend not in CSRMM_IMPLEMENTATIONS:
+        pytest.skip(f'{backend} has no csrmm kernel')
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        6, *shape, transpose=transpose, homo=True, kind=kind, bad='nan', n_batch=3 if mm else None,
+    )
+    ct, expected = homo_ct_case(case, transpose)
+    indptr = jnp.asarray(case.indptr)
+    ws = _make_binary_task_workspace(indptr)
+    op = binary_csrmm if mm else binary_csrmv
+
+    def f(d):
+        return op(d, jnp.asarray(case.indices), indptr, case.events, shape=shape, workspace=ws,
+                  transpose=transpose, backend=backend, weighted=case.weighted)
+
+    _, vjp = jax.vjp(f, jnp.ones(1, jnp.float32))
+    (ct_w,) = vjp(ct)
+    assert np.isfinite(expected)
+    np.testing.assert_allclose(np.asarray(ct_w), [expected], rtol=1e-5)
+
+
+@pytest.mark.parametrize('backend', CSRMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+def test_binary_csrmm_weight_cotangent_isolated_per_event_column(backend, transpose):
+    # NaN cotangent only in the batch columns where an entry's event is
+    # inactive: the entry's weight cotangent stays the finite active-column sum.
+    shape = (7, 6)
+    case = inactive_nonfinite_case(
+        7, *shape, transpose=transpose, homo=False, kind='weighted', bad='nan', n_batch=4,
+    )
+    data = np.where(np.isfinite(case.data), case.data, 1.0).astype(np.float32)
+    rows = np.repeat(np.arange(shape[0]), np.diff(case.indptr))
+    out_idx = case.indices if transpose else rows
+    ev = np.asarray(case.events, np.float64)
+    # NaN at (out, b) only where every entry writing ``out`` is inactive in b.
+    n_out = case.reference.shape[0]
+    touched_active = np.zeros((n_out, 4), bool)
+    np.logical_or.at(touched_active, out_idx, case.active)
+    ct = np.where(touched_active, 1.5, np.nan).astype(np.float32)
+    assert np.isnan(ct).any()
+    with np.errstate(invalid='ignore'):
+        expected = np.where(case.active, ev[case.edge_unit] * ct[out_idx], 0.0).sum(1)
+    indptr = jnp.asarray(case.indptr)
+
+    def f(d):
+        return binary_csrmm(d, jnp.asarray(case.indices), indptr, case.events, shape=shape,
+                            workspace=_make_binary_task_workspace(indptr),
+                            transpose=transpose, backend=backend, weighted=True)
+
+    _, vjp = jax.vjp(f, jnp.asarray(data))
+    (ct_w,) = vjp(jnp.asarray(ct))
+    assert np.isfinite(expected).all()
+    np.testing.assert_allclose(np.asarray(ct_w), expected, rtol=1e-5)

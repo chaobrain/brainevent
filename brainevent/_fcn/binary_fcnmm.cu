@@ -51,10 +51,19 @@
  *   activity test --
  *     EVT_BINARY   -- binary events: the weight itself;
  *     EVT_WEIGHTED -- weighted events (``_wv``): weight times the event value.
- *   Gather kernels: EVT_GATHER(ACC_T, IS_ACTIVE, READ_S, valid, x), the factor
- *   multiplying the weight of one gathered event --
- *     EVT_GATHER_BINARY   -- the activity mask (x is only read if valid);
- *     EVT_GATHER_WEIGHTED -- the event value (0 if not valid).
+ *   Gather kernels: a policy tag EVT_GATHER (EVT_GATHER_BINARY or
+ *   EVT_GATHER_WEIGHTED) selects, by token pasting, the macros
+ *     EVT_GATHER##_TERM(ACC_T, IS_ACTIVE, READ_S, valid, x, w)
+ *         contribution of hetero weight w for one gathered event;
+ *     EVT_GATHER##_HOMO_TERM(ACC_T, IS_ACTIVE, READ_S, valid, x, w0)
+ *         accumulated term of the homogeneous kernels;
+ *     EVT_GATHER##_HOMO_FINAL(ACC_T, w0, acc)
+ *         output of the homogeneous kernels from the accumulator.
+ *   Inactive (or invalid) events SELECT a zero term; the weight is never
+ *   multiplied by a 0/1 mask, so a NaN/Inf weight that only meets inactive
+ *   events contributes exactly 0 (docs/specs/2026-10-24-inactive-row-nan-
+ *   isolation.md). Binary homogeneous kernels count active events and scale
+ *   by w0 only when the count is non-zero.
  *   Weighted event buffers have the weight dtype, so READ_W converts them.
  */
 #ifndef EVT_BINARY
@@ -63,8 +72,16 @@
 #ifndef EVT_WEIGHTED
 #define EVT_WEIGHTED(w, READ_S, s) ((w) * READ_S(s))
 #endif
-#define EVT_GATHER_BINARY(ACC_T, IS_ACTIVE, READ_S, valid, x)   ((ACC_T)((valid) && IS_ACTIVE(x)))
-#define EVT_GATHER_WEIGHTED(ACC_T, IS_ACTIVE, READ_S, valid, x) ((valid) ? (ACC_T)READ_S(x) : (ACC_T)0)
+#define EVT_GATHER_BINARY_TERM(ACC_T, IS_ACTIVE, READ_S, valid, x, w) \
+    (((valid) && IS_ACTIVE(x)) ? (ACC_T)(w) : (ACC_T)0)
+#define EVT_GATHER_WEIGHTED_TERM(ACC_T, IS_ACTIVE, READ_S, valid, x, w) \
+    (((valid) && IS_ACTIVE(x)) ? (ACC_T)(w) * (ACC_T)READ_S(x) : (ACC_T)0)
+#define EVT_GATHER_BINARY_HOMO_TERM(ACC_T, IS_ACTIVE, READ_S, valid, x, w0) \
+    (((valid) && IS_ACTIVE(x)) ? (ACC_T)1 : (ACC_T)0)
+#define EVT_GATHER_WEIGHTED_HOMO_TERM(ACC_T, IS_ACTIVE, READ_S, valid, x, w0) \
+    EVT_GATHER_WEIGHTED_TERM(ACC_T, IS_ACTIVE, READ_S, valid, x, w0)
+#define EVT_GATHER_BINARY_HOMO_FINAL(ACC_T, w0, acc)   (((acc) != (ACC_T)0) ? (w0) * (acc) : (ACC_T)0)
+#define EVT_GATHER_WEIGHTED_HOMO_FINAL(ACC_T, w0, acc) (acc)
 
 // ============================================================================
 // FCN Matrix-Matrix Multiplication (fcnmm) — Optimized CUDA Kernels
@@ -87,7 +104,7 @@
 //   - Multi-row per block: 4 warps, each handling one row
 //   - Shuffle-based index loading: indices read once into registers,
 //     then broadcast via __shfl_sync (zero global memory in inner loop)
-//   - Branchless accumulation: accum += (ACC_T)active
+//   - Branchless accumulation: inactive events select a zero term
 // -----------------------------------------------------------------------
 #define DEFINE_BGM_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, EVT_GATHER)     \
 __global__ void _bgm_warp_homo_kern##SUFFIX(                                                   \
@@ -117,15 +134,14 @@ __global__ void _bgm_warp_homo_kern##SUFFIX(                                    
                 for (int off = 0; off < 32 && k0 + off < n_conn; off++) {                      \
                     int src = __shfl_sync(0xffffffff, my_idx, off);                            \
                     if ((unsigned)(src - ts) < (unsigned)tsz) {                                \
-                        ACC_T ev = EVT_GATHER(ACC_T, IS_ACTIVE, READ_W, col_valid,             \
-                            __ldg(&matrix[(size_t)src * n_batch + safe_j]));                   \
-                        accum += ev;                                                           \
+                        accum += EVT_GATHER##_HOMO_TERM(ACC_T, IS_ACTIVE, READ_W, col_valid,   \
+                            __ldg(&matrix[(size_t)src * n_batch + safe_j]), w0);               \
                     }                                                                          \
                 }                                                                              \
             }                                                                                  \
         }                                                                                      \
         if (col_valid)                                                                         \
-            output[(size_t)row * n_batch + j] = WRITE_W(w0 * accum);                           \
+            output[(size_t)row * n_batch + j] = WRITE_W(EVT_GATHER##_HOMO_FINAL(ACC_T, w0, accum)); \
     }                                                                                          \
 }
 
@@ -159,9 +175,8 @@ __global__ void _bgm_warp_hetero_kern##SUFFIX(                                  
                     int   src = __shfl_sync(0xffffffff, my_idx, off);                          \
                     ACC_T wk  = __shfl_sync(0xffffffff, my_w, off);                            \
                     if ((unsigned)(src - ts) < (unsigned)tsz) {                                \
-                        ACC_T ev = EVT_GATHER(ACC_T, IS_ACTIVE, READ_W, col_valid,             \
-                            __ldg(&matrix[(size_t)src * n_batch + safe_j]));                   \
-                        accum += wk * ev;                                                      \
+                        accum += EVT_GATHER##_TERM(ACC_T, IS_ACTIVE, READ_W, col_valid,        \
+                            __ldg(&matrix[(size_t)src * n_batch + safe_j]), wk);               \
                     }                                                                          \
                 }                                                                              \
             }                                                                                  \
@@ -176,7 +191,7 @@ __global__ void _bgm_warp_hetero_kern##SUFFIX(                                  
 //   - In-kernel matrix tiling: partitions source reads into L2-sized
 //     ranges; indices stay in shared memory across tile passes
 //   - Tree reduction: O(log nwarps) per tile pass
-//   - Branchless accumulation
+//   - Branchless (select) accumulation
 //   - Hetero: weights also cached in shared memory
 //   - Shared memory layout: [s_idx | smem_red] (non-overlapping)
 // -----------------------------------------------------------------------
@@ -210,9 +225,8 @@ __global__ void _bgm_basic_homo_kern##SUFFIX(                                   
             for (int k = warpid; k < n_conn; k += nwarps) {                                            \
                 int src = s_idx[k];                                                                    \
                 if ((unsigned)(src - ts) < (unsigned)tsz) {                                            \
-                    ACC_T ev = EVT_GATHER(ACC_T, IS_ACTIVE, READ_W, col_valid,                         \
-                        __ldg(&matrix[(size_t)src * n_batch + safe_j]));                               \
-                    accum += ev;                                                                       \
+                    accum += EVT_GATHER##_HOMO_TERM(ACC_T, IS_ACTIVE, READ_W, col_valid,               \
+                        __ldg(&matrix[(size_t)src * n_batch + safe_j]), w0);                           \
                 }                                                                                      \
             }                                                                                          \
             __syncthreads();                                                                           \
@@ -226,7 +240,7 @@ __global__ void _bgm_basic_homo_kern##SUFFIX(                                   
             if (warpid == 0) total += smem_red[lane];                                                  \
         }                                                                                              \
         if (warpid == 0 && col_valid)                                                                  \
-            output[(size_t)row * n_batch + j] = WRITE_W(w0 * total);                                   \
+            output[(size_t)row * n_batch + j] = WRITE_W(EVT_GATHER##_HOMO_FINAL(ACC_T, w0, total));    \
         __syncthreads();                                                                               \
     }                                                                                                  \
 }
@@ -267,9 +281,8 @@ __global__ void _bgm_basic_hetero_kern##SUFFIX(                                 
             for (int k = warpid; k < n_conn; k += nwarps) {                                             \
                 int src = s_idx[k];                                                                     \
                 if ((unsigned)(src - ts) < (unsigned)tsz) {                                             \
-                    ACC_T ev = EVT_GATHER(ACC_T, IS_ACTIVE, READ_W, col_valid,                          \
-                        __ldg(&matrix[(size_t)src * n_batch + safe_j]));                                \
-                    accum += READ_W(s_wt[k]) * ev;                                                      \
+                    accum += EVT_GATHER##_TERM(ACC_T, IS_ACTIVE, READ_W, col_valid,                     \
+                        __ldg(&matrix[(size_t)src * n_batch + safe_j]), READ_W(s_wt[k]));               \
                 }                                                                                       \
             }                                                                                           \
             __syncthreads();                                                                            \
@@ -360,7 +373,7 @@ __global__ void _bgm_packed_warp_homo_kern##SUFFIX(                             
             }                                                                        \
         }                                                                           \
         if (col_valid)                                                              \
-            output[(size_t)row * n_batch + j] = WRITE_W(w0 * accum);               \
+            output[(size_t)row * n_batch + j] = WRITE_W(EVT_GATHER_BINARY_HOMO_FINAL(ACC_T, w0, accum)); \
     }                                                                               \
 }
 
@@ -392,7 +405,7 @@ __global__ void _bgm_packed_warp_hetero_kern##SUFFIX(                           
                 int   src = __shfl_sync(0xffffffff, my_idx, off);                   \
                 ACC_T wk  = __shfl_sync(0xffffffff, my_w, off);                     \
                 uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);    \
-                accum += wk * (ACC_T)(col_valid & ((word >> lane) & 1u));           \
+                accum += (col_valid & ((word >> lane) & 1u)) ? wk : (ACC_T)0;       \
             }                                                                        \
         }                                                                           \
         if (col_valid) output[(size_t)row * n_batch + j] = WRITE_W(accum);          \
@@ -444,7 +457,7 @@ __global__ void _bgm_packed_basic_homo_kern##SUFFIX(                            
             __syncthreads();                                                              \
         }                                                                                 \
         if (warpid == 0 && col_valid)                                                     \
-            output[(size_t)row * n_batch + j] = WRITE_W(w0 * smem_red[lane]);             \
+            output[(size_t)row * n_batch + j] = WRITE_W(EVT_GATHER_BINARY_HOMO_FINAL(ACC_T, w0, smem_red[lane])); \
         __syncthreads();                                                                  \
     }                                                                                     \
 }
@@ -482,7 +495,7 @@ __global__ void _bgm_packed_basic_hetero_kern##SUFFIX(                          
         for (int k = warpid; k < n_conn; k += nwarps) {                                     \
             int src = s_idx[k];                                                             \
             uint32_t word = __ldg(&packed[(size_t)src * n_batch_words + bw]);                \
-            accum += READ_W(s_wt[k]) * (ACC_T)(col_valid & ((word >> lane) & 1u));          \
+            accum += (col_valid & ((word >> lane) & 1u)) ? (ACC_T)READ_W(s_wt[k]) : (ACC_T)0; \
         }                                                                                   \
         __syncthreads();                                                                    \
         smem_red[warpid * 32 + lane] = accum;                                               \

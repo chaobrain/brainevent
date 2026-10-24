@@ -42,6 +42,15 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
+// Select, never multiply by the activity: an inactive event contributes exactly
+// zero even when its weight is NaN or +-Inf (``NaN * 0`` is NaN). ``F`` is the
+// event factor ``(ACC_T)IS_ACTIVE(x)``: 1/0 for binary events, the event value
+// for weighted (``_wv``) ones, so ``F != 0`` is the activity in both cases.
+// docs/specs/2026-10-24-inactive-row-nan-isolation.md
+#ifndef BE_EVENT_TERM
+#define BE_EVENT_TERM(W, F) (((F) != 0) ? (W) * (F) : 0)
+#endif
+
 // =========================================================================
 // Indexed (perm) Heterogeneous Kernels — weights read via weights[perm[j]]
 // =========================================================================
@@ -66,7 +75,7 @@ __global__ void _csrmv_nt_thread_perm_hetero_kern##SUFFIX(                      
     _Pragma("unroll 4")                                                                 \
     for (IndptrT j = start; j < end; j++) {                                                 \
         ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                              \
-        acc += READ_W(weights[perm[j]]) * mask;                                         \
+        acc += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask);                           \
     }                                                                                   \
     output[row] = WRITE_W(acc);                                                         \
 }
@@ -96,7 +105,7 @@ __global__ void _csrmv_nt_warp_perm_hetero_kern##SUFFIX(                        
         _Pragma("unroll 2")                                                            \
         for (IndptrT j = start + lane; j < end; j += 32) {                             \
             ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                         \
-            acc += READ_W(weights[perm[j]]) * mask;                                    \
+            acc += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask);                      \
         }                                                                              \
         acc = WARP_RED(acc);                                                           \
         if (lane == 0) output[row] = WRITE_W(acc);                                     \
@@ -128,7 +137,7 @@ __global__ void _csrmv_nt_block_perm_hetero_kern##SUFFIX(                       
     _Pragma("unroll 2")                                                                \
     for (IndptrT j = start + (int)threadIdx.x; j < end; j += blockDim.x) {                 \
         ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                             \
-        acc += READ_W(weights[perm[j]]) * mask;                                        \
+        acc += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask);                          \
     }                                                                                  \
     int lane   = threadIdx.x & 31;                                                     \
     int warpid = threadIdx.x >> 5;                                                     \

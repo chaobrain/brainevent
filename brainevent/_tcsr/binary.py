@@ -33,6 +33,7 @@ from brainevent._op.util import (
     dtype_suffix,
     event_active,
     event_factor,
+    select_active,
 )
 from .preprocess_config import (
     get_hybrid_config,
@@ -476,14 +477,18 @@ def _binary_csrmv_jax_kernel(
             jnp.diff(indptr),
             total_repeat_length=nnz,
         )
-        active = event_factor(events[row_ids], dtype=out_dtype, weighted=weighted)
+        slot_events = events[row_ids]
         weights = data[0] if homogeneous else (
             data if transpose else data[permutation]
         )
-        contrib = active * weights
+        contrib = weights.astype(out_dtype)
         if weighted:
-            # Skip ``0 * w`` so a NaN/Inf weight in an inactive row stays out.
-            contrib = jnp.where(active != 0, contrib, jnp.zeros_like(contrib))
+            contrib = slot_events.astype(out_dtype) * contrib
+        # Select, never multiply by a 0/1 mask: a NaN/Inf weight of an
+        # inactive event must not reach the output.
+        contrib = select_active(
+            event_active(slot_events), jnp.broadcast_to(contrib, (nnz,))
+        )
         result = jnp.zeros((cols,), dtype=out_dtype).at[indices].add(contrib)
         return result, task_begin, task_end, status
 
@@ -514,19 +519,53 @@ def _binary_csrmv_cusparse_kernel(
             "direct TCSR cuSPARSE MV requires indptr values to fit indices dtype"
         )
 
+    # Exact select-based fallback for non-finite weights (see below).
+    select_kernel = _binary_csrmv_jax_kernel(
+        weight_info, vector_info, shape, transpose, **kwargs
+    )
+
     def kernel(weights, indices, indptr, vector, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
-        del local_targets, tile_offsets
         events = event_factor(vector, dtype=out_dtype, weighted=weighted)
-        indptr = indptr.astype(indices.dtype) if indices.dtype != indptr.dtype else indptr
-        if is_homo:
+        cast_indptr = indptr.astype(indices.dtype) if indices.dtype != indptr.dtype else indptr
+        if is_homo and not weighted:
             data = jnp.ones(nse, dtype=out_dtype)
-            mat = jsparse.CSR((data, indices, indptr), shape=(m, k))
-            math_out = jsparse.csr_matvec(mat, events, transpose=True) * weights[0].astype(out_dtype)
+            mat = jsparse.CSR((data, indices, cast_indptr), shape=(m, k))
+            count = jsparse.csr_matvec(mat, events, transpose=True)
+            # ``count`` is an exact active-event count: select instead of
+            # ``0 * w`` so a NaN/Inf homogeneous weight leaves idle outputs 0.
+            math_out = select_active(count != 0, count * weights[0].astype(out_dtype))
             return math_out, task_begin, task_end, status
-        physical_weights = weights if transpose else weights[permutation]
-        mat = jsparse.CSR((physical_weights.astype(out_dtype), indices, indptr), shape=(m, k))
-        math_out = jsparse.csr_matvec(mat, events, transpose=True)
+
+        def library_product(weights):
+            physical_weights = (
+                jnp.broadcast_to(weights[0], (nse,))
+                if is_homo
+                else (weights if transpose else weights[permutation])
+            )
+            mat = jsparse.CSR(
+                (physical_weights.astype(out_dtype), indices, cast_indptr),
+                shape=(m, k),
+            )
+            return jsparse.csr_matvec(mat, events, transpose=True)
+
+        def select_product(weights):
+            return select_kernel(
+                weights, indices, indptr, vector, task_begin, task_end, status,
+                local_targets, tile_offsets, permutation,
+            )[0]
+
+        # cuSPARSE computes ``0 * w`` for inactive rows, which is exact only
+        # for finite weights; any NaN/Inf weight takes the select-based
+        # product. (Masking the operand per call costs a full O(nse) row-id
+        # expansion, ~3.5x the SpMV on an RTX 3090; the finiteness check is a
+        # single reduction.)
+        math_out = jax.lax.cond(
+            jnp.all(jnp.isfinite(weights)),
+            library_product,
+            select_product,
+            weights,
+        )
         return math_out, task_begin, task_end, status
 
     return kernel
@@ -679,13 +718,33 @@ def _slot_row_ids(indices, indptr):
     )
 
 
+
+def _sampled_slot_values(events, ct, row_ids, cols, *, value_weighted):
+    """Physical-slot weight cotangent ``sum_b f(x[b, row(e)]) * ct[b, col(e)]``.
+
+    ``events`` has shape ``(rows,)`` or ``(rows, batch)`` and ``ct`` the
+    matching ``(cols,)`` or ``(cols, batch)``. ``f`` is the event value
+    (``value_weighted``: weighted events and ``pp_prop``) or ``1``; inactive
+    events (``x == 0``) contribute an exact ``0`` even where ``ct`` is NaN/Inf.
+    """
+    x = events[row_ids]
+    terms = ct[cols]
+    if value_weighted:
+        terms = x.astype(ct.dtype) * terms
+    terms = select_active(event_active(x), terms)
+    return terms if terms.ndim == 1 else jnp.sum(terms, axis=1)
+
+
 def _weighted_slot_values_mv(
     events, ct, indices, indptr, local_targets, tile_offsets, *, backend
 ):
     """Physical-slot weight cotangent ``x[row(e)] * ct[col(e)]`` of a weighted MV.
 
     This is the value-weighted (``pp_prop``) rule; weighted events always
-    use it, whatever ``backward_algorithm`` says.
+    use it, whatever ``backward_algorithm`` says. ``cuda_raw`` uses the float
+    SDDMV kernel when it supports the operands (it visits only ``x != 0``
+    rows); every other case selects on activity, so an inactive row gets an
+    exact ``0`` even where ``ct`` is NaN/Inf.
     """
     values = event_factor(events, dtype=ct.dtype, weighted=True)
     if (
@@ -697,7 +756,9 @@ def _weighted_slot_values_mv(
             values, ct, indices, indptr, local_targets, tile_offsets,
             transpose=True,
         )
-    return values[_slot_row_ids(indices, indptr)] * ct[indices]
+    return _sampled_slot_values(
+        events, ct, _slot_row_ids(indices, indptr), indices, value_weighted=True
+    )
 
 
 def _weighted_slot_values_mm(
@@ -706,7 +767,8 @@ def _weighted_slot_values_mm(
     """Physical-slot weight cotangent of a weighted MM in physical BN layout.
 
     ``events_bn`` has shape ``(batch, rows)`` and ``ct_bn`` ``(batch, cols)``;
-    the result is ``sum_b x[b, row(e)] * ct[b, col(e)]``.
+    the result is ``sum_b x[b, row(e)] * ct[b, col(e)]`` over active
+    ``(b, row(e))`` only (see :func:`_weighted_slot_values_mv`).
     """
     values = event_factor(events_bn, dtype=ct_bn.dtype, weighted=True)
     if (
@@ -718,8 +780,10 @@ def _weighted_slot_values_mm(
             values, ct_bn, indices, indptr, local_targets, tile_offsets,
             transpose=True,
         )
-    row_ids = _slot_row_ids(indices, indptr)
-    return jnp.sum(values.T[row_ids, :] * ct_bn.T[indices, :], axis=1)
+    return _sampled_slot_values(
+        events_bn.T, ct_bn.T, _slot_row_ids(indices, indptr), indices,
+        value_weighted=True,
+    )
 
 
 def _csrmv_jvp_v(
@@ -861,7 +925,10 @@ def _csrmv_transpose_rule(
         if type(ct) is ad.Zero:
             ct_values = ad.Zero(data)
         else:
-            if kwargs.get('weighted', False):
+            if (
+                kwargs.get('weighted', False)
+                or kwargs['backward_algorithm'] == 'pp_prop'
+            ):
                 slot_values = _weighted_slot_values_mv(
                     events,
                     ct,
@@ -872,12 +939,7 @@ def _csrmv_transpose_rule(
                     backend=kwargs['backend'],
                 )
             elif kwargs['backend'] == 'cuda_raw':
-                sampled_gradient = (
-                    tcsr_sddmv_dweight_float
-                    if kwargs['backward_algorithm'] == 'pp_prop'
-                    else tcsr_sddmv_dweight_binary
-                )
-                slot_values = sampled_gradient(
+                slot_values = tcsr_sddmv_dweight_binary(
                     events,
                     ct,
                     indices,
@@ -887,17 +949,13 @@ def _csrmv_transpose_rule(
                     transpose=True,
                 )
             else:
-                row_ids = jnp.repeat(
-                    jnp.arange(indptr.shape[0] - 1, dtype=indptr.dtype),
-                    jnp.diff(indptr),
-                    total_repeat_length=indices.size,
+                slot_values = _sampled_slot_values(
+                    events,
+                    ct,
+                    _slot_row_ids(indices, indptr),
+                    indices,
+                    value_weighted=False,
                 )
-                activity = (
-                    events
-                    if kwargs['backward_algorithm'] == 'pp_prop'
-                    else event_factor(events, dtype=ct.dtype)
-                )
-                slot_values = activity[row_ids] * ct[indices]
             if data.aval.shape[0] == 1:
                 ct_values = jnp.sum(slot_values).reshape(*data.aval.shape)
             elif transpose:
@@ -1086,6 +1144,11 @@ def binary_csrmv_p_call(
     ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
     With ``weighted=True``, ``e(x) = x`` and only entries with ``x != 0``
     are visited.
+
+    Inactive events contribute exactly ``0`` on every backend, whatever the
+    weights they would multiply (NaN and ``±Inf`` included); likewise the
+    weight cotangent of an inactive event is exactly ``0``. Active events
+    keep IEEE semantics (an active event times a NaN weight is NaN).
 
     Examples
     --------
@@ -1359,22 +1422,23 @@ def _binary_csrmm_jax_kernel(
             jnp.diff(indptr),
             total_repeat_length=nnz,
         )
-        active = (
+        slot_events = (
             events_bn[:, row_ids]
             if transpose
             else events_bn[row_ids, :]
         )
-        active = event_factor(active, dtype=out_dtype, weighted=weighted)
         physical_weights = data if transpose else data[permutation]
-        if transpose:
-            weights = data[0] if homogeneous else physical_weights[None, :]
-            contrib = active * weights
+        if homogeneous:
+            weights = data[0]
+        elif transpose:
+            weights = physical_weights[None, :]
         else:
-            weights = data[0] if homogeneous else physical_weights[:, None]
-            contrib = active * weights
+            weights = physical_weights[:, None]
+        contrib = jnp.broadcast_to(weights.astype(out_dtype), slot_events.shape)
         if weighted:
-            # Skip ``0 * w`` so a NaN/Inf weight in an inactive row stays out.
-            contrib = jnp.where(active != 0, contrib, jnp.zeros_like(contrib))
+            contrib = slot_events.astype(out_dtype) * contrib
+        # Select, never multiply by a 0/1 mask (``0 * NaN`` is NaN).
+        contrib = select_active(event_active(slot_events), contrib)
         if transpose:
             result = jnp.zeros((events_bn.shape[0], cols), dtype=out_dtype)
             result = result.at[:, indices].add(contrib)
@@ -1410,24 +1474,52 @@ def _binary_csrmm_cusparse_kernel(
             "direct TCSR cuSPARSE MM requires indptr values to fit indices dtype"
         )
 
+    # Exact select-based fallback for non-finite weights (see below).
+    select_kernel = _binary_csrmm_jax_kernel(
+        weight_info, vector_info, shape, transpose, **kwargs
+    )
+
     def kernel(weights, indices, indptr, B, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
-        del local_targets, tile_offsets
         events = event_factor(B, dtype=out_dtype, weighted=weighted)
         events_nb = events.T if transpose else events
-        indptr = indptr.astype(indices.dtype) if indices.dtype != indptr.dtype else indptr
-        if is_homo:
+        cast_indptr = indptr.astype(indices.dtype) if indices.dtype != indptr.dtype else indptr
+        if is_homo and not weighted:
             data = jnp.ones(nse, dtype=out_dtype)
-            mat = jsparse.CSR((data, indices, indptr), shape=(m, k))
-            math_out = (
-                jsparse.csr_matmat(mat, events_nb, transpose=True)
-                * weights[0].astype(out_dtype)
-            )
+            mat = jsparse.CSR((data, indices, cast_indptr), shape=(m, k))
+            count = jsparse.csr_matmat(mat, events_nb, transpose=True)
+            # Exact active-event counts: select instead of ``0 * w``.
+            math_out = select_active(count != 0, count * weights[0].astype(out_dtype))
             return (math_out.T if transpose else math_out), task_begin, task_end, status
-        physical_weights = weights if transpose else weights[permutation]
-        mat = jsparse.CSR((physical_weights.astype(out_dtype), indices, indptr), shape=(m, k))
-        math_out = jsparse.csr_matmat(mat, events_nb, transpose=True)
-        math_out = math_out.T if transpose else math_out
+
+        def library_product(weights):
+            physical_weights = (
+                jnp.broadcast_to(weights[0], (nse,))
+                if is_homo
+                else (weights if transpose else weights[permutation])
+            )
+            mat = jsparse.CSR(
+                (physical_weights.astype(out_dtype), indices, cast_indptr),
+                shape=(m, k),
+            )
+            math_out = jsparse.csr_matmat(mat, events_nb, transpose=True)
+            return math_out.T if transpose else math_out
+
+        def select_product(weights):
+            return select_kernel(
+                weights, indices, indptr, B, task_begin, task_end, status,
+                local_targets, tile_offsets, permutation,
+            )[0]
+
+        # Activity varies per batch column, so one masked operand cannot
+        # serve every column. cuSPARSE computes ``0 * w``, which is exact for
+        # finite weights; any NaN/Inf weight takes the select-based product.
+        math_out = jax.lax.cond(
+            jnp.all(jnp.isfinite(weights)),
+            library_product,
+            select_product,
+            weights,
+        )
         return math_out, task_begin, task_end, status
 
     return kernel
@@ -1867,7 +1959,10 @@ def _csrmm_transpose_rule(
             ad.Zero(permutation),
         )
     else:
-        if kwargs.get('weighted', False):
+        if (
+            kwargs.get('weighted', False)
+            or kwargs['backward_algorithm'] == 'pp_prop'
+        ):
             slot_values = _weighted_slot_values_mm(
                 B if transpose else B.T,
                 ct if transpose else ct.T,
@@ -1878,12 +1973,7 @@ def _csrmm_transpose_rule(
                 backend=kwargs['backend'],
             )
         elif kwargs['backend'] == 'cuda_raw':
-            sampled_gradient = (
-                tcsr_sddmm_dweight_float
-                if kwargs['backward_algorithm'] == 'pp_prop'
-                else tcsr_sddmm_dweight_binary
-            )
-            slot_values = sampled_gradient(
+            slot_values = tcsr_sddmm_dweight_binary(
                 B if transpose else B.T,
                 ct if transpose else ct.T,
                 indices,
@@ -1893,20 +1983,12 @@ def _csrmm_transpose_rule(
                 transpose=True,
             )
         else:
-            row_ids = jnp.repeat(
-                jnp.arange(indptr.shape[0] - 1, dtype=indptr.dtype),
-                jnp.diff(indptr),
-                total_repeat_length=indices.size,
-            )
-            physical_B = B.T if transpose else B
-            physical_ct = ct.T if transpose else ct
-            activity = (
-                physical_B
-                if kwargs['backward_algorithm'] == 'pp_prop'
-                else event_factor(physical_B, dtype=physical_ct.dtype)
-            )
-            slot_values = jnp.sum(
-                activity[row_ids, :] * physical_ct[indices, :], axis=1
+            slot_values = _sampled_slot_values(
+                B.T if transpose else B,
+                ct.T if transpose else ct,
+                _slot_row_ids(indices, indptr),
+                indices,
+                value_weighted=False,
             )
         if data.aval.shape[0] == 1:
             d_data = jnp.sum(slot_values).reshape(*data.aval.shape)
@@ -2108,6 +2190,11 @@ def binary_csrmm_p_call(
     ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
     With ``weighted=True``, ``e(x) = x`` and only entries with ``x != 0``
     are visited.
+
+    Inactive events contribute exactly ``0`` on every backend, whatever the
+    weights they would multiply (NaN and ``±Inf`` included); likewise the
+    weight cotangent of an inactive event is exactly ``0``. Active events
+    keep IEEE semantics (an active event times a NaN weight is NaN).
 
     Examples
     --------

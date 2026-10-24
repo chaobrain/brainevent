@@ -220,3 +220,77 @@ def test_single_bpsa_rejects_invalid_operands_before_cuda(
 
     with pytest.raises(error, match=message):
         implementation.csr_bpsa_dinput_single(**operands)
+
+
+requires_gpu_backend = pytest.mark.skipif(
+    not any(device.platform == "gpu" for device in jax.devices()),
+    reason="requires a JAX GPU backend",
+)
+
+
+def _isolation_tcsr_operands(shape=(37, 9000), seed=0):
+    """Canonical TileCSR operands of a random matrix plus its row ids."""
+    rng = np.random.RandomState(seed)
+    rows, cols = shape
+    mask = rng.rand(rows, cols) < 0.02
+    mask[3] = True  # one dense row spanning both 8192-column tiles
+    indices = np.concatenate([np.flatnonzero(r) for r in mask]).astype(np.int64)
+    indptr = np.concatenate([[0], np.cumsum(mask.sum(1))]).astype(np.int64)
+    tile_count = (cols + 8191) // 8192
+    tile_offsets = np.zeros((rows, tile_count + 1), np.int32)
+    for row in range(rows):
+        row_cols = indices[indptr[row]:indptr[row + 1]]
+        tile_offsets[row] = np.searchsorted(
+            row_cols, np.arange(tile_count + 1) * 8192
+        )
+    local_targets = (indices % 8192).astype(np.uint16)
+    weights = rng.normal(size=indices.size).astype(np.float32)
+    row_ids = np.repeat(np.arange(rows), np.diff(indptr))
+    return weights, indptr, indices, local_targets, tile_offsets, row_ids
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize("variant", ["single", "masked"])
+def test_bpsa_inactive_rows_ignore_nan_inf_weights(variant):
+    """Inactive source rows are skipped: their NaN/±Inf weights never reach
+    the input gradient, which is exactly 0 there; active rows still see NaN."""
+    from brainevent._tcsr import bpsa
+
+    weights, indptr, indices, local_targets, tile_offsets, row_ids = (
+        _isolation_tcsr_operands()
+    )
+    rows = indptr.size - 1
+    cols = 9000
+    batch = 1 if variant == "single" else 3
+    rng = np.random.RandomState(1)
+    active = rng.rand(batch, rows) < 0.4
+    active[:, 3] = False  # the dense row is inactive in every batch
+    active[:, 0] = True   # row 0 is active and carries one NaN weight
+    inactive_all = ~active.any(axis=0)
+    bad = np.resize(np.asarray([np.nan, np.inf, -np.inf], np.float32), weights.size)
+    weights = np.where(inactive_all[row_ids], bad, weights).astype(np.float32)
+    assert indptr[1] > indptr[0]
+    weights[indptr[0]] = np.nan
+    ct = rng.normal(size=(batch, cols)).astype(np.float32)
+
+    if variant == "single":
+        got = bpsa.csr_bpsa_dinput_single(
+            jnp.asarray(weights), jnp.asarray(local_targets), jnp.asarray(indptr),
+            jnp.asarray(tile_offsets), jnp.asarray(active[0]), jnp.asarray(ct[0]),
+        )[None]
+    else:
+        got = bpsa.csr_bpsa_dinput_masked(
+            jnp.asarray(weights), jnp.asarray(indptr), jnp.asarray(local_targets),
+            jnp.asarray(tile_offsets), bpsa.pack_event_mask_bn(jnp.asarray(active)),
+            jnp.asarray(ct),
+        )
+    got = np.asarray(got)
+
+    dense = np.zeros((rows, cols), np.float64)
+    dense[row_ids, indices] = weights
+    with np.errstate(invalid="ignore"):
+        full = ct.astype(np.float64) @ dense.T
+    expected = np.where(active, full, 0.0)
+    assert np.all(got[~active] == 0)
+    assert np.all(np.isnan(got[:, 0]))
+    np.testing.assert_allclose(got, expected, rtol=1e-4, atol=1e-3, equal_nan=True)
