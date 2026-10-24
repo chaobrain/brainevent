@@ -9,7 +9,7 @@
 4. Bug? Write a test that reproduces it, then fix until the test passes.
 5. Every correction: reflect on the mistake, plan to avoid repeating it.
 6. All updates must happen on the worktree branch, not main. 
-7. Write specs under `docs/specs` before implementation.
+7. Write specs under `docs/specs` before implementation, naming starts with the datetime.
 8. Tests should >90% coverage, but focus on meaningful tests that cover edge cases and critical paths, not just trivial lines. 
 9. Typing tests should pass mypy with no errors, but prioritize meaningful type annotations that improve readability and maintainability over exhaustive coverage of every variable.
 10. Support jax version >=0.9.0
@@ -17,19 +17,7 @@
 
 ## Docstring style (NumPy-doc)
 
-All public classes, methods, functions must use [NumPy-style docstrings](https://numpydoc.readthedocs.io/en/latest/format.html). Canonical section order:
-
-1. **Short summary** – one-line imperative description (no blank line before).
-2. **Extended summary** – optional, follow blank line after short summary.
-3. **Parameters** – each entry: `name : type` on own line, description indented below.
-4. **Returns** / **Yields** – same format as Parameters.
-5. **Raises** – exception type and when raised.
-6. **See Also** – related functions / classes.
-7. **Notes** – implementation details, math, references.
-8. **References** – numbered bibliography entries (`.. [1]`).
-9. **Examples** – runnable, doctestable code snippets.
-
-### Rules for the Examples section
+All public classes, methods, functions must use [NumPy-style docstrings](https://numpydoc.readthedocs.io/en/latest/format.html). Rules for the Examples section
 
 - Wrap example code in `.. code-block:: python` directive so Sphinx render with syntax highlighting.
 - Prefix every input line with `>>>` (continuation lines with `...`) for `doctest` compatibility.
