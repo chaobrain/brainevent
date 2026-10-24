@@ -128,7 +128,7 @@ indptr, larger random graph versus `jax_raw`.
 
 ## Benchmark
 
-`dev/benchmarks/csr_delay_deliver_bench.py`: Brunel-like network, 12 500
+`examples/csr_delay_deliver_benchmark.py`: Brunel-like network, 12 500
 neurons, indegree 1250 (15.6 M edges), L = 200, delays uniform in `[1, 199]`,
 firing probability 1-5 % per step, float32 hetero weights. Per-step time of
 (a) `csr_delay_deliver` (cuda_raw / numba), (b) the `jax_raw` scatter,
