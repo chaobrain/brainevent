@@ -40,7 +40,7 @@ from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, load_cuda_file
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, select_active
 from brainevent._fcn.binary import _EVENT_FASTMATH, _numba_event_mask
 
 __all__ = [
@@ -68,8 +68,9 @@ def _check_heterogeneous(data, indices):
 def _fcn_plasticity_row_jax_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
     def kernel(data, indices, spike, trace):
         active = event_active(spike)
-        delta = jnp.where(active[:, None], trace[indices], jnp.zeros_like(data))
-        return [data + delta]
+        # Select the updated value: inactive rows stay bit-identical whatever
+        # the trace holds (NaN/Inf, and ``-0.`` keeps its sign).
+        return [jnp.where(active[:, None], data + trace[indices], data)]
 
     return kernel
 
@@ -204,7 +205,7 @@ def _fcn_plasticity_row_transpose_rule(ct, data, indices, spike, trace, **kwargs
             ct_trace = ad.Zero(trace.aval)
         else:
             active = event_active(spike)[:, None]
-            masked = jnp.where(active, ct, jnp.zeros_like(ct))
+            masked = select_active(active, ct)
             ct_trace = (
                 jnp.zeros(trace.aval.shape, dtype=ct.dtype)
                 .at[indices].add(masked)

@@ -811,3 +811,225 @@ def test_binary_fcnmm_weighted_large_gpu(homo_w, w_dtype, transpose):
     tol = 2e-2 if w_dtype in ('float16', 'bfloat16') else 1e-5
     rel = np.linalg.norm(y - expected) / np.linalg.norm(expected)
     assert rel < tol, f'relative error {rel}'
+
+
+# ---------------------------------------------------------------------------
+# Inactive events contribute exactly zero (NaN/Inf weight isolation)
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md
+# ---------------------------------------------------------------------------
+
+_ISO_BAD = [pytest.param(np.nan, id='nan'), pytest.param(np.inf, id='inf'),
+            pytest.param(-np.inf, id='-inf')]
+_ISO_KINDS = ['bool', 'float', 'weighted']
+_ISO_SHAPE = (6, 6)
+# Events 0, 2, 4 are active. Scatter (transpose=True): posts 2, 3, 5 are only
+# reached from inactive rows. Gather (transpose=False): rows 4, 5 only read
+# inactive events.
+_ISO_INDICES = np.array([[0, 1], [2, 3], [1, 4], [5, 0], [1, 1], [3, 5]], dtype=np.int32)
+_ISO_EVENTS = np.array([2., 0., -1., 0., 0.5, 0.])
+# Batch columns: the first is ``_ISO_EVENTS``; the last is all-inactive.
+_ISO_MATRIX = np.stack([_ISO_EVENTS, np.array([0., 1., 0., 0., 0., 2.]), np.zeros(6)], axis=1)
+
+
+def _iso_events(values, kind):
+    if kind == 'bool':
+        return jnp.asarray(values != 0), False
+    return jnp.asarray(values, dtype=jnp.float32), kind == 'weighted'
+
+
+def _ell_terms(weights, indices, values, transpose, weighted):
+    """Per-connection, per-batch-column select terms and their event values."""
+    idx = np.asarray(indices)
+    w = np.broadcast_to(np.asarray(weights, dtype=np.float64).reshape(-1)
+                        if np.size(weights) == 1 else np.asarray(weights, dtype=np.float64), idx.shape)
+    vals = np.asarray(values, dtype=np.float64)
+    vals = vals[:, None] if vals.ndim == 1 else vals
+    ev = np.broadcast_to(vals[:, None, :], idx.shape + vals.shape[1:]) if transpose else vals[idx]
+    factor = ev if weighted else np.ones_like(ev)
+    with np.errstate(invalid='ignore'):
+        terms = np.where(ev != 0, w[:, :, None] * factor, 0.)
+    return terms, ev, factor
+
+
+def _ell_select_reference(weights, indices, values, shape, transpose, weighted):
+    """``sum where(active, w * f, 0)`` over the ELL structure, float64, NaN-exact."""
+    terms, _, _ = _ell_terms(weights, indices, values, transpose, weighted)
+    if transpose:
+        out = np.zeros((shape[1], terms.shape[-1]))
+        with np.errstate(invalid='ignore'):  # Inf + -Inf
+            np.add.at(out, np.asarray(indices), terms)
+    else:
+        out = terms.sum(1)
+    return out[:, 0] if np.ndim(values) == 1 else out
+
+
+def _iso_weights(homo, bad, transpose, active_of_entry):
+    rng = np.random.default_rng(21)
+    if homo:
+        return jnp.asarray([bad], dtype=jnp.float32)
+    w = rng.standard_normal(_ISO_INDICES.shape)
+    w[~active_of_entry] = bad
+    return jnp.asarray(w, dtype=jnp.float32)
+
+
+def _entry_active(values, transpose):
+    """Activity of the event each ELL entry meets (``values`` is 1-D)."""
+    act = np.asarray(values) != 0
+    return np.broadcast_to(act[:, None], _ISO_INDICES.shape) if transpose else act[_ISO_INDICES]
+
+
+def _skip_cuda_gather_mv(implementation, transpose):
+    if implementation == 'cuda_raw' and not transpose:
+        pytest.skip('cuda_raw has no transpose=False matvec (routed to the CSR kernel)')
+
+
+@pytest.mark.parametrize('implementation', ELL_MV_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('kind', _ISO_KINDS)
+@pytest.mark.parametrize('bad', _ISO_BAD)
+def test_binary_fcnmv_nonfinite_weights_on_inactive_events_are_isolated(implementation, transpose, homo, kind, bad):
+    _skip_cuda_gather_mv(implementation, transpose)
+    weights = _iso_weights(homo, bad, transpose, _entry_active(_ISO_EVENTS, transpose))
+    events, weighted = _iso_events(_ISO_EVENTS, kind)
+    out = binary_fcnmv(weights, jnp.asarray(_ISO_INDICES), events, shape=_ISO_SHAPE, transpose=transpose,
+                       backend=implementation, weighted=weighted)
+    out = np.asarray(out)
+    ref = _ell_select_reference(weights, _ISO_INDICES, _ISO_EVENTS, _ISO_SHAPE, transpose, weighted)
+    np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5, equal_nan=True)
+    inactive_only = [2, 3, 5] if transpose else [4, 5]
+    np.testing.assert_array_equal(out[inactive_only], 0.)
+    if not homo:
+        assert np.all(np.isfinite(out)), out
+
+
+@pytest.mark.parametrize('implementation', FCNMM_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('kind', _ISO_KINDS)
+@pytest.mark.parametrize('bad', _ISO_BAD)
+def test_binary_fcnmm_nonfinite_weights_on_inactive_events_are_isolated(implementation, transpose, homo, kind, bad):
+    # Bad weights sit on the entries inactive in batch column 0; column 1 makes
+    # some of them active (NaN/Inf legitimately propagates there).
+    weights = _iso_weights(homo, bad, transpose, _entry_active(_ISO_EVENTS, transpose))
+    matrix, weighted = _iso_events(_ISO_MATRIX, kind)
+    out = binary_fcnmm(weights, jnp.asarray(_ISO_INDICES), matrix, shape=_ISO_SHAPE, transpose=transpose,
+                       backend=implementation, weighted=weighted)
+    out = np.asarray(out)
+    ref = _ell_select_reference(weights, _ISO_INDICES, _ISO_MATRIX, _ISO_SHAPE, transpose, weighted)
+    np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5, equal_nan=True)
+    np.testing.assert_array_equal(out[:, 2], 0.)  # all-inactive column
+    if not homo:
+        assert np.all(np.isfinite(out[:, 0])), out
+
+
+@pytest.mark.parametrize('implementation', ELL_MV_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('kind', _ISO_KINDS)
+def test_binary_fcnmv_nan_weight_on_active_event_propagates(implementation, transpose, homo, kind):
+    _skip_cuda_gather_mv(implementation, transpose)
+    active = _entry_active(_ISO_EVENTS, transpose)
+    if homo:
+        weights = jnp.asarray([np.nan], dtype=jnp.float32)
+    else:
+        w = np.random.default_rng(22).standard_normal(_ISO_INDICES.shape)
+        w[np.argwhere(active)[0][0], np.argwhere(active)[0][1]] = np.nan
+        weights = jnp.asarray(w, dtype=jnp.float32)
+    events, weighted = _iso_events(_ISO_EVENTS, kind)
+    out = np.asarray(binary_fcnmv(weights, jnp.asarray(_ISO_INDICES), events, shape=_ISO_SHAPE,
+                                  transpose=transpose, backend=implementation, weighted=weighted))
+    ref = _ell_select_reference(weights, _ISO_INDICES, _ISO_EVENTS, _ISO_SHAPE, transpose, weighted)
+    assert np.any(np.isnan(out))
+    np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5, equal_nan=True)
+
+
+def _ell_weight_grad_reference(weights, indices, values, ct, transpose, weighted):
+    """``dW[i, k] = sum_b where(active, f * ct[target, b], 0)``; homo: summed."""
+    _, ev, factor = _ell_terms(np.ones(indices.shape), indices, values, transpose, weighted)
+    ct = np.asarray(ct, dtype=np.float64)
+    ct = ct[:, None] if ct.ndim == 1 else ct
+    c = ct[np.asarray(indices)] if transpose else np.broadcast_to(ct[:, None, :], ev.shape)
+    with np.errstate(invalid='ignore'):
+        g = np.where(ev != 0, factor * c, 0.).sum(-1)
+    return np.asarray([g.sum()]) if np.size(weights) == 1 else g
+
+
+@pytest.mark.parametrize('implementation', ELL_MV_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('kind', _ISO_KINDS)
+def test_binary_fcnmv_weight_cotangent_of_inactive_events_is_exactly_zero(implementation, transpose, homo, kind):
+    _skip_cuda_gather_mv(implementation, transpose)
+    rng = np.random.default_rng(23)
+    weights = jnp.asarray([1.5] if homo else rng.standard_normal(_ISO_INDICES.shape), dtype=jnp.float32)
+    events, weighted = _iso_events(_ISO_EVENTS, kind)
+    ct = rng.standard_normal(6)
+    # A NaN cotangent on an output reached only through inactive events.
+    ct[3 if transpose else 5] = np.nan
+    _, vjp = jax.vjp(lambda w: binary_fcnmv(w, jnp.asarray(_ISO_INDICES), events, shape=_ISO_SHAPE,
+                                            transpose=transpose, backend=implementation, weighted=weighted),
+                     weights)
+    (g,) = vjp(jnp.asarray(ct, dtype=jnp.float32))
+    g = np.asarray(g)
+    ref = _ell_weight_grad_reference(weights, _ISO_INDICES, _ISO_EVENTS, ct, transpose, weighted)
+    assert np.all(np.isfinite(g)), g
+    np.testing.assert_allclose(g, ref, rtol=1e-5, atol=1e-5)
+    if not homo:
+        np.testing.assert_array_equal(g[~_entry_active(_ISO_EVENTS, transpose)], 0.)
+
+
+@pytest.mark.parametrize('implementation', FCNMM_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('kind', _ISO_KINDS)
+def test_binary_fcnmm_weight_cotangent_of_inactive_events_is_exactly_zero(implementation, transpose, homo, kind):
+    rng = np.random.default_rng(24)
+    weights = jnp.asarray([1.5] if homo else rng.standard_normal(_ISO_INDICES.shape), dtype=jnp.float32)
+    matrix, weighted = _iso_events(_ISO_MATRIX, kind)
+    ct = rng.standard_normal((6, _ISO_MATRIX.shape[1]))
+    ct[:, 2] = np.nan  # batch column 2 is all-inactive
+    ct[3 if transpose else 5, 0] = np.nan  # reached only through inactive events in column 0
+    _, vjp = jax.vjp(lambda w: binary_fcnmm(w, jnp.asarray(_ISO_INDICES), matrix, shape=_ISO_SHAPE,
+                                            transpose=transpose, backend=implementation, weighted=weighted),
+                     weights)
+    (g,) = vjp(jnp.asarray(ct, dtype=jnp.float32))
+    g = np.asarray(g)
+    ref = _ell_weight_grad_reference(weights, _ISO_INDICES, _ISO_MATRIX, ct, transpose, weighted)
+    np.testing.assert_allclose(g, ref, rtol=1e-5, atol=1e-5, equal_nan=True)
+
+
+@pytest.mark.parametrize('implementation', FCNMM_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('n_conn', [8, 40])
+def test_binary_fcnmm_nan_isolation_large(implementation, transpose, homo, n_conn):
+    """Exercises the warp / basic / bit-packed (> 1 MB events) CUDA gather variants."""
+    shape = (64, 600)
+    n_batch = 512
+    weights, indices = _fixed_conn(shape, n_conn, homo, seed=3)
+    rng = np.random.default_rng(25)
+    rows = shape[0] if transpose else shape[1]
+    values = (rng.random((rows, n_batch)) < 0.05).astype(np.float64)
+    values[:, -1] = 0.  # all-inactive batch column
+    if homo:
+        weights = jnp.asarray([np.nan], dtype=jnp.float32)
+    else:
+        w = np.array(weights)
+        # NaN on every entry whose event row is inactive in batch column 0.
+        w[~_np_entry_active(values[:, 0], indices, transpose)] = np.nan
+        weights = jnp.asarray(w)
+    matrix = jnp.asarray(values != 0)
+    out = np.asarray(binary_fcnmm(weights, indices, matrix, shape=shape, transpose=transpose,
+                                  backend=implementation))
+    ref = _ell_select_reference(weights, indices, values, shape, transpose, False)
+    np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4, equal_nan=True)
+    np.testing.assert_array_equal(out[:, -1], 0.)
+    if not homo:
+        assert np.all(np.isfinite(out[:, 0]))
+
+
+def _np_entry_active(values_1d, indices, transpose):
+    act = np.asarray(values_1d) != 0
+    idx = np.asarray(indices)
+    return np.broadcast_to(act[:, None], idx.shape) if transpose else act[idx]

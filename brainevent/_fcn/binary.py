@@ -29,7 +29,10 @@ from brainevent._misc import check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, load_cuda_file
 from brainevent.config import get_backend, get_numba_parallel
 from .float import fcnmv, fcnmm
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask
+from brainevent._op.util import (
+    active_sum, cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask,
+    select_active,
+)
 
 __all__ = [
     'binary_fcnmv',
@@ -192,11 +195,15 @@ def _ell_weighted_matvec_numba_kernel(weight_info, transpose: bool):
                 w = weights[0]
                 for i in numba.prange(indices.shape[0]):
                     r = 0.
+                    hit = False
                     for j in range(indices.shape[1]):
                         sp = spikes[indices[i, j]]
                         if sp != 0:
                             r += sp
-                    posts[i] = w * r
+                            hit = True
+                    # Scale only rows with an active event: ``w * 0`` is NaN
+                    # for a NaN/Inf weight.
+                    posts[i] = w * r if hit else 0.
         else:
             @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
             def ell_mv(weights, indices, spikes, posts):
@@ -385,19 +392,19 @@ def _ell_binary_matvec_jax_kernel(
     n_pre, n_post = shape
 
     def kernel(weights, indices, spikes):
+        active = event_active(spikes)
         spk_f = _binary_fcnmv_spike_activity(spikes, weights.dtype, weighted)
-
+        w = jnp.broadcast_to(weights, indices.shape)
+        # Select, never multiply by a 0/1 mask: a NaN/Inf weight that only
+        # meets inactive events contributes exactly 0.
         if transpose:
-            # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
-            masked = jnp.broadcast_to(spk_f[:, None] * weights, indices.shape)
-            return jax.ops.segment_sum(masked.ravel(), indices.ravel(), num_segments=n_post),
+            # Scatter: y[indices[i,k]] += where(active[i], weights[i,k] * f[i], 0)
+            terms = select_active(active[:, None], w * spk_f[:, None] if weighted else w)
+            return jax.ops.segment_sum(terms.ravel(), indices.ravel(), num_segments=n_post),
         else:
-            # Gather: y[i] = sum_k weights[i,k] * spk_f[indices[i,k]]
-            if weights.size == 1:
-                w = weights[0]
-                return jax.vmap(lambda ind: w * jnp.sum(spk_f[ind]))(indices),
-            else:
-                return jax.vmap(lambda w, ind: jnp.sum(w * spk_f[ind]))(weights, indices),
+            # Gather: y[i] = sum_k where(active[indices[i,k]], weights[i,k] * f[indices[i,k]], 0)
+            terms = select_active(active[indices], w * spk_f[indices] if weighted else w)
+            return jnp.sum(terms, axis=1),
 
     return kernel
 
@@ -480,13 +487,18 @@ def _binary_fcnmv_transpose_rule(
                 backend=kwargs['backend'],
                 weighted=weighted,
             )
-            ct_gmax = jnp.inner(ct, ct_gmax[0]).reshape(*weight_info.shape)
+            # <ct, r> with r = prim(1): outputs reached by no active event
+            # (r == 0) contribute exactly 0, even where ``ct`` is NaN/Inf
+            # (select, not ``ct * 0``).
+            ct_gmax = active_sum(ct, ct_gmax[0], weighted=True).reshape(*weight_info.shape)
         else:
-            spk_active = _binary_fcnmv_spike_activity(spikes, weight_info.dtype, weighted)
+            active = event_active(spikes)
+            spk_f = _binary_fcnmv_spike_activity(spikes, weight_info.dtype, weighted)
+            # The cotangent of a weight that meets an inactive event is exactly 0.
             if transpose:
-                ct_gmax = jax.vmap(lambda v, ind: v * ct[ind])(spk_active, indices)
+                ct_gmax = select_active(active[:, None], spk_f[:, None] * ct[indices])
             else:
-                ct_gmax = jax.vmap(lambda c, ind: c * spk_active[ind])(ct, indices)
+                ct_gmax = select_active(active[indices], ct[:, None] * spk_f[indices])
     return ct_gmax, indices, spikes
 
 
@@ -818,12 +830,17 @@ def _fcnmm_weighted_numba_kernel(weight_info, transpose: bool):
                 w = weights[0]
                 for i_m in numba.prange(indices.shape[0]):
                     out = np.zeros(posts.shape[1], dtype=posts.dtype)
+                    hit = np.zeros(posts.shape[1], dtype=np.bool_)
                     for j in range(indices.shape[1]):
                         row = matrix[indices[i_m, j]]
                         for c in range(row.shape[0]):
                             if row[c] != 0:
                                 out[c] += row[c]
-                    posts[i_m] = out * w
+                                hit[c] = True
+                    # Scale only columns with an active event (``w * 0`` is NaN
+                    # for a NaN/Inf weight).
+                    for c in range(out.shape[0]):
+                        posts[i_m, c] = out[c] * w if hit[c] else 0.
         else:
             @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
             def ell_mm(weights, indices, matrix, posts):
@@ -914,32 +931,61 @@ def _binary_fcnmm_numba_kernel(
         # matrix: [k, n]
         #
 
+        # Inactive events select a zero term instead of multiplying the weight
+        # by 0 (``NaN * 0`` is NaN); homogeneous rows count active events and
+        # scale by ``w`` only where the count is non-zero.
         if weight_info.size == 1:
             if bool_events:
                 @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     w = weights[0]
                     for i_m in numba.prange(indices.shape[0]):
-                        posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
+                        count = np.zeros(matrix.shape[1], dtype=np.int64)
+                        for j in range(indices.shape[1]):
+                            row = matrix[indices[i_m, j]]
+                            for c in range(row.shape[0]):
+                                if row[c]:
+                                    count[c] += 1
+                        for c in range(count.shape[0]):
+                            posts[i_m, c] = w * count[c] if count[c] != 0 else 0.
             else:
                 @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     w = weights[0]
                     for i_m in numba.prange(indices.shape[0]):
-                        events = matrix[indices[i_m]] != 0
-                        posts[i_m] = w * np.sum(events, axis=0)
+                        count = np.zeros(matrix.shape[1], dtype=np.int64)
+                        for j in range(indices.shape[1]):
+                            row = matrix[indices[i_m, j]]
+                            for c in range(row.shape[0]):
+                                if row[c] != 0:
+                                    count[c] += 1
+                        for c in range(count.shape[0]):
+                            posts[i_m, c] = w * count[c] if count[c] != 0 else 0.
         else:
             if bool_events:
                 @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
-                        posts[i_m] = weights[i_m] @ (matrix[indices[i_m]]).astype(weights.dtype)
+                        out = np.zeros(posts.shape[1], dtype=posts.dtype)
+                        for j in range(indices.shape[1]):
+                            w = weights[i_m, j]
+                            row = matrix[indices[i_m, j]]
+                            for c in range(row.shape[0]):
+                                if row[c]:
+                                    out[c] += w
+                        posts[i_m] = out
             else:
                 @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
-                        events = (matrix[indices[i_m]] != 0).astype(weights.dtype)
-                        posts[i_m] = weights[i_m] @ events
+                        out = np.zeros(posts.shape[1], dtype=posts.dtype)
+                        for j in range(indices.shape[1]):
+                            w = weights[i_m, j]
+                            row = matrix[indices[i_m, j]]
+                            for c in range(row.shape[0]):
+                                if row[c] != 0:
+                                    out[c] += w
+                        posts[i_m] = out
 
     def kernel(weights, indices, matrix):
         if mask_events:
@@ -1100,31 +1146,29 @@ def _binary_fcnmm_jax_kernel(
     n_pre, n_post = shape
 
     def kernel(weights, indices, matrix):
-        # Convert to float activity (binary) or float values (weighted)
+        active = event_active(matrix)
+        # Float activity (binary) or float values (weighted)
         mat_f = event_factor(matrix, dtype=weights.dtype, weighted=weighted)
+        w = jnp.broadcast_to(weights, indices.shape)
+        # Select, never multiply by a 0/1 mask: a NaN/Inf weight that only
+        # meets inactive events contributes exactly 0.
 
         if transpose:
             # Scatter: Y[n_post, n_batch]; matrix M[n_pre, n_batch]
-            # Y[indices[i,k], j] += weights[i,k] * mat_f[i, j]
+            # Y[indices[i,k], j] += where(active[i, j], weights[i,k] * mat_f[i, j], 0)
             idx_flat = indices.ravel()  # [n_pre * n_conn]
-            mat_rep = jnp.repeat(mat_f, indices.shape[1], axis=0)  # [n_pre*n_conn, n_batch]
-            if weights.size == 1:
-                return jax.ops.segment_sum(
-                    mat_rep * weights[0], idx_flat, num_segments=n_post
-                ),
-            else:
-                w_flat = weights.ravel()[:, None]  # [n_pre*n_conn, 1]
-                return jax.ops.segment_sum(
-                    mat_rep * w_flat, idx_flat, num_segments=n_post
-                ),
+            act_rep = jnp.repeat(active, indices.shape[1], axis=0)  # [n_pre*n_conn, n_batch]
+            w_flat = w.ravel()[:, None]  # [n_pre*n_conn, 1]
+            vals = w_flat * jnp.repeat(mat_f, indices.shape[1], axis=0) if weighted else w_flat
+            return jax.ops.segment_sum(select_active(act_rep, vals), idx_flat, num_segments=n_post),
         else:
             # Gather: Y[n_pre, n_batch]; matrix M[n_post, n_batch]
-            # Y[i, j] = sum_k weights[i,k] * mat_f[indices[i,k], j]
-            if weights.size == 1:
-                w = weights[0]
-                return jax.vmap(lambda ind: w * jnp.sum(mat_f[ind], axis=0))(indices),
-            else:
-                return jax.vmap(lambda w_row, ind: w_row @ mat_f[ind])(weights, indices),
+            # Y[i, j] = sum_k where(active[indices[i,k], j], weights[i,k] * mat_f[indices[i,k], j], 0)
+            def row(w_row, ind):
+                vals = w_row[:, None] * mat_f[ind] if weighted else w_row[:, None]
+                return jnp.sum(select_active(active[ind], vals), axis=0)
+
+            return jax.vmap(row)(w, indices),
 
     return kernel
 
@@ -1197,18 +1241,26 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
             ct_weight = _maybe_transpose_to_expected(
                 ct_weight, ct.shape, op_name='binary_fcnmm transpose homo weight'
             )
-            ct_weight = jnp.sum(ct * ct_weight).reshape(*weight_info.shape)
+            # <ct, r> with r = prim(1): outputs reached by no active event
+            # (r == 0) contribute exactly 0, even where ``ct`` is NaN/Inf
+            # (select, not ``ct * 0``).
+            ct_weight = active_sum(ct, ct_weight, weighted=True).reshape(*weight_info.shape)
 
         else:
-            mat_active = event_factor(matrix, dtype=ct.dtype, weighted=weighted)
+            active = event_active(matrix)
+            mat_f = event_factor(matrix, dtype=ct.dtype, weighted=weighted)
+            # dW[i, k] = sum_j where(active, f * ct, 0): the cotangent of a weight
+            # meeting an inactive event is exactly 0.
             if transpose:
-                # inputs: [k, n] @ [k, n_conn]
-                # ct: [m, n]
-                ct_weight = jax.vmap(lambda mat, ind: ct[ind] @ mat)(mat_active, indices)
+                # active/mat_f: [k, n]; ct: [m, n]; dW[i, c] sums over ct[indices[i, c]]
+                ct_weight = jax.vmap(
+                    lambda a, f, ind: jnp.sum(select_active(a[None, :], ct[ind] * f[None, :]), axis=1)
+                )(active, mat_f, indices)
             else:
-                # inputs: [m, n] @ [m, n_conn]
-                # ct: [k, n]
-                ct_weight = jax.vmap(lambda c, ind: (mat_active[ind] @ c))(ct, indices)
+                # active/mat_f: [m, n]; ct: [k, n]; dW[i, c] gathers events at indices[i, c]
+                ct_weight = jax.vmap(
+                    lambda c, ind: jnp.sum(select_active(active[ind], mat_f[ind] * c[None, :]), axis=1)
+                )(ct, indices)
         return ct_weight, indices, matrix
 
 

@@ -439,3 +439,49 @@ def test_row_transpose_rejects_indices_and_spikes():
     und = [ad.UndefinedPrimal(jax.typeof(data)), indices, args[2], ad.UndefinedPrimal(jax.typeof(args[3]))]
     out = rule([ad.Zero(jax.typeof(data))], *und, backend=None)
     assert type(out[0]) is ad.Zero and type(out[3]) is ad.Zero
+
+
+# --------------------------------------------------------------------------- #
+# Inactive events leave their edges bit-identical (NaN trace isolation)
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md
+# --------------------------------------------------------------------------- #
+
+_ISO_SPIKES = np.array([2., 0., -1., 0., 0.5, 0.])  # rows 1, 3, 5 inactive
+_ISO_INDICES = np.array([[0, 1], [2, 3], [1, 4], [4, 0], [1, 1], [3, 2]], dtype=np.int32)
+
+
+def _iso_bits(x):
+    return np.asarray(x, dtype=np.float32).view(np.uint32)
+
+
+@pytest.mark.parametrize('backend', ROW_BACKENDS)
+@pytest.mark.parametrize('kind', ['bool', 'float32'])
+@pytest.mark.parametrize('bad', [pytest.param(np.nan, id='nan'), pytest.param(np.inf, id='inf')])
+def test_row_inactive_rows_unchanged_with_nonfinite_trace(backend, kind, bad):
+    rng = np.random.default_rng(31)
+    data = rng.standard_normal(_ISO_INDICES.shape).astype(np.float32)
+    data[1, 0] = -0.0  # ``-0. + 0.`` would flip the sign bit
+    trace = rng.standard_normal(5).astype(np.float32)
+    trace[[1, 2, 3]] = bad  # read by inactive rows (and by active rows 0, 2)
+    spikes = jnp.asarray(_ISO_SPIKES != 0 if kind == 'bool' else _ISO_SPIKES, dtype=jnp.dtype(kind))
+    out = np.asarray(fcn_plasticity_row_prim_call(
+        jnp.asarray(data), jnp.asarray(_ISO_INDICES), spikes, jnp.asarray(trace), backend=backend)[0])
+    active = _ISO_SPIKES != 0
+    np.testing.assert_array_equal(_iso_bits(out[~active]), _iso_bits(data[~active]))
+    with np.errstate(invalid='ignore'):
+        expected = np.where(active[:, None], data + trace[_ISO_INDICES], data)
+    np.testing.assert_array_equal(out, expected)  # active rows: NaN/Inf propagate
+
+
+@pytest.mark.parametrize('backend', ROW_BACKENDS)
+def test_row_vmap_isolates_nan_trace(backend):
+    rng = np.random.default_rng(32)
+    data = rng.standard_normal((2,) + _ISO_INDICES.shape).astype(np.float32)
+    trace = np.full(5, np.nan, dtype=np.float32)
+    spikes = jnp.asarray(_ISO_SPIKES != 0)
+    out = jax.vmap(lambda d: fcn_plasticity_row_prim_call(
+        d, jnp.asarray(_ISO_INDICES), spikes, jnp.asarray(trace), backend=backend)[0])(jnp.asarray(data))
+    active = _ISO_SPIKES != 0
+    for b in range(2):
+        np.testing.assert_array_equal(_iso_bits(np.asarray(out[b])[~active]), _iso_bits(data[b][~active]))
+        assert np.all(np.isnan(np.asarray(out[b])[active]))
