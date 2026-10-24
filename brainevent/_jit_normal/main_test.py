@@ -938,3 +938,146 @@ def test_weighted_jitc_numba_nan_event_propagates(op, cls_name, corder):
     assert np.array_equal(np.isnan(y), expected_nan)
     y_ref = _w_apply(op, dense, np.nan_to_num(x, nan=0.0))
     assert np.allclose(y[~expected_nan], y_ref[~expected_nan], rtol=1e-4, atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Inactive events contribute exactly zero (docs/specs/2026-10-24-inactive-row-
+# nan-isolation.md). JITC weights come from parameters, so the case is a NaN /
+# +-Inf *parameter*: outputs that receive only inactive contributions must be
+# exactly 0 on every backend, outputs reached by an active event stay
+# non-finite, and the parameter cotangent ignores inactive events even when
+# the output cotangent is NaN there.
+# ---------------------------------------------------------------------------
+
+from brainevent._jit_normal.binary import binary_jitnmv_p, binary_jitnmm_p
+
+_N_BAD_PARAMS = (
+    (np.nan, 0.3), (np.inf, 0.3), (-np.inf, 0.3), (1.5, np.nan), (1.5, np.inf),
+)
+_N_KINDS = ('bool', 'float', 'weighted')
+
+
+def _n_backends(op):
+    if op in ('mv', 'vm'):
+        prims = (binary_jitnmv_p, jitnmv_p)
+    else:
+        prims = (binary_jitnmm_p, jitnmm_p)
+    names = []
+    for prim in prims:
+        for name in prim.available_backends(platform):
+            if name not in names:
+                names.append(name)
+    return tuple(names)
+
+
+_N_CASES = [
+    pytest.param(backend, op, id=f'{backend}-{op}')
+    for op in ('mv', 'vm', 'mm', 'mr')
+    for backend in _n_backends(op)
+]
+
+
+def _n_partial_events(shape):
+    """Events with values ``2, -1`` on a sparse subset and ``0`` elsewhere."""
+    n = int(np.prod(shape))
+    values = np.zeros(n, np.float32)
+    active = np.random.RandomState(1).permutation(n)[: max(1, n // 6)]
+    values[active] = np.resize(np.asarray([2.0, -1.0], np.float32), active.size)
+    return values.reshape(shape)
+
+
+def _n_wrap(kind, x):
+    if kind == 'bool':
+        return brainevent.BinaryArray(jnp.asarray(x != 0))
+    if kind == 'float':
+        return brainevent.BinaryArray(jnp.asarray(x))
+    return brainevent.WeightedArray(jnp.asarray(x))
+
+
+def _n_active_count(op, cls_name, corder, x):
+    """Number of active events reaching each output, from the finite pattern."""
+    pattern = (np.asarray(_w_matrix(cls_name, _w_params(), corder).todense()) != 0).astype(np.float32)
+    return _w_apply(op, pattern, (x != 0).astype(np.float32))
+
+
+def _n_params(bad):
+    if isinstance(bad, tuple):
+        return tuple(jnp.asarray(b, dtype=jnp.float32) for b in bad)
+    return jnp.asarray(bad, dtype=jnp.float32)
+
+
+@pytest.mark.parametrize('backend,op', _N_CASES)
+@pytest.mark.parametrize('cls_name', _W_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('kind', _N_KINDS)
+def test_inactive_events_isolate_nonfinite_params(backend, op, cls_name, corder, kind):
+    """A NaN/Inf parameter reaches only outputs fed by an active event; the rest are exactly 0."""
+    shape = _w_event_shape(op)
+    partial = _n_partial_events(shape)
+    count = _n_active_count(op, cls_name, corder, partial)
+    assert (count > 0).any() and (count == 0).any()
+    for bad in _N_BAD_PARAMS:
+        mat = _w_matrix(cls_name, _n_params(bad), corder, backend=backend)
+        y0 = np.asarray(_w_apply(op, mat, _n_wrap(kind, np.zeros(shape, np.float32))))
+        assert np.array_equal(y0, np.zeros(y0.shape, y0.dtype)), (bad, y0)
+        y = np.asarray(_w_apply(op, mat, _n_wrap(kind, partial)))
+        assert np.array_equal(y[count == 0], np.zeros(int((count == 0).sum()), y.dtype)), bad
+        # Active events times a non-finite parameter still propagate.
+        assert not np.isfinite(y[count > 0]).any(), bad
+
+
+@pytest.mark.parametrize('backend,op', _N_CASES)
+@pytest.mark.parametrize('cls_name', _W_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('kind', _N_KINDS)
+def test_inactive_events_param_cotangent_is_exactly_zero(backend, op, cls_name, corder, kind):
+    """Parameter cotangents ignore inactive events, even under a NaN output cotangent."""
+    shape = _w_event_shape(op)
+    params = _w_params()
+    for x in (np.zeros(shape, np.float32), _n_partial_events(shape)):
+        ev = _n_wrap(kind, x)
+        count = _n_active_count(op, cls_name, corder, x)
+
+        def f(p):
+            return _w_apply(op, _w_matrix(cls_name, p, corder, backend=backend), ev)
+
+        y, vjp = jax.vjp(f, params)
+        ct = jnp.asarray(np.random.RandomState(2).rand(*y.shape).astype(np.float32))
+        silent = jnp.asarray(count == 0)
+        g_nan = vjp(jnp.where(silent, jnp.nan, ct))[0]
+        g_ref = vjp(jnp.where(silent, 0.0, ct))[0]
+        for a, b in zip(jax.tree.leaves(g_nan), jax.tree.leaves(g_ref)):
+            a, b = np.asarray(a), np.asarray(b)
+            assert np.isfinite(a).all(), (x.any(), a)
+            assert np.allclose(a, b, rtol=1e-5, atol=1e-5)
+            if not x.any():
+                assert np.array_equal(a, np.zeros_like(a))
+
+
+_N_DTYPE_CASES = [
+    pytest.param(backend, op, dtype, id=f'{backend}-{op}-{np.dtype(dtype).name}')
+    for op in ('mv', 'mm')
+    for backend in _n_backends(op)
+    for dtype in ((jnp.float64, jnp.float16, jnp.bfloat16) if backend == 'cuda_raw' else (jnp.float64,))
+]
+
+
+@pytest.mark.parametrize('backend,op,dtype', _N_DTYPE_CASES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('kind', _N_KINDS)
+def test_inactive_events_isolate_nonfinite_params_dtypes(backend, op, dtype, corder, kind):
+    """Every weight-dtype kernel instantiation selects on activity."""
+    cls_name = _W_CLASSES[0]
+    with _w_ctx(dtype):
+        shape = _w_event_shape(op)
+        partial = _n_partial_events(shape)
+        count = _n_active_count(op, cls_name, corder, partial)
+        bad = _N_BAD_PARAMS[0]
+        params = jax.tree.map(lambda b: jnp.asarray(b, dtype=dtype), _n_params(bad))
+        mat = _w_matrix(cls_name, params, corder, backend=backend)
+        for x in (np.zeros(shape, np.float32), partial):
+            ev = _n_wrap(kind, x.astype(np.dtype(dtype)) if kind == 'weighted' else x)
+            y = np.asarray(_w_apply(op, mat, ev), dtype=np.float64)
+            silent = count == 0 if x.any() else np.ones(y.shape, bool)
+            assert np.array_equal(y[silent], np.zeros(int(silent.sum()))), (bad, y)
+            assert not np.isfinite(y[~silent]).any(), bad

@@ -131,7 +131,8 @@ __global__ void _notrans_f32_kern(
     float acc = 0.0f;
     while (local_j < chunk_width) {
         int j = chunk_start + (int)local_j;
-        acc += w * READ_F32(__ldg(&vector[j]));
+        float v = READ_F32(__ldg(&vector[j]));
+        if (v != 0.0f) acc += w * v;  /* zero events are skipped: never 0 * w */
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
         local_j = (unsigned int)lane + 32U * q;
     }
@@ -317,7 +318,8 @@ __global__ void _notrans##SFX##_kern(                                           
     ACC_T acc = (ACC_T)0;                                                            \
     while (local_j < chunk_width) {                                                  \
         int j = chunk_start + (int)local_j;                                          \
-        acc += w * READ_W(__ldg(&vector[j]));                                        \
+        ACC_T v = READ_W(__ldg(&vector[j]));                                         \
+        if (v != (ACC_T)0) acc += w * v;  /* zero events are skipped */              \
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);                   \
         local_j = (unsigned int)lane + 32U * q;                                      \
     }                                                                                \

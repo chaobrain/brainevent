@@ -32,7 +32,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix, event_active
 
 __all__ = [
     "jitu",
@@ -42,6 +42,47 @@ __all__ = [
     "jitumm",
     "jitumm_p",
 ]
+
+
+def _active_sum(r, events, *, binary: bool = False) -> jax.Array:
+    """Sum a transposed product over the active events only.
+
+    Weight-parameter cotangents are ``<r, f(events)>`` with ``r = M_basis^T ct``.
+    The reduction *selects* the active entries (``events != 0``) instead of
+    multiplying by zero, so an inactive event contributes exactly ``0`` even
+    when ``r`` is NaN/Inf there.
+
+    Parameters
+    ----------
+    r : jax.Array
+        Transposed product, same shape as ``events``.
+    events : jax.Array
+        Event operand of the forward product.
+    binary : bool, default=False
+        If True, active events contribute ``r`` (binary events); otherwise
+        they contribute ``r * events`` (float / weighted events).
+
+    Returns
+    -------
+    jax.Array
+        Scalar sum over the active entries.
+
+    Examples
+    --------
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> r = jnp.array([jnp.nan, 2.0, 3.0])
+        >>> float(_active_sum(r, jnp.array([0.0, 1.0, -1.0])))
+        -1.0
+        >>> float(_active_sum(r, jnp.array([False, True, True]), binary=True))
+        5.0
+    """
+    if binary:
+        return jnp.sum(jnp.where(event_active(events), r, 0))
+    return jnp.sum(jnp.where(events != 0, r * events, 0))
+
 
 def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
     if isinstance(prob, Tracer):
@@ -1208,34 +1249,38 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
         )[0]
 
     if needs_w_low or needs_w_high:
-        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        # ``dL/dw_high = <ct, U @ x> = <U^T ct, x>`` and
+        # ``dL/dw_low = <(C - U)^T ct, x>``: reduce over the events and *select*
+        # the active ones, so an inactive event contributes exactly 0 even where
+        # ``ct`` is NaN/Inf (``ct * 0`` would leak).
         ones = jnp.ones((1,), dtype=ct.dtype)
-        u_basis = jitumv_p_call(
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        u_row = jitumv_p_call(
             zeros,
             ones,
             clen,
-            vector,
+            ct,
             seed,
             shape=shape,
-            transpose=transpose,
-            corder=corder,
+            transpose=not transpose,
+            corder=not corder,
             backend=kwargs['backend'],
         )[0]
         if needs_w_low:
-            c_basis = jitumv_p_call(
+            c_row = jitumv_p_call(
                 ones,
                 ones,
                 clen,
-                vector,
+                ct,
                 seed,
                 shape=shape,
-                transpose=transpose,
-                corder=corder,
+                transpose=not transpose,
+                corder=not corder,
                 backend=kwargs['backend'],
             )[0]
-            dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
+            dw_low = jnp.expand_dims(_active_sum(c_row - u_row, vector), axis=0)
         if needs_w_high:
-            dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
+            dw_high = jnp.expand_dims(_active_sum(u_row, vector), axis=0)
 
     if needs_vector or needs_w_low or needs_w_high:
         return dw_low, dw_high, clen, d_vector, seed
@@ -1540,7 +1585,11 @@ def _jitumm_numba_kernel_generator(
                         while local_j < chunk_width:
                             col = chunk_start + local_j
                             u01 = _rng_uniform01(seed0, row, col)
-                            out += B[col] * (w_low0 + u01 * span)
+                            w = w_low0 + u01 * span
+                            for c in range(n):
+                                b = B[col, c]
+                                if b != 0.:  # zero events are skipped (never ``0 * w``)
+                                    out[c] += b * w
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -1552,6 +1601,7 @@ def _jitumm_numba_kernel_generator(
             posts[:] = 0.
             k = posts.shape[0]
             m = B.shape[0]
+            n = posts.shape[1]
             w_low0 = w_low[0]
             w_high0 = w_high[0]
             span = w_high0 - w_low0
@@ -1579,7 +1629,11 @@ def _jitumm_numba_kernel_generator(
                         while local_j < chunk_width:
                             col = chunk_start + local_j
                             u01 = _rng_uniform01(seed0, row, col)
-                            posts[col] += out * (w_low0 + u01 * span)
+                            w = w_low0 + u01 * span
+                            for c in range(n):
+                                b = out[c]
+                                if b != 0.:  # zero events are skipped (never ``0 * w``)
+                                    posts[col, c] += b * w
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -1790,34 +1844,38 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
         )[0]
 
     if needs_w_low or needs_w_high:
-        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        # ``dL/dw_high = <ct, U @ x> = <U^T ct, x>`` and
+        # ``dL/dw_low = <(C - U)^T ct, x>``: reduce over the events and *select*
+        # the active ones, so an inactive event contributes exactly 0 even where
+        # ``ct`` is NaN/Inf (``ct * 0`` would leak).
         ones = jnp.ones((1,), dtype=ct.dtype)
-        u_basis = jitumm_p_call(
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        u_row = jitumm_p_call(
             zeros,
             ones,
             clen,
-            B,
+            ct,
             seed,
             shape=shape,
-            transpose=transpose,
-            corder=corder,
+            transpose=not transpose,
+            corder=not corder,
             backend=kwargs['backend'],
         )[0]
         if needs_w_low:
-            c_basis = jitumm_p_call(
+            c_row = jitumm_p_call(
                 ones,
                 ones,
                 clen,
-                B,
+                ct,
                 seed,
                 shape=shape,
-                transpose=transpose,
-                corder=corder,
+                transpose=not transpose,
+                corder=not corder,
                 backend=kwargs['backend'],
             )[0]
-            dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
+            dw_low = jnp.expand_dims(_active_sum(c_row - u_row, B), axis=0)
         if needs_w_high:
-            dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
+            dw_high = jnp.expand_dims(_active_sum(u_row, B), axis=0)
 
     if needs_B or needs_w_low or needs_w_high:
         return dw_low, dw_high, clen, dB, seed

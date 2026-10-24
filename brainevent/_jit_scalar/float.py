@@ -29,7 +29,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix, event_active
 
 __all__ = [
     "jits",
@@ -39,6 +39,47 @@ __all__ = [
     "jitsmm",
     "jitsmm_p",
 ]
+
+
+def _active_sum(r, events, *, binary: bool = False) -> jax.Array:
+    """Sum a transposed product over the active events only.
+
+    Weight-parameter cotangents are ``<r, f(events)>`` with ``r = M_basis^T ct``.
+    The reduction *selects* the active entries (``events != 0``) instead of
+    multiplying by zero, so an inactive event contributes exactly ``0`` even
+    when ``r`` is NaN/Inf there.
+
+    Parameters
+    ----------
+    r : jax.Array
+        Transposed product, same shape as ``events``.
+    events : jax.Array
+        Event operand of the forward product.
+    binary : bool, default=False
+        If True, active events contribute ``r`` (binary events); otherwise
+        they contribute ``r * events`` (float / weighted events).
+
+    Returns
+    -------
+    jax.Array
+        Scalar sum over the active entries.
+
+    Examples
+    --------
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> r = jnp.array([jnp.nan, 2.0, 3.0])
+        >>> float(_active_sum(r, jnp.array([0.0, 1.0, -1.0])))
+        -1.0
+        >>> float(_active_sum(r, jnp.array([False, True, True]), binary=True))
+        5.0
+    """
+    if binary:
+        return jnp.sum(jnp.where(event_active(events), r, 0))
+    return jnp.sum(jnp.where(events != 0, r * events, 0))
+
 
 @namescope(static_argnames=("shape", "transpose", "corder"))
 def jits(
@@ -829,6 +870,7 @@ def _jitsmv_numba_kernel(
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
                 out = np.float64(0.)
+                hit = False
                 for chunk_id in range(n_chunks):
                     chunk_start = chunk_id * chunk_size
                     if chunk_start >= k:
@@ -842,11 +884,16 @@ def _jitsmv_numba_kernel(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            out += vector[chunk_start + local_j]
+                            v = vector[chunk_start + local_j]
+                            if v != 0.:  # zero events are skipped
+                                out += v
+                                hit = True
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
-                posts[row] = out * weight0
+                # Select, never ``0 * w``: a row reached by no non-zero event is
+                # exactly 0 even for a NaN/Inf weight.
+                posts[row] = out * weight0 if hit else 0.
     else:
         # trans: m = vector length, k = output length (walk); scatter w * v[row].
         @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
@@ -1030,7 +1077,7 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpo
             corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        dw = jnp.sum(row * vector, keepdims=True)
+        dw = jnp.reshape(_active_sum(row, vector), (1,))
         return dw, clen, vector, seed, _
     else:
         raise NotImplementedError(
@@ -1320,6 +1367,7 @@ def _jitsmm_numba_kernel(
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
                 out = np.zeros(n, dtype=B.dtype)
+                hit = np.zeros(n, dtype=np.bool_)
                 for chunk_id in range(n_chunks):
                     chunk_start = chunk_id * chunk_size
                     if chunk_start >= k:
@@ -1333,11 +1381,18 @@ def _jitsmm_numba_kernel(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            out += B[chunk_start + local_j]
+                            j = chunk_start + local_j
+                            for col in range(n):
+                                b = B[j, col]
+                                if b != 0.:  # zero events are skipped
+                                    out[col] += b
+                                    hit[col] = True
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
-                posts[row] = out * weight0
+                # Select per column, never ``0 * w`` (NaN/Inf weight isolation).
+                for col in range(n):
+                    posts[row, col] = out[col] * weight0 if hit[col] else 0.
     else:
         # trans: Y = M^T @ B. m = B rows (walk source), k = output rows (walk).
         @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
@@ -1352,9 +1407,12 @@ def _jitsmm_numba_kernel(
                 cl = np.uint32(2)
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
-                if not np.any(B[row] != 0.):  # all-zero event row: skip
+                b_row = B[row]
+                active = b_row != 0.
+                if not np.any(active):  # all-zero event row: skip
                     continue
-                out = B[row] * weight0
+                # Zero columns of an active row add exactly 0 (select, not ``0 * w``).
+                out = np.where(active, b_row * weight0, 0.).astype(posts.dtype)
                 for chunk_id in range(n_chunks):
                     chunk_start = chunk_id * chunk_size
                     if chunk_start >= k:
@@ -1534,7 +1592,7 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
             corder=not corder,
                 backend=kwargs['backend'],
         )[0]
-        dw = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        dw = jnp.expand_dims(_active_sum(r, B), axis=0)
         return dw, clen, B, seed, _
 
     else:
