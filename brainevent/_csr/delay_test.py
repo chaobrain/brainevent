@@ -494,6 +494,62 @@ def test_int64_time_and_delays_beyond_int32(backend):
         np.testing.assert_allclose(np.asarray(out), expected, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize('backend', BACKENDS)
+@pytest.mark.parametrize('t', [-3, 0, 4, 2 ** 31 - 1])
+@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+def test_traced_out_of_range_delays_in_some_rows(backend, t, weighted, homo):
+    """Rows with delays outside ``[0, L)`` take the floor-modulo fix-up; in-range rows stay on the fast path."""
+    n_pre, n_post, n_slots = 9, 6, 5
+    w, indices, indptr, delays = make_csr(n_pre, n_post, 8, n_slots, seed=31)
+    rng = np.random.default_rng(32)
+    delays = delays.copy()
+    rows = np.repeat(np.arange(n_pre), np.diff(indptr))
+    odd = (rows % 2) == 1  # odd rows get out-of-range delays, even rows keep [1, L)
+    delays[odd] = rng.choice(np.array([-1, -n_slots, -7, 0, n_slots, 2 * n_slots + 3, 999], np.int32), odd.sum())
+    data = np.array([0.7], np.float32) if homo else w
+    events = make_events(n_pre, 'float32', seed=33)
+    events[1] = np.nan  # an odd (fix-up) row with a NaN event is active
+    ring = rng.normal(size=(n_slots, n_post)).astype(np.float32)
+    fn = jax.jit(lambda d: csr_delay_deliver(
+        jnp.asarray(ring), jnp.asarray(events), jnp.asarray(data), jnp.asarray(indices), jnp.asarray(indptr),
+        d, jnp.asarray(t, jnp.int32), shape=(n_pre, n_post), weighted=weighted, backend=backend))
+    out = np.asarray(fn(jnp.asarray(delays)))
+    expected = reference(ring, events, data, indices, indptr, delays, t, weighted)
+    np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('backend', BACKENDS)
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.uint32])
+def test_unsigned_delays(backend, dtype):
+    n_pre, n_post, n_slots = 12, 7, 6
+    w, indices, indptr, delays = make_csr(n_pre, n_post, 6, n_slots, seed=34)
+    delays = (delays + (np.arange(delays.size) % 3) * n_slots).astype(dtype)  # some >= L
+    events = make_events(n_pre, 'bool', seed=35)
+    fn = jax.jit(lambda d: csr_delay_deliver(
+        jnp.zeros((n_slots, n_post), jnp.float32), jnp.asarray(events), jnp.asarray(w), jnp.asarray(indices),
+        jnp.asarray(indptr), d, 11, shape=(n_pre, n_post), backend=backend))
+    out = np.asarray(fn(jnp.asarray(delays)))
+    expected = reference(np.zeros((n_slots, n_post)), events, w, indices, indptr, delays.astype(np.int64), 11)
+    np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.skipif('numba' not in BACKENDS, reason='numba backend unavailable')
+@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+def test_numba_bitwise_matches_jax_raw(weighted, homo):
+    """The numba scatter accumulates in the ring dtype, in edge order, like the jax_raw scatter-add."""
+    n_pre, n_post, n_slots = 40, 9, 7
+    w, indices, indptr, delays = make_csr(n_pre, n_post, 30, n_slots, seed=36)
+    data = np.array([0.3], np.float32) if homo else w
+    events = make_events(n_pre, 'float32', seed=37)
+    ring = np.random.default_rng(38).normal(size=(n_slots, n_post)).astype(np.float32)
+    outs = [np.asarray(csr_delay_deliver(
+        jnp.asarray(ring), jnp.asarray(events), jnp.asarray(data), jnp.asarray(indices), jnp.asarray(indptr),
+        jnp.asarray(delays), 5, shape=(n_pre, n_post), weighted=weighted, backend=b)) for b in ('numba', 'jax_raw')]
+    np.testing.assert_array_equal(outs[0], outs[1])
+
+
 def test_benchmark_data_runs():
     configs = _benchmark_data(platform=PLATFORM)
     assert len(configs) == 4

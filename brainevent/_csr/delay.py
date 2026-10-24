@@ -278,38 +278,63 @@ def _numba_kernel_generator(weighted: bool, weight_info, **kwargs):
             f'{jnp.dtype(weight_info.dtype)}. Use backend="jax_raw" (or cuda_raw on GPU).'
         )
 
+    ring_dtype = np.dtype(weight_info.dtype).type
+
     # No fastmath: ``x != 0`` must treat NaN as active. Rows collide on
     # postsynaptic targets, so the row loop is serial. Each active row is
     # processed in two passes: first its flat ring offsets are computed into
     # a scratch buffer, then the weights are scattered. Decoupling the index
     # loads from the random read-modify-writes roughly halves the time on a
     # ring larger than the cache.
+    #
+    # Performance notes (measured on a 10 MB ring, see
+    # examples/csr_delay_deliver_benchmark.py):
+    # - Every array is indexed with *unsigned* integers. Numba emits a
+    #   negative-index wraparound select for each signed index, which blocks
+    #   vectorisation of the offset pass and adds work to the scatter; unsigned
+    #   indexing removes it (~20% of the step).
+    # - The offset pass is branch-free for delays in ``[0, L)``; out-of-range
+    #   delays only set a flag and the row's offsets are then recomputed with a
+    #   floor modulo.
+    # - The scatter adds ``w`` (or ``w * ring_dtype(x)``) in the ring dtype, so
+    #   no float64 promotion and the same rounding as the jax_raw path.
     @numba.njit
     def deliver(ring, events, weights, indices, indptr, delays, t, out):
         n_slots, n_post = out.shape
         flat = out.reshape(-1)
         t_mod = t[0] % n_slots
         w0 = weights[0]
-        buf = np.empty(0, np.int64)
+        buf = np.empty(0, np.uint64)
+        n_buf = np.uint64(0)
         for i in range(indptr.shape[0] - 1):
             x = events[i]
             if x != 0:
-                start = indptr[i]
-                m = indptr[i + 1] - start
-                if m > buf.shape[0]:
-                    buf = np.empty(m, np.int64)
+                start = np.uint64(indptr[i])
+                m = np.uint64(indptr[i + 1]) - start
+                if m > n_buf:
+                    buf = np.empty(m, np.uint64)
+                    n_buf = m
+                out_of_range = False
                 for k in range(m):
-                    d = delays[start + k]
-                    if d < 0 or d >= n_slots:
-                        d = d % n_slots
+                    p = start + k
+                    d = delays[p]
+                    out_of_range |= (d < 0) | (d >= n_slots)
                     s = t_mod + d
-                    if s >= n_slots:
-                        s -= n_slots
-                    buf[k] = s * n_post + indices[start + k]
-                f = x if weighted else 1
-                for k in range(m):
-                    w = w0 if is_homo else weights[start + k]
-                    flat[buf[k]] += w * f
+                    s = s - n_slots if s >= n_slots else s
+                    buf[k] = s * n_post + indices[p]
+                if out_of_range:
+                    for k in range(m):
+                        p = start + k
+                        s = (t_mod + delays[p] % n_slots) % n_slots
+                        buf[k] = s * n_post + indices[p]
+                if weighted:
+                    f = ring_dtype(x)
+                    for k in range(m):
+                        w = w0 if is_homo else weights[start + k]
+                        flat[buf[k]] += w * f
+                else:
+                    for k in range(m):
+                        flat[buf[k]] += w0 if is_homo else weights[start + k]
 
     def kernel(ring, events, data, indices, indptr, delays, t):
         return numba_kernel(deliver, outs=kwargs['outs'], input_output_aliases={0: 0})(
