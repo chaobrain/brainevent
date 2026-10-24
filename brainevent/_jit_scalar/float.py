@@ -29,7 +29,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix, event_active
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, active_sum, dtype_suffix, event_active
 
 __all__ = [
     "jits",
@@ -41,44 +41,6 @@ __all__ = [
 ]
 
 
-def _active_sum(r, events, *, binary: bool = False) -> jax.Array:
-    """Sum a transposed product over the active events only.
-
-    Weight-parameter cotangents are ``<r, f(events)>`` with ``r = M_basis^T ct``.
-    The reduction *selects* the active entries (``events != 0``) instead of
-    multiplying by zero, so an inactive event contributes exactly ``0`` even
-    when ``r`` is NaN/Inf there.
-
-    Parameters
-    ----------
-    r : jax.Array
-        Transposed product, same shape as ``events``.
-    events : jax.Array
-        Event operand of the forward product.
-    binary : bool, default=False
-        If True, active events contribute ``r`` (binary events); otherwise
-        they contribute ``r * events`` (float / weighted events).
-
-    Returns
-    -------
-    jax.Array
-        Scalar sum over the active entries.
-
-    Examples
-    --------
-
-    .. code-block:: python
-
-        >>> import jax.numpy as jnp
-        >>> r = jnp.array([jnp.nan, 2.0, 3.0])
-        >>> float(_active_sum(r, jnp.array([0.0, 1.0, -1.0])))
-        -1.0
-        >>> float(_active_sum(r, jnp.array([False, True, True]), binary=True))
-        5.0
-    """
-    if binary:
-        return jnp.sum(jnp.where(event_active(events), r, 0))
-    return jnp.sum(jnp.where(events != 0, r * events, 0))
 
 
 @namescope(static_argnames=("shape", "transpose", "corder"))
@@ -1077,7 +1039,7 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpo
             corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        dw = jnp.reshape(_active_sum(row, vector), (1,))
+        dw = jnp.reshape(active_sum(row, vector, weighted=True), (1,))
         return dw, clen, vector, seed, _
     else:
         raise NotImplementedError(
@@ -1592,7 +1554,7 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
             corder=not corder,
                 backend=kwargs['backend'],
         )[0]
-        dw = jnp.expand_dims(_active_sum(r, B), axis=0)
+        dw = jnp.expand_dims(active_sum(r, B, weighted=True), axis=0)
         return dw, clen, B, seed, _
 
     else:

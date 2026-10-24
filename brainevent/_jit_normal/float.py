@@ -32,7 +32,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix, event_active
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, active_sum, dtype_suffix, event_active
 
 __all__ = [
     "jitn",
@@ -44,44 +44,6 @@ __all__ = [
 ]
 
 
-def _active_sum(r, events, *, binary: bool = False) -> jax.Array:
-    """Sum a transposed product over the active events only.
-
-    Weight-parameter cotangents are ``<r, f(events)>`` with ``r = M_basis^T ct``.
-    The reduction *selects* the active entries (``events != 0``) instead of
-    multiplying by zero, so an inactive event contributes exactly ``0`` even
-    when ``r`` is NaN/Inf there.
-
-    Parameters
-    ----------
-    r : jax.Array
-        Transposed product, same shape as ``events``.
-    events : jax.Array
-        Event operand of the forward product.
-    binary : bool, default=False
-        If True, active events contribute ``r`` (binary events); otherwise
-        they contribute ``r * events`` (float / weighted events).
-
-    Returns
-    -------
-    jax.Array
-        Scalar sum over the active entries.
-
-    Examples
-    --------
-
-    .. code-block:: python
-
-        >>> import jax.numpy as jnp
-        >>> r = jnp.array([jnp.nan, 2.0, 3.0])
-        >>> float(_active_sum(r, jnp.array([0.0, 1.0, -1.0])))
-        -1.0
-        >>> float(_active_sum(r, jnp.array([False, True, True]), binary=True))
-        5.0
-    """
-    if binary:
-        return jnp.sum(jnp.where(event_active(events), r, 0))
-    return jnp.sum(jnp.where(events != 0, r * events, 0))
 
 
 def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
@@ -926,7 +888,7 @@ def _jitnmv_transpose_rules(
             shape=shape, transpose=not transpose, corder=not corder,
             backend=backend,
         )[0]
-        dw_loc = jnp.expand_dims(_active_sum(r, vector), axis=0)
+        dw_loc = jnp.expand_dims(active_sum(r, vector, weighted=True), axis=0)
         return dw_loc, w_scale, clen, vector, seed
     elif ad.is_undefined_primal(w_scale):
         # M = (w_loc + w_scale * Z) * mask
@@ -938,7 +900,7 @@ def _jitnmv_transpose_rules(
             shape=shape, transpose=not transpose, corder=not corder,
             backend=backend,
         )[0]
-        dw_scale = jnp.expand_dims(_active_sum(r, vector), axis=0)
+        dw_scale = jnp.expand_dims(active_sum(r, vector, weighted=True), axis=0)
         return w_loc, dw_scale, clen, vector, seed
     else:
         raise NotImplementedError(
@@ -1343,7 +1305,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
             shape=shape, transpose=not transpose, corder=not corder,
             backend=backend,
         )[0]
-        dw_loc = jnp.expand_dims(_active_sum(r, B), axis=0)
+        dw_loc = jnp.expand_dims(active_sum(r, B, weighted=True), axis=0)
         return dw_loc, w_scale, clen, B, seed
     elif ad.is_undefined_primal(w_scale):
         # M = (w_loc + w_scale * Z) * mask
@@ -1354,7 +1316,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
             shape=shape, transpose=not transpose, corder=not corder,
             backend=backend,
         )[0]
-        dw_scale = jnp.expand_dims(_active_sum(r, B), axis=0)
+        dw_scale = jnp.expand_dims(active_sum(r, B, weighted=True), axis=0)
         return w_loc, dw_scale, clen, B, seed
     else:
         raise NotImplementedError(

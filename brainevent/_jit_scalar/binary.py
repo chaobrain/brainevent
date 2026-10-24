@@ -29,8 +29,8 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from .float import _active_sum, jitsmv_p_call, jitsmm_p_call
-from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix, event_active
+from .float import jitsmv_p_call, jitsmm_p_call
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, active_sum, dtype_suffix, event_active
 
 __all__ = [
     "binary_jitsmv",
@@ -582,7 +582,7 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpo
         )[0]
         # Binary events contribute their activity mask, never their raw value (#198);
         # inactive events are selected out, never multiplied by 0.
-        dw = _active_sum(row, vector, binary=True).reshape(weight.aval.shape)
+        dw = active_sum(row, vector).reshape(weight.aval.shape)
         return dw, clen, vector, seed, _
     else:
         raise NotImplementedError(
@@ -1116,7 +1116,7 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
         )[0]
         # Binary events contribute their activity mask, never their raw value (#198);
         # inactive events are selected out, never multiplied by 0.
-        dw = _active_sum(r, B, binary=True).reshape(weight.aval.shape)
+        dw = active_sum(r, B).reshape(weight.aval.shape)
         return dw, clen, B, seed, _
 
     else:

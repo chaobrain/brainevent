@@ -29,8 +29,8 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from .float import _active_sum, _chunk_size, _walk_length, _LANE_STRIDE, jitumv_p_call, jitumm_p_call
-from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix, event_active
+from .float import _chunk_size, _walk_length, _LANE_STRIDE, jitumv_p_call, jitumm_p_call
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, active_sum, dtype_suffix, event_active
 
 __all__ = [
     "binary_jitumv",
@@ -637,9 +637,9 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
                 corder=not corder,
                 backend=kwargs['backend'],
             )[0]
-            dw_low = jnp.expand_dims(_active_sum(c_row - u_row, vector, binary=True), axis=0)
+            dw_low = jnp.expand_dims(active_sum(c_row - u_row, vector), axis=0)
         if needs_w_high:
-            dw_high = jnp.expand_dims(_active_sum(u_row, vector, binary=True), axis=0)
+            dw_high = jnp.expand_dims(active_sum(u_row, vector), axis=0)
 
     if needs_vector or needs_w_low or needs_w_high:
         return dw_low, dw_high, clen, d_vector, seed
@@ -1241,9 +1241,9 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
                 corder=not corder,
                 backend=kwargs['backend'],
             )[0]
-            dw_low = jnp.expand_dims(_active_sum(c_row - u_row, B, binary=True), axis=0)
+            dw_low = jnp.expand_dims(active_sum(c_row - u_row, B), axis=0)
         if needs_w_high:
-            dw_high = jnp.expand_dims(_active_sum(u_row, B, binary=True), axis=0)
+            dw_high = jnp.expand_dims(active_sum(u_row, B), axis=0)
 
     if needs_B or needs_w_low or needs_w_high:
         return dw_low, dw_high, clen, dB, seed

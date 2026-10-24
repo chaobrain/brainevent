@@ -33,6 +33,7 @@ from brainevent._op.util import (
     dtype_suffix,
     event_active,
     event_factor,
+    select_active,
 )
 from .preprocess_config import (
     get_hybrid_config,
@@ -485,7 +486,7 @@ def _binary_csrmv_jax_kernel(
             contrib = slot_events.astype(out_dtype) * contrib
         # Select, never multiply by a 0/1 mask: a NaN/Inf weight of an
         # inactive event must not reach the output.
-        contrib = _select_active(
+        contrib = select_active(
             event_active(slot_events), jnp.broadcast_to(contrib, (nnz,))
         )
         result = jnp.zeros((cols,), dtype=out_dtype).at[indices].add(contrib)
@@ -533,7 +534,7 @@ def _binary_csrmv_cusparse_kernel(
             count = jsparse.csr_matvec(mat, events, transpose=True)
             # ``count`` is an exact active-event count: select instead of
             # ``0 * w`` so a NaN/Inf homogeneous weight leaves idle outputs 0.
-            math_out = _select_active(count != 0, count * weights[0].astype(out_dtype))
+            math_out = select_active(count != 0, count * weights[0].astype(out_dtype))
             return math_out, task_begin, task_end, status
 
         def library_product(weights):
@@ -717,28 +718,6 @@ def _slot_row_ids(indices, indptr):
     )
 
 
-def _select_active(active, values):
-    """Return ``values`` where ``active`` and an exact ``0`` elsewhere.
-
-    Inactive events must contribute exactly zero, whatever the weight or
-    cotangent they would multiply (``0 * NaN`` and ``0 * Inf`` are ``NaN``),
-    so every portable path selects on activity instead of multiplying by a
-    0/1 mask.
-
-    Parameters
-    ----------
-    active : jax.Array
-        Boolean activity, broadcastable against ``values``.
-    values : jax.Array
-        Products computed for every entry.
-
-    Returns
-    -------
-    jax.Array
-        ``jnp.where(active, values, 0)`` with the dtype of ``values``.
-    """
-    return jnp.where(active, values, jnp.zeros((), dtype=values.dtype))
-
 
 def _sampled_slot_values(events, ct, row_ids, cols, *, value_weighted):
     """Physical-slot weight cotangent ``sum_b f(x[b, row(e)]) * ct[b, col(e)]``.
@@ -752,7 +731,7 @@ def _sampled_slot_values(events, ct, row_ids, cols, *, value_weighted):
     terms = ct[cols]
     if value_weighted:
         terms = x.astype(ct.dtype) * terms
-    terms = _select_active(event_active(x), terms)
+    terms = select_active(event_active(x), terms)
     return terms if terms.ndim == 1 else jnp.sum(terms, axis=1)
 
 
@@ -1459,7 +1438,7 @@ def _binary_csrmm_jax_kernel(
         if weighted:
             contrib = slot_events.astype(out_dtype) * contrib
         # Select, never multiply by a 0/1 mask (``0 * NaN`` is NaN).
-        contrib = _select_active(event_active(slot_events), contrib)
+        contrib = select_active(event_active(slot_events), contrib)
         if transpose:
             result = jnp.zeros((events_bn.shape[0], cols), dtype=out_dtype)
             result = result.at[:, indices].add(contrib)
@@ -1510,7 +1489,7 @@ def _binary_csrmm_cusparse_kernel(
             mat = jsparse.CSR((data, indices, cast_indptr), shape=(m, k))
             count = jsparse.csr_matmat(mat, events_nb, transpose=True)
             # Exact active-event counts: select instead of ``0 * w``.
-            math_out = _select_active(count != 0, count * weights[0].astype(out_dtype))
+            math_out = select_active(count != 0, count * weights[0].astype(out_dtype))
             return (math_out.T if transpose else math_out), task_begin, task_end, status
 
         def library_product(weights):
