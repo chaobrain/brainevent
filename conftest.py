@@ -57,3 +57,24 @@ def pytest_collection_modifyitems(config, items):
         params = callspec.params
         if any(params.get(name) in COMPILATION_HEAVY_BACKENDS for name in _BACKEND_PARAM_NAMES):
             item.add_marker(slow)
+
+
+@pytest.fixture(autouse=True)
+def _kernix_toolchain_state_is_restored():
+    """Fail any test that leaves the process-global CUDA toolchain settings changed.
+
+    The nvcc discovery preference and the compute-capability pin feed the
+    kernel cache key. A test that leaks a change makes later tests in the same
+    worker rebuild already-registered modules from a different toolchain, which
+    the FFI registry refuses (``KernelRegistrationError``: "already registered
+    to different content").
+    """
+    from brainevent._op import kernix_toolchain as kt
+
+    before = (kt._NVCC_DISCOVERY, kt._COMPUTE_CAPABILITIES)
+    yield
+    after = (kt._NVCC_DISCOVERY, kt._COMPUTE_CAPABILITIES)
+    assert after == before, (
+        f'test leaked kernix toolchain state (nvcc discovery, compute capabilities): '
+        f'{before!r} -> {after!r}; restore it with monkeypatch or try/finally'
+    )

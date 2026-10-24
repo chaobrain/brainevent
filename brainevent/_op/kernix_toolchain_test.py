@@ -644,6 +644,10 @@ def test_l12_global_state_lock_exists_and_used(monkeypatch):
             return False
 
     monkeypatch.setattr(kt, "_STATE_LOCK", RecordingLock())
+    # Restore the discovery preference afterwards: leaking "system" makes later
+    # tests in this process compile with a different nvcc (new cache key) and
+    # trip the FFI re-registration guard.
+    monkeypatch.setattr(kt, "_NVCC_DISCOVERY", kt._NVCC_DISCOVERY)
     kt.set_nvcc_discovery("system")
     try:
         kt.set_compute_capabilities("8.6")
