@@ -64,10 +64,16 @@ event path; it used to fall through to a float product on the raw values.
   spike delivery `ring[(t + d_e) % L, post(e)] += w_e * f(x)[pre(e)]` into an
   arrival ring buffer; binary or weighted payloads (inferred from a
   `WeightedArray`), homogeneous/heterogeneous weights, jax_raw/numba/cuda_raw,
-  autodiff, `vmap`, units. On an RTX 3090 it is ~5x faster than the
-  event-driven JAX scatter it replaces, but still 1.7–3.2x slower than a
-  scalar-delay `BinaryArray @ CSR` step (random-slot atomics); closing the
-  gap is tracked in #205.
+  autodiff, `vmap`, units. The numba kernel indexes with unsigned integers
+  and computes slots without branches: 0.48–1.23x the scalar-delay
+  `BinaryArray @ CSR` step on one CPU core at 1–5 % firing.
+- **`CSRDelayLayout` / `csr_delay_deliver_layout` / `CSR.delay_layout`**
+  (#203, #205): a precomputed layout that sorts each row's edges by delay.
+  The GPU kernel delivers all active rows delay by delay, so concurrent
+  writes share one ring row in L2: 1.03–1.28x the scalar-delay step on an
+  RTX 3090 at 1–5 % firing (the row-major `csr_delay_deliver` kernel is
+  1.4–2.9x, limited by random writes into a ring larger than L2). Weights
+  live in layout order (`with_data` / `original_data` convert).
 - `brainevent._test_util.check_event_op_grads`, a reusable gradient checker for
   event operators (forward, VJP, JVP/VJP identity, `vmap`).
 
