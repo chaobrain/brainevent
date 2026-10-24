@@ -5,7 +5,7 @@ Scope: full sweep of the 46 `.cu` files and 7 headers shipped as package data, l
 (a) memory-safety and correctness defects, (b) dead code the previous cleanup missed, and
 (c) performance headroom.
 
-Predecessor: [`2026-08-07-cuda-operator-cleanup.md`](2026-08-07-cuda-operator-cleanup.md), which removed 102
+Predecessor: the 2026-08-07 CUDA operator cleanup, which removed 102
 unreachable `@BE` entry points, 2 orphan headers and 8 unused `cuda_common.h` symbols. That
 pass audited *reachability*; it did not look inside the kernels.
 

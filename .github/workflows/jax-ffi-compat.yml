@@ -1,0 +1,238 @@
+# Evaluate the numba XLA FFI bridge (brainevent/_op/numba_ffi.py) against every new
+# jax minor release, automatically.
+#
+# The bridge mirrors jaxlib's ffi.h struct layout by hand and warns at runtime when jax is
+# newer than `_MAX_VALIDATED_JAX`. This workflow polls PyPI daily; when a jax release
+# exceeds that validated range it runs the bridge tests on Linux/macOS/Windows, then
+#   - all green -> opens a PR bumping `_MAX_VALIDATED_JAX`,
+#   - any red   -> opens (or comments on) a `jax-compat` issue.
+#
+# Setup / caveats:
+#   - Enable Settings -> Actions -> General -> "Allow GitHub Actions to create and approve
+#     pull requests".
+#   - PRs opened with GITHUB_TOKEN do not trigger CI.yml. Set the `JAX_COMPAT_PAT` secret
+#     (contents + pull-requests write) to have CI run on the bump PR automatically.
+#   - Only new minor releases trigger an evaluation; patch releases are covered by
+#     CI-daily.yml. The CUDA bridge is not covered (no GPU runners).
+
+name: jax FFI compatibility
+
+on:
+  schedule:
+    # Daily at 06:00 UTC (offset from CI-daily.yml's 00:00 run).
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      jax-version:
+        description: 'jax version to evaluate (empty = latest on PyPI)'
+        required: false
+        default: ''
+      dry-run:
+        description: 'Evaluate only; do not open a PR or issue'
+        type: boolean
+        default: false
+  # Changes to this workflow are exercised on their own PR, always as a dry run.
+  pull_request:
+    paths:
+      - '.github/workflows/jax-ffi-compat.yml'
+
+permissions:
+  contents: write       # push the bump branch
+  pull-requests: write  # open the bump PR
+  issues: write         # open/comment on the failure issue
+  actions: read         # list job conclusions for the report
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.detect.outputs.version }}
+      minor: ${{ steps.detect.outputs.minor }}
+      needs_eval: ${{ steps.detect.outputs.needs_eval }}
+      dry_run: ${{ steps.detect.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Resolve target jax version
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.jax-version }}
+          INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess, sys, urllib.request
+
+          event = os.environ['EVENT']
+          version = (os.environ.get('INPUT_VERSION') or '').strip()
+          if not version:
+              # `info.version` is the latest *stable* release (pre-releases excluded).
+              with urllib.request.urlopen('https://pypi.org/pypi/jax/json', timeout=30) as r:
+                  version = json.load(r)['info']['version']
+          m = re.match(r'(\d+)\.(\d+)', version)
+          if not m:
+              sys.exit(f'cannot parse jax version {version!r}')
+          target = (int(m.group(1)), int(m.group(2)))
+
+          src = open('brainevent/_op/numba_ffi.py').read()
+          v = re.search(r'^_MAX_VALIDATED_JAX = \((\d+), (\d+)\)', src, re.M)
+          if not v:
+              sys.exit('cannot locate `_MAX_VALIDATED_JAX = (X, Y)` in numba_ffi.py')
+          validated = (int(v.group(1)), int(v.group(2)))
+
+          minor = f'{target[0]}.{target[1]}'
+          dry_run = event == 'pull_request' or os.environ.get('INPUT_DRY_RUN') == 'true'
+          if event == 'schedule':
+              needs_eval = target > validated
+              if needs_eval:
+                  # Skip if this version was already reported (avoid daily spam).
+                  def count(kind, title):
+                      out = subprocess.run(
+                          ['gh', kind, 'list', '--state', 'open', '--search',
+                           f'"{title}" in:title', '--json', 'number'],
+                          check=True, capture_output=True, text=True).stdout
+                      return len(json.loads(out))
+                  if (count('pr', f'validate numba FFI bridge against jax {minor}')
+                          or count('issue', f'numba FFI bridge fails on jax {version}')):
+                      print(f'jax {version} already has an open PR/issue; skipping')
+                      needs_eval = False
+          else:
+              needs_eval = True  # manual or PR run: always evaluate
+
+          print(f'target={version} validated={validated} needs_eval={needs_eval} dry_run={dry_run}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write(f'version={version}\nminor={minor}\n'
+                       f'needs_eval={str(needs_eval).lower()}\ndry_run={str(dry_run).lower()}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh:
+              fh.write(f'### jax FFI compat\n\n- target jax: `{version}`\n'
+                       f'- validated: `{validated[0]}.{validated[1]}`\n'
+                       f'- evaluate: `{needs_eval}`, dry-run: `{dry_run}`\n')
+          PY
+
+  evaluate:
+    needs: detect
+    if: needs.detect.outputs.needs_eval == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        include:
+          - os: windows-latest
+            pytest-extra: '-p no:faulthandler'
+    defaults:
+      run:
+        shell: bash
+    env:
+      JAX_VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools --no-cache-dir
+          python -m pip install -r requirements-dev-cpu.txt --no-cache-dir
+          # The `cpu` extra pins the jaxlib build that this jax release requires.
+          python -m pip install "jax[cpu]==${JAX_VERSION}" --no-cache-dir
+          python -m pip install . --no-cache-dir
+      - name: FFI diagnostics
+        run: |
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import platform
+          import jax, jaxlib
+          from brainevent._op.numba_ffi import _detect_xla_ffi_api_version
+          major, minor = _detect_xla_ffi_api_version()
+          print(f'#### {platform.system()}\n')
+          print(f'- jax `{jax.__version__}`, jaxlib `{jaxlib.__version__}`')
+          print(f'- detected XLA FFI API version `{major}.{minor}`')
+          if major != 0:
+              print(f'- :warning: XLA FFI API **major** version changed to {major}: ABI break expected')
+          PY
+      - name: Bridge tests
+        run: pytest brainevent/_op/numba_ffi_test.py brainevent/_op/main_test.py -m "" ${{ matrix.pytest-extra }}
+      - name: All numba/native kernel variants
+        run: pytest brainevent -m slow ${{ matrix.pytest-extra }}
+
+  report:
+    needs: [ detect, evaluate ]
+    if: >-
+      always() && needs.detect.outputs.needs_eval == 'true' &&
+      (needs.evaluate.result == 'success' || needs.evaluate.result == 'failure')
+    runs-on: ubuntu-latest
+    env:
+      # A PAT makes the bump PR trigger CI.yml; GITHUB_TOKEN-created PRs do not.
+      GH_TOKEN: ${{ secrets.JAX_COMPAT_PAT || github.token }}
+      HAS_PAT: ${{ secrets.JAX_COMPAT_PAT != '' }}
+      JAX_VERSION: ${{ needs.detect.outputs.version }}
+      JAX_MINOR: ${{ needs.detect.outputs.minor }}
+      DRY_RUN: ${{ needs.detect.outputs.dry_run }}
+      RESULT: ${{ needs.evaluate.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.JAX_COMPAT_PAT || github.token }}
+      - name: Open bump PR
+        if: needs.evaluate.result == 'success'
+        run: |
+          branch="ci/jax-ffi-validate-${JAX_MINOR}"
+          title="ci: validate numba FFI bridge against jax ${JAX_MINOR}"
+          major="${JAX_MINOR%%.*}"; minor="${JAX_MINOR#*.}"
+          sed -i -E "s/^_MAX_VALIDATED_JAX = \([0-9]+, [0-9]+\)/_MAX_VALIDATED_JAX = (${major}, ${minor})/" \
+            brainevent/_op/numba_ffi.py
+          if git diff --quiet; then
+            echo "::error::_MAX_VALIDATED_JAX was not changed by the bump"; exit 1
+          fi
+          git diff
+          note=""
+          if [ "$HAS_PAT" != "true" ]; then
+            note=$'\n\n> Opened with `GITHUB_TOKEN`, so CI did not start automatically. Close and reopen this PR to trigger CI.'
+          fi
+          body="The numba XLA FFI bridge passed its tests against jax \`${JAX_VERSION}\` on Linux, macOS and Windows ([run](${RUN_URL})).
+
+          This raises \`_MAX_VALIDATED_JAX\` to \`(${major}, ${minor})\`, which silences the untested-jax runtime warning for jax ${JAX_MINOR}.x.${note}"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: would open PR '${title}' from ${branch}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$branch"
+          git commit -am "$title"
+          git push --force origin "$branch"
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
+            --title "$title" --body "$body"
+      - name: Open or update failure issue
+        if: needs.evaluate.result == 'failure'
+        run: |
+          title="numba FFI bridge fails on jax ${JAX_VERSION}"
+          failed=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+            --paginate --jq '.jobs[] | select(.conclusion == "failure") | "- " + .name' )
+          body="The numba XLA FFI bridge failed against jax \`${JAX_VERSION}\` ([run](${RUN_URL})).
+
+          Failing jobs:
+          ${failed}
+
+          \`_MAX_VALIDATED_JAX\` stays unchanged. Users on this jax version get the untested-jax \`RuntimeWarning\`."
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: would open/update issue '${title}'" | tee -a "$GITHUB_STEP_SUMMARY"
+            printf '%s\n' "$failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh label create jax-compat --color B60205 \
+            --description 'jax/jaxlib compatibility of the numba FFI bridge' --force
+          existing=$(gh issue list --state open --search "\"${title}\" in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --label jax-compat --body "$body"
+          fi
