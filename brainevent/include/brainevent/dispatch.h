@@ -20,6 +20,7 @@
 /// Include via ``jkb/common.h`` — this header is user-facing.
 
 #include "brainevent/tensor.h"
+#include "brainevent/check.h"
 #include <cstdio>
 
 // ── Half-precision type aliases (CUDA only) ─────────────────────────────
@@ -87,10 +88,7 @@ struct complex128_t {
                 break;                                                   \
             }                                                            \
             default:                                                     \
-                fprintf(stderr,                                          \
-                    "[be] BE_DISPATCH_FLOATING: unsupported dtype %s\n", \
-                    BE::dtype_name(DTYPE));                             \
-                abort();                                                 \
+                BE_CHECK(false) << "[be] BE_DISPATCH_FLOATING: unsupported dtype " << BE::dtype_name(DTYPE);                                                 \
         }                                                                \
     }()
 
@@ -121,10 +119,7 @@ struct complex128_t {
                 break;                                                   \
             }                                                            \
             default:                                                     \
-                fprintf(stderr,                                          \
-                    "[be] BE_DISPATCH_FLOATING_AND_HALF: unsupported dtype %s\n", \
-                    BE::dtype_name(DTYPE));                             \
-                abort();                                                 \
+                BE_CHECK(false) << "[be] BE_DISPATCH_FLOATING_AND_HALF: unsupported dtype " << BE::dtype_name(DTYPE);                                                 \
         }                                                                \
     }()
 #else
@@ -145,10 +140,7 @@ struct complex128_t {
             case BE::DType::UInt32: { using SCALAR_VAR = uint32_t; __VA_ARGS__ break; } \
             case BE::DType::UInt64: { using SCALAR_VAR = uint64_t; __VA_ARGS__ break; } \
             default:                                                     \
-                fprintf(stderr,                                          \
-                    "[be] BE_DISPATCH_INTEGRAL: unsupported dtype %s\n", \
-                    BE::dtype_name(DTYPE));                             \
-                abort();                                                 \
+                BE_CHECK(false) << "[be] BE_DISPATCH_INTEGRAL: unsupported dtype " << BE::dtype_name(DTYPE);                                                 \
         }                                                                \
     }()
 
@@ -167,10 +159,7 @@ struct complex128_t {
                 break;                                                   \
             }                                                            \
             default:                                                     \
-                fprintf(stderr,                                          \
-                    "[be] BE_DISPATCH_SIGNED_INDEX: unsupported dtype %s\n", \
-                    BE::dtype_name(DTYPE));                              \
-                abort();                                                 \
+                BE_CHECK(false) << "[be] BE_DISPATCH_SIGNED_INDEX: unsupported dtype " << BE::dtype_name(DTYPE);                                                 \
         }                                                                \
     }()
 
@@ -197,20 +186,14 @@ struct complex128_t {
                 break;                                                   \
             }                                                            \
             default:                                                     \
-                fprintf(stderr,                                          \
-                    "[be] BE_DISPATCH_CSR_INDPTR: unsupported dtype %s\n", \
-                    BE::dtype_name(DTYPE));                              \
-                abort();                                                 \
+                BE_CHECK(false) << "[be] BE_DISPATCH_CSR_INDPTR: unsupported dtype " << BE::dtype_name(DTYPE);                                                 \
         }                                                                \
     }()
 
 #define BE_CHECK_CSR_INDICES_INT32(TENSOR)                               \
     do {                                                                 \
         if ((TENSOR).dtype() != BE::DType::Int32) {                      \
-            fprintf(stderr,                                              \
-                "[be] CSR CUDA kernels require int32 indices, got %s\n", \
-                BE::dtype_name((TENSOR).dtype()));                       \
-            abort();                                                     \
+            BE_CHECK(false) << "[be] CSR CUDA kernels require int32 indices, got " << BE::dtype_name((TENSOR).dtype());                                                     \
         }                                                                \
     } while (0)
 
@@ -229,10 +212,7 @@ struct complex128_t {
                 break;                                                   \
             }                                                            \
             default:                                                     \
-                fprintf(stderr,                                          \
-                    "[be] BE_DISPATCH_COMPLEX: unsupported dtype %s\n", \
-                    BE::dtype_name(DTYPE));                             \
-                abort();                                                 \
+                BE_CHECK(false) << "[be] BE_DISPATCH_COMPLEX: unsupported dtype " << BE::dtype_name(DTYPE);                                                 \
         }                                                                \
     }()
 
@@ -252,10 +232,7 @@ struct complex128_t {
             case BE::DType::UInt32:   { using SCALAR_VAR = uint32_t; __VA_ARGS__ break; } \
             case BE::DType::UInt64:   { using SCALAR_VAR = uint64_t; __VA_ARGS__ break; } \
             default:                                                     \
-                fprintf(stderr,                                          \
-                    "[be] BE_DISPATCH_ALL_TYPES: unsupported dtype %s\n", \
-                    BE::dtype_name(DTYPE));                             \
-                abort();                                                 \
+                BE_CHECK(false) << "[be] BE_DISPATCH_ALL_TYPES: unsupported dtype " << BE::dtype_name(DTYPE);                                                 \
         }                                                                \
     }()
 
@@ -280,10 +257,7 @@ struct complex128_t {
             case BE::DType::Complex64:  { using SCALAR_VAR = BE::complex64_t;  __VA_ARGS__ break; } \
             case BE::DType::Complex128: { using SCALAR_VAR = BE::complex128_t; __VA_ARGS__ break; } \
             default:                                                     \
-                fprintf(stderr,                                          \
-                    "[be] BE_DISPATCH_ALL: unsupported dtype %s\n",    \
-                    BE::dtype_name(DTYPE));                             \
-                abort();                                                 \
+                BE_CHECK(false) << "[be] BE_DISPATCH_ALL: unsupported dtype " << BE::dtype_name(DTYPE);                                                 \
         }                                                                \
     }()
 #else
@@ -307,10 +281,7 @@ struct complex128_t {
             case BE::DType::Complex64:  { using SCALAR_VAR = BE::complex64_t;  __VA_ARGS__ break; } \
             case BE::DType::Complex128: { using SCALAR_VAR = BE::complex128_t; __VA_ARGS__ break; } \
             default:                                                     \
-                fprintf(stderr,                                          \
-                    "[be] BE_DISPATCH_ALL: unsupported dtype %s\n",    \
-                    BE::dtype_name(DTYPE));                             \
-                abort();                                                 \
+                BE_CHECK(false) << "[be] BE_DISPATCH_ALL: unsupported dtype " << BE::dtype_name(DTYPE);                                                 \
         }                                                                \
     }()
 #endif

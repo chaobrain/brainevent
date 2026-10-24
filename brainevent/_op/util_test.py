@@ -51,7 +51,9 @@ from brainevent._op.util import (
     jaxtype_to_warptype,
     jaxinfo_to_warpinfo,
     dtype_suffix,
-    spike_suffix,
+    event_active,
+    event_factor,
+    cuda_event_abi,
 )
 
 warp_installed = importlib.util.find_spec('warp') is not None
@@ -334,7 +336,7 @@ def test_f2_defjvp_with_correct_arity_matches_jacfwd():
 # ---------------------------------------------------------------------------
 # Kernel-name suffix helpers
 #
-# ``dtype_suffix`` / ``spike_suffix`` encode the naming contract between the
+# ``dtype_suffix`` / ``cuda_event_abi`` encode the naming contract between the
 # Python dispatch layer and the symbols defined in the ``.cu`` sources. They
 # replaced 31 verbatim copies of the same table, so the mapping is pinned here:
 # a silent change would mis-dispatch to a wrong-precision kernel rather than
@@ -389,16 +391,56 @@ def test_dtype_suffixes_are_distinct():
 
 
 @pytest.mark.parametrize(
-    'dtype, expected',
+    'dtype, suffix, converts',
     [
-        (jnp.bool_, '_bool'),
-        (np.dtype('bool'), '_bool'),
-        (jnp.float32, '_float'),
-        (jnp.float16, '_float'),
-        (jnp.bfloat16, '_float'),
-        (jnp.int8, '_float'),
+        (jnp.bool_, '_bool', False),
+        (np.dtype('bool'), '_bool', False),
+        (jnp.float32, '_float', False),
+        (jnp.float64, '_bool', True),
+        (jnp.float16, '_bool', True),
+        (jnp.bfloat16, '_bool', True),
+        (jnp.int8, '_bool', True),
+        (jnp.uint8, '_bool', True),
+        (jnp.int32, '_bool', True),
     ],
 )
-def test_spike_suffix_splits_bool_from_everything_else(dtype, expected):
-    """Only boolean event arrays select the ``_bool`` kernel variant."""
-    assert spike_suffix(dtype) == expected
+def test_cuda_event_abi_table(dtype, suffix, converts):
+    """Only bool and the native float are passed through; the rest become masks (#199, #204)."""
+    abi = cuda_event_abi(dtype)
+    assert abi.suffix == suffix
+    x = jnp.asarray([2, 0, 1], dtype=dtype)
+    out = abi.prepare(x)
+    if converts:
+        assert out.dtype == jnp.bool_
+        assert out.tolist() == [True, False, True]
+    else:
+        assert out is x
+
+
+def test_cuda_event_abi_native_float_follows_argument():
+    """``binary_fcnmm`` reads events natively in the weight dtype."""
+    assert cuda_event_abi(jnp.float64, native_float=jnp.float64).suffix == '_float'
+    assert cuda_event_abi(jnp.float32, native_float=jnp.float64).suffix == '_bool'
+
+
+def test_cuda_event_abi_rejects_complex():
+    with pytest.raises(TypeError, match='boolean, integer or floating-point'):
+        cuda_event_abi(jnp.complex64)
+
+
+@pytest.mark.parametrize('dtype', [jnp.float32, jnp.float16, jnp.int8, jnp.int32])
+def test_event_active_is_nonzero(dtype):
+    """Negative values are active; zero is not."""
+    x = jnp.asarray([2, -1, 0, 1], dtype=dtype)
+    assert event_active(x).tolist() == [True, True, False, True]
+
+
+def test_event_active_bool_and_nan():
+    assert event_active(jnp.asarray([True, False])).tolist() == [True, False]
+    assert event_active(jnp.asarray([jnp.nan, 0.])).tolist() == [True, False]
+
+
+def test_event_factor_casts_mask():
+    out = event_factor(jnp.asarray([2., -1., 0.]), dtype=jnp.float16)
+    assert out.dtype == jnp.float16
+    assert out.tolist() == [1.0, 1.0, 0.0]
