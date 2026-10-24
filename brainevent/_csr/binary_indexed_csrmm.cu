@@ -41,6 +41,15 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
+// Select, never multiply by the activity: an inactive event contributes exactly
+// zero even when its weight is NaN or +-Inf (``NaN * 0`` is NaN). ``F`` is the
+// event factor ``(ACC_T)IS_ACTIVE(x)``: 1/0 for binary events, the event value
+// for weighted (``_wv``) ones, so ``F != 0`` is the activity in both cases.
+// docs/specs/2026-10-24-inactive-row-nan-isolation.md
+#ifndef BE_EVENT_TERM
+#define BE_EVENT_TERM(W, F) (((F) != 0) ? (W) * (F) : 0)
+#endif
+
 // -------------------------------------------------------------------------
 // Permuted-heterogeneous kernels: read weights[perm[j]] (fused gather).
 // Identical to the plain heterogeneous CSR mat-mat kernels, but with an extra
@@ -76,12 +85,12 @@ __global__ void _csrmm_nt_warp_perm_hetero_kern##SUFFIX(                        
         for (; j + 1 < end; j += 2) {                                                \
             ACC_T mask0 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j]   * n + c]);         \
             ACC_T mask1 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j+1] * n + c]);        \
-            acc0 += READ_W(weights[perm[j]])   * mask0;                              \
-            acc1 += READ_W(weights[perm[j+1]]) * mask1;                              \
+            acc0 += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask0);                 \
+            acc1 += BE_EVENT_TERM(READ_W(weights[perm[j+1]]), mask1);               \
         }                                                                            \
         for (; j < end; j++) {                                                       \
             ACC_T mask = (ACC_T)IS_ACTIVE(B[(size_t)indices[j] * n + c]);            \
-            acc0 += READ_W(weights[perm[j]]) * mask;                                 \
+            acc0 += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask);                   \
         }                                                                            \
         C[(size_t)row * n + c] = WRITE_W(acc0 + acc1);                               \
     }                                                                                \
@@ -114,12 +123,12 @@ __global__ void _csrmm_nt_block_perm_hetero_kern##SUFFIX(                       
             for (; j + 8 < end; j += 16) {                                           \
                 ACC_T mask0 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j]   * n + c]);     \
                 ACC_T mask1 = (ACC_T)IS_ACTIVE(B[(size_t)indices[j+8] * n + c]);    \
-                acc0 += READ_W(weights[perm[j]])   * mask0;                          \
-                acc1 += READ_W(weights[perm[j+8]]) * mask1;                          \
+                acc0 += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask0);             \
+                acc1 += BE_EVENT_TERM(READ_W(weights[perm[j+8]]), mask1);           \
             }                                                                        \
             for (; j < end; j += 8) {                                                 \
                 ACC_T mask = (ACC_T)IS_ACTIVE(B[(size_t)indices[j] * n + c]);        \
-                acc0 += READ_W(weights[perm[j]]) * mask;                             \
+                acc0 += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask);               \
             }                                                                        \
         }                                                                             \
         smem[strip * 32 + lane] = acc0 + acc1;                                       \

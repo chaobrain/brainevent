@@ -706,3 +706,71 @@ def test_csr_plasticity_transpose_rejects_structure_and_spikes(prim):
     und[trace_pos] = ad.UndefinedPrimal(jax.typeof(args[trace_pos]))
     out = rule([ad.Zero(jax.typeof(data))], *und, **kw)
     assert type(out[0]) is ad.Zero and type(out[trace_pos]) is ad.Zero
+
+
+# ---------------------------------------------------------------------------
+# Inactive edges are returned bit-identical, whatever the trace (NaN/Inf).
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md
+# ---------------------------------------------------------------------------
+
+def _nan_trace_problem(seed=31):
+    rng = np.random.default_rng(seed)
+    n_pre, n_post = 9, 7
+    dense = rng.uniform(0.1, 1.0, (n_pre, n_post)) * (rng.random((n_pre, n_post)) < 0.6)
+    csr = brainevent.CSR.fromdense(jnp.asarray(dense, jnp.float32))
+    rows = np.repeat(np.arange(n_pre), np.diff(np.asarray(csr.indptr)))
+    cols = np.asarray(csr.indices)
+    return csr, rows, cols, (n_pre, n_post)
+
+
+@pytest.mark.parametrize('backend', PRE_BACKENDS)
+@pytest.mark.parametrize('spike_dtype', ['bool', 'float32'])
+@pytest.mark.parametrize('bad', [np.nan, np.inf])
+def test_csr_on_pre_inactive_edges_ignore_nonfinite_trace(backend, spike_dtype, bad):
+    csr, rows, cols, shape = _nan_trace_problem()
+    spike = np.resize([2., 0., -1., 0.], shape[0]).astype(np.float32)
+    spike = jnp.asarray(spike != 0) if spike_dtype == 'bool' else jnp.asarray(spike)
+    trace = jnp.full((shape[1],), bad, jnp.float32)
+    new = np.asarray(update_csr_on_binary_pre(
+        csr.data, csr.indices, csr.indptr, spike, trace, shape=shape, backend=backend,
+    ))
+    inactive = ~(np.asarray(spike) != 0)[rows]
+    assert inactive.any() and (~inactive).any()
+    np.testing.assert_array_equal(new[inactive], np.asarray(csr.data)[inactive])
+    assert not np.isfinite(new[~inactive]).any()
+
+
+@pytest.mark.parametrize('backend', POST_BACKENDS)
+@pytest.mark.parametrize('spike_dtype', ['bool', 'float32'])
+@pytest.mark.parametrize('bad', [np.nan, np.inf])
+def test_csr_on_post_inactive_edges_ignore_nonfinite_trace(backend, spike_dtype, bad):
+    csr, rows, cols, shape = _nan_trace_problem(32)
+    csc_indices, csc_indptr, weight_indices = _csr_to_csc_with_weight_indices(
+        csr.data, csr.indices, csr.indptr, shape,
+    )
+    spike = np.resize([0., 1., -2., 0.], shape[1]).astype(np.float32)
+    spike = jnp.asarray(spike != 0) if spike_dtype == 'bool' else jnp.asarray(spike)
+    trace = jnp.full((shape[0],), bad, jnp.float32)
+    new = np.asarray(update_csr_on_binary_post(
+        csr.data, csc_indices, csc_indptr, weight_indices, trace, spike, shape=shape, backend=backend,
+    ))
+    inactive = ~(np.asarray(spike) != 0)[cols]
+    assert inactive.any() and (~inactive).any()
+    np.testing.assert_array_equal(new[inactive], np.asarray(csr.data)[inactive])
+    assert not np.isfinite(new[~inactive]).any()
+
+
+@pytest.mark.parametrize('backend', PRE_BACKENDS)
+def test_csr_on_pre_trace_cotangent_ignores_inactive_edges(backend):
+    csr, rows, cols, shape = _nan_trace_problem(33)
+    spike = jnp.asarray(np.resize([True, False], shape[0]))
+    inactive = ~np.asarray(spike)[rows]
+    ct = jnp.asarray(np.where(inactive, np.nan, 1.0).astype(np.float32))
+
+    def f(trace):
+        return update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, spike, trace,
+                                        shape=shape, backend=backend)
+
+    _, vjp = jax.vjp(f, jnp.ones(shape[1], jnp.float32))
+    (ct_trace,) = vjp(ct)
+    assert np.isfinite(np.asarray(ct_trace)).all()

@@ -2030,3 +2030,58 @@ def test_bitpacked_binary_matmul_csr_is_binary():
     np.testing.assert_allclose(np.asarray(y, np.float64),
                                event_mask(x) @ np.asarray(make(data).todense(), np.float64),
                                rtol=1e-5, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Inactive events contribute exactly zero, whatever the weight (NaN/Inf).
+# docs/specs/2026-10-24-inactive-row-nan-isolation.md
+# ---------------------------------------------------------------------------
+
+from brainevent._csr.binary import binary_csrmv_p  # noqa: E402
+
+_CLASS_BACKENDS = (None,) + tuple(binary_csrmv_p.available_backends(jax.default_backend()))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _CLASS_BACKENDS)
+@pytest.mark.parametrize('fmt', ['csr', 'csc'])
+@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('side', ['left', 'right'])
+@pytest.mark.parametrize('batch', [None, 3])
+def test_event_matmul_ignores_nonfinite_weights_of_inactive_events(backend, fmt, weighted, side, batch):
+    rng = np.random.default_rng(41)
+    m, k = 7, 6
+    dense = rng.standard_normal((m, k)) * (rng.random((m, k)) < 0.6)
+    n_ev = m if side == 'left' else k
+    n_cols = 1 if batch is None else batch
+    vals = np.resize(np.array([2.0, 0.0, -1.0, 0.0, 0.5]), n_ev)[:, None] * np.ones((1, n_cols))
+    if weighted:
+        vals[:, -1] *= 2.0
+    inactive = vals[:, 0] == 0
+    # NaN / Inf on every stored entry read by an inactive event.
+    if side == 'left':
+        dense[inactive] = np.where(dense[inactive] != 0, np.nan, 0.0)
+        dense[np.flatnonzero(inactive)[0], 0] = np.inf
+    else:
+        dense[:, inactive] = np.where(dense[:, inactive] != 0, -np.inf, 0.0)
+        dense[0, np.flatnonzero(inactive)[0]] = np.nan
+    cls = CSR if fmt == 'csr' else CSC
+    mat = cls.fromdense(jnp.asarray(dense, jnp.float32))
+    if backend is not None:
+        mat = cls((mat.data, mat.indices, mat.indptr), shape=mat.shape, backend=backend)
+    f = vals if weighted else (vals != 0).astype(float)
+    # Left products take events as (batch, n_ev), right products as (n_ev, batch).
+    raw = vals[:, 0] if batch is None else (vals.T if side == 'left' else vals)
+    x = jnp.asarray(raw, jnp.float32)
+    ev = brainevent.WeightedArray(x) if weighted else BinaryArray(x != 0)
+    if side == 'left':
+        out = ev @ mat
+        ref = np.where(f.T[:, :, None] != 0, f.T[:, :, None] * np.where(np.isfinite(dense), dense, 0.0)[None], 0.0).sum(1)
+        ref = ref[0] if batch is None else ref
+    else:
+        out = mat @ ev
+        ref = (np.where(np.isfinite(dense), dense, 0.0) @ f)
+        ref = ref[:, 0] if batch is None else ref
+    out = np.asarray(out)
+    assert np.isfinite(out).all()
+    np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)

@@ -28,7 +28,7 @@ from brainevent._compatible_import import Tracer
 from brainevent._misc import _check_csr_cuda_structure_dtypes, _check_csr_structure_dtypes, namescope
 from brainevent._op import load_cuda_file, numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, select_active
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
 __all__ = [
@@ -237,15 +237,6 @@ def _row_ids(indptr, n_pre, nse):
     return jnp.repeat(jnp.arange(n_pre, dtype=indptr.dtype), jnp.diff(indptr), total_repeat_length=nse)
 
 
-def _edge_factor(events, row_ids, dtype, weighted):
-    """Per-edge ``f(x)[row(e)]`` with inactive rows exactly zero."""
-    x = events[row_ids]
-    active = event_active(x)
-    if weighted:
-        return jnp.where(active, x.astype(dtype), jnp.zeros((), dtype))
-    return active.astype(dtype)
-
-
 def _jax_kernel(shape: MatrixShape, weighted: bool, weight_info, **kwargs):
     n_pre = shape[0]
     nse = kwargs['indices_info'].size
@@ -261,7 +252,7 @@ def _jax_kernel(shape: MatrixShape, weighted: bool, weight_info, **kwargs):
             contrib = w * x.astype(ring.dtype)
         else:
             contrib = jnp.broadcast_to(w, (nse,))
-        contrib = jnp.where(active, contrib, jnp.zeros((), ring.dtype))
+        contrib = select_active(active, contrib.astype(ring.dtype))
         slot = _slots(t, delays, n_slots)
         return (ring.at[slot, indices].add(contrib),)
 
@@ -424,8 +415,11 @@ def _transpose_rule(ct, ring, events, data, indices, indptr, delays, t, *, shape
             if type(ct) is ad.Zero:
                 ct_data = ad.Zero(data.aval)
             else:
-                f = _edge_factor(events, row_ids, g.dtype, weighted)
-                ct_data = f * g
+                # Select, not ``f * g``: inactive edges get exactly 0 even when the
+                # ring cotangent at their slot is NaN/Inf.
+                x = events[row_ids]
+                value = x.astype(g.dtype) * g if weighted else g
+                ct_data = select_active(event_active(x), value)
                 if data.aval.shape[0] == 1:
                     ct_data = jnp.sum(ct_data).reshape(data.aval.shape)
                 ct_data = ct_data.astype(data.aval.dtype)

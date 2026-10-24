@@ -48,18 +48,20 @@ from .hybrid_config import (
     compile_flags_for_config,
     module_suffix_for_config,
 )
-from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from .binary import (
     _EVENT_FASTMATH,
+    _csrmm_entry_weight_ct,
+    _entry_weight_ct,
+    _event_contrib,
     _numba_event_mask,
     _numba_weighted_events,
     _workspace_from_task_operands,
     _workspace_task_operands,
 )
 from .float import csrmv, csrmm
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
 
 __all__ = [
     'binary_csrmv_indexed',
@@ -339,10 +341,9 @@ def _binary_csrmv_indexed_jax_kernel(
                 jnp.diff(indptr),
                 total_repeat_length=nse,
             )
-            v_row = vector[row_ids]
-            events = event_factor(v_row, dtype=out_dtype, weighted=weighted)
             w = weights[0] if is_homo else weights[perm]
-            math_out = jnp.zeros(k, dtype=out_dtype).at[indices].add(w * events)
+            contrib = _event_contrib(w, vector[row_ids], dtype=out_dtype, weighted=weighted)
+            math_out = jnp.zeros(k, dtype=out_dtype).at[indices].add(contrib)
             return math_out, task_begin, task_end, status
     else:
         def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
@@ -351,10 +352,9 @@ def _binary_csrmv_indexed_jax_kernel(
                 jnp.diff(indptr),
                 total_repeat_length=nse,
             )
-            v_col = vector[indices]
-            events = event_factor(v_col, dtype=out_dtype, weighted=weighted)
             w = weights[0] if is_homo else weights[perm]
-            math_out = jnp.zeros(m, dtype=out_dtype).at[row_ids].add(w * events)
+            contrib = _event_contrib(w, vector[indices], dtype=out_dtype, weighted=weighted)
+            math_out = jnp.zeros(m, dtype=out_dtype).at[row_ids].add(contrib)
             return math_out, task_begin, task_end, status
 
     return kernel
@@ -617,20 +617,32 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, task_begin, 
     else:
         if type(ct) is ad.Zero:
             ct_w = ad.Zero(weights)
-        elif weights.aval.shape[0] == 1:
-            base = binary_csrmv_indexed_p_call(
-                jnp.ones(1, dtype=weights.aval.dtype), indices, indptr, perm, events,
-                workspace, shape=shape, transpose=transpose, backend=kw['backend'],
-                weighted=kw.get('weighted', False),
-            )[0]
-            ct_w = jnp.inner(ct, base).reshape(*weights.aval.shape)
         else:
-            # (row, col) of the traversed structure at slot k; weight at slot k
-            # is weights[perm[k]], so scatter the per-slot cotangent back via perm.
+            weighted = kw.get('weighted', False)
+            # (row, col) of the traversed structure at slot k; weight at slot k is
+            # weights[perm[k]]. Inactive slots get exactly 0 (select), even for a
+            # NaN/Inf cotangent.
             row, col = _csr_to_coo(indices, indptr)
-            ev = event_factor(events, dtype=ct.dtype, weighted=kw.get('weighted', False))
-            per_slot = ev[row] * ct[col] if transpose else ev[col] * ct[row]
-            ct_w = jnp.zeros(weights.aval.shape, weights.aval.dtype).at[perm].add(per_slot)
+            if weights.aval.shape[0] == 1:
+
+                def unit_product(ct):
+                    base = binary_csrmv_indexed_p_call(
+                        jnp.ones(1, dtype=weights.aval.dtype), indices, indptr, perm, events,
+                        workspace, shape=shape, transpose=transpose, backend=kw['backend'],
+                        weighted=weighted,
+                    )[0]
+                    return jnp.inner(ct, base)
+
+                def select_sum(ct):
+                    return jnp.sum(_entry_weight_ct(events, ct, row, col, transpose=transpose, weighted=weighted))
+
+                # ``ct * 0`` is exact for a finite cotangent only.
+                ct_w = jax.lax.cond(
+                    jnp.all(jnp.isfinite(ct)), unit_product, select_sum, ct,
+                ).astype(weights.aval.dtype).reshape(*weights.aval.shape)
+            else:
+                per_slot = _entry_weight_ct(events, ct, row, col, transpose=transpose, weighted=weighted)
+                ct_w = jnp.zeros(weights.aval.shape, weights.aval.dtype).at[perm].add(per_slot)
         return ct_w, indices, indptr, perm, events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
 
 
@@ -993,10 +1005,9 @@ def _binary_csrmm_indexed_jax_kernel(
                 jnp.diff(indptr),
                 total_repeat_length=nse,
             )
-            B_rows = B[row_ids]  # [nse, n]
-            events = event_factor(B_rows, dtype=out_dtype, weighted=weighted)
             w = weights[0] if is_homo else weights[perm][:, None]
-            math_out = jnp.zeros((k, n), dtype=out_dtype).at[indices].add(w * events)
+            contrib = _event_contrib(w, B[row_ids], dtype=out_dtype, weighted=weighted)  # [nse, n]
+            math_out = jnp.zeros((k, n), dtype=out_dtype).at[indices].add(contrib)
             return math_out, task_begin, task_end, status
     else:
         def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
@@ -1005,10 +1016,9 @@ def _binary_csrmm_indexed_jax_kernel(
                 jnp.diff(indptr),
                 total_repeat_length=nse,
             )
-            B_rows = B[indices]  # [nse, n]
-            events = event_factor(B_rows, dtype=out_dtype, weighted=weighted)
             w = weights[0] if is_homo else weights[perm][:, None]
-            math_out = jnp.zeros((m, n), dtype=out_dtype).at[row_ids].add(w * events)
+            contrib = _event_contrib(w, B[indices], dtype=out_dtype, weighted=weighted)  # [nse, n]
+            math_out = jnp.zeros((m, n), dtype=out_dtype).at[row_ids].add(contrib)
             return math_out, task_begin, task_end, status
 
     return kernel
@@ -1234,7 +1244,6 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, task_begin, ta
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr) or ad.is_undefined_primal(perm):
         raise ValueError("Cannot transpose with respect to sparse structure / perm.")
     ct = ct[0]
-    workspace = _workspace_from_task_operands(kw['task_capacity'], task_begin, task_end, status)
     if ad.is_undefined_primal(B):
         if type(ct) is ad.Zero:
             ct_B = ad.Zero(B)
@@ -1245,22 +1254,17 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, task_begin, ta
     else:
         if type(ct) is ad.Zero:
             ct_w = ad.Zero(data)
-        elif data.aval.shape[0] == 1:
-            base = binary_csrmm_indexed_p_call(
-                jnp.ones(1, dtype=data.aval.dtype), indices, indptr, perm, B,
-                workspace, shape=shape, transpose=transpose, backend=kw['backend'],
-                weighted=kw.get('weighted', False),
-            )[0]
-            ct_w = jnp.sum(base * ct).reshape(*data.aval.shape)
         else:
-            # weight at slot k is weights[perm[k]]; scatter per-slot sddmm back via perm.
+            # weight at slot k is weights[perm[k]]; scatter the per-slot cotangent
+            # back via perm. Inactive (slot, column) pairs contribute exactly 0.
             row, col = _csr_to_coo(indices, indptr)
-            B_factor = event_factor(B, dtype=ct.dtype, weighted=kw.get('weighted', False))
-            if transpose:
-                d_data = sddmm_coo_indices(B_factor, ct.T, row, col).data
+            d_data = _csrmm_entry_weight_ct(
+                B, ct, row, col, transpose=transpose, weighted=kw.get('weighted', False),
+            )
+            if data.aval.shape[0] == 1:
+                ct_w = jnp.sum(d_data).astype(data.aval.dtype).reshape(*data.aval.shape)
             else:
-                d_data = sddmm_coo_indices(B_factor, ct.T, col, row).data
-            ct_w = jnp.zeros(data.aval.shape, data.aval.dtype).at[perm].add(d_data)
+                ct_w = jnp.zeros(data.aval.shape, data.aval.dtype).at[perm].add(d_data)
         return ct_w, indices, indptr, perm, B, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
 
 
