@@ -29,7 +29,8 @@ from brainevent._op import XLACustomKernel, numba_kernel
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent._op import load_cuda_file
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
+from .binary import _EVENT_FASTMATH, _numba_event_mask
 
 __all__ = [
     'update_csr_on_binary_pre',
@@ -178,9 +179,12 @@ def _csr_on_pre_numba_kernel_generator(
     **kwargs
 ):
     import numba
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(spike_info.dtype)
+    bool_events = spike_info.dtype == jnp.bool_ or mask_events
 
-    if spike_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
+    if bool_events:
+        @numba.njit(fastmath=_EVENT_FASTMATH)
         def kernel(weight, indices, indptr, pre_spike, post_trace, out_w):
             for i in range(pre_spike.shape[0]):
                 if pre_spike[i]:
@@ -188,7 +192,7 @@ def _csr_on_pre_numba_kernel_generator(
                     i_end = indptr[i + 1]
                     out_w[i_start: i_end] += post_trace[indices[i_start: i_end]]
     else:
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=_EVENT_FASTMATH)
         def kernel(weight, indices, indptr, pre_spike, post_trace, out_w):
             for i in range(pre_spike.shape[0]):
                 if pre_spike[i] != 0.:
@@ -197,6 +201,8 @@ def _csr_on_pre_numba_kernel_generator(
                     out_w[i_start: i_end] += post_trace[indices[i_start: i_end]]
 
     def fn(weight, indices, indptr, pre_spike, post_trace):
+        if mask_events:
+            pre_spike = event_active(pre_spike)
         return numba_kernel(kernel, outs=kwargs['outs'], input_output_aliases={0: 0})(
             weight, indices, indptr, pre_spike, post_trace
         )
@@ -285,7 +291,6 @@ def _csr_on_pre_jax_kernel(
 ):
     """Pure-JAX kernel for CSR pre-synaptic plasticity update (all platforms)."""
     n_pre, n_post = shape
-    is_bool = (spike_info.dtype == jnp.bool_)
     nse = kwargs['indices_info'].size
 
     def kernel(weight, indices, indptr, pre_spike, post_trace):
@@ -294,10 +299,7 @@ def _csr_on_pre_jax_kernel(
             jnp.diff(indptr),
             total_repeat_length=nse,
         )
-        if is_bool:
-            active = pre_spike[row_ids]
-        else:
-            active = pre_spike[row_ids] != 0.
+        active = event_active(pre_spike[row_ids])
         delta = jnp.where(active, post_trace[indices], jnp.zeros_like(post_trace[indices]))
         return [weight + delta]
 
@@ -327,12 +329,14 @@ def _csr_on_pre_cuda_kernel(
     )
 
     out_info = kwargs['outs']
-    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+    event_abi = cuda_event_abi(spike_info.dtype)
+    spk_suffix = event_abi.suffix
 
     wt_sfx = dtype_suffix(weight_info.dtype)
     kernel_name = f'csr_plasticity_binary_pre.update_csr_on_pre{wt_sfx}{spk_suffix}'
 
     def kernel(weight, indices, indptr, pre_spike, post_trace):
+        pre_spike = event_abi.prepare(pre_spike)
         return jax.ffi.ffi_call(
             kernel_name,
             out_info,
@@ -623,10 +627,13 @@ def _csr2csc_on_post_numba_kernel_generator(
     **kwargs
 ):
     import numba
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(spike_info.dtype)
+    bool_events = spike_info.dtype == jnp.bool_ or mask_events
 
     # Note: Cannot parallelize due to potential race conditions when updating out_w[weight_ids]
-    if spike_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
+    if bool_events:
+        @numba.njit(fastmath=_EVENT_FASTMATH)
         def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike, out_w):
             for i in range(post_spike.shape[0]):
                 if post_spike[i]:
@@ -636,7 +643,7 @@ def _csr2csc_on_post_numba_kernel_generator(
                     pre_ids = indices[index: index_end]
                     out_w[weight_ids] += pre_trace[pre_ids]
     else:
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=_EVENT_FASTMATH)
         def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike, out_w):
             for i in range(post_spike.shape[0]):
                 if post_spike[i] != 0.:
@@ -647,6 +654,8 @@ def _csr2csc_on_post_numba_kernel_generator(
                     out_w[weight_ids] += pre_trace[pre_ids]
 
     def fn(weight, indices, indptr, weight_indices, pre_trace, post_spike):
+        if mask_events:
+            post_spike = event_active(post_spike)
         return numba_kernel(kernel, outs=kwargs['outs'], input_output_aliases={0: 0})(
             weight, indices, indptr, weight_indices, pre_trace, post_spike
         )
@@ -736,7 +745,6 @@ def _csr2csc_on_post_jax_kernel(
 ):
     """Pure-JAX kernel for CSR post-synaptic plasticity update (all platforms)."""
     n_pre, n_post = shape
-    is_bool = (spike_info.dtype == jnp.bool_)
     nse = kwargs['indices_info'].size
 
     def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
@@ -745,10 +753,7 @@ def _csr2csc_on_post_jax_kernel(
             jnp.diff(indptr),
             total_repeat_length=nse,
         )
-        if is_bool:
-            active = post_spike[col_ids]
-        else:
-            active = post_spike[col_ids] != 0.
+        active = event_active(post_spike[col_ids])
         delta = jnp.where(active, pre_trace[indices], jnp.zeros_like(pre_trace[indices]))
         return [weight.at[weight_indices].add(delta)]
 
@@ -787,12 +792,14 @@ def _csr2csc_on_post_cuda_kernel(
     )
 
     out_info = kwargs['outs']
-    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+    event_abi = cuda_event_abi(spike_info.dtype)
+    spk_suffix = event_abi.suffix
 
     wt_sfx = dtype_suffix(weight_info.dtype)
     kernel_name = f'csr_plasticity_binary_post.update_csr_on_post{wt_sfx}{spk_suffix}'
 
     def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
+        post_spike = event_abi.prepare(post_spike)
         return jax.ffi.ffi_call(
             kernel_name,
             out_info,
@@ -1007,7 +1014,8 @@ def update_csc_on_binary_pre(
         integer dtype.
     pre_spike : jax.Array
         Binary or boolean presynaptic spike array, with shape ``(n_pre,)``.
-        Boolean ``True`` or any nonzero float indicates a spike.
+        Boolean ``True`` or any non-zero value (including negative values)
+        indicates a spike.
     post_trace : jax.Array or Quantity
         Postsynaptic eligibility trace, with shape ``(n_post,)``.  Must be
         unit-compatible with ``weight``.
@@ -1107,7 +1115,8 @@ def update_csc_on_binary_post(
         unit-compatible with ``weight``.
     post_spike : jax.Array
         Binary or boolean postsynaptic spike array, with shape ``(n_post,)``.
-        Boolean ``True`` or any nonzero float indicates a spike.
+        Boolean ``True`` or any non-zero value (including negative values)
+        indicates a spike.
     w_min, w_max : jax.Array, Quantity, number, or None, optional
         Lower/upper bounds for weight clipping (same units as ``weight``).  If
         ``None``, the corresponding bound is not applied.

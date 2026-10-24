@@ -116,7 +116,7 @@ def _csr_reference(
         np.arange(shape[0], dtype=np.int32),
         np.diff(host_indptr),
     )
-    values = host_operand > 0 if binary else host_operand
+    values = host_operand != 0 if binary else host_operand
 
     if reverse:
         if values.ndim == 1:
@@ -182,7 +182,7 @@ def _make_events(
     *,
     seed: int,
 ) -> jax.Array:
-    """Create deterministic events including inactive nonpositive values."""
+    """Create deterministic events including zero and (active) negative values."""
     rng = np.random.default_rng(seed)
     if jnp.dtype(dtype) == jnp.dtype(jnp.bool_):
         values = rng.random(shape) < 0.3

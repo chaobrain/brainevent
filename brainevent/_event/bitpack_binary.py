@@ -21,6 +21,7 @@ from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import binary_densemm, binary_densemv
 from brainevent._error import MathError
+from brainevent._op.util import event_active
 from .base import EventRepresentation, extract_raw_value, is_known_type
 
 __all__ = [
@@ -38,7 +39,9 @@ def bitpack(arr: jax.Array, axis: int) -> jax.Array:
     Parameters
     ----------
     arr : jax.Array
-        Input array (any dtype; non-zero values are treated as ``True``).
+        Input event array of any boolean, integer or floating-point dtype.
+        Elements are packed by activity: ``True`` (boolean) or non-zero
+        (numeric; negative values and NaN are active).
     axis : int
         Axis along which to pack.
 
@@ -48,7 +51,7 @@ def bitpack(arr: jax.Array, axis: int) -> jax.Array:
         Packed uint32 array.  The packed axis has length
         ``ceil(arr.shape[axis] / 32)``.
     """
-    arr = jnp.asarray(arr, dtype=jnp.bool_)
+    arr = event_active(arr)
     axis = axis % arr.ndim
     n = arr.shape[axis]
     n_packed = (n + 31) // 32

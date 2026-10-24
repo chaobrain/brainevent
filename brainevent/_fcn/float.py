@@ -132,6 +132,49 @@ def fcnmv(
     return u.maybe_decimal(r * v_unit * w_unit)
 
 
+#: Upper bound on the elements of the ``(n_pre, n_conn, chunk)`` update
+#: temporary of the scatter (``transpose=True``) path of :func:`fcnmm`, which
+#: is processed in chunks of output columns. ``vmap`` multiplies it by the batch
+#: size. 2**24 keeps single-call speed (measured on an RTX 3090) while bounding
+#: the batched temporary.
+_FCNMM_CHUNK_ELEMS = 1 << 24
+
+
+def _fcnmm_scatter(weights, indices, matrix, n_post):
+    """Compute ``Y[indices[i, k], :] += w[i, k] * M[i, :]`` in chunks of columns.
+
+    A scatter-add needs its updates materialised, an ``(n_pre, n_conn, n)``
+    temporary. Columns of ``M`` are processed in chunks so that it stays below
+    ``_FCNMM_CHUNK_ELEMS`` elements (one step when it already fits; at least one
+    column per step).
+    """
+    n_pre, n_conn = indices.shape
+    n = matrix.shape[1]
+    homo = weights.ndim == 0
+    dtype = matrix.dtype if homo else jnp.result_type(weights, matrix)
+    matrix = matrix.astype(dtype)
+
+    def scatter(cols):
+        upd = cols[:, None, :] if homo else weights.astype(dtype)[:, :, None] * cols[:, None, :]
+        if homo:
+            upd = jnp.broadcast_to(upd, (n_pre, n_conn, cols.shape[1]))
+        return jnp.zeros((n_post, cols.shape[1]), dtype).at[indices].add(upd)
+
+    cn = max(1, min(n, _FCNMM_CHUNK_ELEMS // max(1, n_pre * n_conn)))
+    n_chunks = -(-n // cn)
+    if n_chunks == 1:
+        out = scatter(matrix)
+    else:
+        mp = jnp.pad(matrix, ((0, 0), (0, n_chunks * cn - n)))
+
+        def step(c, acc):
+            cols = jax.lax.dynamic_slice_in_dim(mp, c * cn, cn, axis=1)
+            return jax.lax.dynamic_update_slice_in_dim(acc, scatter(cols), c * cn, axis=1)
+
+        out = jax.lax.fori_loop(0, n_chunks, step, jnp.zeros((n_post, n_chunks * cn), dtype))[:, :n]
+    return weights * out if homo else out
+
+
 @namescope(static_argnames=['shape', 'transpose'])
 def fcnmm(
     weights: Union[jax.Array, u.Quantity],
@@ -225,25 +268,12 @@ def fcnmm(
     weights, w_unit = u.split_mantissa_unit(weights)
     matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    n = matrix.shape[1]
     if transpose:
-        # Scatter mode: Y[n_post, n]
-        # Y[indices[i, k], :] += weights[i, k] * matrix[i, :]
-        if weights.ndim == 0:
-            # homo: scatter matrix rows first, then scale by scalar weight
-            # indices: (n_pre, n_conn), matrix: (n_pre, n)
-            # expand indices to (n_pre, n_conn, 1) for 2D scatter
-            idx_exp = jnp.broadcast_to(indices[:, :, None], (n_pre, indices.shape[1], n))
-            m_exp = jnp.broadcast_to(matrix[:, None, :], (n_pre, indices.shape[1], n))
-            r = weights * jnp.zeros((n_post, n), matrix.dtype).at[idx_exp, jnp.arange(n)].add(m_exp)
-        else:
-            # hetero: weights (n_pre, n_conn), matrix (n_pre, n)
-            idx_exp = jnp.broadcast_to(indices[:, :, None], (n_pre, indices.shape[1], n))
-            vals = weights[:, :, None] * matrix[:, None, :]
-            r = jnp.zeros((n_post, n), weights.dtype).at[idx_exp, jnp.arange(n)].add(vals)
+        # Scatter mode: Y[n_post, n], Y[indices[i, k], :] += weights[i, k] * matrix[i, :]
+        r = _fcnmm_scatter(weights, indices, matrix, n_post)
     else:
-        # Gather mode: Y[n_pre, n]
-        # Y[i, :] = sum_k weights[i, k] * matrix[indices[i, k], :]
+        # Gather mode: Y[n_pre, n], Y[i, :] = sum_k weights[i, k] * matrix[indices[i, k], :]
+        # (XLA fuses the gather into the reduction; no (n_pre, n_conn, n) buffer.)
         if weights.ndim == 0:
             r = jax.vmap(lambda ind: weights * jnp.sum(matrix[ind], axis=0))(indices)
         else:

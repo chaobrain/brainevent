@@ -28,7 +28,7 @@ def _load_bpsa_cuda_module():
 
 
 def pack_event_mask_bn(event_bn: jax.Array) -> jax.Array:
-    """Pack positive BN events along the neuron axis.
+    """Pack active (non-zero) BN events along the neuron axis.
 
     Parameters
     ----------
@@ -68,7 +68,7 @@ def pack_event_mask_bn(event_bn: jax.Array) -> jax.Array:
     if event_dtype == jnp.dtype(jnp.bool_):
         active_bn = event_bn
     elif event_dtype == jnp.dtype(jnp.float32):
-        active_bn = event_bn > 0
+        active_bn = event_bn != 0
     else:
         raise TypeError("event_bn dtype must be bool or float32")
     return jnp.packbits(active_bn, axis=1, bitorder="little")
@@ -240,7 +240,8 @@ def csr_bpsa_dinput_single(
 
     Notes
     -----
-    This operator is GPU-only. Float events are active only when positive.
+    This operator is GPU-only. Float events are active when non-zero
+    (negative values and NaN are active).
     """
     weights = jnp.asarray(weights)
     local_targets = jnp.asarray(local_targets)

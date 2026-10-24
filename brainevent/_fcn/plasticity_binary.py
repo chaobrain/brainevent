@@ -39,7 +39,8 @@ from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, load_cuda_file
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
+from brainevent._fcn.binary import _EVENT_FASTMATH, _numba_event_mask
 
 __all__ = [
     'update_fixed_post_conn_on_binary_pre',
@@ -64,10 +65,8 @@ def _check_heterogeneous(data, indices):
 # --------------------------------------------------------------------------- #
 
 def _fcn_plasticity_row_jax_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
-    is_bool = (spike_info.dtype == jnp.bool_)
-
     def kernel(data, indices, spike, trace):
-        active = spike if is_bool else (spike != 0)
+        active = event_active(spike)
         delta = jnp.where(active[:, None], trace[indices], jnp.zeros_like(data))
         return [data + delta]
 
@@ -80,24 +79,30 @@ def _fcn_plasticity_row_jax_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
 
 def _fcn_plasticity_row_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
     import numba
+
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(spike_info.dtype)
+    bool_events = spike_info.dtype == jnp.bool_ or mask_events
     parallel = get_numba_parallel()
 
-    if spike_info.dtype == jnp.bool_:
-        @numba.njit(parallel=parallel, fastmath=True, nogil=True)
+    if bool_events:
+        @numba.njit(parallel=parallel, fastmath=_EVENT_FASTMATH, nogil=True)
         def kern(data, indices, spike, trace, out):
             for r in numba.prange(data.shape[0]):
                 if spike[r]:
                     for k in range(data.shape[1]):
                         out[r, k] += trace[indices[r, k]]
     else:
-        @numba.njit(parallel=parallel, fastmath=True, nogil=True)
+        @numba.njit(parallel=parallel, fastmath=_EVENT_FASTMATH, nogil=True)
         def kern(data, indices, spike, trace, out):
             for r in numba.prange(data.shape[0]):
-                if spike[r] != 0.:
+                if spike[r] != 0:
                     for k in range(data.shape[1]):
                         out[r, k] += trace[indices[r, k]]
 
     def kernel(data, indices, spike, trace):
+        if mask_events:
+            spike = event_active(spike)
         return numba_kernel(kern, outs=kwargs['outs'], input_output_aliases={0: 0})(
             data, indices, spike, trace
         )
@@ -133,13 +138,14 @@ def _fcn_plasticity_row_cuda_kernel(
         name='fcn_plasticity_row_driven',
     )
     out_info = kwargs['outs']
-    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+    abi = cuda_event_abi(spike_info.dtype)
+    spk_suffix = abi.suffix
     wt_sfx = dtype_suffix(weight_info.dtype)
     kernel_name = f'fcn_plasticity_row_driven.update_fcn_row{wt_sfx}{spk_suffix}'
 
     def kernel(data, indices, spike, trace):
         return jax.ffi.ffi_call(kernel_name, out_info, input_output_aliases={0: 0})(
-            data, indices, spike, trace
+            data, indices, abi.prepare(spike), trace
         )
 
     return kernel

@@ -215,12 +215,8 @@ void jitsmm_notrans_f32(
     int threads = 256;
     int warps_per_block = threads / 32;
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
-        fprintf(stderr,
-                "jitsmm_notrans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
-                row_warp_blocks, n_chunks, n);
-        abort();
-    }
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535))
+        << "jitsmm_notrans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks << " n=" << n;
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n);
 
     _notrans_f32_kern<<<blocks, threads, 0, s>>>(
@@ -255,12 +251,8 @@ void jitsmm_trans_f32(
     int threads = 256;
     int warps_per_block = threads / 32;
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {
-        fprintf(stderr,
-                "jitsmm_trans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d n=%d\n",
-                row_warp_blocks, n_chunks, n);
-        abort();
-    }
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535))
+        << "jitsmm_trans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks << " n=" << n;
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n);
 
     _trans_f32_kern<<<blocks, threads, 0, s>>>(
@@ -383,10 +375,8 @@ void NAME##SFX(                                                                \
     int threads = 256;                                                         \
     int warps_per_block = threads / 32;                                        \
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;         \
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {       \
-        fprintf(stderr, #NAME #SFX " grid overflow\n");                       \
-        abort();                                                               \
-    }                                                                          \
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535)) \
+        << #NAME << #SFX << " grid overflow"; \
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, (unsigned int)n); \
     _##KERNEL##SFX##_kern<<<blocks, threads, 0, s>>>(                          \
         static_cast<const WEIGHT_T*>(weight.data_ptr()),                       \

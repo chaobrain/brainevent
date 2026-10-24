@@ -15,12 +15,16 @@
 
 # -*- coding: utf-8 -*-
 
+from contextlib import nullcontext
+
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import brainevent
 from brainevent import BinaryArray
+from brainevent._test_util import jax_x64_enabled
 
 
 class TestBinaryArray:
@@ -120,3 +124,71 @@ class TestBinaryArray:
 
         with pytest.raises(AssertionError):
             _ = binary_mat @ dense_vec
+
+
+# ---------------------------------------------------------------------------
+# Activity contract: numeric events are active iff ``x != 0``.
+# ---------------------------------------------------------------------------
+
+_ACTIVITY_DTYPES = [
+    jnp.bool_, jnp.int8, jnp.uint8, jnp.int16, jnp.int32,
+    jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64,
+]
+
+
+def _activity_events(shape, dtype):
+    """Events from ``[2, -1, 0, 0.5]`` (integers: ``[2, -1, 0, 1]``) as ``dtype``."""
+    n = int(np.prod(shape))
+    dtype = np.dtype(dtype)
+    if dtype == np.bool_:
+        base = np.asarray([True, True, False, True])
+    elif np.issubdtype(dtype, np.integer):
+        base = np.asarray([2, -1, 0, 1])
+    else:
+        base = np.asarray([2.0, -1.0, 0.0, 0.5])
+    values = np.resize(base, n)
+    return values[np.random.RandomState(0).permutation(n)].reshape(shape).astype(dtype)
+
+
+def _activity_context(dtype):
+    return jax_x64_enabled() if np.dtype(dtype) == np.float64 else nullcontext()
+
+
+@pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=lambda d: np.dtype(d).name)
+@pytest.mark.parametrize('shape, axis', [((37,), 0), ((5, 37), 1), ((37, 5), 0)])
+def test_bitpack_packs_nonzero_events(dtype, shape, axis):
+    from brainevent._event.bitpack_binary import bitpack
+
+    host = _activity_events(shape, dtype)
+    with _activity_context(dtype):
+        packed = np.asarray(bitpack(jnp.asarray(host), axis=axis))
+    mask = np.moveaxis(host != 0, axis, -1)
+    n = mask.shape[-1]
+    padded = np.zeros(mask.shape[:-1] + (64,), dtype=np.uint64)
+    padded[..., :n] = mask
+    words = np.stack(
+        [(padded[..., 32 * w:32 * (w + 1)] << np.arange(32, dtype=np.uint64)).sum(-1)
+         for w in range((n + 31) // 32)],
+        axis=-1,
+    ).astype(np.uint32)
+    np.testing.assert_array_equal(np.moveaxis(packed, axis, -1), words)
+
+
+def test_bitpack_treats_nan_as_active():
+    from brainevent._event.bitpack_binary import bitpack
+
+    packed = bitpack(jnp.asarray([np.nan, 0.0, -0.0, 1.0], dtype=jnp.float32), axis=0)
+    np.testing.assert_array_equal(np.asarray(packed), np.asarray([0b1001], dtype=np.uint32))
+
+
+@pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_binary_array_matmul_uses_nonzero_activity(dtype):
+    host = _activity_events((6,), dtype)
+    host_mat = _activity_events((3, 6), dtype)
+    weight = np.arange(1.0, 13.0, dtype=np.float32).reshape(6, 2)
+    with _activity_context(dtype):
+        w = jnp.asarray(weight)
+        vec = np.asarray(BinaryArray(jnp.asarray(host)) @ w)
+        mat = np.asarray(BinaryArray(jnp.asarray(host_mat)) @ w)
+    np.testing.assert_allclose(vec, (host != 0).astype(np.float32) @ weight, rtol=1e-6)
+    np.testing.assert_allclose(mat, (host_mat != 0).astype(np.float32) @ weight, rtol=1e-6)

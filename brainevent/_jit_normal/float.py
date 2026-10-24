@@ -838,14 +838,17 @@ def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose
 
 
 def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend, **kwargs):
+    # M = (w_loc + w_scale * Z) * mask is linear in (w_loc, w_scale):
+    # the w_loc tangent direction is (w_dot, 0).
     return jitnmv_p_call(
-        w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+        w_dot, jnp.zeros_like(w_scale), clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
 def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend, **kwargs):
+    # The w_scale tangent direction is (0, w_dot).
     return jitnmv_p_call(
-        w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+        jnp.zeros_like(w_loc), w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
@@ -1236,15 +1239,18 @@ def _jitnmm_cuda_kernel(
 
 
 def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
+    # M = (w_loc + w_scale * Z) * mask is linear in (w_loc, w_scale):
+    # the w_loc tangent direction is (w_dot, 0).
     return jitnmm_p_call(
-        w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        w_dot, jnp.zeros_like(w_scale), clen, B, seed, shape=shape, transpose=transpose, corder=corder,
         backend=backend,
     )
 
 
 def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
+    # The w_scale tangent direction is (0, w_dot).
     return jitnmm_p_call(
-        w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        jnp.zeros_like(w_loc), w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
         backend=backend,
     )
 

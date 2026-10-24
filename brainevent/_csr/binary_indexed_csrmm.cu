@@ -191,11 +191,10 @@ void binary_csrmm_nt_auto_perm_hetero##SUFFIX(                                  
     const BE::Tensor B,       BE::Tensor C,       int64_t stream                \
 ) {                                                                             \
     BE_CHECK_CSR_INDICES_INT32(indices);                                        \
-    if (perm.dtype() != indptr.dtype()) {                                       \
-        fprintf(stderr, "[be] indexed CSR CUDA kernels require perm dtype (%s) to match indptr dtype (%s)\\n", \
-                BE::dtype_name(perm.dtype()), BE::dtype_name(indptr.dtype())); \
-        abort();                                                                  \
-    }                                                                             \
+    BE_CHECK(perm.dtype() == indptr.dtype())                                   \
+        << "[be] indexed CSR CUDA kernels require perm dtype ("              \
+        << BE::dtype_name(perm.dtype()) << ") to match indptr dtype ("       \
+        << BE::dtype_name(indptr.dtype()) << ")";                            \
     cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                  \
     int m        = static_cast<int>(indptr.size(0)) - 1;                        \
     int n        = static_cast<int>(B.size(1));                                 \

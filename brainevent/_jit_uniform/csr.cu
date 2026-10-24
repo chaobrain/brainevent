@@ -444,12 +444,8 @@ void count_chunks_trans_f32(
     int threads = 256;
     int warps_per_block = threads / 32;
     int row_warp_blocks = (n_rows + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
-        fprintf(stderr,
-                "count_chunks_trans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
-                row_warp_blocks, n_chunks);
-        abort();
-    }
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535))
+        << "count_chunks_trans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks;
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
     _count_chunks_trans_f32_kern<<<blocks, threads, 0, s>>>(
@@ -485,12 +481,8 @@ void fill_trans_f32(
     int threads = 256;
     int warps_per_block = threads / 32;
     int row_warp_blocks = (n_rows + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
-        fprintf(stderr,
-                "fill_trans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
-                row_warp_blocks, n_chunks);
-        abort();
-    }
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535))
+        << "fill_trans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks;
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
     _fill_trans_f32_kern<<<blocks, threads, 0, s>>>(
@@ -529,12 +521,8 @@ void count_chunks_notrans_f32(
     int threads = 256;
     int warps_per_block = threads / 32;
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
-        fprintf(stderr,
-                "count_chunks_notrans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
-                row_warp_blocks, n_chunks);
-        abort();
-    }
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535))
+        << "count_chunks_notrans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks;
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
     _count_chunks_notrans_f32_kern<<<blocks, threads, 0, s>>>(
@@ -570,12 +558,8 @@ void fill_notrans_f32(
     int threads = 256;
     int warps_per_block = threads / 32;
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
-        fprintf(stderr,
-                "fill_notrans_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
-                row_warp_blocks, n_chunks);
-        abort();
-    }
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535))
+        << "fill_notrans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks;
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
     _fill_notrans_f32_kern<<<blocks, threads, 0, s>>>(
@@ -613,11 +597,8 @@ void NAME##SFX( \
     int threads = 256; \
     int warps_per_block = threads / 32; \
     int row_warp_blocks = (n_rows + warps_per_block - 1) / warps_per_block; \
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) { \
-        fprintf(stderr, #NAME #SFX " grid overflow: row_warp_blocks=%d n_chunks=%d\n", \
-                row_warp_blocks, n_chunks); \
-        abort(); \
-    } \
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535)) \
+        << #NAME << #SFX << " grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks; \
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U); \
     KERNEL<<<blocks, threads, 0, s>>>( \
         static_cast<const int*>(clen.data_ptr()), \
@@ -649,11 +630,8 @@ void NAME##SFX( \
     int threads = 256; \
     int warps_per_block = threads / 32; \
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block; \
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) { \
-        fprintf(stderr, #NAME #SFX " grid overflow: row_warp_blocks=%d n_chunks=%d\n", \
-                row_warp_blocks, n_chunks); \
-        abort(); \
-    } \
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535)) \
+        << #NAME << #SFX << " grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks; \
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U); \
     KERNEL<<<blocks, threads, 0, s>>>( \
         static_cast<const int*>(clen.data_ptr()), \
@@ -687,11 +665,8 @@ void NAME##SFX( \
     int threads = 256; \
     int warps_per_block = threads / 32; \
     int row_warp_blocks = (n_rows + warps_per_block - 1) / warps_per_block; \
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) { \
-        fprintf(stderr, #NAME #SFX " grid overflow: row_warp_blocks=%d n_chunks=%d\n", \
-                row_warp_blocks, n_chunks); \
-        abort(); \
-    } \
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535)) \
+        << #NAME << #SFX << " grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks; \
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U); \
     KERNEL_BASE##SFX##_kern<<<blocks, threads, 0, s>>>( \
         static_cast<const WEIGHT_T*>(w_low.data_ptr()), \
@@ -730,11 +705,8 @@ void NAME##SFX( \
     int threads = 256; \
     int warps_per_block = threads / 32; \
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block; \
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) { \
-        fprintf(stderr, #NAME #SFX " grid overflow: row_warp_blocks=%d n_chunks=%d\n", \
-                row_warp_blocks, n_chunks); \
-        abort(); \
-    } \
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535)) \
+        << #NAME << #SFX << " grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks; \
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U); \
     KERNEL_BASE##SFX##_kern<<<blocks, threads, 0, s>>>( \
         static_cast<const WEIGHT_T*>(w_low.data_ptr()), \

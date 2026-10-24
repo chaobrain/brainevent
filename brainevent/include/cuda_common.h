@@ -123,12 +123,12 @@ __device__ __inline__ double warp_reduce_sum_f64(double val) {
  * Check if a float32 spike is active.
  *
  * For event-driven computation, a float spike is considered active
- * if it is strictly positive.
+ * if it is non-zero (negative values and NaN are active).
  *
  * @param s  Spike value (float)
  * @return   1 if active, 0 otherwise
  */
-#define IS_ACTIVE_FLOAT(s) ((s) > 0.0f)
+#define IS_ACTIVE_FLOAT(s) ((s) != 0.0f)
 
 /**
  * Check if a float32 spike is active (explicit).
@@ -138,40 +138,40 @@ __device__ __inline__ double warp_reduce_sum_f64(double val) {
  * @param s  Spike value (float)
  * @return   1 if active, 0 otherwise
  */
-#define IS_ACTIVE_F32(s) ((s) > 0.0f)
+#define IS_ACTIVE_F32(s) ((s) != 0.0f)
 
 /**
  * Check if a float64 spike is active.
  *
  * For event-driven computation, a double spike is considered active
- * if it is strictly positive.
+ * if it is non-zero (negative values and NaN are active).
  *
  * @param s  Spike value (double)
  * @return   1 if active, 0 otherwise
  */
-#define IS_ACTIVE_F64(s) ((s) > 0.0)
+#define IS_ACTIVE_F64(s) ((s) != 0.0)
 
 /**
  * Check if a float16 spike is active.
  *
  * For event-driven computation, a half spike is considered active
- * if it is strictly positive. Converts to float for comparison.
+ * if it is non-zero (negative values and NaN are active). Converts to float for comparison.
  *
  * @param s  Spike value (__half)
  * @return   1 if active, 0 otherwise
  */
-#define IS_ACTIVE_F16(s) (__half2float(s) > 0.0f)
+#define IS_ACTIVE_F16(s) (__half2float(s) != 0.0f)
 
 /**
  * Check if a bfloat16 spike is active.
  *
  * For event-driven computation, a bfloat16 spike is considered active
- * if it is strictly positive. Converts to float for comparison.
+ * if it is non-zero (negative values and NaN are active). Converts to float for comparison.
  *
  * @param s  Spike value (__nv_bfloat16)
  * @return   1 if active, 0 otherwise
  */
-#define IS_ACTIVE_BF16(s) (__bfloat162float(s) > 0.0f)
+#define IS_ACTIVE_BF16(s) (__bfloat162float(s) != 0.0f)
 
 // =========================================================================
 // Per-Dtype Conversion Macros

@@ -865,7 +865,8 @@ def test_nontransposed_raw_cuda_perm_uses_indptr_dtype():
         source = (csr_dir / filename).read_text()
         assert "const IndptrT*  __restrict__ perm" in source
         assert "static_cast<const IndptrT*>(perm.data_ptr())" in source
-        assert "perm.dtype() != indptr.dtype()" in source
+        assert "BE_CHECK(perm.dtype() == indptr.dtype())" in source
+        assert "abort()" not in source
         assert "const int32_t*  __restrict__ perm" not in source
 
 
@@ -1141,3 +1142,161 @@ def test_binary_indexed_csrmm_cuda_accepts_int64_indptr(transpose):
                                     transpose=transpose, backend='jax_raw', workspace=workspace32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Event activity contract (``x != 0``), CUDA event ABI and #198 weight
+# gradients for the indexed (perm-gather) products.
+# ---------------------------------------------------------------------------
+
+from brainevent._csr.binary_indexed import binary_csrmv_indexed_p, binary_csrmm_indexed_p  # noqa: E402
+from brainevent._csr._test_util import (  # noqa: E402
+    EVENT_DTYPE_NAMES, event_dtype_context, event_mask, event_values,
+    random_csr_numpy, run_python_isolated,
+)
+from brainevent._test_util import check_event_op_grads, requires_gpu  # noqa: E402
+
+_PLATFORM = jax.default_backend()
+_IDX_MV_BACKENDS = tuple(binary_csrmv_indexed_p.available_backends(_PLATFORM))
+_IDX_MM_BACKENDS = tuple(binary_csrmm_indexed_p.available_backends(_PLATFORM))
+_ACT_M, _ACT_K, _ACT_N = 11, 8, 3
+
+
+def _hp_matmul(a, b):
+    """Full-precision float32 matmul (GPU defaults to TF32, ~1e-3 error)."""
+    return jnp.matmul(a, b, precision=jax.lax.Precision.HIGHEST)
+
+
+def _indexed_operands(homo, seed=0):
+    """Return ``(weights, indices, indptr, perm, rows)`` with a random slot permutation."""
+    rng = np.random.default_rng(seed)
+    _, indices, indptr, _ = random_csr_numpy(rng, _ACT_M, _ACT_K)
+    nse = indices.size
+    perm = rng.permutation(nse).astype(np.int32)
+    weights = (np.array([1.5], np.float32) if homo
+               else rng.standard_normal(nse).astype(np.float32))
+    rows = np.repeat(np.arange(_ACT_M), np.diff(indptr))
+    return jnp.asarray(weights), jnp.asarray(indices), jnp.asarray(indptr), jnp.asarray(perm), rows
+
+
+def _indexed_dense(weights, indices, perm, rows):
+    """Differentiable dense matrix with ``D[rows[j], indices[j]] = weights[perm[j]]``."""
+    cols = np.asarray(indices)
+    vals = jnp.broadcast_to(weights, (cols.size,)) if weights.size == 1 else weights[perm]
+    return jnp.zeros((_ACT_M, _ACT_K), weights.dtype).at[rows, cols].add(vals)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MV_BACKENDS)
+@pytest.mark.parametrize('dtype_name', EVENT_DTYPE_NAMES)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_indexed_mv_event_is_active_iff_nonzero(backend, dtype_name, homo, transpose):
+    with event_dtype_context(dtype_name):
+        weights, indices, indptr, perm, rows = _indexed_operands(homo)
+        dense = np.asarray(_indexed_dense(weights, indices, perm, rows), dtype=np.float64)
+        x = event_values(dtype_name, _ACT_M if transpose else _ACT_K)
+        got = binary_csrmv_indexed(
+            weights, indices, indptr, perm, x, shape=(_ACT_M, _ACT_K), transpose=transpose,
+            backend=backend, workspace=_make_binary_task_workspace(indptr),
+        )
+        mask = event_mask(x)
+        expected = mask @ dense if transpose else dense @ mask
+        np.testing.assert_allclose(np.asarray(got, dtype=np.float64), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MM_BACKENDS)
+@pytest.mark.parametrize('dtype_name', EVENT_DTYPE_NAMES)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_indexed_mm_event_is_active_iff_nonzero(backend, dtype_name, homo, transpose):
+    with event_dtype_context(dtype_name):
+        weights, indices, indptr, perm, rows = _indexed_operands(homo, seed=1)
+        dense = np.asarray(_indexed_dense(weights, indices, perm, rows), dtype=np.float64)
+        B = event_values(dtype_name, (_ACT_M if transpose else _ACT_K, _ACT_N), seed=1)
+        got = binary_csrmm_indexed(
+            weights, indices, indptr, perm, B, shape=(_ACT_M, _ACT_K), transpose=transpose,
+            backend=backend, workspace=_make_binary_task_workspace(indptr),
+        )
+        mask = event_mask(B)
+        expected = dense.T @ mask if transpose else dense @ mask
+        np.testing.assert_allclose(np.asarray(got, dtype=np.float64), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MV_BACKENDS)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_indexed_mv_gradients_use_event_mask(backend, homo, transpose):
+    """#198: the perm-scattered weight cotangent uses the activity mask."""
+    weights, indices, indptr, perm, rows = _indexed_operands(homo, seed=2)
+    x = event_values('float32', _ACT_M if transpose else _ACT_K, seed=2)
+
+    def op(w, v):
+        return binary_csrmv_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
+                                    transpose=transpose, backend=backend,
+                                    workspace=_make_binary_task_workspace(indptr))
+
+    def dense_op(w, z):
+        D = _indexed_dense(w, indices, perm, rows)
+        return _hp_matmul(z, D) if transpose else _hp_matmul(D, z)
+
+    check_event_op_grads(op, dense_op, weights, x, mode='binary')
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MM_BACKENDS)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_indexed_mm_gradients_use_event_mask(backend, homo, transpose):
+    """#198 for the indexed matrix product (SDDMM on the mask, scattered via perm)."""
+    weights, indices, indptr, perm, rows = _indexed_operands(homo, seed=3)
+    B = event_values('float32', (_ACT_M if transpose else _ACT_K, _ACT_N), seed=3)
+
+    def op(w, v):
+        return binary_csrmm_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
+                                    transpose=transpose, backend=backend,
+                                    workspace=_make_binary_task_workspace(indptr))
+
+    def dense_op(w, z):
+        D = _indexed_dense(w, indices, perm, rows)
+        return _hp_matmul(D.T, z) if transpose else _hp_matmul(D, z)
+
+    check_event_op_grads(op, dense_op, weights, B, mode='binary')
+
+
+_BAD_PERM_CALL = r'''
+import sys
+from pathlib import Path
+import jax
+jax.config.update('jax_enable_x64', True)
+import jax.numpy as jnp
+import brainevent._csr.binary_indexed as mod
+from brainevent._op import load_cuda_file
+load_cuda_file(Path(mod.__file__).parent / 'binary_indexed_csrmv.cu', name='csr_binary_indexed_csrmv')
+weights = jnp.ones(3, jnp.float32)
+indices = jnp.array([0, 1, 2], jnp.int32)
+indptr = jnp.array([0, 2, 3], jnp.int32)
+perm = jnp.array([2, 0, 1], jnp.int64)  # must match indptr (int32)
+vector = jnp.array([1, 0, 1], jnp.int8)
+try:
+    r = jax.ffi.ffi_call('csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero_f32_bool',
+                         jax.ShapeDtypeStruct((2,), jnp.float32))(weights, indices, indptr, perm, vector)
+    jax.block_until_ready(r)
+except Exception as e:
+    print('RAISED', type(e).__name__, e)
+    sys.exit(0)
+print('NO ERROR')
+sys.exit(3)
+'''
+
+
+@requires_gpu
+def test_indexed_cuda_perm_dtype_mismatch_raises_python_exception():
+    """The perm/indptr dtype check throws (Python exception) instead of aborting."""
+    proc = run_python_isolated(_BAD_PERM_CALL)
+    output = proc.stdout + proc.stderr
+    assert proc.returncode >= 0, f'process killed by signal {-proc.returncode}:\n{output}'
+    assert proc.returncode == 0, output
+    assert 'require perm dtype' in output, output

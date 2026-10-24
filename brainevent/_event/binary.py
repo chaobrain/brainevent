@@ -51,8 +51,13 @@ class BinaryArray(EventRepresentation):
 
         y[j] = sum_{i : s[i] != 0} W[i, j]
 
-    This is equivalent to ``s.astype(float) @ W`` but the implementation
-    only iterates over the non-zero entries of ``s``.
+    This is equivalent to ``(s != 0).astype(float) @ W`` but the
+    implementation only iterates over the non-zero entries of ``s``. A
+    boolean event is active where it is ``True``; a numeric event is active
+    where it is non-zero, so negative values and NaN are active and the event
+    value itself is never multiplied in. Pass ``x > 0`` explicitly to
+    threshold signed inputs. Reverse-mode weight gradients use the same
+    activity mask.
 
     The class is registered as a JAX PyTree node, so it is compatible with
     ``jax.jit``, ``jax.grad``, ``jax.vmap``, and other transformations.

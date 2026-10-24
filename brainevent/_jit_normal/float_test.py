@@ -923,3 +923,53 @@ def test_notrans_and_trans_kernels_draw_one_matrix(implementation, shape):
     materialized = np.asarray(jitn(1.5, 0.15, prob, seed, shape=(a, b), transpose=False,
                               corder=True, backend=implementation))
     assert np.allclose(via_notrans, materialized, rtol=1e-5, atol=1e-5)
+
+
+def _impl_params(implementations):
+    if implementations:
+        return [pytest.param(i, id=i) for i in implementations]
+    return [pytest.param(None, marks=pytest.mark.skip(reason='no backend'), id='none')]
+
+
+@pytest.mark.parametrize('implementation', _impl_params(JITNMV_IMPLEMENTATIONS))
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmv_weight_jvp_uses_unit_tangent_directions(implementation, transpose, corder):
+    """``M = (w_loc + w_scale * Z) * mask`` is linear in ``(w_loc, w_scale)``.
+
+    So the JVP along ``w_loc`` (``w_scale``) must equal the product evaluated at
+    ``(1, 0)`` (``(0, 1)``), regardless of the primal point.
+    """
+    shape, prob, seed = (20, 30), 0.3, 123
+    v = jnp.asarray(np.random.RandomState(0).randn(shape[0] if transpose else shape[1]), dtype=jnp.float32)
+
+    def f(w_loc, w_scale):
+        return jitnmv(w_loc, w_scale, prob, v, seed, shape=shape, transpose=transpose,
+                      corder=corder, backend=implementation)
+
+    w_loc, w_scale = jnp.asarray(1.5, jnp.float32), jnp.asarray(0.7, jnp.float32)
+    one, zero = jnp.asarray(1.0, jnp.float32), jnp.asarray(0.0, jnp.float32)
+    _, t_loc = jax.jvp(lambda a: f(a, w_scale), (w_loc,), (one,))
+    _, t_scale = jax.jvp(lambda b: f(w_loc, b), (w_scale,), (one,))
+    assert np.allclose(t_loc, f(one, zero), rtol=1e-4, atol=1e-4)
+    assert np.allclose(t_scale, f(zero, one), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize('implementation', _impl_params(JITNMM_IMPLEMENTATIONS))
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmm_weight_jvp_uses_unit_tangent_directions(implementation, transpose, corder):
+    """Matrix-matrix counterpart of the ``jitnmv`` weight-JVP linearity check."""
+    shape, prob, seed = (20, 30), 0.3, 123
+    B = jnp.asarray(np.random.RandomState(0).randn(shape[0] if transpose else shape[1], 3), dtype=jnp.float32)
+
+    def f(w_loc, w_scale):
+        return jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, transpose=transpose,
+                      corder=corder, backend=implementation)
+
+    w_loc, w_scale = jnp.asarray(1.5, jnp.float32), jnp.asarray(0.7, jnp.float32)
+    one, zero = jnp.asarray(1.0, jnp.float32), jnp.asarray(0.0, jnp.float32)
+    _, t_loc = jax.jvp(lambda a: f(a, w_scale), (w_loc,), (one,))
+    _, t_scale = jax.jvp(lambda b: f(w_loc, b), (w_scale,), (one,))
+    assert np.allclose(t_loc, f(one, zero), rtol=1e-4, atol=1e-4)
+    assert np.allclose(t_scale, f(zero, one), rtol=1e-4, atol=1e-4)

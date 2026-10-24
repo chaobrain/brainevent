@@ -245,8 +245,8 @@ def test_binary_mm_handles_homogeneous_duplicates_empty_rows_and_float_events():
             **common,
         )
 
-    np.testing.assert_allclose(false_result, dense @ (events_nb > 0))
-    np.testing.assert_allclose(true_result, (events_bn > 0) @ dense)
+    np.testing.assert_allclose(false_result, dense @ (events_nb != 0))
+    np.testing.assert_allclose(true_result, (events_bn != 0) @ dense)
 
 
 def test_tcsr_binary_matmul_four_quadrants_and_lazy_mirror_cache():
@@ -652,7 +652,7 @@ def test_cuda_raw_sampled_weight_gradient_matches_dense_reference(
 
     event_values = np.asarray(events)
     activity = (
-        event_values if backward_algorithm == "pp_prop" else event_values > 0
+        event_values if backward_algorithm == "pp_prop" else event_values != 0
     )
     ct_values = np.asarray(ct)
     indptr = np.asarray(matrix._tcsr_indptr)
@@ -734,7 +734,7 @@ def test_tile_kernel_routes_supported_dtypes_to_canonical_int8(
     assert calls[0][1][0].dtype == jnp.dtype(weight_dtype)
     spike_bn = calls[0][3][4]
     assert spike_bn.dtype == jnp.int8
-    np.testing.assert_array_equal(spike_bn, np.asarray(events) > 0)
+    np.testing.assert_array_equal(spike_bn, np.asarray(events) != 0)
 
 
 def test_mapped_homogeneous_tile_kernel_uses_f64_and_canonical_int8(
@@ -785,14 +785,15 @@ def test_mapped_homogeneous_tile_kernel_uses_f64_and_canonical_int8(
     assert calls[0][0].endswith("binary_csrmm_tile_homo_f64")
     assert calls[0][1][0].dtype == jnp.float64
     assert calls[0][3][4].dtype == jnp.int8
-    np.testing.assert_array_equal(calls[0][3][4], [[1, 0], [0, 1]])
+    # events.T == [[1, -1], [0, 2]]; -1 is active under ``x != 0``.
+    np.testing.assert_array_equal(calls[0][3][4], [[1, 1], [0, 1]])
 
 
 @pytest.mark.parametrize(
     ("weight_dtype", "event_dtype", "error"),
     [
         (jnp.float16, jnp.bool_, "float32 or float64"),
-        (jnp.float32, jnp.int16, "bool, int8, or floating-point"),
+        (jnp.float32, jnp.complex64, "boolean, integer, or floating-point"),
     ],
 )
 def test_tile_kernel_rejects_unsupported_dtypes_before_cuda_load(
@@ -843,7 +844,7 @@ def test_cuda_tile_mm_matches_dense_across_f64_subtile_boundaries(
     )
     raw_events = np.asarray([[1, 0], [0, 2], [-1, 3], [0, 0]])
     if event_dtype == jnp.bool_:
-        raw_events = raw_events > 0
+        raw_events = raw_events != 0
 
     with _explicit_int64_allowed():
         data = (
@@ -889,7 +890,7 @@ def test_cuda_tile_mm_matches_dense_across_f64_subtile_boundaries(
     for row in range(2):
         begin, end = indptr_np[row : row + 2]
         np.add.at(dense[row], indices_np[begin:end], values_np[begin:end])
-    expected = (np.asarray(raw_events) > 0).astype(dense.dtype) @ dense
+    expected = (np.asarray(raw_events) != 0).astype(dense.dtype) @ dense
 
     assert actual.dtype == jnp.dtype(weight_dtype)
     tolerance = 1e-12 if weight_dtype == jnp.float64 else 1e-6
@@ -932,7 +933,7 @@ def test_cuda_tile_mm_f64_bptt_weight_gradient_matches_dense_reference() -> None
 
         actual = jax.jit(jax.grad(loss))(data)
 
-    active = np.asarray(events) > 0
+    active = np.asarray(events) != 0
     expected = np.asarray(
         [
             np.sum(active[:, 0] * np.asarray(cotangent)[:, 4095]),
@@ -943,3 +944,206 @@ def test_cuda_tile_mm_f64_bptt_weight_gradient_matches_dense_reference() -> None
         dtype=np.float64,
     )
     np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Activity contract: a numeric event is active iff ``x != 0`` (negative values
+# and NaN included), a boolean event iff ``x``, on every binary backend, and the
+# default (``bptt``) weight gradient uses the same mask (#198).
+# ---------------------------------------------------------------------------
+
+from brainevent._tcsr.binary import binary_csrmm_p as _tcsr_binary_csrmm_p
+from brainevent._tcsr.binary import binary_csrmv_p as _tcsr_binary_csrmv_p
+from brainevent._test_util import check_event_op_grads
+
+_ACTIVITY_DTYPES = [
+    jnp.bool_, jnp.int8, jnp.uint8, jnp.int16, jnp.int32,
+    jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64,
+]
+_ACTIVITY_SHAPE = (37, 41)
+_ACTIVITY_BATCH = 4
+
+
+def _activity_backend_params(primitive):
+    platform = jax.default_backend()
+    backends = primitive.available_backends(platform)
+    if not backends:
+        return [pytest.param(None, marks=pytest.mark.skip(reason="no backend"), id="none")]
+    return [pytest.param(b, id=b) for b in backends]
+
+
+def _activity_events(shape, dtype):
+    """Events from ``[2, -1, 0, 0.5]`` (integers ``[2, -1, 0, 1]``) as ``dtype``.
+
+    Floating dtypes also carry one NaN, which is active.
+    """
+    n = int(np.prod(shape))
+    dtype = np.dtype(dtype)
+    if dtype == np.bool_:
+        base = np.asarray([True, True, False, True])
+    elif np.issubdtype(dtype, np.integer):
+        base = np.asarray([2, -1, 0, 1])
+    else:
+        base = np.asarray([2.0, -1.0, 0.0, 0.5])
+    values = np.resize(base, n)
+    values = values[np.random.RandomState(0).permutation(n)].reshape(shape).astype(dtype)
+    if np.issubdtype(dtype, np.floating):
+        flat = values.reshape(-1)
+        flat[np.flatnonzero(flat)[1]] = np.nan
+    return values
+
+
+def _activity_tcsr(binary_backend, homogeneous):
+    """Small TCSR (with an empty row) and its dense float32 reference."""
+    from brainevent._tcsr.main import TCSR
+
+    rows, cols = _ACTIVITY_SHAPE
+    rng = np.random.RandomState(3)
+    mask = rng.rand(rows, cols) < 0.3
+    mask[5] = False
+    indices = np.concatenate([np.flatnonzero(r) for r in mask]).astype(np.int32)
+    indptr = np.concatenate([[0], np.cumsum(mask.sum(1))]).astype(np.int64)
+    if homogeneous:
+        data = np.asarray([1.5], dtype=np.float32)
+        dense = mask * np.float32(1.5)
+    else:
+        data = rng.uniform(-1.0, 1.0, indices.size).astype(np.float32)
+        dense = np.zeros((rows, cols), np.float32)
+        dense[np.repeat(np.arange(rows), mask.sum(1)), indices] = data
+    source = PlainCSR(
+        (jnp.asarray(data), jnp.asarray(indices), jnp.asarray(indptr)),
+        shape=_ACTIVITY_SHAPE,
+    )
+    return TCSR.from_sorted_csr(source, binary_backend=binary_backend), dense.astype(np.float32)
+
+
+def _activity_event_shape(op):
+    rows, cols = _ACTIVITY_SHAPE
+    return {
+        "mv": (cols,), "vm": (rows,),
+        "mm": (cols, _ACTIVITY_BATCH), "mr": (_ACTIVITY_BATCH, rows),
+    }[op]
+
+
+def _activity_apply(op, mat, events):
+    return mat @ events if op in ("mv", "mm") else events @ mat
+
+
+def _check_tcsr_activity(binary_backend, homogeneous, op, dtype):
+    host = _activity_events(_activity_event_shape(op), dtype)
+    with _explicit_int64_allowed():
+        matrix, dense = _activity_tcsr(binary_backend, homogeneous)
+        got = np.asarray(_activity_apply(op, matrix, BinaryArray(jnp.asarray(host))))
+    ref = _activity_apply(op, dense, (host != 0).astype(np.float32))
+    np.testing.assert_allclose(got, ref, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("binary_backend", _activity_backend_params(_tcsr_binary_csrmv_p))
+@pytest.mark.parametrize("homogeneous", [False, True])
+@pytest.mark.parametrize("op", ["mv", "vm"])
+@pytest.mark.parametrize("dtype", _ACTIVITY_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_tcsr_binary_mv_activity_all_dtypes_match_dense(binary_backend, homogeneous, op, dtype):
+    _check_tcsr_activity(binary_backend, homogeneous, op, dtype)
+
+
+@pytest.mark.parametrize("binary_backend", _activity_backend_params(_tcsr_binary_csrmm_p))
+@pytest.mark.parametrize("homogeneous", [False, True])
+@pytest.mark.parametrize("op", ["mm", "mr"])
+@pytest.mark.parametrize("dtype", _ACTIVITY_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_tcsr_binary_mm_activity_all_dtypes_match_dense(binary_backend, homogeneous, op, dtype):
+    _check_tcsr_activity(binary_backend, homogeneous, op, dtype)
+
+
+def _check_tcsr_activity_grads(binary_backend, homogeneous, op):
+    n = int(np.prod(_activity_event_shape(op)))
+    values = np.resize(np.asarray([2.0, -1.0, 0.0], dtype=np.float32), n)
+    values = values[np.random.RandomState(1).permutation(n)].reshape(_activity_event_shape(op))
+    with _explicit_int64_allowed():
+        matrix, _ = _activity_tcsr(binary_backend, homogeneous)
+
+        def op_fn(data, v):
+            return _activity_apply(op, matrix.with_data(data), BinaryArray(v))
+
+        def dense_fn(data, z):
+            return _activity_apply(op, matrix.with_data(data).todense(), z)
+
+        # Keep the dense GPU reference out of TF32.
+        with jax.default_matmul_precision("highest"):
+            check_event_op_grads(
+                op_fn, dense_fn, matrix.data, jnp.asarray(values),
+                mode="binary", rtol=1e-4, atol=1e-4,
+            )
+
+
+@pytest.mark.parametrize("binary_backend", _activity_backend_params(_tcsr_binary_csrmv_p))
+@pytest.mark.parametrize("homogeneous", [False, True])
+@pytest.mark.parametrize("op", ["mv", "vm"])
+def test_tcsr_binary_mv_grads_use_activity_mask(binary_backend, homogeneous, op):
+    _check_tcsr_activity_grads(binary_backend, homogeneous, op)
+
+
+@pytest.mark.parametrize("binary_backend", _activity_backend_params(_tcsr_binary_csrmm_p))
+@pytest.mark.parametrize("homogeneous", [False, True])
+@pytest.mark.parametrize("op", ["mm", "mr"])
+def test_tcsr_binary_mm_grads_use_activity_mask(binary_backend, homogeneous, op):
+    _check_tcsr_activity_grads(binary_backend, homogeneous, op)
+
+
+@requires_gpu_backend
+def test_cuda_hybrid_dtype_check_raises_python_exception_instead_of_aborting():
+    """A failing hybrid ``BE_CSRMV_WAT_HYBRID_CHECK`` must raise, not ``abort()``.
+
+    Feed float64 weights to the float32 hybrid kernel (bypassing the Python
+    dispatch, which never does this) in a subprocess: before the fix the
+    host-side check called ``std::abort()`` and killed the interpreter.
+    """
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import jax, jax.numpy as jnp
+        jax.config.update('jax_enable_x64', True)
+        from brainevent._tcsr import binary
+        f32, i32 = jnp.float32, jnp.int32
+        cap = 4
+        kernel = binary._binary_csrmv_cuda_kernel(
+            jax.ShapeDtypeStruct((3,), f32),
+            jax.ShapeDtypeStruct((2,), jnp.bool_),
+            True,
+            mirror_enabled=False,
+            indices_info=jax.ShapeDtypeStruct((3,), i32),
+            indptr_info=jax.ShapeDtypeStruct((3,), i32),
+            outs=(
+                jax.ShapeDtypeStruct((3,), f32),
+                jax.ShapeDtypeStruct((cap,), i32),
+                jax.ShapeDtypeStruct((cap,), i32),
+                jax.ShapeDtypeStruct((2,), i32),
+            ),
+            task_capacity=cap,
+        )
+        try:
+            out = kernel(
+                jnp.ones((3,), jnp.float64),  # wrong: kernel expects float32
+                jnp.asarray([0, 2, 1], i32),
+                jnp.asarray([0, 2, 3], i32),
+                jnp.asarray([True, False]),
+                jnp.zeros((cap,), i32), jnp.zeros((cap,), i32), jnp.zeros((2,), i32),
+                None, None, None,
+            )
+            jax.block_until_ready(out)
+        except Exception as e:
+            print('RAISED', 'expects matching weights dtype' in str(e))
+        else:
+            print('NO_ERROR')
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True,
+        timeout=900, env=os.environ.copy(),
+    )
+    assert proc.returncode >= 0, f"process killed by signal {-proc.returncode}:\n{proc.stderr[-2000:]}"
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "RAISED True" in proc.stdout, (proc.stdout, proc.stderr[-2000:])

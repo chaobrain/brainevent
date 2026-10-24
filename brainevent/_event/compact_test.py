@@ -555,3 +555,130 @@ class TestBinary2DCSCEncode:
     def test_invalid_ndim(self):
         with pytest.raises(ValueError, match="`spikes` must be 2D"):
             binary_2d_csc_from_array(jnp.zeros((2, 3, 4), dtype=jnp.bool_))
+
+
+# ---------------------------------------------------------------------------
+# Activity contract: a numeric event is active iff ``x != 0`` (negative values
+# included), a boolean event iff ``x``, for every dtype and backend.
+# ---------------------------------------------------------------------------
+
+_ACTIVITY_DTYPES = [
+    jnp.bool_, jnp.int8, jnp.uint8, jnp.int16, jnp.int32,
+    jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64,
+]
+
+
+def _activity_dtype_id(dtype):
+    return np.dtype(dtype).name
+
+
+def _activity_events(shape, dtype):
+    """Events from the pattern ``[2, -1, 0, 0.5]`` cast to ``dtype``.
+
+    Integer dtypes use ``[2, -1, 0, 1]`` (``-1`` wraps to ``255`` for uint8 and
+    stays active). float64 also carries a ``1e-300`` event, which is non-zero
+    but flushes to zero if cast to float32; floating dtypes carry a NaN
+    (active). Row 1 (2-D) is all zeros so
+    inactive rows are covered too.
+    """
+    n = int(np.prod(shape))
+    dtype = np.dtype(dtype)
+    if dtype == np.bool_:
+        base = np.asarray([True, True, False, True])
+    elif np.issubdtype(dtype, np.integer):
+        base = np.asarray([2, -1, 0, 1])
+    else:
+        base = np.asarray([2.0, -1.0, 0.0, 0.5])
+    values = np.resize(base, n)
+    values = values[np.random.RandomState(0).permutation(n)].reshape(shape)
+    values = values.astype(dtype)
+    if len(shape) == 2:
+        values[1] = 0
+    flat = values.reshape(-1)
+    if np.issubdtype(dtype, np.floating):
+        flat[np.flatnonzero(flat)[1]] = np.nan  # NaN is active
+    if dtype == np.float64:
+        flat[np.flatnonzero(flat)[0]] = 1e-300
+    return values
+
+
+def _activity_context(dtype):
+    from contextlib import nullcontext
+    from brainevent._test_util import jax_x64_enabled
+    return jax_x64_enabled() if np.dtype(dtype) == np.float64 else nullcontext()
+
+
+def _activity_backend_params(primitive):
+    backends = primitive.available_backends(platform)
+    if not backends:
+        return [pytest.param(None, marks=pytest.mark.skip(reason='no backend'), id='none')]
+    return [pytest.param(b, id=b) for b in backends]
+
+
+class TestActivityAcrossDtypes:
+    @pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+    @pytest.mark.parametrize('backend', _activity_backend_params(binary_1d_array_index_p))
+    def test_1d_array_index(self, backend, dtype):
+        host = _activity_events((37,), dtype)
+        with _activity_context(dtype):
+            active_ids, n_active = binary_1d_array_index_p_call(jnp.asarray(host), backend=backend)
+            got = np.sort(np.asarray(active_ids[: int(n_active[0])], dtype=np.int32))
+        np.testing.assert_array_equal(got, np.flatnonzero(host != 0))
+
+    @pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+    @pytest.mark.parametrize('backend', _activity_backend_params(binary_2d_compact_only_p))
+    def test_2d_compact_only(self, backend, dtype):
+        host = _activity_events((37, 5), dtype)
+        with _activity_context(dtype):
+            active_ids, n_active = binary_2d_compact_only_p_call(jnp.asarray(host), backend=backend)
+            got = np.sort(np.asarray(active_ids[: int(n_active[0])], dtype=np.int32))
+        np.testing.assert_array_equal(got, np.flatnonzero(np.any(host != 0, axis=1)))
+
+    @pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+    @pytest.mark.parametrize('backend', _activity_backend_params(binary_2d_array_index_p))
+    def test_2d_array_index(self, backend, dtype):
+        host = _activity_events((37, 5), dtype)
+        with _activity_context(dtype):
+            packed, active_ids, n_active = binary_2d_array_index_p_call(jnp.asarray(host), backend=backend)
+            packed = np.asarray(packed)
+            got = np.sort(np.asarray(active_ids[: int(n_active[0])], dtype=np.int32))
+        mask = host != 0
+        expected_words = (mask.astype(np.uint32) << np.arange(5, dtype=np.uint32)).sum(axis=1)
+        np.testing.assert_array_equal(packed[:, 0], expected_words)
+        np.testing.assert_array_equal(got, np.flatnonzero(mask.any(axis=1)))
+
+    @pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+    @pytest.mark.parametrize('backend', _activity_backend_params(binary_2d_pair_stream_encode_p))
+    def test_2d_pair_stream(self, backend, dtype):
+        host = _activity_events((37, 5), dtype)
+        with _activity_context(dtype):
+            pair_stream, n_pairs = binary_2d_pair_stream_encode_p_call(jnp.asarray(host), backend=backend)
+            got = _reconstruct_pair_stream_mask(pair_stream, n_pairs, host.shape)
+        np.testing.assert_array_equal(got, host != 0)
+
+    @pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+    @pytest.mark.parametrize('backend', _activity_backend_params(binary_2d_row_sparse_encode_p))
+    def test_2d_row_sparse(self, backend, dtype):
+        host = _activity_events((37, 5), dtype)
+        with _activity_context(dtype):
+            spike_indices, = binary_2d_row_sparse_encode_p_call(jnp.asarray(host), row_size=5, backend=backend)
+            got = _reconstruct_row_sparse_mask(spike_indices, host.shape)
+        np.testing.assert_array_equal(got, host != 0)
+
+    @pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+    @pytest.mark.parametrize('backend', _activity_backend_params(binary_2d_csr_row_count_p))
+    def test_2d_csr_encode(self, backend, dtype):
+        host = _activity_events((37, 5), dtype)
+        with _activity_context(dtype):
+            indices, indptr = binary_2d_csr_encode_p_call(jnp.asarray(host), backend=backend)
+            got = _reconstruct_csr_mask(indices, indptr, host.shape)
+        np.testing.assert_array_equal(got, host != 0)
+
+    @pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+    @pytest.mark.parametrize('backend', _activity_backend_params(binary_2d_csc_encode_p))
+    def test_2d_csc_encode(self, backend, dtype):
+        host = _activity_events((37, 5), dtype)
+        with _activity_context(dtype):
+            indices, indptr = binary_2d_csc_encode_p_call(jnp.asarray(host), backend=backend)
+            got = _reconstruct_csc_mask(indices, indptr, host.shape)
+        np.testing.assert_array_equal(got, host != 0)

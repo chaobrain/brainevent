@@ -29,7 +29,7 @@ from brainevent._misc import check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, load_cuda_file
 from brainevent.config import get_backend, get_numba_parallel
 from .float import fcnmv, fcnmm
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask
 
 __all__ = [
     'binary_fcnmv',
@@ -37,6 +37,10 @@ __all__ = [
     'binary_fcnmm',
     'binary_fcnmm_p',
 ]
+
+
+_EVENT_FASTMATH = NUMBA_EVENT_FASTMATH
+_numba_event_mask = numba_event_mask
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -69,7 +73,7 @@ def binary_fcnmv(
         the post-synaptic (column) indices of each connection.
     spikes : jax.Array or u.Quantity
         Binary spike vector.  Entries are treated as active when ``True``
-        (boolean) or ``> 0`` (float).
+        (boolean) or ``!= 0`` (numeric; negative values and NaN are active).
     shape : tuple[int, int]
         Logical ``(num_pre, num_post)`` shape of the equivalent dense
         weight matrix.
@@ -102,7 +106,7 @@ def binary_fcnmv(
 
         ``y[i] = sum_{k=0}^{n_conn-1} weights[i, k] * 1_{spikes[indices[i, k]] active}``
 
-    where "active" means ``True`` for boolean spikes or ``> 0`` for float spikes.
+    where "active" means ``True`` for boolean spikes or ``!= 0`` for numeric spikes.
     For homogeneous weights (``weights`` has shape ``(1,)``):
 
         ``y[i] = w * sum_{k=0}^{n_conn-1} 1_{spikes[indices[i, k]] active}``
@@ -147,10 +151,7 @@ def _binary_fcnmv_spike_activity(
     spikes: jax.Array,
     dtype: jnp.dtype,
 ) -> jax.Array:
-    spikes = u.math.asarray(spikes)
-    if spikes.dtype == jnp.bool_:
-        return spikes.astype(dtype)
-    return (spikes > 0).astype(dtype)
+    return event_factor(u.math.asarray(spikes), dtype=dtype)
 
 
 def _ell_binary_matvec_numba_kernel(
@@ -161,10 +162,14 @@ def _ell_binary_matvec_numba_kernel(
 ):
     import numba
 
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(spike_info.dtype)
+    bool_events = spike_info.dtype == jnp.bool_ or mask_events
+
     if transpose:
         if weight_info.size == 1:
-            if spike_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
+            if bool_events:
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -173,17 +178,17 @@ def _ell_binary_matvec_numba_kernel(
                             for j in range(indices.shape[1]):
                                 posts[indices[i, j]] += w
             else:
-                @numba.njit(fastmath=True)
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     w = weights[0]
                     for i in range(spikes.shape[0]):
-                        if spikes[i] > 0.:
+                        if spikes[i] != 0:
                             for j in range(indices.shape[1]):
                                 posts[indices[i, j]] += w
         else:
-            if spike_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
+            if bool_events:
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     for i in range(spikes.shape[0]):
@@ -191,18 +196,18 @@ def _ell_binary_matvec_numba_kernel(
                             for j in range(indices.shape[1]):
                                 posts[indices[i, j]] += weights[i, j]
             else:
-                @numba.njit(fastmath=True)
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     for i in range(spikes.shape[0]):
-                        if spikes[i] > 0.:
+                        if spikes[i] != 0:
                             for j in range(indices.shape[1]):
                                 posts[indices[i, j]] += weights[i, j]
 
     else:
         if weight_info.size == 1:
-            if spike_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            if bool_events:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     w = weights[0]
                     for i in numba.prange(indices.shape[0]):
@@ -213,9 +218,9 @@ def _ell_binary_matvec_numba_kernel(
                                 r += w
                         posts[i] = r
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
-                    spk_bool = spikes > 0.
+                    spk_bool = spikes != 0
                     w = weights[0]
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
@@ -225,8 +230,8 @@ def _ell_binary_matvec_numba_kernel(
                                 r += w
                         posts[i] = r
         else:
-            if spike_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            if bool_events:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
@@ -236,9 +241,9 @@ def _ell_binary_matvec_numba_kernel(
                                 r += weights[i, j]
                         posts[i] = r
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
-                    spk_bool = spikes > 0.
+                    spk_bool = spikes != 0
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
                         for j in range(indices.shape[1]):
@@ -248,6 +253,8 @@ def _ell_binary_matvec_numba_kernel(
                         posts[i] = r
 
     def kernel(weights, indices, spikes):
+        if mask_events:
+            spikes = event_active(spikes)
         return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, spikes)
 
     return kernel
@@ -282,8 +289,8 @@ def _ell_binary_matvec_cuda_kernel(
     kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_bool{row_sfx}'
 
     def kernel(weights, indices, spikes):
-        spikes = u.math.asarray(spikes, dtype=bool)
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
+        # The scatter kernel only reads a bool event buffer.
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, event_active(spikes))
 
     return kernel
 
@@ -397,6 +404,11 @@ def _binary_fcnmv_transpose_rule(
 
 
 def _binary_fcnmv_batching(args, axes, **kwargs):
+    # The cuda_raw scatter matmat returns the raw batch-first layout
+    # ``(batch, num_post)``; every other backend returns ``(out, batch)``.
+    out_axis = 0 if _binary_fcnmm_uses_raw_batch_first(
+        transpose=kwargs['transpose'], backend=kwargs['backend']
+    ) else 1
     if tuple(axes) == (None, None, 0):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_fcnmm_p_call(
@@ -407,7 +419,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
         )
-        return r, [1]
+        return r, [out_axis]
     elif tuple(axes) == (None, None, 1):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_fcnmm_p_call(
@@ -418,7 +430,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
         )
-        return r, [1]
+        return r, [out_axis]
     else:
         return general_batching_rule(binary_fcnmv_p, args, axes, **kwargs)
 
@@ -622,7 +634,7 @@ def binary_fcnmm(
 
         ``Y[i, j] = sum_{k=0}^{n_conn-1} weights[i, k] * 1_{M[indices[i, k], j] active}``
 
-    where "active" means ``True`` for boolean entries or ``> 0`` for float
+    where "active" means ``True`` for boolean entries or ``!= 0`` for numeric
     entries of ``M``.  For homogeneous weights (``weights`` has shape ``(1,)``):
 
         ``Y[i, j] = w * sum_{k=0}^{n_conn-1} 1_{M[indices[i, k], j] active}``
@@ -682,6 +694,10 @@ def _binary_fcnmm_numba_kernel(
 ):
     import numba
 
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(matrix_info.dtype)
+    bool_events = matrix_info.dtype == jnp.bool_ or mask_events
+
     if transpose:
         # fixed pre connection number
         #
@@ -690,8 +706,8 @@ def _binary_fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            if matrix_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
+            if bool_events:
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -700,17 +716,17 @@ def _binary_fcnmm_numba_kernel(
                         for i_conn in range(indices.shape[1]):
                             posts[indices[i_k, i_conn], nonzero] += w
             else:
-                @numba.njit(fastmath=True)
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     w = weights[0]
                     for i_k in range(matrix.shape[0]):
-                        nonzero, = np.where(matrix[i_k] > 0.)
+                        nonzero, = np.where(matrix[i_k] != 0)
                         for i_conn in range(indices.shape[1]):
                             posts[indices[i_k, i_conn], nonzero] += w
         else:
-            if matrix_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
+            if bool_events:
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     for i in range(matrix.shape[0]):
@@ -718,11 +734,11 @@ def _binary_fcnmm_numba_kernel(
                         for j in range(indices.shape[1]):
                             posts[indices[i, j], nonzero] += weights[i, j]
             else:
-                @numba.njit(fastmath=True)
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     for i in range(matrix.shape[0]):
-                        nonzero, = np.where(matrix[i] > 0.)
+                        nonzero, = np.where(matrix[i] != 0)
                         for j in range(indices.shape[1]):
                             posts[indices[i, j], nonzero] += weights[i, j]
 
@@ -734,33 +750,35 @@ def _binary_fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            if matrix_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            if bool_events:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     w = weights[0]
                     for i_m in numba.prange(indices.shape[0]):
                         posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     w = weights[0]
                     for i_m in numba.prange(indices.shape[0]):
-                        events = matrix[indices[i_m]] > 0.
+                        events = matrix[indices[i_m]] != 0
                         posts[i_m] = w * np.sum(events, axis=0)
         else:
-            if matrix_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            if bool_events:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
                         posts[i_m] = weights[i_m] @ (matrix[indices[i_m]]).astype(weights.dtype)
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
-                        events = (matrix[indices[i_m]] > 0.).astype(weights.dtype)
+                        events = (matrix[indices[i_m]] != 0).astype(weights.dtype)
                         posts[i_m] = weights[i_m] @ events
 
     def kernel(weights, indices, matrix):
+        if mask_events:
+            matrix = event_active(matrix)
         return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, matrix)
 
     return kernel
@@ -773,11 +791,14 @@ def _binary_fcnmm_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    is_bool_matrix = (matrix_info.dtype == jnp.bool_)
     sfx = dtype_suffix(weight_info.dtype)
     homo = weight_info.size == 1
     mode_sfx = '_homo' if homo else '_hetero'
-    spike_sfx = '_bool' if is_bool_matrix else '_float'
+    # ``_float`` kernels read events of the *weight* dtype; every other event
+    # dtype is converted to its bool activity mask inside the closure.
+    abi = cuda_event_abi(matrix_info.dtype, native_float=weight_info.dtype)
+    spike_sfx = abi.suffix
+    is_bool_matrix = spike_sfx == '_bool'
 
     if transpose:
         return _binary_fcnmm_sraw_cuda_kernel(
@@ -798,7 +819,7 @@ def _binary_fcnmm_cuda_kernel(
         np.dtype('bool'): 1, np.dtype('uint8'): 1,
         np.dtype('float16'): 2, np.dtype('bfloat16'): 2,
         np.dtype('float32'): 4, np.dtype('float64'): 8,
-    }.get(np.dtype(matrix_info.dtype), 4)
+    }.get(np.dtype(jnp.bool_) if is_bool_matrix else np.dtype(matrix_info.dtype), 4)
     mat_bytes = n_rows * n_batch * elem_size
     # Use packed path when spike matrix exceeds ~1MB (half L2 on most GPUs)
     use_packed = (mat_bytes > 1024 * 1024)
@@ -814,7 +835,7 @@ def _binary_fcnmm_cuda_kernel(
         packed_gather_name = f'fcn_binary_mm.binary_fcnmm_gather_packed{mode_sfx}{size_sfx}{sfx}'
 
         def kernel(weights, indices, matrix):
-            packed = jax.ffi.ffi_call(pack_name, packed_info)(matrix)
+            packed = jax.ffi.ffi_call(pack_name, packed_info)(abi.prepare(matrix))
             return jax.ffi.ffi_call(packed_gather_name, out_info)(weights, indices, packed)
     else:
         # Small matrix — use unpacked gather directly
@@ -825,7 +846,7 @@ def _binary_fcnmm_cuda_kernel(
         )
 
         def kernel(weights, indices, matrix):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
+            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, abi.prepare(matrix))
 
     return kernel
 
@@ -847,10 +868,10 @@ def _binary_fcnmm_sraw_cuda_kernel(
         kwargs['outs'][0].shape,
         kwargs['outs'][0].dtype,
     )
-    is_bool_matrix = (matrix_info.dtype == jnp.bool_)
     sfx = dtype_suffix(weight_info.dtype)
     mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
-    spike_sfx = '_bool' if is_bool_matrix else '_float'
+    abi = cuda_event_abi(matrix_info.dtype, native_float=weight_info.dtype)
+    spike_sfx = abi.suffix
 
     kernel_name = (
         'fcn_binary_mm.'
@@ -858,7 +879,7 @@ def _binary_fcnmm_sraw_cuda_kernel(
     )
 
     def kernel(weights, indices, matrix):
-        raw = jax.ffi.ffi_call(kernel_name, sraw_out)(weights, indices, matrix)
+        raw = jax.ffi.ffi_call(kernel_name, sraw_out)(weights, indices, abi.prepare(matrix))
         return raw,
 
     return kernel
@@ -904,10 +925,7 @@ def _binary_fcnmm_jax_kernel(
 
     def kernel(weights, indices, matrix):
         # Convert to float activity
-        if matrix.dtype == jnp.bool_:
-            mat_f = matrix.astype(weights.dtype)
-        else:
-            mat_f = (matrix > 0).astype(weights.dtype)
+        mat_f = event_factor(matrix, dtype=weights.dtype)
 
         if transpose:
             # Scatter: Y[n_post, n_batch]; matrix M[n_pre, n_batch]
@@ -1001,14 +1019,15 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
             ct_weight = jnp.sum(ct * ct_weight).reshape(*weight_info.shape)
 
         else:
+            mat_active = event_factor(matrix, dtype=ct.dtype)
             if transpose:
                 # inputs: [k, n] @ [k, n_conn]
                 # ct: [m, n]
-                ct_weight = jax.vmap(lambda mat, ind: ct[ind] @ mat)(matrix, indices)
+                ct_weight = jax.vmap(lambda mat, ind: ct[ind] @ mat)(mat_active, indices)
             else:
                 # inputs: [m, n] @ [m, n_conn]
                 # ct: [k, n]
-                ct_weight = jax.vmap(lambda c, ind: (matrix[ind] @ c))(ct, indices)
+                ct_weight = jax.vmap(lambda c, ind: (mat_active[ind] @ c))(ct, indices)
         return ct_weight, indices, matrix
 
 
@@ -1025,6 +1044,11 @@ def _batching_base_fn(args, axis=1, **kwargs):
         backend=kwargs['backend'],
     )
     raw = r[0]
+    if _binary_fcnmm_uses_raw_batch_first(transpose=kwargs['transpose'], backend=kwargs['backend']):
+        # cuda_raw scatter emits the raw batch-first layout ``(cols, num_post)``
+        # for the primitive as well, so the batch axis precedes ``num_post``.
+        r = jnp.reshape(raw, [maybe_batch1, maybe_batch2, raw.shape[1]])
+        return [r], [axis - 1]
     r = jnp.reshape(raw, [raw.shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 

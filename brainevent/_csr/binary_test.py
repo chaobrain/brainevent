@@ -390,7 +390,8 @@ def test_binary_csrmv_jax_csr_kernel_hetero_float_transpose():
             workspace.status,
         )[0]
 
-        assert jnp.allclose(got, jnp.array([1.0, 0.0, 2.0], dtype=jnp.float32))
+        # Negative events are active (``x != 0``).
+        assert jnp.allclose(got, jnp.array([1.0, 3.0, 6.0], dtype=jnp.float32))
 
 
 @pytest.mark.slow
@@ -445,7 +446,8 @@ def test_binary_csrmm_jax_csr_kernel_hetero_float_transpose():
             workspace.status,
         )[0]
 
-        expected = jnp.array([[1.0, 0.0], [0.0, 3.0], [2.0, 4.0]], dtype=jnp.float32)
+        # Negative events are active (``x != 0``), so every entry of B fires.
+        expected = jnp.array([[1.0, 1.0], [3.0, 3.0], [6.0, 6.0]], dtype=jnp.float32)
         assert jnp.allclose(got, expected)
 
 
@@ -1527,3 +1529,216 @@ def test_binary_csrmv_cuda_source_keeps_three_dispatch_tiers():
     assert cu.count('if (avg_nnz < 16)') == 2
     assert cu.count('} else if (avg_nnz < 512) {') == 2
     assert 'avg_nnz <= 512' not in cu, 'two-tier dispatch came back'
+
+
+# ---------------------------------------------------------------------------
+# Event activity contract (``x != 0``), CUDA event ABI (#199, #204) and binary
+# weight gradients (#198). See docs/specs/2026-10-24-event-activity-and-abi.md.
+# ---------------------------------------------------------------------------
+
+from brainevent._csr._test_util import (  # noqa: E402
+    EVENT_DTYPE_NAMES, event_dtype_context, event_mask, event_values,
+    random_csr_numpy, run_python_isolated,
+)
+from brainevent._test_util import check_event_op_grads, requires_gpu  # noqa: E402
+
+_ACT_M, _ACT_K, _ACT_N = 13, 9, 3
+
+
+def _hp_matmul(a, b):
+    """Full-precision float32 matmul (GPU defaults to TF32, ~1e-3 error)."""
+    return jnp.matmul(a, b, precision=jax.lax.Precision.HIGHEST)
+
+
+def _activity_operands(homo, seed=0):
+    rng = np.random.default_rng(seed)
+    data, indices, indptr, dense = random_csr_numpy(rng, _ACT_M, _ACT_K)
+    if homo:
+        data = np.array([1.5], dtype=np.float32)
+        dense = (dense != 0) * 1.5
+    return jnp.asarray(data), jnp.asarray(indices), jnp.asarray(indptr), dense
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('dtype_name', EVENT_DTYPE_NAMES)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_csrmv_event_is_active_iff_nonzero(backend, dtype_name, homo, transpose):
+    """Negative and fractional events are active and weights are never scaled by them."""
+    with event_dtype_context(dtype_name):
+        data, indices, indptr, dense = _activity_operands(homo)
+        x = event_values(dtype_name, _ACT_M if transpose else _ACT_K)
+        got = binary_csrmv(
+            data, indices, indptr, x, shape=(_ACT_M, _ACT_K), transpose=transpose,
+            backend=backend, workspace=_make_binary_task_workspace(indptr),
+        )
+        mask = event_mask(x)
+        expected = mask @ dense if transpose else dense @ mask
+        np.testing.assert_allclose(np.asarray(got, dtype=np.float64), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('dtype_name', EVENT_DTYPE_NAMES)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_csrmm_event_is_active_iff_nonzero(backend, dtype_name, homo, transpose):
+    """Matrix events follow the same ``x != 0`` rule on every backend."""
+    with event_dtype_context(dtype_name):
+        data, indices, indptr, dense = _activity_operands(homo, seed=1)
+        B = event_values(dtype_name, (_ACT_M if transpose else _ACT_K, _ACT_N), seed=1)
+        got = binary_csrmm(
+            data, indices, indptr, B, shape=(_ACT_M, _ACT_K), transpose=transpose,
+            backend=backend, workspace=_make_binary_task_workspace(indptr),
+        )
+        mask = event_mask(B)
+        expected = dense.T @ mask if transpose else dense @ mask
+        np.testing.assert_allclose(np.asarray(got, dtype=np.float64), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+def test_binary_csrmv_nan_event_is_active(backend):
+    data, indices, indptr, dense = _activity_operands(homo=False)
+    x = jnp.zeros(_ACT_M, dtype=jnp.float32).at[jnp.array([0, 5])].set(jnp.nan)
+    got = binary_csrmv(
+        data, indices, indptr, x, shape=(_ACT_M, _ACT_K), transpose=True,
+        backend=backend, workspace=_make_binary_task_workspace(indptr),
+    )
+    np.testing.assert_allclose(np.asarray(got, dtype=np.float64), event_mask(x) @ dense, rtol=1e-5, atol=1e-5)
+
+
+def _dense_from_data(data, indices, indptr, shape):
+    """Differentiable dense form of a CSR matrix (homogeneous if ``data.size == 1``)."""
+    rows = np.repeat(np.arange(shape[0]), np.diff(np.asarray(indptr)))
+    cols = np.asarray(indices)
+    vals = jnp.broadcast_to(data, (cols.size,)) if data.size == 1 else data
+    return jnp.zeros(shape, dtype=data.dtype).at[rows, cols].add(vals)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_csrmv_gradients_use_event_mask(backend, homo, transpose):
+    """#198: weight cotangents use the activity mask, event cotangents are straight-through."""
+    data, indices, indptr, _ = _activity_operands(homo, seed=2)
+    shape = (_ACT_M, _ACT_K)
+    x = event_values('float32', _ACT_M if transpose else _ACT_K, seed=2)
+
+    def op(d, v):
+        return binary_csrmv(d, indices, indptr, v, shape=shape, transpose=transpose,
+                            backend=backend, workspace=_make_binary_task_workspace(indptr))
+
+    def dense_op(d, z):
+        W = _dense_from_data(d, indices, indptr, shape)
+        return _hp_matmul(z, W) if transpose else _hp_matmul(W, z)
+
+    check_event_op_grads(op, dense_op, data, x, mode='binary')
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_csrmm_gradients_use_event_mask(backend, homo, transpose):
+    """#198 for the matrix product (the hetero branch goes through SDDMM)."""
+    data, indices, indptr, _ = _activity_operands(homo, seed=3)
+    shape = (_ACT_M, _ACT_K)
+    B = event_values('float32', (_ACT_M if transpose else _ACT_K, _ACT_N), seed=3)
+
+    def op(d, v):
+        return binary_csrmm(d, indices, indptr, v, shape=shape, transpose=transpose,
+                            backend=backend, workspace=_make_binary_task_workspace(indptr))
+
+    def dense_op(d, z):
+        W = _dense_from_data(d, indices, indptr, shape)
+        return _hp_matmul(W.T, z) if transpose else _hp_matmul(W, z)
+
+    check_event_op_grads(op, dense_op, data, B, mode='binary')
+
+
+def test_issue_198_binary_csr_weight_gradient_regression():
+    """Exact #198 repro: a count of 2 contributes 1 to the weight gradient, not 2."""
+    import brainevent as be
+
+    W = jnp.array([[1., 10.], [100., 0.], [0., 1000.]])
+    csr = be.CSR.fromdense(W)
+    mk = lambda d: be.CSR((d, csr.indices, csr.indptr), shape=W.shape)
+
+    x = jnp.array([0., 2., 1.])
+    g = jax.grad(lambda d: (be.BinaryArray(x) @ mk(d)).sum())(csr.data)
+    np.testing.assert_allclose(np.asarray(g), [0., 0., 1., 1.])
+
+    X = jnp.stack([x, x])
+    g_mm = jax.grad(lambda d: (be.BinaryArray(X) @ mk(d)).sum())(csr.data)
+    np.testing.assert_allclose(np.asarray(g_mm), [0., 0., 2., 2.])
+
+    # Negative events are active: forward and gradient both count them once.
+    xn = jnp.array([-1., 1., 0.])
+    assert float((be.BinaryArray(xn) @ csr).sum()) == 111.
+    g_neg = jax.grad(lambda d: (be.BinaryArray(xn) @ mk(d)).sum())(csr.data)
+    np.testing.assert_allclose(np.asarray(g_neg), [1., 1., 1., 0.])
+
+
+@requires_gpu
+def test_issue_199_float64_events_hetero_float64_csr_default_backend():
+    """#199: float64 spikes @ hetero float64 CSR on GPU must not abort and must be correct."""
+    import brainevent as be
+
+    with jax_x64_enabled():
+        rng = np.random.default_rng(0)
+        n_pre, n_post, p = 1000, 1000, 0.1
+        W = (rng.random((n_pre, n_post)) < p) * rng.normal(size=(n_pre, n_post))
+        csr = be.CSR.fromdense(jnp.asarray(W, dtype=jnp.float64))
+        spikes = jnp.asarray(rng.random(n_pre) < 0.05, dtype=jnp.float64)
+        spikes = spikes.at[:3].set(jnp.array([2.0, -1.0, 0.5]))
+        out = jax.jit(lambda s: be.BinaryArray(s) @ csr)(spikes).block_until_ready()
+        assert out.dtype == jnp.float64
+        ref = (np.asarray(spikes) != 0).astype(np.float64) @ W
+        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-10, atol=1e-10)
+
+
+_BAD_HYBRID_CALL = r'''
+import sys
+from pathlib import Path
+import jax, jax.numpy as jnp
+import brainevent._csr.binary as binary_mod
+from brainevent._op import load_cuda_file
+from brainevent._csr.hybrid_config import (
+    compile_flags_for_config, get_hybrid_config, module_suffix_for_config,
+)
+cfg = get_hybrid_config()
+mod = 'csr_binary_csrmv_hybrid' + module_suffix_for_config(cfg)
+load_cuda_file(Path(binary_mod.__file__).parent / 'binary_csrmv_hybrid.cu', name=mod,
+               extra_cuda_cflags=compile_flags_for_config(cfg), allow_cuda_graph=False)
+cap = 4
+weights = jnp.ones(3, jnp.float32)
+indices = jnp.array([0, 1, 2], jnp.int32)
+indptr = jnp.array([0, 2, 3], jnp.int32)
+vector = jnp.array([1, 0], jnp.int32)  # wrong dtype: the _float kernel expects float32
+tb = jnp.zeros(cap, jnp.int32); te = jnp.zeros(cap, jnp.int32); st = jnp.zeros(2, jnp.int32)
+outs = (jax.ShapeDtypeStruct((3,), jnp.float32), jax.ShapeDtypeStruct((cap,), jnp.int32),
+        jax.ShapeDtypeStruct((cap,), jnp.int32), jax.ShapeDtypeStruct((2,), jnp.int32))
+try:
+    r = jax.ffi.ffi_call(mod + '.binary_csrmv_wat_hybrid_hetero_f32_float', outs,
+                         input_output_aliases={4: 1, 5: 2, 6: 3})(
+        weights, indices, indptr, vector, tb, te, st, task_capacity=cap)
+    jax.block_until_ready(r)
+except Exception as e:
+    print('RAISED', type(e).__name__, e)
+    sys.exit(0)
+print('NO ERROR')
+sys.exit(3)
+'''
+
+
+@requires_gpu
+def test_hybrid_cuda_dtype_mismatch_raises_python_exception():
+    """A failing host-side check in a hybrid kernel raises instead of aborting the process."""
+    proc = run_python_isolated(_BAD_HYBRID_CALL)
+    output = proc.stdout + proc.stderr
+    assert proc.returncode >= 0, f'process killed by signal {-proc.returncode}:\n{output}'
+    assert proc.returncode == 0, output
+    assert 'expects matching vector dtype' in output, output

@@ -147,6 +147,24 @@ def test_csc_to_csr_index_x64_uses_offset_dtype_for_scatter_counts():
     assert permutation.dtype == jnp.int32
 
 
+@pytest.mark.parametrize("index_dtype", [jnp.int64, jnp.int32])
+def test_csr_to_csc_index_x64_emits_no_future_warning(index_dtype):
+    """#200: int64 CSR structure under x64 must not trigger an unsafe-cast FutureWarning."""
+    from brainevent._misc import csr_to_csc_index
+
+    with jax_x64_enabled(), warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        indptr = jnp.array([0, 2, 3, 5], dtype=index_dtype)
+        indices = jnp.array([0, 2, 1, 0, 3], dtype=index_dtype)
+        csc_indptr, csc_indices, perm = csr_to_csc_index(indptr, indices, shape=(3, 4))
+        csc_indptr, csc_indices, perm = jax.block_until_ready((csc_indptr, csc_indices, perm))
+
+    np.testing.assert_array_equal(np.asarray(csc_indptr), [0, 2, 3, 4, 5])
+    np.testing.assert_array_equal(np.asarray(csc_indices), [0, 2, 1, 0, 2])
+    # perm maps CSC slots to CSR slots: CSR column order is [0, 2, 1, 0, 3].
+    np.testing.assert_array_equal(np.asarray(indices)[np.asarray(perm)], [0, 0, 1, 2, 3])
+
+
 class TestCsrToCscIndexMethods(unittest.TestCase):
     def test_default_matches_explicit_coo(self):
         from brainevent._misc import csr_to_csc_index

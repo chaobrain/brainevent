@@ -495,3 +495,54 @@ def test_plasticity_post_cuda_accepts_int64_indptr():
     expected = jnp.array([1.0, 2.5, 3.0, 5.5], dtype=jnp.float32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Event activity contract: a spike is active iff ``spike != 0`` (negative and
+# fractional values included) on every backend, including CUDA.
+# ---------------------------------------------------------------------------
+
+from brainevent._csr._test_util import (  # noqa: E402
+    EVENT_DTYPE_NAMES, event_dtype_context, event_mask, event_values, random_csr_numpy,
+)
+
+_PL_PRE, _PL_POST = 12, 9
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', PRE_BACKENDS)
+@pytest.mark.parametrize('dtype_name', EVENT_DTYPE_NAMES)
+def test_csr_on_pre_spike_is_active_iff_nonzero(backend, dtype_name):
+    with event_dtype_context(dtype_name):
+        rng = np.random.default_rng(0)
+        data, indices, indptr, _ = random_csr_numpy(rng, _PL_PRE, _PL_POST)
+        pre_spike = event_values(dtype_name, _PL_PRE)
+        post_trace = rng.standard_normal(_PL_POST).astype(np.float32)
+        got = update_csr_on_binary_pre(
+            jnp.asarray(data), jnp.asarray(indices), jnp.asarray(indptr), pre_spike,
+            jnp.asarray(post_trace), shape=(_PL_PRE, _PL_POST), backend=backend,
+        )
+        rows = np.repeat(np.arange(_PL_PRE), np.diff(indptr))
+        expected = data + event_mask(pre_spike)[rows] * post_trace[indices]
+        np.testing.assert_allclose(np.asarray(got, dtype=np.float64), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', POST_BACKENDS)
+@pytest.mark.parametrize('dtype_name', EVENT_DTYPE_NAMES)
+def test_csr_on_post_spike_is_active_iff_nonzero(backend, dtype_name):
+    with event_dtype_context(dtype_name):
+        rng = np.random.default_rng(1)
+        data, indices, indptr, _ = random_csr_numpy(rng, _PL_PRE, _PL_POST)
+        csc_indices, csc_indptr, weight_indices = _csr_to_csc_with_weight_indices(
+            data, indices, indptr, (_PL_PRE, _PL_POST)
+        )
+        post_spike = event_values(dtype_name, _PL_POST, seed=1)
+        pre_trace = rng.standard_normal(_PL_PRE).astype(np.float32)
+        got = update_csr_on_binary_post(
+            jnp.asarray(data), csc_indices, csc_indptr, weight_indices,
+            jnp.asarray(pre_trace), post_spike, shape=(_PL_PRE, _PL_POST), backend=backend,
+        )
+        rows = np.repeat(np.arange(_PL_PRE), np.diff(indptr))
+        expected = data + pre_trace[rows] * event_mask(post_spike)[indices]
+        np.testing.assert_allclose(np.asarray(got, dtype=np.float64), expected, rtol=1e-5, atol=1e-5)

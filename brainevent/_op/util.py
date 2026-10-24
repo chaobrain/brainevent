@@ -17,7 +17,7 @@
 
 import functools
 import importlib.util
-from typing import Any, Callable, Optional, Protocol, Sequence, Tuple, TYPE_CHECKING, Union
+from typing import Any, Callable, NamedTuple, Optional, Protocol, Sequence, Tuple, TYPE_CHECKING, Union
 
 import jax
 import numpy as np
@@ -42,7 +42,10 @@ __all__ = [
     'check_pallas_jax_version',
     'check_warp_installed',
     'dtype_suffix',
-    'spike_suffix',
+    'event_active',
+    'event_factor',
+    'EventABI',
+    'cuda_event_abi',
 ]
 
 _DTYPE_SUFFIX = {
@@ -76,7 +79,7 @@ def dtype_suffix(dtype) -> str:
 
     See Also
     --------
-    spike_suffix : Companion helper for the spike/event operand suffix.
+    cuda_event_abi : Companion helper for the spike/event operand ABI.
 
     Notes
     -----
@@ -100,39 +103,192 @@ def dtype_suffix(dtype) -> str:
     return _DTYPE_SUFFIX.get(np.dtype(dtype), '_f32')
 
 
-def spike_suffix(dtype) -> str:
-    """Map a spike/event dtype to its CUDA kernel symbol suffix.
+def event_active(x) -> jax.Array:
+    """Return the activity mask of a binary event array.
 
-    Event operands are dispatched to either a boolean-specialized kernel or a
-    float-valued one.
+    A boolean event is active where it is ``True``; a numeric event is active
+    where it is non-zero (so negative values and NaN are active). This is the
+    single activity contract shared by every backend.
 
     Parameters
     ----------
-    dtype : dtype_like
-        Any object accepted by :func:`numpy.dtype`.
+    x : array_like
+        Event array of any boolean, integer or floating-point dtype.
 
     Returns
     -------
-    suffix : str
-        ``'_bool'`` for boolean event arrays, ``'_float'`` otherwise.
+    mask : jax.Array
+        Boolean array with the shape of ``x``.
 
     See Also
     --------
-    dtype_suffix : Companion helper for the weight dtype suffix.
+    event_factor : The mask cast to a numeric dtype.
+    cuda_event_abi : CUDA kernel suffix selection for event operands.
 
     Examples
     --------
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._op.util import spike_suffix
-        >>> spike_suffix(jnp.bool_)
+        >>> from brainevent._op.util import event_active
+        >>> event_active(jnp.array([2., -1., 0., 0.5])).tolist()
+        [True, True, False, True]
+    """
+    x = jax.numpy.asarray(x)
+    if x.dtype == jax.numpy.bool_:
+        return x
+    return x != 0
+
+
+def event_factor(x, *, dtype) -> jax.Array:
+    """Return the activity mask of a binary event array as ``dtype``.
+
+    Binary operations multiply weights by this factor (``1`` for active events,
+    ``0`` otherwise); they never multiply by the raw event value.
+
+    Parameters
+    ----------
+    x : array_like
+        Event array of any boolean, integer or floating-point dtype.
+    dtype : dtype_like
+        Output dtype, usually the weight or cotangent dtype.
+
+    Returns
+    -------
+    factor : jax.Array
+        ``event_active(x).astype(dtype)``.
+
+    See Also
+    --------
+    event_active : The boolean activity mask.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._op.util import event_factor
+        >>> event_factor(jnp.array([2., -1., 0.]), dtype=jnp.float32).tolist()
+        [1.0, 1.0, 0.0]
+    """
+    return event_active(x).astype(dtype)
+
+
+#: Numba ``fastmath`` flags for event kernels. ``nnan``/``ninf`` are excluded
+#: so the ``x != 0`` activity test stays correct for NaN and infinite events.
+NUMBA_EVENT_FASTMATH = {'nsz', 'arcp', 'contract', 'afn', 'reassoc'}
+
+
+def numba_event_mask(dtype) -> bool:
+    """Return whether a numba kernel must read an event operand as its mask.
+
+    Numba has no ``float16``/``bfloat16`` support, so such events are replaced
+    by ``event_active(x)`` inside the kernel closure (after ``bind``, so the
+    straight-through event gradient is unaffected) and use the boolean kernel.
+
+    Parameters
+    ----------
+    dtype : dtype_like
+        Event dtype.
+
+    Returns
+    -------
+    bool
+        ``True`` for ``float16`` and ``bfloat16``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._op.util import numba_event_mask
+        >>> numba_event_mask(jnp.float16), numba_event_mask(jnp.float32)
+        (True, False)
+    """
+    return np.dtype(dtype) in (np.dtype(jax.numpy.float16), np.dtype(jax.numpy.bfloat16))
+
+
+class EventABI(NamedTuple):
+    """CUDA calling convention for a binary event operand.
+
+    Attributes
+    ----------
+    suffix : str
+        Event part of the kernel symbol name, ``'_bool'`` or ``'_float'``.
+    prepare : Callable[[jax.Array], jax.Array]
+        Conversion applied to the event operand inside the CUDA lowering,
+        right before ``ffi_call``.
+    """
+    suffix: str
+    prepare: Callable[[jax.Array], jax.Array]
+
+
+def _identity(x):
+    return x
+
+
+def cuda_event_abi(dtype, *, native_float=np.float32) -> EventABI:
+    """Select the CUDA kernel ABI for a binary event operand.
+
+    CUDA binary kernels are compiled for two event buffers: ``bool`` (read as
+    ``int8``) and one native floating-point type (``float32`` for most
+    kernels). Any other dtype is converted to its boolean activity mask, which
+    is exact because binary kernels only test activity.
+
+    Call this inside a CUDA kernel generator and apply ``prepare`` inside the
+    returned kernel closure, never before ``bind``: casting earlier would cut
+    the straight-through gradient of the event operand.
+
+    Parameters
+    ----------
+    dtype : dtype_like
+        Event dtype.
+    native_float : dtype_like, optional
+        Floating-point event dtype the ``_float`` kernels read natively.
+        Defaults to ``float32``; ``binary_fcnmm`` passes its weight dtype.
+
+    Returns
+    -------
+    abi : EventABI
+        ``('_bool', identity)`` for bool, ``('_float', identity)`` for
+        ``native_float``, ``('_bool', event_active)`` for any other integer or
+        floating-point dtype.
+
+    Raises
+    ------
+    TypeError
+        If ``dtype`` is not boolean, integer or floating-point.
+
+    See Also
+    --------
+    event_active : The activity mask used by ``prepare``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._op.util import cuda_event_abi
+        >>> cuda_event_abi(jnp.bool_).suffix
         '_bool'
 
-        >>> spike_suffix(jnp.float32)
+        >>> cuda_event_abi(jnp.float32).suffix
         '_float'
+
+        >>> cuda_event_abi(jnp.float64).suffix
+        '_bool'
     """
-    return '_bool' if np.dtype(dtype) == np.dtype(np.bool_) else '_float'
+    dtype = np.dtype(dtype)
+    if dtype == np.dtype(np.bool_):
+        return EventABI('_bool', _identity)
+    if dtype == np.dtype(native_float):
+        return EventABI('_float', _identity)
+    if jax.numpy.issubdtype(dtype, jax.numpy.integer) or jax.numpy.issubdtype(dtype, jax.numpy.floating):
+        return EventABI('_bool', event_active)
+    raise TypeError(
+        f'Binary CUDA events must be boolean, integer or floating-point, got {dtype}.'
+    )
+
 
 _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
 _WARP_INSTALL_ERROR_MESSAGE = (
