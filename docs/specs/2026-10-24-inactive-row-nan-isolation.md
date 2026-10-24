@@ -50,7 +50,18 @@ the select-based `jax_raw` kernel. Homogeneous binary products select on the
 event count (`where(count != 0, count * w, 0)`). Measured (RTX 3090, TCSR,
 20000^2, 1 % density, 5 % active): mv hetero 0.108 -> 0.145 ms (finiteness
 check), mm batch 16 0.455 -> 0.47-0.52 ms; event-driven cuda_raw and numba
-paths unchanged.
+paths unchanged. CSR cuSPARSE mv hetero: 0.075 -> 0.114 ms.
+
+Dense (cuBLAS) checks the product instead of the weights: `W` is O(n*m), the
+same order as the product, while the output is O(m). The cuBLAS result is
+kept when it is finite (an inactive non-finite weight always surfaces as NaN
+in the output, so a finite output is exact); otherwise `lax.cond` recomputes
+with the select-based kernel. The fast path is the false branch, so with
+finite weights the cost is within noise; the fallback (only when a NaN/Inf is
+present) costs 1.3-2.6x.
+
+Plasticity kernels select the old weight, `where(active, w + trace, w)`, so
+inactive edges are bit-identical (including `-0.0`).
 
 ## Helpers
 
