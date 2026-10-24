@@ -546,3 +546,163 @@ def test_csr_on_post_spike_is_active_iff_nonzero(backend, dtype_name):
         rows = np.repeat(np.arange(_PL_PRE), np.diff(indptr))
         expected = data + pre_trace[rows] * event_mask(post_spike)[indices]
         np.testing.assert_allclose(np.asarray(got, dtype=np.float64), expected, rtol=1e-5, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Autodiff (#202): the updates are jointly linear in (weight, trace); clipping
+# happens in the wrapper, so w_min / w_max gradients come from JAX.
+# ---------------------------------------------------------------------------
+
+from brainevent._test_util import check_plasticity_grads  # noqa: E402
+
+_AD_PRE, _AD_POST = 9, 7
+_W_LO, _W_HI = jnp.float32(0.2), jnp.float32(1.3)
+
+
+def _ad_spikes(n, seed):
+    """Spikes containing 2, -1 (both active) and 0."""
+    base = np.array([2., -1., 0., 0.5, 0., 1.], dtype=np.float32)
+    return jnp.asarray(np.resize(np.roll(base, seed), n))
+
+
+def _ad_problem(seed=0):
+    rng = np.random.default_rng(seed)
+    data, indices, indptr, _ = random_csr_numpy(rng, _AD_PRE, _AD_POST)
+    data = jnp.asarray(rng.uniform(0.3, 1.2, data.shape), dtype=jnp.float32)
+    rows = np.repeat(np.arange(_AD_PRE), np.diff(indptr))
+    return data, jnp.asarray(indices), jnp.asarray(indptr), rows, rng
+
+
+def _ref_edges(weight, active_e, trace_e, w_min, w_max):
+    return jnp.clip(weight + jnp.where(active_e, trace_e, 0.), w_min, w_max)
+
+
+@pytest.mark.parametrize('backend', PRE_BACKENDS)
+@pytest.mark.parametrize('spike_kind', ['float', 'bool'])
+def test_csr_on_pre_grads_match_reference(backend, spike_kind):
+    data, indices, indptr, rows, rng = _ad_problem(0)
+    pre_spike = _ad_spikes(_AD_PRE, 0)
+    if spike_kind == 'bool':
+        pre_spike = pre_spike != 0
+    post_trace = jnp.asarray(rng.uniform(-0.6, 0.6, _AD_POST), dtype=jnp.float32)
+    active_e = np.asarray(pre_spike != 0)[rows]
+
+    def op(w, t, lo, hi):
+        return update_csr_on_binary_pre(w, indices, indptr, pre_spike, t, lo, hi,
+                                        shape=(_AD_PRE, _AD_POST), backend=backend)
+
+    def ref(w, t, lo, hi):
+        return _ref_edges(w, active_e, t[indices], lo, hi)
+
+    check_plasticity_grads(op, ref, data, post_trace, _W_LO, _W_HI)
+
+
+@pytest.mark.parametrize('backend', POST_BACKENDS)
+def test_csr_on_post_grads_match_reference(backend):
+    data, indices, indptr, rows, rng = _ad_problem(1)
+    csc_indices, csc_indptr, perm = _csr_to_csc_with_weight_indices(
+        np.asarray(data), np.asarray(indices), np.asarray(indptr), (_AD_PRE, _AD_POST)
+    )
+    post_spike = _ad_spikes(_AD_POST, 1)
+    pre_trace = jnp.asarray(rng.uniform(-0.6, 0.6, _AD_PRE), dtype=jnp.float32)
+    active_e = np.asarray(post_spike != 0)[np.asarray(indices)]
+
+    def op(w, t, lo, hi):
+        return update_csr_on_binary_post(w, csc_indices, csc_indptr, perm, t, post_spike, lo, hi,
+                                         shape=(_AD_PRE, _AD_POST), backend=backend)
+
+    def ref(w, t, lo, hi):
+        return _ref_edges(w, active_e, t[rows], lo, hi)
+
+    check_plasticity_grads(op, ref, data, pre_trace, _W_LO, _W_HI)
+
+
+def test_csc_updates_grads_match_reference():
+    W = _dense(np.random.default_rng(3), _AD_PRE, _AD_POST)
+    csc = brainevent.CSC.fromdense(W)
+    rows = np.asarray(csc.indices)
+    cols = np.repeat(np.arange(_AD_POST), np.diff(np.asarray(csc.indptr)))
+    pre_spike = _ad_spikes(_AD_PRE, 2)
+    post_spike = _ad_spikes(_AD_POST, 3)
+    rng = np.random.default_rng(4)
+    pre_trace = jnp.asarray(rng.uniform(-0.6, 0.6, _AD_PRE), dtype=jnp.float32)
+    post_trace = jnp.asarray(rng.uniform(-0.6, 0.6, _AD_POST), dtype=jnp.float32)
+    hi = jnp.float32(1.6)
+
+    check_plasticity_grads(
+        lambda w, t, lo, h: brainevent.update_csc_on_binary_pre(
+            w, csc.indices, csc.indptr, pre_spike, t, lo, h, shape=csc.shape),
+        lambda w, t, lo, h: _ref_edges(w, np.asarray(pre_spike != 0)[rows], t[cols], lo, h),
+        csc.data, post_trace, _W_LO, hi,
+    )
+    check_plasticity_grads(
+        lambda w, t, lo, h: brainevent.update_csc_on_binary_post(
+            w, csc.indices, csc.indptr, t, post_spike, lo, h, shape=csc.shape),
+        lambda w, t, lo, h: _ref_edges(w, np.asarray(post_spike != 0)[cols], t[rows], lo, h),
+        csc.data, pre_trace, _W_LO, hi,
+    )
+
+
+def test_csr_class_methods_differentiable():
+    data, indices, indptr, rows, rng = _ad_problem(5)
+    csr = brainevent.CSR((data, indices, indptr), shape=(_AD_PRE, _AD_POST))
+    pre_spike = _ad_spikes(_AD_PRE, 4)
+    post_spike = _ad_spikes(_AD_POST, 5)
+    pre_trace = jnp.asarray(rng.uniform(-0.6, 0.6, _AD_PRE), dtype=jnp.float32)
+    post_trace = jnp.asarray(rng.uniform(-0.6, 0.6, _AD_POST), dtype=jnp.float32)
+
+    def step(w, tr_pre, tr_post):
+        m = csr.with_data(w).update_on_post(tr_pre, post_spike)
+        return m.update_on_pre(pre_spike, tr_post).data
+
+    def ref(w, tr_pre, tr_post):
+        w = w + jnp.where(np.asarray(post_spike != 0)[np.asarray(indices)], tr_pre[rows], 0.)
+        return w + jnp.where(np.asarray(pre_spike != 0)[rows], tr_post[indices], 0.)
+
+    ct = jnp.asarray(rng.standard_normal(data.shape), dtype=jnp.float32)
+    g = jax.grad(lambda *a: jnp.vdot(ct, step(*a)), argnums=(0, 1, 2))(data, pre_trace, post_trace)
+    g_ref = jax.grad(lambda *a: jnp.vdot(ct, ref(*a)), argnums=(0, 1, 2))(data, pre_trace, post_trace)
+    for a, b in zip(g, g_ref):
+        np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-5, atol=1e-5)
+
+
+def test_issue_202_repro():
+    csr = brainevent.CSR.fromdense(jnp.array([[1., 0.5], [0., 2.], [0.3, 0.]]))
+    w, idx, ptr = csr.data, csr.indices, csr.indptr
+    pre_spike = jnp.array([True, False, True])
+
+    def loss_pre(w, post_trace):
+        w_new = brainevent.update_csr_on_binary_pre(w, idx, ptr, pre_spike, post_trace, 0., 5., shape=(3, 2))
+        return w_new.sum()
+
+    trace = jnp.array([0.1, 0.2])
+    np.testing.assert_allclose(jax.grad(loss_pre, 0)(w, trace), np.ones(4))
+    # rows 0 and 2 fire: column 0 is hit by edges (0,0), (2,0); column 1 by (0,1).
+    np.testing.assert_allclose(jax.grad(loss_pre, 1)(w, trace), [2., 1.])
+
+
+@pytest.mark.parametrize('prim', [update_csr_on_binary_pre_p, update_csr_on_binary_post_p])
+def test_csr_plasticity_transpose_rejects_structure_and_spikes(prim):
+    from jax.interpreters import ad
+    data, indices, indptr, rows, rng = _ad_problem(6)
+    ct = [jnp.ones_like(data)]
+    kw = dict(shape=(_AD_PRE, _AD_POST), backend=None)
+    rule = ad.primitive_transposes[prim.primitive]
+    if prim is update_csr_on_binary_pre_p:
+        args = [data, indices, indptr, jnp.ones(_AD_PRE), jnp.ones(_AD_POST)]
+        spike_pos = 3
+    else:
+        args = [data, indices, indptr, indices, jnp.ones(_AD_PRE), jnp.ones(_AD_POST)]
+        spike_pos = 5
+    for pos in (1, spike_pos):
+        bad = list(args)
+        bad[pos] = ad.UndefinedPrimal(jax.typeof(args[pos]))
+        with pytest.raises(ValueError):
+            rule(ct, *bad, **kw)
+    # Zero cotangents propagate as symbolic zeros.
+    und = list(args)
+    und[0] = ad.UndefinedPrimal(jax.typeof(data))
+    trace_pos = 4
+    und[trace_pos] = ad.UndefinedPrimal(jax.typeof(args[trace_pos]))
+    out = rule([ad.Zero(jax.typeof(data))], *und, **kw)
+    assert type(out[0]) is ad.Zero and type(out[trace_pos]) is ad.Zero

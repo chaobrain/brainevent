@@ -23,6 +23,7 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.interpreters import ad
 
 from brainevent._misc import _check_csr_cuda_structure_dtypes, namescope, csc_to_csr_index
 from brainevent._op import XLACustomKernel, numba_kernel
@@ -140,6 +141,10 @@ def update_csr_on_binary_pre(
     The function internally converts ``post_trace`` to the same unit as ``weight``
     before performing arithmetic, so mixed-unit inputs are supported as long as
     the units are dimensionally compatible.
+
+    The update is differentiable (``jax.grad`` / ``jax.jvp``) with respect to
+    ``weight``, ``post_trace``, ``w_min`` and ``w_max``; spikes and the sparsity
+    structure are treated as non-differentiable.
 
     Examples
     --------
@@ -441,6 +446,52 @@ def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shap
     )
 
 
+
+def _csr_row_ids(indptr, n_rows: int, nse: int):
+    """Return the row id of every stored element of a CSR structure."""
+    return jnp.repeat(
+        jnp.arange(n_rows, dtype=indptr.dtype),
+        jnp.diff(indptr),
+        total_repeat_length=nse,
+    )
+
+
+def _csr_on_pre_jvp_weight(w_dot, weight, indices, indptr, pre_spike, post_trace, **kwargs):
+    # out = weight + m * trace[indices]: the weight enters as the identity.
+    return [w_dot]
+
+
+def _csr_on_pre_jvp_trace(t_dot, weight, indices, indptr, pre_spike, post_trace, *, shape, **kwargs):
+    # The trace tangent is the same event-driven update applied to a zero weight.
+    return csr_on_pre_prim_call(
+        jnp.zeros_like(weight), indices, indptr, pre_spike, t_dot,
+        shape=shape, backend=kwargs['backend'],
+    )
+
+
+def _csr_on_pre_transpose_rule(ct, weight, indices, indptr, pre_spike, post_trace, *, shape, **kwargs):
+    if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr):
+        raise ValueError("Cannot transpose with respect to sparse indices.")
+    if ad.is_undefined_primal(pre_spike):
+        raise ValueError("Cannot transpose with respect to pre_spike.")
+    ct = ct[0]
+    ct_weight = weight
+    ct_trace = post_trace
+    if ad.is_undefined_primal(weight):
+        ct_weight = ad.Zero(weight.aval) if type(ct) is ad.Zero else ct
+    if ad.is_undefined_primal(post_trace):
+        if type(ct) is ad.Zero:
+            ct_trace = ad.Zero(post_trace.aval)
+        else:
+            # ct_trace[j] = sum_{e: indices[e] == j} active(pre_spike[row(e)]) * ct[e]
+            row_ids = _csr_row_ids(indptr, shape[0], indices.shape[0])
+            active = event_active(pre_spike)[row_ids]
+            ct_trace = jax.ops.segment_sum(
+                jnp.where(active, ct, jnp.zeros_like(ct)), indices, num_segments=shape[1],
+            ).astype(post_trace.aval.dtype)
+    return ct_weight, indices, indptr, pre_spike, ct_trace
+
+
 update_csr_on_binary_pre_p = XLACustomKernel(
     'binary_csr_plast',
     doc="""
@@ -475,6 +526,8 @@ update_csr_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _csr_on_pre_jax_kernel)
 update_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_pre_p.def_benchmark_data(_csr_on_pre_benchmark_data)
 update_csr_on_binary_pre_p.def_call(csr_on_pre_prim_call)
+update_csr_on_binary_pre_p.def_jvp_rule2(_csr_on_pre_jvp_weight, None, None, None, _csr_on_pre_jvp_trace)
+update_csr_on_binary_pre_p.def_transpose_rule(_csr_on_pre_transpose_rule)
 
 
 @namescope(static_argnames=['shape'])
@@ -582,6 +635,10 @@ def update_csr_on_binary_post(
     The function internally converts ``pre_trace`` to the same unit as ``weight``
     before performing arithmetic, so mixed-unit inputs are supported as long as
     the units are dimensionally compatible.
+
+    The update is differentiable (``jax.grad`` / ``jax.jvp``) with respect to
+    ``weight``, ``pre_trace``, ``w_min`` and ``w_max``; spikes and the sparsity
+    structure are treated as non-differentiable.
 
     The CSC layout is used so that iterating over postsynaptic spikes efficiently
     gathers all incoming synapses. The ``weight_indices`` array allows writing
@@ -913,6 +970,49 @@ def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace
     )
 
 
+
+def _csr2csc_on_post_jvp_weight(w_dot, weight, indices, indptr, weight_indices, pre_trace, post_spike, **kwargs):
+    return [w_dot]
+
+
+def _csr2csc_on_post_jvp_trace(t_dot, weight, indices, indptr, weight_indices, pre_trace, post_spike,
+                               *, shape, **kwargs):
+    return csr2csc_on_post_prim_call(
+        jnp.zeros_like(weight), indices, indptr, weight_indices, t_dot, post_spike,
+        shape=shape, backend=kwargs['backend'],
+    )
+
+
+def _csr2csc_on_post_transpose_rule(ct, weight, indices, indptr, weight_indices, pre_trace, post_spike,
+                                    *, shape, **kwargs):
+    if (
+        ad.is_undefined_primal(indices)
+        or ad.is_undefined_primal(indptr)
+        or ad.is_undefined_primal(weight_indices)
+    ):
+        raise ValueError("Cannot transpose with respect to sparse indices.")
+    if ad.is_undefined_primal(post_spike):
+        raise ValueError("Cannot transpose with respect to post_spike.")
+    ct = ct[0]
+    ct_weight = weight
+    ct_trace = pre_trace
+    if ad.is_undefined_primal(weight):
+        ct_weight = ad.Zero(weight.aval) if type(ct) is ad.Zero else ct
+    if ad.is_undefined_primal(pre_trace):
+        if type(ct) is ad.Zero:
+            ct_trace = ad.Zero(pre_trace.aval)
+        else:
+            # CSC slot k belongs to post column col(k), pre row indices[k] and data slot
+            # weight_indices[k]:  ct_trace[i] = sum_{k: indices[k] == i} active(col(k)) * ct[perm[k]].
+            col_ids = _csr_row_ids(indptr, shape[1], indices.shape[0])
+            active = event_active(post_spike)[col_ids]
+            ct_slot = ct[weight_indices]
+            ct_trace = jax.ops.segment_sum(
+                jnp.where(active, ct_slot, jnp.zeros_like(ct_slot)), indices, num_segments=shape[0],
+            ).astype(pre_trace.aval.dtype)
+    return ct_weight, indices, indptr, weight_indices, ct_trace, post_spike
+
+
 update_csr_on_binary_post_p = XLACustomKernel(
     'csr2csc_on_post',
     doc="""
@@ -948,6 +1048,10 @@ update_csr_on_binary_post_p.def_kernel('jax_raw', 'tpu', _csr2csc_on_post_jax_ke
 update_csr_on_binary_post_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_post_p.def_benchmark_data(_csr2csc_on_post_benchmark_data)
 update_csr_on_binary_post_p.def_call(csr2csc_on_post_prim_call)
+update_csr_on_binary_post_p.def_jvp_rule2(
+    _csr2csc_on_post_jvp_weight, None, None, None, _csr2csc_on_post_jvp_trace, None,
+)
+update_csr_on_binary_post_p.def_transpose_rule(_csr2csc_on_post_transpose_rule)
 
 
 # ---------------------------------------------------------------------------

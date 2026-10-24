@@ -35,6 +35,7 @@ from .binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from .diag_add import csr_diag_position, csr_diag_add
 from .float import csrmv, csrmm
 from .plasticity_binary import update_csr_on_binary_pre, update_csr_on_binary_post
+from .plasticity_generic import csr_apply_on_pre, csr_apply_on_post
 from .slice import csr_slice_rows
 from .spsolve import csr_solve
 from .dt2t import csrmv_dt2t
@@ -1487,6 +1488,133 @@ class CSR(CompressedSparseData):
             w_min, w_max, shape=self.shape, backend=self.backend,
         )
         return self.with_data(new_w)
+
+    def _edge_state_or_data(self, edge_state):
+        if edge_state is not None:
+            return edge_state
+        if u.math.size(self.data) == 1 and self.nse > 1:
+            raise ValueError(
+                "Plasticity rules require per-synapse (heterogeneous) weights, but this matrix "
+                "stores a homogeneous (size-1) weight. Materialize per-synapse weights first "
+                "or pass an explicit edge_state."
+            )
+        return self.data
+
+    def apply_on_pre(self, rule, pre_spike, *, edge_state=None, pre_vals=None, post_vals=None, params=None):
+        """Apply a per-edge plasticity rule to the synapses of firing presynaptic neurons.
+
+        Method form of :func:`brainevent.csr_apply_on_pre` using this matrix's
+        structure: for every stored synapse ``(i, j)`` with ``pre_spike[i]``
+        active, ``edge_state[e] <- rule(edge_state[e], pre_vals[i], post_vals[j], params)``.
+
+        Parameters
+        ----------
+        rule : callable
+            ``rule(edge_e, pre_e, post_e, params) -> new_edge_e``, applied per
+            edge with :func:`jax.vmap`.
+        pre_spike : jax.Array
+            Presynaptic spikes (bool or numeric), shape ``(shape[0],)``.
+        edge_state : pytree or None, optional
+            Per-edge state in CSR data order (leaves of leading dimension
+            ``nse``).  ``None`` uses ``self.data``.
+        pre_vals, post_vals : pytree or None, optional
+            Per-neuron values of leading dimension ``shape[0]`` / ``shape[1]``.
+        params : pytree or None, optional
+            Rule parameters, broadcast to every edge.
+
+        Returns
+        -------
+        pytree
+            The new edge state (the new data array when ``edge_state`` is
+            ``None``; rebuild a matrix with :meth:`with_data`).
+
+        Raises
+        ------
+        ValueError
+            If ``edge_state`` is ``None`` and the matrix stores a homogeneous
+            weight, or if shapes do not match (see
+            :func:`brainevent.csr_apply_on_pre`).
+
+        See Also
+        --------
+        apply_on_post : Postsynaptic-spike-triggered counterpart.
+        update_on_pre : Fast event-driven additive update.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> import brainevent
+            >>> csr = brainevent.CSR.fromdense(jnp.array([[1., 0.5], [0., 2.]]))
+            >>> new_w = csr.apply_on_pre(
+            ...     lambda w, pre, post, lr: w + lr * post, jnp.array([True, False]),
+            ...     post_vals=jnp.array([1., 2.]), params=0.1,
+            ... )
+            >>> new_w
+            Array([1.1, 0.7, 2. ], dtype=float32)
+        """
+        return csr_apply_on_pre(
+            rule, self._edge_state_or_data(edge_state), self.indices, self.indptr, pre_spike,
+            pre_vals=pre_vals, post_vals=post_vals, params=params, shape=self.shape,
+        )
+
+    def apply_on_post(self, rule, post_spike, *, edge_state=None, pre_vals=None, post_vals=None, params=None):
+        """Apply a per-edge plasticity rule to the synapses of firing postsynaptic neurons.
+
+        Method form of :func:`brainevent.csr_apply_on_post` using this matrix's
+        structure: for every stored synapse ``(i, j)`` with ``post_spike[j]``
+        active, ``edge_state[e] <- rule(edge_state[e], pre_vals[i], post_vals[j], params)``.
+
+        Parameters
+        ----------
+        rule : callable
+            ``rule(edge_e, pre_e, post_e, params) -> new_edge_e``, applied per
+            edge with :func:`jax.vmap`.
+        post_spike : jax.Array
+            Postsynaptic spikes (bool or numeric), shape ``(shape[1],)``.
+        edge_state : pytree or None, optional
+            Per-edge state in CSR data order (leaves of leading dimension
+            ``nse``).  ``None`` uses ``self.data``.
+        pre_vals, post_vals : pytree or None, optional
+            Per-neuron values of leading dimension ``shape[0]`` / ``shape[1]``.
+        params : pytree or None, optional
+            Rule parameters, broadcast to every edge.
+
+        Returns
+        -------
+        pytree
+            The new edge state (the new data array when ``edge_state`` is
+            ``None``).
+
+        Raises
+        ------
+        ValueError
+            If ``edge_state`` is ``None`` and the matrix stores a homogeneous
+            weight, or if shapes do not match.
+
+        See Also
+        --------
+        apply_on_pre : Presynaptic-spike-triggered counterpart.
+        update_on_post : Fast event-driven additive update.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> import brainevent
+            >>> csr = brainevent.CSR.fromdense(jnp.array([[1., 0.5], [0., 2.]]))
+            >>> csr.apply_on_post(
+            ...     lambda w, pre, post, lr: w - lr * pre, jnp.array([False, True]),
+            ...     pre_vals=jnp.array([1., 2.]), params=0.1,
+            ... )
+            Array([1. , 0.4, 1.8], dtype=float32)
+        """
+        return csr_apply_on_post(
+            rule, self._edge_state_or_data(edge_state), self.indices, self.indptr, post_spike,
+            pre_vals=pre_vals, post_vals=post_vals, params=params, shape=self.shape,
+        )
 
     def __getitem__(self, index):
         """Extract rows of the matrix ``W`` as a dense array (NumPy semantics).

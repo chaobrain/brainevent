@@ -34,6 +34,7 @@ from typing import Optional
 import brainunit as u
 import jax
 import jax.numpy as jnp
+from jax.interpreters import ad
 
 from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, load_cuda_file
@@ -174,6 +175,44 @@ def fcn_plasticity_row_prim_call(data, indices, spike, trace, *, backend: Option
     )
 
 
+
+# --------------------------------------------------------------------------- #
+# Autodiff rules: out[r, k] = data[r, k] + active(spike[r]) * trace[indices[r, k]]
+# is jointly linear in (data, trace); spikes and indices are non-differentiable.
+# --------------------------------------------------------------------------- #
+
+def _fcn_plasticity_row_jvp_data(d_dot, data, indices, spike, trace, **kwargs):
+    return [d_dot]
+
+
+def _fcn_plasticity_row_jvp_trace(t_dot, data, indices, spike, trace, **kwargs):
+    return fcn_plasticity_row_prim_call(jnp.zeros_like(data), indices, spike, t_dot, backend=kwargs['backend'])
+
+
+def _fcn_plasticity_row_transpose_rule(ct, data, indices, spike, trace, **kwargs):
+    if ad.is_undefined_primal(indices):
+        raise ValueError("Cannot transpose with respect to indices.")
+    if ad.is_undefined_primal(spike):
+        raise ValueError("Cannot transpose with respect to spike.")
+    ct = ct[0]
+    ct_data = data
+    ct_trace = trace
+    if ad.is_undefined_primal(data):
+        ct_data = ad.Zero(data.aval) if type(ct) is ad.Zero else ct
+    if ad.is_undefined_primal(trace):
+        if type(ct) is ad.Zero:
+            ct_trace = ad.Zero(trace.aval)
+        else:
+            active = event_active(spike)[:, None]
+            masked = jnp.where(active, ct, jnp.zeros_like(ct))
+            ct_trace = (
+                jnp.zeros(trace.aval.shape, dtype=ct.dtype)
+                .at[indices].add(masked)
+                .astype(trace.aval.dtype)
+            )
+    return ct_data, indices, spike, ct_trace
+
+
 # --------------------------------------------------------------------------- #
 # Primitive registration
 # --------------------------------------------------------------------------- #
@@ -193,6 +232,8 @@ fcn_plasticity_row_p.def_kernel('jax_raw', 'cpu', _fcn_plasticity_row_jax_kernel
 fcn_plasticity_row_p.def_kernel('jax_raw', 'gpu', _fcn_plasticity_row_jax_kernel)
 fcn_plasticity_row_p.def_kernel('jax_raw', 'tpu', _fcn_plasticity_row_jax_kernel)
 fcn_plasticity_row_p.def_call(fcn_plasticity_row_prim_call)
+fcn_plasticity_row_p.def_jvp_rule2(_fcn_plasticity_row_jvp_data, None, None, _fcn_plasticity_row_jvp_trace)
+fcn_plasticity_row_p.def_transpose_rule(_fcn_plasticity_row_transpose_rule)
 fcn_plasticity_row_p.def_tags('fcn', 'plasticity')
 
 
