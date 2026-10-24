@@ -5,6 +5,127 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-24
+
+A minor release driven by brainpy.state's upstream issues. It makes "active
+event" mean the same thing on every backend, closes a family of CUDA event-ABI
+bugs, and adds three features spiking simulators asked for: value-weighted
+events, differentiable plasticity with user-defined per-edge rules, and fused
+per-edge-delay spike delivery.
+
+**Requirements:** Python ≥ 3.12, `jax` ≥ 0.9.0 (validated through 0.12.x),
+`brainunit` ≥ 0.0.8, `numpy` ≥ 2.0.
+
+### ⚠️ Breaking changes & migration
+
+**A numeric event is active iff `x != 0`, on every backend.** Most kernels used
+to test `x > 0`, some tested `x != 0`, and the dense `jax_raw` kernels did not
+threshold at all. Every backend (numba, jax_raw, cuda_raw, cusparse,
+cublas) and every operation (matmul, plasticity, compaction, bit-packing) now
+uses `x != 0` (boolean events: `x`). **Negative and NaN events are now
+active.** Code that relied on `x > 0` thresholding should pass `x > 0`
+explicitly:
+
+| `0.2.x` | `0.3.0` |
+| --- | --- |
+| `BinaryArray(v - v_th) @ W` (negative = silent) | `BinaryArray(v > v_th) @ W` |
+
+**Binary weight gradients use the event mask (#198).** The weight cotangent of
+binary CSR/CSC (+ indexed), dense, FixedNum and JITC scalar/normal products was
+built from the raw event values instead of the `{0, 1}` mask the forward pass
+uses. Gradients recorded with non-boolean events change; boolean events are
+unaffected. Event gradients keep the straight-through estimator `W^T ct`.
+
+**`BitPackedBinary @ CSR/CSC/FixedNum*/JITC*/TCSR`** now takes the binary
+event path; it used to fall through to a float product on the raw values.
+
+### Added
+
+- **`brainevent.WeightedArray`** (#201): value-weighted events. `WeightedArray(x) @ M`
+  computes the exact `x @ dense(M)` while visiting only entries with `x != 0`;
+  signed int8/uint8/int16/int32 and float16/bfloat16/float32/float64 values;
+  exact JVP/VJP (integer events get `float0` cotangents). Event-driven for
+  dense, CSR/CSC (+ indexed), FixedNumPerPre/Post, TCSR and JITC
+  scalar/normal/uniform, on numba, jax_raw and cuda_raw. Binary primitives
+  gain a static `weighted=False` keyword. `BinaryArray` is unchanged and is not
+  related to `WeightedArray` by inheritance.
+- **Differentiable plasticity** (#202): JVP and transpose rules for
+  `binary_csr_plast`, `csr2csc_on_post`, `fcn_plasticity_row` and the dense
+  plasticity primitives, w.r.t. both the weight and the trace, so
+  `update_csr_on_binary_pre/post`, the CSC, FixedNum and dense variants work
+  under `jax.grad`, `jax.jvp` and `jax.vmap`.
+- **Generic per-edge plasticity rules** (#202): `csr_apply_on_pre` /
+  `csr_apply_on_post` and `CSR.apply_on_pre` / `CSR.apply_on_post` apply a
+  user rule `rule(edge_state, pre, post, params)` to the edges of spiking
+  rows/columns, with a pytree edge state (e.g. weight + eligibility trace) and
+  gradients through the rule parameters. Pure JAX: the rule is evaluated on
+  every edge (O(nse)) and masked to the spiking ones.
+- **`csr_delay_deliver` / `CSR.delay_deliver`** (#203): fused per-edge-delay
+  spike delivery `ring[(t + d_e) % L, post(e)] += w_e * f(x)[pre(e)]` into an
+  arrival ring buffer; binary or weighted payloads (inferred from a
+  `WeightedArray`), homogeneous/heterogeneous weights, jax_raw/numba/cuda_raw,
+  autodiff, `vmap`, units. The numba kernel indexes with unsigned integers
+  and computes slots without branches: 0.48–1.23x the scalar-delay
+  `BinaryArray @ CSR` step on one CPU core at 1–5 % firing.
+- **`CSRDelayLayout` / `csr_delay_deliver_layout` / `CSR.delay_layout`**
+  (#203, #205): a precomputed layout that sorts each row's edges by delay.
+  The GPU kernel delivers all active rows delay by delay, so concurrent
+  writes share one ring row in L2: 1.03–1.28x the scalar-delay step on an
+  RTX 3090 at 1–5 % firing (the row-major `csr_delay_deliver` kernel is
+  1.4–2.9x, limited by random writes into a ring larger than L2). Weights
+  live in layout order (`with_data` / `original_data` convert).
+- `brainevent._test_util.check_event_op_grads`, a reusable gradient checker for
+  event operators (forward, VJP, JVP/VJP identity, `vmap`).
+
+### Fixed
+
+- **CUDA event ABI (#199, #204).** float64, float16, bfloat16 and integer events
+  were fed into float32 kernels in ~14 cuda_raw paths (CSR indexed, dense mv/mm,
+  FCN mm, TCSR, CSR/dense/FCN plasticity): silent garbage or out-of-bounds reads.
+  Every binary cuda_raw lowering now normalizes events through one ABI table.
+- **No more `abort()`** in CUDA host code (#199): dtype, dispatch, index,
+  grid-size and cuBLAS checks raise a Python exception instead of killing the
+  process.
+- NaN events are active on numba (the event kernels no longer use the
+  `nnan`/`ninf` fast-math flags); f16/bf16 events work on numba.
+- `jit_normal` weight JVP; FixedNum cuda_raw batching over the event axis.
+- `fcnmm` scatter path: the `(n_pre, n_conn, n)` temporary is chunked over
+  output columns, so `vmap`ped products no longer exhaust GPU memory
+  (5.7 GiB → 0.02 GiB for the batching test).
+- `csr_to_csc_index` emits no `FutureWarning` under x64 (#200; regression test).
+- **Inactive events contribute exactly zero on every backend.** A NaN/±Inf
+  weight (or JITC weight parameter, or plasticity trace) on an inactive event
+  used to reach the output on the `jax_raw`, gather-style CUDA, cuSPARSE and
+  cuBLAS paths (`0 * NaN = NaN`) but not on the event-driven kernels. Every
+  backend now selects on activity; weight cotangents of inactive events are
+  exactly zero. Library backends keep their fast path when all weights are
+  finite and fall back to a select-based kernel otherwise. Active events with
+  non-finite weights still propagate NaN/Inf.
+- Intermittent `KernelRegistrationError: ... already registered to different
+  content` in multi-worker GPU test runs: a toolchain test leaked the nvcc
+  discovery preference, so later kernels in the same process were built with
+  a different nvcc. Fixed, and a suite-wide fixture now fails any test that
+  leaks the toolchain state.
+
+### Changed
+
+- The numba FFI bridge is validated through jax 0.12 (no more "untested jax"
+  warning on 0.12.x).
+- TCSR: native float SpMV/SpMM, complete data API (`sum`, `apply`, arithmetic,
+  indexing, `slice_rows`), `dt2t` primitives; `TCSR` exported at top level (#195).
+- `apply` must preserve the value shape; logical `sum` added to CSR/CSC/FCN/TCSR.
+- Indexed CSR CUDA kernels read `perm` through the `indptr` dtype and reject
+  mismatches.
+- Python ≥ 3.12 and `jax` ≥ 0.9.0 are required (also stated in
+  `AGENTS.md` and `CONTRIBUTING.md`).
+- TCSR tests sit next to their modules (no more `_tcsr/test/`).
+
+### Performance
+
+- Binary-path timings are unchanged within noise. Weighted/binary time ratio
+  0.85–1.12 across formats. First-call CUDA compile of the CSR modules grows
+  from 39 s to 51 s (extra weighted instantiations).
+
 ## [0.2.1] - 2026-08-09
 
 A follow-up to `0.2.0` that removes the mv/mm split from the just-in-time

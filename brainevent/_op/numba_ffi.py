@@ -126,7 +126,7 @@ XLA_FFI_API_MAJOR, XLA_FFI_API_MINOR = _detect_xla_ffi_api_version()
 # ctypes definitions in this module — has been validated against this bridge.
 # This replaces the former hard ``jax<0.11`` install pin: newer jax is allowed,
 # but :func:`_warn_if_untested_jax` warns once if the ABI may have shifted.
-_MAX_VALIDATED_JAX = (0, 11)
+_MAX_VALIDATED_JAX = (0, 12)
 
 # Set the first time :func:`_warn_if_untested_jax` runs so the warning fires at
 # most once per process.
