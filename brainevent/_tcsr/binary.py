@@ -27,7 +27,13 @@ from brainevent._misc import (
 )
 from brainevent._op import load_cuda_file
 from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor
+from brainevent._op.util import (
+    NUMBA_EVENT_FASTMATH,
+    cuda_event_abi,
+    dtype_suffix,
+    event_active,
+    event_factor,
+)
 from .preprocess_config import (
     get_hybrid_config,
     compile_flags_for_config,
@@ -138,6 +144,20 @@ def _validate_backward_algorithm(backward_algorithm: str) -> None:
         )
 
 
+def _validate_weighted_events(dtype) -> None:
+    """Reject weighted event dtypes that have no numeric value."""
+    dtype = jnp.dtype(dtype)
+    if not (
+        dtype == jnp.dtype(jnp.bool_)
+        or jnp.issubdtype(dtype, jnp.integer)
+        or jnp.issubdtype(dtype, jnp.floating)
+    ):
+        raise TypeError(
+            "TCSR weighted events must be boolean, integer, or floating-point, "
+            f"got {dtype}"
+        )
+
+
 def _prepare_non_transposed_components(
     indices,
     indptr,
@@ -197,6 +217,7 @@ def binary_csrmv(
     transpose: bool = True,
     backend: Optional[str] = None,
     backward_algorithm: str = "bptt",
+    weighted: bool = False,
 ) -> Data:
     """Multiply event vector by a tile-ordered sparse weight matrix.
 
@@ -228,6 +249,13 @@ def binary_csrmv(
     backward_algorithm : {"bptt", "pp_prop"}, optional
         Weight-gradient rule. ``bptt`` uses binary activity; ``pp_prop``
         preserves Batch1 float eligibility values. Default is ``bptt``.
+        Ignored when ``weighted`` (the weight gradient is then always the
+        value-weighted ``pp_prop`` rule).
+    weighted : bool, optional
+        Multiply each weight by the event value (``WeightedArray``
+        semantics, ``y = v @ W`` exactly) instead of by the activity mask.
+        Only events with ``v != 0`` are visited. Default is ``False``.
+
     Returns
     -------
     y : jax.Array or brainunit.Quantity
@@ -259,6 +287,7 @@ def binary_csrmv(
         transpose=transpose,
         backend=backend,
         backward_algorithm=backward_algorithm,
+        weighted=weighted,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
 
@@ -277,6 +306,7 @@ def binary_csrmm(
     transpose: bool = True,
     backend: Optional[str] = None,
     backward_algorithm: str = "bptt",
+    weighted: bool = False,
 ) -> Data:
     """Multiply a BN event matrix by a tile-ordered sparse matrix.
 
@@ -307,7 +337,15 @@ def binary_csrmm(
         One of ``jax``, ``numba``, ``cusparse``, or ``cuda_raw``.
     backward_algorithm : {"bptt", "pp_prop"}, optional
         Weight-gradient rule. ``pp_prop`` preserves float32 eligibility values
-        for supported logical batch sizes. Default is ``bptt``.
+        for supported logical batch sizes. Default is ``bptt``. Ignored when
+        ``weighted`` (the weight gradient is then always value-weighted).
+    weighted : bool, optional
+        Multiply each weight by the event value (``WeightedArray``
+        semantics) instead of by the activity mask. Only events with
+        ``B != 0`` are visited. On CUDA the weighted product uses the indexed
+        hybrid kernels (the tile kernel only consumes active-row lists).
+        Default is ``False``.
+
     Returns
     -------
     C : jax.Array or brainunit.Quantity
@@ -339,6 +377,7 @@ def binary_csrmm(
         transpose=transpose,
         backend=backend,
         backward_algorithm=backward_algorithm,
+        weighted=weighted,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -357,6 +396,8 @@ def _csrmv_numba_kernel(
         transpose=transpose, mirror_enabled=mirror_enabled
     )
     homogeneous = weight_info.size == 1
+    weighted = kwargs.get('weighted', False)
+    out_dtype = kwargs['outs'][0].dtype
 
     @numba.njit(fastmath=True, nogil=True)
     def mv(data, indices, indptr, permutation, events, output):
@@ -368,9 +409,30 @@ def _csrmv_numba_kernel(
                     weight = data[0] if homogeneous else data[weight_slot]
                     output[indices[slot]] += weight
 
+    # Weighted: ``fastmath`` without ``nnan``/``ninf`` keeps ``value != 0``
+    # (and NaN propagation) exact.
+    @numba.njit(fastmath=NUMBA_EVENT_FASTMATH, nogil=True)
+    def mv_weighted(data, indices, indptr, permutation, events, output):
+        output[:] = 0
+        for row in range(indptr.shape[0] - 1):
+            value = events[row]
+            if value != 0:
+                for slot in range(indptr[row], indptr[row + 1]):
+                    weight_slot = permutation[slot] if mirror_enabled else slot
+                    weight = data[0] if homogeneous else data[weight_slot]
+                    output[indices[slot]] += weight * value
+
     def kernel(data, indices, indptr, events, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
         del local_targets, tile_offsets
+        if weighted:
+            # Event values in the weight dtype (numba lacks float16/bfloat16).
+            events = event_factor(events, dtype=out_dtype, weighted=True)
+            output = numba_kernel(mv_weighted, outs=kwargs['outs'][0])(
+                data, indices, indptr, permutation, events
+            )
+            math_out = output[0] if isinstance(output, (tuple, list)) else output
+            return math_out, task_begin, task_end, status
         # Numba reads the boolean activity mask (``x != 0``): exact for every
         # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
         events = event_active(events)
@@ -399,6 +461,7 @@ def _binary_csrmv_jax_kernel(
     nnz = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
     homogeneous = weight_info.size == 1
+    weighted = kwargs.get('weighted', False)
     if nnz > jnp.iinfo(kwargs['indices_info'].dtype).max:
         raise NotImplementedError(
             "direct TCSR JAX MV requires indptr values to fit indices dtype"
@@ -413,13 +476,15 @@ def _binary_csrmv_jax_kernel(
             jnp.diff(indptr),
             total_repeat_length=nnz,
         )
-        active = event_factor(events[row_ids], dtype=out_dtype)
+        active = event_factor(events[row_ids], dtype=out_dtype, weighted=weighted)
         weights = data[0] if homogeneous else (
             data if transpose else data[permutation]
         )
-        result = jnp.zeros((cols,), dtype=out_dtype).at[indices].add(
-            active * weights
-        )
+        contrib = active * weights
+        if weighted:
+            # Skip ``0 * w`` so a NaN/Inf weight in an inactive row stays out.
+            contrib = jnp.where(active != 0, contrib, jnp.zeros_like(contrib))
+        result = jnp.zeros((cols,), dtype=out_dtype).at[indices].add(contrib)
         return result, task_begin, task_end, status
 
     return kernel
@@ -442,6 +507,7 @@ def _binary_csrmv_cusparse_kernel(
     is_homo = (weight_info.size == 1)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
+    weighted = kwargs.get('weighted', False)
 
     if nse > jnp.iinfo(kwargs['indices_info'].dtype).max:
         raise NotImplementedError(
@@ -451,7 +517,7 @@ def _binary_csrmv_cusparse_kernel(
     def kernel(weights, indices, indptr, vector, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
         del local_targets, tile_offsets
-        events = event_factor(vector, dtype=out_dtype)
+        events = event_factor(vector, dtype=out_dtype, weighted=weighted)
         indptr = indptr.astype(indices.dtype) if indices.dtype != indptr.dtype else indptr
         if is_homo:
             data = jnp.ones(nse, dtype=out_dtype)
@@ -484,7 +550,13 @@ def _binary_csrmv_cuda_kernel(
 
     # Event ABI: bool / float32 kernels; other dtypes are converted to their
     # activity mask inside the kernel closure (after bind, so JVPs are intact).
-    event_abi = cuda_event_abi(vector_info.dtype)
+    # Weighted events use the ``_wv`` kernels, which read the event values in
+    # the weight dtype.
+    event_abi = cuda_event_abi(
+        vector_info.dtype,
+        weighted=kwargs.get('weighted', False),
+        value_dtype=weight_info.dtype,
+    )
     spk_suffix = event_abi.suffix
 
     # Weight dtype suffix
@@ -587,6 +659,69 @@ def _grad_backend(backend, primitive):
     }[backend]
 
 
+_SDDMM_FLOAT_BATCHES = frozenset((4, 8, 16, 32, 64, 128, 256, 512))
+
+
+def _float_sddmm_supported(ct_dtype, indices_dtype, batch=None) -> bool:
+    """Whether the value-weighted CUDA SDDMM kernels accept these operands."""
+    return (
+        jnp.dtype(ct_dtype) in (jnp.dtype(jnp.float32), jnp.dtype(jnp.float64))
+        and jnp.dtype(indices_dtype) == jnp.dtype(jnp.int32)
+        and (batch is None or batch in _SDDMM_FLOAT_BATCHES)
+    )
+
+
+def _slot_row_ids(indices, indptr):
+    return jnp.repeat(
+        jnp.arange(indptr.shape[0] - 1, dtype=indptr.dtype),
+        jnp.diff(indptr),
+        total_repeat_length=indices.size,
+    )
+
+
+def _weighted_slot_values_mv(
+    events, ct, indices, indptr, local_targets, tile_offsets, *, backend
+):
+    """Physical-slot weight cotangent ``x[row(e)] * ct[col(e)]`` of a weighted MV.
+
+    This is the value-weighted (``pp_prop``) rule; weighted events always
+    use it, whatever ``backward_algorithm`` says.
+    """
+    values = event_factor(events, dtype=ct.dtype, weighted=True)
+    if (
+        backend == 'cuda_raw'
+        and indices.size > 0
+        and _float_sddmm_supported(ct.dtype, indices.dtype)
+    ):
+        return tcsr_sddmv_dweight_float(
+            values, ct, indices, indptr, local_targets, tile_offsets,
+            transpose=True,
+        )
+    return values[_slot_row_ids(indices, indptr)] * ct[indices]
+
+
+def _weighted_slot_values_mm(
+    events_bn, ct_bn, indices, indptr, local_targets, tile_offsets, *, backend
+):
+    """Physical-slot weight cotangent of a weighted MM in physical BN layout.
+
+    ``events_bn`` has shape ``(batch, rows)`` and ``ct_bn`` ``(batch, cols)``;
+    the result is ``sum_b x[b, row(e)] * ct[b, col(e)]``.
+    """
+    values = event_factor(events_bn, dtype=ct_bn.dtype, weighted=True)
+    if (
+        backend == 'cuda_raw'
+        and indices.size > 0
+        and _float_sddmm_supported(ct_bn.dtype, indices.dtype, values.shape[0])
+    ):
+        return tcsr_sddmm_dweight_float(
+            values, ct_bn, indices, indptr, local_targets, tile_offsets,
+            transpose=True,
+        )
+    row_ids = _slot_row_ids(indices, indptr)
+    return jnp.sum(values.T[row_ids, :] * ct_bn.T[indices, :], axis=1)
+
+
 def _csrmv_jvp_v(
     v_dot,
     data,
@@ -606,12 +741,14 @@ def _csrmv_jvp_v(
 ):
     physical_shape = shape if transpose else shape[::-1]
     physical_data = data if transpose or data.shape[0] == 1 else data[permutation]
+    # The tangent lives in the output (weight) dtype; casting first also keeps
+    # float16/bfloat16 event tangents off backends without those types.
     return (
         csrmv(
             physical_data,
             indices,
             indptr,
-            v_dot,
+            v_dot.astype(data.dtype),
             shape=physical_shape,
             local_targets=local_targets,
             tile_offsets=tile_offsets,
@@ -657,6 +794,7 @@ def _csrmv_jvp_weights(
         backward_algorithm=kwargs['backward_algorithm'],
         permutation=permutation,
         mirror_enabled=kwargs['mirror_enabled'],
+        weighted=kwargs.get('weighted', False),
     )[0]
     return tangent, jnp.zeros_like(task_begin), jnp.zeros_like(task_end), jnp.zeros_like(status)
 
@@ -706,7 +844,7 @@ def _csrmv_transpose_rule(
                 tile_offsets=tile_offsets,
                 transpose=False,
                 backend=_grad_backend(kwargs['backend'], csrmv_p),
-            )
+            ).astype(events.aval.dtype)
         return (
             data,
             indices,
@@ -723,7 +861,17 @@ def _csrmv_transpose_rule(
         if type(ct) is ad.Zero:
             ct_values = ad.Zero(data)
         else:
-            if kwargs['backend'] == 'cuda_raw':
+            if kwargs.get('weighted', False):
+                slot_values = _weighted_slot_values_mv(
+                    events,
+                    ct,
+                    indices,
+                    indptr,
+                    local_targets,
+                    tile_offsets,
+                    backend=kwargs['backend'],
+                )
+            elif kwargs['backend'] == 'cuda_raw':
                 sampled_gradient = (
                     tcsr_sddmv_dweight_float
                     if kwargs['backward_algorithm'] == 'pp_prop'
@@ -791,6 +939,7 @@ def _csrmv_batching(args, axes, **kwargs):
             backward_algorithm=kwargs['backward_algorithm'],
             permutation=args[9],
             mirror_enabled=kwargs['mirror_enabled'],
+            weighted=kwargs.get('weighted', False),
         )
         math_out = r[0] if kwargs['transpose'] else r[0].T
         return (math_out, args[4], args[5], args[6]), (0, None, None, None)
@@ -816,6 +965,7 @@ def _csrmv_batching(args, axes, **kwargs):
             backward_algorithm=call_kwargs['backward_algorithm'],
             permutation=call_args[9],
             mirror_enabled=call_kwargs['mirror_enabled'],
+            weighted=call_kwargs.get('weighted', False),
         )
 
     return general_batching_rule(prepared_call, args, axes, **kwargs)
@@ -837,6 +987,7 @@ def binary_csrmv_p_call(
     buffers: TCSBuffers | None = None,
     permutation=None,
     mirror_enabled: bool = False,
+    weighted: bool = False,
 ):
     """
     Low-level primitive call for event-driven CSR matrix--vector
@@ -886,6 +1037,9 @@ def binary_csrmv_p_call(
         Prepared mirror-to-canonical slot mapping used by transformation rules.
     mirror_enabled : bool, optional
         Whether the positional structure is already mirror-prepared.
+    weighted : bool, optional
+        Multiply weights by the event values instead of the activity mask.
+        Default is ``False``.
 
     Returns
     -------
@@ -930,6 +1084,8 @@ def binary_csrmv_p_call(
     ``x != 0`` (numeric; negative values and NaN are active), and ``0``
     otherwise.  ``w[j]`` is either
     ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
+    With ``weighted=True``, ``e(x) = x`` and only entries with ``x != 0``
+    are visited.
 
     Examples
     --------
@@ -953,6 +1109,8 @@ def binary_csrmv_p_call(
         (3,)
     """
     _validate_backward_algorithm(backward_algorithm)
+    if weighted:
+        _validate_weighted_events(vector.dtype)
     if not transpose and not mirror_enabled:
         mirror = _prepare_non_transposed_components(
             indices,
@@ -1028,6 +1186,7 @@ def binary_csrmv_p_call(
         backend=backend,
         backward_algorithm=backward_algorithm,
         mirror_enabled=mirror_enabled,
+        weighted=bool(weighted),
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.
@@ -1059,7 +1218,8 @@ This primitive dispatches direct TCSR event-vector multiplication to the
 
 Only entries of ``v`` that are ``True`` (boolean) or non-zero (numeric) are considered active events
 and contribute to the output, enabling efficient event-driven sparse-dense products commonly used
-in spiking neural networks.
+in spiking neural networks. The static ``weighted`` parameter multiplies the
+weights by the event values (``WeightedArray``) instead of the activity mask.
 
 Beyond backend dispatch, the primitive stores JAX transformation bindings
 (JVP, transpose, batching, and call registration) so the operation integrates
@@ -1111,6 +1271,24 @@ def _csrmm_numba_kernel(
         transpose=transpose, mirror_enabled=mirror_enabled
     )
     homogeneous = weight_info.size == 1
+    weighted = kwargs.get('weighted', False)
+    out_dtype = kwargs['outs'][0].dtype
+
+    @numba.njit(parallel=get_numba_parallel(), fastmath=NUMBA_EVENT_FASTMATH, nogil=True)
+    def mm_weighted(data, indices, indptr, permutation, events, output):
+        output[:] = 0
+        batch_size = events.shape[0] if transpose else events.shape[1]
+        for batch in numba.prange(batch_size):
+            for row in range(indptr.shape[0] - 1):
+                value = events[batch, row] if transpose else events[row, batch]
+                if value != 0:
+                    for slot in range(indptr[row], indptr[row + 1]):
+                        weight_slot = permutation[slot] if mirror_enabled else slot
+                        weight = data[0] if homogeneous else data[weight_slot]
+                        if transpose:
+                            output[batch, indices[slot]] += weight * value
+                        else:
+                            output[indices[slot], batch] += weight * value
 
     @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
     def mm(data, indices, indptr, permutation, events, output):
@@ -1131,6 +1309,13 @@ def _csrmm_numba_kernel(
     def kernel(data, indices, indptr, events_bn, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
         del local_targets, tile_offsets
+        if weighted:
+            events_bn = event_factor(events_bn, dtype=out_dtype, weighted=True)
+            output = numba_kernel(mm_weighted, outs=kwargs['outs'][0])(
+                data, indices, indptr, permutation, events_bn
+            )
+            math_out = output[0] if isinstance(output, (tuple, list)) else output
+            return math_out, task_begin, task_end, status
         # Numba reads the boolean activity mask (``x != 0``): exact for every
         # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
         events_bn = event_active(events_bn)
@@ -1159,6 +1344,7 @@ def _binary_csrmm_jax_kernel(
     nnz = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
     homogeneous = weight_info.size == 1
+    weighted = kwargs.get('weighted', False)
     if nnz > jnp.iinfo(kwargs['indices_info'].dtype).max:
         raise NotImplementedError(
             "direct TCSR JAX MM requires indptr values to fit indices dtype"
@@ -1178,16 +1364,23 @@ def _binary_csrmm_jax_kernel(
             if transpose
             else events_bn[row_ids, :]
         )
-        active = event_factor(active, dtype=out_dtype)
+        active = event_factor(active, dtype=out_dtype, weighted=weighted)
         physical_weights = data if transpose else data[permutation]
         if transpose:
             weights = data[0] if homogeneous else physical_weights[None, :]
-            result = jnp.zeros((events_bn.shape[0], cols), dtype=out_dtype)
-            result = result.at[:, indices].add(active * weights)
+            contrib = active * weights
         else:
             weights = data[0] if homogeneous else physical_weights[:, None]
+            contrib = active * weights
+        if weighted:
+            # Skip ``0 * w`` so a NaN/Inf weight in an inactive row stays out.
+            contrib = jnp.where(active != 0, contrib, jnp.zeros_like(contrib))
+        if transpose:
+            result = jnp.zeros((events_bn.shape[0], cols), dtype=out_dtype)
+            result = result.at[:, indices].add(contrib)
+        else:
             result = jnp.zeros((cols, events_bn.shape[1]), dtype=out_dtype)
-            result = result.at[indices, :].add(active * weights)
+            result = result.at[indices, :].add(contrib)
         return result, task_begin, task_end, status
 
     return kernel
@@ -1210,6 +1403,7 @@ def _binary_csrmm_cusparse_kernel(
     is_homo = (weight_info.size == 1)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
+    weighted = kwargs.get('weighted', False)
 
     if nse > jnp.iinfo(kwargs['indices_info'].dtype).max:
         raise NotImplementedError(
@@ -1219,7 +1413,7 @@ def _binary_csrmm_cusparse_kernel(
     def kernel(weights, indices, indptr, B, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
         del local_targets, tile_offsets
-        events = event_factor(B, dtype=out_dtype)
+        events = event_factor(B, dtype=out_dtype, weighted=weighted)
         events_nb = events.T if transpose else events
         indptr = indptr.astype(indices.dtype) if indices.dtype != indptr.dtype else indptr
         if is_homo:
@@ -1366,6 +1560,93 @@ def _binary_csrmm_indexed_cuda_kernel(
     return kernel
 
 
+def _binary_csrmm_weighted_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    """Build the weighted CUDA MM route on the hybrid (SRAW) kernels.
+
+    Every direction and weight layout runs on ``binary_indexed_csrmm_hybrid``:
+    mirror-prepared heterogeneous weights read ``weights[perm[j]]``, canonical
+    heterogeneous weights ``weights[j]`` and homogeneous weights
+    ``weights[0]``. The kernels read events as a row-major
+    ``[rows, batch]`` matrix in the weight dtype and write ``[batch, cols]``.
+    """
+    mirror_enabled = kwargs['mirror_enabled']
+    _validate_prepared_direction(
+        transpose=transpose, mirror_enabled=mirror_enabled
+    )
+    _check_csr_cuda_structure_dtypes(
+        kwargs['indices_info'], kwargs['indptr_info']
+    )
+    event_abi = cuda_event_abi(
+        vector_info.dtype, weighted=True, value_dtype=weight_info.dtype
+    )
+    wt_sfx = dtype_suffix(weight_info.dtype)
+    config = get_hybrid_config()
+    module = (
+        'tcsr_binary_indexed_csrmm_hybrid'
+        + module_suffix_for_config(config)
+    )
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_indexed_csrmm_hybrid.cu'),
+        name=module,
+        extra_cuda_cflags=compile_flags_for_config(config),
+        allow_cuda_graph=False,
+    )
+    if weight_info.size == 1:
+        entry = 'binary_csrmm_sraw_hybrid_homo'
+    elif mirror_enabled:
+        entry = 'binary_indexed_csrmm_sraw_hybrid_hetero'
+    else:
+        entry = 'binary_csrmm_sraw_hybrid_hetero'
+    kernel_name = f'{module}.{entry}{wt_sfx}{event_abi.suffix}'
+    out_info = kwargs['outs'][0]
+    # transpose=True: BN events (batch, rows) -> BN output (batch, cols).
+    # transpose=False: NB events (rows, batch) -> NB output (cols, batch).
+    batch = vector_info.shape[0] if transpose else vector_info.shape[1]
+    cols = out_info.shape[1] if transpose else out_info.shape[0]
+    ffi_outs = (
+        jax.ShapeDtypeStruct((batch, cols), out_info.dtype),
+        *kwargs['outs'][1:],
+    )
+
+    def kernel(
+        weights,
+        indices,
+        indptr,
+        events,
+        task_begin,
+        task_end,
+        status,
+        local_targets,
+        tile_offsets,
+        permutation,
+    ):
+        del local_targets, tile_offsets
+        events_nb = event_abi.prepare(events.T if transpose else events)
+        output_bn, task_begin, task_end, status = jax.ffi.ffi_call(
+            kernel_name,
+            ffi_outs,
+            input_output_aliases={5: 1, 6: 2, 7: 3},
+        )(
+            weights,
+            indices,
+            indptr,
+            permutation,
+            events_nb,
+            task_begin,
+            task_end,
+            status,
+            task_capacity=kwargs['task_capacity'],
+        )
+        return (output_bn if transpose else output_bn.T), task_begin, task_end, status
+
+    return kernel
+
+
 def _binary_csrmm_tile_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -1376,6 +1657,14 @@ def _binary_csrmm_tile_cuda_kernel(
     _validate_prepared_direction(
         transpose=transpose, mirror_enabled=mirror_enabled
     )
+    if kwargs.get('weighted', False):
+        # The tile kernel only consumes active-row lists (no event values).
+        return _binary_csrmm_weighted_cuda_kernel(
+            weight_info,
+            vector_info,
+            transpose,
+            **kwargs,
+        )
     if not transpose:
         return _binary_csrmm_indexed_cuda_kernel(
             weight_info,
@@ -1482,6 +1771,7 @@ def _csrmm_jvp_data(
         backward_algorithm=kwargs['backward_algorithm'],
         permutation=permutation,
         mirror_enabled=kwargs['mirror_enabled'],
+        weighted=kwargs.get('weighted', False),
     )[0]
     return tangent, jnp.zeros_like(task_begin), jnp.zeros_like(task_end), jnp.zeros_like(status)
 
@@ -1505,7 +1795,7 @@ def _csrmm_jvp_B(
 ):
     physical_shape = shape if transpose else shape[::-1]
     physical_data = data if transpose or data.shape[0] == 1 else data[permutation]
-    physical_B = B_dot if transpose else B_dot.T
+    physical_B = (B_dot if transpose else B_dot.T).astype(data.dtype)
     tangent = csrmm(
         physical_data,
         indices,
@@ -1563,7 +1853,7 @@ def _csrmm_transpose_rule(
             transpose=False,
             backend=_grad_backend(kwargs['backend'], csrmm_p),
         )
-        dB = dB if transpose else dB.T
+        dB = (dB if transpose else dB.T).astype(B.aval.dtype)
         return (
             data,
             indices,
@@ -1577,7 +1867,17 @@ def _csrmm_transpose_rule(
             ad.Zero(permutation),
         )
     else:
-        if kwargs['backend'] == 'cuda_raw':
+        if kwargs.get('weighted', False):
+            slot_values = _weighted_slot_values_mm(
+                B if transpose else B.T,
+                ct if transpose else ct.T,
+                indices,
+                indptr,
+                local_targets,
+                tile_offsets,
+                backend=kwargs['backend'],
+            )
+        elif kwargs['backend'] == 'cuda_raw':
             sampled_gradient = (
                 tcsr_sddmm_dweight_float
                 if kwargs['backward_algorithm'] == 'pp_prop'
@@ -1657,6 +1957,7 @@ def _csrmm_batching(args, axes, **kwargs):
             backward_algorithm=kwargs['backward_algorithm'],
             permutation=args[9],
             mirror_enabled=kwargs['mirror_enabled'],
+            weighted=kwargs.get('weighted', False),
         )[0]
         if kwargs['transpose']:
             r = jnp.reshape(r, [outer_size, batch_size, r.shape[1]])
@@ -1689,6 +1990,7 @@ def _csrmm_batching(args, axes, **kwargs):
             backward_algorithm=call_kwargs['backward_algorithm'],
             permutation=call_args[9],
             mirror_enabled=call_kwargs['mirror_enabled'],
+            weighted=call_kwargs.get('weighted', False),
         )
 
     return general_batching_rule(prepared_call, args, axes, **kwargs)
@@ -1710,6 +2012,7 @@ def binary_csrmm_p_call(
     buffers: TCSBuffers | None = None,
     permutation=None,
     mirror_enabled: bool = False,
+    weighted: bool = False,
 ):
     """
     Low-level primitive call for event-driven CSR matrix--matrix
@@ -1756,6 +2059,9 @@ def binary_csrmm_p_call(
         Prepared mirror-to-canonical slot mapping used by transformation rules.
     mirror_enabled : bool, optional
         Whether the positional structure is already mirror-prepared.
+    weighted : bool, optional
+        Multiply weights by the event values instead of the activity mask.
+        Default is ``False``.
 
     Returns
     -------
@@ -1800,6 +2106,8 @@ def binary_csrmm_p_call(
     ``x != 0`` (numeric; negative values and NaN are active), and ``0``
     otherwise.  ``w[j]`` is either
     ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
+    With ``weighted=True``, ``e(x) = x`` and only entries with ``x != 0``
+    are visited.
 
     Examples
     --------
@@ -1823,6 +2131,8 @@ def binary_csrmm_p_call(
         (2, 3)
     """
     _validate_backward_algorithm(backward_algorithm)
+    if weighted:
+        _validate_weighted_events(B.dtype)
     if not transpose and not mirror_enabled:
         mirror = _prepare_non_transposed_components(
             indices,
@@ -1904,6 +2214,7 @@ def binary_csrmm_p_call(
         backend=backend,
         backward_algorithm=backward_algorithm,
         mirror_enabled=mirror_enabled,
+        weighted=bool(weighted),
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.
@@ -1935,7 +2246,8 @@ This primitive dispatches direct TCSR BN event-matrix multiplication to the
 
 Only entries of ``B`` that are ``True`` (boolean) or non-zero (numeric) are considered active events
 and contribute to the output, enabling efficient event-driven sparse-dense products commonly used
-in spiking neural networks.
+in spiking neural networks. The static ``weighted`` parameter multiplies the
+weights by the event values (``WeightedArray``) instead of the activity mask.
 
 Beyond backend dispatch, the primitive stores JAX transformation bindings
 (JVP, transpose, batching, and call registration) so the operation integrates

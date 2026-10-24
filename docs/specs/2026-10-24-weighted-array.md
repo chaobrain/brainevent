@@ -34,7 +34,7 @@ brainevent.WeightedArray(value)       # value: int8/uint8/int16/int32/float16/bf
   | format | implementation |
   |---|---|
   | Dense, CSR/CSC (+ indexed route), FixedNumPerPre/Post, TCSR | static `weighted: bool = False` parameter on the existing binary primitives (`binary_densem{v,m}`, `binary_csrm{v,m}`, `binary_csrm{v,m}_indexed`, `binary_fcnm{v,m}`, TCSR `binary_csrm{v,m}`); kernels multiply by the event value in the active branch; rules use `w * x` instead of `w * mask(x)` |
-  | JITCScalar/Normal/Uniform R/C | route to the existing float JITC primitives (`jitsmv/jitnmv/jitumv` and `mm`), whose kernels skip zero events (add the skip where missing: uniform) and use the same RNG chunking as the binary kernels, hence the same matrix |
+  | JITCScalar/Normal/Uniform R/C | route to the existing float JITC primitives (`jitsmv/jitnmv/jitumv` and `mm`), which use the same RNG chunking as the binary kernels, hence the same matrix; zero events are skipped in the scatter kernels and (added here) in the normal/uniform gather kernels; float numba kernels use `NUMBA_EVENT_FASTMATH` so NaN events propagate |
   | cuSPARSE / cuBLAS backends | float op |
 
 - **CUDA ABI.** `cuda_event_abi(dtype, weighted=True, value_dtype=W.dtype)` returns
@@ -43,8 +43,11 @@ brainevent.WeightedArray(value)       # value: int8/uint8/int16/int32/float16/bf
   are cast inside the lowering. TCSR weighted mm uses the indexed hybrid path (the tile path
   only consumes active-row lists and stays binary-only). TCSR weighted gradients use the
   value-weighted (`pp_prop`) weight cotangent.
-- **Activity in weighted kernels** is `x != 0` (same as binary); `0 * w` terms are skipped,
-  so a NaN/Inf weight in an inactive row does not propagate.
+- **Activity in weighted kernels** is `x != 0` (same as binary). Event-driven kernels (numba,
+  CUDA scatter/hybrid paths, dense CUDA) skip inactive entries; gather-style CUDA kernels,
+  `jax_raw`, cuSPARSE and cuBLAS compute `w * 0` instead. With finite weights the results are
+  identical; whether a NaN/Inf weight in an inactive row propagates is backend dependent, as
+  for binary events.
 
 ## Helpers
 
@@ -60,3 +63,17 @@ both transpose directions, homo/hetero, every backend, with `x` containing `2, -
 in int8/uint8/int16/int32/f16/bf16/f32/f64. Binary results unchanged (existing tests). GPU:
 compile time of the added instantiations and binary-path benchmarks before/after (no
 regression).
+
+## Behaviour changes on existing paths
+
+- `BitPackedBinary @ CSR/CSC/FixedNum*/JITC*/TCSR` now takes the binary event path (it used
+  to fall through to the float product on the raw values).
+- Event tangents are cast to the weight dtype and event cotangents to the event dtype in the
+  binary rules too (fixes f16/bf16 events on numba and f64 events with f32 weights under x64).
+
+## Measured (RTX 3090)
+
+- Binary-path timings unchanged within noise (most machine code byte-identical).
+- Weighted / binary time: 0.85-1.12 across CSR, dense, FCN, TCSR, JITC.
+- First-call CUDA compile time: CSR modules 39.4 s -> 50.8 s; dense/FCN modules +0.2 s each,
+  `fcnmm` +1.5 s.

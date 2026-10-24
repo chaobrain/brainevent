@@ -40,6 +40,19 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
+/*
+ * Event contribution policies (EVT_SCALE(w, READ_S, s)):
+ *   EVT_BINARY   -- binary events: the weight itself (activity already tested).
+ *   EVT_WEIGHTED -- weighted events (``_wv``): weight times the event value; the
+ *                   event buffer has the weight dtype, so READ_W converts it.
+ */
+#ifndef EVT_BINARY
+#define EVT_BINARY(w, READ_S, s)   (w)
+#endif
+#ifndef EVT_WEIGHTED
+#define EVT_WEIGHTED(w, READ_S, s) ((w) * READ_S(s))
+#endif
+
 // =========================================================================
 // Dense Matrix-Vector Multiplication (densemv)
 // =========================================================================
@@ -49,7 +62,7 @@
  *   spikes[k] @ weights[k,n] -> output[n]
  */
 
-#define DEFINE_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
     __global__ void _transpose_kern##SUFFIX(                                        \
         const WEIGHT_T *__restrict__ weights,                                      \
         const SPIKE_T *__restrict__ spikes,                                        \
@@ -60,10 +73,11 @@
         int lane = threadIdx.x & 31;                                               \
         if (row >= k)                                                              \
             return;                                                                \
-        if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                               \
+        SPIKE_T sv = __ldg(&spikes[row]);                                          \
+        if (!IS_ACTIVE(sv)) return;                                                \
         for (int j = lane; j < n; j += 32)                                         \
         {                                                                          \
-            ATOMIC_ADD_W(&output[j], READ_W(__ldg(&weights[(size_t)row * n + j])));\
+            ATOMIC_ADD_W(&output[j], EVT_SCALE(READ_W(__ldg(&weights[(size_t)row * n + j])), READ_W, sv));\
         }                                                                          \
     }
 
@@ -72,7 +86,7 @@
  *   weights[m,k] @ spikes[k] -> output[m]
  */
 
-#define DEFINE_NO_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_NO_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
     __global__ void _no_transpose_kern##SUFFIX(                                     \
         const WEIGHT_T *__restrict__ weights,                                      \
         const SPIKE_T *__restrict__ spikes,                                        \
@@ -83,32 +97,43 @@
         int lane = threadIdx.x & 31;                                               \
         if (row >= n)                                                              \
             return;                                                                \
-        if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                               \
+        SPIKE_T sv = __ldg(&spikes[row]);                                          \
+        if (!IS_ACTIVE(sv)) return;                                                \
         for (int j = lane; j < m; j += 32)                                         \
         {                                                                          \
-            ATOMIC_ADD_W(&output[j], READ_W(__ldg(&weights[(size_t)j * n + row])));\
+            ATOMIC_ADD_W(&output[j], EVT_SCALE(READ_W(__ldg(&weights[(size_t)j * n + row])), READ_W, sv));\
         }                                                                          \
     }
 
 // Transpose Instantiations
-DEFINE_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, READ_F32, atomic_add_f32)
-DEFINE_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, READ_F32, atomic_add_f32)
-DEFINE_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, READ_F64, atomic_add_f64)
-DEFINE_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, READ_F64, atomic_add_f64)
-DEFINE_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomic_add_f16)
-DEFINE_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, READ_F16, atomic_add_f16)
-DEFINE_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, READ_BF16, atomic_add_bf16)
+DEFINE_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, READ_F32, atomic_add_f32, EVT_BINARY)
+DEFINE_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, READ_F32, atomic_add_f32, EVT_BINARY)
+DEFINE_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, READ_BF16, atomic_add_bf16, EVT_BINARY)
 
 // No-transpose Instantiations
-DEFINE_NO_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, READ_F32, atomic_add_f32)
-DEFINE_NO_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, READ_F32, atomic_add_f32)
-DEFINE_NO_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, READ_F64, atomic_add_f64)
-DEFINE_NO_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, READ_F64, atomic_add_f64)
-DEFINE_NO_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomic_add_f16)
-DEFINE_NO_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, READ_F16, atomic_add_f16)
-DEFINE_NO_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_NO_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, READ_BF16, atomic_add_bf16)
+DEFINE_NO_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, READ_F32, atomic_add_f32, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, READ_F32, atomic_add_f32, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, READ_BF16, atomic_add_bf16, EVT_BINARY)
+
+// Weighted (value-multiplying) instantiations: event buffer in the weight dtype
+DEFINE_TRANSPOSE(_f32_wv, float, IS_ACTIVE_F32, float, READ_F32, atomic_add_f32, EVT_WEIGHTED)
+DEFINE_TRANSPOSE(_f64_wv, double, IS_ACTIVE_F64, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_TRANSPOSE(_f16_wv, __half, IS_ACTIVE_F16, __half, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_TRANSPOSE(_bf16_wv, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
+DEFINE_NO_TRANSPOSE(_f32_wv, float, IS_ACTIVE_F32, float, READ_F32, atomic_add_f32, EVT_WEIGHTED)
+DEFINE_NO_TRANSPOSE(_f64_wv, double, IS_ACTIVE_F64, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_NO_TRANSPOSE(_f16_wv, __half, IS_ACTIVE_F16, __half, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_NO_TRANSPOSE(_bf16_wv, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
 
 // FFI Macros for SpMV
 #define FFI_TRANSPOSE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)             \
@@ -184,3 +209,21 @@ FFI_NO_TRANSPOSE(_f16_float, __half, float)
 FFI_NO_TRANSPOSE(_bf16_bool, __nv_bfloat16, int8_t)
 // @BE binary_densemv_no_transpose_bf16_float
 FFI_NO_TRANSPOSE(_bf16_float, __nv_bfloat16, float)
+
+// Weighted FFI Instantiations
+// @BE binary_densemv_transpose_f32_wv
+FFI_TRANSPOSE(_f32_wv, float, float)
+// @BE binary_densemv_transpose_f64_wv
+FFI_TRANSPOSE(_f64_wv, double, double)
+// @BE binary_densemv_transpose_f16_wv
+FFI_TRANSPOSE(_f16_wv, __half, __half)
+// @BE binary_densemv_transpose_bf16_wv
+FFI_TRANSPOSE(_bf16_wv, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_densemv_no_transpose_f32_wv
+FFI_NO_TRANSPOSE(_f32_wv, float, float)
+// @BE binary_densemv_no_transpose_f64_wv
+FFI_NO_TRANSPOSE(_f64_wv, double, double)
+// @BE binary_densemv_no_transpose_f16_wv
+FFI_NO_TRANSPOSE(_f16_wv, __half, __half)
+// @BE binary_densemv_no_transpose_bf16_wv
+FFI_NO_TRANSPOSE(_bf16_wv, __nv_bfloat16, __nv_bfloat16)

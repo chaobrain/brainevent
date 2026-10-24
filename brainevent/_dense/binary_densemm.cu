@@ -37,6 +37,19 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
+/*
+ * Event contribution policies (EVT_SCALE(w, READ_S, s)):
+ *   EVT_BINARY   -- binary events: the weight itself (activity already tested).
+ *   EVT_WEIGHTED -- weighted events (``_wv``): weight times the event value; the
+ *                   event buffer has the weight dtype, so READ_W converts it.
+ */
+#ifndef EVT_BINARY
+#define EVT_BINARY(w, READ_S, s)   (w)
+#endif
+#ifndef EVT_WEIGHTED
+#define EVT_WEIGHTED(w, READ_S, s) ((w) * READ_S(s))
+#endif
+
 #define DENSEMM_WPR_WARP_THREADS 32
 #define DENSEMM_WPR_WARPS_PER_BLOCK 8
 #define DENSEMM_WPR_BLOCK_THREADS \
@@ -47,7 +60,7 @@
  *   weights[k,m].T @ spikes[k,batch] -> output[m,batch]
  */
 
-#define DEFINE_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
 __global__ void _transpose_kern##SUFFIX(                                                    \
     const WEIGHT_T* __restrict__ weights,                                                   \
     const SPIKE_T*  __restrict__ spikes,                                                    \
@@ -59,11 +72,12 @@ __global__ void _transpose_kern##SUFFIX(                                        
     int row = static_cast<int>(blockIdx.x) * DENSEMM_WPR_WARPS_PER_BLOCK + warp_id;         \
     int batch = static_cast<int>(blockIdx.y);                                                \
     if (row >= k || batch >= n_batch) return;                                                \
-    if (!IS_ACTIVE(__ldg(&spikes[static_cast<size_t>(row) * n_batch + batch]))) return;      \
+    SPIKE_T sv = __ldg(&spikes[static_cast<size_t>(row) * n_batch + batch]);                \
+    if (!IS_ACTIVE(sv)) return;                                                             \
     ACC_T homo_w = is_homo ? READ_W(__ldg(&weights[0])) : ACC_T(0);                         \
     for (int post = lane; post < m; post += DENSEMM_WPR_WARP_THREADS) {                     \
         ACC_T wk = is_homo ? homo_w : READ_W(__ldg(&weights[static_cast<size_t>(row) * m + post])); \
-        ATOMIC_ADD_W(&output[static_cast<size_t>(batch) * m + post], wk);                   \
+        ATOMIC_ADD_W(&output[static_cast<size_t>(batch) * m + post], EVT_SCALE(wk, READ_W, sv)); \
     }                                                                                       \
 }
 
@@ -72,7 +86,7 @@ __global__ void _transpose_kern##SUFFIX(                                        
  *   weights[m,k] @ spikes[k,batch] -> output[m,batch]
  */
 
-#define DEFINE_NO_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_NO_TRANSPOSE(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
 __global__ void _no_transpose_kern##SUFFIX(                                                    \
     const WEIGHT_T* __restrict__ weights,                                                       \
     const SPIKE_T*  __restrict__ spikes,                                                        \
@@ -84,33 +98,44 @@ __global__ void _no_transpose_kern##SUFFIX(                                     
     int row = static_cast<int>(blockIdx.x) * DENSEMM_WPR_WARPS_PER_BLOCK + warp_id;             \
     int batch = static_cast<int>(blockIdx.y);                                                    \
     if (row >= k || batch >= n_batch) return;                                                    \
-    if (!IS_ACTIVE(__ldg(&spikes[static_cast<size_t>(row) * n_batch + batch]))) return;          \
+    SPIKE_T sv = __ldg(&spikes[static_cast<size_t>(row) * n_batch + batch]);                    \
+    if (!IS_ACTIVE(sv)) return;                                                                 \
     ACC_T homo_w = is_homo ? READ_W(__ldg(&weights[0])) : ACC_T(0);                             \
     for (int post = lane; post < m; post += DENSEMM_WPR_WARP_THREADS) {                         \
         ACC_T wk = is_homo ? homo_w : READ_W(__ldg(&weights[static_cast<size_t>(post) * k + row])); \
-        ATOMIC_ADD_W(&output[static_cast<size_t>(batch) * m + post], wk);                       \
+        ATOMIC_ADD_W(&output[static_cast<size_t>(batch) * m + post], EVT_SCALE(wk, READ_W, sv)); \
     }                                                                                           \
 }
 
 // Transpose Instantiations
-DEFINE_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomic_add_f32)
-DEFINE_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, float, READ_F32, atomic_add_f32)
-DEFINE_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, double, READ_F64, atomic_add_f64)
-DEFINE_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, float, READ_F16, atomic_add_f16)
-DEFINE_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomic_add_f32, EVT_BINARY)
+DEFINE_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, float, READ_F32, atomic_add_f32, EVT_BINARY)
+DEFINE_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
 
 // No-transpose Instantiations
-DEFINE_NO_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomic_add_f32)
-DEFINE_NO_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, float, READ_F32, atomic_add_f32)
-DEFINE_NO_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_NO_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, double, READ_F64, atomic_add_f64)
-DEFINE_NO_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_NO_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, float, READ_F16, atomic_add_f16)
-DEFINE_NO_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_NO_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_NO_TRANSPOSE(_f32_bool, int8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomic_add_f32, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f32_float, float, IS_ACTIVE_FLOAT, float, float, READ_F32, atomic_add_f32, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f64_bool, int8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f64_float, float, IS_ACTIVE_FLOAT, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_f16_float, float, IS_ACTIVE_FLOAT, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_bf16_bool, int8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_NO_TRANSPOSE(_bf16_float, float, IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+
+// Weighted (value-multiplying) instantiations: event buffer in the weight dtype
+DEFINE_TRANSPOSE(_f32_wv, float, IS_ACTIVE_F32, float, float, READ_F32, atomic_add_f32, EVT_WEIGHTED)
+DEFINE_TRANSPOSE(_f64_wv, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_TRANSPOSE(_f16_wv, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_TRANSPOSE(_bf16_wv, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
+DEFINE_NO_TRANSPOSE(_f32_wv, float, IS_ACTIVE_F32, float, float, READ_F32, atomic_add_f32, EVT_WEIGHTED)
+DEFINE_NO_TRANSPOSE(_f64_wv, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_NO_TRANSPOSE(_f16_wv, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_NO_TRANSPOSE(_bf16_wv, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
 
 #define DENSEMM_WPR_IS_HOMO(weights) \
     (((weights).ndim() == 0 || (weights).numel() == 1) ? 1 : 0)
@@ -197,3 +222,21 @@ FFI_NO_TRANSPOSE(_f16_float, __half, float)
 FFI_NO_TRANSPOSE(_bf16_bool, __nv_bfloat16, int8_t)
 // @BE binary_densemm_no_transpose_bf16_float
 FFI_NO_TRANSPOSE(_bf16_float, __nv_bfloat16, float)
+
+// Weighted FFI Instantiations
+// @BE binary_densemm_transpose_f32_wv
+FFI_TRANSPOSE(_f32_wv, float, float)
+// @BE binary_densemm_transpose_f64_wv
+FFI_TRANSPOSE(_f64_wv, double, double)
+// @BE binary_densemm_transpose_f16_wv
+FFI_TRANSPOSE(_f16_wv, __half, __half)
+// @BE binary_densemm_transpose_bf16_wv
+FFI_TRANSPOSE(_bf16_wv, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_densemm_no_transpose_f32_wv
+FFI_NO_TRANSPOSE(_f32_wv, float, float)
+// @BE binary_densemm_no_transpose_f64_wv
+FFI_NO_TRANSPOSE(_f64_wv, double, double)
+// @BE binary_densemm_no_transpose_f16_wv
+FFI_NO_TRANSPOSE(_f16_wv, __half, __half)
+// @BE binary_densemm_no_transpose_bf16_wv
+FFI_NO_TRANSPOSE(_bf16_wv, __nv_bfloat16, __nv_bfloat16)

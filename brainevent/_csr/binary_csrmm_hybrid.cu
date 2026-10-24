@@ -54,6 +54,12 @@
  *
  *   Short rows are rows with row_nnz <= 128. Heavy rows are split into chunks
  *   of at most 4096 nonzeros.
+ *
+ * Weighted (``_wv``) entry points:
+ *   The event buffer has the weight dtype; an active row (value != 0)
+ *   scatters weight * value. Weighted heavy-row tasks store the row id in
+ *   task_end instead of the end offset; the block kernel recomputes the end
+ *   from indptr and re-reads the row value.
  */
 
 #include "cuda_common.h"
@@ -170,6 +176,20 @@ namespace
         __device__ static bool active(float value) { return IS_ACTIVE_FLOAT(value); }
     };
 
+    // dtype of the event buffer: the binary event type, or the weight dtype for
+    // weighted (``_wv``) kernels, which read the event value as a scale.
+    template <typename WeightT, typename EventT, bool Weighted>
+    struct HybridEventDType
+    {
+        static constexpr BE::DType value = HybridEventTraits<EventT>::dtype;
+    };
+
+    template <typename WeightT, typename EventT>
+    struct HybridEventDType<WeightT, EventT, true>
+    {
+        static constexpr BE::DType value = HybridWeightTraits<WeightT>::dtype;
+    };
+
     template <typename OffsetT>
     __device__ __forceinline__ int32_t TaskChunksForRowNnz(
         OffsetT nnz,
@@ -190,13 +210,14 @@ namespace
         return static_cast<int32_t>(chunks);
     }
 
-    template <typename WeightT, typename IndexT, typename OffsetT>
+    template <bool Weighted, typename WeightT, typename IndexT, typename OffsetT>
     __device__ __forceinline__ void ScatterRangeHetero(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         WeightT *__restrict__ output_col,
         OffsetT begin,
-        OffsetT end)
+        OffsetT end,
+        typename HybridWeightTraits<WeightT>::AccT scale)
     {
         using WeightTraits = HybridWeightTraits<WeightT>;
         using AccT = typename WeightTraits::AccT;
@@ -206,17 +227,22 @@ namespace
         {
             IndexT idx = __ldg(&indices[j]);
             AccT w = WeightTraits::read(__ldg(&weights[j]));
+            if constexpr (Weighted)
+            {
+                w *= scale;
+            }
             WeightTraits::atomic_add(&output_col[idx], w);
         }
     }
 
-    template <typename WeightT, typename IndexT, typename OffsetT>
+    template <bool Weighted, typename WeightT, typename IndexT, typename OffsetT>
     __device__ __forceinline__ void ScatterRangeThreadHetero(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         WeightT *__restrict__ output_col,
         OffsetT begin,
-        OffsetT end)
+        OffsetT end,
+        typename HybridWeightTraits<WeightT>::AccT scale)
     {
         using WeightTraits = HybridWeightTraits<WeightT>;
         using AccT = typename WeightTraits::AccT;
@@ -224,21 +250,30 @@ namespace
         {
             IndexT idx = __ldg(&indices[j]);
             AccT w = WeightTraits::read(__ldg(&weights[j]));
+            if constexpr (Weighted)
+            {
+                w *= scale;
+            }
             WeightTraits::atomic_add(&output_col[idx], w);
         }
     }
 
-    template <typename WeightT, typename IndexT, typename OffsetT>
+    template <bool Weighted, typename WeightT, typename IndexT, typename OffsetT>
     __device__ __forceinline__ void ScatterRangeHomo(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         WeightT *__restrict__ output_col,
         OffsetT begin,
-        OffsetT end)
+        OffsetT end,
+        typename HybridWeightTraits<WeightT>::AccT scale)
     {
         using WeightTraits = HybridWeightTraits<WeightT>;
         using AccT = typename WeightTraits::AccT;
         AccT w = WeightTraits::read(__ldg(&weights[0]));
+        if constexpr (Weighted)
+        {
+            w *= scale;
+        }
         for (OffsetT j = begin + static_cast<OffsetT>(threadIdx.x);
              j < end;
              j += static_cast<OffsetT>(blockDim.x))
@@ -248,17 +283,22 @@ namespace
         }
     }
 
-    template <typename WeightT, typename IndexT, typename OffsetT>
+    template <bool Weighted, typename WeightT, typename IndexT, typename OffsetT>
     __device__ __forceinline__ void ScatterRangeThreadHomo(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         WeightT *__restrict__ output_col,
         OffsetT begin,
-        OffsetT end)
+        OffsetT end,
+        typename HybridWeightTraits<WeightT>::AccT scale)
     {
         using WeightTraits = HybridWeightTraits<WeightT>;
         using AccT = typename WeightTraits::AccT;
         AccT w = WeightTraits::read(__ldg(&weights[0]));
+        if constexpr (Weighted)
+        {
+            w *= scale;
+        }
         for (OffsetT j = begin; j < end; ++j)
         {
             IndexT idx = __ldg(&indices[j]);
@@ -266,7 +306,7 @@ namespace
         }
     }
 
-    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT>
+    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT, bool Weighted>
     __global__ void CsrmmSrawHybridExtractHeteroKernel(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
@@ -286,10 +326,25 @@ namespace
         {
             return;
         }
-        if (!HybridEventTraits<EventT>::active(
-                __ldg(&matrix[static_cast<size_t>(row) * n_batch + col])))
+        typename HybridWeightTraits<WeightT>::AccT scale = 1;
+        if constexpr (Weighted)
         {
-            return;
+            // Weighted events (buffer in the weight dtype): x != 0 is active
+            // and scales every weight of the row.
+            scale = HybridWeightTraits<WeightT>::read(
+                __ldg(&matrix[static_cast<size_t>(row) * n_batch + col]));
+            if (scale == 0)
+            {
+                return;
+            }
+        }
+        else
+        {
+            if (!HybridEventTraits<EventT>::active(
+                    __ldg(&matrix[static_cast<size_t>(row) * n_batch + col])))
+            {
+                return;
+            }
         }
 
         OffsetT row_begin = __ldg(&indptr[row]);
@@ -297,7 +352,7 @@ namespace
         OffsetT nnz = row_end - row_begin;
         if (nnz <= static_cast<OffsetT>(kTprThreshold))
         {
-            ScatterRangeThreadHetero(weights, indices, output_col, row_begin, row_end);
+            ScatterRangeThreadHetero<Weighted>(weights, indices, output_col, row_begin, row_end, scale);
             return;
         }
 
@@ -324,11 +379,20 @@ namespace
             }
             int32_t task = base + chunk;
             task_begin[task] = begin;
-            task_end[task] = end;
+            if constexpr (Weighted)
+            {
+                // Weighted tasks record the row instead of the end offset so
+                // the block kernel can re-read the event value of the row.
+                task_end[task] = static_cast<OffsetT>(row);
+            }
+            else
+            {
+                task_end[task] = end;
+            }
         }
     }
 
-    template <typename WeightT, typename IndexT, typename OffsetT>
+    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT, bool Weighted>
     __global__ void CsrmmSrawHybridBlockHeteroKernel(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
@@ -336,7 +400,11 @@ namespace
         const OffsetT *__restrict__ task_end,
         const int32_t *__restrict__ status,
         int task_capacity,
-        WeightT *__restrict__ output_col)
+        WeightT *__restrict__ output_col,
+        const OffsetT *__restrict__ indptr,
+        const EventT *__restrict__ matrix,
+        int n_batch,
+        int col)
     {
         int active = __ldg(&status[kStatusCountIndex]);
         if (active > task_capacity)
@@ -346,12 +414,29 @@ namespace
         for (int task = blockIdx.x; task < active; task += gridDim.x)
         {
             OffsetT begin = __ldg(&task_begin[task]);
-            OffsetT end = __ldg(&task_end[task]);
-            ScatterRangeHetero(weights, indices, output_col, begin, end);
+            OffsetT end;
+            typename HybridWeightTraits<WeightT>::AccT scale = 1;
+            if constexpr (Weighted)
+            {
+                // task_end holds the row of a weighted task (see the extract kernel).
+                int row = static_cast<int>(__ldg(&task_end[task]));
+                OffsetT row_end = __ldg(&indptr[row + 1]);
+                end = begin + static_cast<OffsetT>(kTaskNnz);
+                if (end > row_end)
+                {
+                    end = row_end;
+                }
+                scale = HybridWeightTraits<WeightT>::read(__ldg(&matrix[static_cast<size_t>(row) * n_batch + col]));
+            }
+            else
+            {
+                end = __ldg(&task_end[task]);
+            }
+            ScatterRangeHetero<Weighted>(weights, indices, output_col, begin, end, scale);
         }
     }
 
-    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT>
+    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT, bool Weighted>
     __global__ void CsrmmSrawHybridExtractHomoKernel(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
@@ -371,10 +456,25 @@ namespace
         {
             return;
         }
-        if (!HybridEventTraits<EventT>::active(
-                __ldg(&matrix[static_cast<size_t>(row) * n_batch + col])))
+        typename HybridWeightTraits<WeightT>::AccT scale = 1;
+        if constexpr (Weighted)
         {
-            return;
+            // Weighted events (buffer in the weight dtype): x != 0 is active
+            // and scales every weight of the row.
+            scale = HybridWeightTraits<WeightT>::read(
+                __ldg(&matrix[static_cast<size_t>(row) * n_batch + col]));
+            if (scale == 0)
+            {
+                return;
+            }
+        }
+        else
+        {
+            if (!HybridEventTraits<EventT>::active(
+                    __ldg(&matrix[static_cast<size_t>(row) * n_batch + col])))
+            {
+                return;
+            }
         }
 
         OffsetT row_begin = __ldg(&indptr[row]);
@@ -382,7 +482,7 @@ namespace
         OffsetT nnz = row_end - row_begin;
         if (nnz <= static_cast<OffsetT>(kTprThreshold))
         {
-            ScatterRangeThreadHomo(weights, indices, output_col, row_begin, row_end);
+            ScatterRangeThreadHomo<Weighted>(weights, indices, output_col, row_begin, row_end, scale);
             return;
         }
 
@@ -409,11 +509,20 @@ namespace
             }
             int32_t task = base + chunk;
             task_begin[task] = begin;
-            task_end[task] = end;
+            if constexpr (Weighted)
+            {
+                // Weighted tasks record the row instead of the end offset so
+                // the block kernel can re-read the event value of the row.
+                task_end[task] = static_cast<OffsetT>(row);
+            }
+            else
+            {
+                task_end[task] = end;
+            }
         }
     }
 
-    template <typename WeightT, typename IndexT, typename OffsetT>
+    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT, bool Weighted>
     __global__ void CsrmmSrawHybridBlockHomoKernel(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
@@ -421,7 +530,11 @@ namespace
         const OffsetT *__restrict__ task_end,
         const int32_t *__restrict__ status,
         int task_capacity,
-        WeightT *__restrict__ output_col)
+        WeightT *__restrict__ output_col,
+        const OffsetT *__restrict__ indptr,
+        const EventT *__restrict__ matrix,
+        int n_batch,
+        int col)
     {
         int active = __ldg(&status[kStatusCountIndex]);
         if (active > task_capacity)
@@ -431,12 +544,29 @@ namespace
         for (int task = blockIdx.x; task < active; task += gridDim.x)
         {
             OffsetT begin = __ldg(&task_begin[task]);
-            OffsetT end = __ldg(&task_end[task]);
-            ScatterRangeHomo(weights, indices, output_col, begin, end);
+            OffsetT end;
+            typename HybridWeightTraits<WeightT>::AccT scale = 1;
+            if constexpr (Weighted)
+            {
+                // task_end holds the row of a weighted task (see the extract kernel).
+                int row = static_cast<int>(__ldg(&task_end[task]));
+                OffsetT row_end = __ldg(&indptr[row + 1]);
+                end = begin + static_cast<OffsetT>(kTaskNnz);
+                if (end > row_end)
+                {
+                    end = row_end;
+                }
+                scale = HybridWeightTraits<WeightT>::read(__ldg(&matrix[static_cast<size_t>(row) * n_batch + col]));
+            }
+            else
+            {
+                end = __ldg(&task_end[task]);
+            }
+            ScatterRangeHomo<Weighted>(weights, indices, output_col, begin, end, scale);
         }
     }
 
-    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT>
+    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT, bool Weighted>
     static void LaunchCsrmmSrawHybridHetero(
         const WeightT *weights,
         const IndexT *indices,
@@ -464,7 +594,7 @@ namespace
             BE_CUDA_CHECK(cudaMemsetAsync(
                 status, 0, static_cast<size_t>(2) * sizeof(int32_t), stream));
             WeightT *output_col = output + static_cast<size_t>(col) * n_post;
-            CsrmmSrawHybridExtractHeteroKernel<WeightT, EventT, IndexT, OffsetT>
+            CsrmmSrawHybridExtractHeteroKernel<WeightT, EventT, IndexT, OffsetT, Weighted>
                 <<<extract_blocks, kBlockSize, 0, stream>>>(
                     weights, indices, indptr, matrix, output_col,
                     task_begin, task_end, status, n_pre, n_batch, col,
@@ -476,16 +606,16 @@ namespace
                 int scatter_blocks = task_capacity < kFixedScatterBlocks
                                          ? task_capacity
                                          : kFixedScatterBlocks;
-                CsrmmSrawHybridBlockHeteroKernel<WeightT, IndexT, OffsetT>
+                CsrmmSrawHybridBlockHeteroKernel<WeightT, EventT, IndexT, OffsetT, Weighted>
                     <<<scatter_blocks, kBlockSize, 0, stream>>>(
                         weights, indices, task_begin, task_end, status,
-                        task_capacity, output_col);
+                        task_capacity, output_col, indptr, matrix, n_batch, col);
                 BE_CHECK_KERNEL_LAUNCH();
             }
         }
     }
 
-    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT>
+    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT, bool Weighted>
     static void LaunchCsrmmSrawHybridHomo(
         const WeightT *weights,
         const IndexT *indices,
@@ -513,7 +643,7 @@ namespace
             BE_CUDA_CHECK(cudaMemsetAsync(
                 status, 0, static_cast<size_t>(2) * sizeof(int32_t), stream));
             WeightT *output_col = output + static_cast<size_t>(col) * n_post;
-            CsrmmSrawHybridExtractHomoKernel<WeightT, EventT, IndexT, OffsetT>
+            CsrmmSrawHybridExtractHomoKernel<WeightT, EventT, IndexT, OffsetT, Weighted>
                 <<<extract_blocks, kBlockSize, 0, stream>>>(
                     weights, indices, indptr, matrix, output_col,
                     task_begin, task_end, status, n_pre, n_batch, col,
@@ -525,10 +655,10 @@ namespace
                 int scatter_blocks = task_capacity < kFixedScatterBlocks
                                          ? task_capacity
                                          : kFixedScatterBlocks;
-                CsrmmSrawHybridBlockHomoKernel<WeightT, IndexT, OffsetT>
+                CsrmmSrawHybridBlockHomoKernel<WeightT, EventT, IndexT, OffsetT, Weighted>
                     <<<scatter_blocks, kBlockSize, 0, stream>>>(
                         weights, indices, task_begin, task_end, status,
-                        task_capacity, output_col);
+                        task_capacity, output_col, indptr, matrix, n_batch, col);
                 BE_CHECK_KERNEL_LAUNCH();
             }
         }
@@ -547,7 +677,7 @@ namespace
 
 } // namespace
 
-#define DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(SUFFIX, WEIGHT_T, EVENT_T) \
+#define DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(SUFFIX, WEIGHT_T, EVENT_T, WEIGHTED) \
 void binary_csrmm_sraw_hybrid_hetero##SUFFIX(                             \
     const BE::Tensor weights,                                             \
     const BE::Tensor indices,                                             \
@@ -573,7 +703,7 @@ void binary_csrmm_sraw_hybrid_hetero##SUFFIX(                             \
         IsSignedIndexDType(indptr.dtype()),                               \
         "binary_csrmm_sraw_hybrid_hetero" #SUFFIX " expects indptr=s32/s64"); \
     BE_CSRMM_SRAW_HYBRID_CHECK(                                           \
-        matrix.dtype() == HybridEventTraits<EVENT_T>::dtype,              \
+        (matrix.dtype() == HybridEventDType<WEIGHT_T, EVENT_T, WEIGHTED>::value),              \
         "binary_csrmm_sraw_hybrid_hetero" #SUFFIX " expects matching matrix dtype"); \
     BE_CSRMM_SRAW_HYBRID_CHECK(                                           \
         output.dtype() == HybridWeightTraits<WEIGHT_T>::dtype,            \
@@ -633,7 +763,7 @@ void binary_csrmm_sraw_hybrid_hetero##SUFFIX(                             \
              task_end_output.data_ptr<void>() != nullptr),                 \
         "binary_csrmm_sraw_hybrid_hetero" #SUFFIX " expects non-null task scratch"); \
     BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, { \
-        LaunchCsrmmSrawHybridHetero<WEIGHT_T, EVENT_T, IndexT, OffsetT>(   \
+        LaunchCsrmmSrawHybridHetero<WEIGHT_T, EVENT_T, IndexT, OffsetT, WEIGHTED>(   \
             weights.data_ptr<const WEIGHT_T>(),                            \
             indices.data_ptr<const IndexT>(),                              \
             indptr.data_ptr<const OffsetT>(),                              \
@@ -651,7 +781,7 @@ void binary_csrmm_sraw_hybrid_hetero##SUFFIX(                             \
     });                                                                    \
 }
 
-#define DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(SUFFIX, WEIGHT_T, EVENT_T)  \
+#define DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(SUFFIX, WEIGHT_T, EVENT_T, WEIGHTED)  \
 void binary_csrmm_sraw_hybrid_homo##SUFFIX(                               \
     const BE::Tensor weights,                                             \
     const BE::Tensor indices,                                             \
@@ -677,7 +807,7 @@ void binary_csrmm_sraw_hybrid_homo##SUFFIX(                               \
         IsSignedIndexDType(indptr.dtype()),                               \
         "binary_csrmm_sraw_hybrid_homo" #SUFFIX " expects indptr=s32/s64"); \
     BE_CSRMM_SRAW_HYBRID_CHECK(                                           \
-        matrix.dtype() == HybridEventTraits<EVENT_T>::dtype,              \
+        (matrix.dtype() == HybridEventDType<WEIGHT_T, EVENT_T, WEIGHTED>::value),              \
         "binary_csrmm_sraw_hybrid_homo" #SUFFIX " expects matching matrix dtype"); \
     BE_CSRMM_SRAW_HYBRID_CHECK(                                           \
         output.dtype() == HybridWeightTraits<WEIGHT_T>::dtype,            \
@@ -734,7 +864,7 @@ void binary_csrmm_sraw_hybrid_homo##SUFFIX(                               \
              task_end_output.data_ptr<void>() != nullptr),                 \
         "binary_csrmm_sraw_hybrid_homo" #SUFFIX " expects non-null task scratch"); \
     BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, { \
-        LaunchCsrmmSrawHybridHomo<WEIGHT_T, EVENT_T, IndexT, OffsetT>(     \
+        LaunchCsrmmSrawHybridHomo<WEIGHT_T, EVENT_T, IndexT, OffsetT, WEIGHTED>(     \
             weights.data_ptr<const WEIGHT_T>(),                            \
             indices.data_ptr<const IndexT>(),                              \
             indptr.data_ptr<const OffsetT>(),                              \
@@ -753,35 +883,55 @@ void binary_csrmm_sraw_hybrid_homo##SUFFIX(                               \
 }
 
 // @BE binary_csrmm_sraw_hybrid_hetero_f32_bool
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f32_bool, float, int8_t)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f32_bool, float, int8_t, false)
 // @BE binary_csrmm_sraw_hybrid_hetero_f32_float
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f32_float, float, float)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f32_float, float, float, false)
 // @BE binary_csrmm_sraw_hybrid_hetero_f64_bool
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f64_bool, double, int8_t)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f64_bool, double, int8_t, false)
 // @BE binary_csrmm_sraw_hybrid_hetero_f64_float
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f64_float, double, float)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f64_float, double, float, false)
 // @BE binary_csrmm_sraw_hybrid_hetero_f16_bool
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f16_bool, __half, int8_t)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f16_bool, __half, int8_t, false)
 // @BE binary_csrmm_sraw_hybrid_hetero_f16_float
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f16_float, __half, float)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f16_float, __half, float, false)
 // @BE binary_csrmm_sraw_hybrid_hetero_bf16_bool
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_bf16_bool, __nv_bfloat16, int8_t)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_bf16_bool, __nv_bfloat16, int8_t, false)
 // @BE binary_csrmm_sraw_hybrid_hetero_bf16_float
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_bf16_float, __nv_bfloat16, float)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_bf16_float, __nv_bfloat16, float, false)
 
 // @BE binary_csrmm_sraw_hybrid_homo_f32_bool
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f32_bool, float, int8_t)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f32_bool, float, int8_t, false)
 // @BE binary_csrmm_sraw_hybrid_homo_f32_float
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f32_float, float, float)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f32_float, float, float, false)
 // @BE binary_csrmm_sraw_hybrid_homo_f64_bool
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f64_bool, double, int8_t)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f64_bool, double, int8_t, false)
 // @BE binary_csrmm_sraw_hybrid_homo_f64_float
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f64_float, double, float)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f64_float, double, float, false)
 // @BE binary_csrmm_sraw_hybrid_homo_f16_bool
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f16_bool, __half, int8_t)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f16_bool, __half, int8_t, false)
 // @BE binary_csrmm_sraw_hybrid_homo_f16_float
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f16_float, __half, float)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f16_float, __half, float, false)
 // @BE binary_csrmm_sraw_hybrid_homo_bf16_bool
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_bf16_bool, __nv_bfloat16, int8_t)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_bf16_bool, __nv_bfloat16, int8_t, false)
 // @BE binary_csrmm_sraw_hybrid_homo_bf16_float
-DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_bf16_float, __nv_bfloat16, float)
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_bf16_float, __nv_bfloat16, float, false)
+
+// Weighted (``_wv``) entry points: the event buffer has the weight dtype and
+// active rows scatter ``w * x``. Instantiated with WEIGHTED=true; the binary
+// entry points above compile exactly as before (WEIGHTED=false).
+// @BE binary_csrmm_sraw_hybrid_hetero_f32_wv
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f32_wv, float, float, true)
+// @BE binary_csrmm_sraw_hybrid_hetero_f64_wv
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f64_wv, double, double, true)
+// @BE binary_csrmm_sraw_hybrid_hetero_f16_wv
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_f16_wv, __half, __half, true)
+// @BE binary_csrmm_sraw_hybrid_hetero_bf16_wv
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HETERO(_bf16_wv, __nv_bfloat16, __nv_bfloat16, true)
+// @BE binary_csrmm_sraw_hybrid_homo_f32_wv
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f32_wv, float, float, true)
+// @BE binary_csrmm_sraw_hybrid_homo_f64_wv
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f64_wv, double, double, true)
+// @BE binary_csrmm_sraw_hybrid_homo_f16_wv
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_f16_wv, __half, __half, true)
+// @BE binary_csrmm_sraw_hybrid_homo_bf16_wv
+DEFINE_BINARY_CSRMM_SRAW_HYBRID_HOMO(_bf16_wv, __nv_bfloat16, __nv_bfloat16, true)

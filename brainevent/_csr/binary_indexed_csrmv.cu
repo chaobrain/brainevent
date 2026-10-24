@@ -263,3 +263,44 @@ FFI_CSRMV_NT_AUTO_PERM_HETERO(_f16_float, __half, float,  8 * sizeof(float))
 FFI_CSRMV_NT_AUTO_PERM_HETERO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * sizeof(float))
 // @BE binary_csrmv_nt_auto_perm_hetero_bf16_float
 FFI_CSRMV_NT_AUTO_PERM_HETERO(_bf16_float, __nv_bfloat16, float,  8 * sizeof(float))
+
+
+// =========================================================================
+// Weighted (``_wv``) instantiations -- WeightedArray events
+// =========================================================================
+//
+// The event buffer has the weight dtype and the kernels accumulate
+// ``w * x`` instead of ``w * mask(x)``: the event-read slot of the kernel
+// macros (``IS_ACTIVE``) is given the weight reader ``READ_W``, so
+// ``(ACC_T)IS_ACTIVE(x)`` becomes the event value. Binary instantiations above
+// are unchanged.
+
+// f32 weighted
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f32_wv, float, READ_F32, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f32_wv, float, READ_F32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f32_wv, float, READ_F32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+
+// f64 weighted
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f64_wv, double, READ_F64, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f64_wv, double, READ_F64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f64_wv, double, READ_F64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+
+// f16 weighted
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f16_wv, __half, READ_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f16_wv, __half, READ_F16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f16_wv, __half, READ_F16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+
+// bf16 weighted
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_bf16_wv, __nv_bfloat16, READ_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_bf16_wv, __nv_bfloat16, READ_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_bf16_wv, __nv_bfloat16, READ_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+
+// Weighted FFI entry points
+// @BE binary_csrmv_nt_auto_perm_hetero_f32_wv
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f32_wv, float, float, 8 * sizeof(float))
+// @BE binary_csrmv_nt_auto_perm_hetero_f64_wv
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f64_wv, double, double, 8 * sizeof(double))
+// @BE binary_csrmv_nt_auto_perm_hetero_f16_wv
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f16_wv, __half, __half, 8 * sizeof(float))
+// @BE binary_csrmv_nt_auto_perm_hetero_bf16_wv
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_bf16_wv, __nv_bfloat16, __nv_bfloat16, 8 * sizeof(float))

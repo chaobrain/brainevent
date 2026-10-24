@@ -543,3 +543,210 @@ def test_issue_198_dense_binary_array_weight_grad():
     fm = lambda w: (brainevent.BinaryArray(X) @ w).sum()
     gm = jax.grad(fm)(W)
     np.testing.assert_allclose(np.asarray(gm), [[0., 0.], [2., 2.], [2., 2.]])
+
+
+# ---------------------------------------------------------------------------
+# Weighted events (#201): ``weighted=True`` multiplies by the event value.
+# ---------------------------------------------------------------------------
+
+WEIGHTED_EVENT_DTYPES = tuple(d for d in EVENT_DTYPES if d != 'bool') + ('bool',)
+
+
+def _values(events):
+    return np.asarray(events.astype(jnp.float32) if events.dtype == jnp.bfloat16 else events,
+                      dtype=np.float64)
+
+
+@pytest.mark.parametrize("implementation", DENSEMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("dtype_name", WEIGHTED_EVENT_DTYPES)
+def test_densemv_weighted_all_dtypes(implementation, transpose, dtype_name):
+    k, n = 8, 5
+    with _x64_if_needed(dtype_name):
+        rng = np.random.default_rng(10)
+        w_np = rng.standard_normal((k, n) if transpose else (n, k)).astype(np.float32)
+        spikes = _make_events((k,), dtype_name)
+        result = binary_densemv(jnp.asarray(w_np), spikes, transpose=transpose,
+                                backend=implementation, weighted=True)
+        assert result.dtype == jnp.float32
+    x = _values(spikes)
+    expected = x @ w_np if transpose else w_np @ x
+    np.testing.assert_allclose(np.asarray(result), expected, rtol=1e-5, atol=1e-4)
+
+
+@pytest.mark.parametrize("implementation", DENSEMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("dtype_name", WEIGHTED_EVENT_DTYPES)
+def test_densemm_weighted_all_dtypes(implementation, transpose, dtype_name):
+    k, m, n = 8, 5, 3
+    with _x64_if_needed(dtype_name):
+        rng = np.random.default_rng(11)
+        w_np = rng.standard_normal((k, m) if transpose else (m, k)).astype(np.float32)
+        spikes = _make_events((k, n), dtype_name)
+        result = binary_densemm(jnp.asarray(w_np), spikes, transpose=transpose,
+                                backend=implementation, weighted=True)
+    x = _values(spikes)
+    expected = w_np.T @ x if transpose else w_np @ x
+    np.testing.assert_allclose(np.asarray(result), expected, rtol=1e-5, atol=1e-4)
+
+
+@pytest.mark.parametrize("implementation", DENSEMV_IMPLEMENTATIONS)
+def test_densemv_weighted_skips_zero_events(implementation):
+    """A non-finite weight in an inactive row must not reach the output."""
+    if implementation in ('jax_raw', 'cublas'):
+        pytest.skip('float matmul backends propagate 0 * inf.')
+    w = jnp.asarray([[1., 2.], [np.inf, np.nan], [3., 4.]], dtype=jnp.float32)
+    x = jnp.asarray([2., 0., -1.], dtype=jnp.float32)
+    result = binary_densemv(w, x, transpose=True, backend=implementation, weighted=True)
+    np.testing.assert_allclose(np.asarray(result), [2. - 3., 4. - 4.])
+
+
+def test_dense_weighted_binary_unchanged():
+    """``weighted=False`` (default) still binarises; ``weighted=True`` does not."""
+    w = jnp.asarray([[1., 2.], [3., 4.], [5., 6.]])
+    x = jnp.asarray([2, 0, -1], dtype=jnp.int8)
+    np.testing.assert_allclose(binary_densemv(w, x, transpose=True), [6., 8.])
+    np.testing.assert_allclose(binary_densemv(w, x, transpose=True, weighted=True), [-3., -2.])
+
+
+_WEIGHTED_GRAD_DTYPES = ('float32', 'int8', 'int32', 'float16', 'bfloat16', 'float64')
+
+
+def _weighted_grad_x(shape, dtype_name):
+    x = _make_events(shape, dtype_name)
+    tol = 2e-2 if dtype_name in ('float16', 'bfloat16') else 1e-4
+    return x, tol
+
+
+@pytest.mark.parametrize("implementation", DENSEMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("dtype_name", _WEIGHTED_GRAD_DTYPES)
+def test_densemv_weighted_grads(implementation, transpose, dtype_name):
+    with _x64_if_needed(dtype_name):
+        x, tol = _weighted_grad_x((6,), dtype_name)
+        k, m = x.shape[0], 4
+        w = jnp.asarray(np.random.default_rng(12).standard_normal((k, m) if transpose else (m, k)), jnp.float32)
+        if transpose:
+            op = lambda p, v: binary_densemv(p, v, transpose=True, backend=implementation, weighted=True)
+            dense = lambda p, z: z.astype(p.dtype) @ p
+        else:
+            op = lambda p, v: binary_densemv(p, v, transpose=False, backend=implementation, weighted=True)
+            dense = lambda p, z: p @ z.astype(p.dtype)
+        check_event_op_grads(op, dense, w, x, mode='weighted', rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize("implementation", DENSEMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("dtype_name", _WEIGHTED_GRAD_DTYPES)
+def test_densemm_weighted_grads(implementation, transpose, dtype_name):
+    with _x64_if_needed(dtype_name):
+        x, tol = _weighted_grad_x((6, 3), dtype_name)
+        k, m = x.shape[0], 4
+        w = jnp.asarray(np.random.default_rng(13).standard_normal((k, m) if transpose else (m, k)), jnp.float32)
+        if transpose:
+            op = lambda p, v: binary_densemm(p, v, transpose=True, backend=implementation, weighted=True)
+            dense = lambda p, z: p.T @ z.astype(p.dtype)
+        else:
+            op = lambda p, v: binary_densemm(p, v, transpose=False, backend=implementation, weighted=True)
+            dense = lambda p, z: p @ z.astype(p.dtype)
+        check_event_op_grads(op, dense, w, x, mode='weighted', rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize("implementation", DENSEMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("transpose", [False, True])
+def test_densemm_weighted_vmap_over_weights(implementation, transpose):
+    """Batching over the weight operand keeps ``weighted``."""
+    x = _make_events((6, 3), 'int8')
+    ws = jnp.asarray(np.random.default_rng(14).standard_normal((2, 6, 4) if transpose else (2, 4, 6)), jnp.float32)
+    f = lambda w: binary_densemm(w, x, transpose=transpose, backend=implementation, weighted=True)
+    got = jax.vmap(f)(ws)
+    xf = x.astype(jnp.float32)
+    expected = jnp.einsum('bkm,kn->bmn' if transpose else 'bmk,kn->bmn', ws, xf)
+    np.testing.assert_allclose(np.asarray(got), np.asarray(expected), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("dtype", [jnp.bool_, jnp.int8, jnp.int32, jnp.float16, jnp.float32])
+@pytest.mark.parametrize("w_dtype", [jnp.float32, jnp.float16])
+@pytest.mark.parametrize("op", ['mv', 'mm'])
+@pytest.mark.parametrize("transpose", [False, True])
+def test_dense_cuda_raw_weighted_abi(monkeypatch, dtype, w_dtype, op, transpose):
+    """Weighted events select the ``_wv`` symbol, cast to the weight dtype."""
+    captured = {}
+
+    def fake_ffi_call(kernel_name, out_info):
+        captured['kernel_name'] = kernel_name
+
+        def run(*args):
+            captured['args'] = args
+            infos = out_info if isinstance(out_info, (list, tuple)) else (out_info,)
+            return tuple(jnp.zeros(info.shape, info.dtype) for info in infos)
+
+        return run
+
+    monkeypatch.setattr(dense_binary_mod, 'load_cuda_file', lambda *a, **kw: None)
+    monkeypatch.setattr(dense_binary_mod.jax.ffi, 'ffi_call', fake_ffi_call)
+    spikes = jnp.asarray(_make_events((4,) if op == 'mv' else (4, 2), 'float32'), dtype=dtype)
+    w_shape = (4, 3) if transpose else (3, 4)
+    if op == 'mv':
+        kernel = dense_binary_mod._binary_densemv_cuda_kernel(
+            jax.ShapeDtypeStruct(spikes.shape, dtype), transpose, weighted=True,
+            outs=[jax.ShapeDtypeStruct((3,), w_dtype)],
+            weight_info=jax.ShapeDtypeStruct(w_shape, w_dtype),
+        )
+    else:
+        kernel = dense_binary_mod._binary_densemm_cuda_kernel(
+            spk_info=jax.ShapeDtypeStruct(spikes.shape, dtype),
+            weight_info=jax.ShapeDtypeStruct(w_shape, w_dtype),
+            transpose=transpose, weighted=True,
+            outs=[jax.ShapeDtypeStruct((3, 2), w_dtype)],
+        )
+    kernel(jnp.ones(w_shape, w_dtype), spikes)
+    w_sfx = '_f32' if w_dtype == jnp.float32 else '_f16'
+    direction = 'transpose' if transpose else 'no_transpose'
+    assert captured['kernel_name'] == f'dense_binary_{op}.binary_dense{op}_{direction}{w_sfx}_wv'
+    passed = captured['args'][1]
+    assert passed.dtype == jnp.dtype(w_dtype)
+    np.testing.assert_array_equal(np.asarray(passed), np.asarray(spikes.astype(w_dtype)))
+
+
+@pytest.mark.parametrize("op", ['mv', 'mm'])
+def test_dense_cublas_weighted_uses_float_product(op):
+    """The bool-only cuBLAS entry points are bypassed for weighted events."""
+    fn = (dense_binary_mod._binary_densemv_cublas_kernel if op == 'mv'
+          else dense_binary_mod._binary_densemm_cublas_kernel)
+    x = _make_events((4,) if op == 'mv' else (4, 2), 'int8')
+    kernel = fn(spk_info=jax.ShapeDtypeStruct(x.shape, x.dtype),
+                weight_info=jax.ShapeDtypeStruct((4, 3), jnp.float32),
+                transpose=True, weighted=True,
+                outs=[jax.ShapeDtypeStruct((3,) if op == 'mv' else (3, 2), jnp.float32)])
+    w = jnp.asarray(np.arange(12, dtype=np.float32).reshape(4, 3))
+    got = kernel(w, x)[0]
+    np.testing.assert_allclose(np.asarray(got), np.asarray(w.T @ x.astype(jnp.float32)))
+
+
+@requires_gpu
+@pytest.mark.parametrize("backend", [None, 'cuda_raw', 'cublas'])
+@pytest.mark.parametrize("w_dtype", ['float32', 'float64', 'float16', 'bfloat16'])
+@pytest.mark.parametrize("transpose", [False, True])
+def test_dense_weighted_gpu_large(backend, w_dtype, transpose):
+    if backend == 'cublas' and w_dtype != 'float32':
+        pytest.skip('cublas supports float32 weights only')
+    with jax_x64_enabled():
+        rng = np.random.default_rng(201)
+        k, m = 300, 200
+        W = rng.standard_normal((k, m) if transpose else (m, k))
+        x = rng.integers(-3, 4, size=k) * (rng.random(k) < 0.2)
+        events = jnp.asarray(x, dtype=jnp.int8)
+        Wj = jnp.asarray(W, dtype=jnp.dtype(w_dtype))
+        Wf = np.asarray(Wj.astype(jnp.float64) if w_dtype == 'bfloat16' else Wj, dtype=np.float64)
+        out = binary_densemv(Wj, events, transpose=transpose, backend=backend, weighted=True)
+        mm = binary_densemm(Wj, jnp.stack([events, -events], 1), transpose=transpose,
+                            backend=backend, weighted=True)
+        ref = x @ Wf if transpose else Wf @ x
+        ref_mm = (Wf.T if transpose else Wf) @ np.stack([x, -x], 1)
+    # bf16 outputs accumulate atomically in bf16 (8-bit mantissa).
+    tol = {'float16': 1e-2, 'bfloat16': 3e-2}.get(w_dtype, 1e-5)
+    for got, r in ((out, ref), (mm, ref_mm)):
+        got = np.asarray(jnp.asarray(got, jnp.float32) if w_dtype == 'bfloat16' else got, dtype=np.float64)
+        rel = np.linalg.norm(got - r) / np.linalg.norm(r)
+        assert rel < tol, f'relative error {rel}'

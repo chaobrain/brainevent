@@ -20,11 +20,12 @@ from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
-from brainevent._event.binary import BinaryArray
+from brainevent._event.dispatch import as_event_operand
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitnmv, binary_jitnmm
 from .csr import jitn_to_csr
@@ -35,6 +36,32 @@ __all__ = [
     'JITCNormalR',
     'JITCNormalC',
 ]
+
+
+def _weighted_event_value(value, weight):
+    """Cast weighted event values to the floating dtype of the JITC weight.
+
+    ``WeightedArray`` products route to the float JITC primitives, whose
+    kernels require the event operand in the weight dtype and skip zero
+    events. Integer events are cast (their cotangent is ``float0``).
+
+    Parameters
+    ----------
+    value : jax.Array or u.Quantity
+        Raw event values of a :class:`~brainevent.WeightedArray`.
+    weight : jax.Array or u.Quantity
+        A weight parameter of the matrix; its dtype selects the cast.
+
+    Returns
+    -------
+    jax.Array or u.Quantity
+        ``value`` cast to the weight dtype (promoted to a floating dtype if
+        the weight is integer).
+    """
+    dtype = u.math.get_dtype(weight)
+    if not jnp.issubdtype(dtype, jnp.floating):
+        dtype = jnp.result_type(dtype, 1.0)
+    return u.math.asarray(value).astype(dtype)
 
 
 class JITCNormalMatrix(JITCMatrix):
@@ -805,10 +832,12 @@ class JITCNormalR(JITCNormalMatrix):
         - If ``other`` is a ``BinaryArray`` (event-driven), uses the binary event
           kernel (``binary_jitnmv`` for 1-D, ``binary_jitnmm`` for 2-D).
         - Otherwise, uses the float kernel (``jitnmv`` for 1-D, ``jitnmm`` for 2-D).
+          A ``WeightedArray`` is cast to the weight dtype and takes this path;
+          the float kernels skip zero events.
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The right-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -836,8 +865,13 @@ class JITCNormalR(JITCNormalMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        event = as_event_operand(other)
+        if event is not None and event[1]:
+            # WeightedArray: exact float product (the float kernels skip zero events).
+            other = _weighted_event_value(event[0], self.wloc)
+            event = None
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 # JIT matrix @ events
                 return binary_jitnmv(
@@ -911,7 +945,7 @@ class JITCNormalR(JITCNormalMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The left-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -937,8 +971,13 @@ class JITCNormalR(JITCNormalMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        event = as_event_operand(other)
+        if event is not None and event[1]:
+            # WeightedArray: exact float product (the float kernels skip zero events).
+            other = _weighted_event_value(event[0], self.wloc)
+            event = None
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 #
                 # vector @ JIT matrix
@@ -1334,7 +1373,7 @@ class JITCNormalC(JITCNormalMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The right-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -1356,8 +1395,13 @@ class JITCNormalC(JITCNormalMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        event = as_event_operand(other)
+        if event is not None and event[1]:
+            # WeightedArray: exact float product (the float kernels skip zero events).
+            other = _weighted_event_value(event[0], self.wloc)
+            event = None
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
@@ -1438,7 +1482,7 @@ class JITCNormalC(JITCNormalMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The left-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -1464,8 +1508,13 @@ class JITCNormalC(JITCNormalMatrix):
         # other @ csr
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
-        if isinstance(other, BinaryArray):
-            other = other.value
+        event = as_event_operand(other)
+        if event is not None and event[1]:
+            # WeightedArray: exact float product (the float kernels skip zero events).
+            other = _weighted_event_value(event[0], self.wloc)
+            event = None
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T

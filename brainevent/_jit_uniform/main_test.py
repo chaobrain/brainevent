@@ -753,3 +753,199 @@ class Test_Notrans_Trans_Dense_CSR_Cross_Check:
         assert allclose(y_trans, fu @ dense, rtol=1e-4, atol=1e-4)
         assert allclose(y_trans, fu @ csr, rtol=1e-4, atol=1e-4)
         jax.block_until_ready((y_notrans, y_trans))
+
+
+# ---------------------------------------------------------------------------
+# WeightedArray (#201): ``WeightedArray @ JITC`` routes to the float JITC
+# primitives, which multiply by the event value, skip zero events and draw the
+# same matrix as the binary kernels.
+# ---------------------------------------------------------------------------
+
+from contextlib import nullcontext as _w_nullcontext
+
+from brainevent._jit_uniform.float import jitumv_p, jitumm_p
+from brainevent._test_util import check_event_op_grads as _w_check_grads
+from brainevent._test_util import jax_x64_enabled as _w_x64
+
+_W_MV_BACKENDS = tuple(jitumv_p.available_backends(platform))
+_W_MM_BACKENDS = tuple(jitumm_p.available_backends(platform))
+_W_DTYPES = [
+    jnp.int8, jnp.uint8, jnp.int16, jnp.int32,
+    jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64,
+]
+_W_SHAPE = (20, 30)
+_W_PROB = 0.3
+_W_SEED = 123
+_W_CLASSES = ['JITCUniformR', 'JITCUniformC']
+
+
+def _w_dtype_id(dtype):
+    return np.dtype(dtype).name
+
+
+def _w_ctx(dtype):
+    return _w_x64() if np.dtype(dtype) == np.float64 else _w_nullcontext()
+
+
+def _w_weight_dtype(event_dtype):
+    # float64 events exercise the float64 kernel instantiation.
+    return jnp.float64 if np.dtype(event_dtype) == np.float64 else jnp.float32
+
+
+def _w_params(dtype=jnp.float32):
+    return (jnp.asarray(0.1, dtype=dtype), jnp.asarray(0.6, dtype=dtype))
+
+
+def _w_matrix(cls_name, params, corder, backend=None):
+    return getattr(brainevent, cls_name)(
+        (params[0], params[1], _W_PROB, _W_SEED), shape=_W_SHAPE, corder=corder, backend=backend,
+    )
+
+
+def _w_event_shape(op):
+    m, n = _W_SHAPE
+    return {'mv': (n,), 'vm': (m,), 'mm': (n, 3), 'mr': (3, m)}[op]
+
+
+def _w_apply(op, mat, x):
+    return mat @ x if op in ('mv', 'mm') else x @ mat
+
+
+def _w_events(shape, dtype, base=None):
+    """Mostly-zero events with values ``[2, -1, 0, 0.5]`` (``uint8``: ``[2, 3, 0, 1]``)."""
+    dtype = np.dtype(dtype)
+    if base is None:
+        if dtype == np.uint8:
+            base = [2, 3, 0, 1]
+        elif np.issubdtype(dtype, np.integer):
+            base = [2, -1, 0, 1]
+        else:
+            base = [2.0, -1.0, 0.0, 0.5]
+    n = int(np.prod(shape))
+    values = np.resize(np.asarray(base), n)
+    values = values[np.random.RandomState(0).permutation(n)].reshape(shape)
+    return jnp.asarray(values.astype(dtype))
+
+
+def _w_backends(op):
+    return _W_MV_BACKENDS if op in ('mv', 'vm') else _W_MM_BACKENDS
+
+
+_W_CASES = [
+    pytest.param(backend, op, id=f'{backend}-{op}')
+    for op in ('mv', 'vm', 'mm', 'mr')
+    for backend in _w_backends(op)
+]
+
+
+@pytest.mark.parametrize('backend,op', _W_CASES)
+@pytest.mark.parametrize('cls_name', _W_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('dtype', _W_DTYPES, ids=_w_dtype_id)
+def test_weighted_jitc_grads_match_dense(backend, op, cls_name, corder, dtype):
+    """Forward, weight/event gradients, JVP/VJP identity and vmap are exact."""
+    half = np.dtype(dtype).itemsize == 2 and jnp.issubdtype(dtype, jnp.floating)
+    tol = 1e-2 if half else 1e-4
+    with _w_ctx(dtype):
+        x = _w_events(_w_event_shape(op), dtype)
+        params = _w_params(_w_weight_dtype(dtype))
+
+        def op_fn(p, v):
+            return _w_apply(op, _w_matrix(cls_name, p, corder, backend=backend), brainevent.WeightedArray(v))
+
+        def dense_fn(p, z):
+            return _w_apply(op, _w_matrix(cls_name, p, corder).todense(), z)
+
+        _w_check_grads(op_fn, dense_fn, params, x, mode='weighted', rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize('backend,op', _W_CASES)
+@pytest.mark.parametrize('cls_name', _W_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+def test_weighted_jitc_draws_same_matrix_as_binary(backend, op, cls_name, corder):
+    """``WeightedArray(mask)`` equals ``BinaryArray(mask)``; ``WeightedArray(x)`` equals ``x @ dense``."""
+    params = _w_params()
+    mat = _w_matrix(cls_name, params, corder, backend=backend)
+    x = _w_events(_w_event_shape(op), jnp.float32)
+    mask = x != 0
+    y_bin = _w_apply(op, mat, brainevent.BinaryArray(mask))
+    y_wmask = _w_apply(op, mat, brainevent.WeightedArray(mask.astype(jnp.float32)))
+    assert np.allclose(np.asarray(y_bin), np.asarray(y_wmask), rtol=1e-5, atol=1e-5)
+    y_w = _w_apply(op, mat, brainevent.WeightedArray(x))
+    with jax.default_matmul_precision('highest'):
+        y_ref = _w_apply(op, _w_matrix(cls_name, params, corder).todense(), x)
+    assert np.allclose(np.asarray(y_w), np.asarray(y_ref), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize('backend,op', _W_CASES)
+@pytest.mark.parametrize('cls_name', _W_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+def test_weighted_jitc_sparse_events_and_bool(backend, op, cls_name, corder):
+    """Very sparse (incl. all-zero) and boolean weighted events match the dense product."""
+    params = _w_params()
+    mat = _w_matrix(cls_name, params, corder, backend=backend)
+    dense = _w_matrix(cls_name, params, corder).todense()
+    shape = _w_event_shape(op)
+    sparse = _w_events(shape, jnp.float32, base=[3.0] + [0.0] * 19)
+    for x in (sparse, jnp.zeros(shape, jnp.float32), sparse != 0):
+        y = _w_apply(op, mat, brainevent.WeightedArray(x))
+        with jax.default_matmul_precision('highest'):
+            y_ref = _w_apply(op, dense, x.astype(jnp.float32))
+        assert y.dtype == jnp.float32
+        assert np.allclose(np.asarray(y), np.asarray(y_ref), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize('backend,op', _W_CASES)
+def test_weighted_jitc_vmap_over_events(backend, op):
+    params = _w_params()
+    mat = _w_matrix(_W_CLASSES[0], params, False, backend=backend)
+    dense = _w_matrix(_W_CLASSES[0], params, False).todense()
+    xs = jnp.stack([_w_events(_w_event_shape(op), jnp.int8), -_w_events(_w_event_shape(op), jnp.int8)])
+    ys = jax.vmap(lambda v: _w_apply(op, mat, brainevent.WeightedArray(v)))(xs)
+    with jax.default_matmul_precision('highest'):
+        ys_ref = jax.vmap(lambda v: _w_apply(op, dense, v.astype(jnp.float32)))(xs)
+    assert np.allclose(np.asarray(ys), np.asarray(ys_ref), rtol=1e-4, atol=1e-4)
+
+
+def test_weighted_jitc_integer_event_gradient_is_float0():
+    params = _w_params()
+    x = _w_events(_w_event_shape('mv'), jnp.int8)
+
+    def f(p, v):
+        return (_w_matrix(_W_CLASSES[0], p, True) @ brainevent.WeightedArray(v)).sum()
+
+    _, g_x = jax.grad(f, argnums=(0, 1), allow_int=True)(params, x)
+    assert g_x.dtype == jax.dtypes.float0
+
+
+@pytest.mark.parametrize('backend,op', [c for c in _W_CASES if c.values[1] in ('mv', 'vm')])
+@pytest.mark.parametrize('cls_name', _W_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+def test_weighted_jitc_mv_skips_zero_events(backend, op, cls_name, corder):
+    """Zero events are skipped (gather and scatter kernels): a NaN weight in an inactive row does not propagate."""
+    nan_params = (jnp.asarray(jnp.nan, dtype=jnp.float32), jnp.asarray(0.6, dtype=jnp.float32))
+    mat = _w_matrix(cls_name, nan_params, corder, backend=backend)
+    shape = _w_event_shape(op)
+    y = _w_apply(op, mat, brainevent.WeightedArray(jnp.zeros(shape, jnp.float32)))
+    assert np.array_equal(np.asarray(y), np.zeros(y.shape, np.float32))
+
+
+@pytest.mark.skipif('numba' not in _W_MV_BACKENDS + _W_MM_BACKENDS, reason='requires the numba backend')
+@pytest.mark.parametrize('op', ['mv', 'vm', 'mm', 'mr'])
+@pytest.mark.parametrize('cls_name', _W_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+def test_weighted_jitc_numba_nan_event_propagates(op, cls_name, corder):
+    """A NaN weighted event is active: ``NaN * w`` reaches exactly the connected outputs (gather and scatter)."""
+    params = _w_params()
+    mat = _w_matrix(cls_name, params, corder, backend='numba')
+    dense = np.asarray(_w_matrix(cls_name, params, corder).todense())
+    x = np.array(_w_events(_w_event_shape(op), jnp.float32))
+    flat = x.reshape(-1)
+    flat[np.flatnonzero(flat)[1]] = np.nan
+    y = np.asarray(_w_apply(op, mat, brainevent.WeightedArray(jnp.asarray(x))))
+    nan_in = np.isnan(x).astype(np.float32)
+    expected_nan = _w_apply(op, (dense != 0).astype(np.float32), nan_in) > 0
+    assert expected_nan.any()
+    assert np.array_equal(np.isnan(y), expected_nan)
+    y_ref = _w_apply(op, dense, np.nan_to_num(x, nan=0.0))
+    assert np.allclose(y[~expected_nan], y_ref[~expected_nan], rtol=1e-4, atol=1e-4)

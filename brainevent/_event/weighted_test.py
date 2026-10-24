@@ -78,3 +78,59 @@ class TestAsEventOperand:
         assert not weighted and value is v
         assert as_event_operand(v) is None
         assert as_event_operand(np.asarray(v)) is None
+
+
+_W = jnp.asarray([[1., 10., -2.], [100., 0., 3.], [0., 1000., 4.], [5., 6., 7.]], dtype=jnp.float32)
+
+
+class TestWeightedArrayDenseMatmul:
+    """``WeightedArray`` with raw dense matrices (``binary_dense*(weighted=True)``)."""
+
+    @pytest.mark.parametrize('dtype', [jnp.int8, jnp.uint8, jnp.int16, jnp.int32,
+                                       jnp.float16, jnp.bfloat16, jnp.float32])
+    def test_forward_all_dtypes(self, dtype):
+        raw = np.array([2., -1., 0., 0.5])
+        if jnp.issubdtype(dtype, jnp.integer):
+            raw = np.trunc(raw).astype(np.int64)
+        v = jnp.asarray(raw).astype(dtype)
+        vf = np.asarray(v.astype(jnp.float32), dtype=np.float64)
+        w = np.asarray(_W, dtype=np.float64)
+        np.testing.assert_allclose(WeightedArray(v) @ _W, vf @ w, rtol=1e-5)
+        np.testing.assert_allclose(_W.T @ WeightedArray(v), w.T @ vf, rtol=1e-5)
+        V = jnp.stack([v, jnp.roll(v, 1)])                       # (2, 4)
+        Vf = np.asarray(V.astype(jnp.float32), dtype=np.float64)
+        np.testing.assert_allclose(WeightedArray(V) @ _W, Vf @ w, rtol=1e-5)
+        np.testing.assert_allclose(_W.T @ WeightedArray(V.T), w.T @ Vf.T, rtol=1e-5)
+
+    def test_differs_from_binary(self):
+        v = jnp.asarray([2, -1, 0, 3], dtype=jnp.int8)
+        np.testing.assert_allclose(WeightedArray(v) @ _W, v.astype(jnp.float32) @ _W)
+        np.testing.assert_allclose(BinaryArray(v) @ _W, (v != 0).astype(jnp.float32) @ _W)
+
+    @pytest.mark.parametrize('left', [True, False])
+    @pytest.mark.parametrize('ndim', [1, 2])
+    @pytest.mark.parametrize('dtype', [jnp.float32, jnp.int8])
+    def test_grads(self, left, ndim, dtype):
+        from brainevent._test_util import check_event_op_grads
+
+        x = jnp.asarray([2., -1., 0., 3.]).astype(dtype)
+        if ndim == 2:
+            x = jnp.stack([x, jnp.roll(x, 1)])                   # (2, 4)
+        if left:
+            op = lambda p, v: WeightedArray(v) @ p
+            dense = lambda p, z: z.astype(p.dtype) @ p
+        else:
+            x = x.T
+            op = lambda p, v: p.T @ WeightedArray(v)
+            dense = lambda p, z: p.T @ z.astype(p.dtype)
+        check_event_op_grads(op, dense, _W, x, mode='weighted')
+
+    def test_jit(self):
+        x = WeightedArray(jnp.asarray([0, 2, 1, 0], dtype=jnp.int8))
+        out = jax.jit(lambda e, w: e @ w)(x, _W)
+        np.testing.assert_allclose(out, jnp.asarray([0., 2., 1., 0.]) @ _W)
+
+    def test_matches_dense_class(self):
+        x = WeightedArray(jnp.asarray([0, 2, -1, 1], dtype=jnp.int8))
+        np.testing.assert_allclose(x @ _W, x @ brainevent.Dense(_W))
+        np.testing.assert_allclose(_W.T @ x, brainevent.Dense(_W.T) @ x)

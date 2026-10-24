@@ -1597,3 +1597,59 @@ def test_fixed_num_homogeneous_sum_preserves_units():
 
     assert u.get_unit(matrix.sum()) == u.mV
     assert u.math.allclose(matrix.sum(), 8.0 * u.mV)
+
+
+# ---------------------------------------------------------------------------
+# WeightedArray (#201): both storage orientations, both product directions
+# (favourable: ELL scatter; unfavourable: perm-fused CSR indexed kernel).
+# ---------------------------------------------------------------------------
+
+_WEIGHTED_BACKENDS = [None, 'jax_raw', 'numba'] if platform == 'cpu' else [None, 'jax_raw']
+
+
+def _weighted_events(n, batch=None, dtype=jnp.float32):
+    x = np.resize(np.array([2., -1., 0., 0.5, 0., 3., -2., 0.]), n)
+    if batch is not None:
+        x = np.stack([np.roll(x, i) for i in range(batch)], axis=0)
+    if jnp.issubdtype(dtype, jnp.integer):
+        x = np.trunc(x)
+    return jnp.asarray(x, dtype=dtype)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _WEIGHTED_BACKENDS)
+@pytest.mark.parametrize('dtype', [jnp.float32, jnp.int8, jnp.float16])
+@pytest.mark.parametrize('side', ['left', 'right'])
+@pytest.mark.parametrize('batch', [None, 3])
+def test_fcn_weighted_array_matmul_and_grads(backend, dtype, side, batch):
+    from brainevent._test_util import check_event_op_grads
+
+    tol = 2e-2 if dtype == jnp.float16 else 1e-4
+    for cls, data, indices, shape in _cases():
+        M = cls(data, indices, shape=shape, backend=backend).build_weight_indices()
+        n_pre, n_post = shape
+        if side == 'left':
+            # x @ W  (W^T x): event length n_pre
+            x = _weighted_events(n_pre, batch, dtype)
+            op = lambda p, v, _M=M: brainevent.WeightedArray(v) @ _M.with_data(p)
+            dense_op = lambda p, z, _M=M: z.astype(p.dtype) @ jnp.asarray(_M.with_data(p).todense())
+        else:
+            # W @ x: event length n_post (as columns for the 2-D case)
+            x = _weighted_events(n_post, batch, dtype)
+            if batch is not None:
+                x = x.T
+            op = lambda p, v, _M=M: _M.with_data(p) @ brainevent.WeightedArray(v)
+            dense_op = lambda p, z, _M=M: jnp.asarray(_M.with_data(p).todense()) @ z.astype(p.dtype)
+        check_event_op_grads(op, dense_op, data, x, mode='weighted', rtol=tol, atol=tol)
+
+
+@pytest.mark.slow
+def test_fcn_weighted_array_differs_from_binary_array():
+    for cls, data, indices, shape in _cases():
+        M = cls(data, indices, shape=shape)
+        dense = jnp.asarray(M.todense(), dtype=jnp.float32)
+        x = _weighted_events(shape[0], dtype=jnp.int8)
+        np.testing.assert_allclose(brainevent.WeightedArray(x) @ M, x.astype(jnp.float32) @ dense,
+                                   rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(BinaryArray(x) @ M, (x != 0).astype(jnp.float32) @ dense,
+                                   rtol=1e-5, atol=1e-5)

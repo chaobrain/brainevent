@@ -507,7 +507,8 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror_workspaces(monkey
     def fail_direct(*args, **kwargs):
         raise AssertionError("cuda_raw unfavorable BinaryArray route must use indexed primitive")
 
-    def fake_mv_indexed(data, indices, indptr, perm, vector, *, shape, transpose, backend=None, workspace=None):
+    def fake_mv_indexed(data, indices, indptr, perm, vector, *, shape, transpose, backend=None, workspace=None,
+                        weighted=False):
         calls.append({
             "kind": "mv",
             "shape": shape,
@@ -518,7 +519,8 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror_workspaces(monkey
         out_size = shape[1] if transpose else shape[0]
         return jnp.zeros((out_size,), dtype=data.dtype)
 
-    def fake_mm_indexed(data, indices, indptr, perm, matrix, *, shape, transpose, backend=None, workspace=None):
+    def fake_mm_indexed(data, indices, indptr, perm, matrix, *, shape, transpose, backend=None, workspace=None,
+                        weighted=False):
         calls.append({
             "kind": "mm",
             "shape": shape,
@@ -1300,3 +1302,161 @@ def test_indexed_cuda_perm_dtype_mismatch_raises_python_exception():
     assert proc.returncode >= 0, f'process killed by signal {-proc.returncode}:\n{output}'
     assert proc.returncode == 0, output
     assert 'require perm dtype' in output, output
+
+
+# ---------------------------------------------------------------------------
+# Value-weighted events (``weighted=True``, WeightedArray, #201).
+# ---------------------------------------------------------------------------
+
+from brainevent._csr._test_util import WEIGHTED_EVENT_DTYPE_NAMES, heavy_row_csr_numpy  # noqa: E402
+
+
+def _weighted_tol(dtype_name):
+    # Event tangents/cotangents of float16/bfloat16 events are rounded to the event dtype.
+    if dtype_name in ('float16', 'bfloat16'):
+        return dict(rtol=2e-2, atol=2e-2)
+    return dict(rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MV_BACKENDS)
+@pytest.mark.parametrize('dtype_name', WEIGHTED_EVENT_DTYPE_NAMES)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_indexed_mv_weighted_matches_dense_and_grads(backend, dtype_name, homo, transpose):
+    """Weighted indexed mat-vec: exact product, weight cotangent scattered via perm."""
+    with event_dtype_context(dtype_name):
+        weights, indices, indptr, perm, rows = _indexed_operands(homo, seed=4)
+        x = event_values(dtype_name, _ACT_M if transpose else _ACT_K, seed=4)
+
+        def op(w, v):
+            return binary_csrmv_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
+                                        transpose=transpose, backend=backend,
+                                        workspace=_make_binary_task_workspace(indptr), weighted=True)
+
+        def dense_op(w, z):
+            D = _indexed_dense(w, indices, perm, rows)
+            z = z.astype(w.dtype)
+            return _hp_matmul(z, D) if transpose else _hp_matmul(D, z)
+
+        check_event_op_grads(op, dense_op, weights, x, mode='weighted',
+                             check_vmap=dtype_name == 'float32', **_weighted_tol(dtype_name))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MM_BACKENDS)
+@pytest.mark.parametrize('dtype_name', WEIGHTED_EVENT_DTYPE_NAMES)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_indexed_mm_weighted_matches_dense_and_grads(backend, dtype_name, homo, transpose):
+    with event_dtype_context(dtype_name):
+        weights, indices, indptr, perm, rows = _indexed_operands(homo, seed=5)
+        B = event_values(dtype_name, (_ACT_M if transpose else _ACT_K, _ACT_N), seed=5)
+
+        def op(w, v):
+            return binary_csrmm_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
+                                        transpose=transpose, backend=backend,
+                                        workspace=_make_binary_task_workspace(indptr), weighted=True)
+
+        def dense_op(w, z):
+            D = _indexed_dense(w, indices, perm, rows)
+            z = z.astype(w.dtype)
+            return _hp_matmul(D.T, z) if transpose else _hp_matmul(D, z)
+
+        check_event_op_grads(op, dense_op, weights, B, mode='weighted',
+                             check_vmap=dtype_name == 'float32', **_weighted_tol(dtype_name))
+
+
+def _heavy_indexed(seed, m, k, row_nnz, homo):
+    rng = np.random.default_rng(seed)
+    _, indices, indptr, _ = heavy_row_csr_numpy(rng, m, k, row_nnz)
+    nse = indices.size
+    perm = rng.permutation(nse).astype(np.int32)
+    weights = np.array([1.5], np.float32) if homo else rng.standard_normal(nse).astype(np.float32)
+    rows = np.repeat(np.arange(m), np.diff(indptr))
+    dense = np.zeros((m, k))
+    dense[rows, indices] = weights[0] if homo else weights[perm]
+    return jnp.asarray(weights), jnp.asarray(indices), jnp.asarray(indptr), jnp.asarray(perm), dense
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MV_BACKENDS)
+@pytest.mark.parametrize('homo', [True, False])
+def test_indexed_mv_weighted_heavy_rows_use_row_value(backend, homo):
+    """Multi-chunk hybrid rows re-read their own event value (indexed scatter)."""
+    weights, indices, indptr, perm, dense = _heavy_indexed(7, 6, 9000, 8500, homo)
+    x = jnp.array([2.0, 0.0, -1.0, 0.5, 3.0, 0.0], dtype=jnp.float32)
+    got = binary_csrmv_indexed(weights, indices, indptr, perm, x, shape=dense.shape, transpose=True,
+                               backend=backend, workspace=_make_binary_task_workspace(indptr), weighted=True)
+    np.testing.assert_allclose(np.asarray(got, np.float64), np.asarray(x, np.float64) @ dense,
+                               rtol=1e-4, atol=1e-3)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', _IDX_MM_BACKENDS)
+@pytest.mark.parametrize('homo', [True, False])
+def test_indexed_mm_weighted_heavy_rows_use_row_value(backend, homo):
+    weights, indices, indptr, perm, dense = _heavy_indexed(8, 5, 9000, 8500, homo)
+    B = jnp.array([[2.0, 0.0], [0.0, -1.0], [-1.0, 0.5], [0.5, 0.0], [0.0, 3.0]], dtype=jnp.float32)
+    got = binary_csrmm_indexed(weights, indices, indptr, perm, B, shape=dense.shape, transpose=True,
+                               backend=backend, workspace=_make_binary_task_workspace(indptr), weighted=True)
+    np.testing.assert_allclose(np.asarray(got, np.float64), dense.T @ np.asarray(B, np.float64),
+                               rtol=1e-4, atol=1e-3)
+
+
+@pytest.mark.parametrize('homo', [True, False])
+def test_indexed_cuda_generators_select_weighted_abi(monkeypatch, homo):
+    """Indexed CUDA kernels use the ``_wv`` symbols with events cast to the weight dtype."""
+    ffi_calls = []
+    monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name, **kwargs: None)
+    monkeypatch.setattr(binary_indexed_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
+
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    perm = jnp.array([1, 0], dtype=jnp.int32)
+    workspace = _make_binary_task_workspace(indptr)
+    task_kwargs = {
+        'task_begin_info': shape_of(workspace.task_begin.dtype, workspace.task_begin.shape),
+        'task_end_info': shape_of(workspace.task_end.dtype, workspace.task_end.shape),
+        'status_info': shape_of(workspace.status.dtype, workspace.status.shape),
+        'task_capacity': workspace.task_capacity,
+    }
+    tail = (task_kwargs['task_begin_info'], task_kwargs['task_end_info'], task_kwargs['status_info'])
+    n_w = 1 if homo else 2
+    weights = jnp.ones(n_w, dtype=jnp.float32)
+    if homo:
+        names = [
+            'csr_binary_csrmv.binary_csrmv_nt_auto_homo_f32_wv',
+            'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid_homo_f32_wv',
+            'csr_binary_csrmm.binary_csrmm_nt_auto_homo_f32_wv',
+            'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid_homo_f32_wv',
+        ]
+    else:
+        names = [
+            'csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero_f32_wv',
+            'csr_binary_indexed_csrmv_hybrid.binary_indexed_csrmv_wat_hybrid_hetero_f32_wv',
+            'csr_binary_indexed_csrmm.binary_csrmm_nt_auto_perm_hetero_f32_wv',
+            'csr_binary_indexed_csrmm_hybrid.binary_indexed_csrmm_sraw_hybrid_hetero_f32_wv',
+        ]
+    cases = [
+        (binary_indexed_mod._binary_csrmv_indexed_cuda_kernel, (2,), False, (1,)),
+        (binary_indexed_mod._binary_csrmv_indexed_cuda_kernel, (1,), True, (2,)),
+        (binary_indexed_mod._binary_csrmm_indexed_cuda_kernel, (2, 3), False, (1, 3)),
+        (binary_indexed_mod._binary_csrmm_indexed_cuda_kernel, (1, 3), True, (2, 3)),
+    ]
+    for (factory, ev_shape, transpose, out_shape), expected in zip(cases, names):
+        ffi_calls.clear()
+        events = jnp.full(ev_shape, 4, dtype=jnp.uint8)
+        kernel = factory(
+            shape_of(jnp.float32, (n_w,)), shape_of(jnp.uint8, ev_shape), transpose,
+            **{**cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int32),
+               'outs': (shape_of(jnp.float32, out_shape), *tail), 'weighted': True, **task_kwargs},
+        )
+        kernel(weights, indices, indptr, perm, events, workspace.task_begin, workspace.task_end, workspace.status)
+        assert len(ffi_calls) == 1
+        name, _, _, args, _ = ffi_calls[0]
+        assert strip_hybrid_suffix(name) == expected
+        # Homogeneous weights reuse the plain kernels, which take no ``perm``.
+        event_arg = args[3] if homo else args[4]
+        assert event_arg.dtype == jnp.float32
+        np.testing.assert_array_equal(np.asarray(event_arg), np.full(ev_shape, 4.0))
