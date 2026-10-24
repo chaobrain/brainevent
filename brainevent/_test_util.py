@@ -341,3 +341,124 @@ def ones_like(x):
         every leaf.
     """
     return jax.tree.map(jnp.ones_like, x)
+
+
+def _tree_vdot(a, b):
+    leaves = jax.tree_util.tree_map(
+        lambda u, v: jnp.vdot(jnp.ravel(u).astype(jnp.float64 if u.dtype == jnp.float64 else jnp.float32),
+                              jnp.ravel(v).astype(jnp.float64 if u.dtype == jnp.float64 else jnp.float32)),
+        a, b,
+    )
+    return sum(jax.tree_util.tree_leaves(leaves))
+
+
+def check_event_op_grads(
+    op,
+    dense_op,
+    params,
+    x,
+    *,
+    mode: str = 'binary',
+    rtol: float = 1e-4,
+    atol: float = 1e-4,
+    check_vmap: bool = True,
+    seed: int = 0,
+):
+    """Check an event operation's forward pass and derivatives against a dense reference.
+
+    The event operation ``op(params, x)`` wraps the raw event array ``x`` in
+    an event representation internally (for example
+    ``BinaryArray(x) @ CSR(params)``). The reference ``dense_op(params, z)``
+    is the same product written with dense arrays, evaluated at
+    ``z = factor(x)``, where ``factor`` is the activity mask for
+    ``mode='binary'`` and the identity for ``mode='weighted'``.
+
+    Parameters
+    ----------
+    op : callable
+        ``op(params, x) -> y``, the operation under test.
+    dense_op : callable
+        ``dense_op(params, z) -> y``, linear in ``z``.
+    params : pytree of jax.Array
+        Differentiable weight parameters.
+    x : jax.Array
+        Raw float event array. Should contain values other than 0 and 1
+        (for example ``2.0`` and ``-1.0``) to exercise #198.
+    mode : {'binary', 'weighted'}, optional
+        Event semantics.
+    rtol, atol : float, optional
+        Tolerances.
+    check_vmap : bool, optional
+        Also check the parameter gradient under ``jax.vmap`` over a stacked
+        pair of event arrays.
+    seed : int, optional
+        Seed for the random cotangent and tangents.
+
+    Notes
+    -----
+    Checked properties:
+
+    1. Forward: ``op(params, x) == dense_op(params, factor(x))``.
+    2. Reverse mode w.r.t. ``params`` equals the dense reference gradient
+       (the #198 property: binary weight gradients use the mask).
+    3. Reverse mode w.r.t. ``x`` equals ``d dense_op / d z``. For binary
+       events this is the straight-through estimator; for weighted events it
+       is exact.
+    4. Forward and reverse mode agree:
+       ``<ct, J t> == <J^T ct, t>`` for random tangents ``t``.
+    5. Optionally, the parameter gradient under ``jax.vmap``.
+    """
+    from brainevent._op.util import event_factor
+
+    if mode == 'binary':
+        z = event_factor(x, dtype=x.dtype)
+    elif mode == 'weighted':
+        z = x
+    else:
+        raise ValueError(f'Unknown mode {mode!r}.')
+
+    keys = jax.random.split(jax.random.PRNGKey(seed), 3)
+    y = op(params, x)
+    y_ref = dense_op(params, z)
+    assert y.shape == y_ref.shape, (y.shape, y_ref.shape)
+    assert jnp.allclose(y, y_ref, rtol=rtol, atol=atol), 'forward mismatch'
+
+    ct = jax.random.normal(keys[0], y.shape, dtype=y.dtype)
+    leaves, treedef = jax.tree_util.tree_flatten(params)
+    tp = jax.tree_util.tree_unflatten(
+        treedef,
+        [jax.random.normal(k, l.shape, dtype=l.dtype)
+         for k, l in zip(jax.random.split(keys[1], len(leaves)), leaves)],
+    )
+    tx = jax.random.normal(keys[2], x.shape, dtype=x.dtype)
+
+    _, vjp = jax.vjp(op, params, x)
+    g_p, g_x = vjp(ct)
+    _, vjp_ref = jax.vjp(dense_op, params, z)
+    g_p_ref, g_x_ref = vjp_ref(ct)
+
+    for a, b in zip(jax.tree_util.tree_leaves(g_p), jax.tree_util.tree_leaves(g_p_ref)):
+        assert jnp.allclose(a, b, rtol=rtol, atol=atol), f'weight gradient mismatch:\n{a}\nvs\n{b}'
+    assert jnp.allclose(g_x, g_x_ref, rtol=rtol, atol=atol), f'event gradient mismatch:\n{g_x}\nvs\n{g_x_ref}'
+
+    # Forward mode w.r.t. params only for binary events: the event tangent of a
+    # binary op is straight-through, which has no forward-mode counterpart of
+    # the mask, so the dot-product identity is checked per argument.
+    _, jp = jax.jvp(lambda p: op(p, x), (params,), (tp,))
+    lhs = jnp.vdot(ct, jp)
+    rhs = _tree_vdot(g_p, tp)
+    assert jnp.allclose(lhs, rhs, rtol=rtol, atol=atol * max(1, y.size)), \
+        f'weight JVP/VJP mismatch: {lhs} vs {rhs}'
+    _, jx = jax.jvp(lambda v: op(params, v), (x,), (tx,))
+    lhs = jnp.vdot(ct, jx)
+    rhs = jnp.vdot(g_x, tx)
+    assert jnp.allclose(lhs, rhs, rtol=rtol, atol=atol * max(1, y.size)), \
+        f'event JVP/VJP mismatch: {lhs} vs {rhs}'
+
+    if check_vmap:
+        xs = jnp.stack([x, jnp.flip(x, axis=0)])
+        zs = jax.vmap(lambda v: event_factor(v, dtype=v.dtype) if mode == 'binary' else v)(xs)
+        g = jax.vmap(lambda v: jax.grad(lambda p: jnp.vdot(ct, op(p, v)))(params))(xs)
+        g_ref = jax.vmap(lambda v: jax.grad(lambda p: jnp.vdot(ct, dense_op(p, v)))(params))(zs)
+        for a, b in zip(jax.tree_util.tree_leaves(g), jax.tree_util.tree_leaves(g_ref)):
+            assert jnp.allclose(a, b, rtol=rtol, atol=atol), f'vmapped weight gradient mismatch:\n{a}\nvs\n{b}'

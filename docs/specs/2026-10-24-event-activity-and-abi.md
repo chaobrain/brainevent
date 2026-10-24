@@ -66,3 +66,19 @@ def cuda_event_abi(dtype, *, native_float=jnp.float32) -> EventABI
 
 Negative and NaN events used to be inactive on most backends and are now active. Users who
 relied on `x > 0` thresholding should pass `x > 0` explicitly.
+
+## Binary weight gradients (#198)
+
+The forward pass of every binary operation multiplies weights by `event_factor(x)`. Its
+derivatives must be the derivatives of that function:
+
+- weight JVP: the binary primitive applied to the weight tangent (already the case);
+- weight cotangent: built from `event_factor(x)`, never from raw `x`. Affected branches: CSR
+  mv/mm hetero (+ indexed), dense mv/mm, FCN mm, JIT scalar mv/mm, JIT normal mv/mm (loc and
+  scale). FCN mv, JIT uniform and TCSR `bptt` already comply; TCSR `pp_prop` is value-weighted
+  by design and unchanged;
+- event tangent / cotangent: unchanged straight-through estimator `W^T ct`.
+
+`brainevent._test_util.check_event_op_grads(op, dense_op, params, x, mode=...)` checks forward,
+reverse mode (weights and events), the JVP/VJP dot-product identity and `vmap` against a dense
+reference, with `x` containing `2.0`, `-1.0` and `0`. Every format's tests call it.

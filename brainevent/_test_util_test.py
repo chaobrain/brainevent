@@ -18,6 +18,7 @@
 import brainstate
 import jax
 import jax.numpy as jnp
+import pytest
 
 import brainevent
 from brainevent._test_util import (
@@ -29,6 +30,7 @@ from brainevent._test_util import (
     allclose,
     gen_events,
     ones_like,
+    check_event_op_grads,
 )
 
 
@@ -348,3 +350,38 @@ class TestOnesLike:
         assert jnp.allclose(result[0], jnp.ones(2))
         assert jnp.allclose(result[1], jnp.ones(1))
         jax.block_until_ready((x[0], x[1], result[0], result[1]))
+
+
+class TestCheckEventOpGrads:
+    """``check_event_op_grads`` must accept correct ops and reject the #198 defect."""
+
+    W = jnp.array([[1., 10.], [100., 0.], [0., 1000.]])
+    x = jnp.array([0., 2., -1.])
+
+    @staticmethod
+    def _dense(w, z):
+        return z @ w
+
+    def test_accepts_masked_op(self):
+        from brainevent._op.util import event_factor
+        op = lambda w, v: event_factor(jax.lax.stop_gradient(v), dtype=v.dtype) @ w + (v - jax.lax.stop_gradient(v)) @ w
+        check_event_op_grads(op, self._dense, self.W, self.x)
+
+    def test_rejects_raw_weight_gradient(self):
+        from brainevent._op.util import event_factor
+
+        @jax.custom_vjp
+        def op(w, v):
+            return event_factor(v, dtype=v.dtype) @ w
+
+        op.defvjp(lambda w, v: (op(w, v), (w, v)),
+                  lambda res, ct: (jnp.outer(res[1], ct), res[0] @ ct))   # raw v: the #198 bug
+        with pytest.raises(AssertionError, match='weight gradient mismatch'):
+            check_event_op_grads(op, self._dense, self.W, self.x, check_vmap=False)
+
+    def test_weighted_mode_uses_values(self):
+        check_event_op_grads(self._dense, self._dense, self.W, self.x, mode='weighted')
+
+    def test_unknown_mode(self):
+        with pytest.raises(ValueError, match='Unknown mode'):
+            check_event_op_grads(self._dense, self._dense, self.W, self.x, mode='nope')
