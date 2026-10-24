@@ -27,7 +27,7 @@ from brainevent._misc import (
 )
 from brainevent._op import load_cuda_file
 from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor
 from .preprocess_config import (
     get_hybrid_config,
     compile_flags_for_config,
@@ -80,15 +80,17 @@ def _tile_weight_suffix(weight_dtype, event_dtype) -> str:
             f"{weight_dtype}"
         )
 
+    # Events are packed with ``event_active(x).astype(int8)`` (``x != 0``)
+    # inside the kernel closure, so any boolean / integer / floating dtype works.
     event_dtype = jnp.dtype(event_dtype)
     if not (
         event_dtype == jnp.dtype(jnp.bool_)
-        or event_dtype == jnp.dtype(jnp.int8)
+        or jnp.issubdtype(event_dtype, jnp.integer)
         or jnp.issubdtype(event_dtype, jnp.floating)
     ):
         raise TypeError(
-            "TCSR CUDA tile MM events must be bool, int8, or floating-point, "
-            f"got {event_dtype}"
+            "TCSR CUDA tile MM events must be boolean, integer, or "
+            f"floating-point, got {event_dtype}"
         )
     return suffix
 
@@ -355,14 +357,12 @@ def _csrmv_numba_kernel(
         transpose=transpose, mirror_enabled=mirror_enabled
     )
     homogeneous = weight_info.size == 1
-    boolean_events = vector_info.dtype == jnp.bool_
 
     @numba.njit(fastmath=True, nogil=True)
     def mv(data, indices, indptr, permutation, events, output):
         output[:] = 0
         for row in range(indptr.shape[0] - 1):
-            active = events[row] if boolean_events else events[row] > 0
-            if active:
+            if events[row]:
                 for slot in range(indptr[row], indptr[row + 1]):
                     weight_slot = permutation[slot] if mirror_enabled else slot
                     weight = data[0] if homogeneous else data[weight_slot]
@@ -371,6 +371,9 @@ def _csrmv_numba_kernel(
     def kernel(data, indices, indptr, events, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
         del local_targets, tile_offsets
+        # Numba reads the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
+        events = event_active(events)
         output = numba_kernel(mv, outs=kwargs['outs'][0])(
             data, indices, indptr, permutation, events
         )
@@ -396,7 +399,6 @@ def _binary_csrmv_jax_kernel(
     nnz = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
     homogeneous = weight_info.size == 1
-    boolean_events = vector_info.dtype == jnp.bool_
     if nnz > jnp.iinfo(kwargs['indices_info'].dtype).max:
         raise NotImplementedError(
             "direct TCSR JAX MV requires indptr values to fit indices dtype"
@@ -411,12 +413,7 @@ def _binary_csrmv_jax_kernel(
             jnp.diff(indptr),
             total_repeat_length=nnz,
         )
-        active = events[row_ids]
-        active = (
-            active.astype(out_dtype)
-            if boolean_events
-            else (active > 0).astype(out_dtype)
-        )
+        active = event_factor(events[row_ids], dtype=out_dtype)
         weights = data[0] if homogeneous else (
             data if transpose else data[permutation]
         )
@@ -443,7 +440,6 @@ def _binary_csrmv_cusparse_kernel(
     )
     m, k = shape if transpose else shape[::-1]
     is_homo = (weight_info.size == 1)
-    is_bool = (vector_info.dtype == jnp.bool_)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
 
@@ -455,7 +451,7 @@ def _binary_csrmv_cusparse_kernel(
     def kernel(weights, indices, indptr, vector, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
         del local_targets, tile_offsets
-        events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+        events = event_factor(vector, dtype=out_dtype)
         indptr = indptr.astype(indices.dtype) if indices.dtype != indptr.dtype else indptr
         if is_homo:
             data = jnp.ones(nse, dtype=out_dtype)
@@ -486,18 +482,23 @@ def _binary_csrmv_cuda_kernel(
     is_homo = (weight_info.size == 1)
     homo_suffix = '_homo' if is_homo else '_hetero'
 
-    # Spike type suffix
-    spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
+    # Event ABI: bool / float32 kernels; other dtypes are converted to their
+    # activity mask inside the kernel closure (after bind, so JVPs are intact).
+    event_abi = cuda_event_abi(vector_info.dtype)
+    spk_suffix = event_abi.suffix
 
     # Weight dtype suffix
     wt_sfx = dtype_suffix(weight_info.dtype)
 
     config = get_hybrid_config()
     indexed = mirror_enabled and not is_homo
+    # ``tcsr_`` prefix: these sources are TCSR-owned copies and must not share
+    # an FFI module name with the plain-CSR kernels (kernix refuses to
+    # re-register a live target with different content).
     module = (
-        'csr_binary_indexed_csrmv_hybrid'
+        'tcsr_binary_indexed_csrmv_hybrid'
         if indexed
-        else 'csr_binary_csrmv_hybrid'
+        else 'tcsr_binary_csrmv_hybrid'
     ) + module_suffix_for_config(config)
     load_cuda_file(
         Path(__file__).parent.joinpath(
@@ -518,6 +519,7 @@ def _binary_csrmv_cuda_kernel(
     def kernel(weights, indices, indptr, vector, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
         del local_targets, tile_offsets
+        vector = event_abi.prepare(vector)
         if indexed:
             return jax.ffi.ffi_call(
                 kernel_name,
@@ -745,7 +747,7 @@ def _csrmv_transpose_rule(
                 activity = (
                     events
                     if kwargs['backward_algorithm'] == 'pp_prop'
-                    else (events > 0).astype(ct.dtype)
+                    else event_factor(events, dtype=ct.dtype)
                 )
                 slot_values = activity[row_ids] * ct[indices]
             if data.aval.shape[0] == 1:
@@ -925,7 +927,8 @@ def binary_csrmv_p_call(
     ``y[j] = sum_{i in nz_col(j)} w[i] * e(v[i])``  (transposed)
 
     where ``e(x)`` is ``1`` when ``x`` is ``True`` (boolean) or
-    ``x > 0`` (float), and ``0`` otherwise.  ``w[j]`` is either
+    ``x != 0`` (numeric; negative values and NaN are active), and ``0``
+    otherwise.  ``w[j]`` is either
     ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
 
     Examples
@@ -1108,7 +1111,6 @@ def _csrmm_numba_kernel(
         transpose=transpose, mirror_enabled=mirror_enabled
     )
     homogeneous = weight_info.size == 1
-    boolean_events = vector_info.dtype == jnp.bool_
 
     @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
     def mm(data, indices, indptr, permutation, events, output):
@@ -1116,8 +1118,7 @@ def _csrmm_numba_kernel(
         batch_size = events.shape[0] if transpose else events.shape[1]
         for batch in numba.prange(batch_size):
             for row in range(indptr.shape[0] - 1):
-                value = events[batch, row] if transpose else events[row, batch]
-                active = value if boolean_events else value > 0
+                active = events[batch, row] if transpose else events[row, batch]
                 if active:
                     for slot in range(indptr[row], indptr[row + 1]):
                         weight_slot = permutation[slot] if mirror_enabled else slot
@@ -1130,6 +1131,9 @@ def _csrmm_numba_kernel(
     def kernel(data, indices, indptr, events_bn, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
         del local_targets, tile_offsets
+        # Numba reads the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
+        events_bn = event_active(events_bn)
         output = numba_kernel(mm, outs=kwargs['outs'][0])(
             data, indices, indptr, permutation, events_bn
         )
@@ -1155,7 +1159,6 @@ def _binary_csrmm_jax_kernel(
     nnz = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
     homogeneous = weight_info.size == 1
-    boolean_events = vector_info.dtype == jnp.bool_
     if nnz > jnp.iinfo(kwargs['indices_info'].dtype).max:
         raise NotImplementedError(
             "direct TCSR JAX MM requires indptr values to fit indices dtype"
@@ -1175,11 +1178,7 @@ def _binary_csrmm_jax_kernel(
             if transpose
             else events_bn[row_ids, :]
         )
-        active = (
-            active.astype(out_dtype)
-            if boolean_events
-            else (active > 0).astype(out_dtype)
-        )
+        active = event_factor(active, dtype=out_dtype)
         physical_weights = data if transpose else data[permutation]
         if transpose:
             weights = data[0] if homogeneous else physical_weights[None, :]
@@ -1209,7 +1208,6 @@ def _binary_csrmm_cusparse_kernel(
     )
     m, k = shape if transpose else shape[::-1]
     is_homo = (weight_info.size == 1)
-    is_bool = (vector_info.dtype == jnp.bool_)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
 
@@ -1221,7 +1219,7 @@ def _binary_csrmm_cusparse_kernel(
     def kernel(weights, indices, indptr, B, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
         del local_targets, tile_offsets
-        events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+        events = event_factor(B, dtype=out_dtype)
         events_nb = events.T if transpose else events
         indptr = indptr.astype(indices.dtype) if indices.dtype != indptr.dtype else indptr
         if is_homo:
@@ -1292,7 +1290,7 @@ def _binary_csrmm_indexed_cuda_kernel(
             permutation,
         ):
             del indices, permutation
-            spike_bn = (events_nb.T > 0).astype(jnp.int8)
+            spike_bn = event_active(events_nb.T).astype(jnp.int8)
             output_bn, _, _ = jax.ffi.ffi_call(
                 "tcsr_binary_csrmm_tile.binary_csrmm_tile_homo_"
                 f"{weight_suffix}",
@@ -1307,11 +1305,12 @@ def _binary_csrmm_indexed_cuda_kernel(
             return output_bn.T, task_begin, task_end, status
 
         return homogeneous_kernel
-    spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
+    event_abi = cuda_event_abi(vector_info.dtype)
+    spk_suffix = event_abi.suffix
     wt_sfx = dtype_suffix(weight_info.dtype)
     config = get_hybrid_config()
     module = (
-        'csr_binary_indexed_csrmm_hybrid'
+        'tcsr_binary_indexed_csrmm_hybrid'
         + module_suffix_for_config(config)
     )
     load_cuda_file(
@@ -1346,6 +1345,7 @@ def _binary_csrmm_indexed_cuda_kernel(
         permutation,
     ):
         del local_targets, tile_offsets
+        events_nb = event_abi.prepare(events_nb)
         output_bn, task_begin, task_end, status = jax.ffi.ffi_call(
             kernel_name,
             ffi_outs,
@@ -1434,7 +1434,7 @@ def _binary_csrmm_tile_cuda_kernel(
         permutation,
     ):
         del indices
-        spike_bn = (B > 0).astype(jnp.int8)
+        spike_bn = event_active(B).astype(jnp.int8)
         output_bn, _, _ = jax.ffi.ffi_call(
             ffi_target,
             ffi_outs,
@@ -1603,7 +1603,7 @@ def _csrmm_transpose_rule(
             activity = (
                 physical_B
                 if kwargs['backward_algorithm'] == 'pp_prop'
-                else (physical_B > 0).astype(physical_ct.dtype)
+                else event_factor(physical_B, dtype=physical_ct.dtype)
             )
             slot_values = jnp.sum(
                 activity[row_ids, :] * physical_ct[indices, :], axis=1
@@ -1797,7 +1797,8 @@ def binary_csrmm_p_call(
     ``C[b, j] = sum_{i in nz_col(j)} w[i] * e(B[b, i])``  (transposed)
 
     where ``e(x)`` is ``1`` when ``x`` is ``True`` (boolean) or
-    ``x > 0`` (float), and ``0`` otherwise.  ``w[j]`` is either
+    ``x != 0`` (numeric; negative values and NaN are active), and ``0``
+    otherwise.  ``w[j]`` is either
     ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
 
     Examples

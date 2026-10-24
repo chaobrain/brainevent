@@ -30,7 +30,7 @@ from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule,
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
 from .float import _chunk_size, _walk_length, _LANE_STRIDE, jitumv_p_call, jitumm_p_call
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import dtype_suffix, event_active
 
 __all__ = [
     "binary_jitumv",
@@ -120,7 +120,8 @@ def binary_jitumv(
 
         ``result[i] = sum_{j : vector[j] is active} A[i, j]``
 
-    where "active" means ``True`` for boolean arrays or ``> 0`` for float arrays.
+    where "active" means ``True`` for boolean arrays or non-zero for numeric
+    arrays (negative values and NaN are active).
     Only positions where ``vector[j]`` is active contribute, making this efficient
     when the event vector is sparse. The full expansion is:
 
@@ -243,7 +244,8 @@ def binary_jitumm(
 
         ``result[i, j] = sum_{k : B[k, j] is active} A[i, k]``
 
-    where "active" means ``True`` for boolean arrays or ``> 0`` for float arrays.
+    where "active" means ``True`` for boolean arrays or non-zero for numeric
+    arrays (negative values and NaN are active).
     Each column of ``B`` is treated as an independent event vector. The full
     expansion is:
 
@@ -325,7 +327,6 @@ def _jitumv_numba_kernel_generator(
 
     stride = _LANE_STRIDE
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
-    is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
         @numba.njit(fastmath=True)
@@ -356,10 +357,7 @@ def _jitumv_numba_kernel_generator(
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
                             j = chunk_start + local_j
-                            if is_bool:
-                                active = vector[j]
-                            else:
-                                active = vector[j] > 0.
+                            active = vector[j]
                             if active:
                                 u01 = _rng_uniform01(seed0, row, j)
                                 out += w_low0 + u01 * span
@@ -382,10 +380,7 @@ def _jitumv_numba_kernel_generator(
                 cl = np.uint32(2)
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
-                if is_bool:
-                    active_row = vector[row]
-                else:
-                    active_row = vector[row] > 0.
+                active_row = vector[row]
                 if not active_row:
                     continue
                 for chunk_id in range(n_chunks):
@@ -409,6 +404,10 @@ def _jitumv_numba_kernel_generator(
                             local_j = lane + stride * int(q)
 
     def kernel(w_low, w_high, clen, vector, seed):
+        # Numba sees the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16, which Numba cannot read) and immune to
+        # ``fastmath`` folding ``NaN != 0`` to False.
+        vector = event_active(vector)
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, vector, seed)
 
     return kernel
@@ -429,10 +428,9 @@ def _binary_jitumv_cuda_kernel(
     k = int(vector_info.shape[0])
     n_words = (k + 31) // 32
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
-    is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(w_low, w_high, clen, vector, seed):
-        spikes = vector.astype(jnp.int8) if is_bool else (vector > 0).astype(jnp.int8)
+        spikes = event_active(vector).astype(jnp.int8)
         packed = jax.ffi.ffi_call(
             'jit_uniform_binary_jitumv.pack_bool',
             jax.ShapeDtypeStruct((n_words,), jnp.uint32),
@@ -916,7 +914,6 @@ def _jitumm_numba_kernel_generator(
 
     stride = _LANE_STRIDE
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
-    is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
         @numba.njit(fastmath=True)
@@ -951,10 +948,7 @@ def _jitumm_numba_kernel_generator(
                             u01 = _rng_uniform01(seed0, row, j)
                             w = w_low0 + u01 * span
                             for col in range(n):
-                                if is_bool:
-                                    active = B[j, col]
-                                else:
-                                    active = B[j, col] > 0.
+                                active = B[j, col]
                                 if active:
                                     out[col] += w
                             state = _rng_next(state)
@@ -994,10 +988,7 @@ def _jitumm_numba_kernel_generator(
                             u01 = _rng_uniform01(seed0, row, j)
                             w = w_low0 + u01 * span
                             for col in range(n):
-                                if is_bool:
-                                    active = B[row, col]
-                                else:
-                                    active = B[row, col] > 0.
+                                active = B[row, col]
                                 if active:
                                     posts[j, col] += w
                             state = _rng_next(state)
@@ -1005,6 +996,10 @@ def _jitumm_numba_kernel_generator(
                             local_j = lane + stride * int(q)
 
     def kernel(w_low, w_high, clen, B, seed):
+        # Numba sees the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16, which Numba cannot read) and immune to
+        # ``fastmath`` folding ``NaN != 0`` to False.
+        B = event_active(B)
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)
 
     return kernel
@@ -1032,10 +1027,9 @@ def _binary_jitumm_cuda_kernel(
         m_ffi, k_ffi = int(out_info.shape[0]), k_pack
     else:
         m_ffi, k_ffi = k_pack, int(out_info.shape[0])
-    is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(w_low, w_high, clen, B, seed):
-        spikes = B.astype(jnp.int8) if is_bool else (B > 0).astype(jnp.int8)
+        spikes = event_active(B).astype(jnp.int8)
         packed = jax.ffi.ffi_call(
             'jit_uniform_binary_jitumm.pack',
             jax.ShapeDtypeStruct((n, n_words), jnp.uint32),

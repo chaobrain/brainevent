@@ -41,7 +41,7 @@ __device__ __forceinline__ bool event_active<bool>(bool value)
 template <>
 __device__ __forceinline__ bool event_active<float>(float value)
 {
-    return value > 0.0f;
+    return value != 0.0f;
 }
 
 template <typename EventT, typename IndptrT>

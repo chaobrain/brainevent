@@ -30,7 +30,7 @@ from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
 from brainevent._op import load_cuda_file
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask
 
 __all__ = [
     'binary_densemv', 'binary_densemv_p',
@@ -63,6 +63,10 @@ def _load_dense_cublas_file():
         extra_ldflags=[str(libcublas), f'-rpath={libcublas.parent}'],
         allow_cuda_graph=False,
     )
+
+
+_EVENT_FASTMATH = NUMBA_EVENT_FASTMATH
+_numba_event_mask = numba_event_mask
 
 
 # ==============================================================================
@@ -100,7 +104,7 @@ def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None)
     backend : str, optional
         Backend to use for the computation. On GPU production backends include
         ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
-        (float32 weights with bool spikes only). ``None`` selects the platform
+        (float32 weights only). ``None`` selects the platform
         default.
 
     Returns
@@ -139,7 +143,9 @@ def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None)
     where ``s[i]`` is ``1`` if ``spikes[i]`` is active and ``0`` otherwise.
 
     For boolean spikes, an entry is considered active when it is ``True``.
-    For float spikes, an entry is considered active when it is ``> 0``.
+    For numeric spikes, an entry is considered active when it is ``!= 0``
+    (negative values and NaN are active). Spike values are never multiplied
+    in; only their activity matters.
 
     Examples
     --------
@@ -157,8 +163,8 @@ def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None)
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    # Ensure spikes are bool or float — integer types (uint8, int8, int32, etc.)
-    # must be cast to bool to match kernel expectations.
+    # Integer events (uint8, int8, int32, ...) are cast to their activity mask
+    # (``x != 0``); bool and floating events are passed through unchanged.
     if not jnp.issubdtype(spk_val.dtype, jnp.floating) and spk_val.dtype != jnp.bool_:
         spk_val = spk_val.astype(jnp.bool_)
     r = binary_densemv_p_call(weight_val, spk_val, transpose=transpose, backend=backend)
@@ -172,40 +178,46 @@ def _binary_densemv_numba_kernel(
 ):
     import numba
 
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(spk_info.dtype)
+    bool_events = spk_info.dtype == jnp.bool_ or mask_events
+
     if transpose:
         # weights[k,n], spikes[k] -> out[n]
-        if spk_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True)
+        if bool_events:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
             def kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
                     if spikes[i]:
                         posts += weights[i]
         else:
-            @numba.njit(fastmath=True)
+            @numba.njit(fastmath=_EVENT_FASTMATH)
             def kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
-                    if spikes[i] > 0.:
+                    if spikes[i] != 0:
                         posts += weights[i]
     else:
         # weights[m,k], spikes[k] -> out[m]
-        if spk_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True)
+        if bool_events:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
             def kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
                     if spikes[i]:
                         posts += weights[:, i]
         else:
-            @numba.njit(fastmath=True)
+            @numba.njit(fastmath=_EVENT_FASTMATH)
             def kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
-                    if spikes[i] > 0.:
+                    if spikes[i] != 0:
                         posts += weights[:, i]
 
     def run(weights, spikes):
+        if mask_events:
+            spikes = event_active(spikes)
         return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
 
     return run
@@ -216,7 +228,7 @@ def _binary_densemv_jax_kernel(
     **kwargs,
 ):
     def kernel(weights, spikes):
-        s = spikes.astype(weights.dtype) if spikes.dtype == jnp.bool_ else spikes
+        s = event_factor(spikes, dtype=weights.dtype)
         if transpose:
             return s @ weights,
         else:
@@ -237,7 +249,8 @@ def _binary_densemv_cuda_kernel(
     )
 
     out_info = kwargs['outs']
-    spk_suffix = '_bool' if spk_info.dtype == jnp.bool_ else '_float'
+    abi = cuda_event_abi(spk_info.dtype)
+    spk_suffix = abi.suffix
 
     wt_sfx = dtype_suffix(kwargs['weight_info'].dtype)
 
@@ -247,7 +260,7 @@ def _binary_densemv_cuda_kernel(
         kernel_name = f'dense_binary_mv.binary_densemv_no_transpose{wt_sfx}{spk_suffix}'
 
     def kernel(weights, spikes):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, abi.prepare(spikes))
 
     return kernel
 
@@ -258,11 +271,9 @@ def _binary_densemv_cublas_kernel(
     transpose: bool,
     **kwargs
 ):
-    """Select the cuBLAS dense MV backend for float32 weights and bool spikes."""
+    """Select the cuBLAS dense MV backend for float32 weights (any event dtype)."""
     if jnp.dtype(weight_info.dtype) != jnp.dtype('float32'):
         raise NotImplementedError("cublas dense MV only supports float32 weights.")
-    if jnp.dtype(spk_info.dtype) != jnp.dtype(jnp.bool_):
-        raise NotImplementedError("cublas dense MV only supports bool spikes.")
 
     _load_dense_cublas_file()
 
@@ -271,7 +282,7 @@ def _binary_densemv_cublas_kernel(
     kernel_name = f'dense_binary_cublas.binary_densemv_cublas_{suffix}_f32_bool'
 
     def kernel(weights, spikes):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))
 
     return kernel
 
@@ -296,11 +307,14 @@ def _binary_densemv_transpose_rule(ct, weights, spikes, *, transpose, **kwargs):
             ct_spikes = jnp.matmul(ct, weights)
         return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_spikes)
     else:
+        if type(ct) is ad.Zero:
+            return ad.Zero(weights), spikes
+        s = event_factor(spikes, dtype=ct.dtype)
         if transpose:
-            ct_weights = jnp.outer(spikes, ct)
+            ct_weights = jnp.outer(s, ct)
         else:
-            ct_weights = jnp.outer(ct, spikes)
-        return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
+            ct_weights = jnp.outer(ct, s)
+        return ct_weights, spikes
 
 
 def _binary_densemv_batching(args, axes, *, transpose, **kwargs):
@@ -366,7 +380,7 @@ def binary_densemv_p_call(weights, spikes, *, transpose, backend: Optional[str] 
     backend : str, optional
         Backend to use for the computation. On GPU production backends include
         ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
-        (float32 weights with bool spikes only). ``None`` selects the platform
+        (float32 weights only). ``None`` selects the platform
         default.
 
     Returns
@@ -441,7 +455,7 @@ This ``XLACustomKernel`` instance dispatches the binary (event-driven) dense
 matrix-vector multiplication operation to registered backends. On GPU,
 ``cuda_raw`` is the WPR event-driven CUDA backend and remains the default;
 ``jax_raw`` provides a pure JAX reference path, and ``cublas`` provides an
-optional float32/bool cuBLAS path.
+optional float32-weight cuBLAS path.
 
 The operation computes ``weights[m,k] @ spikes[k] -> out[m]`` when ``transpose=False``,
 or ``spikes[k] @ weights[k,n] -> out[n]`` when ``transpose=True``, where only active
@@ -509,7 +523,7 @@ def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None)
     backend : str, optional
         Backend to use for the computation. On GPU production backends include
         ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
-        (float32 weights with bool events only). ``None`` selects the platform
+        (float32 weights only). ``None`` selects the platform
         default.
 
     Returns
@@ -568,8 +582,8 @@ def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None)
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    # Ensure spikes are bool or float — integer types (uint8, int8, int32, etc.)
-    # must be cast to bool to match kernel expectations.
+    # Integer events (uint8, int8, int32, ...) are cast to their activity mask
+    # (``x != 0``); bool and floating events are passed through unchanged.
     if not jnp.issubdtype(spk_val.dtype, jnp.floating) and spk_val.dtype != jnp.bool_:
         spk_val = spk_val.astype(jnp.bool_)
     r = binary_densemm_p_call(weight_val, spk_val, transpose=transpose, backend=backend)
@@ -584,11 +598,15 @@ def _binary_densemm_numba_kernel(
 ):
     import numba
 
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(spk_info.dtype)
+    bool_events = spk_info.dtype == jnp.bool_ or mask_events
+
     if transpose:
         # weights[k,m].T @ spikes[k,n] -> out[m,n]
         # primitive args: (weights, spikes)
-        if spk_info.dtype == jnp.bool_:
-            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+        if bool_events:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
             def kernel(weights, spikes, posts):
                 for i_n in numba.prange(spikes.shape[1]):
                     out = np.zeros(weights.shape[1], dtype=posts.dtype)
@@ -597,18 +615,18 @@ def _binary_densemm_numba_kernel(
                             out += weights[i_k]
                     posts[:, i_n] = out
         else:
-            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
             def kernel(weights, spikes, posts):
                 for i_n in numba.prange(spikes.shape[1]):
                     out = np.zeros(weights.shape[1], dtype=posts.dtype)
                     for i_k in range(spikes.shape[0]):
-                        if spikes[i_k, i_n] > 0.:
+                        if spikes[i_k, i_n] != 0:
                             out += weights[i_k]
                     posts[:, i_n] = out
     else:
         # weights[m,k] @ spikes[k,n] -> out[m,n]
-        if spk_info.dtype == jnp.bool_:
-            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+        if bool_events:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
             def kernel(weights, spikes, posts):
                 for i_n in numba.prange(spikes.shape[1]):
                     out = np.zeros(weights.shape[0], dtype=weights.dtype)
@@ -617,16 +635,18 @@ def _binary_densemm_numba_kernel(
                             out += weights[:, i_k]
                     posts[:, i_n] = out
         else:
-            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
             def kernel(weights, spikes, posts):
                 for i_n in numba.prange(spikes.shape[1]):
                     out = np.zeros(weights.shape[0], dtype=weights.dtype)
                     for i_k in range(spikes.shape[0]):
-                        if spikes[i_k, i_n] > 0.:
+                        if spikes[i_k, i_n] != 0:
                             out += weights[:, i_k]
                     posts[:, i_n] = out
 
     def run(weights, spikes):
+        if mask_events:
+            spikes = event_active(spikes)
         return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
 
     return run
@@ -652,9 +672,11 @@ def _binary_densemm_transpose_rule(ct, weights, spikes, *, transpose, **kwargs):
             ct_events = weights @ ct
             return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events)
         else:
-            # ct_weights: spikes[k,n] @ ct.T[n,m] -> [k,m]
-            ct_weights = spikes @ ct.T
-            return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
+            # ct_weights: active(spikes)[k,n] @ ct.T[n,m] -> [k,m]
+            if type(ct) is ad.Zero:
+                return ad.Zero(weights), spikes
+            ct_weights = event_factor(spikes, dtype=ct.dtype) @ ct.T
+            return ct_weights, spikes
     else:
         # weights[m,k] @ spikes[k,n] -> out[m,n]
         if ad.is_undefined_primal(spikes):
@@ -840,7 +862,7 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
     backend : str, optional
         Backend to use for the computation. On GPU production backends include
         ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
-        (float32 weights with bool events only). ``None`` selects the platform
+        (float32 weights only). ``None`` selects the platform
         default.
 
     Returns
@@ -920,12 +942,12 @@ def _binary_densemm_jax_kernel(
 ):
     if transpose:
         def run(weights, spikes):
-            s = spikes.astype(weights.dtype) if spikes.dtype == jnp.bool_ else spikes
+            s = event_factor(spikes, dtype=weights.dtype)
             return [weights.T @ s]
         return run
     else:
         def run(weights, spikes):
-            s = spikes.astype(weights.dtype) if spikes.dtype == jnp.bool_ else spikes
+            s = event_factor(spikes, dtype=weights.dtype)
             return [weights @ s]
         return run
 
@@ -967,8 +989,9 @@ def _binary_densemm_cuda_kernel(
         name='dense_binary_mm',
     )
 
-    # Spike type suffix
-    spk_suffix = '_bool' if spk_info.dtype == jnp.bool_ else '_float'
+    # Spike type suffix (non-native event dtypes are converted to bool masks)
+    abi = cuda_event_abi(spk_info.dtype)
+    spk_suffix = abi.suffix
 
     # Weight dtype suffix
     wt_sfx = dtype_suffix(weight_info.dtype)
@@ -983,7 +1006,7 @@ def _binary_densemm_cuda_kernel(
     )
 
     def kernel(weights, spikes):
-        output = jax.ffi.ffi_call(kernel_name, physical_out_info)(weights, spikes)[0]
+        output = jax.ffi.ffi_call(kernel_name, physical_out_info)(weights, abi.prepare(spikes))[0]
         return (jnp.transpose(output),)
 
     return kernel
@@ -995,11 +1018,9 @@ def _binary_densemm_cublas_kernel(
     transpose: bool,
     **kwargs
 ):
-    """Select the cuBLAS dense MM backend for float32 weights and bool events."""
+    """Select the cuBLAS dense MM backend for float32 weights (any event dtype)."""
     if jnp.dtype(weight_info.dtype) != jnp.dtype('float32'):
         raise NotImplementedError("cublas dense MM only supports float32 weights.")
-    if jnp.dtype(spk_info.dtype) != jnp.dtype(jnp.bool_):
-        raise NotImplementedError("cublas dense MM only supports bool events.")
 
     _load_dense_cublas_file()
 
@@ -1008,7 +1029,7 @@ def _binary_densemm_cublas_kernel(
     kernel_name = f'dense_binary_cublas.binary_densemm_cublas_{suffix}_f32_bool'
 
     def kernel(weights, spikes):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))
 
     return kernel
 
@@ -1022,7 +1043,7 @@ This ``XLACustomKernel`` instance dispatches the binary (event-driven) dense
 matrix-matrix multiplication operation to registered backends. On GPU,
 ``cuda_raw`` is the WPR event-driven CUDA backend and remains the default;
 ``jax_raw`` provides a pure JAX reference path, and ``cublas`` provides an
-optional float32/bool cuBLAS path.
+optional float32-weight cuBLAS path.
 
 The operation computes ``weights[m,k] @ spikes[k,n] -> out[m,n]`` when ``transpose=False``,
 or ``weights[k,m].T @ spikes[k,n] -> out[m,n]`` when ``transpose=True``, where only active

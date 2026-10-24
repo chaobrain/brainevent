@@ -215,12 +215,8 @@ void launch_fill_dt2t_f32(
     int threads = 256;
     int warps_per_block = threads / 32;
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) {
-        fprintf(stderr,
-                "fill_dt2t_f32 grid overflow: row_warp_blocks=%d n_chunks=%d\n",
-                row_warp_blocks, n_chunks);
-        abort();
-    }
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535))
+        << "fill_dt2t_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks;
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U);
 
     _fill_dt2t_f32_kern<TRANSPOSE><<<blocks, threads, 0, s>>>(
@@ -346,11 +342,8 @@ void NAME##SFX( \
     int threads = 256; \
     int warps_per_block = threads / 32; \
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block; \
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535) { \
-        fprintf(stderr, #NAME #SFX " grid overflow: row_warp_blocks=%d n_chunks=%d\n", \
-                row_warp_blocks, n_chunks); \
-        abort(); \
-    } \
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535)) \
+        << #NAME << #SFX << " grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks; \
     dim3 blocks((unsigned int)row_warp_blocks, (unsigned int)n_chunks, 1U); \
     _fill_dt2t##SFX##_kern<TRANSPOSE><<<blocks, threads, 0, s>>>( \
         static_cast<const WEIGHT_T*>(weight.data_ptr()), \

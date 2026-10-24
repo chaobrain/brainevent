@@ -68,6 +68,13 @@ _ROUTING_CASES = (
     ("tcsr_sddmv_dweight_binary", jnp.int8, jnp.float64, "binary_f64_int8_t"),
     ("tcsr_sddmv_dweight_binary", jnp.float32, jnp.float64, "binary_f64_float_t"),
     ("tcsr_sddmv_dweight_binary", jnp.float64, jnp.float64, "binary_f64_double_t"),
+    # Event dtypes without a native kernel use their ``!= 0`` mask (bool ABI).
+    ("tcsr_sddmm_dweight_binary", jnp.int8, jnp.float32, "binary_f32_bool_t"),
+    ("tcsr_sddmm_dweight_binary", jnp.float64, jnp.float32, "binary_f32_bool_t"),
+    ("tcsr_sddmm_dweight_binary", jnp.int16, jnp.float64, "binary_f64_bool_t"),
+    ("tcsr_sddmv_dweight_binary", jnp.float16, jnp.float32, "binary_f32_bool_t"),
+    ("tcsr_sddmv_dweight_binary", jnp.bfloat16, jnp.float64, "binary_f64_bool_t"),
+    ("tcsr_sddmv_dweight_binary", jnp.uint8, jnp.float32, "binary_f32_bool_t"),
     ("tcsr_sddmm_dweight_float", jnp.float32, jnp.float32, "float_f32_t"),
     ("tcsr_sddmm_dweight_float", jnp.float64, jnp.float64, "float_f64_t"),
     ("tcsr_sddmv_dweight_float", jnp.float32, jnp.float32, "float_f32_t"),
@@ -121,8 +128,8 @@ def test_sddmm_dtype_pair_selects_exact_ffi_target(
 @pytest.mark.parametrize(
     ("function_name", "event_dtype", "value_dtype"),
     (
-        ("tcsr_sddmm_dweight_binary", jnp.int8, jnp.float32),
-        ("tcsr_sddmv_dweight_binary", jnp.float64, jnp.float32),
+        ("tcsr_sddmm_dweight_binary", jnp.bool_, jnp.float16),
+        ("tcsr_sddmv_dweight_binary", jnp.complex64, jnp.float32),
         ("tcsr_sddmm_dweight_float", jnp.float32, jnp.float64),
         ("tcsr_sddmv_dweight_float", jnp.float64, jnp.float32),
     ),
@@ -146,7 +153,7 @@ def test_sddmm_rejects_unsupported_dtype_pair_before_cuda_load(
 
 
 def _binary_events(dtype, *, batched):
-    """Return events with a fixed positive-only activity pattern."""
+    """Return events with a fixed signed activity pattern (negatives are active)."""
     if jnp.dtype(dtype) == jnp.dtype(jnp.bool_):
         values = [[True, False], [False, False], [True, True], [False, False]]
     else:
@@ -179,8 +186,8 @@ def _numeric_inputs(event, value_dtype):
 )
 @pytest.mark.parametrize("event_dtype", (jnp.bool_, jnp.int8, jnp.float32, jnp.float64))
 @pytest.mark.parametrize("operation", ("sddmm", "sddmv"))
-def test_binary_f64_cuda_uses_positive_event_bits(operation, event_dtype):
-    """Compute f64 binary gradients from positive event bits on CUDA."""
+def test_binary_f64_cuda_uses_nonzero_event_bits(operation, event_dtype):
+    """Compute f64 binary gradients from ``x != 0`` event bits on CUDA."""
     batched = operation == "sddmm"
     event = _binary_events(event_dtype, batched=batched)
     inputs = _numeric_inputs(event, jnp.float64)
@@ -189,7 +196,11 @@ def test_binary_f64_cuda_uses_positive_event_bits(operation, event_dtype):
         event, *inputs, transpose=True
     )
 
-    expected = [19, 28, 19] if batched else [2, 5, 0]
+    if jnp.dtype(event_dtype) == jnp.dtype(jnp.bool_):
+        expected = [19, 28, 19] if batched else [2, 5, 0]
+    else:
+        # Negative events are active: masks [[1,0],[0,1],[1,1],[1,0]] / [1,1].
+        expected = [48, 65, 30] if batched else [2, 5, 3]
     assert result.dtype == jnp.float64
     assert jnp.allclose(result, jnp.array(expected, dtype=jnp.float64))
 

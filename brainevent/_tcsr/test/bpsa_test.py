@@ -61,7 +61,8 @@ def test_explicit_bpsa_package_exports_standalone_operations():
     float_packed = bpsa.pack_event_mask_bn(
         jnp.asarray([[1.0, 0.0, -1.0, 2.0]], dtype=jnp.float32)
     )
-    np.testing.assert_array_equal(float_packed, np.asarray([[0x09]], np.uint8))
+    # -1.0 is active under the ``x != 0`` contract.
+    np.testing.assert_array_equal(float_packed, np.asarray([[0x0D]], np.uint8))
 
 
 @pytest.mark.parametrize(

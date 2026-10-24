@@ -75,14 +75,12 @@
 namespace ffi = xla::ffi;
 
 #ifndef BE_CSRMV_WAT_HYBRID_CHECK
+// Host-side check: throws BE::CheckError, which the generated FFI wrapper
+// converts into an xla::ffi::Error (a Python exception) instead of aborting.
 #define BE_CSRMV_WAT_HYBRID_CHECK(condition, message) \
-    do                                                      \
-    {                                                       \
-        if (!(condition))                                   \
-        {                                                   \
-            std::fprintf(stderr, "%s\n", message);          \
-            std::abort();                                   \
-        }                                                   \
+    do                                \
+    {                                 \
+        BE_CHECK(condition) << (message); \
     } while (0)
 #endif
 

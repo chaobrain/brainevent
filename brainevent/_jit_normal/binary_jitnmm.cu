@@ -314,6 +314,8 @@ void pack(
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     if (n_words <= 0 || n <= 0)
         return;
+    BE_CHECK(n <= 65535)
+        << "pack grid overflow: n=" << n << " event columns exceed the 65535 grid.y limit";
 
     int threads = 256;
     dim3 blocks((unsigned int)((n_words + threads - 1) / threads),
@@ -352,14 +354,8 @@ void notrans_f32(
     int threads = 256;
     int warps_per_block = threads / 32;
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535)
-    {
-        fprintf(stderr,
-                "notrans_f32 grid overflow: "
-                "row_warp_blocks=%d n_chunks=%d n=%d\n",
-                row_warp_blocks, n_chunks, n);
-        abort();
-    }
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535))
+        << "notrans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks << " n=" << n;
     dim3 blocks((unsigned int)row_warp_blocks,
                 (unsigned int)n_chunks,
                 (unsigned int)n);
@@ -401,14 +397,8 @@ void trans_f32(
     int threads = 256;
     int warps_per_block = threads / 32;
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535)
-    {
-        fprintf(stderr,
-                "trans_f32 grid overflow: "
-                "row_warp_blocks=%d n_chunks=%d n=%d\n",
-                row_warp_blocks, n_chunks, n);
-        abort();
-    }
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535))
+        << "trans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks << " n=" << n;
     dim3 blocks((unsigned int)row_warp_blocks,
                 (unsigned int)n_chunks,
                 (unsigned int)n);
@@ -546,10 +536,8 @@ void NAME##SFX(                                                              \
     int threads = 256;                                                        \
     int warps_per_block = threads / 32;                                       \
     int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;         \
-    if (row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535) {    \
-        fprintf(stderr, #NAME #SFX " grid overflow\n");                      \
-        abort();                                                              \
-    }                                                                         \
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535)) \
+        << #NAME << #SFX << " grid overflow"; \
     dim3 blocks((unsigned int)row_warp_blocks,                               \
                 (unsigned int)n_chunks,                                       \
                 (unsigned int)n);                                             \

@@ -174,6 +174,40 @@ def event_factor(x, *, dtype) -> jax.Array:
     return event_active(x).astype(dtype)
 
 
+#: Numba ``fastmath`` flags for event kernels. ``nnan``/``ninf`` are excluded
+#: so the ``x != 0`` activity test stays correct for NaN and infinite events.
+NUMBA_EVENT_FASTMATH = {'nsz', 'arcp', 'contract', 'afn', 'reassoc'}
+
+
+def numba_event_mask(dtype) -> bool:
+    """Return whether a numba kernel must read an event operand as its mask.
+
+    Numba has no ``float16``/``bfloat16`` support, so such events are replaced
+    by ``event_active(x)`` inside the kernel closure (after ``bind``, so the
+    straight-through event gradient is unaffected) and use the boolean kernel.
+
+    Parameters
+    ----------
+    dtype : dtype_like
+        Event dtype.
+
+    Returns
+    -------
+    bool
+        ``True`` for ``float16`` and ``bfloat16``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._op.util import numba_event_mask
+        >>> numba_event_mask(jnp.float16), numba_event_mask(jnp.float32)
+        (True, False)
+    """
+    return np.dtype(dtype) in (np.dtype(jax.numpy.float16), np.dtype(jax.numpy.bfloat16))
+
+
 class EventABI(NamedTuple):
     """CUDA calling convention for a binary event operand.
 

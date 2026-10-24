@@ -407,8 +407,17 @@ def check_event_op_grads(
     4. Forward and reverse mode agree:
        ``<ct, J t> == <J^T ct, t>`` for random tangents ``t``.
     5. Optionally, the parameter gradient under ``jax.vmap``.
+
+    ``dense_op`` runs under ``jax.default_matmul_precision('highest')``, so
+    the reference is not degraded by TF32 on GPUs.
     """
     from brainevent._op.util import event_factor
+
+    def ref_op(p, v):
+        # Full float32 precision: GPUs default float32 matmuls to TF32
+        # (~1e-3 relative error), which would swamp the comparison.
+        with jax.default_matmul_precision('highest'):
+            return dense_op(p, v)
 
     if mode == 'binary':
         z = event_factor(x, dtype=x.dtype)
@@ -419,7 +428,7 @@ def check_event_op_grads(
 
     keys = jax.random.split(jax.random.PRNGKey(seed), 3)
     y = op(params, x)
-    y_ref = dense_op(params, z)
+    y_ref = ref_op(params, z)
     assert y.shape == y_ref.shape, (y.shape, y_ref.shape)
     assert jnp.allclose(y, y_ref, rtol=rtol, atol=atol), 'forward mismatch'
 
@@ -434,7 +443,7 @@ def check_event_op_grads(
 
     _, vjp = jax.vjp(op, params, x)
     g_p, g_x = vjp(ct)
-    _, vjp_ref = jax.vjp(dense_op, params, z)
+    _, vjp_ref = jax.vjp(ref_op, params, z)
     g_p_ref, g_x_ref = vjp_ref(ct)
 
     for a, b in zip(jax.tree_util.tree_leaves(g_p), jax.tree_util.tree_leaves(g_p_ref)):
@@ -459,6 +468,6 @@ def check_event_op_grads(
         xs = jnp.stack([x, jnp.flip(x, axis=0)])
         zs = jax.vmap(lambda v: event_factor(v, dtype=v.dtype) if mode == 'binary' else v)(xs)
         g = jax.vmap(lambda v: jax.grad(lambda p: jnp.vdot(ct, op(p, v)))(params))(xs)
-        g_ref = jax.vmap(lambda v: jax.grad(lambda p: jnp.vdot(ct, dense_op(p, v)))(params))(zs)
+        g_ref = jax.vmap(lambda v: jax.grad(lambda p: jnp.vdot(ct, ref_op(p, v)))(params))(zs)
         for a, b in zip(jax.tree_util.tree_leaves(g), jax.tree_util.tree_leaves(g_ref)):
             assert jnp.allclose(a, b, rtol=rtol, atol=atol), f'vmapped weight gradient mismatch:\n{a}\nvs\n{b}'

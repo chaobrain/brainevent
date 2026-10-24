@@ -380,3 +380,152 @@ def recording_ffi_call(calls):
         return call
 
     return ffi_call
+
+
+# ---------------------------------------------------------------------------
+# Helpers for the event-activity tests (``x != 0`` contract, see
+# ``docs/specs/2026-10-24-event-activity-and-abi.md``).
+# ---------------------------------------------------------------------------
+
+#: Event dtypes swept by the activity tests. ``float64`` needs x64 mode; wrap
+#: the test body in :func:`event_dtype_context`.
+EVENT_DTYPE_NAMES = (
+    'bool', 'int8', 'uint8', 'int16', 'int32', 'float16', 'bfloat16', 'float32', 'float64',
+)
+
+_EVENT_PATTERNS = {
+    'bool': [True, True, False, True, False, True, True, False],
+    'uint8': [2, 255, 0, 1, 0, 7, 1, 0],
+    'signed': [2, -1, 0, 3, 0, -3, 1, 0],
+    'float': [2.0, -1.0, 0.0, 0.5, 0.0, -3.0, 1.0, 0.0],
+}
+
+
+def event_dtype_context(dtype_name):
+    """Return a context manager enabling x64 when ``dtype_name`` needs it.
+
+    Parameters
+    ----------
+    dtype_name : str
+        One of :data:`EVENT_DTYPE_NAMES`.
+
+    Returns
+    -------
+    contextlib.AbstractContextManager
+        ``jax_x64_enabled()`` for ``'float64'``, otherwise a no-op context.
+    """
+    import contextlib
+    from brainevent._test_util import jax_x64_enabled
+
+    return jax_x64_enabled() if dtype_name == 'float64' else contextlib.nullcontext()
+
+
+def event_values(dtype_name, shape, seed=0):
+    """Return an event array with positive, negative, fractional and zero entries.
+
+    Parameters
+    ----------
+    dtype_name : str
+        One of :data:`EVENT_DTYPE_NAMES`. Must be called inside
+        :func:`event_dtype_context` for ``'float64'``.
+    shape : int or tuple of int
+        Output shape.
+    seed : int, optional
+        Seed of the shuffle.
+
+    Returns
+    -------
+    jax.Array
+        Events of dtype ``dtype_name``. Floats contain ``2, -1, 0, 0.5``;
+        signed integers ``2, -1, 0``; ``uint8`` ``2, 255, 0``. About a third of
+        the entries are zero.
+    """
+    shape = (shape,) if isinstance(shape, int) else tuple(shape)
+    size = int(np.prod(shape))
+    if dtype_name == 'bool':
+        key = 'bool'
+    elif dtype_name == 'uint8':
+        key = 'uint8'
+    elif dtype_name.startswith('int'):
+        key = 'signed'
+    else:
+        key = 'float'
+    pattern = np.asarray(_EVENT_PATTERNS[key])
+    values = np.resize(pattern, size)
+    values = np.random.default_rng(seed).permutation(values).reshape(shape)
+    dtype = jnp.dtype(dtype_name)
+    if key == 'float':
+        return jnp.asarray(values.astype(np.float32)).astype(dtype)
+    return jnp.asarray(values.astype(dtype))
+
+
+def random_csr_numpy(rng, m, k, density=0.4, weight_dtype=np.float32):
+    """Return a random CSR matrix as numpy arrays plus its dense form.
+
+    Parameters
+    ----------
+    rng : numpy.random.Generator
+        Random source.
+    m, k : int
+        Matrix shape.
+    density : float, optional
+        Fraction of stored entries.
+    weight_dtype : dtype, optional
+        Dtype of the stored values.
+
+    Returns
+    -------
+    data : numpy.ndarray
+        Stored values, shape ``(nse,)``.
+    indices : numpy.ndarray
+        int32 column indices, shape ``(nse,)``.
+    indptr : numpy.ndarray
+        int32 row pointers, shape ``(m + 1,)``. Some rows may be empty.
+    dense : numpy.ndarray
+        The ``(m, k)`` dense matrix (float64) for the reference product.
+    """
+    mask = rng.random((m, k)) < density
+    rows, cols = np.nonzero(mask)
+    data = rng.standard_normal(rows.size).astype(weight_dtype)
+    indptr = np.concatenate([[0], np.cumsum(mask.sum(axis=1))]).astype(np.int32)
+    dense = np.zeros((m, k), dtype=np.float64)
+    dense[rows, cols] = data.astype(np.float64)
+    return data, cols.astype(np.int32), indptr, dense
+
+
+def event_mask(x):
+    """Return the reference activity mask ``x != 0`` as a float64 numpy array."""
+    return np.asarray(jnp.asarray(x) != 0).astype(np.float64)
+
+
+def run_python_isolated(source, timeout=600):
+    """Run ``source`` in a fresh Python interpreter and return the result.
+
+    Used to check that a failing CUDA call raises a Python exception instead
+    of killing the process: a signal-terminated child has a negative
+    ``returncode``.
+
+    Parameters
+    ----------
+    source : str
+        Python source to execute with ``python -c``.
+    timeout : float, optional
+        Seconds before the child is killed.
+
+    Returns
+    -------
+    subprocess.CompletedProcess
+        With ``stdout``/``stderr`` captured as text.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = str(Path(__file__).resolve().parents[2])
+    env = dict(os.environ)
+    env['PYTHONPATH'] = repo_root + os.pathsep + env.get('PYTHONPATH', '')
+    return subprocess.run(
+        [sys.executable, '-c', source],
+        capture_output=True, text=True, timeout=timeout, env=env, cwd=repo_root,
+    )

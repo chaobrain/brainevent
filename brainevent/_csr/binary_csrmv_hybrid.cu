@@ -75,14 +75,12 @@
 namespace ffi = xla::ffi;
 
 #ifndef BE_CSRMV_WAT_HYBRID_CHECK
+// Host-side check: throws BE::CheckError, which the generated FFI wrapper
+// converts into an xla::ffi::Error (a Python exception) instead of terminating the process.
 #define BE_CSRMV_WAT_HYBRID_CHECK(condition, message) \
     do                                                      \
     {                                                       \
-        if (!(condition))                                   \
-        {                                                   \
-            std::fprintf(stderr, "%s\n", message);          \
-            std::abort();                                   \
-        }                                                   \
+        BE_CHECK(condition) << (message);                   \
     } while (0)
 #endif
 
@@ -682,6 +680,7 @@ void binary_csrmv_wat_hybrid_hetero##SUFFIX(                             \
         "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects status scratch length 2"); \
     cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);     \
     bool ok = true;                                                        \
+    std::string launch_error;                                              \
     BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, { \
         ffi::Error error = LaunchBinaryCsrmvWatHybrid<WEIGHT_T, EVENT_T, IndexT, OffsetT>( \
             weights.data_ptr<const WEIGHT_T>(),                            \
@@ -698,8 +697,9 @@ void binary_csrmv_wat_hybrid_hetero##SUFFIX(                             \
             task_capacity,                                                 \
             cuda_stream);                                                  \
         ok = error.success();                                              \
+        if (!ok) launch_error = std::string(error.message());              \
     });                                                                    \
-    BE_CSRMV_WAT_HYBRID_CHECK(ok, "binary_csrmv_wat_hybrid_hetero" #SUFFIX " launch failed"); \
+    BE_CSRMV_WAT_HYBRID_CHECK(ok, std::string("binary_csrmv_wat_hybrid_hetero" #SUFFIX " launch failed: " + launch_error).c_str()); \
 }
 
 #define DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(SUFFIX, WEIGHT_T, EVENT_T)   \
@@ -766,6 +766,7 @@ void binary_csrmv_wat_hybrid_homo##SUFFIX(                               \
         "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects status scratch length 2"); \
     cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);     \
     bool ok = true;                                                        \
+    std::string launch_error;                                              \
     BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, { \
         ffi::Error error = LaunchBinaryCsrmvWatHybridHomo<WEIGHT_T, EVENT_T, IndexT, OffsetT>( \
             weights.data_ptr<const WEIGHT_T>(),                            \
@@ -782,8 +783,9 @@ void binary_csrmv_wat_hybrid_homo##SUFFIX(                               \
             task_capacity,                                                 \
             cuda_stream);                                                  \
         ok = error.success();                                              \
+        if (!ok) launch_error = std::string(error.message());              \
     });                                                                    \
-    BE_CSRMV_WAT_HYBRID_CHECK(ok, "binary_csrmv_wat_hybrid_homo" #SUFFIX " launch failed"); \
+    BE_CSRMV_WAT_HYBRID_CHECK(ok, std::string("binary_csrmv_wat_hybrid_homo" #SUFFIX " launch failed: " + launch_error).c_str()); \
 }
 
 // @BE binary_csrmv_wat_hybrid_hetero_f32_bool

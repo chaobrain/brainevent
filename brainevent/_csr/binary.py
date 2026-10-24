@@ -42,7 +42,7 @@ from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from .float import csrmv, csrmm, csrmv_p, csrmm_p
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask
 
 __all__ = [
     'binary_csrmv',
@@ -143,7 +143,8 @@ def binary_csrmv(
     Computes ``y = A @ v`` (or ``y = A.T @ v`` when ``transpose=True``)
     where ``A`` is stored in Compressed Sparse Row format and ``v`` is
     treated as a binary event vector.  Elements of ``v`` that are ``True``
-    (boolean) or positive (float) are considered *active events*; only
+    (boolean) or non-zero (numeric, including negative values and NaN) are
+    considered *active events*; only
     those contribute to the result, enabling efficient event-driven
     sparse--dense products commonly used in spiking neural networks.
 
@@ -167,8 +168,8 @@ def binary_csrmv(
     v : jax.Array, numpy.ndarray, or brainunit.Quantity
         Dense event vector.  Shape ``(shape[0],)`` when ``transpose=True``
         or ``(shape[1],)`` when ``transpose=False``.  Dtype may be boolean
-        (events indicated by ``True``) or floating-point (events indicated
-        by values ``> 0``).
+        (events indicated by ``True``) or numeric (events indicated
+        by non-zero values, including negative values and NaN).
     shape : tuple of int
         Two-element tuple ``(m, k)`` giving the logical shape of the
         sparse matrix ``A``.
@@ -200,7 +201,7 @@ def binary_csrmv(
     This operation is *event-driven*: instead of performing a full
     sparse--dense product, it skips columns (or rows, when transposed)
     for which the corresponding entry in ``v`` is inactive (``False`` or
-    ``<= 0``).  This yields significant speed-ups when the event vector is
+    ``0``; negative values and NaN are active).  This yields significant speed-ups when the event vector is
     sparse.
 
     Mathematically, the non-transposed operation computes:
@@ -210,7 +211,7 @@ def binary_csrmv(
     where ``nz(i)`` denotes the set of column indices with non-zero
     entries in row ``i``, and ``e(v[j])`` is the event indicator:
 
-    ``e(v[j]) = 1  if v[j] is True (bool) or v[j] > 0 (float)``
+    ``e(v[j]) = 1  if v[j] is True (bool) or v[j] != 0 (numeric)``
     ``e(v[j]) = 0  otherwise``
 
     When ``transpose=True``, the transposed operation computes:
@@ -299,7 +300,8 @@ def binary_csrmm(
         Dense event matrix.  Shape
         ``(shape[0], cols)`` when ``transpose=True`` or
         ``(shape[1], cols)`` when ``transpose=False``.
-        Dtype may be boolean or floating-point.
+        Dtype may be boolean, integer or floating-point; an entry is active
+        iff it is ``True`` or non-zero (negative values and NaN are active).
     shape : tuple of int
         Two-element tuple ``(m, k)`` giving the logical shape of the
         sparse matrix ``A``.
@@ -324,7 +326,7 @@ def binary_csrmm(
     Notes
     -----
     The operation is *event-driven*: entries of ``B`` that are inactive
-    (``False`` or ``<= 0``) are skipped.  Custom JVP and transpose rules
+    (``False`` or ``0``; negative values and NaN are active) are skipped.  Custom JVP and transpose rules
     are provided for automatic differentiation.
 
     Mathematically, the non-transposed operation computes:
@@ -335,7 +337,7 @@ def binary_csrmm(
     entries in row ``i`` of the CSR matrix, and ``e(B[j, l])`` is the
     event indicator:
 
-    ``e(B[j, l]) = 1  if B[j, l] is True (bool) or B[j, l] > 0 (float)``
+    ``e(B[j, l]) = 1  if B[j, l] is True (bool) or B[j, l] != 0 (numeric)``
     ``e(B[j, l]) = 0  otherwise``
 
     When ``transpose=True``, the transposed operation computes:
@@ -384,6 +386,10 @@ def binary_csrmm(
     return u.maybe_decimal(res * (unitd * unitb))
 
 
+_EVENT_FASTMATH = NUMBA_EVENT_FASTMATH
+_numba_event_mask = numba_event_mask
+
+
 def _csrmv_numba_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -391,11 +397,14 @@ def _csrmv_numba_kernel(
     **kwargs
 ):
     import numba
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(vector_info.dtype)
+    bool_events = vector_info.dtype == jnp.bool_ or mask_events
     if weight_info.size == 1:
         if transpose:
-            if vector_info.dtype == jnp.bool_:
+            if bool_events:
                 # Cannot parallelize due to race condition on posts[indices[j]]
-                @numba.njit(fastmath=True)
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -405,19 +414,19 @@ def _csrmv_numba_kernel(
                                 posts[indices[j]] += w
 
             else:
-                @numba.njit(fastmath=True)
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
-                        if v[i] > 0.:
+                        if v[i] != 0.:
                             for j in range(indptr[i], indptr[i + 1]):
                                 posts[indices[j]] += w
 
         else:
-            if vector_info.dtype == jnp.bool_:
+            if bool_events:
                 # Can parallelize by row
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     w = weights[0]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -428,21 +437,21 @@ def _csrmv_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     w = weights[0]
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = 0.0
                         for j in range(indptr[i], indptr[i + 1]):
-                            if v[indices[j]] > 0.:
+                            if v[indices[j]] != 0.:
                                 r += w
                         posts[i] = r
 
     else:
         if transpose:
-            if vector_info.dtype == jnp.bool_:
+            if bool_events:
                 # Cannot parallelize due to race condition
-                @numba.njit(fastmath=True)
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     for i in range(v.shape[0]):
@@ -451,18 +460,18 @@ def _csrmv_numba_kernel(
                                 posts[indices[j]] += weights[j]
 
             else:
-                @numba.njit(fastmath=True)
+                @numba.njit(fastmath=_EVENT_FASTMATH)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     for i in range(v.shape[0]):
-                        if v[i] > 0.:
+                        if v[i] != 0.:
                             for j in range(indptr[i], indptr[i + 1]):
                                 posts[indices[j]] += weights[j]
 
         else:
-            if vector_info.dtype == jnp.bool_:
+            if bool_events:
                 # Can parallelize by row
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = 0.0
@@ -472,16 +481,18 @@ def _csrmv_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = 0.0
                         for j in range(indptr[i], indptr[i + 1]):
-                            if v[indices[j]] > 0.:
+                            if v[indices[j]] != 0.:
                                 r += weights[j]
                         posts[i] = r
 
     def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
+        if mask_events:
+            vector = event_active(vector)
         output = numba_kernel(mv, outs=kwargs['outs'][0])(weights, indices, indptr, vector)
         math_out = output[0] if isinstance(output, (tuple, list)) else output
         return math_out, task_begin, task_end, status
@@ -499,7 +510,6 @@ def _binary_csrmv_jax_kernel(
     """Pure-JAX kernel for binary (event-driven) CSR matrix-vector multiplication."""
     m, k = shape
     is_homo = (weight_info.size == 1)
-    is_bool = (vector_info.dtype == jnp.bool_)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
 
@@ -511,7 +521,7 @@ def _binary_csrmv_jax_kernel(
                 total_repeat_length=nse,
             )
             v_row = vector[row_ids]
-            events = v_row.astype(out_dtype) if is_bool else (v_row > 0.).astype(out_dtype)
+            events = event_factor(v_row, dtype=out_dtype)
             w = weights[0] if is_homo else weights
             math_out = jnp.zeros(k, dtype=out_dtype).at[indices].add(w * events)
             return math_out, task_begin, task_end, status
@@ -523,7 +533,7 @@ def _binary_csrmv_jax_kernel(
                 total_repeat_length=nse,
             )
             v_col = vector[indices]
-            events = v_col.astype(out_dtype) if is_bool else (v_col > 0.).astype(out_dtype)
+            events = event_factor(v_col, dtype=out_dtype)
             w = weights[0] if is_homo else weights
             math_out = jnp.zeros(m, dtype=out_dtype).at[row_ids].add(w * events)
             return math_out, task_begin, task_end, status
@@ -542,12 +552,11 @@ def _binary_csrmv_cusparse_kernel(
     import jax.experimental.sparse as jsparse
     m, k = shape
     is_homo = (weight_info.size == 1)
-    is_bool = (vector_info.dtype == jnp.bool_)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
 
     def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
-        events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+        events = event_factor(vector, dtype=out_dtype)
         indices = indices.astype(indptr.dtype) if indices.dtype != indptr.dtype else indices
         if is_homo:
             data = jnp.ones(nse, dtype=out_dtype)
@@ -559,21 +568,6 @@ def _binary_csrmv_cusparse_kernel(
         return math_out, task_begin, task_end, status
 
     return kernel
-
-
-def _cuda_event_abi(dtype):
-    """Return the CUDA event suffix and whether positive-value casting is needed."""
-    dtype = jnp.dtype(dtype)
-    if dtype == jnp.dtype(jnp.bool_):
-        return "_bool", False
-    if dtype == jnp.dtype(jnp.float32):
-        return "_float", False
-    if jnp.issubdtype(dtype, jnp.integer) or jnp.issubdtype(dtype, jnp.floating):
-        return "_bool", True
-    raise TypeError(
-        "CSR CUDA binary events must be boolean, integer, or floating-point, "
-        f"got {dtype}"
-    )
 
 
 def _binary_csrmv_cuda_kernel(
@@ -588,7 +582,8 @@ def _binary_csrmv_cuda_kernel(
     is_homo = (weight_info.size == 1)
     homo_suffix = '_homo' if is_homo else '_hetero'
 
-    spk_suffix, normalize_events = _cuda_event_abi(vector_info.dtype)
+    event_abi = cuda_event_abi(vector_info.dtype)
+    spk_suffix = event_abi.suffix
 
     # Weight dtype suffix
     wt_sfx = dtype_suffix(weight_info.dtype)
@@ -605,8 +600,7 @@ def _binary_csrmv_cuda_kernel(
         kernel_name = f'{_mod}.binary_csrmv_wat_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
-            if normalize_events:
-                vector = vector > 0
+            vector = event_abi.prepare(vector)
             return jax.ffi.ffi_call(
                 kernel_name,
                 kwargs['outs'],
@@ -631,8 +625,7 @@ def _binary_csrmv_cuda_kernel(
         kernel_name = f'csr_binary_csrmv.binary_csrmv_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, vector, task_begin, task_end, status):
-            if normalize_events:
-                vector = vector > 0
+            vector = event_abi.prepare(vector)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
             return math_out, task_begin, task_end, status
 
@@ -732,7 +725,9 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, task_begin, task_en
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:  # heterogeneous values
                 row, col = _csr_to_coo(indices, indptr)
-                ct_values = events[row] * ct[col] if transpose else events[col] * ct[row]
+                # The forward multiplies by the activity mask, never the raw event value.
+                ev = event_factor(events, dtype=ct.dtype)
+                ct_values = ev[row] * ct[col] if transpose else ev[col] * ct[row]
         return ct_values, indices, indptr, events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
 
 
@@ -931,7 +926,7 @@ def binary_csrmv_p_call(
     ``y[j] = sum_{i in nz_col(j)} w[i] * e(v[i])``  (transposed)
 
     where ``e(x)`` is ``1`` when ``x`` is ``True`` (boolean) or
-    ``x > 0`` (float), and ``0`` otherwise.  ``w[j]`` is either
+    ``x != 0`` (numeric), and ``0`` otherwise.  ``w[j]`` is either
     ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
 
     Examples
@@ -1014,7 +1009,7 @@ This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR spars
 operation to registered backends (``numba``, ``pallas``, ``cuda_raw``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
-Only entries of ``v`` that are ``True`` (boolean) or positive (float) are considered active events
+Only entries of ``v`` that are ``True`` (boolean) or non-zero (numeric) are considered active events
 and contribute to the output, enabling efficient event-driven sparse-dense products commonly used
 in spiking neural networks.
 
@@ -1051,6 +1046,9 @@ def _csrmm_numba_kernel(
     **kwargs
 ):
     import numba
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(vector_info.dtype)
+    bool_events = vector_info.dtype == jnp.bool_ or mask_events
 
     if weight_info.size == 1:
         if transpose:
@@ -1059,8 +1057,8 @@ def _csrmm_numba_kernel(
             #
             # [k, m] @ [k, n]
             #
-            if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            if bool_events:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     posts[:] = 0.
@@ -1071,9 +1069,9 @@ def _csrmm_numba_kernel(
                                     posts[indices[j], k] += w
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
-                    B = B > 0.
+                    B = B != 0.
                     w = weights[0]
                     posts[:] = 0.
                     for k in numba.prange(B.shape[1]):
@@ -1084,8 +1082,8 @@ def _csrmm_numba_kernel(
 
         else:
             # csr @ B
-            if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            if bool_events:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     posts[:] = 0.
@@ -1099,10 +1097,10 @@ def _csrmm_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
-                    B = B > 0.
+                    B = B != 0.
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = np.zeros(B.shape[1], dtype=weights.dtype)
                         for j in range(indptr[i], indptr[i + 1]):
@@ -1116,8 +1114,8 @@ def _csrmm_numba_kernel(
         if transpose:
             # csr.T @ B
 
-            if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            if bool_events:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     posts[:] = 0.
                     for k in numba.prange(B.shape[1]):
@@ -1127,9 +1125,9 @@ def _csrmm_numba_kernel(
                                     posts[indices[j], k] += weights[j]
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
-                    B = B > 0.
+                    B = B != 0.
                     posts[:] = 0.
                     for k in numba.prange(B.shape[1]):
                         for i in range(B.shape[0]):
@@ -1141,8 +1139,8 @@ def _csrmm_numba_kernel(
             # csr @ B
             # Fixed: Changed range to prange for parallelization
 
-            if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+            if bool_events:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     n_cols = B.shape[1]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -1157,7 +1155,7 @@ def _csrmm_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     n_cols = B.shape[1]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -1166,11 +1164,13 @@ def _csrmm_numba_kernel(
                             col_idx = indices[j]
                             w = weights[j]
                             for k in range(n_cols):
-                                if B[col_idx, k] > 0.:
+                                if B[col_idx, k] != 0.:
                                     r[k] += w
                         posts[i] = r
 
     def kernel(weights, indices, indptr, B, task_begin, task_end, status):
+        if mask_events:
+            B = event_active(B)
         output = numba_kernel(mm, outs=kwargs['outs'][0])(weights, indices, indptr, B)
         math_out = output[0] if isinstance(output, (tuple, list)) else output
         return math_out, task_begin, task_end, status
@@ -1189,7 +1189,6 @@ def _binary_csrmm_jax_kernel(
     m, k = shape
     n = vector_info.shape[1]
     is_homo = (weight_info.size == 1)
-    is_bool = (vector_info.dtype == jnp.bool_)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
 
@@ -1201,7 +1200,7 @@ def _binary_csrmm_jax_kernel(
                 total_repeat_length=nse,
             )
             B_rows = B[row_ids]  # [nse, n]
-            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            events = event_factor(B_rows, dtype=out_dtype)
             w = weights[0] if is_homo else weights[:, None]
             math_out = jnp.zeros((k, n), dtype=out_dtype).at[indices].add(w * events)
             return math_out, task_begin, task_end, status
@@ -1213,7 +1212,7 @@ def _binary_csrmm_jax_kernel(
                 total_repeat_length=nse,
             )
             B_rows = B[indices]  # [nse, n]
-            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            events = event_factor(B_rows, dtype=out_dtype)
             w = weights[0] if is_homo else weights[:, None]
             math_out = jnp.zeros((m, n), dtype=out_dtype).at[row_ids].add(w * events)
             return math_out, task_begin, task_end, status
@@ -1232,12 +1231,11 @@ def _binary_csrmm_cusparse_kernel(
     import jax.experimental.sparse as jsparse
     m, k = shape
     is_homo = (weight_info.size == 1)
-    is_bool = (vector_info.dtype == jnp.bool_)
     nse = kwargs['indices_info'].size
     out_dtype = kwargs['outs'][0].dtype
 
     def kernel(weights, indices, indptr, B, task_begin, task_end, status):
-        events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+        events = event_factor(B, dtype=out_dtype)
         indices = indices.astype(indptr.dtype) if indices.dtype != indptr.dtype else indices
         if is_homo:
             data = jnp.ones(nse, dtype=out_dtype)
@@ -1259,7 +1257,8 @@ def _binary_csrmm_cuda_kernel(
 ):
     _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
 
-    spk_suffix, normalize_events = _cuda_event_abi(vector_info.dtype)
+    event_abi = cuda_event_abi(vector_info.dtype)
+    spk_suffix = event_abi.suffix
 
     # Weight dtype suffix
     wt_sfx = dtype_suffix(weight_info.dtype)
@@ -1286,8 +1285,7 @@ def _binary_csrmm_cuda_kernel(
         kernel_name = f'{_mod}.binary_csrmm_sraw_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, B, task_begin, task_end, status):
-            if normalize_events:
-                B = B > 0
+            B = event_abi.prepare(B)
             output, task_begin_out, task_end_out, status_out = jax.ffi.ffi_call(
                 kernel_name,
                 out_info,
@@ -1313,8 +1311,7 @@ def _binary_csrmm_cuda_kernel(
         kernel_name = f'csr_binary_csrmm.binary_csrmm_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
         def kernel(weights, indices, indptr, B, task_begin, task_end, status):
-            if normalize_events:
-                B = B > 0
+            B = event_abi.prepare(B)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
             return math_out, task_begin, task_end, status
 
@@ -1374,10 +1371,12 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, task_begin, task_end, st
             return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
         else:
             row, col = _csr_to_coo(indices, indptr)
+            # The forward multiplies by the activity mask, never the raw event value.
+            B_factor = event_factor(B, dtype=ct.dtype)
             if transpose:
-                d_data = sddmm_coo_indices(B, ct.T, row, col).data
+                d_data = sddmm_coo_indices(B_factor, ct.T, row, col).data
             else:
-                d_data = sddmm_coo_indices(B, ct.T, col, row).data
+                d_data = sddmm_coo_indices(B_factor, ct.T, col, row).data
             return d_data, indices, indptr, B, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
 
 
@@ -1554,7 +1553,7 @@ def binary_csrmm_p_call(
     ``C[j, l] = sum_{i in nz_col(j)} w[i] * e(B[i, l])``  (transposed)
 
     where ``e(x)`` is ``1`` when ``x`` is ``True`` (boolean) or
-    ``x > 0`` (float), and ``0`` otherwise.  ``w[j]`` is either
+    ``x != 0`` (numeric), and ``0`` otherwise.  ``w[j]`` is either
     ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
 
     Examples
@@ -1637,7 +1636,7 @@ This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR spars
 operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
-Only entries of ``B`` that are ``True`` (boolean) or positive (float) are considered active events
+Only entries of ``B`` that are ``True`` (boolean) or non-zero (numeric) are considered active events
 and contribute to the output, enabling efficient event-driven sparse-dense products commonly used
 in spiking neural networks.
 

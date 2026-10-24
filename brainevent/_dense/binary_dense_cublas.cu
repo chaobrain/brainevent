@@ -3,8 +3,7 @@
 #include "brainevent/common.h"
 
 #include <climits>
-#include <cstdio>
-#include <cstdlib>
+#include <memory>
 #include <mutex>
 
 namespace {
@@ -43,35 +42,18 @@ const char* CublasStatusName(cublasStatus_t status) {
     }
 }
 
+// Host-side failures throw (BE::CheckError); the generated FFI wrapper turns
+// the exception into an xla::ffi::Error, i.e. a Python exception.
 void CheckCublas(cublasStatus_t status, const char* expr, const char* file, int line) {
-    if (status != CUBLAS_STATUS_SUCCESS) {
-        std::fprintf(
-            stderr,
-            "[be] cuBLAS error at %s:%d: %s (%s)\n",
-            file,
-            line,
-            CublasStatusName(status),
-            expr);
-        std::fflush(stderr);
-        std::abort();
-    }
+    BE_CHECK(status == CUBLAS_STATUS_SUCCESS)
+        << "cuBLAS error at " << file << ":" << line << ": "
+        << CublasStatusName(status) << " (" << expr << ")";
 }
 
 #define BE_CUBLAS_CHECK(expr) CheckCublas((expr), #expr, __FILE__, __LINE__)
 
 #define REQUIRE_CUBLAS_DENSE(cond, message)                                      \
-    do {                                                                         \
-        if (!(cond)) {                                                           \
-            std::fprintf(                                                        \
-                stderr,                                                          \
-                "[be] cublas dense check failed at %s:%d: %s\n",                \
-                __FILE__,                                                        \
-                __LINE__,                                                        \
-                (message));                                                      \
-            std::fflush(stderr);                                                 \
-            std::abort();                                                        \
-        }                                                                        \
-    } while (0)
+    BE_CHECK(cond) << "cublas dense check failed: " << (message)
 
 cublasHandle_t SharedCublasHandle() {
     static cublasHandle_t handle = nullptr;
@@ -87,16 +69,28 @@ cublasHandle_t SharedCublasHandle() {
     return handle;
 }
 
-float* ConvertBoolEvents(const BE::Tensor events, cudaStream_t stream) {
+/// Frees a stream-ordered allocation when an exception unwinds the launcher.
+struct AsyncFree {
+    cudaStream_t stream;
+    void operator()(float* ptr) const {
+        if (ptr != nullptr) {
+            cudaFreeAsync(ptr, stream);
+        }
+    }
+};
+using AsyncFloatBuffer = std::unique_ptr<float, AsyncFree>;
+
+AsyncFloatBuffer ConvertBoolEvents(const BE::Tensor events, cudaStream_t stream) {
     const int64_t n = events.numel();
-    float* events_f = nullptr;
-    BE_CUDA_CHECK(cudaMallocAsync(&events_f, static_cast<size_t>(n) * sizeof(float), stream));
+    float* raw = nullptr;
+    BE_CUDA_CHECK(cudaMallocAsync(&raw, static_cast<size_t>(n) * sizeof(float), stream));
+    AsyncFloatBuffer events_f(raw, AsyncFree{stream});
 
     const int threads = 256;
     const int blocks = static_cast<int>((n + threads - 1) / threads);
     BoolToFloatKernel<<<blocks, threads, 0, stream>>>(
         static_cast<const unsigned char*>(events.data_ptr()),
-        events_f,
+        events_f.get(),
         n);
     BE_CHECK_KERNEL_LAUNCH();
     return events_f;
@@ -124,7 +118,7 @@ void LaunchBinaryDenseMvCublas(
     REQUIRE_CUBLAS_DENSE(m <= INT_MAX && k <= INT_MAX, "cuBLAS MV dimensions exceed int range");
 
     auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
-    float* spikes_f = ConvertBoolEvents(spikes, cuda_stream);
+    AsyncFloatBuffer spikes_f = ConvertBoolEvents(spikes, cuda_stream);
 
     cublasHandle_t handle = SharedCublasHandle();
     BE_CUBLAS_CHECK(cublasSetStream(handle, cuda_stream));
@@ -144,13 +138,13 @@ void LaunchBinaryDenseMvCublas(
         &alpha,
         static_cast<const float*>(weights.data_ptr()),
         lda,
-        spikes_f,
+        spikes_f.get(),
         1,
         &beta,
         static_cast<float*>(output.data_ptr()),
         1));
 
-    BE_CUDA_CHECK(cudaFreeAsync(spikes_f, cuda_stream));
+    BE_CUDA_CHECK(cudaFreeAsync(spikes_f.release(), cuda_stream));
 }
 
 void LaunchBinaryDenseMmCublas(
@@ -175,7 +169,7 @@ void LaunchBinaryDenseMmCublas(
     REQUIRE_CUBLAS_DENSE(m <= INT_MAX && k <= INT_MAX && n <= INT_MAX, "cuBLAS MM dimensions exceed int range");
 
     auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
-    float* events_f = ConvertBoolEvents(events, cuda_stream);
+    AsyncFloatBuffer events_f = ConvertBoolEvents(events, cuda_stream);
 
     cublasHandle_t handle = SharedCublasHandle();
     BE_CUBLAS_CHECK(cublasSetStream(handle, cuda_stream));
@@ -199,7 +193,7 @@ void LaunchBinaryDenseMmCublas(
         c_cols,
         shared,
         &alpha,
-        events_f,
+        events_f.get(),
         lda,
         static_cast<const float*>(weights.data_ptr()),
         ldb,
@@ -207,7 +201,7 @@ void LaunchBinaryDenseMmCublas(
         static_cast<float*>(output.data_ptr()),
         ldc));
 
-    BE_CUDA_CHECK(cudaFreeAsync(events_f, cuda_stream));
+    BE_CUDA_CHECK(cudaFreeAsync(events_f.release(), cuda_stream));
 }
 
 }  // namespace

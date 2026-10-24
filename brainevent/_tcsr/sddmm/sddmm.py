@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 
 from brainevent._op import load_cuda_file
+from brainevent._op.util import event_active
 
 
 __all__ = [
@@ -48,6 +49,26 @@ _SDDMV_BINARY_CUDA_MODULE = None
 _SDDMV_FLOAT_CUDA_MODULE = None
 
 
+def _native_binary_events(events: jax.Array, ct_dtype) -> jax.Array:
+    """Map an event array onto a dtype the binary SDDMM kernels read natively.
+
+    The kernels only test activity (``x != 0``), so converting an event dtype
+    without a native kernel (integers, float16, bfloat16, ...) to its boolean
+    activity mask is exact. Supported pairs and non-numeric dtypes are
+    returned unchanged so the dtype check below still reports them.
+    """
+    ct_dtype = jnp.dtype(ct_dtype)
+    event_dtype = jnp.dtype(events.dtype)
+    if (ct_dtype, event_dtype) in _BINARY_TARGET_SUFFIXES:
+        return events
+    if ct_dtype in (_F32, _F64) and (
+        jnp.issubdtype(event_dtype, jnp.integer)
+        or jnp.issubdtype(event_dtype, jnp.floating)
+    ):
+        return event_active(events)
+    return events
+
+
 def tcsr_sddmm_dweight_binary(
     events: jax.Array,
     ct: jax.Array,
@@ -60,7 +81,7 @@ def tcsr_sddmm_dweight_binary(
 ) -> jax.Array:
     """Compute heterogeneous CSR-slot gradients from binary events.
 
-    Treat numeric event values as active exactly when they are positive. The
+    Treat numeric event values as active exactly when they are non-zero. The
     operation consumes CSR structure directly and supports only the direct
     transposed binary CSRMM orientation.
 
@@ -69,7 +90,8 @@ def tcsr_sddmm_dweight_binary(
     events : jax.Array
         Event matrix with shape ``(batch, rows)``. Float32 cotangents accept
         bool or float32 events. Float64 cotangents accept bool, int8, float32,
-        or float64 events.
+        or float64 events; other integer or floating-point events are
+        converted to their ``!= 0`` activity mask.
     ct : jax.Array
         Float32 or float64 cotangent matrix with shape ``(batch, cols)``.
     indices : jax.Array
@@ -124,6 +146,7 @@ def tcsr_sddmm_dweight_binary(
         if value.ndim != rank:
             raise ValueError(f"{name} must be rank {rank}")
 
+    events = _native_binary_events(events, ct.dtype)
     event_dtype = jnp.dtype(events.dtype)
     ct_dtype = jnp.dtype(ct.dtype)
     target_suffixes = _BINARY_TARGET_SUFFIXES.get((ct_dtype, event_dtype))
@@ -191,6 +214,9 @@ def tcsr_sddmm_dweight_binary(
     dweight, _ = jax.ffi.ffi_call(
         target,
         output_info,
+        # Under ``jax.vmap`` (e.g. per-sample weight gradients) run one call
+        # per mapped element; the kernels have no native extra batch axis.
+        vmap_method="sequential",
         input_layouts=[(0, 1), (0, 1), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0, 1, 2)],
     )(events.T, ct, local_targets, indptr, tile_offsets)
@@ -351,6 +377,7 @@ def tcsr_sddmm_dweight_float(
         "tcsr_sddmm_float.tcsr_sddmm_dweight_float_"
         f"{'f32' if value_dtype == _F32 else 'f64'}_t",
         output_info,
+        vmap_method="sequential",
         input_layouts=[(0, 1), (0, 1), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0, 1, 2), (0,), (0, 1), (0, 1, 2)],
     )(B.T, ct, local_targets, indptr, tile_offsets)
@@ -374,7 +401,8 @@ def tcsr_sddmv_dweight_binary(
     event : jax.Array
         Source events with shape ``(rows,)``. Float32 cotangents accept bool or
         float32 events. Float64 cotangents accept bool, int8, float32, or
-        float64 events.
+        float64 events; other integer or floating-point events are
+        converted to their ``!= 0`` activity mask.
     ct : jax.Array
         Float32 or float64 cotangent values with shape ``(cols,)``.
     indices : jax.Array
@@ -431,6 +459,7 @@ def tcsr_sddmv_dweight_binary(
         if value.ndim != rank:
             raise ValueError(f"{name} must be rank {rank}")
 
+    event = _native_binary_events(event, ct.dtype)
     event_dtype = jnp.dtype(event.dtype)
     ct_dtype = jnp.dtype(ct.dtype)
     target_suffixes = _BINARY_TARGET_SUFFIXES.get((ct_dtype, event_dtype))
@@ -485,6 +514,7 @@ def tcsr_sddmv_dweight_binary(
         "tcsr_sddmv_binary."
         f"tcsr_sddmv_dweight_binary_{value_suffix}_{event_suffix}_t",
         output_info,
+        vmap_method="sequential",
         input_layouts=[(0,), (0,), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0,), (0,)],
     )(event, ct, local_targets, indptr, tile_offsets)
@@ -614,6 +644,7 @@ def tcsr_sddmv_dweight_float(
         "tcsr_sddmv_float.tcsr_sddmv_dweight_float_"
         f"{'f32' if value_dtype == _F32 else 'f64'}_t",
         output_info,
+        vmap_method="sequential",
         input_layouts=[(0,), (0,), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0,), (0,)],
     )(event, ct, local_targets, indptr, tile_offsets)

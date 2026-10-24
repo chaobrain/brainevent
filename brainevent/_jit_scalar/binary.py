@@ -30,7 +30,7 @@ from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule,
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
 from .float import jitsmv_p_call, jitsmm_p_call
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import dtype_suffix, event_active, event_factor
 
 __all__ = [
     "binary_jitsmv",
@@ -124,7 +124,8 @@ def binary_jitsmv(
 
     where ``C(i)`` is the deterministic random connection set for row ``i``
     (determined by the seed), and ``spike[j]`` is 1 if ``vector[j]`` is
-    True (for boolean) or ``> 0`` (for float).
+    ``True`` (boolean) or non-zero (numeric; negative values and NaN are
+    active).
 
     Since the input is binary, the operation reduces to counting the number
     of active (spiking) presynaptic neurons that connect to each postsynaptic
@@ -248,8 +249,8 @@ def binary_jitsmm(
     ``Y[i, k] = sum_{j in C(i)} w * spike[j, k]``
 
     where ``C(i)`` is the deterministic random connection set for row ``i``
-    and ``spike[j, k]`` is 1 if ``B[j, k]`` is True (for boolean) or ``> 0``
-    (for float).
+    and ``spike[j, k]`` is 1 if ``B[j, k]`` is ``True`` (boolean) or
+    non-zero (numeric; negative values and NaN are active).
 
     This is equivalent to performing ``binary_jitsmv`` independently for each
     column of ``B``, but is implemented more efficiently as a single kernel.
@@ -309,9 +310,8 @@ def _jitsmv_numba_kernel(
     corder : bool
         Column-order flag selecting the notrans/trans orientation (see above).
     vector_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the input vector. ``bool``/``int8`` spikes
-        are active when non-zero (matching the CUDA ``pack_bool``); other dtypes
-        are active when ``> 0``.
+        Shape and dtype metadata for the input vector. Spikes are active when
+        ``True`` (boolean) or non-zero (numeric), matching the CUDA ``pack_bool``.
     **kwargs : dict
         Additional keyword arguments; must include ``'outs'`` (output
         shape/dtype) and ``'shape'`` (the implicit matrix shape, used to derive
@@ -335,7 +335,6 @@ def _jitsmv_numba_kernel(
     # split the *walked* dimension into 4 chunks; ``n_chunks`` is then derived
     # from that dimension inside the kernel, as CUDA does.
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
-    is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
         # notrans: m = output rows, k = vector length (walk dimension).
@@ -365,12 +364,8 @@ def _jitsmv_numba_kernel(
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
                             j = chunk_start + local_j
-                            if is_bool:
-                                if vector[j]:
-                                    acc += 1.0
-                            else:
-                                if vector[j] > 0:
-                                    acc += 1.0
+                            if vector[j]:
+                                acc += 1.0
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -390,12 +385,8 @@ def _jitsmv_numba_kernel(
                 cl = np.uint32(2)
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
-                if is_bool:
-                    if not vector[row]:
-                        continue
-                else:
-                    if not (vector[row] > 0):
-                        continue
+                if not vector[row]:
+                    continue
                 for chunk_id in range(n_chunks):
                     chunk_start = chunk_id * chunk_size
                     if chunk_start >= k:
@@ -416,6 +407,10 @@ def _jitsmv_numba_kernel(
                             local_j = lane + stride * int(q)
 
     def kernel(weight, clen, vector, seed, _):
+        # Numba sees the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16, which Numba cannot read) and immune to
+        # ``fastmath`` folding ``NaN != 0`` to False.
+        vector = event_active(vector)
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, vector, seed)
 
     return kernel
@@ -443,11 +438,9 @@ def _binary_jitsmv_cuda_kernel(
     k = int(vector_info.shape[0])
     n_words = (k + 31) // 32
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
-    # bool/int8 spikes are active when non-zero; float spikes when > 0.
-    is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(weight, clen, vector, seed, _):
-        spikes = vector.astype(jnp.int8) if is_bool else (vector > 0).astype(jnp.int8)
+        spikes = event_active(vector).astype(jnp.int8)
         packed = jax.ffi.ffi_call(
             'jit_scalar_binary_jitsmv.pack_bool',
             jax.ShapeDtypeStruct((n_words,), jnp.uint32),
@@ -585,7 +578,8 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpo
             corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        dw = jnp.sum(row * vector, keepdims=True).reshape(weight.aval.shape)
+        # Binary events contribute their activity mask, never their raw value (#198).
+        dw = jnp.sum(row * event_factor(vector, dtype=row.dtype), keepdims=True).reshape(weight.aval.shape)
         return dw, clen, vector, seed, _
     else:
         raise NotImplementedError(
@@ -844,9 +838,8 @@ def _jitsmm_numba_kernel(
         If True, iterate over output rows as the outer loop.
         If False, iterate over input rows as the outer loop with accumulation.
     B_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the input matrix ``B``. When
-        ``B_info.dtype == jnp.bool_``, the kernel uses boolean comparisons;
-        otherwise it uses ``> 0`` comparisons.
+        Shape and dtype metadata for the input matrix ``B``. Events are
+        active when ``True`` (boolean) or non-zero (numeric).
     **kwargs : dict
         Additional keyword arguments, must include ``'outs'``.
 
@@ -868,7 +861,6 @@ def _jitsmm_numba_kernel(
     # (the walked dimension split into 4 chunks), so matmat and matvec draw the
     # same matrix.
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
-    is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
         # notrans: Y = M @ B. m = output rows, k = B rows (walk dimension), n = cols.
@@ -901,12 +893,8 @@ def _jitsmm_numba_kernel(
                         while local_j < chunk_width:
                             j = chunk_start + local_j
                             for col in range(n):
-                                if is_bool:
-                                    if B[j, col]:
-                                        out[col] += 1.0
-                                else:
-                                    if B[j, col] > 0.:
-                                        out[col] += 1.0
+                                if B[j, col]:
+                                    out[col] += 1.0
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -926,10 +914,7 @@ def _jitsmm_numba_kernel(
                 cl = np.uint32(2)
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
-                if is_bool:
-                    indices = np.where(B[row])[0]
-                else:
-                    indices = np.where(B[row] > 0.)[0]
+                indices = np.where(B[row])[0]
                 if indices.shape[0] == 0:
                     continue
                 for chunk_id in range(n_chunks):
@@ -952,6 +937,10 @@ def _jitsmm_numba_kernel(
                             local_j = lane + stride * int(q)
 
     def kernel(weight, clen, B, seed, _):
+        # Numba sees the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16, which Numba cannot read) and immune to
+        # ``fastmath`` folding ``NaN != 0`` to False.
+        B = event_active(B)
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, B, seed)
 
     return kernel
@@ -983,10 +972,9 @@ def _binary_jitsmm_cuda_kernel(
         m_ffi, k_ffi = int(out_info.shape[0]), k_pack
     else:
         m_ffi, k_ffi = k_pack, int(out_info.shape[0])
-    is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(weight, clen, B, seed, _):
-        spikes = B.astype(jnp.int8) if is_bool else (B > 0).astype(jnp.int8)
+        spikes = event_active(B).astype(jnp.int8)
         packed = jax.ffi.ffi_call(
             'jit_scalar_binary_jitsmm.pack',
             jax.ShapeDtypeStruct((n, n_words), jnp.uint32),
@@ -1121,7 +1109,8 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
             corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        dw = jnp.sum(r * B, keepdims=True).reshape(weight.aval.shape)
+        # Binary events contribute their activity mask, never their raw value (#198).
+        dw = jnp.sum(r * event_factor(B, dtype=r.dtype), keepdims=True).reshape(weight.aval.shape)
         return dw, clen, B, seed, _
 
     else:

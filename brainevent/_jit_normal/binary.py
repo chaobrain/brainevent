@@ -30,7 +30,7 @@ from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule,
 from brainevent._op import load_cuda_file
 from brainevent._typing import ArrayData, Data, MatrixShape
 from .float import _LANE_STRIDE, _chunk_size, _walk_length, jitnmv_p_call, jitnmm_p_call
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import dtype_suffix, event_active, event_factor
 
 __all__ = [
     "binary_jitnmv",
@@ -59,7 +59,7 @@ def binary_jitnmv(
     Computes ``M @ v`` where ``M`` is a sparse matrix whose non-zero entries are
     drawn from a normal distribution with parameters ``w_loc`` (mean) and ``w_scale``
     (standard deviation), and ``v`` is a binary event vector. Only positions where
-    ``v`` is active (True or > 0) contribute to the output, making this operation
+    ``v`` is active (``True`` or non-zero) contribute to the output, making this operation
     event-driven and efficient for sparse neural activity patterns.
 
     Parameters
@@ -192,7 +192,7 @@ def binary_jitnmm(
     Computes ``M @ B`` where ``M`` is a sparse matrix whose non-zero entries are
     drawn from a normal distribution with parameters ``w_loc`` (mean) and ``w_scale``
     (standard deviation), and ``B`` is a 2-D binary event matrix. Only positions
-    where ``B`` elements are active (True or > 0) contribute to the output.
+    where ``B`` elements are active (``True`` or non-zero) contribute to the output.
 
     Parameters
     ----------
@@ -321,7 +321,6 @@ def _jitc_mv_normal_numba_kernel_generator(
 
     stride = _LANE_STRIDE
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
-    is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
         @numba.njit(fastmath=True)
@@ -351,10 +350,7 @@ def _jitc_mv_normal_numba_kernel_generator(
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
                             j = chunk_start + local_j
-                            if is_bool:
-                                active = vector[j]
-                            else:
-                                active = vector[j] > 0.
+                            active = vector[j]
                             if active:
                                 n01 = _rng_normal01(seed0, row, j)
                                 out += w_loc0 + n01 * w_scale0
@@ -376,10 +372,7 @@ def _jitc_mv_normal_numba_kernel_generator(
                 cl = np.uint32(2)
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
-                if is_bool:
-                    active_row = vector[row]
-                else:
-                    active_row = vector[row] > 0.
+                active_row = vector[row]
                 if not active_row:
                     continue
                 for chunk_id in range(n_chunks):
@@ -403,6 +396,10 @@ def _jitc_mv_normal_numba_kernel_generator(
                             local_j = lane + stride * int(q)
 
     def run(w_loc, w_scale, clen, vector, seed):
+        # Numba sees the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16, which Numba cannot read) and immune to
+        # ``fastmath`` folding ``NaN != 0`` to False.
+        vector = event_active(vector)
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
 
     return run
@@ -423,10 +420,9 @@ def _binary_jitnmv_cuda_kernel(
     k = int(vector_info.shape[0])
     n_words = (k + 31) // 32
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
-    is_bool = np.dtype(vector_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(w_loc, w_scale, clen, vector, seed):
-        spikes = vector.astype(jnp.int8) if is_bool else (vector > 0).astype(jnp.int8)
+        spikes = event_active(vector).astype(jnp.int8)
         packed = jax.ffi.ffi_call(
             'jit_normal_binary_jitnmv.pack_bool',
             jax.ShapeDtypeStruct((n_words,), jnp.uint32),
@@ -448,15 +444,18 @@ def _jitc_mv_normal_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, t
 
 def _jitc_mv_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     """JVP rule for the w_loc argument of binary_jitnmv."""
+    # M = (w_loc + w_scale * Z) * mask is linear in (w_loc, w_scale):
+    # the w_loc tangent direction is (w_dot, 0).
     return binary_jitnmv_p_call(
-        w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_dot, jnp.zeros_like(w_scale), clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitc_mv_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     """JVP rule for the w_scale argument of binary_jitnmv."""
+    # The w_scale tangent direction is (0, w_dot).
     return binary_jitnmv_p_call(
-        w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        jnp.zeros_like(w_loc), w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
@@ -481,22 +480,22 @@ def _jitc_mv_normal_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, s
         return w_loc, w_scale, clen, r, seed
     elif ad.is_undefined_primal(w_loc):
         # M = (w_loc + w_scale * Z) * mask, forward: M @ event(v)
-        # d(loss)/d(w_loc) = sum((mask^T @ ct) * vector)
+        # d(loss)/d(w_loc) = sum((mask^T @ ct) * active(vector))
         r = jitnmv_p_call(
             1., 0., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        dw_loc = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        dw_loc = jnp.expand_dims(jnp.sum(r * event_factor(vector, dtype=r.dtype)), axis=0)
         return dw_loc, w_scale, clen, vector, seed
     elif ad.is_undefined_primal(w_scale):
-        # d(loss)/d(w_scale) = sum(((Z*mask)^T @ ct) * vector)
+        # d(loss)/d(w_scale) = sum(((Z*mask)^T @ ct) * active(vector))
         r = jitnmv_p_call(
             0., 1., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        dw_scale = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        dw_scale = jnp.expand_dims(jnp.sum(r * event_factor(vector, dtype=r.dtype)), axis=0)
         return w_loc, dw_scale, clen, vector, seed
     else:
         raise NotImplementedError(
@@ -719,7 +718,6 @@ def _jitc_mm_normal_numba_kernel_generator(
 
     stride = _LANE_STRIDE
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], transpose, corder))
-    is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     if corder:
         @numba.njit(fastmath=True)
@@ -753,10 +751,7 @@ def _jitc_mm_normal_numba_kernel_generator(
                             n01 = _rng_normal01(seed0, row, j)
                             w = w_loc0 + n01 * w_scale0
                             for col in range(n):
-                                if is_bool:
-                                    active = B[j, col]
-                                else:
-                                    active = B[j, col] > 0.
+                                active = B[j, col]
                                 if active:
                                     out[col] += w
                             state = _rng_next(state)
@@ -795,10 +790,7 @@ def _jitc_mm_normal_numba_kernel_generator(
                             n01 = _rng_normal01(seed0, row, j)
                             w = w_loc0 + n01 * w_scale0
                             for col in range(n):
-                                if is_bool:
-                                    active = B[row, col]
-                                else:
-                                    active = B[row, col] > 0.
+                                active = B[row, col]
                                 if active:
                                     posts[j, col] += w
                             state = _rng_next(state)
@@ -806,6 +798,10 @@ def _jitc_mm_normal_numba_kernel_generator(
                             local_j = lane + stride * int(q)
 
     def run(w_loc, w_scale, clen, B, seed):
+        # Numba sees the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16, which Numba cannot read) and immune to
+        # ``fastmath`` folding ``NaN != 0`` to False.
+        B = event_active(B)
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_loc, w_scale, clen, B, seed)
 
     return run
@@ -833,10 +829,9 @@ def _binary_jitnmm_cuda_kernel(
         m_ffi, k_ffi = int(out_info.shape[0]), k_pack
     else:
         m_ffi, k_ffi = k_pack, int(out_info.shape[0])
-    is_bool = np.dtype(B_info.dtype) in (np.dtype('bool'), np.dtype('int8'))
 
     def kernel(w_loc, w_scale, clen, B, seed):
-        spikes = B.astype(jnp.int8) if is_bool else (B > 0).astype(jnp.int8)
+        spikes = event_active(B).astype(jnp.int8)
         packed = jax.ffi.ffi_call(
             'jit_normal_binary_jitnmm.pack',
             jax.ShapeDtypeStruct((n, n_words), jnp.uint32),
@@ -852,15 +847,18 @@ def _binary_jitnmm_cuda_kernel(
 
 def _jitc_mm_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     """JVP rule for the w_loc argument of binary_jitnmm."""
+    # M = (w_loc + w_scale * Z) * mask is linear in (w_loc, w_scale):
+    # the w_loc tangent direction is (w_dot, 0).
     return binary_jitnmm_p_call(
-        w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        w_dot, jnp.zeros_like(w_scale), clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitc_mm_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     """JVP rule for the w_scale argument of binary_jitnmm."""
+    # The w_scale tangent direction is (0, w_dot).
     return binary_jitnmm_p_call(
-        w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        jnp.zeros_like(w_loc), w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
@@ -893,22 +891,22 @@ def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape,
         return w_loc, w_scale, clen, r, seed
     elif ad.is_undefined_primal(w_loc):
         # M = (w_loc + w_scale * Z) * mask, forward: M @ event(B)
-        # d(loss)/d(w_loc) = sum((mask^T @ ct) * B)
+        # d(loss)/d(w_loc) = sum((mask^T @ ct) * active(B))
         r = jitnmm_p_call(
             1., 0., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        dw_loc = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        dw_loc = jnp.expand_dims(jnp.sum(r * event_factor(B, dtype=r.dtype)), axis=0)
         return dw_loc, w_scale, clen, B, seed
     elif ad.is_undefined_primal(w_scale):
-        # d(loss)/d(w_scale) = sum(((Z*mask)^T @ ct) * B)
+        # d(loss)/d(w_scale) = sum(((Z*mask)^T @ ct) * active(B))
         r = jitnmm_p_call(
             0., 1., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
             backend=kwargs['backend'],
         )[0]
-        dw_scale = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        dw_scale = jnp.expand_dims(jnp.sum(r * event_factor(B, dtype=r.dtype)), axis=0)
         return w_loc, dw_scale, clen, B, seed
     else:
         raise NotImplementedError(

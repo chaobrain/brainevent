@@ -28,7 +28,8 @@ from brainevent._op import (
 )
 from brainevent._op import load_cuda_file
 from brainevent.config import get_numba_parallel
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, event_factor
+from brainevent._dense.binary import _EVENT_FASTMATH, _numba_event_mask
 
 __all__ = [
     'update_dense_on_binary_pre',
@@ -104,6 +105,7 @@ def update_dense_on_binary_pre(
     weight update for each synapse ``(i, j)`` is:
 
     ``delta_W[i, j] = post_trace[j]`` if ``pre_spike[i]`` is active
+    (``True`` for boolean spikes, ``!= 0`` for numeric spikes)
 
     ``delta_W[i, j] = 0`` otherwise
 
@@ -144,21 +146,27 @@ def update_dense_on_binary_pre(
 def _dense_on_pre_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
     import numba
 
-    if spike_info.dtype == jnp.bool_:
-        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(spike_info.dtype)
+    bool_events = spike_info.dtype == jnp.bool_ or mask_events
+
+    if bool_events:
+        @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
         def kernel(weight, spike, trace, out_w):
             for i in numba.prange(spike.shape[0]):
                 if spike[i]:
                     out_w[i] += trace
 
     else:
-        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
         def kernel(weight, spike, trace, out_w):
             for i in numba.prange(spike.shape[0]):
-                if spike[i] != 0.:
+                if spike[i] != 0:
                     out_w[i] += trace
 
     def run(weight, spike, trace):
+        if mask_events:
+            spike = event_active(spike)
         return numba_kernel(kernel, outs=kwargs['outs'], input_output_aliases={0: 0})(weight, spike, trace)
 
     return run
@@ -171,7 +179,8 @@ def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
     )
 
     out_info = kwargs['outs']
-    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+    abi = cuda_event_abi(spike_info.dtype)
+    spk_suffix = abi.suffix
 
     wt_sfx = dtype_suffix(weight_info.dtype)
     kernel_name = f'dense_plasticity_on_pre.update_dense_on_pre{wt_sfx}{spk_suffix}'
@@ -181,14 +190,14 @@ def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
             kernel_name,
             out_info,
             input_output_aliases={0: 0},
-        )(weight, spike, trace)
+        )(weight, abi.prepare(spike), trace)
 
     return kernel
 
 
 def _dense_on_pre_jax_kernel(**kwargs):
     def kernel(weight, spike, trace):
-        s = spike.astype(weight.dtype) if spike.dtype == jnp.bool_ else spike
+        s = event_factor(spike, dtype=weight.dtype)
         return [weight + jnp.outer(s, trace)]
 
     return kernel
@@ -309,10 +318,7 @@ def _update_dense_pre_benchmark_data(*, platform):
 def _dense_on_pre_batching(args, axes, **kwargs):
     if axes == (0, None, None):
         weight, pre_spike, post_trace = args
-        if pre_spike.dtype == jnp.bool_:
-            mask = pre_spike.astype(weight.dtype)
-        else:
-            mask = (pre_spike != 0.).astype(weight.dtype)
+        mask = event_factor(pre_spike, dtype=weight.dtype)
         update = mask[:, None] * post_trace[None, :]
         return [weight + update[None, :, :]], [0]
     return general_batching_rule(update_dense_on_binary_pre_p, args, axes, **kwargs)
@@ -422,6 +428,7 @@ def update_dense_on_binary_post(
     weight update for each synapse ``(i, j)`` is:
 
     ``delta_W[i, j] = pre_trace[i]`` if ``post_spike[j]`` is active
+    (``True`` for boolean spikes, ``!= 0`` for numeric spikes)
 
     ``delta_W[i, j] = 0`` otherwise
 
@@ -462,21 +469,27 @@ def update_dense_on_binary_post(
 def _dense_on_post_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
     import numba
 
-    if spike_info.dtype == jnp.bool_:
-        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    mask_events = _numba_event_mask(spike_info.dtype)
+    bool_events = spike_info.dtype == jnp.bool_ or mask_events
+
+    if bool_events:
+        @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
         def kernel(weight, trace, spike, out_w):
             for i in numba.prange(spike.shape[0]):
                 if spike[i]:
                     out_w[:, i] += trace
 
     else:
-        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
         def kernel(weight, trace, spike, out_w):
             for i in numba.prange(spike.shape[0]):
-                if spike[i] != 0.:
+                if spike[i] != 0:
                     out_w[:, i] += trace
 
     def run(weight, trace, spike):
+        if mask_events:
+            spike = event_active(spike)
         return numba_kernel(kernel, outs=kwargs['outs'], input_output_aliases={0: 0})(weight, trace, spike)
 
     return run
@@ -489,7 +502,8 @@ def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
     )
 
     out_info = kwargs['outs']
-    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+    abi = cuda_event_abi(spike_info.dtype)
+    spk_suffix = abi.suffix
 
     wt_sfx = dtype_suffix(weight_info.dtype)
     kernel_name = f'dense_plasticity_on_post.update_dense_on_post{wt_sfx}{spk_suffix}'
@@ -499,14 +513,14 @@ def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
             kernel_name,
             out_info,
             input_output_aliases={0: 0},
-        )(weight, trace, spike)
+        )(weight, trace, abi.prepare(spike))
 
     return kernel
 
 
 def _dense_on_post_jax_kernel(**kwargs):
     def kernel(weight, trace, spike):
-        s = spike.astype(weight.dtype) if spike.dtype == jnp.bool_ else spike
+        s = event_factor(spike, dtype=weight.dtype)
         return [weight + jnp.outer(trace, s)]
 
     return kernel
@@ -608,10 +622,7 @@ def _dense_on_post_transpose_rule(ct, weight, pre_trace, post_spike, **kwargs):
 def _dense_on_post_batching(args, axes, **kwargs):
     if axes == (0, None, None):
         weight, pre_trace, post_spike = args
-        if post_spike.dtype == jnp.bool_:
-            mask = post_spike.astype(weight.dtype)
-        else:
-            mask = (post_spike != 0.).astype(weight.dtype)
+        mask = event_factor(post_spike, dtype=weight.dtype)
         update = pre_trace[:, None] * mask[None, :]
         return [weight + update[None, :, :]], [0]
     return general_batching_rule(update_dense_on_binary_post_p, args, axes, **kwargs)

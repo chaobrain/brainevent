@@ -212,7 +212,8 @@ def test_formal_sddmm_api_matches_hand_computed_gradients():
         static_argnames=("transpose",),
     )(event_mv, ct_mv, *common_mv, transpose=True)
 
-    assert jnp.allclose(binary_mm, jnp.array([19, 28, 19], jnp.float32))
+    # Binary gradients use the ``x != 0`` mask: negative events are active.
+    assert jnp.allclose(binary_mm, jnp.array([48, 65, 30], jnp.float32))
     assert jnp.allclose(float_mm, jnp.array([-3, 5, 65], jnp.float32))
-    assert jnp.allclose(binary_mv, jnp.array([2, 5, 0], jnp.float32))
+    assert jnp.allclose(binary_mv, jnp.array([2, 5, 3], jnp.float32))
     assert jnp.allclose(float_mv, jnp.array([4, 10, -3], jnp.float32))

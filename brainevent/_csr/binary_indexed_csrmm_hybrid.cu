@@ -30,16 +30,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <string>
 
 #ifndef BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK
+// Host-side check: throws BE::CheckError, which the generated FFI wrapper
+// converts into an xla::ffi::Error (a Python exception) instead of terminating the process.
 #define BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(condition, message) \
-    do                                                             \
-    {                                                              \
-        if (!(condition))                                          \
-        {                                                          \
-            std::fprintf(stderr, "%s\n", message);                \
-            std::abort();                                          \
-        }                                                          \
+    do                                                      \
+    {                                                       \
+        BE_CHECK(condition) << (message);                   \
     } while (0)
 #endif
 

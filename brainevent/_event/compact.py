@@ -27,6 +27,7 @@ from brainevent._op import (
     general_batching_rule,
     load_cuda_file,
 )
+from brainevent._op.util import cuda_event_abi, event_active
 
 '''
 binary_2d_compact_only_p_call
@@ -141,15 +142,14 @@ def _binary_2d_compact_only_cuda_kernel(
         name='compact',
     )
 
-    is_bool = (spikes_info.dtype == jnp.bool_)
-    kernel_name = ('compact.compact_2d_only_bool'
-                   if is_bool else
-                   'compact.compact_2d_only_float')
+    # bool / float32 kernels; other dtypes are reduced to their ``!= 0`` mask
+    # (casting e.g. float64 to float32 could flush tiny non-zero values to 0).
+    event_abi = cuda_event_abi(spikes_info.dtype)
+    kernel_name = f'compact.compact_2d_only{event_abi.suffix}'
     out_info = kwargs['outs']
 
     def kernel(spikes):
-        if not is_bool and spikes.dtype != jnp.float32:
-            spikes = spikes.astype(jnp.float32)
+        spikes = event_abi.prepare(spikes)
         return jax.ffi.ffi_call(kernel_name, out_info)(spikes)
 
     return kernel
@@ -163,36 +163,24 @@ def _binary_2d_compact_only_numba_kernel(
 
     n_pre, n_batch = spikes_info.shape
 
-    if spikes_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
-        def mv(spikes, active_ids, n_active):
-            n_act = 0
-            for i in range(n_pre):
-                row_active = False
-                for j in range(n_batch):
-                    if spikes[i, j]:
-                        row_active = True
-                        break
-                if row_active:
-                    active_ids[n_act] = i
-                    n_act += 1
-            n_active[0] = n_act
-    else:
-        @numba.njit(fastmath=True)
-        def mv(spikes, active_ids, n_active):
-            n_act = 0
-            for i in range(n_pre):
-                row_active = False
-                for j in range(n_batch):
-                    if spikes[i, j] != 0.:
-                        row_active = True
-                        break
-                if row_active:
-                    active_ids[n_act] = i
-                    n_act += 1
-            n_active[0] = n_act
+    @numba.njit(fastmath=True)
+    def mv(spikes, active_ids, n_active):
+        n_act = 0
+        for i in range(n_pre):
+            row_active = False
+            for j in range(n_batch):
+                if spikes[i, j]:
+                    row_active = True
+                    break
+            if row_active:
+                active_ids[n_act] = i
+                n_act += 1
+        n_active[0] = n_act
 
     def kernel(spikes):
+        # Numba reads the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
+        spikes = event_active(spikes)
         return numba_kernel(mv, outs=kwargs['outs'])(spikes)
 
     return kernel
@@ -288,15 +276,14 @@ def _binary_1d_array_index_cuda_kernel(
         name='compact',
     )
 
-    is_bool = (spikes_info.dtype == jnp.bool_)
-    kernel_name = ('compact.compact_1d_bool'
-                   if is_bool else
-                   'compact.compact_1d_float')
+    # bool / float32 kernels; other dtypes are reduced to their ``!= 0`` mask
+    # (casting e.g. float64 to float32 could flush tiny non-zero values to 0).
+    event_abi = cuda_event_abi(spikes_info.dtype)
+    kernel_name = f'compact.compact_1d{event_abi.suffix}'
     out_info = kwargs['outs']
 
     def kernel(spikes):
-        if not is_bool and spikes.dtype != jnp.float32:
-            spikes = spikes.astype(jnp.float32)
+        spikes = event_abi.prepare(spikes)
         return jax.ffi.ffi_call(kernel_name, out_info)(spikes)
 
     return kernel
@@ -310,26 +297,19 @@ def _binary_1d_array_index_numba_kernel(
 
     n = spikes_info.shape[0]
 
-    if spikes_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
-        def mv(spikes, active_ids, n_active):
-            n_act = 0
-            for i in range(n):
-                if spikes[i]:
-                    active_ids[n_act] = i
-                    n_act += 1
-            n_active[0] = n_act
-    else:
-        @numba.njit(fastmath=True)
-        def mv(spikes, active_ids, n_active):
-            n_act = 0
-            for i in range(n):
-                if spikes[i] != 0.:
-                    active_ids[n_act] = i
-                    n_act += 1
-            n_active[0] = n_act
+    @numba.njit(fastmath=True)
+    def mv(spikes, active_ids, n_active):
+        n_act = 0
+        for i in range(n):
+            if spikes[i]:
+                active_ids[n_act] = i
+                n_act += 1
+        n_active[0] = n_act
 
     def kernel(spikes):
+        # Numba reads the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
+        spikes = event_active(spikes)
         return numba_kernel(mv, outs=kwargs['outs'])(spikes)
 
     return kernel
@@ -434,15 +414,14 @@ def _binary_2d_array_index_cuda_kernel(
         name='compact',
     )
 
-    is_bool = (spikes_info.dtype == jnp.bool_)
-    kernel_name = ('compact.fused_bitpack_compact_2d_bool'
-                   if is_bool else
-                   'compact.fused_bitpack_compact_2d_float')
+    # bool / float32 kernels; other dtypes are reduced to their ``!= 0`` mask
+    # (casting e.g. float64 to float32 could flush tiny non-zero values to 0).
+    event_abi = cuda_event_abi(spikes_info.dtype)
+    kernel_name = f'compact.fused_bitpack_compact_2d{event_abi.suffix}'
     out_info = kwargs['outs']
 
     def kernel(spikes):
-        if not is_bool and spikes.dtype != jnp.float32:
-            spikes = spikes.astype(jnp.float32)
+        spikes = event_abi.prepare(spikes)
         return jax.ffi.ffi_call(kernel_name, out_info)(spikes)
 
     return kernel
@@ -458,46 +437,29 @@ def _binary_2d_array_index_numba_kernel(
     n_pre, n_batch = spikes_info.shape
     n_batch_packed = math.ceil(n_batch / 32)
 
-    if spikes_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
-        def mv(spikes, packed, active_ids, n_active):
-            n_act = 0
-            for i in range(n_pre):
-                row_active = False
-                for w in range(n_batch_packed):
-                    word = numba.uint32(0)
-                    for bit in range(32):
-                        col = w * 32 + bit
-                        if col < n_batch and spikes[i, col]:
-                            word |= numba.uint32(1) << numba.uint32(bit)
-                    packed[i, w] = word
-                    if word != 0:
-                        row_active = True
-                if row_active:
-                    active_ids[n_act] = i
-                    n_act += 1
-            n_active[0] = n_act
-    else:
-        @numba.njit(fastmath=True)
-        def mv(spikes, packed, active_ids, n_active):
-            n_act = 0
-            for i in range(n_pre):
-                row_active = False
-                for w in range(n_batch_packed):
-                    word = numba.uint32(0)
-                    for bit in range(32):
-                        col = w * 32 + bit
-                        if col < n_batch and spikes[i, col] != 0.:
-                            word |= numba.uint32(1) << numba.uint32(bit)
-                    packed[i, w] = word
-                    if word != 0:
-                        row_active = True
-                if row_active:
-                    active_ids[n_act] = i
-                    n_act += 1
-            n_active[0] = n_act
+    @numba.njit(fastmath=True)
+    def mv(spikes, packed, active_ids, n_active):
+        n_act = 0
+        for i in range(n_pre):
+            row_active = False
+            for w in range(n_batch_packed):
+                word = numba.uint32(0)
+                for bit in range(32):
+                    col = w * 32 + bit
+                    if col < n_batch and spikes[i, col]:
+                        word |= numba.uint32(1) << numba.uint32(bit)
+                packed[i, w] = word
+                if word != 0:
+                    row_active = True
+            if row_active:
+                active_ids[n_act] = i
+                n_act += 1
+        n_active[0] = n_act
 
     def kernel(spikes):
+        # Numba reads the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
+        spikes = event_active(spikes)
         return numba_kernel(mv, outs=kwargs['outs'])(spikes)
 
     return kernel
@@ -617,15 +579,14 @@ def _binary_2d_pair_stream_encode_cuda_kernel(
         name='compact',
     )
 
-    is_bool = (spikes_info.dtype == jnp.bool_)
-    kernel_name = ('compact.pair_stream_encode_2d_bool'
-                   if is_bool else
-                   'compact.pair_stream_encode_2d_float')
+    # bool / float32 kernels; other dtypes are reduced to their ``!= 0`` mask
+    # (casting e.g. float64 to float32 could flush tiny non-zero values to 0).
+    event_abi = cuda_event_abi(spikes_info.dtype)
+    kernel_name = f'compact.pair_stream_encode_2d{event_abi.suffix}'
     out_info = kwargs['outs']
 
     def kernel(spikes):
-        if not is_bool and spikes.dtype != jnp.float32:
-            spikes = spikes.astype(jnp.float32)
+        spikes = event_abi.prepare(spikes)
         return jax.ffi.ffi_call(kernel_name, out_info)(spikes)
 
     return kernel
@@ -639,32 +600,22 @@ def _binary_2d_pair_stream_encode_numba_kernel(
 
     n_src, n_batch = spikes_info.shape
 
-    if spikes_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
-        def mv(spikes, pair_stream, n_pairs):
-            pair_stream[:] = 0
-            write_pos = 0
-            for row in range(n_src):
-                for col in range(n_batch):
-                    if spikes[row, col]:
-                        pair_stream[write_pos, 0] = row
-                        pair_stream[write_pos, 1] = col
-                        write_pos += 1
-            n_pairs[0] = write_pos
-    else:
-        @numba.njit(fastmath=True)
-        def mv(spikes, pair_stream, n_pairs):
-            pair_stream[:] = 0
-            write_pos = 0
-            for row in range(n_src):
-                for col in range(n_batch):
-                    if spikes[row, col] != 0.:
-                        pair_stream[write_pos, 0] = row
-                        pair_stream[write_pos, 1] = col
-                        write_pos += 1
-            n_pairs[0] = write_pos
+    @numba.njit(fastmath=True)
+    def mv(spikes, pair_stream, n_pairs):
+        pair_stream[:] = 0
+        write_pos = 0
+        for row in range(n_src):
+            for col in range(n_batch):
+                if spikes[row, col]:
+                    pair_stream[write_pos, 0] = row
+                    pair_stream[write_pos, 1] = col
+                    write_pos += 1
+        n_pairs[0] = write_pos
 
     def kernel(spikes):
+        # Numba reads the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
+        spikes = event_active(spikes)
         return numba_kernel(mv, outs=kwargs['outs'])(spikes)
 
     return kernel
@@ -775,15 +726,14 @@ def _binary_2d_row_sparse_encode_cuda_kernel(
         name='compact',
     )
 
-    is_bool = (spikes_info.dtype == jnp.bool_)
-    kernel_name = ('compact.row_sparse_encode_2d_bool'
-                   if is_bool else
-                   'compact.row_sparse_encode_2d_float')
+    # bool / float32 kernels; other dtypes are reduced to their ``!= 0`` mask
+    # (casting e.g. float64 to float32 could flush tiny non-zero values to 0).
+    event_abi = cuda_event_abi(spikes_info.dtype)
+    kernel_name = f'compact.row_sparse_encode_2d{event_abi.suffix}'
     out_info = kwargs['outs']
 
     def kernel(spikes):
-        if not is_bool and spikes.dtype != jnp.float32:
-            spikes = spikes.astype(jnp.float32)
+        spikes = event_abi.prepare(spikes)
         return jax.ffi.ffi_call(kernel_name, out_info)(spikes)
 
     return kernel
@@ -798,28 +748,20 @@ def _binary_2d_row_sparse_encode_numba_kernel(
 
     n_src, n_batch = spikes_info.shape
 
-    if spikes_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
-        def mv(spikes, spike_indices):
-            spike_indices[:] = 0
-            for row in range(n_src):
-                write_pos = 0
-                for col in range(n_batch):
-                    if spikes[row, col]:
-                        spike_indices[row, write_pos] = col + 1
-                        write_pos += 1
-    else:
-        @numba.njit(fastmath=True)
-        def mv(spikes, spike_indices):
-            spike_indices[:] = 0
-            for row in range(n_src):
-                write_pos = 0
-                for col in range(n_batch):
-                    if spikes[row, col] != 0.:
-                        spike_indices[row, write_pos] = col + 1
-                        write_pos += 1
+    @numba.njit(fastmath=True)
+    def mv(spikes, spike_indices):
+        spike_indices[:] = 0
+        for row in range(n_src):
+            write_pos = 0
+            for col in range(n_batch):
+                if spikes[row, col]:
+                    spike_indices[row, write_pos] = col + 1
+                    write_pos += 1
 
     def kernel(spikes):
+        # Numba reads the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
+        spikes = event_active(spikes)
         return numba_kernel(mv, outs=kwargs['outs'])(spikes)
 
     return kernel
@@ -945,15 +887,14 @@ def _binary_2d_csr_row_count_cuda_kernel(
         name='compact',
     )
 
-    is_bool = (spikes_info.dtype == jnp.bool_)
-    kernel_name = ('compact.csr_row_count_2d_bool'
-                   if is_bool else
-                   'compact.csr_row_count_2d_float')
+    # bool / float32 kernels; other dtypes are reduced to their ``!= 0`` mask
+    # (casting e.g. float64 to float32 could flush tiny non-zero values to 0).
+    event_abi = cuda_event_abi(spikes_info.dtype)
+    kernel_name = f'compact.csr_row_count_2d{event_abi.suffix}'
     out_info = kwargs['outs']
 
     def kernel(spikes):
-        if not is_bool and spikes.dtype != jnp.float32:
-            spikes = spikes.astype(jnp.float32)
+        spikes = event_abi.prepare(spikes)
         return jax.ffi.ffi_call(kernel_name, out_info)(spikes)
 
     return kernel
@@ -967,26 +908,19 @@ def _binary_2d_csr_row_count_numba_kernel(
 
     n_src, n_batch = spikes_info.shape
 
-    if spikes_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
-        def mv(spikes, row_counts):
-            for row in range(n_src):
-                count = 0
-                for col in range(n_batch):
-                    if spikes[row, col]:
-                        count += 1
-                row_counts[row] = count
-    else:
-        @numba.njit(fastmath=True)
-        def mv(spikes, row_counts):
-            for row in range(n_src):
-                count = 0
-                for col in range(n_batch):
-                    if spikes[row, col] != 0.:
-                        count += 1
-                row_counts[row] = count
+    @numba.njit(fastmath=True)
+    def mv(spikes, row_counts):
+        for row in range(n_src):
+            count = 0
+            for col in range(n_batch):
+                if spikes[row, col]:
+                    count += 1
+            row_counts[row] = count
 
     def kernel(spikes):
+        # Numba reads the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
+        spikes = event_active(spikes)
         return numba_kernel(mv, outs=kwargs['outs'])(spikes)
 
     return kernel
@@ -1053,15 +987,14 @@ def _binary_2d_csr_fill_cuda_kernel(
         name='compact',
     )
 
-    is_bool = (spikes_info.dtype == jnp.bool_)
-    kernel_name = ('compact.csr_fill_2d_bool'
-                   if is_bool else
-                   'compact.csr_fill_2d_float')
+    # bool / float32 kernels; other dtypes are reduced to their ``!= 0`` mask
+    # (casting e.g. float64 to float32 could flush tiny non-zero values to 0).
+    event_abi = cuda_event_abi(spikes_info.dtype)
+    kernel_name = f'compact.csr_fill_2d{event_abi.suffix}'
     out_info = kwargs['outs']
 
     def kernel(spikes, indptr):
-        if not is_bool and spikes.dtype != jnp.float32:
-            spikes = spikes.astype(jnp.float32)
+        spikes = event_abi.prepare(spikes)
         return jax.ffi.ffi_call(kernel_name, out_info)(spikes, indptr)
 
     return kernel
@@ -1076,28 +1009,20 @@ def _binary_2d_csr_fill_numba_kernel(
 
     n_src, n_batch = spikes_info.shape
 
-    if spikes_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
-        def mv(spikes, indptr, indices):
-            indices[:] = 0
-            for row in range(n_src):
-                write_pos = indptr[row]
-                for col in range(n_batch):
-                    if spikes[row, col]:
-                        indices[write_pos] = col
-                        write_pos += 1
-    else:
-        @numba.njit(fastmath=True)
-        def mv(spikes, indptr, indices):
-            indices[:] = 0
-            for row in range(n_src):
-                write_pos = indptr[row]
-                for col in range(n_batch):
-                    if spikes[row, col] != 0.:
-                        indices[write_pos] = col
-                        write_pos += 1
+    @numba.njit(fastmath=True)
+    def mv(spikes, indptr, indices):
+        indices[:] = 0
+        for row in range(n_src):
+            write_pos = indptr[row]
+            for col in range(n_batch):
+                if spikes[row, col]:
+                    indices[write_pos] = col
+                    write_pos += 1
 
     def kernel(spikes, indptr):
+        # Numba reads the boolean activity mask (``x != 0``): exact for every
+        # dtype (incl. float16/bfloat16) and immune to ``fastmath`` NaN folding.
+        spikes = event_active(spikes)
         return numba_kernel(mv, outs=kwargs['outs'])(spikes, indptr)
 
     return kernel

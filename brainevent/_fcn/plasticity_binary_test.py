@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+import contextlib
+
 import brainunit as bu
 import brainevent as be
 import jax
@@ -20,6 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from brainevent._test_util import jax_x64_enabled
 from brainevent._fcn.plasticity_binary import (
     fcn_plasticity_row_p,
     fcn_plasticity_row_prim_call,
@@ -77,6 +80,41 @@ def test_row_prim(backend, spike_dtype):
     got = fcn_plasticity_row_prim_call(data, indices, spike, trace, backend=backend)[0]
     ref = _ell_ref_row(data, indices, spike, trace)
     assert np.allclose(np.asarray(got), ref, atol=1e-5)
+
+
+_EVENT_DTYPES = (
+    'bool', 'int8', 'uint8', 'int16', 'int32',
+    'float16', 'bfloat16', 'float32', 'float64',
+)
+
+
+def _pattern_events(n, dtype_name):
+    """Tile ``[2, -1, 0, 0.5, ...]``; ints wrap/truncate (uint8 -1 -> 255, 0.5 -> 0)."""
+    raw = np.resize(np.array([2., -1., 0., 0.5, 0., 1., -3., 0.]), n)
+    if dtype_name == 'bool':
+        arr = raw != 0
+    elif dtype_name.startswith(('int', 'uint')):
+        arr = raw.astype(np.int64).astype(dtype_name)
+    else:
+        arr = raw
+    return jnp.asarray(arr, dtype=jnp.dtype(dtype_name))
+
+
+@pytest.mark.parametrize("backend", ROW_BACKENDS)
+@pytest.mark.parametrize("dtype_name", _EVENT_DTYPES)
+def test_row_prim_event_activity_all_dtypes(backend, dtype_name):
+    """A row spike is active iff ``!= 0`` on every backend (#199)."""
+    rng = np.random.default_rng(3)
+    n_row, n_conn, n_col = 8, 3, 7
+    ctx = jax_x64_enabled() if dtype_name == 'float64' else contextlib.nullcontext()
+    with ctx:
+        data = jnp.asarray(rng.random((n_row, n_conn)), dtype=jnp.float32)
+        indices = jnp.asarray(rng.integers(0, n_col, (n_row, n_conn)), dtype=jnp.int32)
+        spike = _pattern_events(n_row, dtype_name)
+        trace = jnp.asarray(rng.random(n_col), dtype=jnp.float32)
+        got = np.asarray(fcn_plasticity_row_prim_call(data, indices, spike, trace, backend=backend)[0])
+    ref = _ell_ref_row(data, indices, np.asarray(spike), trace)
+    assert np.allclose(got, ref, atol=1e-5)
 
 
 @pytest.mark.slow

@@ -71,19 +71,19 @@ namespace
     template <>
     __device__ __forceinline__ bool event_active<float>(float value)
     {
-        return value > 0.0f;
+        return value != 0.0f;
     }
 
     template <>
     __device__ __forceinline__ bool event_active<int8_t>(int8_t value)
     {
-        return value > 0;
+        return value != 0;
     }
 
     template <>
     __device__ __forceinline__ bool event_active<double>(double value)
     {
-        return value > 0.0;
+        return value != 0.0;
     }
 
     template <typename EventT>
