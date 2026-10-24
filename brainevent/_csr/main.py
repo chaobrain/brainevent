@@ -1616,7 +1616,7 @@ class CSR(CompressedSparseData):
             pre_vals=pre_vals, post_vals=post_vals, params=params, shape=self.shape,
         )
 
-    def delay_deliver(self, ring, events, delays, t, *, weighted: bool = False, backend: Optional[str] = None):
+    def delay_deliver(self, ring, events, delays, t, *, weighted: Optional[bool] = None, backend: Optional[str] = None):
         """Deliver presynaptic events into an arrival ring with per-edge delays.
 
         Convenience wrapper around :func:`brainevent.csr_delay_deliver` using
@@ -1628,15 +1628,17 @@ class CSR(CompressedSparseData):
         ----------
         ring : jax.Array or Quantity
             Arrival buffer of shape ``(L, shape[1])``.
-        events : jax.Array or BinaryArray
-            Presynaptic events of shape ``(shape[0],)``.
+        events : jax.Array, BinaryArray or WeightedArray
+            Presynaptic events of shape ``(shape[0],)``. A
+            :class:`WeightedArray` selects weighted delivery.
         delays : jax.Array or int
             Integer per-edge delays in steps, shape ``(nse,)`` aligned with
             ``self.indices``, or a scalar.
         t : int or jax.Array
             Current integer time step (may be traced).
-        weighted : bool, optional
-            Binary (``False``, default) or event-value-weighted delivery.
+        weighted : bool or None, optional
+            Binary (``False``) or event-value-weighted (``True``) delivery.
+            ``None`` (default) infers it from the event type.
         backend : str or None, optional
             Backend override; defaults to ``self.backend``.
 

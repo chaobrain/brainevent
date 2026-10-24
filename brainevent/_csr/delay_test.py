@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent import BinaryArray, CSR, csr_delay_deliver, csr_delay_deliver_p
+from brainevent import BinaryArray, CSR, WeightedArray, csr_delay_deliver, csr_delay_deliver_p
 from brainevent._csr.delay import _benchmark_data, csr_delay_deliver_p_call
 from brainevent._test_util import check_event_op_grads, jax_x64_enabled, requires_gpu
 
@@ -147,6 +147,50 @@ class TestForward:
                                 jnp.asarray(indptr), 2, 3, shape=(n_pre, n_post), backend=backend)
         expected = reference(np.zeros((n_slots, n_post)), events, w, indices, indptr, 2, 3)
         np.testing.assert_allclose(np.asarray(out), expected, rtol=1e-5, atol=1e-5)
+
+    @pytest.mark.parametrize('backend', BACKENDS)
+    @pytest.mark.parametrize('ev_dtype', ('int8', 'float32'))
+    def test_weighted_array_selects_weighted_mode(self, backend, ev_dtype):
+        n_pre, n_post, n_slots = 9, 6, 4
+        w, indices, indptr, delays = make_csr(n_pre, n_post, 5, n_slots)
+        events = make_events(n_pre, ev_dtype)
+        ring = jnp.zeros((n_slots, n_post), jnp.float32)
+        args = (jnp.asarray(w), jnp.asarray(indices), jnp.asarray(indptr), jnp.asarray(delays), 1)
+        expected = reference(np.zeros((n_slots, n_post)), events, w, indices, indptr, delays, 1, True)
+        for weighted in (None, True):
+            out = csr_delay_deliver(ring, WeightedArray(jnp.asarray(events)), *args,
+                                    shape=(n_pre, n_post), weighted=weighted, backend=backend)
+            np.testing.assert_allclose(np.asarray(out), expected, rtol=1e-5, atol=1e-5)
+        csr = CSR((jnp.asarray(w), jnp.asarray(indices), jnp.asarray(indptr)), shape=(n_pre, n_post))
+        out = csr.delay_deliver(ring, WeightedArray(jnp.asarray(events)), jnp.asarray(delays), 1, backend=backend)
+        np.testing.assert_allclose(np.asarray(out), expected, rtol=1e-5, atol=1e-5)
+
+    def test_contradictory_weighted_flag_raises(self):
+        w, indices, indptr, delays = make_csr(4, 3, 2, 3)
+        args = (jnp.asarray(w), jnp.asarray(indices), jnp.asarray(indptr), jnp.asarray(delays), 0)
+        ring = jnp.zeros((3, 3), jnp.float32)
+        with pytest.raises(ValueError, match='contradicts'):
+            csr_delay_deliver(ring, WeightedArray(jnp.ones(4)), *args, shape=(4, 3), weighted=False)
+        with pytest.raises(ValueError, match='contradicts'):
+            csr_delay_deliver(ring, BinaryArray(jnp.ones(4, bool)), *args, shape=(4, 3), weighted=True)
+
+    def test_weighted_array_grads_are_exact(self):
+        n_pre, n_post, n_slots = 6, 5, 4
+        w, indices, indptr, delays = make_csr(n_pre, n_post, 3, n_slots)
+        events = jnp.asarray(make_events(n_pre, 'float32'))
+        ring = jnp.zeros((n_slots, n_post), jnp.float32)
+        args = (jnp.asarray(indices), jnp.asarray(indptr), jnp.asarray(delays), 2)
+
+        def loss(data, x, wrap):
+            ev = WeightedArray(x) if wrap else x
+            out = csr_delay_deliver(ring, ev, data, *args, shape=(n_pre, n_post),
+                                    weighted=None if wrap else True, backend='jax_raw')
+            return jnp.sum(out ** 2)
+
+        g_wrap = jax.grad(loss, argnums=(0, 1))(jnp.asarray(w), events, True)
+        g_raw = jax.grad(loss, argnums=(0, 1))(jnp.asarray(w), events, False)
+        for a, b in zip(g_wrap, g_raw):
+            np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-6)
 
     @pytest.mark.parametrize('backend', BACKENDS)
     def test_empty_matrix_and_no_spikes(self, backend):

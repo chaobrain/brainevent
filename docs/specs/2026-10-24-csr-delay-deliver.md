@@ -20,10 +20,10 @@ A single fused event-driven kernel removes both costs.
 ```python
 brainevent.csr_delay_deliver(
     ring, events, data, indices, indptr, delays, t,
-    *, shape, weighted=False, backend=None,
+    *, shape, weighted=None, backend=None,
 ) -> ring_new
 
-CSR.delay_deliver(ring, events, delays, t, *, weighted=False, backend=None)
+CSR.delay_deliver(ring, events, delays, t, *, weighted=None, backend=None)
 ```
 
 | argument | shape / dtype | notes |
@@ -35,7 +35,7 @@ CSR.delay_deliver(ring, events, delays, t, *, weighted=False, backend=None)
 | `delays` | `(nse,)` integer, or a scalar broadcast to `(nse,)` | steps |
 | `t` | integer scalar | may be traced (e.g. inside `lax.scan`); passed as an array operand |
 | `shape` | `(n_pre, n_post)` | static |
-| `weighted` | static bool | `False`: binary; `True`: event value weighted |
+| `weighted` | bool or None | `False`: binary; `True`: event value weighted; `None`: from the event type |
 
 ### Semantics
 
@@ -58,8 +58,11 @@ this step, `d >= L` would alias a later step). When `delays` is traced no check
 is possible; out-of-range values wrap modulo `L` with the same formula on every
 backend.
 
-Weighted mode is the internal path a forthcoming `WeightedArray` event type
-will dispatch to; it is reachable today via `weighted=True`.
+Event mode: `weighted=None` (default) infers the mode from the event type,
+`True` for a `WeightedArray` and `False` for raw arrays, `BinaryArray` and
+`BitPackedBinary` (via `brainevent._event.as_event_operand`). An explicit
+`weighted` that contradicts the wrapper type raises `ValueError`; with a raw
+array, `weighted=True` selects weighted delivery.
 
 ### Units
 

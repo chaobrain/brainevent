@@ -68,7 +68,7 @@ def csr_delay_deliver(
     t: Any,
     *,
     shape: MatrixShape,
-    weighted: bool = False,
+    weighted: Optional[bool] = None,
     backend: Optional[str] = None,
 ) -> Data:
     """Deliver spikes through a CSR matrix with per-edge delays into a ring buffer.
@@ -90,9 +90,10 @@ def csr_delay_deliver(
         (``float16``, ``bfloat16``, ``float32`` or ``float64``). Its dtype is
         the output dtype. When ``data`` or ``events`` carry units, ``ring``
         must carry ``unit(data) * unit(events)``.
-    events : jax.Array or BinaryArray
-        Presynaptic events of shape ``(n_pre,)``; a :class:`BinaryArray` is
-        unwrapped. Any boolean, integer or floating dtype.
+    events : jax.Array, BinaryArray or WeightedArray
+        Presynaptic events of shape ``(n_pre,)``. Event wrappers are
+        unwrapped; a :class:`WeightedArray` selects weighted delivery. Any
+        boolean, integer or floating dtype.
     data : jax.Array or brainunit.Quantity
         Synaptic weights: a scalar / shape ``(1,)`` (homogeneous) or shape
         ``(nse,)`` (heterogeneous). Cast to ``ring.dtype``.
@@ -108,9 +109,11 @@ def csr_delay_deliver(
         a :func:`jax.lax.scan`).
     shape : tuple of int
         ``(n_pre, n_post)``, the logical shape of the CSR matrix.
-    weighted : bool, optional
-        ``False`` (default): binary delivery, each active row adds ``w_e``.
+    weighted : bool or None, optional
+        ``False``: binary delivery, each active row adds ``w_e``.
         ``True``: weighted delivery, each row adds ``x[i] * w_e``.
+        ``None`` (default): ``True`` for a :class:`WeightedArray`,
+        ``False`` otherwise.
     backend : str or None, optional
         ``'jax_raw'``, ``'numba'`` (CPU) or ``'cuda_raw'`` (GPU), or ``None``
         for the platform default.
@@ -173,10 +176,9 @@ def csr_delay_deliver(
                [0.5, 0. , 0. ],
                [0. , 0. , 0.5]], dtype=float32)
     """
-    from brainevent._event import BinaryArray  # pylint: disable=import-outside-toplevel
+    from brainevent._event import as_event_operand  # pylint: disable=import-outside-toplevel
 
-    if isinstance(events, BinaryArray):
-        events = events.value
+    events, weighted = _resolve_event_mode(events, weighted, as_event_operand(events))
     # Validate outside the jitted body so that concrete delays are visible.
     ring_shape = np.shape(u.get_mantissa(ring))
     if len(ring_shape) == 2:
@@ -185,6 +187,20 @@ def csr_delay_deliver(
         ring, events, data, indices, indptr, delays, t,
         shape=tuple(shape), weighted=bool(weighted), backend=backend,
     )
+
+
+def _resolve_event_mode(events, weighted, operand):
+    """Unwrap an event wrapper and reconcile its kind with ``weighted``."""
+    if operand is None:
+        return events, bool(weighted)
+    value, wrapper_weighted = operand
+    if weighted is not None and bool(weighted) != wrapper_weighted:
+        kind = 'WeightedArray' if wrapper_weighted else 'a binary event array'
+        raise ValueError(
+            f'weighted={weighted} contradicts the event type ({kind}); '
+            f'omit `weighted` or pass a raw array.'
+        )
+    return value, wrapper_weighted
 
 
 @namescope(static_argnames=("shape", "weighted"))
