@@ -42,7 +42,7 @@ cheaper to agree on an approach before the implementation exists.
 
 ## Development setup
 
-`brainevent` requires **Python >= 3.11** (3.11–3.14 are supported) and **JAX >= 0.8.0**.
+`brainevent` requires **Python >= 3.12** (3.12–3.15 are supported) and **JAX >= 0.9.0**.
 
 ```bash
 # 1. Fork the repo on GitHub, then clone your fork
