@@ -761,6 +761,39 @@ def test_csr_on_post_inactive_edges_ignore_nonfinite_trace(backend, spike_dtype,
 
 
 @pytest.mark.parametrize('backend', PRE_BACKENDS)
+def test_csr_on_pre_inactive_edges_are_bit_identical(backend):
+    """Inactive edges are returned unchanged, including the sign of ``-0.0``."""
+    csr, rows, cols, shape = _nan_trace_problem(34)
+    data = jnp.where(jnp.arange(csr.nse) % 2 == 0, -0.0, csr.data).astype(jnp.float32)
+    spike = jnp.asarray(np.resize([True, False], shape[0]))
+    trace = jnp.full((shape[1],), jnp.nan, jnp.float32)
+    new = np.asarray(update_csr_on_binary_pre(
+        data, csr.indices, csr.indptr, spike, trace, shape=shape, backend=backend,
+    ))
+    inactive = ~np.asarray(spike)[rows]
+    np.testing.assert_array_equal(np.signbit(new[inactive]), np.signbit(np.asarray(data)[inactive]))
+    np.testing.assert_array_equal(new[inactive], np.asarray(data)[inactive])
+
+
+@pytest.mark.parametrize('backend', POST_BACKENDS)
+def test_csr_on_post_inactive_edges_are_bit_identical(backend):
+    """Inactive edges are returned unchanged, including the sign of ``-0.0``."""
+    csr, rows, cols, shape = _nan_trace_problem(35)
+    data = jnp.where(jnp.arange(csr.nse) % 2 == 0, -0.0, csr.data).astype(jnp.float32)
+    csc_indices, csc_indptr, weight_indices = _csr_to_csc_with_weight_indices(
+        data, csr.indices, csr.indptr, shape,
+    )
+    spike = jnp.asarray(np.resize([False, True], shape[1]))
+    trace = jnp.full((shape[0],), jnp.nan, jnp.float32)
+    new = np.asarray(update_csr_on_binary_post(
+        data, csc_indices, csc_indptr, weight_indices, trace, spike, shape=shape, backend=backend,
+    ))
+    inactive = ~np.asarray(spike)[cols]
+    np.testing.assert_array_equal(np.signbit(new[inactive]), np.signbit(np.asarray(data)[inactive]))
+    np.testing.assert_array_equal(new[inactive], np.asarray(data)[inactive])
+
+
+@pytest.mark.parametrize('backend', PRE_BACKENDS)
 def test_csr_on_pre_trace_cotangent_ignores_inactive_edges(backend):
     csr, rows, cols, shape = _nan_trace_problem(33)
     spike = jnp.asarray(np.resize([True, False], shape[0]))

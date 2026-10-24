@@ -305,8 +305,9 @@ def _csr_on_pre_jax_kernel(
             total_repeat_length=nse,
         )
         active = event_active(pre_spike[row_ids])
-        delta = select_active(active, post_trace[indices])
-        return [weight + delta]
+        # Select the old weight (not ``weight + 0``) so inactive edges stay
+        # bit-identical, including ``-0.0``, whatever the trace holds.
+        return [jnp.where(active, weight + post_trace[indices], weight)]
 
     return kernel
 
@@ -811,8 +812,10 @@ def _csr2csc_on_post_jax_kernel(
             total_repeat_length=nse,
         )
         active = event_active(post_spike[col_ids])
-        delta = select_active(active, pre_trace[indices])
-        return [weight.at[weight_indices].add(delta)]
+        # ``weight_indices`` is a permutation, so ``set`` writes each edge once;
+        # selecting the old value keeps inactive edges bit-identical.
+        old = weight[weight_indices]
+        return [weight.at[weight_indices].set(jnp.where(active, old + pre_trace[indices], old))]
 
     return kernel
 
