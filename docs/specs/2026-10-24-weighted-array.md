@@ -43,11 +43,9 @@ brainevent.WeightedArray(value)       # value: int8/uint8/int16/int32/float16/bf
   are cast inside the lowering. TCSR weighted mm uses the indexed hybrid path (the tile path
   only consumes active-row lists and stays binary-only). TCSR weighted gradients use the
   value-weighted (`pp_prop`) weight cotangent.
-- **Activity in weighted kernels** is `x != 0` (same as binary). Event-driven kernels (numba,
-  CUDA scatter/hybrid paths, dense CUDA) skip inactive entries; gather-style CUDA kernels,
-  `jax_raw`, cuSPARSE and cuBLAS compute `w * 0` instead. With finite weights the results are
-  identical; whether a NaN/Inf weight in an inactive row propagates is backend dependent, as
-  for binary events.
+- **Activity in weighted kernels** is `x != 0` (same as binary). Inactive
+  events contribute exactly zero on every backend, even against NaN/Inf weights
+  (`2026-10-24-inactive-row-nan-isolation.md`).
 
 ## Helpers
 
