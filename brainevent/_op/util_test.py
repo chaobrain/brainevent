@@ -444,3 +444,31 @@ def test_event_factor_casts_mask():
     out = event_factor(jnp.asarray([2., -1., 0.]), dtype=jnp.float16)
     assert out.dtype == jnp.float16
     assert out.tolist() == [1.0, 1.0, 0.0]
+
+
+def test_event_factor_weighted_keeps_values():
+    out = event_factor(jnp.asarray([2, -1, 0], dtype=jnp.int8), dtype=jnp.float32, weighted=True)
+    assert out.dtype == jnp.float32
+    assert out.tolist() == [2.0, -1.0, 0.0]
+
+
+@pytest.mark.parametrize('dtype', [jnp.int8, jnp.uint8, jnp.int16, jnp.float16, jnp.float32, jnp.bool_])
+def test_cuda_event_abi_weighted_casts_to_value_dtype(dtype):
+    abi = cuda_event_abi(dtype, weighted=True, value_dtype=jnp.float32)
+    assert abi.suffix == '_wv'
+    x = jnp.asarray([2, 0, 1], dtype=dtype)
+    out = abi.prepare(x)
+    assert out.dtype == jnp.float32
+    assert out.tolist() == jnp.asarray([2, 0, 1], dtype=dtype).astype(jnp.float32).tolist()
+
+
+def test_cuda_event_abi_weighted_identity_for_same_dtype():
+    x = jnp.asarray([1., 0.], dtype=jnp.float32)
+    assert cuda_event_abi(jnp.float32, weighted=True, value_dtype=jnp.float32).prepare(x) is x
+
+
+def test_cuda_event_abi_weighted_errors():
+    with pytest.raises(ValueError, match='value_dtype'):
+        cuda_event_abi(jnp.float32, weighted=True)
+    with pytest.raises(TypeError, match='Weighted CUDA events'):
+        cuda_event_abi(jnp.complex64, weighted=True, value_dtype=jnp.float32)
