@@ -42,6 +42,10 @@ class WeightedArray(EventRepresentation):
         floating-point dtypes; signed values are allowed. Boolean arrays are
         accepted and behave like :class:`BinaryArray`.
 
+    See Also
+    --------
+    BinaryArray : Binary events (the value is not used).
+
     Notes
     -----
     Given an event vector ``x`` of shape ``(k,)`` and a weight matrix ``W``
@@ -56,10 +60,6 @@ class WeightedArray(EventRepresentation):
     - ``d y / d x[i] = W[i, :]`` (integer events get ``float0`` cotangents).
 
     ``WeightedArray`` is not a subclass of :class:`BinaryArray`.
-
-    See Also
-    --------
-    BinaryArray : Binary events (the value is not used).
 
     Examples
     --------
@@ -119,13 +119,15 @@ class WeightedArray(EventRepresentation):
                 f"Got {self.ndim}D array."
             )
         side = 'Right' if left else 'Left'
-        assert oc.ndim == 2, (f"{side} operand must be a 2D array in "
-                              f"matrix multiplication. Got {oc.ndim}D array.")
+        if oc.ndim != 2:
+            raise MathError(f"{side} operand must be a 2D array in "
+                            f"matrix multiplication. Got {oc.ndim}D array.")
         inner_self = self.shape[-1] if left else self.shape[0]
         inner_oc = oc.shape[0] if left else oc.shape[-1]
-        assert inner_self == inner_oc, (
-            f"Incompatible dimensions for matrix multiplication: {inner_self} and {inner_oc}."
-        )
+        if inner_self != inner_oc:
+            raise MathError(
+                f"Incompatible dimensions for matrix multiplication: {inner_self} and {inner_oc}."
+            )
 
     def __matmul__(self, oc):
         """Compute ``self @ oc`` with value-weighted event-driven multiplication.

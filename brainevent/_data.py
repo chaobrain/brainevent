@@ -429,6 +429,39 @@ class JITCMatrix(DataRepresentation):
     """
     __module__ = 'brainevent'
 
+    @staticmethod
+    def _split_event_operand(other, weight):
+        """Classify a matmul operand for the JITC binary / float routes.
+
+        A :class:`~brainevent.WeightedArray` routes to the float JITC
+        primitives, whose kernels skip zero events: its values are cast to the
+        floating dtype of ``weight`` (integer events get ``float0``
+        cotangents) and returned as a plain operand.
+
+        Parameters
+        ----------
+        other : object
+            Right- or left-hand operand of ``@``.
+        weight : jax.Array or u.Quantity
+            A weight parameter of the matrix; its dtype selects the cast.
+
+        Returns
+        -------
+        other : object
+            The operand, unwrapped and cast for a ``WeightedArray``.
+        event : tuple of (jax.Array, bool) or None
+            ``(value, False)`` for a binary event operand; ``None`` otherwise.
+        """
+        from brainevent._event.dispatch import as_event_operand  # pylint: disable=import-outside-toplevel
+
+        event = as_event_operand(other)
+        if event is None or not event[1]:
+            return other, event
+        dtype = u.math.get_dtype(weight)
+        if not jnp.issubdtype(dtype, jnp.floating):
+            dtype = jnp.result_type(dtype, 1.0)
+        return u.math.asarray(event[0]).astype(dtype), None
+
     def _unitary_op(self, op):
         """
         Apply a unary operation to the matrix.

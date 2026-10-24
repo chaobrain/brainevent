@@ -63,10 +63,14 @@ class TestWeightedArray:
             WeightedArray(jnp.array(1.)) @ W
         with pytest.raises(MathError):
             WeightedArray(jnp.ones((2, 2, 3))) @ W
-        with pytest.raises(AssertionError):
+        with pytest.raises(MathError, match='Incompatible'):
             WeightedArray(jnp.ones(4)) @ W
-        with pytest.raises(AssertionError):
+        with pytest.raises(MathError, match='Incompatible'):
             W @ WeightedArray(jnp.ones(3))
+        with pytest.raises(MathError, match='Right operand must be a 2D'):
+            WeightedArray(jnp.ones(3)) @ jnp.ones(3)
+        with pytest.raises(MathError, match='Left operand must be a 2D'):
+            jnp.ones((2, 3, 3)) @ WeightedArray(jnp.ones(3))
 
 
 class TestAsEventOperand:
