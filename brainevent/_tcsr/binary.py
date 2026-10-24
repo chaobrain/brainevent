@@ -209,8 +209,8 @@ def binary_csrmv(
     indptr : jax.Array or numpy.ndarray
         TCSR row pointer.
     v : jax.Array, numpy.ndarray, or brainunit.Quantity
-        Event vector. Positive floating values and true boolean values are
-        active.
+        Event vector. ``True`` (boolean) and non-zero (numeric, including
+        negative values and NaN) entries are active.
     shape : tuple of int
         Logical matrix shape ``(n_pre, n_post)``.
     workspace : HybridWorkspace
@@ -1057,7 +1057,7 @@ Low-level XLA custom-kernel primitive for ``binary_csrmv``.
 This primitive dispatches direct TCSR event-vector multiplication to the
 ``jax``, ``numba``, ``cusparse``, and ``cuda_raw`` backends.
 
-Only entries of ``v`` that are ``True`` (boolean) or positive (float) are considered active events
+Only entries of ``v`` that are ``True`` (boolean) or non-zero (numeric) are considered active events
 and contribute to the output, enabling efficient event-driven sparse-dense products commonly used
 in spiking neural networks.
 
@@ -1933,7 +1933,7 @@ Low-level XLA custom-kernel primitive for ``binary_csrmm``.
 This primitive dispatches direct TCSR BN event-matrix multiplication to the
 ``jax``, ``numba``, ``cusparse``, and ``cuda_raw`` backends.
 
-Only entries of ``B`` that are ``True`` (boolean) or positive (float) are considered active events
+Only entries of ``B`` that are ``True`` (boolean) or non-zero (numeric) are considered active events
 and contribute to the output, enabling efficient event-driven sparse-dense products commonly used
 in spiking neural networks.
 

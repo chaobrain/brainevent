@@ -75,7 +75,7 @@ def binary_jitnmv(
         the generated connectivity matrix.
     vector : Data
         The binary event vector to multiply with. Elements are treated as events
-        (True/False or >0/<=0). Shape must be compatible with ``shape``.
+        (``True`` or non-zero; negative values and NaN are active). Shape must be compatible with ``shape``.
     seed : int, optional
         Random seed for reproducible matrix generation. If None, a random seed
         is generated at compile time.
@@ -130,7 +130,7 @@ def binary_jitnmv(
     where ``C(i) = {j : Bernoulli_ij = 1}`` is the set of connected
     pre-synaptic indices for post-synaptic neuron ``i``, ``N_ij ~ Normal(w_loc,
     w_scale)`` is the connection weight, and ``spike[j]`` is treated as a
-    binary event (True/False or >0/<=0). Equivalently:
+    binary event (``True`` or non-zero; negative values and NaN are active). Equivalently:
 
     ``y[i] = sum_{j in C(i) : spike[j]=1} N_ij``
 
@@ -207,7 +207,7 @@ def binary_jitnmm(
         the generated connectivity matrix.
     B : Data
         The binary event matrix to multiply with, shape ``(k, n)``. Elements are
-        treated as events (True/False or >0/<=0).
+        treated as events (``True`` or non-zero; negative values and NaN are active).
     seed : int, optional
         Random seed for reproducible matrix generation. If None, a random seed
         is generated at compile time.

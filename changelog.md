@@ -119,7 +119,7 @@ paths, or between CPU and GPU, keeps its connectivity.
   how-to guides and the two data-structure notebooks; the removed
   `IndexedBinary1d` / `IndexedBinary2d` give way to `BitPackedBinary` /
   `CompactBinary`.
-- `docs/specs/2026-08-09-2026-08-09-release-0.2.1.md` records the CI root cause and the reference audit.
+- `docs/specs/2026-08-09-release-0.2.1.md` records the CI root cause and the reference audit.
 
 ### Internal
 
