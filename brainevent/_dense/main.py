@@ -42,10 +42,9 @@ __all__ = [
 
 
 def _event_value(obj):
-    from brainevent._event import BinaryArray, BitPackedBinary
-    if isinstance(obj, (BinaryArray, BitPackedBinary)):
-        return obj.value
-    return None
+    """Return ``(value, weighted)`` for an event operand, ``None`` otherwise."""
+    from brainevent._event.dispatch import as_event_operand
+    return as_event_operand(obj)
 
 
 def _normalize_dense_index(index):
@@ -102,7 +101,8 @@ class Dense(DataRepresentation):
     Notes
     -----
     ``Dense @ BinaryArray`` and ``BinaryArray @ Dense`` dispatch to the
-    event-driven dense binary primitives.  Dense numeric operands fall back to
+    event-driven dense binary primitives; ``WeightedArray`` operands use the
+    same primitives with ``weighted=True``.  Dense numeric operands fall back to
     ordinary JAX matrix multiplication with unit-aware dtype promotion.
 
     The per-synapse ``dt2t`` protocol is intentionally not implemented directly
@@ -427,19 +427,23 @@ class Dense(DataRepresentation):
         """
         Dense matrix multiplication: ``self @ other``.
 
-        Binary event operands use :func:`binary_densemv` or
+        Binary and weighted event operands (:class:`~brainevent.BinaryArray`,
+        :class:`~brainevent.WeightedArray`) use :func:`binary_densemv` or
         :func:`binary_densemm` with ``transpose=False``.  Dense numeric operands
         use ordinary JAX matrix multiplication.
         """
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        event = _event_value(other)
-        if event is not None:
+        operand = _event_value(other)
+        if operand is not None:
+            event, weighted = operand
             if event.ndim == 1:
-                return binary_densemv(self.data, event, transpose=False, backend=self.backend)
+                return binary_densemv(self.data, event, transpose=False, backend=self.backend,
+                                      weighted=weighted)
             elif event.ndim == 2:
-                return binary_densemm(self.data, event, transpose=False, backend=self.backend)
+                return binary_densemm(self.data, event, transpose=False, backend=self.backend,
+                                      weighted=weighted)
             else:
                 raise NotImplementedError(f"matmul with object of shape {event.shape}")
 
@@ -453,18 +457,22 @@ class Dense(DataRepresentation):
         """
         Reflected dense matrix multiplication: ``other @ self``.
 
-        Binary event operands use the transposed dense binary primitives.
+        Binary and weighted event operands use the transposed dense event
+        primitives.
         Dense numeric operands use ordinary JAX matrix multiplication.
         """
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        event = _event_value(other)
-        if event is not None:
+        operand = _event_value(other)
+        if operand is not None:
+            event, weighted = operand
             if event.ndim == 1:
-                return binary_densemv(self.data, event, transpose=True, backend=self.backend)
+                return binary_densemv(self.data, event, transpose=True, backend=self.backend,
+                                      weighted=weighted)
             elif event.ndim == 2:
-                return binary_densemm(self.data, event.T, transpose=True, backend=self.backend).T
+                return binary_densemm(self.data, event.T, transpose=True, backend=self.backend,
+                                      weighted=weighted).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {event.shape}")
 

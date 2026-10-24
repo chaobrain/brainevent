@@ -29,7 +29,7 @@ from brainevent._csr.main import CSC as PlainCSC
 from brainevent._csr.main import CSR as PlainCSR
 from brainevent._csr.slice import csr_slice_rows
 from brainevent._data import DataRepresentation
-from brainevent._event import BinaryArray
+from brainevent._event import as_event_operand
 from brainevent._misc import (
     _csr_to_coo,
     _csr_todense,
@@ -1284,9 +1284,11 @@ class TCSR(TiledCompressedSparseData):
 
         Parameters
         ----------
-        other : array-like, brainunit.Quantity, or brainevent.BinaryArray
+        other : array-like, brainunit.Quantity, brainevent.BinaryArray, or brainevent.WeightedArray
             Vector of shape ``(self.shape[1],)`` or matrix of shape
-            ``(self.shape[1], batch)`` on the right.
+            ``(self.shape[1], batch)`` on the right. A ``WeightedArray``
+            computes the exact product with its values, visiting only
+            non-zero events.
 
         Returns
         -------
@@ -1304,9 +1306,10 @@ class TCSR(TiledCompressedSparseData):
         __rmatmul__ : Multiply a left operand by this logical view.
         transpose : Create a shared transposed logical view.
         """
-        if not isinstance(other, BinaryArray):
+        event = as_event_operand(other)
+        if event is None:
             return self._float_matmul(other, reverse=False)
-        events = other.value
+        events, weighted = event
         if events.ndim not in (1, 2):
             raise NotImplementedError(
                 f"binary matmul with object of shape {events.shape}"
@@ -1333,6 +1336,7 @@ class TCSR(TiledCompressedSparseData):
                 transpose=self._transpose_state,
                 backend=self.binary_backend,
                 backward_algorithm=self.backward_algorithm,
+                weighted=weighted,
             )
         else:
             result = binary.binary_csrmm(
@@ -1348,6 +1352,7 @@ class TCSR(TiledCompressedSparseData):
                 transpose=self._transpose_state,
                 backend=self.binary_backend,
                 backward_algorithm=self.backward_algorithm,
+                weighted=weighted,
             )
         return (
             result
@@ -1365,9 +1370,11 @@ class TCSR(TiledCompressedSparseData):
 
         Parameters
         ----------
-        other : array-like, brainunit.Quantity, or brainevent.BinaryArray
+        other : array-like, brainunit.Quantity, brainevent.BinaryArray, or brainevent.WeightedArray
             Vector of shape ``(self.shape[0],)`` or matrix of shape
-            ``(batch, self.shape[0])`` on the left.
+            ``(batch, self.shape[0])`` on the left. A ``WeightedArray``
+            computes the exact product with its values, visiting only
+            non-zero events.
 
         Returns
         -------
@@ -1385,9 +1392,10 @@ class TCSR(TiledCompressedSparseData):
         __matmul__ : Multiply this logical view by a right operand.
         transpose : Create a shared transposed logical view.
         """
-        if not isinstance(other, BinaryArray):
+        event = as_event_operand(other)
+        if event is None:
             return self._float_matmul(other, reverse=True)
-        events = other.value
+        events, weighted = event
         if events.ndim not in (1, 2):
             raise NotImplementedError(
                 f"binary matmul with object of shape {events.shape}"
@@ -1416,6 +1424,7 @@ class TCSR(TiledCompressedSparseData):
                 transpose=compute_transpose,
                 backend=self.binary_backend,
                 backward_algorithm=self.backward_algorithm,
+                weighted=weighted,
             )
         else:
             result = binary.binary_csrmm(
@@ -1431,6 +1440,7 @@ class TCSR(TiledCompressedSparseData):
                 transpose=compute_transpose,
                 backend=self.binary_backend,
                 backward_algorithm=self.backward_algorithm,
+                weighted=weighted,
             )
         return (
             result

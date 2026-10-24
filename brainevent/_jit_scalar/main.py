@@ -20,11 +20,11 @@ from typing import Union, Optional, Dict
 
 import brainunit as u
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
-from brainevent._event.binary import BinaryArray
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitsmv, binary_jitsmm
 from .csr import jits_to_csr
@@ -35,6 +35,7 @@ __all__ = [
     'JITCScalarR',
     'JITCScalarC',
 ]
+
 
 
 class JITCScalarMatrix(JITCMatrix):
@@ -832,10 +833,12 @@ class JITCScalarR(JITCScalarMatrix):
           ``binary_jitsmm``.
         * 1-D dense array -- float matrix-vector product via ``jitsmv``.
         * 2-D dense array -- float matrix-matrix product via ``jitsmm``.
+        * ``WeightedArray`` -- cast to the weight dtype, then the float
+          product (``jitsmv`` / ``jitsmm``), whose kernels skip zero events.
 
         Parameters
         ----------
-        other : BinaryArray or jax.Array or u.Quantity
+        other : BinaryArray, WeightedArray, jax.Array or u.Quantity
             The right-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -854,8 +857,9 @@ class JITCScalarR(JITCScalarMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.weight)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 # JIT matrix @ events
                 return binary_jitsmv(weight, self.prob, other, self.seed, shape=self.shape,
@@ -906,7 +910,7 @@ class JITCScalarR(JITCScalarMatrix):
 
         Parameters
         ----------
-        other : BinaryArray or jax.Array or u.Quantity
+        other : BinaryArray, WeightedArray, jax.Array or u.Quantity
             The left-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -924,8 +928,9 @@ class JITCScalarR(JITCScalarMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.weight)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 #
                 # vector @ JIT matrix
@@ -1331,7 +1336,7 @@ class JITCScalarC(JITCScalarMatrix):
 
         Parameters
         ----------
-        other : BinaryArray or jax.Array or u.Quantity
+        other : BinaryArray, WeightedArray, jax.Array or u.Quantity
             The right-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -1349,8 +1354,9 @@ class JITCScalarC(JITCScalarMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.weight)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
@@ -1429,7 +1435,7 @@ class JITCScalarC(JITCScalarMatrix):
 
         Parameters
         ----------
-        other : BinaryArray or jax.Array or u.Quantity
+        other : BinaryArray, WeightedArray, jax.Array or u.Quantity
             The left-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -1447,8 +1453,9 @@ class JITCScalarC(JITCScalarMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.weight)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T

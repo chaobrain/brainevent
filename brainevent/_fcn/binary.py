@@ -43,7 +43,7 @@ _EVENT_FASTMATH = NUMBA_EVENT_FASTMATH
 _numba_event_mask = numba_event_mask
 
 
-@namescope(static_argnames=['shape', 'transpose'])
+@namescope(static_argnames=['shape', 'transpose', 'weighted'])
 def binary_fcnmv(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -52,6 +52,7 @@ def binary_fcnmv(
     shape: Tuple[int, int],
     transpose: bool = False,
     backend: Optional[str] = None,
+    weighted: bool = False,
 ) -> Union[jax.Array, u.Quantity]:
     """
     Event-driven sparse matrix--vector product with fixed connection number.
@@ -84,6 +85,10 @@ def binary_fcnmv(
     backend : str or None, optional
         Execution backend override (``'numba'``,
         ``'pallas'``, ``'cuda_raw'``, or ``None`` for automatic selection).
+    weighted : bool, optional
+        If ``True``, multiply each weight by the event value instead of its
+        activity mask (:class:`~brainevent.WeightedArray` semantics); zero
+        events are still skipped. Defaults to ``False``.
 
     Returns
     -------
@@ -143,6 +148,7 @@ def binary_fcnmv(
         shape=shape,
         transpose=transpose,
         backend=backend,
+        weighted=weighted,
     )[0]
     return u.maybe_decimal(r * v_unit * w_unit)
 
@@ -150,21 +156,83 @@ def binary_fcnmv(
 def _binary_fcnmv_spike_activity(
     spikes: jax.Array,
     dtype: jnp.dtype,
+    weighted: bool = False,
 ) -> jax.Array:
-    return event_factor(u.math.asarray(spikes), dtype=dtype)
+    return event_factor(u.math.asarray(spikes), dtype=dtype, weighted=weighted)
+
+
+def _ell_weighted_matvec_numba_kernel(weight_info, transpose: bool):
+    import numba
+
+    if transpose:
+        if weight_info.size == 1:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def ell_mv(weights, indices, spikes, posts):
+                posts[:] = 0.
+                w = weights[0]
+                for i in range(spikes.shape[0]):
+                    sp = spikes[i]
+                    if sp != 0:
+                        wsp = w * sp
+                        for j in range(indices.shape[1]):
+                            posts[indices[i, j]] += wsp
+        else:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def ell_mv(weights, indices, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    sp = spikes[i]
+                    if sp != 0:
+                        for j in range(indices.shape[1]):
+                            posts[indices[i, j]] += weights[i, j] * sp
+    else:
+        if weight_info.size == 1:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def ell_mv(weights, indices, spikes, posts):
+                w = weights[0]
+                for i in numba.prange(indices.shape[0]):
+                    r = 0.
+                    for j in range(indices.shape[1]):
+                        sp = spikes[indices[i, j]]
+                        if sp != 0:
+                            r += sp
+                    posts[i] = w * r
+        else:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def ell_mv(weights, indices, spikes, posts):
+                for i in numba.prange(indices.shape[0]):
+                    r = 0.
+                    for j in range(indices.shape[1]):
+                        sp = spikes[indices[i, j]]
+                        if sp != 0:
+                            r += weights[i, j] * sp
+                    posts[i] = r
+    return ell_mv
 
 
 def _ell_binary_matvec_numba_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
     transpose: bool,
+    weighted: bool = False,
     **kwargs
 ):
     import numba
 
-    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on
+    # their mask (binary) or are read as float32 (weighted).
     mask_events = _numba_event_mask(spike_info.dtype)
     bool_events = spike_info.dtype == jnp.bool_ or mask_events
+
+    if weighted:
+        weighted_mv = _ell_weighted_matvec_numba_kernel(weight_info, transpose)
+
+        def weighted_kernel(weights, indices, spikes):
+            if mask_events:
+                spikes = spikes.astype(jnp.float32)
+            return numba_kernel(weighted_mv, outs=kwargs['outs'])(weights, indices, spikes)
+
+        return weighted_kernel
 
     if transpose:
         if weight_info.size == 1:
@@ -264,6 +332,7 @@ def _ell_binary_matvec_cuda_kernel(
     transpose: bool,
     spike_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
+    weighted: bool = False,
     **kwargs
 ):
     load_cuda_file(
@@ -285,11 +354,22 @@ def _ell_binary_matvec_cuda_kernel(
         )
 
     # Scatter mode: if is_active(spikes[i]) -> output[indices[i,k]] += weights[i,k]
+    # (times spikes[i] for weighted events).
     mode_sfx = '_homo' if row_homo else '_hetero'
+    if weighted:
+        # Weighted scatter kernels read the event buffer in the weight dtype.
+        abi = cuda_event_abi(spike_info.dtype, weighted=True, value_dtype=weight_info.dtype)
+        kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}{abi.suffix}{row_sfx}'
+
+        def weighted_kernel(weights, indices, spikes):
+            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, abi.prepare(spikes))
+
+        return weighted_kernel
+
     kernel_name = f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_bool{row_sfx}'
 
     def kernel(weights, indices, spikes):
-        # The scatter kernel only reads a bool event buffer.
+        # The binary scatter kernel only reads a bool event buffer.
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, event_active(spikes))
 
     return kernel
@@ -298,13 +378,14 @@ def _ell_binary_matvec_cuda_kernel(
 def _ell_binary_matvec_jax_kernel(
     shape: Tuple[int, int],
     transpose: bool,
+    weighted: bool = False,
     **kwargs,
 ):
     """Pure JAX reference implementation for benchmarking comparison."""
     n_pre, n_post = shape
 
     def kernel(weights, indices, spikes):
-        spk_f = _binary_fcnmv_spike_activity(spikes, weights.dtype)
+        spk_f = _binary_fcnmv_spike_activity(spikes, weights.dtype, weighted)
 
         if transpose:
             # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
@@ -331,7 +412,8 @@ def _binary_fcnmv_jvp_spikes(
     transpose,
     **kwargs
 ):
-    return fcnmv(weights, indices, spk_dot, shape=shape, transpose=transpose),
+    # The output has the weight dtype; the event tangent may be wider (e.g. float64).
+    return fcnmv(weights, indices, spk_dot, shape=shape, transpose=transpose).astype(weights.dtype),
 
 
 def _binary_fcnmv_jvp_weights(
@@ -342,6 +424,7 @@ def _binary_fcnmv_jvp_weights(
     *,
     shape,
     transpose,
+    weighted=False,
     **kwargs
 ):
     return binary_fcnmv_p_call(
@@ -351,6 +434,7 @@ def _binary_fcnmv_jvp_weights(
         shape=shape,
         transpose=transpose,
         backend=kwargs['backend'],
+        weighted=weighted,
     )
 
 
@@ -363,6 +447,7 @@ def _binary_fcnmv_transpose_rule(
     shape,
     transpose,
     weight_info,
+    weighted=False,
     **kwargs
 ):
     if ad.is_undefined_primal(indices):
@@ -377,6 +462,7 @@ def _binary_fcnmv_transpose_rule(
             ct_spk = ad.Zero(spikes)
         else:
             ct_spk = fcnmv(weights, indices, ct, shape=shape, transpose=not transpose)
+            ct_spk = ct_spk.astype(spikes.aval.dtype)
         return weights, indices, ct_spk
 
     else:
@@ -392,10 +478,11 @@ def _binary_fcnmv_transpose_rule(
                 shape=shape,
                 transpose=transpose,
                 backend=kwargs['backend'],
+                weighted=weighted,
             )
             ct_gmax = jnp.inner(ct, ct_gmax[0]).reshape(*weight_info.shape)
         else:
-            spk_active = _binary_fcnmv_spike_activity(spikes, weight_info.dtype)
+            spk_active = _binary_fcnmv_spike_activity(spikes, weight_info.dtype, weighted)
             if transpose:
                 ct_gmax = jax.vmap(lambda v, ind: v * ct[ind])(spk_active, indices)
             else:
@@ -418,6 +505,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
+            weighted=kwargs.get('weighted', False),
         )
         return r, [out_axis]
     elif tuple(axes) == (None, None, 1):
@@ -429,6 +517,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
+            weighted=kwargs.get('weighted', False),
         )
         return r, [out_axis]
     else:
@@ -467,6 +556,7 @@ def binary_fcnmv_p_call(
     shape: Tuple[int, int],
     transpose: bool = False,
     backend: Optional[str] = None,
+    weighted: bool = False,
 ) -> Tuple[jax.Array]:
     """
     Low-level primitive call for the ELL event-driven sparse matrix--vector
@@ -495,6 +585,9 @@ def binary_fcnmv_p_call(
     backend : str or None, optional
         Backend override (``'numba'``, ``'pallas'``, ``'cuda_raw'``, or
         ``None``).
+    weighted : bool, optional
+        Multiply weights by the event value instead of its activity mask.
+        Defaults to ``False``.
 
     Returns
     -------
@@ -514,6 +607,7 @@ def binary_fcnmv_p_call(
         outs=[out],
         shape=shape,
         transpose=transpose,
+        weighted=weighted,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
@@ -572,7 +666,7 @@ binary_fcnmv_p.def_tags('fcn', 'binary')
 binary_fcnmv_p.def_benchmark_data(_binary_fcnmv_benchmark_data)
 
 
-@namescope(static_argnames=['shape', 'transpose'])
+@namescope(static_argnames=['shape', 'transpose', 'weighted'])
 def binary_fcnmm(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -581,6 +675,7 @@ def binary_fcnmm(
     shape: Tuple[int, int],
     transpose: bool,
     backend: Optional[str] = None,
+    weighted: bool = False,
 ) -> Union[jax.Array, u.Quantity]:
     """
     Event-driven sparse matrix--matrix product with fixed connection number.
@@ -611,6 +706,10 @@ def binary_fcnmm(
         scatter mode).
     backend : str or None, optional
         Execution backend override.
+    weighted : bool, optional
+        If ``True``, multiply each weight by the event value instead of its
+        activity mask (:class:`~brainevent.WeightedArray` semantics); zero
+        events are still skipped. Defaults to ``False``.
 
     Returns
     -------
@@ -675,6 +774,7 @@ def binary_fcnmm(
         transpose=transpose,
         shape=shape,
         backend=backend,
+        weighted=weighted,
     )[0]
     if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=backend):
         # The cuda_raw scatter kernel emits a raw "batch-first" ``(n, num_post)``
@@ -686,17 +786,82 @@ def binary_fcnmm(
     return u.maybe_decimal(r * m_unit * w_unit)
 
 
+def _fcnmm_weighted_numba_kernel(weight_info, transpose: bool):
+    import numba
+
+    if transpose:
+        # Scatter: posts[indices[i, j], c] += weights[i, j] * matrix[i, c]
+        if weight_info.size == 1:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def ell_mm(weights, indices, matrix, posts):
+                posts[:] = 0.
+                w = weights[0]
+                for i in range(matrix.shape[0]):
+                    nonzero, = np.where(matrix[i] != 0)
+                    vals = matrix[i][nonzero] * w
+                    for j in range(indices.shape[1]):
+                        posts[indices[i, j], nonzero] += vals
+        else:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def ell_mm(weights, indices, matrix, posts):
+                posts[:] = 0.
+                for i in range(matrix.shape[0]):
+                    nonzero, = np.where(matrix[i] != 0)
+                    vals = matrix[i][nonzero]
+                    for j in range(indices.shape[1]):
+                        posts[indices[i, j], nonzero] += vals * weights[i, j]
+    else:
+        # Gather: posts[i, c] = sum_j weights[i, j] * matrix[indices[i, j], c]
+        if weight_info.size == 1:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def ell_mm(weights, indices, matrix, posts):
+                w = weights[0]
+                for i_m in numba.prange(indices.shape[0]):
+                    out = np.zeros(posts.shape[1], dtype=posts.dtype)
+                    for j in range(indices.shape[1]):
+                        row = matrix[indices[i_m, j]]
+                        for c in range(row.shape[0]):
+                            if row[c] != 0:
+                                out[c] += row[c]
+                    posts[i_m] = out * w
+        else:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def ell_mm(weights, indices, matrix, posts):
+                for i_m in numba.prange(indices.shape[0]):
+                    out = np.zeros(posts.shape[1], dtype=posts.dtype)
+                    for j in range(indices.shape[1]):
+                        row = matrix[indices[i_m, j]]
+                        w = weights[i_m, j]
+                        for c in range(row.shape[0]):
+                            if row[c] != 0:
+                                out[c] += w * row[c]
+                    posts[i_m] = out
+    return ell_mm
+
+
 def _binary_fcnmm_numba_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     transpose: bool,
+    weighted: bool = False,
     **kwargs
 ):
     import numba
 
-    # Numba cannot read float16/bfloat16; such events use the boolean kernel on their mask.
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on
+    # their mask (binary) or are read as float32 (weighted).
     mask_events = _numba_event_mask(matrix_info.dtype)
     bool_events = matrix_info.dtype == jnp.bool_ or mask_events
+
+    if weighted:
+        weighted_mm = _fcnmm_weighted_numba_kernel(weight_info, transpose)
+
+        def weighted_kernel(weights, indices, matrix):
+            if mask_events:
+                matrix = matrix.astype(jnp.float32)
+            return numba_kernel(weighted_mm, outs=kwargs['outs'])(weights, indices, matrix)
+
+        return weighted_kernel
 
     if transpose:
         # fixed pre connection number
@@ -789,20 +954,25 @@ def _binary_fcnmm_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
+    weighted: bool = False,
     **kwargs
 ):
     sfx = dtype_suffix(weight_info.dtype)
     homo = weight_info.size == 1
     mode_sfx = '_homo' if homo else '_hetero'
-    # ``_float`` kernels read events of the *weight* dtype; every other event
-    # dtype is converted to its bool activity mask inside the closure.
-    abi = cuda_event_abi(matrix_info.dtype, native_float=weight_info.dtype)
+    # Binary: ``_float`` kernels read events of the *weight* dtype; every other
+    # event dtype is converted to its bool activity mask inside the closure.
+    # Weighted: ``_wv`` kernels read events cast to the weight dtype.
+    abi = cuda_event_abi(
+        matrix_info.dtype, native_float=weight_info.dtype,
+        weighted=weighted, value_dtype=weight_info.dtype,
+    )
     spike_sfx = abi.suffix
     is_bool_matrix = spike_sfx == '_bool'
 
     if transpose:
         return _binary_fcnmm_sraw_cuda_kernel(
-            transpose, weight_info, matrix_info, indices_info, **kwargs
+            transpose, weight_info, matrix_info, indices_info, weighted=weighted, **kwargs
         )
 
     load_cuda_file(
@@ -821,8 +991,9 @@ def _binary_fcnmm_cuda_kernel(
         np.dtype('float32'): 4, np.dtype('float64'): 8,
     }.get(np.dtype(jnp.bool_) if is_bool_matrix else np.dtype(matrix_info.dtype), 4)
     mat_bytes = n_rows * n_batch * elem_size
-    # Use packed path when spike matrix exceeds ~1MB (half L2 on most GPUs)
-    use_packed = (mat_bytes > 1024 * 1024)
+    # Use packed path when spike matrix exceeds ~1MB (half L2 on most GPUs).
+    # Bit-packing only carries activity, so weighted events never use it.
+    use_packed = (mat_bytes > 1024 * 1024) and not weighted
 
     if use_packed:
         # Step 1: pack spikes into uint32 bitmasks
@@ -856,6 +1027,7 @@ def _binary_fcnmm_sraw_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
+    weighted: bool = False,
     **kwargs
 ):
 
@@ -870,7 +1042,10 @@ def _binary_fcnmm_sraw_cuda_kernel(
     )
     sfx = dtype_suffix(weight_info.dtype)
     mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
-    abi = cuda_event_abi(matrix_info.dtype, native_float=weight_info.dtype)
+    abi = cuda_event_abi(
+        matrix_info.dtype, native_float=weight_info.dtype,
+        weighted=weighted, value_dtype=weight_info.dtype,
+    )
     spike_sfx = abi.suffix
 
     kernel_name = (
@@ -918,14 +1093,15 @@ def _logical_transpose_true_shape_from_cotangent(ct, shape):
 def _binary_fcnmm_jax_kernel(
     shape: Tuple[int, int],
     transpose: bool,
+    weighted: bool = False,
     **kwargs,
 ):
     """Pure JAX reference implementation for benchmarking comparison."""
     n_pre, n_post = shape
 
     def kernel(weights, indices, matrix):
-        # Convert to float activity
-        mat_f = event_factor(matrix, dtype=weights.dtype)
+        # Convert to float activity (binary) or float values (weighted)
+        mat_f = event_factor(matrix, dtype=weights.dtype, weighted=weighted)
 
         if transpose:
             # Scatter: Y[n_post, n_batch]; matrix M[n_pre, n_batch]
@@ -954,7 +1130,7 @@ def _binary_fcnmm_jax_kernel(
 
 
 def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    tangent = fcnmm(weights, indices, matrix_dot, shape=shape, transpose=transpose)
+    tangent = fcnmm(weights, indices, matrix_dot, shape=shape, transpose=transpose).astype(weights.dtype)
     if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=kwargs.get('backend')):
         expected_shape = (matrix.shape[1], shape[1])
         tangent = _maybe_transpose_to_expected(
@@ -963,9 +1139,11 @@ def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, tra
     return tangent,
 
 
-def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
+def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, weighted=False,
+                              **kwargs):
     tangent = binary_fcnmm_p_call(
-        weights_dot, indices, matrix, shape=shape, transpose=transpose, backend=kwargs['backend']
+        weights_dot, indices, matrix, shape=shape, transpose=transpose, backend=kwargs['backend'],
+        weighted=weighted,
     )[0]
     if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=kwargs.get('backend')):
         expected_shape = (matrix.shape[1], shape[1])
@@ -975,7 +1153,8 @@ def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, t
     return tangent,
 
 
-def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpose, weight_info, **kwargs):
+def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpose, weight_info, weighted=False,
+                                 **kwargs):
     if ad.is_undefined_primal(indices):
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
@@ -997,6 +1176,7 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
 
         else:
             ct_vector = fcnmm(weights, indices, ct, shape=shape, transpose=not transpose)
+            ct_vector = ct_vector.astype(matrix.aval.dtype)
 
         return weights, indices, ct_vector
     else:
@@ -1012,6 +1192,7 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
                 shape=shape,
                 transpose=transpose,
                 backend=kwargs['backend'],
+                weighted=weighted,
             )[0]
             ct_weight = _maybe_transpose_to_expected(
                 ct_weight, ct.shape, op_name='binary_fcnmm transpose homo weight'
@@ -1019,7 +1200,7 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
             ct_weight = jnp.sum(ct * ct_weight).reshape(*weight_info.shape)
 
         else:
-            mat_active = event_factor(matrix, dtype=ct.dtype)
+            mat_active = event_factor(matrix, dtype=ct.dtype, weighted=weighted)
             if transpose:
                 # inputs: [k, n] @ [k, n_conn]
                 # ct: [m, n]
@@ -1042,6 +1223,7 @@ def _batching_base_fn(args, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         backend=kwargs['backend'],
+        weighted=kwargs.get('weighted', False),
     )
     raw = r[0]
     if _binary_fcnmm_uses_raw_batch_first(transpose=kwargs['transpose'], backend=kwargs['backend']):
@@ -1106,6 +1288,7 @@ def binary_fcnmm_p_call(
     shape: Tuple[int, int],
     transpose: bool,
     backend: Optional[str] = None,
+    weighted: bool = False,
 ) -> Tuple[jax.Array]:
     """
     Low-level primitive call for event-driven sparse matrix--matrix product
@@ -1133,6 +1316,9 @@ def binary_fcnmm_p_call(
         scatter mode (fixed pre-connections).
     backend : str or None, optional
         Backend override (``'numba'``, ``'pallas'``, or ``None``).
+    weighted : bool, optional
+        Multiply weights by the event value instead of its activity mask.
+        Defaults to ``False``.
 
     Returns
     -------
@@ -1153,6 +1339,7 @@ def binary_fcnmm_p_call(
         matrix,
         transpose=transpose,
         shape=shape,
+        weighted=weighted,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),

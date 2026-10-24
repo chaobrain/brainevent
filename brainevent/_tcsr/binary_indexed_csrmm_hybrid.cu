@@ -21,6 +21,14 @@
  * transpose=True. Structural slot j reads weights[perm[j]], then scatters to
  * output[batch, indices[j]]. Scratch/task semantics match
  * binary_csrmm_sraw_hybrid.cu.
+ *
+ * Weighted (``_wv``) entries serve ``WeightedArray`` events: the event
+ * matrix holds values in the weight dtype and each active row scatters
+ * ``weight * value``. Besides the indexed (mirror) layout they cover the
+ * canonical layout (``binary_csrmm_sraw_hybrid_hetero_*_wv``, weights[j],
+ * ``perm`` ignored) and homogeneous weights
+ * (``binary_csrmm_sraw_hybrid_homo_*_wv``, weights[0]). A heavy-row task
+ * recovers its row (hence its event value) by binary search over indptr.
  */
 
 #include "cuda_common.h"
@@ -119,21 +127,134 @@ namespace
         __device__ static void atomic_add(__nv_bfloat16 *addr, AccT value) { atomic_add_bf16(addr, value); }
     };
 
+    // Binary events add the weight unscaled; ``apply`` is the identity, so
+    // binary instantiations compile to the plain ``atomic_add(w)`` code.
+    struct UnitScale
+    {
+        template <typename AccT>
+        __device__ __forceinline__ AccT apply(AccT w) const { return w; }
+    };
+
+    // Weighted events multiply the weight by the event value.
+    template <typename AccT>
+    struct ValueScale
+    {
+        AccT value;
+        __device__ __forceinline__ AccT apply(AccT w) const { return w * value; }
+    };
+
+    // Event tag of the weighted (``_wv``) kernels: the event buffer holds
+    // values in the weight dtype ``ValueT``.
+    template <typename ValueT>
+    struct WeightedEvent;
+
+    // Row of the CSR slot ``begin`` (the largest row with indptr[row] <= begin).
+    // Task ranges never start in an empty row, so the result owns ``begin``.
+    template <typename OffsetT>
+    __device__ __forceinline__ int TaskRow(const OffsetT *__restrict__ indptr, int m, OffsetT begin)
+    {
+        int lo = 0;
+        int hi = m;
+        while (hi - lo > 1)
+        {
+            int mid = lo + (hi - lo) / 2;
+            if (__ldg(&indptr[mid]) <= begin)
+            {
+                lo = mid;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        return lo;
+    }
+
     template <typename EventT>
     struct HybridEventTraits;
 
     template <>
     struct HybridEventTraits<int8_t>
     {
+        using Storage = int8_t;
+        using Scale = UnitScale;
         static constexpr BE::DType dtype = BE::DType::Bool;
         __device__ static bool active(int8_t value) { return IS_ACTIVE_BOOL(value); }
+        __device__ static Scale scale(int8_t) { return Scale{}; }
+        template <typename OffsetT>
+        __device__ static Scale task_scale(const Storage *, const OffsetT *, int, int, int, OffsetT) { return Scale{}; }
     };
 
     template <>
     struct HybridEventTraits<float>
     {
+        using Storage = float;
+        using Scale = UnitScale;
         static constexpr BE::DType dtype = BE::DType::Float32;
         __device__ static bool active(float value) { return IS_ACTIVE_FLOAT(value); }
+        __device__ static Scale scale(float) { return Scale{}; }
+        template <typename OffsetT>
+        __device__ static Scale task_scale(const Storage *, const OffsetT *, int, int, int, OffsetT) { return Scale{}; }
+    };
+
+    template <typename ValueT>
+    struct HybridEventTraits<WeightedEvent<ValueT>>
+    {
+        using Storage = ValueT;
+        using AccT = typename HybridWeightTraits<ValueT>::AccT;
+        using Scale = ValueScale<AccT>;
+        static constexpr BE::DType dtype = HybridWeightTraits<ValueT>::dtype;
+        __device__ static bool active(ValueT value)
+        {
+            return HybridWeightTraits<ValueT>::read(value) != static_cast<AccT>(0);
+        }
+        __device__ static Scale scale(ValueT value) { return Scale{HybridWeightTraits<ValueT>::read(value)}; }
+        // Value of the row owning task slot ``begin`` in batch column ``col``
+        // of the row-major ``[n_pre, n_batch]`` event matrix.
+        template <typename OffsetT>
+        __device__ static Scale task_scale(
+            const Storage *__restrict__ matrix, const OffsetT *__restrict__ indptr,
+            int n_pre, int n_batch, int col, OffsetT begin)
+        {
+            int row = TaskRow(indptr, n_pre, begin);
+            return scale(__ldg(&matrix[static_cast<size_t>(row) * n_batch + col]));
+        }
+    };
+
+    // Weight access policies. Binary entries use ``IndexedWeights`` only;
+    // the direct and homogeneous policies serve the weighted entries for the
+    // canonical (unmirrored) direction and homogeneous weights.
+    struct IndexedWeights
+    {
+        static constexpr bool kNeedsPerm = true;
+        static constexpr bool kHomo = false;
+        template <typename WeightT, typename OffsetT>
+        __device__ static WeightT load(const WeightT *__restrict__ weights, const OffsetT *__restrict__ perm, OffsetT j)
+        {
+            return __ldg(&weights[__ldg(&perm[j])]);
+        }
+    };
+
+    struct DirectWeights
+    {
+        static constexpr bool kNeedsPerm = false;
+        static constexpr bool kHomo = false;
+        template <typename WeightT, typename OffsetT>
+        __device__ static WeightT load(const WeightT *__restrict__ weights, const OffsetT *__restrict__, OffsetT j)
+        {
+            return __ldg(&weights[j]);
+        }
+    };
+
+    struct HomoWeights
+    {
+        static constexpr bool kNeedsPerm = false;
+        static constexpr bool kHomo = true;
+        template <typename WeightT, typename OffsetT>
+        __device__ static WeightT load(const WeightT *__restrict__ weights, const OffsetT *__restrict__, OffsetT)
+        {
+            return __ldg(&weights[0]);
+        }
     };
 
     template <typename OffsetT>
@@ -156,14 +277,15 @@ namespace
         return static_cast<int32_t>(chunks);
     }
 
-    template <typename WeightT, typename IndexT, typename OffsetT>
+    template <typename Access, typename WeightT, typename IndexT, typename OffsetT, typename Scale>
     __device__ __forceinline__ void ScatterRangeIndexed(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         const OffsetT *__restrict__ perm,
         WeightT *__restrict__ output_col,
         OffsetT begin,
-        OffsetT end)
+        OffsetT end,
+        Scale scale)
     {
         using WeightTraits = HybridWeightTraits<WeightT>;
         using AccT = typename WeightTraits::AccT;
@@ -172,39 +294,38 @@ namespace
              j += static_cast<OffsetT>(blockDim.x))
         {
             IndexT idx = __ldg(&indices[j]);
-            OffsetT weight_pos = __ldg(&perm[j]);
-            AccT w = WeightTraits::read(__ldg(&weights[weight_pos]));
-            WeightTraits::atomic_add(&output_col[idx], w);
+            AccT w = WeightTraits::read(Access::load(weights, perm, j));
+            WeightTraits::atomic_add(&output_col[idx], scale.apply(w));
         }
     }
 
-    template <typename WeightT, typename IndexT, typename OffsetT>
+    template <typename Access, typename WeightT, typename IndexT, typename OffsetT, typename Scale>
     __device__ __forceinline__ void ScatterRangeThreadIndexed(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         const OffsetT *__restrict__ perm,
         WeightT *__restrict__ output_col,
         OffsetT begin,
-        OffsetT end)
+        OffsetT end,
+        Scale scale)
     {
         using WeightTraits = HybridWeightTraits<WeightT>;
         using AccT = typename WeightTraits::AccT;
         for (OffsetT j = begin; j < end; ++j)
         {
             IndexT idx = __ldg(&indices[j]);
-            OffsetT weight_pos = __ldg(&perm[j]);
-            AccT w = WeightTraits::read(__ldg(&weights[weight_pos]));
-            WeightTraits::atomic_add(&output_col[idx], w);
+            AccT w = WeightTraits::read(Access::load(weights, perm, j));
+            WeightTraits::atomic_add(&output_col[idx], scale.apply(w));
         }
     }
 
-    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT>
+    template <typename Access, typename WeightT, typename EventT, typename IndexT, typename OffsetT>
     __global__ void IndexedCsrmmSrawHybridExtractKernel(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         const OffsetT *__restrict__ indptr,
         const OffsetT *__restrict__ perm,
-        const EventT *__restrict__ matrix,
+        const typename HybridEventTraits<EventT>::Storage *__restrict__ matrix,
         WeightT *__restrict__ output_col,
         OffsetT *__restrict__ task_begin,
         OffsetT *__restrict__ task_end,
@@ -214,13 +335,15 @@ namespace
         int col,
         int task_capacity)
     {
+        using EventTraits = HybridEventTraits<EventT>;
         int row = blockIdx.x * blockDim.x + threadIdx.x;
         if (row >= n_pre)
         {
             return;
         }
-        if (!HybridEventTraits<EventT>::active(
-                __ldg(&matrix[static_cast<size_t>(row) * n_batch + col])))
+        const typename EventTraits::Storage event =
+            __ldg(&matrix[static_cast<size_t>(row) * n_batch + col]);
+        if (!EventTraits::active(event))
         {
             return;
         }
@@ -230,7 +353,8 @@ namespace
         OffsetT nnz = row_end - row_begin;
         if (nnz <= static_cast<OffsetT>(kTprThreshold))
         {
-            ScatterRangeThreadIndexed(weights, indices, perm, output_col, row_begin, row_end);
+            ScatterRangeThreadIndexed<Access>(weights, indices, perm, output_col, row_begin, row_end,
+                                              EventTraits::scale(event));
             return;
         }
 
@@ -261,11 +385,16 @@ namespace
         }
     }
 
-    template <typename WeightT, typename IndexT, typename OffsetT>
+    template <typename Access, typename WeightT, typename EventT, typename IndexT, typename OffsetT>
     __global__ void IndexedCsrmmSrawHybridBlockKernel(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         const OffsetT *__restrict__ perm,
+        const OffsetT *__restrict__ indptr,
+        const typename HybridEventTraits<EventT>::Storage *__restrict__ matrix,
+        int n_pre,
+        int n_batch,
+        int col,
         const OffsetT *__restrict__ task_begin,
         const OffsetT *__restrict__ task_end,
         const int32_t *__restrict__ status,
@@ -281,17 +410,19 @@ namespace
         {
             OffsetT begin = __ldg(&task_begin[task]);
             OffsetT end = __ldg(&task_end[task]);
-            ScatterRangeIndexed(weights, indices, perm, output_col, begin, end);
+            ScatterRangeIndexed<Access>(
+                weights, indices, perm, output_col, begin, end,
+                HybridEventTraits<EventT>::task_scale(matrix, indptr, n_pre, n_batch, col, begin));
         }
     }
 
-    template <typename WeightT, typename EventT, typename IndexT, typename OffsetT>
+    template <typename Access, typename WeightT, typename EventT, typename IndexT, typename OffsetT>
     static void LaunchIndexedCsrmmSrawHybrid(
         const WeightT *weights,
         const IndexT *indices,
         const OffsetT *indptr,
         const OffsetT *perm,
-        const EventT *matrix,
+        const typename HybridEventTraits<EventT>::Storage *matrix,
         WeightT *output,
         OffsetT *task_begin,
         OffsetT *task_end,
@@ -314,7 +445,7 @@ namespace
             BE_CUDA_CHECK(cudaMemsetAsync(
                 status, 0, static_cast<size_t>(2) * sizeof(int32_t), stream));
             WeightT *output_col = output + static_cast<size_t>(col) * n_post;
-            IndexedCsrmmSrawHybridExtractKernel<WeightT, EventT, IndexT, OffsetT>
+            IndexedCsrmmSrawHybridExtractKernel<Access, WeightT, EventT, IndexT, OffsetT>
                 <<<extract_blocks, kBlockSize, 0, stream>>>(
                     weights, indices, indptr, perm, matrix, output_col,
                     task_begin, task_end, status, n_pre, n_batch, col,
@@ -326,9 +457,10 @@ namespace
                 int scatter_blocks = task_capacity < kFixedScatterBlocks
                                          ? task_capacity
                                          : kFixedScatterBlocks;
-                IndexedCsrmmSrawHybridBlockKernel<WeightT, IndexT, OffsetT>
+                IndexedCsrmmSrawHybridBlockKernel<Access, WeightT, EventT, IndexT, OffsetT>
                     <<<scatter_blocks, kBlockSize, 0, stream>>>(
-                        weights, indices, perm, task_begin, task_end, status,
+                        weights, indices, perm, indptr, matrix, n_pre, n_batch, col,
+                        task_begin, task_end, status,
                         task_capacity, output_col);
                 BE_CHECK_KERNEL_LAUNCH();
             }
@@ -348,8 +480,10 @@ namespace
 
 } // namespace
 
-#define DEFINE_BINARY_INDEXED_CSRMM_SRAW_HYBRID_HETERO(SUFFIX, WEIGHT_T, EVENT_T) \
-void binary_indexed_csrmm_sraw_hybrid_hetero##SUFFIX(                  \
+// NAME: entry name; ACCESS: weight access policy (IndexedWeights reads
+// weights[perm[j]], DirectWeights weights[j], HomoWeights weights[0]).
+#define DEFINE_CSRMM_SRAW_HYBRID_ENTRY(NAME, WEIGHT_T, EVENT_T, ACCESS)    \
+void NAME(                                                                \
     const BE::Tensor weights,                                             \
     const BE::Tensor indices,                                             \
     const BE::Tensor indptr,                                              \
@@ -367,19 +501,20 @@ void binary_indexed_csrmm_sraw_hybrid_hetero##SUFFIX(                  \
 {                                                                         \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         weights.dtype() == HybridWeightTraits<WEIGHT_T>::dtype,           \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects matching weights dtype"); \
+        #NAME " expects matching weights dtype"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         IsSignedIndexDType(indices.dtype()),                              \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects indices=s32/s64"); \
+        #NAME " expects indices=s32/s64"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
-        IsSignedIndexDType(indptr.dtype()) && perm.dtype() == indptr.dtype(), \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects indptr=s32/s64 and perm dtype to match indptr"); \
+        IsSignedIndexDType(indptr.dtype()) &&                             \
+            (!ACCESS::kNeedsPerm || perm.dtype() == indptr.dtype()),      \
+        #NAME " expects indptr=s32/s64 and perm dtype to match indptr"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         matrix.dtype() == HybridEventTraits<EVENT_T>::dtype,              \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects matching matrix dtype"); \
+        #NAME " expects matching matrix dtype"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         output.dtype() == HybridWeightTraits<WEIGHT_T>::dtype,            \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects matching output dtype"); \
+        #NAME " expects matching output dtype"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         task_begin_scratch.dtype() == indptr.dtype() &&                   \
             task_end_scratch.dtype() == indptr.dtype() &&                 \
@@ -387,33 +522,34 @@ void binary_indexed_csrmm_sraw_hybrid_hetero##SUFFIX(                  \
             task_end_output.dtype() == indptr.dtype() &&                  \
             status_scratch.dtype() == BE::DType::Int32 &&                 \
             status_output.dtype() == BE::DType::Int32,                    \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects status=s32 and task scratch dtype to match indptr"); \
+        #NAME " expects status=s32 and task scratch dtype to match indptr"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         weights.ndim() == 1 && indices.ndim() == 1 && indptr.ndim() == 1 && \
             perm.ndim() == 1 && matrix.ndim() == 2 && output.ndim() == 2 && \
             task_begin_scratch.ndim() == 1 && task_end_scratch.ndim() == 1 && \
             status_scratch.ndim() == 1 && task_begin_output.ndim() == 1 && \
             task_end_output.ndim() == 1 && status_output.ndim() == 1,     \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects CSR/scratch rank-1 and matrix/output rank-2"); \
+        #NAME " expects CSR/scratch rank-1 and matrix/output rank-2"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
-        weights.numel() == indices.numel() && perm.numel() == indices.numel(), \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects weights/perm/indices lengths to match"); \
+        (ACCESS::kHomo ? weights.numel() == 1 : weights.numel() == indices.numel()) && \
+            (!ACCESS::kNeedsPerm || perm.numel() == indices.numel()),     \
+        #NAME " expects weights/perm/indices lengths to match"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         indptr.numel() == matrix.size(0) + 1,                             \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects indptr length to be matrix rows plus one"); \
+        #NAME " expects indptr length to be matrix rows plus one"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         output.size(0) == matrix.size(1),                                 \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects output rows to equal matrix columns"); \
+        #NAME " expects output rows to equal matrix columns"); \
     int parsed_task_capacity = ParseTaskCapacity(task_capacity);           \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         task_begin_scratch.numel() == static_cast<size_t>(parsed_task_capacity) && \
             task_end_scratch.numel() == static_cast<size_t>(parsed_task_capacity) && \
             task_begin_output.numel() == static_cast<size_t>(parsed_task_capacity) && \
             task_end_output.numel() == static_cast<size_t>(parsed_task_capacity), \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects task scratch lengths to match task_capacity"); \
+        #NAME " expects task scratch lengths to match task_capacity"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         status_scratch.numel() == 2 && status_output.numel() == 2,         \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects status length 2"); \
+        #NAME " expects status length 2"); \
     cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);     \
     int n_pre = static_cast<int>(matrix.size(0));                          \
     int n_batch = static_cast<int>(matrix.size(1));                        \
@@ -428,19 +564,19 @@ void binary_indexed_csrmm_sraw_hybrid_hetero##SUFFIX(                  \
     }                                                                      \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         status_output.data_ptr<int32_t>() != nullptr,                      \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects non-null status scratch"); \
+        #NAME " expects non-null status scratch"); \
     BE_INDEXED_CSRMM_SRAW_HYBRID_CHECK(                                   \
         parsed_task_capacity == 0 ||                                       \
             (task_begin_output.data_ptr<void>() != nullptr &&              \
              task_end_output.data_ptr<void>() != nullptr),                 \
-        "binary_indexed_csrmm_sraw_hybrid_hetero" #SUFFIX " expects non-null task scratch"); \
+        #NAME " expects non-null task scratch"); \
     BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, { \
-        LaunchIndexedCsrmmSrawHybrid<WEIGHT_T, EVENT_T, IndexT, OffsetT>(  \
+        LaunchIndexedCsrmmSrawHybrid<ACCESS, WEIGHT_T, EVENT_T, IndexT, OffsetT>( \
             weights.data_ptr<const WEIGHT_T>(),                            \
             indices.data_ptr<const IndexT>(),                              \
             indptr.data_ptr<const OffsetT>(),                              \
             perm.data_ptr<const OffsetT>(),                                \
-            matrix.data_ptr<const EVENT_T>(),                              \
+            matrix.data_ptr<const HybridEventTraits<EVENT_T>::Storage>(),  \
             out,                                                           \
             task_begin_output.data_ptr<OffsetT>(),                         \
             task_end_output.data_ptr<OffsetT>(),                           \
@@ -455,18 +591,49 @@ void binary_indexed_csrmm_sraw_hybrid_hetero##SUFFIX(                  \
 }
 
 // @BE binary_indexed_csrmm_sraw_hybrid_hetero_f32_bool
-DEFINE_BINARY_INDEXED_CSRMM_SRAW_HYBRID_HETERO(_f32_bool, float, int8_t)
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_f32_bool, float, int8_t, IndexedWeights)
 // @BE binary_indexed_csrmm_sraw_hybrid_hetero_f32_float
-DEFINE_BINARY_INDEXED_CSRMM_SRAW_HYBRID_HETERO(_f32_float, float, float)
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_f32_float, float, float, IndexedWeights)
 // @BE binary_indexed_csrmm_sraw_hybrid_hetero_f64_bool
-DEFINE_BINARY_INDEXED_CSRMM_SRAW_HYBRID_HETERO(_f64_bool, double, int8_t)
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_f64_bool, double, int8_t, IndexedWeights)
 // @BE binary_indexed_csrmm_sraw_hybrid_hetero_f64_float
-DEFINE_BINARY_INDEXED_CSRMM_SRAW_HYBRID_HETERO(_f64_float, double, float)
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_f64_float, double, float, IndexedWeights)
 // @BE binary_indexed_csrmm_sraw_hybrid_hetero_f16_bool
-DEFINE_BINARY_INDEXED_CSRMM_SRAW_HYBRID_HETERO(_f16_bool, __half, int8_t)
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_f16_bool, __half, int8_t, IndexedWeights)
 // @BE binary_indexed_csrmm_sraw_hybrid_hetero_f16_float
-DEFINE_BINARY_INDEXED_CSRMM_SRAW_HYBRID_HETERO(_f16_float, __half, float)
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_f16_float, __half, float, IndexedWeights)
 // @BE binary_indexed_csrmm_sraw_hybrid_hetero_bf16_bool
-DEFINE_BINARY_INDEXED_CSRMM_SRAW_HYBRID_HETERO(_bf16_bool, __nv_bfloat16, int8_t)
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_bf16_bool, __nv_bfloat16, int8_t, IndexedWeights)
 // @BE binary_indexed_csrmm_sraw_hybrid_hetero_bf16_float
-DEFINE_BINARY_INDEXED_CSRMM_SRAW_HYBRID_HETERO(_bf16_float, __nv_bfloat16, float)
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_bf16_float, __nv_bfloat16, float, IndexedWeights)
+
+// Weighted (``WeightedArray``) entries: the event matrix holds values in the
+// weight dtype and each active row scatters ``weight * value``. The plain
+// ``binary_csrmm_sraw_hybrid_*`` entries serve canonical structures (no
+// permutation; ``perm`` is ignored) and homogeneous weights.
+// @BE binary_indexed_csrmm_sraw_hybrid_hetero_f32_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_f32_wv, float, WeightedEvent<float>, IndexedWeights)
+// @BE binary_indexed_csrmm_sraw_hybrid_hetero_f64_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_f64_wv, double, WeightedEvent<double>, IndexedWeights)
+// @BE binary_indexed_csrmm_sraw_hybrid_hetero_f16_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_f16_wv, __half, WeightedEvent<__half>, IndexedWeights)
+// @BE binary_indexed_csrmm_sraw_hybrid_hetero_bf16_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_indexed_csrmm_sraw_hybrid_hetero_bf16_wv, __nv_bfloat16, WeightedEvent<__nv_bfloat16>, IndexedWeights)
+
+// @BE binary_csrmm_sraw_hybrid_hetero_f32_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_csrmm_sraw_hybrid_hetero_f32_wv, float, WeightedEvent<float>, DirectWeights)
+// @BE binary_csrmm_sraw_hybrid_hetero_f64_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_csrmm_sraw_hybrid_hetero_f64_wv, double, WeightedEvent<double>, DirectWeights)
+// @BE binary_csrmm_sraw_hybrid_hetero_f16_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_csrmm_sraw_hybrid_hetero_f16_wv, __half, WeightedEvent<__half>, DirectWeights)
+// @BE binary_csrmm_sraw_hybrid_hetero_bf16_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_csrmm_sraw_hybrid_hetero_bf16_wv, __nv_bfloat16, WeightedEvent<__nv_bfloat16>, DirectWeights)
+
+// @BE binary_csrmm_sraw_hybrid_homo_f32_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_csrmm_sraw_hybrid_homo_f32_wv, float, WeightedEvent<float>, HomoWeights)
+// @BE binary_csrmm_sraw_hybrid_homo_f64_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_csrmm_sraw_hybrid_homo_f64_wv, double, WeightedEvent<double>, HomoWeights)
+// @BE binary_csrmm_sraw_hybrid_homo_f16_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_csrmm_sraw_hybrid_homo_f16_wv, __half, WeightedEvent<__half>, HomoWeights)
+// @BE binary_csrmm_sraw_hybrid_homo_bf16_wv
+DEFINE_CSRMM_SRAW_HYBRID_ENTRY(binary_csrmm_sraw_hybrid_homo_bf16_wv, __nv_bfloat16, WeightedEvent<__nv_bfloat16>, HomoWeights)

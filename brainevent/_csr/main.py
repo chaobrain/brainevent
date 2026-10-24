@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._data import DataRepresentation
-from brainevent._event import BinaryArray
+from brainevent._event import as_event_operand
 from brainevent._misc import (
     _csr_to_coo, _csr_todense, csr_to_csc_index, csc_to_csr_index, normalize_row_index, build_sub_csr,
     _as_int32_indices, _as_indptr, _check_compressed_structure,
@@ -1040,6 +1040,7 @@ class CSR(CompressedSparseData):
     right-hand operand type:
 
     * :class:`~brainevent.BinaryArray` -- event-driven binary CSR MV/MM.
+    * :class:`~brainevent.WeightedArray` -- event-driven value-weighted CSR MV/MM.
     * Dense ``jax.Array`` / ``brainunit.Quantity`` -- standard float CSR
       MV/MM with automatic dtype promotion.
 
@@ -1633,13 +1634,14 @@ class CSR(CompressedSparseData):
 
         * 1-D array -- sparse matrix-vector product (MV).
         * 2-D array -- sparse matrix-matrix product (MM).
-        * :class:`~brainevent.BinaryArray` -- event-driven binary kernel.
+        * :class:`~brainevent.BinaryArray` / :class:`~brainevent.WeightedArray`
+          -- event-driven binary / value-weighted kernel.
         * Dense ``jax.Array`` / ``brainunit.Quantity`` -- standard float
           kernel with automatic dtype promotion.
 
         Parameters
         ----------
-        other : jax.Array, brainunit.Quantity, or BinaryArray
+        other : jax.Array, brainunit.Quantity, BinaryArray, or WeightedArray
             The right-hand operand.  Must be 1-D or 2-D.
 
         Returns
@@ -1667,14 +1669,16 @@ class CSR(CompressedSparseData):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        event = as_event_operand(other)
+        if event is not None:
+            other, weighted = event
             if other.ndim == 1:
                 if not _use_cuda_indexed_binary_route(self.backend):
                     matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", self.indptr)
                     return binary_csrmv(
                         matrix.data, matrix.indices, matrix.indptr, other,
                         shape=matrix.shape, transpose=False, backend=matrix.backend, workspace=workspace,
+                        weighted=weighted,
                     )
                 # Explicit CUDA raw uses the mirror route so the transpose
                 # hybrid kernels handle the unfavorable direction.
@@ -1683,6 +1687,7 @@ class CSR(CompressedSparseData):
                 return binary_csrmv_indexed(
                     matrix.data, csc_indices, csc_indptr, perm, other,
                     shape=matrix.shape[::-1], transpose=True, backend=matrix.backend, workspace=workspace,
+                    weighted=weighted,
                 )
             elif other.ndim == 2:
                 if not _use_cuda_indexed_binary_route(self.backend):
@@ -1690,6 +1695,7 @@ class CSR(CompressedSparseData):
                     return binary_csrmm(
                         matrix.data, matrix.indices, matrix.indptr, other,
                         shape=matrix.shape, transpose=False, backend=matrix.backend, workspace=workspace,
+                        weighted=weighted,
                     )
                 # Explicit CUDA raw uses the mirror route so the transpose
                 # hybrid kernels handle the unfavorable direction.
@@ -1698,6 +1704,7 @@ class CSR(CompressedSparseData):
                 return binary_csrmm_indexed(
                     matrix.data, csc_indices, csc_indptr, perm, other,
                     shape=matrix.shape[::-1], transpose=True, backend=matrix.backend, workspace=workspace,
+                    weighted=weighted,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1737,7 +1744,7 @@ class CSR(CompressedSparseData):
 
         Parameters
         ----------
-        other : jax.Array, brainunit.Quantity, or BinaryArray
+        other : jax.Array, brainunit.Quantity, BinaryArray, or WeightedArray
             The left-hand operand.  Must be 1-D or 2-D.
 
         Returns
@@ -1764,17 +1771,20 @@ class CSR(CompressedSparseData):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        event = as_event_operand(other)
+        if event is not None:
+            other, weighted = event
             if other.ndim == 1:
                 matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", self.indptr)
                 return binary_csrmv(matrix.data, matrix.indices, matrix.indptr, other,
-                                    shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace)
+                                    shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace,
+                                    weighted=weighted)
             elif other.ndim == 2:
                 other = other.T
                 matrix, workspace = _ensure_binary_workspace_and_get(self, "csr", self.indptr)
                 r = binary_csrmm(matrix.data, matrix.indices, matrix.indptr, other,
-                                 shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace)
+                                 shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace,
+                                 weighted=weighted)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -2555,7 +2565,7 @@ class CSC(CompressedSparseData):
 
         Parameters
         ----------
-        other : jax.Array, brainunit.Quantity, or BinaryArray
+        other : jax.Array, brainunit.Quantity, BinaryArray, or WeightedArray
             The right-hand operand.  Must be 1-D or 2-D.
 
         Returns
@@ -2582,8 +2592,9 @@ class CSC(CompressedSparseData):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        event = as_event_operand(other)
+        if event is not None:
+            other, weighted = event
             if other.ndim == 1:
                 matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", self.indptr)
                 return binary_csrmv(
@@ -2592,6 +2603,7 @@ class CSC(CompressedSparseData):
                     transpose=True,
                     backend=matrix.backend,
                     workspace=workspace,
+                    weighted=weighted,
                 )
             elif other.ndim == 2:
                 matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", self.indptr)
@@ -2601,6 +2613,7 @@ class CSC(CompressedSparseData):
                     transpose=True,
                     backend=matrix.backend,
                     workspace=workspace,
+                    weighted=weighted,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -2642,7 +2655,7 @@ class CSC(CompressedSparseData):
 
         Parameters
         ----------
-        other : jax.Array, brainunit.Quantity, or BinaryArray
+        other : jax.Array, brainunit.Quantity, BinaryArray, or WeightedArray
             The left-hand operand.  Must be 1-D or 2-D.
 
         Returns
@@ -2669,14 +2682,16 @@ class CSC(CompressedSparseData):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        event = as_event_operand(other)
+        if event is not None:
+            other, weighted = event
             if other.ndim == 1:
                 if not _use_cuda_indexed_binary_route(self.backend):
                     matrix, workspace = _ensure_binary_workspace_and_get(self, "csc", self.indptr)
                     return binary_csrmv(
                         matrix.data, matrix.indices, matrix.indptr, other,
                         shape=matrix.shape[::-1], transpose=False, backend=matrix.backend, workspace=workspace,
+                        weighted=weighted,
                     )
                 # Explicit CUDA raw uses the mirror route so the transpose
                 # hybrid kernels handle the unfavorable direction.
@@ -2685,6 +2700,7 @@ class CSC(CompressedSparseData):
                 return binary_csrmv_indexed(
                     matrix.data, csr_indices, csr_indptr, perm, other,
                     shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace,
+                    weighted=weighted,
                 )
             elif other.ndim == 2:
                 if not _use_cuda_indexed_binary_route(self.backend):
@@ -2692,6 +2708,7 @@ class CSC(CompressedSparseData):
                     r = binary_csrmm(
                         matrix.data, matrix.indices, matrix.indptr, other.T,
                         shape=matrix.shape[::-1], transpose=False, backend=matrix.backend, workspace=workspace,
+                        weighted=weighted,
                     )
                     return r.T
                 # Explicit CUDA raw uses the mirror route so the transpose
@@ -2701,6 +2718,7 @@ class CSC(CompressedSparseData):
                 r = binary_csrmm_indexed(
                     matrix.data, csr_indices, csr_indptr, perm, other.T,
                     shape=matrix.shape, transpose=True, backend=matrix.backend, workspace=workspace,
+                    weighted=weighted,
                 )
                 return r.T
             else:

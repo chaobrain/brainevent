@@ -20,11 +20,11 @@ from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
-from brainevent._event.binary import BinaryArray
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitumv, binary_jitumm
 from .csr import jitu_to_csr
@@ -35,6 +35,7 @@ __all__ = [
     'JITCUniformR',
     'JITCUniformC',
 ]
+
 
 
 class JITCUniformMatrix(JITCMatrix):
@@ -844,7 +845,7 @@ class JITCUniformR(JITCUniformMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The right-hand operand. Can be a 1-D vector (matrix-vector product)
             or a 2-D matrix (matrix-matrix product).
 
@@ -871,8 +872,9 @@ class JITCUniformR(JITCUniformMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.wlow)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 # JIT matrix @ events
                 return binary_jitumv(
@@ -949,7 +951,7 @@ class JITCUniformR(JITCUniformMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The left-hand operand. Can be a 1-D vector (vector-matrix product)
             or a 2-D matrix (matrix-matrix product).
 
@@ -976,8 +978,9 @@ class JITCUniformR(JITCUniformMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.wlow)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 #
                 # vector @ JIT matrix
@@ -1403,7 +1406,7 @@ class JITCUniformC(JITCUniformMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The right-hand operand. Can be a 1-D vector (matrix-vector product)
             or a 2-D matrix (matrix-matrix product).
 
@@ -1430,8 +1433,9 @@ class JITCUniformC(JITCUniformMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.wlow)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
@@ -1514,7 +1518,7 @@ class JITCUniformC(JITCUniformMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The left-hand operand. Can be a 1-D vector (vector-matrix product)
             or a 2-D matrix (matrix-matrix product).
 
@@ -1540,8 +1544,9 @@ class JITCUniformC(JITCUniformMatrix):
         # other @ csr
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.wlow)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T

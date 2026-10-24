@@ -40,6 +40,19 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
+/*
+ * Event contribution policies (EVT_SCALE(w, READ_S, s)):
+ *   EVT_BINARY   -- binary events: the weight itself (activity already tested).
+ *   EVT_WEIGHTED -- weighted events (``_wv``): weight times the event value; the
+ *                   event buffer has the weight dtype, so READ_W converts it.
+ */
+#ifndef EVT_BINARY
+#define EVT_BINARY(w, READ_S, s)   (w)
+#endif
+#ifndef EVT_WEIGHTED
+#define EVT_WEIGHTED(w, READ_S, s) ((w) * READ_S(s))
+#endif
+
 // ============================================================================
 // SCATTER kernels  (transpose=True)
 // output[indices[i,k]] += weights[i,k] * is_active(spikes[i])
@@ -52,7 +65,7 @@
 //      Launch: <<<ceil(n_pre/256), 256>>>
 
 
-#define DEFINE_BS_WPR_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_BS_WPR_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
 __global__ void _bs_wpr_homo_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                      \
     const SPIKE_T* __restrict__ spikes,                                                       \
@@ -64,16 +77,16 @@ __global__ void _bs_wpr_homo_kern##SUFFIX(                                      
     int row = tid / 32;                                                                       \
     int lane = tid % 32;                                                                      \
     if (row >= n_pre) return;                                                                 \
-    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                              \
+    SPIKE_T sv = __ldg(&spikes[row]); if (!IS_ACTIVE(sv)) return;                             \
     const int32_t* i_row = indices + (size_t)row * n_conn;                                    \
-    ACC_T w0 = READ_W(weights[0]);                                                            \
+    ACC_T w0 = EVT_SCALE(READ_W(weights[0]), READ_W, sv);                                     \
     for (int k = lane; k < n_conn; k += 32) {                                                 \
         int idx = __ldg(&i_row[k]);                                                           \
         ATOMIC_ADD_W(&output[idx], w0);                                                       \
     }                                                                                         \
 }
 
-#define DEFINE_BS_WPR_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_BS_WPR_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
 __global__ void _bs_wpr_hetero_kern##SUFFIX(                                                    \
     const int32_t*  __restrict__ indices,                                                       \
     const SPIKE_T*  __restrict__ spikes,                                                        \
@@ -85,18 +98,18 @@ __global__ void _bs_wpr_hetero_kern##SUFFIX(                                    
     int row  = tid / 32;                                                                        \
     int lane = tid % 32;                                                                        \
     if (row >= n_pre) return;                                                                   \
-    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                                \
+    SPIKE_T sv = __ldg(&spikes[row]); if (!IS_ACTIVE(sv)) return;                             \
     const int32_t*  i_row = indices + (size_t)row * n_conn;                                     \
     const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                     \
     for (int k = lane; k < n_conn; k += 32) {                                                   \
         int   idx = __ldg(&i_row[k]);                                                           \
         ACC_T  wk = READ_W(__ldg(&w_row[k]));                                                   \
-        ATOMIC_ADD_W(&output[idx], wk);                                                         \
+        ATOMIC_ADD_W(&output[idx], EVT_SCALE(wk, READ_W, sv));                                \
     }                                                                                           \
 }
 
 /**/
-#define DEFINE_BS_TPR_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_BS_TPR_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
 __global__ void _bs_tpr_homo_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                      \
     const SPIKE_T* __restrict__ spikes,                                                       \
@@ -106,9 +119,9 @@ __global__ void _bs_tpr_homo_kern##SUFFIX(                                      
 ) {                                                                                           \
     int row = blockIdx.x * blockDim.x + threadIdx.x;                                          \
     if (row >= n_pre) return;                                                                 \
-    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                              \
+    SPIKE_T sv = __ldg(&spikes[row]); if (!IS_ACTIVE(sv)) return;                             \
     const int32_t* i_row = indices + (size_t)row * n_conn;                                    \
-    ACC_T w0 = READ_W(weights[0]);                                                            \
+    ACC_T w0 = EVT_SCALE(READ_W(weights[0]), READ_W, sv);                                     \
     for (int k = 0; k < n_conn; k++) {                                                        \
         int idx = __ldg(&i_row[k]);                                                           \
         ATOMIC_ADD_W(&output[idx], w0);                                                       \
@@ -116,7 +129,7 @@ __global__ void _bs_tpr_homo_kern##SUFFIX(                                      
 }
 
 
-#define DEFINE_BS_TPR_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_BS_TPR_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
 __global__ void _bs_tpr_hetero_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                        \
     const SPIKE_T* __restrict__ spikes,                                                         \
@@ -126,13 +139,13 @@ __global__ void _bs_tpr_hetero_kern##SUFFIX(                                    
 ) {                                                                                             \
     int row = blockIdx.x * blockDim.x + threadIdx.x;                                            \
     if (row >= n_pre) return;                                                                   \
-    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                                \
+    SPIKE_T sv = __ldg(&spikes[row]); if (!IS_ACTIVE(sv)) return;                             \
     const int32_t* i_row = indices + (size_t)row * n_conn;                                      \
     const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                     \
     for (int k = 0; k < n_conn; k++) {                                                          \
         int idx = __ldg(&i_row[k]);                                                             \
         ACC_T wk = READ_W(__ldg(&w_row[k]));                                                    \
-        ATOMIC_ADD_W(&output[idx], wk);                                                         \
+        ATOMIC_ADD_W(&output[idx], EVT_SCALE(wk, READ_W, sv));                                \
     }                                                                                           \
 }
 
@@ -141,44 +154,62 @@ __global__ void _bs_tpr_hetero_kern##SUFFIX(                                    
 // ============================================================================
 
 // ---- float32 ----
-DEFINE_BS_TPR_HOMO     (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_BS_TPR_HETERO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_BS_WPR_HOMO     (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_BS_WPR_HETERO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_BS_TPR_HOMO     (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_BS_TPR_HETERO   (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_BS_WPR_HOMO     (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_BS_WPR_HETERO   (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
+DEFINE_BS_TPR_HOMO     (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_BS_TPR_HETERO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_BS_WPR_HOMO     (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_BS_WPR_HETERO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_BS_TPR_HOMO     (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_BS_TPR_HETERO   (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_BS_WPR_HOMO     (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_BS_WPR_HETERO   (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_BINARY)
 
 // ---- float64 ----
-DEFINE_BS_TPR_HOMO     (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_BS_TPR_HETERO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_BS_WPR_HOMO     (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_BS_WPR_HETERO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_BS_TPR_HOMO     (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_BS_TPR_HETERO   (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_BS_WPR_HOMO     (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_BS_WPR_HETERO   (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_TPR_HOMO     (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_BS_TPR_HETERO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_BS_WPR_HOMO     (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_BS_WPR_HETERO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_BS_TPR_HOMO     (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_BS_TPR_HETERO   (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_BS_WPR_HOMO     (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_BS_WPR_HETERO   (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
 
 // ---- float16 ----
-DEFINE_BS_TPR_HOMO     (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BS_TPR_HETERO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BS_WPR_HOMO     (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BS_WPR_HETERO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BS_TPR_HOMO     (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BS_TPR_HETERO   (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BS_WPR_HOMO     (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_BS_WPR_HETERO   (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_BS_TPR_HOMO     (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_BS_TPR_HETERO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_BS_WPR_HOMO     (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_BS_WPR_HETERO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_BS_TPR_HOMO     (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_BS_TPR_HETERO   (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_BS_WPR_HOMO     (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_BS_WPR_HETERO   (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
 
 // ---- bfloat16 ----
-DEFINE_BS_TPR_HOMO     (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BS_TPR_HETERO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BS_WPR_HOMO     (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BS_WPR_HETERO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BS_TPR_HOMO     (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BS_TPR_HETERO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BS_WPR_HOMO     (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_BS_WPR_HETERO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_BS_TPR_HOMO     (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_BS_TPR_HETERO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_BS_WPR_HOMO     (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_BS_WPR_HETERO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_BS_TPR_HOMO     (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_BS_TPR_HETERO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_BS_WPR_HOMO     (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_BS_WPR_HETERO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+
+// ---- weighted (value-multiplying) events, buffer in the weight dtype ----
+DEFINE_BS_TPR_HOMO     (_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_WEIGHTED)
+DEFINE_BS_TPR_HETERO   (_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_WEIGHTED)
+DEFINE_BS_WPR_HOMO     (_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_WEIGHTED)
+DEFINE_BS_WPR_HETERO   (_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_WEIGHTED)
+DEFINE_BS_TPR_HOMO     (_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_BS_TPR_HETERO   (_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_BS_WPR_HOMO     (_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_BS_WPR_HETERO   (_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_BS_TPR_HOMO     (_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_BS_TPR_HETERO   (_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_BS_WPR_HOMO     (_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_BS_WPR_HETERO   (_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_BS_TPR_HOMO     (_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
+DEFINE_BS_TPR_HETERO   (_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
+DEFINE_BS_WPR_HOMO     (_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
+DEFINE_BS_WPR_HETERO   (_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
 
 
 // ============================================================================
@@ -277,3 +308,21 @@ FFI_BS_HETERO(_bool_f16, __half, uint8_t)
 FFI_BS_HOMO  (_bool_bf16, __nv_bfloat16, uint8_t)
 // @BE binary_fcnmv_scatter_hetero_bool_bf16
 FFI_BS_HETERO(_bool_bf16, __nv_bfloat16, uint8_t)
+
+// ---- weighted events ----
+// @BE binary_fcnmv_scatter_homo_wv_f32
+FFI_BS_HOMO  (_wv_f32, float, float)
+// @BE binary_fcnmv_scatter_hetero_wv_f32
+FFI_BS_HETERO(_wv_f32, float, float)
+// @BE binary_fcnmv_scatter_homo_wv_f64
+FFI_BS_HOMO  (_wv_f64, double, double)
+// @BE binary_fcnmv_scatter_hetero_wv_f64
+FFI_BS_HETERO(_wv_f64, double, double)
+// @BE binary_fcnmv_scatter_homo_wv_f16
+FFI_BS_HOMO  (_wv_f16, __half, __half)
+// @BE binary_fcnmv_scatter_hetero_wv_f16
+FFI_BS_HETERO(_wv_f16, __half, __half)
+// @BE binary_fcnmv_scatter_homo_wv_bf16
+FFI_BS_HOMO  (_wv_bf16, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_fcnmv_scatter_hetero_wv_bf16
+FFI_BS_HETERO(_wv_bf16, __nv_bfloat16, __nv_bfloat16)

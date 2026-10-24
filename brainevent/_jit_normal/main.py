@@ -20,11 +20,11 @@ from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
-from brainevent._event.binary import BinaryArray
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitnmv, binary_jitnmm
 from .csr import jitn_to_csr
@@ -35,6 +35,7 @@ __all__ = [
     'JITCNormalR',
     'JITCNormalC',
 ]
+
 
 
 class JITCNormalMatrix(JITCMatrix):
@@ -805,10 +806,12 @@ class JITCNormalR(JITCNormalMatrix):
         - If ``other`` is a ``BinaryArray`` (event-driven), uses the binary event
           kernel (``binary_jitnmv`` for 1-D, ``binary_jitnmm`` for 2-D).
         - Otherwise, uses the float kernel (``jitnmv`` for 1-D, ``jitnmm`` for 2-D).
+          A ``WeightedArray`` is cast to the weight dtype and takes this path;
+          the float kernels skip zero events.
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The right-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -836,8 +839,9 @@ class JITCNormalR(JITCNormalMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.wloc)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 # JIT matrix @ events
                 return binary_jitnmv(
@@ -911,7 +915,7 @@ class JITCNormalR(JITCNormalMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The left-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -937,8 +941,9 @@ class JITCNormalR(JITCNormalMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.wloc)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 #
                 # vector @ JIT matrix
@@ -1334,7 +1339,7 @@ class JITCNormalC(JITCNormalMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The right-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -1356,8 +1361,9 @@ class JITCNormalC(JITCNormalMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.wloc)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
@@ -1438,7 +1444,7 @@ class JITCNormalC(JITCNormalMatrix):
 
         Parameters
         ----------
-        other : jax.Array, u.Quantity, or BinaryArray
+        other : jax.Array, u.Quantity, BinaryArray or WeightedArray
             The left-hand operand. Must be 1-D (vector) or 2-D (matrix).
 
         Returns
@@ -1464,8 +1470,9 @@ class JITCNormalC(JITCNormalMatrix):
         # other @ csr
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
-        if isinstance(other, BinaryArray):
-            other = other.value
+        other, event = self._split_event_operand(other, self.wloc)
+        if event is not None:
+            other = event[0]
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T

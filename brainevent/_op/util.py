@@ -140,11 +140,12 @@ def event_active(x) -> jax.Array:
     return x != 0
 
 
-def event_factor(x, *, dtype) -> jax.Array:
-    """Return the activity mask of a binary event array as ``dtype``.
+def event_factor(x, *, dtype, weighted: bool = False) -> jax.Array:
+    """Return the factor that multiplies the weights of an event operation.
 
-    Binary operations multiply weights by this factor (``1`` for active events,
-    ``0`` otherwise); they never multiply by the raw event value.
+    Binary operations multiply weights by the activity mask (``1`` for active
+    events, ``0`` otherwise) and never by the raw event value. Weighted
+    operations (:class:`~brainevent.WeightedArray`) multiply by the value.
 
     Parameters
     ----------
@@ -152,11 +153,13 @@ def event_factor(x, *, dtype) -> jax.Array:
         Event array of any boolean, integer or floating-point dtype.
     dtype : dtype_like
         Output dtype, usually the weight or cotangent dtype.
+    weighted : bool, optional
+        Return ``x.astype(dtype)`` instead of the mask. Defaults to ``False``.
 
     Returns
     -------
     factor : jax.Array
-        ``event_active(x).astype(dtype)``.
+        ``x.astype(dtype)`` if ``weighted``, else ``event_active(x).astype(dtype)``.
 
     See Also
     --------
@@ -170,7 +173,12 @@ def event_factor(x, *, dtype) -> jax.Array:
         >>> from brainevent._op.util import event_factor
         >>> event_factor(jnp.array([2., -1., 0.]), dtype=jnp.float32).tolist()
         [1.0, 1.0, 0.0]
+
+        >>> event_factor(jnp.array([2, -1, 0]), dtype=jnp.float32, weighted=True).tolist()
+        [2.0, -1.0, 0.0]
     """
+    if weighted:
+        return jax.numpy.asarray(x).astype(dtype)
     return event_active(x).astype(dtype)
 
 
@@ -214,7 +222,8 @@ class EventABI(NamedTuple):
     Attributes
     ----------
     suffix : str
-        Event part of the kernel symbol name, ``'_bool'`` or ``'_float'``.
+        Event part of the kernel symbol name: ``'_bool'`` or ``'_float'`` for
+        binary kernels, ``'_wv'`` for weighted kernels.
     prepare : Callable[[jax.Array], jax.Array]
         Conversion applied to the event operand inside the CUDA lowering,
         right before ``ffi_call``.
@@ -227,7 +236,7 @@ def _identity(x):
     return x
 
 
-def cuda_event_abi(dtype, *, native_float=np.float32) -> EventABI:
+def cuda_event_abi(dtype, *, native_float=np.float32, weighted: bool = False, value_dtype=None) -> EventABI:
     """Select the CUDA kernel ABI for a binary event operand.
 
     CUDA binary kernels are compiled for two event buffers: ``bool`` (read as
@@ -246,13 +255,20 @@ def cuda_event_abi(dtype, *, native_float=np.float32) -> EventABI:
     native_float : dtype_like, optional
         Floating-point event dtype the ``_float`` kernels read natively.
         Defaults to ``float32``; ``binary_fcnmm`` passes its weight dtype.
+        Ignored when ``weighted``.
+    weighted : bool, optional
+        Select the weighted (value-multiplying) kernel ABI. Defaults to
+        ``False``.
+    value_dtype : dtype_like, optional
+        dtype the weighted kernels read events in, normally the weight dtype.
+        Required when ``weighted``.
 
     Returns
     -------
     abi : EventABI
-        ``('_bool', identity)`` for bool, ``('_float', identity)`` for
+        Binary: ``('_bool', identity)`` for bool, ``('_float', identity)`` for
         ``native_float``, ``('_bool', event_active)`` for any other integer or
-        floating-point dtype.
+        floating-point dtype. Weighted: ``('_wv', cast to value_dtype)``.
 
     Raises
     ------
@@ -277,8 +293,24 @@ def cuda_event_abi(dtype, *, native_float=np.float32) -> EventABI:
 
         >>> cuda_event_abi(jnp.float64).suffix
         '_bool'
+
+        >>> cuda_event_abi(jnp.int8, weighted=True, value_dtype=jnp.float32).suffix
+        '_wv'
     """
     dtype = np.dtype(dtype)
+    if weighted:
+        if value_dtype is None:
+            raise ValueError('value_dtype is required for the weighted event ABI.')
+        if not (jax.numpy.issubdtype(dtype, jax.numpy.integer)
+                or jax.numpy.issubdtype(dtype, jax.numpy.floating)
+                or dtype == np.dtype(np.bool_)):
+            raise TypeError(
+                f'Weighted CUDA events must be boolean, integer or floating-point, got {dtype}.'
+            )
+        value_dtype = np.dtype(value_dtype)
+        if dtype == value_dtype:
+            return EventABI('_wv', _identity)
+        return EventABI('_wv', lambda x: x.astype(value_dtype))
     if dtype == np.dtype(np.bool_):
         return EventABI('_bool', _identity)
     if dtype == np.dtype(native_float):

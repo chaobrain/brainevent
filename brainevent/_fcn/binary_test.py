@@ -572,3 +572,242 @@ def test_binary_fcnmm_grads_use_activity_mask(implementation, homo_w, transpose)
         return d.T @ z if transpose else d @ z
 
     check_event_op_grads(op, dense_op, weights, x, mode='binary')
+
+
+# ---------------------------------------------------------------------------
+# Weighted events (#201): ``weighted=True`` multiplies by the event value.
+# ---------------------------------------------------------------------------
+
+def _np_values(events):
+    ev = events.astype(jnp.float32) if events.dtype == jnp.bfloat16 else events
+    return np.asarray(ev, dtype=np.float64)
+
+
+@pytest.mark.parametrize('implementation', ELL_MV_PARAMS)
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('dtype_name', EVENT_DTYPES)
+def test_binary_fcnmv_weighted_all_dtypes(implementation, homo_w, transpose, dtype_name):
+    if implementation == 'cuda_raw' and not transpose:
+        pytest.skip('CUDA row-gather matvec removed; W @ s routes through CSR indexed.')
+    shape = _ACT_SHAPE
+    with _x64_if(dtype_name == 'float64'):
+        weights, indices = _fixed_conn(shape, 5, homo_w)
+        events = _make_events((shape[0] if transpose else shape[1],), dtype_name)
+        y = np.asarray(binary_fcnmv(weights, indices, events, shape=shape, transpose=transpose,
+                                    backend=implementation, weighted=True))
+    dense = _np_dense(weights, indices, shape)
+    x = _np_values(events)
+    expected = x @ dense if transpose else dense @ x
+    np.testing.assert_allclose(y, expected, rtol=1e-5, atol=1e-4)
+
+
+@pytest.mark.parametrize('implementation', FCNMM_PARAMS)
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('dtype_name', EVENT_DTYPES)
+def test_binary_fcnmm_weighted_all_dtypes(implementation, homo_w, transpose, dtype_name):
+    shape = _ACT_SHAPE
+    with _x64_if(dtype_name == 'float64'):
+        weights, indices = _fixed_conn(shape, 5, homo_w)
+        matrix = _make_events((shape[0] if transpose else shape[1], 3), dtype_name)
+        y = np.asarray(binary_fcnmm(weights, indices, matrix, shape=shape, transpose=transpose,
+                                    backend=implementation, weighted=True))
+    dense = _np_dense(weights, indices, shape)
+    x = _np_values(matrix)
+    expected = dense.T @ x if transpose else dense @ x
+    np.testing.assert_allclose(y, expected, rtol=1e-5, atol=1e-4)
+
+
+@pytest.mark.parametrize('implementation', FCNMM_PARAMS)
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('n_conn', [5, 40])
+def test_binary_fcnmm_weighted_gather_warp_and_basic(implementation, homo_w, n_conn):
+    """``n_conn > 32`` selects the CUDA basic gather kernel."""
+    shape = (24, 64)
+    weights, indices = _fixed_conn(shape, n_conn, homo_w)
+    matrix = _make_events((shape[1], 5), 'int8')
+    y = np.asarray(binary_fcnmm(weights, indices, matrix, shape=shape, transpose=False,
+                                backend=implementation, weighted=True))
+    expected = _np_dense(weights, indices, shape) @ _np_values(matrix)
+    np.testing.assert_allclose(y, expected, rtol=1e-5, atol=1e-4)
+
+
+_WEIGHTED_GRAD_DTYPES = ('float32', 'int8', 'float16', 'float64')
+
+
+def _weighted_grad_events(shape, dtype_name):
+    tol = 2e-2 if dtype_name in ('float16', 'bfloat16') else 1e-4
+    return _make_events(shape, dtype_name), tol
+
+
+@pytest.mark.parametrize('implementation', ELL_MV_PARAMS)
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('dtype_name', _WEIGHTED_GRAD_DTYPES)
+def test_binary_fcnmv_weighted_grads(implementation, homo_w, transpose, dtype_name):
+    if implementation == 'cuda_raw' and not transpose:
+        pytest.skip('CUDA row-gather matvec removed; W @ s routes through CSR indexed.')
+    shape = _GRAD_SHAPE
+    with _x64_if(dtype_name == 'float64'):
+        weights, indices = _fixed_conn(shape, 4, homo_w, seed=17)
+        x, tol = _weighted_grad_events((shape[0] if transpose else shape[1],), dtype_name)
+
+        def op(p, v):
+            return binary_fcnmv(p, indices, v, shape=shape, transpose=transpose,
+                                backend=implementation, weighted=True)
+
+        def dense_op(p, z):
+            d = _dense_from_fixed_conn(p, indices, shape)
+            z = z.astype(d.dtype)
+            return z @ d if transpose else d @ z
+
+        check_event_op_grads(op, dense_op, weights, x, mode='weighted', rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize('implementation', FCNMM_PARAMS)
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('dtype_name', _WEIGHTED_GRAD_DTYPES)
+def test_binary_fcnmm_weighted_grads(implementation, homo_w, transpose, dtype_name):
+    shape = _GRAD_SHAPE
+    with _x64_if(dtype_name == 'float64'):
+        weights, indices = _fixed_conn(shape, 4, homo_w, seed=18)
+        x, tol = _weighted_grad_events((shape[0] if transpose else shape[1], 3), dtype_name)
+
+        def op(p, v):
+            return binary_fcnmm(p, indices, v, shape=shape, transpose=transpose,
+                                backend=implementation, weighted=True)
+
+        def dense_op(p, z):
+            d = _dense_from_fixed_conn(p, indices, shape)
+            z = z.astype(d.dtype)
+            return d.T @ z if transpose else d @ z
+
+        check_event_op_grads(op, dense_op, weights, x, mode='weighted', rtol=tol, atol=tol)
+
+
+def test_binary_fcnmv_weighted_binary_unchanged():
+    weights, indices = _fixed_conn((6, 5), 3, False, seed=3)
+    x = jnp.asarray([2, -1, 0, 3, 0, 1], dtype=jnp.int8)
+    dense = _np_dense(weights, indices, (6, 5))
+    yb = binary_fcnmv(weights, indices, x, shape=(6, 5), transpose=True)
+    yw = binary_fcnmv(weights, indices, x, shape=(6, 5), transpose=True, weighted=True)
+    np.testing.assert_allclose(np.asarray(yb), _np_active(x) @ dense, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.asarray(yw), np.asarray(x, np.float64) @ dense, rtol=1e-5, atol=1e-5)
+
+
+def _capture_fcn_ffi(monkeypatch):
+    captured: dict = {'names': []}
+
+    def fake_ffi_call(kernel_name, out_info):
+        captured['names'].append(kernel_name)
+
+        def run(*args):
+            captured['events'] = args[-1]
+            infos = out_info if isinstance(out_info, (list, tuple)) else (out_info,)
+            return tuple(jnp.zeros(info.shape, info.dtype) for info in infos)
+
+        return run
+
+    monkeypatch.setattr(binary_mod, 'load_cuda_file', lambda *a, **kw: None)
+    monkeypatch.setattr(binary_mod.jax.ffi, 'ffi_call', fake_ffi_call)
+    return captured
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('w_dtype', ['float32', 'float16'])
+@pytest.mark.parametrize('e_dtype', ['bool', 'int8', 'float32', 'float16'])
+def test_binary_fcnmv_cuda_weighted_abi(monkeypatch, homo_w, w_dtype, e_dtype):
+    captured = _capture_fcn_ffi(monkeypatch)
+    weights = jnp.ones((1,) if homo_w else (4, 2), dtype=jnp.dtype(w_dtype))
+    indices = jnp.zeros((4, 2), dtype=jnp.int32)
+    spikes = _make_events((4,), e_dtype)
+    kernel = binary_mod._ell_binary_matvec_cuda_kernel(
+        transpose=True,
+        spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        weighted=True,
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        outs=[jax.ShapeDtypeStruct((3,), weights.dtype)],
+    )
+    kernel(weights, indices, spikes)
+    mode = '_homo' if homo_w else '_hetero'
+    w_sfx = '_f32' if w_dtype == 'float32' else '_f16'
+    assert captured['names'] == [f'fcn_binary_mv.binary_fcnmv_scatter{mode}_wv{w_sfx}']
+    assert captured['events'].dtype == jnp.dtype(w_dtype)
+    np.testing.assert_array_equal(np.asarray(captured['events']),
+                                  np.asarray(spikes.astype(jnp.dtype(w_dtype))))
+
+
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('n_conn,size', [(2, '_warp'), (40, '_basic')])
+@pytest.mark.parametrize('e_dtype', ['int8', 'float32', 'float64'])
+@pytest.mark.parametrize('n_batch', [3, 5000])
+def test_binary_fcnmm_cuda_weighted_abi(monkeypatch, homo_w, transpose, n_conn, size, e_dtype, n_batch):
+    """Weighted events select ``_wv`` kernels and never the bit-packed path."""
+    captured = _capture_fcn_ffi(monkeypatch)
+    with jax_x64_enabled():
+        weights = jnp.ones((1,) if homo_w else (64, n_conn), dtype=jnp.float32)
+        indices = jnp.zeros((64, n_conn), dtype=jnp.int32)
+        matrix = _make_events((64, n_batch), e_dtype)
+        kernel = binary_mod._binary_fcnmm_cuda_kernel(
+            transpose=transpose,
+            weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+            matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
+            indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+            weighted=True,
+            outs=[jax.ShapeDtypeStruct((64, n_batch), weights.dtype)],
+        )
+        kernel(weights, indices, matrix)
+    mode = '_homo' if homo_w else '_hetero'
+    if transpose:
+        expected = f'fcn_binary_mm.binary_fcnmm_sraw{mode}_wv_f32'
+    else:
+        expected = f'fcn_binary_mm.binary_fcnmm_gather{mode}{size}_wv_f32'
+    assert captured['names'] == [expected]
+    assert captured['events'].dtype == jnp.float32
+    np.testing.assert_array_equal(np.asarray(captured['events']), np.asarray(matrix, np.float32))
+
+
+@pytest.mark.parametrize('implementation', FCNMM_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_fcnmv_weighted_vmap(implementation, transpose):
+    """vmap of the weighted matvec batches into the weighted matmat."""
+    shape = _GRAD_SHAPE
+    weights, indices = _fixed_conn(shape, 4, False, seed=19)
+    xs = _make_events((3, shape[0] if transpose else shape[1]), 'int8')
+    backend = None if implementation == 'cuda_raw' and not transpose else implementation
+    f = lambda v: binary_fcnmv(weights, indices, v, shape=shape, transpose=transpose,
+                               backend=backend, weighted=True)
+    got = np.asarray(jax.vmap(f)(xs))
+    dense = _np_dense(weights, indices, shape)
+    x = np.asarray(xs, np.float64)
+    expected = x @ dense if transpose else x @ dense.T
+    np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-4)
+
+
+@requires_gpu
+@pytest.mark.parametrize('homo_w', [True, False])
+@pytest.mark.parametrize('w_dtype', ['float32', 'float64', 'float16', 'bfloat16'])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_fcnmm_weighted_large_gpu(homo_w, w_dtype, transpose):
+    """Large event matrices (> 1 MB) would take the packed path in binary mode."""
+    shape = (40, 600)
+    n_batch = 2000
+    with jax_x64_enabled():
+        weights, indices = _fixed_conn(shape, 8, homo_w, w_dtype=w_dtype)
+        rng = np.random.default_rng(5)
+        rows = shape[0] if transpose else shape[1]
+        x = rng.integers(-3, 4, size=(rows, n_batch)) * (rng.random((rows, n_batch)) < 0.1)
+        matrix = jnp.asarray(x, dtype=jnp.float32)
+        y = binary_fcnmm(weights, indices, matrix, shape=shape, transpose=transpose,
+                         backend='cuda_raw', weighted=True)
+        y = np.asarray(y.astype(jnp.float32), dtype=np.float64)
+    w64 = weights.astype(jnp.float32) if w_dtype == 'bfloat16' else weights
+    dense = _np_dense(w64, indices, shape)
+    expected = dense.T @ x if transpose else dense @ x
+    tol = 2e-2 if w_dtype in ('float16', 'bfloat16') else 1e-5
+    rel = np.linalg.norm(y - expected) / np.linalg.norm(expected)
+    assert rel < tol, f'relative error {rel}'

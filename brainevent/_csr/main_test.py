@@ -1901,3 +1901,132 @@ def test_compressed_homogeneous_sum_preserves_units():
 
     assert u.get_unit(matrix.sum()) == u.mV
     assert u.math.allclose(matrix.sum(), 8.0 * u.mV)
+
+
+# ---------------------------------------------------------------------------
+# WeightedArray dispatch (#201): ``CSR``/``CSC`` ``@`` a value-weighted event
+# operand is the exact product, on every backend and route (including the
+# explicit ``cuda_raw`` indexed route for the unfavourable direction).
+# ---------------------------------------------------------------------------
+
+from brainevent import WeightedArray  # noqa: E402
+from brainevent._csr._test_util import (  # noqa: E402
+    WEIGHTED_EVENT_DTYPE_NAMES, event_dtype_context, event_mask, event_values,
+)
+from brainevent._test_util import check_event_op_grads  # noqa: E402
+
+_W_M, _W_N, _W_B = 12, 9, 3
+
+
+def _weighted_matrix_factory(cls, homo, backend, seed=0):
+    """Return ``(make, data)`` where ``make(d)`` builds a ``cls`` matrix with values ``d``."""
+    rng = np.random.default_rng(seed)
+    dense = (rng.random((_W_M, _W_N)) < 0.4) * rng.standard_normal((_W_M, _W_N))
+    base = cls.fromdense(jnp.asarray(dense, dtype=jnp.float32))
+    data = jnp.array([1.5], dtype=jnp.float32) if homo else base.data
+
+    def make(d):
+        return cls((d, base.indices, base.indptr), shape=base.shape, backend=backend)
+
+    return make, data
+
+
+def _weighted_tol(dtype_name):
+    if dtype_name in ('float16', 'bfloat16'):
+        return dict(rtol=2e-2, atol=2e-2)
+    return dict(rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', BINARY_CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('dtype_name', WEIGHTED_EVENT_DTYPE_NAMES)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('ndim', [1, 2])
+@pytest.mark.parametrize('side', ['left', 'right'])
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_weighted_array_matmul_matches_dense_and_grads(cls, side, ndim, homo, dtype_name, backend):
+    """``WeightedArray(x) @ M`` / ``M @ WeightedArray(x)`` equal the dense product with exact gradients."""
+    with event_dtype_context(dtype_name):
+        make, data = _weighted_matrix_factory(cls, homo, backend, seed=ndim)
+        inner = _W_M if side == 'left' else _W_N
+        if ndim == 1:
+            x = event_values(dtype_name, inner, seed=ndim)
+        elif side == 'left':
+            x = event_values(dtype_name, (_W_B, inner), seed=ndim)
+        else:
+            x = event_values(dtype_name, (inner, _W_B), seed=ndim)
+
+        def op(d, v):
+            m = make(d)
+            return WeightedArray(v) @ m if side == 'left' else m @ WeightedArray(v)
+
+        def dense_op(d, z):
+            W = make(d).todense()
+            z = z.astype(d.dtype)
+            return z @ W if side == 'left' else W @ z
+
+        check_event_op_grads(op, dense_op, data, x, mode='weighted',
+                             check_vmap=dtype_name == 'float32', **_weighted_tol(dtype_name))
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_weighted_array_matmul_jax_raw_differs_from_binary(cls, side):
+    """Weighted and binary dispatch use different semantics on the same values."""
+    make, data = _weighted_matrix_factory(cls, False, 'jax_raw', seed=3)
+    M = make(data)
+    W = np.asarray(M.todense(), dtype=np.float64)
+    x = event_values('float32', _W_M if side == 'left' else _W_N, seed=3)
+    x64 = np.asarray(x, np.float64)
+    if side == 'left':
+        weighted, binary = WeightedArray(x) @ M, BinaryArray(x) @ M
+        exp_w, exp_b = x64 @ W, event_mask(x) @ W
+    else:
+        weighted, binary = M @ WeightedArray(x), M @ BinaryArray(x)
+        exp_w, exp_b = W @ x64, W @ event_mask(x)
+    np.testing.assert_allclose(np.asarray(weighted, np.float64), exp_w, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.asarray(binary, np.float64), exp_b, rtol=1e-5, atol=1e-5)
+
+
+def test_weighted_array_integer_events_return_weight_dtype():
+    make, data = _weighted_matrix_factory(CSR, False, 'jax_raw', seed=4)
+    x = event_values('int8', _W_M, seed=4)
+    y = WeightedArray(x) @ make(data)
+    assert y.dtype == data.dtype
+    np.testing.assert_allclose(np.asarray(y, np.float64),
+                               np.asarray(x, np.float64) @ np.asarray(make(data).todense(), np.float64),
+                               rtol=1e-5, atol=1e-5)
+
+
+def test_weighted_array_cuda_raw_unfavorable_routes_pass_weighted(monkeypatch):
+    """The explicit ``cuda_raw`` indexed route forwards ``weighted=True``."""
+    import brainevent._csr.main as csr_main
+
+    dense = jnp.array([[0.0, 2.0, 5.0], [3.0, 4.0, 0.0]], dtype=jnp.float32)
+    csr = CSR.fromdense(dense, backend="cuda_raw")
+    csc = CSC.fromdense(dense, backend="cuda_raw")
+    seen = []
+
+    def fake(data, indices, indptr, perm, v, *, shape, transpose, backend=None, workspace=None, weighted=False):
+        seen.append(weighted)
+        out = shape[1] if transpose else shape[0]
+        return jnp.zeros((out,) + v.shape[1:], dtype=data.dtype)
+
+    monkeypatch.setattr(csr_main, "binary_csrmv_indexed", fake)
+    monkeypatch.setattr(csr_main, "binary_csrmm_indexed", fake)
+    csr @ WeightedArray(jnp.array([1.0, 0.0, 2.0]))
+    csr @ WeightedArray(jnp.ones((3, 2)))
+    WeightedArray(jnp.array([1.0, 0.0])) @ csc
+    WeightedArray(jnp.ones((2, 2))) @ csc
+    csr @ BinaryArray(jnp.array([1.0, 0.0, 2.0]))
+    assert seen == [True, True, True, True, False]
+
+
+def test_bitpacked_binary_matmul_csr_is_binary():
+    """``as_event_operand`` routes BitPackedBinary through the binary kernels."""
+    make, data = _weighted_matrix_factory(CSR, False, 'jax_raw', seed=5)
+    x = jnp.asarray(event_values('float32', _W_M, seed=5) != 0)
+    y = brainevent.BitPackedBinary(x) @ make(data)
+    np.testing.assert_allclose(np.asarray(y, np.float64),
+                               event_mask(x) @ np.asarray(make(data).todense(), np.float64),
+                               rtol=1e-5, atol=1e-5)

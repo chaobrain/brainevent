@@ -382,7 +382,8 @@ def check_event_op_grads(
     params : pytree of jax.Array
         Differentiable weight parameters.
     x : jax.Array
-        Raw float event array. Should contain values other than 0 and 1
+        Raw event array. Integer arrays are allowed (weighted mode); their
+        event gradient is not checked. Should contain values other than 0 and 1
         (for example ``2.0`` and ``-1.0``) to exercise #198.
     mode : {'binary', 'weighted'}, optional
         Event semantics.
@@ -426,9 +427,10 @@ def check_event_op_grads(
     else:
         raise ValueError(f'Unknown mode {mode!r}.')
 
+    x_is_float = jnp.issubdtype(x.dtype, jnp.floating)
     keys = jax.random.split(jax.random.PRNGKey(seed), 3)
     y = op(params, x)
-    y_ref = ref_op(params, z)
+    y_ref = ref_op(params, z if x_is_float else z.astype(y.dtype))
     assert y.shape == y_ref.shape, (y.shape, y_ref.shape)
     assert jnp.allclose(y, y_ref, rtol=rtol, atol=atol), 'forward mismatch'
 
@@ -439,16 +441,24 @@ def check_event_op_grads(
         [jax.random.normal(k, l.shape, dtype=l.dtype)
          for k, l in zip(jax.random.split(keys[1], len(leaves)), leaves)],
     )
-    tx = jax.random.normal(keys[2], x.shape, dtype=x.dtype)
 
-    _, vjp = jax.vjp(op, params, x)
-    g_p, g_x = vjp(ct)
-    _, vjp_ref = jax.vjp(ref_op, params, z)
-    g_p_ref, g_x_ref = vjp_ref(ct)
+    if x_is_float:
+        _, vjp = jax.vjp(op, params, x)
+        g_p, g_x = vjp(ct)
+        _, vjp_ref = jax.vjp(ref_op, params, z)
+        g_p_ref, g_x_ref = vjp_ref(ct)
+        assert jnp.allclose(g_x, g_x_ref, rtol=rtol, atol=atol), \
+            f'event gradient mismatch:\n{g_x}\nvs\n{g_x_ref}'
+    else:
+        # Integer events are not differentiable (float0 cotangents); only the
+        # weight gradient is checked. The reference uses the float values.
+        _, vjp = jax.vjp(lambda p: op(p, x), params)
+        g_p, = vjp(ct)
+        _, vjp_ref = jax.vjp(lambda p: ref_op(p, z.astype(y.dtype)), params)
+        g_p_ref, = vjp_ref(ct)
 
     for a, b in zip(jax.tree_util.tree_leaves(g_p), jax.tree_util.tree_leaves(g_p_ref)):
         assert jnp.allclose(a, b, rtol=rtol, atol=atol), f'weight gradient mismatch:\n{a}\nvs\n{b}'
-    assert jnp.allclose(g_x, g_x_ref, rtol=rtol, atol=atol), f'event gradient mismatch:\n{g_x}\nvs\n{g_x_ref}'
 
     # Forward mode w.r.t. params only for binary events: the event tangent of a
     # binary op is straight-through, which has no forward-mode counterpart of
@@ -458,16 +468,18 @@ def check_event_op_grads(
     rhs = _tree_vdot(g_p, tp)
     assert jnp.allclose(lhs, rhs, rtol=rtol, atol=atol * max(1, y.size)), \
         f'weight JVP/VJP mismatch: {lhs} vs {rhs}'
-    _, jx = jax.jvp(lambda v: op(params, v), (x,), (tx,))
-    lhs = jnp.vdot(ct, jx)
-    rhs = jnp.vdot(g_x, tx)
-    assert jnp.allclose(lhs, rhs, rtol=rtol, atol=atol * max(1, y.size)), \
-        f'event JVP/VJP mismatch: {lhs} vs {rhs}'
+    if x_is_float:
+        tx = jax.random.normal(keys[2], x.shape, dtype=x.dtype)
+        _, jx = jax.jvp(lambda v: op(params, v), (x,), (tx,))
+        lhs = jnp.vdot(ct, jx)
+        rhs = jnp.vdot(g_x, tx)
+        assert jnp.allclose(lhs, rhs, rtol=rtol, atol=atol * max(1, y.size)), \
+            f'event JVP/VJP mismatch: {lhs} vs {rhs}'
 
     if check_vmap:
         xs = jnp.stack([x, jnp.flip(x, axis=0)])
         zs = jax.vmap(lambda v: event_factor(v, dtype=v.dtype) if mode == 'binary' else v)(xs)
         g = jax.vmap(lambda v: jax.grad(lambda p: jnp.vdot(ct, op(p, v)))(params))(xs)
-        g_ref = jax.vmap(lambda v: jax.grad(lambda p: jnp.vdot(ct, ref_op(p, v)))(params))(zs)
+        g_ref = jax.vmap(lambda v: jax.grad(lambda p: jnp.vdot(ct, ref_op(p, v.astype(y.dtype))))(params))(zs)
         for a, b in zip(jax.tree_util.tree_leaves(g), jax.tree_util.tree_leaves(g_ref)):
             assert jnp.allclose(a, b, rtol=rtol, atol=atol), f'vmapped weight gradient mismatch:\n{a}\nvs\n{b}'

@@ -193,3 +193,65 @@ def test_dense_is_jit_compatible_pytree_for_binary_matmul_and_with_data():
     got = run(dense, spikes)
     expected = (weights + 1.) @ spikes.value.astype(weights.dtype)
     assert jnp.allclose(got, expected)
+
+
+# ---------------------------------------------------------------------------
+# WeightedArray (#201)
+# ---------------------------------------------------------------------------
+
+_W_DATA = jnp.asarray([[1., 10., -2.], [100., 0., 3.], [0., 1000., 4.], [5., 6., 7.]], dtype=jnp.float32)
+
+
+@pytest.mark.parametrize('backend', [None, 'jax_raw', 'numba', 'cuda_raw', 'cublas'])
+@pytest.mark.parametrize('dtype', [jnp.int8, jnp.int32, jnp.float16, jnp.float32])
+def test_dense_weighted_array_matmul_matches_dense_reference(backend, dtype):
+    from brainevent._dense.binary import binary_densemv_p
+    from brainevent._test_util import check_event_op_grads
+
+    if backend is not None and backend not in binary_densemv_p.available_backends(jax.default_backend()):
+        pytest.skip(f'{backend} not available')
+
+    x1 = jnp.asarray([2, -1, 0, 3], dtype=dtype)
+    x2 = jnp.stack([x1, jnp.roll(x1, 1)], axis=0)          # (2, 4)
+    tol = 2e-2 if dtype == jnp.float16 else 1e-4
+
+    # x @ W  (W^T x) and W.T @ x, both 1-D and 2-D
+    check_event_op_grads(
+        lambda p, v: be.WeightedArray(v) @ be.Dense(p, backend=backend),
+        lambda p, z: z.astype(p.dtype) @ p, _W_DATA, x1, mode='weighted', rtol=tol, atol=tol,
+    )
+    check_event_op_grads(
+        lambda p, v: be.WeightedArray(v) @ be.Dense(p, backend=backend),
+        lambda p, z: z.astype(p.dtype) @ p, _W_DATA, x2, mode='weighted', rtol=tol, atol=tol,
+    )
+    check_event_op_grads(
+        lambda p, v: be.Dense(p.T, backend=backend) @ be.WeightedArray(v),
+        lambda p, z: p.T @ z.astype(p.dtype), _W_DATA, x1, mode='weighted', rtol=tol, atol=tol,
+    )
+    check_event_op_grads(
+        lambda p, v: be.Dense(p.T, backend=backend) @ be.WeightedArray(v),
+        lambda p, z: p.T @ z.astype(p.dtype), _W_DATA, x2.T, mode='weighted', rtol=tol, atol=tol,
+    )
+
+
+def test_dense_weighted_array_differs_from_binary_array():
+    dense = be.Dense(_W_DATA, backend='jax_raw')
+    x = jnp.asarray([2, -1, 0, 3], dtype=jnp.int8)
+    xf = x.astype(jnp.float32)
+    assert jnp.allclose(be.WeightedArray(x) @ dense, xf @ _W_DATA)
+    assert jnp.allclose(be.BinaryArray(x) @ dense, (x != 0).astype(jnp.float32) @ _W_DATA)
+    assert jnp.allclose(dense.T @ be.WeightedArray(x), _W_DATA.T @ xf)
+
+
+def test_dense_weighted_array_with_units_and_jit():
+    dense = be.Dense(_W_DATA * u.mV, backend='jax_raw')
+    x = be.WeightedArray(jnp.asarray([2, 0, 1, 0], dtype=jnp.int8))
+    out = jax.jit(lambda d, e: e @ d)(dense, x)
+    assert u.get_unit(out) == u.mV
+    assert u.math.allclose(out, (jnp.asarray([2., 0., 1., 0.]) @ _W_DATA) * u.mV)
+
+
+def test_dense_weighted_array_rejects_3d():
+    dense = be.Dense(_W_DATA, backend='jax_raw')
+    with pytest.raises(NotImplementedError):
+        dense.T @ be.WeightedArray(jnp.ones((4, 2, 2)))

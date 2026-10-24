@@ -385,3 +385,8 @@ class TestCheckEventOpGrads:
     def test_unknown_mode(self):
         with pytest.raises(ValueError, match='Unknown mode'):
             check_event_op_grads(self._dense, self._dense, self.W, self.x, mode='nope')
+
+    def test_weighted_mode_integer_events(self):
+        x = jnp.array([0, 2, -1], dtype=jnp.int8)
+        op = lambda w, v: v.astype(w.dtype) @ w
+        check_event_op_grads(op, self._dense, self.W, x, mode='weighted')

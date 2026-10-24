@@ -18,6 +18,8 @@ from .base import EventRepresentation
 from .binary import BinaryArray
 from .bitpack_binary import BitPackedBinary, bitpack
 from .compact_binary import CompactBinary
+from .dispatch import as_event_operand
+from .weighted import WeightedArray
 
 __all__ = [
     'EventRepresentation',
@@ -25,4 +27,6 @@ __all__ = [
     'BitPackedBinary',
     'bitpack',
     'CompactBinary',
+    'WeightedArray',
+    'as_event_operand',
 ]

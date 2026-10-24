@@ -32,7 +32,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix
 
 __all__ = [
     "jitu",
@@ -941,7 +941,7 @@ def _jitumv_numba_kernel_generator(
     chunk_size = _chunk_size(_walk_length(kwargs['shape'], kwargs['transpose'], corder))
 
     if corder:
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(w_low, w_high, clen, vector, seed, posts):
             m = posts.shape[0]
             k = vector.shape[0]
@@ -969,14 +969,16 @@ def _jitumv_numba_kernel_generator(
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
                             col = chunk_start + local_j
-                            u01 = _rng_uniform01(seed0, row, col)
-                            out += vector[col] * (w_low0 + u01 * span)
+                            v = vector[col]
+                            if v != 0.:  # zero events are skipped
+                                u01 = _rng_uniform01(seed0, row, col)
+                                out += v * (w_low0 + u01 * span)
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
                 posts[row] = out
     else:
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(w_low, w_high, clen, vector, seed, posts):
             posts[:] = 0.
             k = posts.shape[0]
@@ -1508,7 +1510,7 @@ def _jitumm_numba_kernel_generator(
 
     if corder:
         # notrans: Y = M @ B. m = output rows, k = B rows (walk), n = columns.
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(w_low, w_high, clen, B, seed, posts):
             m = posts.shape[0]
             n = posts.shape[1]
@@ -1545,7 +1547,7 @@ def _jitumm_numba_kernel_generator(
                 posts[row] = out
     else:
         # trans: Y = M^T @ B. m = B rows (walk source), k = output rows (walk).
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(w_low, w_high, clen, B, seed, posts):
             posts[:] = 0.
             k = posts.shape[0]
@@ -1560,6 +1562,8 @@ def _jitumm_numba_kernel_generator(
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
                 out = B[row]
+                if not np.any(out != 0.):  # all-zero event row: skip
+                    continue
                 for chunk_id in range(n_chunks):
                     chunk_start = chunk_id * chunk_size
                     if chunk_start >= k:

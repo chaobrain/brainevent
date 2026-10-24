@@ -28,6 +28,16 @@ Binary Events
    CompactBinary
 
 
+Weighted Events
+---------------
+
+.. autosummary::
+   :toctree: generated/
+   :template: classtemplate.rst
+
+   WeightedArray
+
+
 Bit Packing
 -----------
 

@@ -72,6 +72,7 @@ from ._event import (
     BitPackedBinary,
     bitpack,
     CompactBinary,
+    WeightedArray,
 )
 from ._fcn import (
     FixedNumConn, FixedNumPerPost, FixedNumPerPre,
@@ -153,6 +154,7 @@ __all__ = [
     'BitPackedBinary',
     'bitpack',
     'CompactBinary',
+    'WeightedArray',
 
     # --- representing sparse data --- #
     'DataRepresentation',

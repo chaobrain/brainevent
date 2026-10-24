@@ -393,6 +393,10 @@ EVENT_DTYPE_NAMES = (
     'bool', 'int8', 'uint8', 'int16', 'int32', 'float16', 'bfloat16', 'float32', 'float64',
 )
 
+#: Event dtypes swept by the weighted (``WeightedArray``) tests: every
+#: non-boolean dtype of :data:`EVENT_DTYPE_NAMES`.
+WEIGHTED_EVENT_DTYPE_NAMES = tuple(name for name in EVENT_DTYPE_NAMES if name != 'bool')
+
 _EVENT_PATTERNS = {
     'bool': [True, True, False, True, False, True, True, False],
     'uint8': [2, 255, 0, 1, 0, 7, 1, 0],
@@ -529,3 +533,38 @@ def run_python_isolated(source, timeout=600):
         [sys.executable, '-c', source],
         capture_output=True, text=True, timeout=timeout, env=env, cwd=repo_root,
     )
+
+
+def heavy_row_csr_numpy(rng, m, k, row_nnz, weight_dtype=np.float32):
+    """Return a CSR matrix whose rows are long enough for the hybrid task path.
+
+    The hybrid CUDA scatter kernels split rows with more than
+    ``BE_HYBRID_TPR_THRESHOLD`` (128) stored entries into chunks of
+    ``BE_HYBRID_TASK_NNZ`` (4096) entries; ``row_nnz > 4096`` therefore
+    exercises multi-chunk rows.
+
+    Parameters
+    ----------
+    rng : numpy.random.Generator
+        Random source.
+    m, k : int
+        Matrix shape; ``row_nnz <= k``.
+    row_nnz : int
+        Stored entries per row (row ``i`` gets ``row_nnz - i``, so rows differ).
+    weight_dtype : dtype, optional
+        Dtype of the stored values.
+
+    Returns
+    -------
+    data, indices, indptr, dense : numpy.ndarray
+        As in :func:`random_csr_numpy`.
+    """
+    counts = [row_nnz - i for i in range(m)]
+    cols = [np.sort(rng.choice(k, c, replace=False)) for c in counts]
+    indices = np.concatenate(cols).astype(np.int32)
+    indptr = np.concatenate([[0], np.cumsum(counts)]).astype(np.int32)
+    data = rng.standard_normal(indices.size).astype(weight_dtype)
+    dense = np.zeros((m, k), dtype=np.float64)
+    rows = np.repeat(np.arange(m), counts)
+    dense[rows, indices] = data.astype(np.float64)
+    return data, indices, indptr, dense

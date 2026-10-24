@@ -177,9 +177,12 @@ __global__ void _notrans_f32_kern(
     float acc = 0.0f;
     while (local_j < chunk_width) {
         int j = chunk_start + (int)local_j;
-        float n01 = hash_normal01(seed0, row, j);
-        float w = loc + n01 * scale;
-        acc += w * READ_F32(__ldg(&vector[j]));
+        float v = READ_F32(__ldg(&vector[j]));
+        if (v != 0.0f) {  /* zero events are skipped */
+            float n01 = hash_normal01(seed0, row, j);
+            float w = loc + n01 * scale;
+            acc += w * v;
+        }
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
         local_j = (unsigned int)lane + 32U * q;
     }
@@ -376,9 +379,12 @@ __global__ void _notrans##SFX##_kern(                                         \
     ACC_T acc = (ACC_T)0;                                                     \
     while (local_j < chunk_width) {                                           \
         int j = chunk_start + (int)local_j;                                   \
-        float n01 = hash_normal01(seed0, row, j);                             \
-        ACC_T w = loc + (ACC_T)n01 * scale;                                   \
-        acc += w * READ_W(__ldg(&vector[j]));                                 \
+        ACC_T v = READ_W(__ldg(&vector[j]));                                  \
+        if (v != (ACC_T)0) {  /* zero events are skipped */                   \
+            float n01 = hash_normal01(seed0, row, j);                         \
+            ACC_T w = loc + (ACC_T)n01 * scale;                               \
+            acc += w * v;                                                     \
+        }                                                                     \
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);            \
         local_j = (unsigned int)lane + 32U * q;                               \
     }                                                                         \

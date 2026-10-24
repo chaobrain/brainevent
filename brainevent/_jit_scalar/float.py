@@ -29,7 +29,7 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.util import dtype_suffix
+from brainevent._op.util import NUMBA_EVENT_FASTMATH, dtype_suffix
 
 __all__ = [
     "jits",
@@ -817,7 +817,7 @@ def _jitsmv_numba_kernel(
 
     if corder:
         # notrans: m = output rows, k = vector length (walk); gather w * v[j].
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(weight, clen, vector, seed, posts):
             m = posts.shape[0]
             k = vector.shape[0]
@@ -849,7 +849,7 @@ def _jitsmv_numba_kernel(
                 posts[row] = out * weight0
     else:
         # trans: m = vector length, k = output length (walk); scatter w * v[row].
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(weight, clen, vector, seed, posts):
             posts[:] = 0.
             k = posts.shape[0]
@@ -1307,7 +1307,7 @@ def _jitsmm_numba_kernel(
 
     if corder:
         # notrans: Y = M @ B. m = output rows, k = B rows (walk), n = columns.
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(weight, clen, B, seed, posts):
             m = posts.shape[0]
             n = posts.shape[1]
@@ -1340,7 +1340,7 @@ def _jitsmm_numba_kernel(
                 posts[row] = out * weight0
     else:
         # trans: Y = M^T @ B. m = B rows (walk source), k = output rows (walk).
-        @numba.njit(fastmath=True)
+        @numba.njit(fastmath=NUMBA_EVENT_FASTMATH)
         def kernel_impl(weight, clen, B, seed, posts):
             posts[:] = 0.
             k = posts.shape[0]
@@ -1352,6 +1352,8 @@ def _jitsmm_numba_kernel(
                 cl = np.uint32(2)
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
+                if not np.any(B[row] != 0.):  # all-zero event row: skip
+                    continue
                 out = B[row] * weight0
                 for chunk_id in range(n_chunks):
                     chunk_start = chunk_id * chunk_size

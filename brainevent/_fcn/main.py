@@ -32,7 +32,7 @@ from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_in
 from brainevent._csr.plasticity_binary import update_csr_on_binary_post
 from brainevent._csr.slice import csr_slice_rows
 from brainevent._data import DataRepresentation
-from brainevent._event.binary import BinaryArray
+from brainevent._event.dispatch import as_event_operand
 from brainevent._misc import (
     _coo_todense, COOInfo, fixed_conn_num_csc_structure,
     fixed_conn_num_csr_indptr, normalize_row_index, build_sub_csr,
@@ -330,14 +330,14 @@ class FixedNumConn(DataRepresentation):
             (self.data,),
         )
 
-    def _binary_matvec(self, s, transpose_W: bool):
+    def _binary_matvec(self, s, transpose_W: bool, weighted: bool = False):
         a_shape, ell_transpose = self._ell_plan(transpose_W)
         if ell_transpose:
             # Favorable: the event vector indexes the ELL stored axis -> direct
             # column-scatter over active events.
             return binary_fcnmv(
                 self.data, self.indices, s,
-                shape=a_shape, transpose=True, backend=self.backend,
+                shape=a_shape, transpose=True, backend=self.backend, weighted=weighted,
             )
         # Unfavorable: traverse the cached CSC mirror with the reused, perm-fused
         # CSR kernel -- it reads ``data[perm[j]]`` so only active columns are
@@ -348,16 +348,17 @@ class FixedNumConn(DataRepresentation):
         return binary_csrmv_indexed(
             self.data.reshape(-1), csc_indices, csc_indptr, perm, s,
             shape=a_shape[::-1], transpose=True, backend=self.backend, workspace=workspace,
+            weighted=weighted,
         )
 
-    def _binary_matmat(self, matrix, transpose_W: bool):
+    def _binary_matmat(self, matrix, transpose_W: bool, weighted: bool = False):
         a_shape, ell_transpose = self._ell_plan(transpose_W)
         if ell_transpose:
             # Favorable: the event matrix indexes the ELL stored axis -> direct
             # column-scatter over active events.
             return binary_fcnmm(
                 self.data, self.indices, matrix,
-                shape=a_shape, transpose=True, backend=self.backend,
+                shape=a_shape, transpose=True, backend=self.backend, weighted=weighted,
             )
         # Unfavorable: perm-fused indexed matmat over the cached CSC mirror --
         # parity with the matvec unfavorable path.
@@ -367,6 +368,7 @@ class FixedNumConn(DataRepresentation):
         return binary_csrmm_indexed(
             self.data.reshape(-1), csc_indices, csc_indptr, perm, matrix,
             shape=a_shape[::-1], transpose=True, backend=self.backend, workspace=workspace,
+            weighted=weighted,
         )
 
     def _float_matvec(self, vector, transpose_W: bool, data):
@@ -446,19 +448,20 @@ class FixedNumConn(DataRepresentation):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, BinaryArray):
-            value = other.value
+        operand = as_event_operand(other)
+        if operand is not None:
+            value, weighted = operand
             if value.ndim == 1:
-                return self._binary_matvec(value, transpose_W)
+                return self._binary_matvec(value, transpose_W, weighted)
             elif value.ndim == 2:
                 if transpose_W:
                     expected_shape = (value.shape[0], self.shape[1])
-                    result = self._binary_matmat(value.T, transpose_W)
+                    result = self._binary_matmat(value.T, transpose_W, weighted)
                     return _align_binary_matmat_output(
                         result, expected_shape, f'{type(self).__name__}.__rmatmul__'
                     )
                 expected_shape = (self.shape[0], value.shape[1])
-                result = self._binary_matmat(value, transpose_W)
+                result = self._binary_matmat(value, transpose_W, weighted)
                 return _align_binary_matmat_output(
                     result, expected_shape, f'{type(self).__name__}.__matmul__'
                 )

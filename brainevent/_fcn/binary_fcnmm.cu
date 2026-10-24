@@ -45,6 +45,27 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 
+/*
+ * Event contribution policies.
+ *   Scatter (SRAW) kernels: EVT_SCALE(w, READ_S, s), applied after the
+ *   activity test --
+ *     EVT_BINARY   -- binary events: the weight itself;
+ *     EVT_WEIGHTED -- weighted events (``_wv``): weight times the event value.
+ *   Gather kernels: EVT_GATHER(ACC_T, IS_ACTIVE, READ_S, valid, x), the factor
+ *   multiplying the weight of one gathered event --
+ *     EVT_GATHER_BINARY   -- the activity mask (x is only read if valid);
+ *     EVT_GATHER_WEIGHTED -- the event value (0 if not valid).
+ *   Weighted event buffers have the weight dtype, so READ_W converts them.
+ */
+#ifndef EVT_BINARY
+#define EVT_BINARY(w, READ_S, s)   (w)
+#endif
+#ifndef EVT_WEIGHTED
+#define EVT_WEIGHTED(w, READ_S, s) ((w) * READ_S(s))
+#endif
+#define EVT_GATHER_BINARY(ACC_T, IS_ACTIVE, READ_S, valid, x)   ((ACC_T)((valid) && IS_ACTIVE(x)))
+#define EVT_GATHER_WEIGHTED(ACC_T, IS_ACTIVE, READ_S, valid, x) ((valid) ? (ACC_T)READ_S(x) : (ACC_T)0)
+
 // ============================================================================
 // FCN Matrix-Matrix Multiplication (fcnmm) — Optimized CUDA Kernels
 // ============================================================================
@@ -68,7 +89,7 @@
 //     then broadcast via __shfl_sync (zero global memory in inner loop)
 //   - Branchless accumulation: accum += (ACC_T)active
 // -----------------------------------------------------------------------
-#define DEFINE_BGM_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W)     \
+#define DEFINE_BGM_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, EVT_GATHER)     \
 __global__ void _bgm_warp_homo_kern##SUFFIX(                                                   \
     const int32_t* __restrict__ indices,                                                       \
     const SPIKE_T* __restrict__ matrix,                                                        \
@@ -96,9 +117,9 @@ __global__ void _bgm_warp_homo_kern##SUFFIX(                                    
                 for (int off = 0; off < 32 && k0 + off < n_conn; off++) {                      \
                     int src = __shfl_sync(0xffffffff, my_idx, off);                            \
                     if ((unsigned)(src - ts) < (unsigned)tsz) {                                \
-                        bool active = col_valid &&                                             \
-                            IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]));          \
-                        accum += (ACC_T)active;                                                \
+                        ACC_T ev = EVT_GATHER(ACC_T, IS_ACTIVE, READ_W, col_valid,             \
+                            __ldg(&matrix[(size_t)src * n_batch + safe_j]));                   \
+                        accum += ev;                                                           \
                     }                                                                          \
                 }                                                                              \
             }                                                                                  \
@@ -108,7 +129,7 @@ __global__ void _bgm_warp_homo_kern##SUFFIX(                                    
     }                                                                                          \
 }
 
-#define DEFINE_BGM_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W)   \
+#define DEFINE_BGM_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, EVT_GATHER)   \
 __global__ void _bgm_warp_hetero_kern##SUFFIX(                                                 \
     const int32_t* __restrict__ indices,                                                       \
     const SPIKE_T* __restrict__ matrix,                                                        \
@@ -138,9 +159,9 @@ __global__ void _bgm_warp_hetero_kern##SUFFIX(                                  
                     int   src = __shfl_sync(0xffffffff, my_idx, off);                          \
                     ACC_T wk  = __shfl_sync(0xffffffff, my_w, off);                            \
                     if ((unsigned)(src - ts) < (unsigned)tsz) {                                \
-                        bool active = col_valid &&                                             \
-                            IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]));          \
-                        accum += wk * (ACC_T)active;                                           \
+                        ACC_T ev = EVT_GATHER(ACC_T, IS_ACTIVE, READ_W, col_valid,             \
+                            __ldg(&matrix[(size_t)src * n_batch + safe_j]));                   \
+                        accum += wk * ev;                                                      \
                     }                                                                          \
                 }                                                                              \
             }                                                                                  \
@@ -159,7 +180,7 @@ __global__ void _bgm_warp_hetero_kern##SUFFIX(                                  
 //   - Hetero: weights also cached in shared memory
 //   - Shared memory layout: [s_idx | smem_red] (non-overlapping)
 // -----------------------------------------------------------------------
-#define DEFINE_BGM_BASIC_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO)  \
+#define DEFINE_BGM_BASIC_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO, EVT_GATHER)  \
 __global__ void _bgm_basic_homo_kern##SUFFIX(                                                          \
     const int32_t* __restrict__ indices,                                                               \
     const SPIKE_T* __restrict__ matrix,                                                                \
@@ -189,9 +210,9 @@ __global__ void _bgm_basic_homo_kern##SUFFIX(                                   
             for (int k = warpid; k < n_conn; k += nwarps) {                                            \
                 int src = s_idx[k];                                                                    \
                 if ((unsigned)(src - ts) < (unsigned)tsz) {                                            \
-                    bool active = col_valid &&                                                         \
-                        IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]));                      \
-                    accum += (ACC_T)active;                                                            \
+                    ACC_T ev = EVT_GATHER(ACC_T, IS_ACTIVE, READ_W, col_valid,                         \
+                        __ldg(&matrix[(size_t)src * n_batch + safe_j]));                               \
+                    accum += ev;                                                                       \
                 }                                                                                      \
             }                                                                                          \
             __syncthreads();                                                                           \
@@ -210,7 +231,7 @@ __global__ void _bgm_basic_homo_kern##SUFFIX(                                   
     }                                                                                                  \
 }
 
-#define DEFINE_BGM_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO) \
+#define DEFINE_BGM_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO, EVT_GATHER) \
 __global__ void _bgm_basic_hetero_kern##SUFFIX(                                                         \
     const int32_t* __restrict__ indices,                                                                \
     const SPIKE_T* __restrict__ matrix,                                                                 \
@@ -246,9 +267,9 @@ __global__ void _bgm_basic_hetero_kern##SUFFIX(                                 
             for (int k = warpid; k < n_conn; k += nwarps) {                                             \
                 int src = s_idx[k];                                                                     \
                 if ((unsigned)(src - ts) < (unsigned)tsz) {                                             \
-                    bool active = col_valid &&                                                          \
-                        IS_ACTIVE(__ldg(&matrix[(size_t)src * n_batch + safe_j]));                       \
-                    accum += READ_W(s_wt[k]) * (ACC_T)active;                                          \
+                    ACC_T ev = EVT_GATHER(ACC_T, IS_ACTIVE, READ_W, col_valid,                          \
+                        __ldg(&matrix[(size_t)src * n_batch + safe_j]));                                \
+                    accum += READ_W(s_wt[k]) * ev;                                                      \
                 }                                                                                       \
             }                                                                                           \
             __syncthreads();                                                                            \
@@ -483,7 +504,7 @@ __global__ void _bgm_packed_basic_hetero_kern##SUFFIX(                          
 //   - Reads matrix[n_pre, n_batch], scatters active rows to output
 //     physically laid out as [n_batch, n_post].
 // -----------------------------------------------------------------------
-#define DEFINE_SRAW_FCNMM_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_SRAW_FCNMM_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
 __global__ void _sraw_fcnmm_homo_kern##SUFFIX(                                                    \
     const int32_t* __restrict__ indices,                                                          \
     const SPIKE_T* __restrict__ matrix,                                                           \
@@ -496,8 +517,9 @@ __global__ void _sraw_fcnmm_homo_kern##SUFFIX(                                  
     int row = static_cast<int>(blockIdx.x) * SRAW_FCNMM_WARPS_PER_BLOCK + warp_id;                 \
     int j = static_cast<int>(blockIdx.y);                                                          \
     if (row >= n_pre || j >= n_batch) return;                                                      \
-    if (!IS_ACTIVE(__ldg(&matrix[static_cast<size_t>(row) * n_batch + j]))) return;                \
-    ACC_T w0 = READ_W(__ldg(&weights[0]));                                                         \
+    SPIKE_T sv = __ldg(&matrix[static_cast<size_t>(row) * n_batch + j]);                           \
+    if (!IS_ACTIVE(sv)) return;                                                                    \
+    ACC_T w0 = EVT_SCALE(READ_W(__ldg(&weights[0])), READ_W, sv);                                  \
     const int32_t* i_row = indices + static_cast<size_t>(row) * n_conn;                            \
     for (int k = lane; k < n_conn; k += SRAW_FCNMM_WARP_THREADS) {                                 \
         int target = __ldg(&i_row[k]);                                                             \
@@ -505,7 +527,7 @@ __global__ void _sraw_fcnmm_homo_kern##SUFFIX(                                  
     }                                                                                              \
 }
 
-#define DEFINE_SRAW_FCNMM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+#define DEFINE_SRAW_FCNMM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W, EVT_SCALE) \
 __global__ void _sraw_fcnmm_hetero_kern##SUFFIX(                                                   \
     const int32_t* __restrict__ indices,                                                           \
     const SPIKE_T* __restrict__ matrix,                                                            \
@@ -518,74 +540,101 @@ __global__ void _sraw_fcnmm_hetero_kern##SUFFIX(                                
     int row = static_cast<int>(blockIdx.x) * SRAW_FCNMM_WARPS_PER_BLOCK + warp_id;                  \
     int j = static_cast<int>(blockIdx.y);                                                           \
     if (row >= n_pre || j >= n_batch) return;                                                       \
-    if (!IS_ACTIVE(__ldg(&matrix[static_cast<size_t>(row) * n_batch + j]))) return;                 \
+    SPIKE_T sv = __ldg(&matrix[static_cast<size_t>(row) * n_batch + j]);                           \
+    if (!IS_ACTIVE(sv)) return;                                                                    \
     const int32_t* i_row = indices + static_cast<size_t>(row) * n_conn;                             \
     const WEIGHT_T* w_row = weights + static_cast<size_t>(row) * n_conn;                            \
     for (int k = lane; k < n_conn; k += SRAW_FCNMM_WARP_THREADS) {                                  \
         int target = __ldg(&i_row[k]);                                                              \
         ACC_T wk = READ_W(__ldg(&w_row[k]));                                                        \
-        ATOMIC_ADD_W(&output[static_cast<size_t>(j) * n_post + target], wk);                        \
+        ATOMIC_ADD_W(&output[static_cast<size_t>(j) * n_post + target], EVT_SCALE(wk, READ_W, sv)); \
     }                                                                                               \
 }
 
 // Instantiations
 // ---- float32 ----
-DEFINE_BGM_WARP_HOMO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32)
-DEFINE_BGM_WARP_HETERO (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32)
-DEFINE_BGM_WARP_HOMO   (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32)
-DEFINE_BGM_WARP_HETERO (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32)
-DEFINE_BGM_BASIC_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_BGM_BASIC_HOMO  (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_BGM_WARP_HOMO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HETERO (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HOMO   (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HETERO (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HOMO  (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HETERO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f, EVT_GATHER_BINARY)
 
 // ---- float64 ----
-DEFINE_BGM_WARP_HOMO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64)
-DEFINE_BGM_WARP_HETERO (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64)
-DEFINE_BGM_WARP_HOMO   (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64)
-DEFINE_BGM_WARP_HETERO (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64)
-DEFINE_BGM_BASIC_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_BGM_BASIC_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_BGM_BASIC_HOMO  (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_BGM_BASIC_HETERO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_BGM_WARP_HOMO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HETERO (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HOMO   (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HETERO (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HOMO  (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HETERO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0, EVT_GATHER_BINARY)
 
 // ---- float16 ----
-DEFINE_BGM_WARP_HOMO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16)
-DEFINE_BGM_WARP_HETERO (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16)
-DEFINE_BGM_WARP_HOMO   (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16)
-DEFINE_BGM_WARP_HETERO (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16)
-DEFINE_BGM_BASIC_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_BGM_BASIC_HOMO  (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_BGM_WARP_HOMO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HETERO (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HOMO   (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HETERO (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HOMO  (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HETERO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f, EVT_GATHER_BINARY)
 
 // ---- bfloat16 ----
-DEFINE_BGM_WARP_HOMO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_BGM_WARP_HETERO (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_BGM_WARP_HOMO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_BGM_WARP_HETERO (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_BGM_BASIC_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_BGM_BASIC_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_BGM_WARP_HOMO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HETERO (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HOMO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, EVT_GATHER_BINARY)
+DEFINE_BGM_WARP_HETERO (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, EVT_GATHER_BINARY)
+DEFINE_BGM_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, EVT_GATHER_BINARY)
 
 // ---- SRAW scatter kernel instantiations ----
-DEFINE_SRAW_FCNMM_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_SRAW_FCNMM_HOMO  (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_SRAW_FCNMM_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
-DEFINE_SRAW_FCNMM_HETERO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd)
-DEFINE_SRAW_FCNMM_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_SRAW_FCNMM_HOMO  (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_SRAW_FCNMM_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
-DEFINE_SRAW_FCNMM_HETERO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64)
-DEFINE_SRAW_FCNMM_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_SRAW_FCNMM_HOMO  (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_SRAW_FCNMM_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16)
-DEFINE_SRAW_FCNMM_HETERO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16)
-DEFINE_SRAW_FCNMM_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_SRAW_FCNMM_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_SRAW_FCNMM_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_SRAW_FCNMM_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SRAW_FCNMM_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HOMO  (_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HETERO(_float_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HOMO  (_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HETERO(_float_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HOMO  (_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HETERO(_float_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+DEFINE_SRAW_FCNMM_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_BINARY)
+
+// ---- weighted (value-multiplying) events, buffer in the weight dtype ----
+DEFINE_BGM_WARP_HOMO   (_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_WARP_HETERO (_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_BASIC_HOMO  (_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_BASIC_HETERO(_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, WRITE_F32, 0.0f, EVT_GATHER_WEIGHTED)
+DEFINE_SRAW_FCNMM_HOMO  (_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_WEIGHTED)
+DEFINE_SRAW_FCNMM_HETERO(_wv_f32, float, IS_ACTIVE_F32, float, float, READ_F32, atomicAdd, EVT_WEIGHTED)
+DEFINE_BGM_WARP_HOMO   (_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_WARP_HETERO (_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_BASIC_HOMO  (_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_BASIC_HETERO(_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, WRITE_F64, 0.0, EVT_GATHER_WEIGHTED)
+DEFINE_SRAW_FCNMM_HOMO  (_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_SRAW_FCNMM_HETERO(_wv_f64, double, IS_ACTIVE_F64, double, double, READ_F64, atomic_add_f64, EVT_WEIGHTED)
+DEFINE_BGM_WARP_HOMO   (_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_WARP_HETERO (_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_BASIC_HOMO  (_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_BASIC_HETERO(_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, WRITE_F16, 0.0f, EVT_GATHER_WEIGHTED)
+DEFINE_SRAW_FCNMM_HOMO  (_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_SRAW_FCNMM_HETERO(_wv_f16, __half, IS_ACTIVE_F16, __half, float, READ_F16, atomic_add_f16, EVT_WEIGHTED)
+DEFINE_BGM_WARP_HOMO   (_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_WARP_HETERO (_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_BASIC_HOMO  (_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, EVT_GATHER_WEIGHTED)
+DEFINE_BGM_BASIC_HETERO(_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, EVT_GATHER_WEIGHTED)
+DEFINE_SRAW_FCNMM_HOMO  (_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
+DEFINE_SRAW_FCNMM_HETERO(_wv_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, EVT_WEIGHTED)
 
 // ---- Packed BGM kernel instantiations (weight-type only) ----
 // float32
@@ -1034,3 +1083,53 @@ FFI_PACK_SPIKES(_f64, double, _f64)
 FFI_PACK_SPIKES(_f16, __half, _f16)
 // @BE binary_fcnmm_pack_bf16
 FFI_PACK_SPIKES(_bf16, __nv_bfloat16, _bf16)
+
+// ---- Weighted events (unpacked gather + SRAW scatter; no packed path) ----
+// @BE binary_fcnmm_gather_homo_warp_wv_f32
+FFI_BGM_HOMO_WARP  (_wv_f32, float, float)
+// @BE binary_fcnmm_gather_hetero_warp_wv_f32
+FFI_BGM_HETERO_WARP(_wv_f32, float, float)
+// @BE binary_fcnmm_gather_homo_basic_wv_f32
+FFI_BGM_HOMO_BASIC (_wv_f32, float, float, sizeof(float))
+// @BE binary_fcnmm_gather_hetero_basic_wv_f32
+FFI_BGM_HETERO_BASIC(_wv_f32, float, float, sizeof(float))
+// @BE binary_fcnmm_sraw_homo_wv_f32
+FFI_SRAW_FCNMM_HOMO(_wv_f32, float, float)
+// @BE binary_fcnmm_sraw_hetero_wv_f32
+FFI_SRAW_FCNMM_HETERO(_wv_f32, float, float)
+// @BE binary_fcnmm_gather_homo_warp_wv_f64
+FFI_BGM_HOMO_WARP  (_wv_f64, double, double)
+// @BE binary_fcnmm_gather_hetero_warp_wv_f64
+FFI_BGM_HETERO_WARP(_wv_f64, double, double)
+// @BE binary_fcnmm_gather_homo_basic_wv_f64
+FFI_BGM_HOMO_BASIC (_wv_f64, double, double, sizeof(double))
+// @BE binary_fcnmm_gather_hetero_basic_wv_f64
+FFI_BGM_HETERO_BASIC(_wv_f64, double, double, sizeof(double))
+// @BE binary_fcnmm_sraw_homo_wv_f64
+FFI_SRAW_FCNMM_HOMO(_wv_f64, double, double)
+// @BE binary_fcnmm_sraw_hetero_wv_f64
+FFI_SRAW_FCNMM_HETERO(_wv_f64, double, double)
+// @BE binary_fcnmm_gather_homo_warp_wv_f16
+FFI_BGM_HOMO_WARP  (_wv_f16, __half, __half)
+// @BE binary_fcnmm_gather_hetero_warp_wv_f16
+FFI_BGM_HETERO_WARP(_wv_f16, __half, __half)
+// @BE binary_fcnmm_gather_homo_basic_wv_f16
+FFI_BGM_HOMO_BASIC (_wv_f16, __half, __half, sizeof(float))
+// @BE binary_fcnmm_gather_hetero_basic_wv_f16
+FFI_BGM_HETERO_BASIC(_wv_f16, __half, __half, sizeof(float))
+// @BE binary_fcnmm_sraw_homo_wv_f16
+FFI_SRAW_FCNMM_HOMO(_wv_f16, __half, __half)
+// @BE binary_fcnmm_sraw_hetero_wv_f16
+FFI_SRAW_FCNMM_HETERO(_wv_f16, __half, __half)
+// @BE binary_fcnmm_gather_homo_warp_wv_bf16
+FFI_BGM_HOMO_WARP  (_wv_bf16, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_fcnmm_gather_hetero_warp_wv_bf16
+FFI_BGM_HETERO_WARP(_wv_bf16, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_fcnmm_gather_homo_basic_wv_bf16
+FFI_BGM_HOMO_BASIC (_wv_bf16, __nv_bfloat16, __nv_bfloat16, sizeof(float))
+// @BE binary_fcnmm_gather_hetero_basic_wv_bf16
+FFI_BGM_HETERO_BASIC(_wv_bf16, __nv_bfloat16, __nv_bfloat16, sizeof(float))
+// @BE binary_fcnmm_sraw_homo_wv_bf16
+FFI_SRAW_FCNMM_HOMO(_wv_bf16, __nv_bfloat16, __nv_bfloat16)
+// @BE binary_fcnmm_sraw_hetero_wv_bf16
+FFI_SRAW_FCNMM_HETERO(_wv_bf16, __nv_bfloat16, __nv_bfloat16)

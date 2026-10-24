@@ -214,7 +214,7 @@ def test_binary_csrmv_batching_vector_axis_0_uses_csrmm_fast_path(monkeypatch):
     math_out = jnp.ones((1, 2), dtype=jnp.float32)
     calls = []
 
-    def fake_csrmm_p_call(w, idx, ptr, b, workspace, *, shape, transpose, backend):
+    def fake_csrmm_p_call(w, idx, ptr, b, workspace, *, shape, transpose, backend, weighted=False):
         calls.append((w, idx, ptr, b, shape, transpose, backend, workspace))
         return (math_out, workspace.task_begin, workspace.task_end, workspace.status)
 
@@ -246,7 +246,7 @@ def test_binary_csrmv_batching_vector_axis_1_uses_csrmm_fast_path(monkeypatch):
     math_out = jnp.ones((1, 2), dtype=jnp.float32)
     calls = []
 
-    def fake_csrmm_p_call(w, idx, ptr, b, workspace, *, shape, transpose, backend):
+    def fake_csrmm_p_call(w, idx, ptr, b, workspace, *, shape, transpose, backend, weighted=False):
         calls.append((w, idx, ptr, b, shape, transpose, backend, workspace))
         return (math_out, workspace.task_begin, workspace.task_end, workspace.status)
 
@@ -1742,3 +1742,226 @@ def test_hybrid_cuda_dtype_mismatch_raises_python_exception():
     assert proc.returncode >= 0, f'process killed by signal {-proc.returncode}:\n{output}'
     assert proc.returncode == 0, output
     assert 'expects matching vector dtype' in output, output
+
+
+# ---------------------------------------------------------------------------
+# Value-weighted events (``weighted=True``, WeightedArray, #201).
+# See docs/specs/2026-10-24-weighted-array.md.
+# ---------------------------------------------------------------------------
+
+from brainevent._csr._test_util import WEIGHTED_EVENT_DTYPE_NAMES, heavy_row_csr_numpy  # noqa: E402
+
+
+def _weighted_tol(dtype_name):
+    # float16/bfloat16 events hold exact values (2, -1, 0.5) and the product is
+    # computed in the weight dtype, but the event cotangent/tangent checks are
+    # rounded to the event dtype.
+    if dtype_name in ('float16', 'bfloat16'):
+        return dict(rtol=2e-2, atol=2e-2)
+    return dict(rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('dtype_name', WEIGHTED_EVENT_DTYPE_NAMES)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_csrmv_weighted_matches_dense_and_grads(backend, dtype_name, homo, transpose):
+    """Weighted mat-vec is the exact product ``x @ W`` with exact derivatives."""
+    with event_dtype_context(dtype_name):
+        data, indices, indptr, _ = _activity_operands(homo, seed=4)
+        shape = (_ACT_M, _ACT_K)
+        x = event_values(dtype_name, _ACT_M if transpose else _ACT_K, seed=4)
+
+        def op(d, v):
+            return binary_csrmv(d, indices, indptr, v, shape=shape, transpose=transpose, backend=backend,
+                                workspace=_make_binary_task_workspace(indptr), weighted=True)
+
+        def dense_op(d, z):
+            # Events are cast to the weight dtype (the kernels' compute dtype).
+            W = _dense_from_data(d, indices, indptr, shape)
+            z = z.astype(d.dtype)
+            return _hp_matmul(z, W) if transpose else _hp_matmul(W, z)
+
+        check_event_op_grads(op, dense_op, data, x, mode='weighted',
+                             check_vmap=dtype_name == 'float32', **_weighted_tol(dtype_name))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('dtype_name', WEIGHTED_EVENT_DTYPE_NAMES)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_csrmm_weighted_matches_dense_and_grads(backend, dtype_name, homo, transpose):
+    """Weighted mat-mat (hetero weight cotangent through the SDDMM path)."""
+    with event_dtype_context(dtype_name):
+        data, indices, indptr, _ = _activity_operands(homo, seed=5)
+        shape = (_ACT_M, _ACT_K)
+        B = event_values(dtype_name, (_ACT_M if transpose else _ACT_K, _ACT_N), seed=5)
+
+        def op(d, v):
+            return binary_csrmm(d, indices, indptr, v, shape=shape, transpose=transpose, backend=backend,
+                                workspace=_make_binary_task_workspace(indptr), weighted=True)
+
+        def dense_op(d, z):
+            W = _dense_from_data(d, indices, indptr, shape)
+            z = z.astype(d.dtype)
+            return _hp_matmul(W.T, z) if transpose else _hp_matmul(W, z)
+
+        check_event_op_grads(op, dense_op, data, B, mode='weighted',
+                             check_vmap=dtype_name == 'float32', **_weighted_tol(dtype_name))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_csrmv_weighted_vmap_over_events_matches_dense(backend, homo, transpose):
+    """vmap over the event axis lowers to the weighted mat-mat primitive."""
+    data, indices, indptr, dense = _activity_operands(homo, seed=6)
+    shape = (_ACT_M, _ACT_K)
+    xs = jnp.stack([event_values('float32', _ACT_M if transpose else _ACT_K, seed=s) for s in range(3)])
+
+    f = jax.vmap(lambda v: binary_csrmv(data, indices, indptr, v, shape=shape, transpose=transpose,
+                                        backend=backend, workspace=_make_binary_task_workspace(indptr),
+                                        weighted=True))
+    got = np.asarray(f(xs), dtype=np.float64)
+    xs64 = np.asarray(xs, dtype=np.float64)
+    expected = xs64 @ dense if transpose else xs64 @ dense.T
+    np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('homo', [True, False])
+def test_binary_csrmv_weighted_heavy_rows_use_row_value(backend, homo):
+    """Rows longer than one hybrid task (> 4096 entries) are scaled by their own event value."""
+    rng = np.random.default_rng(7)
+    m, k = 6, 9000
+    data, indices, indptr, dense = heavy_row_csr_numpy(rng, m, k, row_nnz=8500)
+    if homo:
+        dense = (dense != 0) * 1.5
+        data = np.array([1.5], np.float32)
+    x = jnp.array([2.0, 0.0, -1.0, 0.5, 3.0, 0.0], dtype=jnp.float32)
+    indptr = jnp.asarray(indptr)
+    got = binary_csrmv(jnp.asarray(data), jnp.asarray(indices), indptr, x, shape=(m, k), transpose=True,
+                       backend=backend, workspace=_make_binary_task_workspace(indptr), weighted=True)
+    np.testing.assert_allclose(np.asarray(got, np.float64), np.asarray(x, np.float64) @ dense,
+                               rtol=1e-4, atol=1e-3)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('backend', CSRMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('homo', [True, False])
+def test_binary_csrmm_weighted_heavy_rows_use_row_value(backend, homo):
+    rng = np.random.default_rng(8)
+    m, k = 5, 9000
+    data, indices, indptr, dense = heavy_row_csr_numpy(rng, m, k, row_nnz=8500)
+    if homo:
+        dense = (dense != 0) * 1.5
+        data = np.array([1.5], np.float32)
+    B = jnp.array([[2.0, 0.0], [0.0, -1.0], [-1.0, 0.5], [0.5, 0.0], [0.0, 3.0]], dtype=jnp.float32)
+    indptr = jnp.asarray(indptr)
+    got = binary_csrmm(jnp.asarray(data), jnp.asarray(indices), indptr, B, shape=(m, k), transpose=True,
+                       backend=backend, workspace=_make_binary_task_workspace(indptr), weighted=True)
+    np.testing.assert_allclose(np.asarray(got, np.float64), dense.T @ np.asarray(B, np.float64),
+                               rtol=1e-4, atol=1e-3)
+
+
+@pytest.mark.parametrize('weight_dtype', [jnp.float32, jnp.float16])
+@pytest.mark.parametrize('homo', [True, False])
+def test_binary_cuda_generators_select_weighted_abi(monkeypatch, weight_dtype, homo):
+    """``weighted=True`` picks the ``_wv`` symbols and casts events to the weight dtype in the lowering."""
+    ffi_calls = []
+    monkeypatch.setattr(binary_mod, "load_cuda_file", lambda path, name, **kwargs: None)
+    monkeypatch.setattr(binary_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
+
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    workspace = _make_binary_task_workspace(indptr)
+    task_kwargs = {
+        'task_begin_info': shape_of(workspace.task_begin.dtype, workspace.task_begin.shape),
+        'task_end_info': shape_of(workspace.task_end.dtype, workspace.task_end.shape),
+        'status_info': shape_of(workspace.status.dtype, workspace.status.shape),
+        'task_capacity': workspace.task_capacity,
+    }
+    tail = (task_kwargs['task_begin_info'], task_kwargs['task_end_info'], task_kwargs['status_info'])
+    n_w = 1 if homo else 2
+    weights = jnp.ones(n_w, dtype=weight_dtype)
+    sfx = {jnp.float32: '_f32', jnp.float16: '_f16'}[weight_dtype]
+    hs = '_homo' if homo else '_hetero'
+    cases = [
+        (binary_mod._binary_csrmv_cuda_kernel, (2,), False, (1,),
+         f'csr_binary_csrmv.binary_csrmv_nt_auto{hs}{sfx}_wv'),
+        (binary_mod._binary_csrmv_cuda_kernel, (1,), True, (2,),
+         f'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid{hs}{sfx}_wv'),
+        (binary_mod._binary_csrmm_cuda_kernel, (2, 3), False, (1, 3),
+         f'csr_binary_csrmm.binary_csrmm_nt_auto{hs}{sfx}_wv'),
+        (binary_mod._binary_csrmm_cuda_kernel, (1, 3), True, (2, 3),
+         f'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid{hs}{sfx}_wv'),
+    ]
+    for factory, ev_shape, transpose, out_shape, expected_name in cases:
+        ffi_calls.clear()
+        events = jnp.full(ev_shape, -3, dtype=jnp.int8)
+        kernel = factory(
+            shape_of(weight_dtype, (n_w,)), shape_of(jnp.int8, ev_shape), transpose,
+            **{**cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int32),
+               'outs': (shape_of(weight_dtype, out_shape), *tail), 'weighted': True, **task_kwargs},
+        )
+        kernel(weights, indices, indptr, events, workspace.task_begin, workspace.task_end, workspace.status)
+        assert len(ffi_calls) == 1
+        name, _, _, args, _ = ffi_calls[0]
+        assert strip_hybrid_suffix(name) == expected_name
+        event_arg = args[3]
+        assert event_arg.dtype == weight_dtype
+        np.testing.assert_array_equal(np.asarray(event_arg, np.float32), np.full(ev_shape, -3.0))
+
+
+def test_binary_csrmv_weighted_integer_events_have_zero_cotangent():
+    """Integer weighted events are not differentiable: the event cotangent is float0."""
+    data, indices, indptr, _ = _activity_operands(False, seed=9)
+    x = event_values('int8', _ACT_K, seed=9)
+    f = lambda d, v: binary_csrmv(d, indices, indptr, v, shape=(_ACT_M, _ACT_K), backend='jax_raw',
+                                  workspace=_make_binary_task_workspace(indptr), weighted=True).sum()
+    g_d, g_x = jax.grad(f, argnums=(0, 1), allow_int=True)(data, x)
+    assert g_x.dtype == jax.dtypes.float0
+    W = np.asarray(_dense_from_data(data, indices, indptr, (_ACT_M, _ACT_K)))
+    rows = np.repeat(np.arange(_ACT_M), np.diff(np.asarray(indptr)))
+    np.testing.assert_allclose(np.asarray(g_d), np.asarray(x, np.float32)[np.asarray(indices)], rtol=1e-6)
+    assert W.shape == (_ACT_M, _ACT_K) and rows.size == data.size
+
+
+def test_binary_csrmv_weighted_default_is_binary():
+    """``weighted`` defaults to ``False``: values are binarised."""
+    data, indices, indptr, dense = _activity_operands(False, seed=10)
+    x = event_values('float32', _ACT_K, seed=10)
+    ws = _make_binary_task_workspace(indptr)
+    binary = binary_csrmv(data, indices, indptr, x, shape=(_ACT_M, _ACT_K), backend='jax_raw', workspace=ws)
+    weighted = binary_csrmv(data, indices, indptr, x, shape=(_ACT_M, _ACT_K), backend='jax_raw',
+                            workspace=ws, weighted=True)
+    np.testing.assert_allclose(np.asarray(binary, np.float64), dense @ event_mask(x), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.asarray(weighted, np.float64), dense @ np.asarray(x, np.float64),
+                               rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('axis', [0, 1])
+def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis):
+    """The mat-vec batching rule keeps ``weighted`` when it lowers to mat-mat."""
+    weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 2], dtype=jnp.int32)
+    vector = jnp.array([[2.0, 0.0], [0.0, -1.0]], dtype=jnp.float32)
+    workspace = _make_binary_task_workspace(indptr)
+    seen = []
+
+    def fake_csrmm_p_call(w, idx, ptr, b, workspace, *, shape, transpose, backend, weighted=False):
+        seen.append(weighted)
+        return (jnp.ones((1, 2), dtype=jnp.float32), workspace.task_begin, workspace.task_end, workspace.status)
+
+    monkeypatch.setattr("brainevent._csr.binary.binary_csrmm_p_call", fake_csrmm_p_call)
+    axes = (None, None, None, axis, None, None, None)
+    _csrmv_batching(
+        (weights, indices, indptr, vector, workspace.task_begin, workspace.task_end, workspace.status),
+        axes, shape=(1, 2), transpose=False, backend="jax_raw", weighted=True,
+    )
+    assert seen == [True]
