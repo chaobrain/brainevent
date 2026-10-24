@@ -31,6 +31,7 @@ from ._csr import (
     update_csc_on_binary_pre, update_csc_on_binary_post,
     csr_apply_on_pre, csr_apply_on_post,
     csr_slice_rows, csr_slice_rows_p,
+    csr_delay_deliver, csr_delay_deliver_p,
     HybridConfig, get_hybrid_config, init_csr_config,
 )
 from ._tcsr import TCSR
@@ -176,6 +177,7 @@ __all__ = [
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',
     'csr_apply_on_pre', 'csr_apply_on_post',
     'csr_slice_rows', 'csr_slice_rows_p',
+    'csr_delay_deliver', 'csr_delay_deliver_p',
 
     # --- dense matrix --- #
     'Dense',

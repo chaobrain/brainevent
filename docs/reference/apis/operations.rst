@@ -67,6 +67,14 @@ Row slicing.
    csr_slice_rows
    csr_slice_rows_p
 
+Per-edge-delay spike delivery into an arrival ring.
+
+.. autosummary::
+   :toctree: generated/
+
+   csr_delay_deliver
+   csr_delay_deliver_p
+
 
 Dense Operations
 ----------------

@@ -123,7 +123,7 @@ def test_fresh_import_emits_no_warning():
 
 
 def test_all_exports_resolve_and_are_stable():
-    assert len(brainevent.__all__) == 169
+    assert len(brainevent.__all__) == 171
     for name in brainevent.__all__:
         assert hasattr(brainevent, name), name
 

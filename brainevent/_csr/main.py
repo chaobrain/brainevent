@@ -1616,6 +1616,61 @@ class CSR(CompressedSparseData):
             pre_vals=pre_vals, post_vals=post_vals, params=params, shape=self.shape,
         )
 
+    def delay_deliver(self, ring, events, delays, t, *, weighted: bool = False, backend: Optional[str] = None):
+        """Deliver presynaptic events into an arrival ring with per-edge delays.
+
+        Convenience wrapper around :func:`brainevent.csr_delay_deliver` using
+        this matrix as the ``(n_pre, n_post)`` connectivity::
+
+            ring_new[(t + delays[e]) % L, indices[e]] += data[e] * f(events)[row(e)]
+
+        Parameters
+        ----------
+        ring : jax.Array or Quantity
+            Arrival buffer of shape ``(L, shape[1])``.
+        events : jax.Array or BinaryArray
+            Presynaptic events of shape ``(shape[0],)``.
+        delays : jax.Array or int
+            Integer per-edge delays in steps, shape ``(nse,)`` aligned with
+            ``self.indices``, or a scalar.
+        t : int or jax.Array
+            Current integer time step (may be traced).
+        weighted : bool, optional
+            Binary (``False``, default) or event-value-weighted delivery.
+        backend : str or None, optional
+            Backend override; defaults to ``self.backend``.
+
+        Returns
+        -------
+        jax.Array or Quantity
+            The updated ring.
+
+        See Also
+        --------
+        brainevent.csr_delay_deliver : Underlying function.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> import brainevent
+            >>> csr = brainevent.CSR.fromdense(jnp.array([[1., 0.], [0., 2.]]))
+            >>> ring = jnp.zeros((3, 2))
+            >>> csr.delay_deliver(ring, jnp.array([True, True]), jnp.array([1, 2]), 0,
+            ...                   backend='jax_raw')
+            Array([[0., 0.],
+                   [1., 0.],
+                   [0., 2.]], dtype=float32)
+        """
+        from .delay import csr_delay_deliver  # pylint: disable=import-outside-toplevel
+
+        return csr_delay_deliver(
+            ring, events, self.data, self.indices, self.indptr, delays, t,
+            shape=self.shape, weighted=weighted,
+            backend=self.backend if backend is None else backend,
+        )
+
     def __getitem__(self, index):
         """Extract rows of the matrix ``W`` as a dense array (NumPy semantics).
 
