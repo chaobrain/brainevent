@@ -291,13 +291,27 @@ def _dense_on_pre_jvp_weight(w_dot, weight, pre_spike, post_trace, **kwargs):
     return [w_dot]
 
 
+def _dense_on_pre_jvp_trace(t_dot, weight, pre_spike, post_trace, **kwargs):
+    # The trace tangent is the same update applied to a zero weight.
+    return _dense_on_pre_prim_call(jnp.zeros_like(weight), pre_spike, t_dot, backend=kwargs['backend'])
+
+
 def _dense_on_pre_transpose_rule(ct, weight, pre_spike, post_trace, **kwargs):
-    if ad.is_undefined_primal(pre_spike) or ad.is_undefined_primal(post_trace):
-        raise ValueError("Cannot transpose with respect to pre_spike or post_trace.")
+    if ad.is_undefined_primal(pre_spike):
+        raise ValueError("Cannot transpose with respect to pre_spike.")
     ct = ct[0]
+    ct_weight = weight
+    ct_trace = post_trace
     if ad.is_undefined_primal(weight):
-        return (ad.Zero(weight) if type(ct) is ad.Zero else ct), pre_spike, post_trace
-    return weight, pre_spike, post_trace
+        ct_weight = ad.Zero(weight.aval) if type(ct) is ad.Zero else ct
+    if ad.is_undefined_primal(post_trace):
+        if type(ct) is ad.Zero:
+            ct_trace = ad.Zero(post_trace.aval)
+        else:
+            # out = W + outer(m, trace)  =>  ct_trace = m @ ct
+            m = event_factor(pre_spike, dtype=ct.dtype)
+            ct_trace = (m @ ct).astype(post_trace.aval.dtype)
+    return ct_weight, pre_spike, ct_trace
 
 
 def _update_dense_pre_benchmark_data(*, platform):
@@ -354,7 +368,7 @@ update_dense_on_binary_pre_p.def_cuda_raw_kernel(_dense_on_pre_cuda_kernel, asde
 update_dense_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _dense_on_pre_jax_kernel)
 update_dense_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _dense_on_pre_jax_kernel)
 update_dense_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _dense_on_pre_jax_kernel)
-update_dense_on_binary_pre_p.def_jvp_rule2(_dense_on_pre_jvp_weight, None, None)
+update_dense_on_binary_pre_p.def_jvp_rule2(_dense_on_pre_jvp_weight, None, _dense_on_pre_jvp_trace)
 update_dense_on_binary_pre_p.def_transpose_rule(_dense_on_pre_transpose_rule)
 update_dense_on_binary_pre_p.def_batching_rule(_dense_on_pre_batching)
 update_dense_on_binary_pre_p.def_call(_dense_on_pre_prim_call)
@@ -610,13 +624,26 @@ def _dense_on_post_jvp_weight(w_dot, weight, pre_trace, post_spike, **kwargs):
     return [w_dot]
 
 
+def _dense_on_post_jvp_trace(t_dot, weight, pre_trace, post_spike, **kwargs):
+    return _dense_on_post_prim_call(jnp.zeros_like(weight), t_dot, post_spike, backend=kwargs['backend'])
+
+
 def _dense_on_post_transpose_rule(ct, weight, pre_trace, post_spike, **kwargs):
-    if ad.is_undefined_primal(pre_trace) or ad.is_undefined_primal(post_spike):
-        raise ValueError("Cannot transpose with respect to pre_trace or post_spike.")
+    if ad.is_undefined_primal(post_spike):
+        raise ValueError("Cannot transpose with respect to post_spike.")
     ct = ct[0]
+    ct_weight = weight
+    ct_trace = pre_trace
     if ad.is_undefined_primal(weight):
-        return (ad.Zero(weight) if type(ct) is ad.Zero else ct), pre_trace, post_spike
-    return weight, pre_trace, post_spike
+        ct_weight = ad.Zero(weight.aval) if type(ct) is ad.Zero else ct
+    if ad.is_undefined_primal(pre_trace):
+        if type(ct) is ad.Zero:
+            ct_trace = ad.Zero(pre_trace.aval)
+        else:
+            # out = W + outer(trace, m)  =>  ct_trace = ct @ m
+            m = event_factor(post_spike, dtype=ct.dtype)
+            ct_trace = (ct @ m).astype(pre_trace.aval.dtype)
+    return ct_weight, ct_trace, post_spike
 
 
 def _dense_on_post_batching(args, axes, **kwargs):
@@ -673,7 +700,7 @@ update_dense_on_binary_post_p.def_cuda_raw_kernel(_dense_on_post_cuda_kernel, as
 update_dense_on_binary_post_p.def_kernel('jax_raw', 'cpu', _dense_on_post_jax_kernel)
 update_dense_on_binary_post_p.def_kernel('jax_raw', 'gpu', _dense_on_post_jax_kernel)
 update_dense_on_binary_post_p.def_kernel('jax_raw', 'tpu', _dense_on_post_jax_kernel)
-update_dense_on_binary_post_p.def_jvp_rule2(_dense_on_post_jvp_weight, None, None)
+update_dense_on_binary_post_p.def_jvp_rule2(_dense_on_post_jvp_weight, _dense_on_post_jvp_trace, None)
 update_dense_on_binary_post_p.def_transpose_rule(_dense_on_post_transpose_rule)
 update_dense_on_binary_post_p.def_batching_rule(_dense_on_post_batching)
 update_dense_on_binary_post_p.def_call(_dense_on_post_prim_call)

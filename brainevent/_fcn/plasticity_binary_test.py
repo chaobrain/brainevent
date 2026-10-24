@@ -347,3 +347,95 @@ def test_row_cuda_matches_jax(spike_dtype):
     a = fcn_plasticity_row_prim_call(data, indices, spike, trace, backend='cuda_raw')[0]
     b = fcn_plasticity_row_prim_call(data, indices, spike, trace, backend='jax_raw')[0]
     assert np.allclose(np.asarray(a), np.asarray(b), atol=1e-5)
+
+
+# --------------------------------------------------------------------------- #
+# Autodiff (#202): gradients w.r.t. data, trace, w_min and w_max.
+# --------------------------------------------------------------------------- #
+
+from brainevent._test_util import check_plasticity_grads  # noqa: E402
+
+_LO, _HI = jnp.float32(0.2), jnp.float32(1.3)
+
+
+def _ad_spikes(n, seed):
+    base = np.array([2., -1., 0., 0.5, 0., 1.], dtype=np.float32)
+    return jnp.asarray(np.resize(np.roll(base, seed), n))
+
+
+def _row_ref(data, indices, spike, trace, lo, hi):
+    active = np.asarray(spike != 0)[:, None]
+    return jnp.clip(data + jnp.where(active, trace[indices], 0.), lo, hi)
+
+
+@pytest.mark.parametrize("backend", ROW_BACKENDS)
+def test_post_conn_on_pre_grads(backend):
+    rng = np.random.default_rng(40)
+    n_pre, n_conn, n_post = 6, 4, 5
+    data = jnp.asarray(rng.uniform(0.3, 1.2, (n_pre, n_conn)), dtype=jnp.float32)
+    # duplicate post ids in a row exercise the scatter-add cotangent
+    indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn)), dtype=jnp.int32)
+    spike = _ad_spikes(n_pre, 0)
+    trace = jnp.asarray(rng.uniform(-0.6, 0.6, n_post), dtype=jnp.float32)
+    check_plasticity_grads(
+        lambda d, t, lo, hi: update_fixed_post_conn_on_binary_pre(
+            d, indices, spike, t, lo, hi, shape=(n_pre, n_post), backend=backend),
+        lambda d, t, lo, hi: _row_ref(d, indices, spike, t, lo, hi),
+        data, trace, _LO, _HI,
+    )
+
+
+@pytest.mark.parametrize("backend", ROW_BACKENDS)
+def test_pre_conn_on_post_grads(backend):
+    rng = np.random.default_rng(41)
+    n_pre, n_conn, n_post = 7, 3, 6
+    data = jnp.asarray(rng.uniform(0.3, 1.2, (n_post, n_conn)), dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_pre, (n_post, n_conn)), dtype=jnp.int32)
+    spike = _ad_spikes(n_post, 1) != 0  # boolean spikes
+    trace = jnp.asarray(rng.uniform(-0.6, 0.6, n_pre), dtype=jnp.float32)
+    check_plasticity_grads(
+        lambda d, t, lo, hi: update_fixed_pre_conn_on_binary_post(
+            d, indices, t, spike, lo, hi, shape=(n_pre, n_post), backend=backend),
+        lambda d, t, lo, hi: _row_ref(d, indices, spike, t, lo, hi),
+        data, trace, _LO, _HI,
+    )
+
+
+@pytest.mark.parametrize("cls", ["FixedNumPerPre", "FixedNumPerPost"])
+def test_unfavorable_class_methods_grads(cls):
+    """Unfavorable FCN directions reuse the CSR post primitive and are differentiable."""
+    rng = np.random.default_rng(42)
+    n_pre, n_conn, n_post = 6, 3, 5
+    n_rows = n_pre if cls == "FixedNumPerPre" else n_post
+    n_cols = n_post if cls == "FixedNumPerPre" else n_pre
+    data = jnp.asarray(rng.uniform(0.3, 1.2, (n_rows, n_conn)), dtype=jnp.float32)
+    indices = jnp.asarray(rng.integers(0, n_cols, (n_rows, n_conn)), dtype=jnp.int32)
+    m = getattr(be, cls)(data, indices, shape=(n_pre, n_post))
+    col_spike = _ad_spikes(n_cols, 2)
+    row_trace = jnp.asarray(rng.uniform(-0.6, 0.6, n_rows), dtype=jnp.float32)
+    if cls == "FixedNumPerPre":
+        op = lambda d, t, lo, hi: m.with_data(d).update_on_post(t, col_spike, w_min=lo, w_max=hi).data
+    else:
+        op = lambda d, t, lo, hi: m.with_data(d).update_on_pre(col_spike, t, w_min=lo, w_max=hi).data
+
+    def ref(d, t, lo, hi):
+        active = np.asarray(col_spike != 0)[np.asarray(indices)]
+        return jnp.clip(d + jnp.where(active, t[:, None], 0.), lo, hi)
+
+    check_plasticity_grads(op, ref, data, row_trace, _LO, _HI)
+
+
+def test_row_transpose_rejects_indices_and_spikes():
+    from jax.interpreters import ad
+    rule = ad.primitive_transposes[fcn_plasticity_row_p.primitive]
+    data = jnp.ones((3, 2), dtype=jnp.float32)
+    indices = jnp.zeros((3, 2), dtype=jnp.int32)
+    args = [data, indices, jnp.ones(3), jnp.ones(4)]
+    for pos in (1, 2):
+        bad = list(args)
+        bad[pos] = ad.UndefinedPrimal(jax.typeof(args[pos]))
+        with pytest.raises(ValueError):
+            rule([data], *bad, backend=None)
+    und = [ad.UndefinedPrimal(jax.typeof(data)), indices, args[2], ad.UndefinedPrimal(jax.typeof(args[3]))]
+    out = rule([ad.Zero(jax.typeof(data))], *und, backend=None)
+    assert type(out[0]) is ad.Zero and type(out[3]) is ad.Zero

@@ -483,3 +483,84 @@ def check_event_op_grads(
         g_ref = jax.vmap(lambda v: jax.grad(lambda p: jnp.vdot(ct, ref_op(p, v.astype(y.dtype))))(params))(zs)
         for a, b in zip(jax.tree_util.tree_leaves(g), jax.tree_util.tree_leaves(g_ref)):
             assert jnp.allclose(a, b, rtol=rtol, atol=atol), f'vmapped weight gradient mismatch:\n{a}\nvs\n{b}'
+
+
+def check_plasticity_grads(
+    op,
+    ref,
+    weight,
+    trace,
+    w_min,
+    w_max,
+    *,
+    rtol: float = 1e-5,
+    atol: float = 1e-5,
+    seed: int = 0,
+):
+    """Check a plasticity update's derivatives against a pure-JAX reference.
+
+    Parameters
+    ----------
+    op : callable
+        ``op(weight, trace, w_min, w_max) -> new_weight``, the update under
+        test (spikes and structure closed over).
+    ref : callable
+        Pure-JAX reference with the same signature.
+    weight, trace : jax.Array
+        Primal weight (per-synapse) and trace arrays.
+    w_min, w_max : jax.Array
+        Scalar clip bounds (differentiated as well).
+    rtol, atol : float, optional
+        Tolerances.
+    seed : int, optional
+        Seed for the random cotangent and tangents.
+
+    Notes
+    -----
+    Checked properties: forward values; reverse mode w.r.t. all four
+    arguments; forward mode; the dot-product identity
+    ``<ct, J t> == <J^T ct, t>``; ``jit(grad)``; and ``vmap`` of the gradient
+    over a stack of ``(weight, trace)`` pairs.
+    """
+    args = (weight, trace, w_min, w_max)
+    keys = jax.random.split(jax.random.PRNGKey(seed), 6)
+
+    y = op(*args)
+    y_ref = ref(*args)
+    assert y.shape == y_ref.shape, (y.shape, y_ref.shape)
+    assert jnp.allclose(y, y_ref, rtol=rtol, atol=atol), f'forward mismatch:\n{y}\nvs\n{y_ref}'
+
+    ct = jax.random.normal(keys[0], y.shape, dtype=y.dtype)
+    tangents = tuple(
+        jax.random.normal(k, jnp.shape(a), dtype=jnp.asarray(a).dtype)
+        for k, a in zip(jax.random.split(keys[1], 4), args)
+    )
+
+    _, vjp = jax.vjp(op, *args)
+    g = vjp(ct)
+    _, vjp_ref = jax.vjp(ref, *args)
+    g_ref = vjp_ref(ct)
+    for name, a, b in zip(('weight', 'trace', 'w_min', 'w_max'), g, g_ref):
+        assert jnp.allclose(a, b, rtol=rtol, atol=atol), f'{name} gradient mismatch:\n{a}\nvs\n{b}'
+
+    _, jt = jax.jvp(op, args, tangents)
+    _, jt_ref = jax.jvp(ref, args, tangents)
+    assert jnp.allclose(jt, jt_ref, rtol=rtol, atol=atol), f'JVP mismatch:\n{jt}\nvs\n{jt_ref}'
+
+    lhs = jnp.vdot(ct, jt)
+    rhs = _tree_vdot(g, tangents)
+    assert jnp.allclose(lhs, rhs, rtol=rtol, atol=atol * max(1, y.size)), f'JVP/VJP mismatch: {lhs} vs {rhs}'
+
+    def loss(f):
+        return lambda w, t: jnp.vdot(ct, f(w, t, w_min, w_max))
+
+    g_jit = jax.jit(jax.grad(loss(op), argnums=(0, 1)))(weight, trace)
+    for a, b in zip(g_jit, g_ref[:2]):
+        assert jnp.allclose(a, b, rtol=rtol, atol=atol), 'jit(grad) mismatch'
+
+    ws = jnp.stack([weight, weight + 0.25 * jax.random.normal(keys[2], weight.shape, dtype=weight.dtype)])
+    ts = jnp.stack([trace, -trace])
+    gv = jax.vmap(jax.grad(loss(op), argnums=(0, 1)))(ws, ts)
+    gv_ref = jax.vmap(jax.grad(loss(ref), argnums=(0, 1)))(ws, ts)
+    for a, b in zip(gv, gv_ref):
+        assert jnp.allclose(a, b, rtol=rtol, atol=atol), f'vmap(grad) mismatch:\n{a}\nvs\n{b}'

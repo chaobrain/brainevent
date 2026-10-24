@@ -56,6 +56,8 @@ Plasticity operations.
    update_csr_on_binary_post_p
    update_csc_on_binary_pre
    update_csc_on_binary_post
+   csr_apply_on_pre
+   csr_apply_on_post
 
 Row slicing.
 

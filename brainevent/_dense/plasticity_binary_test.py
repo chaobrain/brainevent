@@ -213,3 +213,67 @@ class Test_dense_on_post:
             mat = jnp.minimum(mat, w_max)
         assert jnp.allclose(mat2, mat)
         jax.block_until_ready((mat, pre_trace, post_spike, mat2))
+
+
+# ---------------------------------------------------------------------------
+# Autodiff (#202): gradients w.r.t. weight, trace, w_min and w_max.
+# ---------------------------------------------------------------------------
+
+from brainevent._test_util import check_plasticity_grads  # noqa: E402
+
+_AD_PRE, _AD_POST = 8, 6
+_LO, _HI = jnp.float32(0.2), jnp.float32(1.3)
+
+
+def _ad_inputs(seed):
+    rng = np.random.default_rng(seed)
+    W = jnp.asarray(rng.uniform(0.3, 1.2, (_AD_PRE, _AD_POST)), dtype=jnp.float32)
+    return W, rng
+
+
+@pytest.mark.parametrize('backend', PRE_BACKENDS)
+def test_dense_on_pre_grads_match_reference(backend):
+    W, rng = _ad_inputs(0)
+    spike = jnp.asarray(_EVENT_PATTERN[:_AD_PRE], dtype=jnp.float32)
+    trace = jnp.asarray(rng.uniform(-0.6, 0.6, _AD_POST), dtype=jnp.float32)
+    active = np.asarray(spike != 0)
+
+    check_plasticity_grads(
+        lambda w, t, lo, hi: update_dense_on_binary_pre(w, spike, t, lo, hi, backend=backend),
+        lambda w, t, lo, hi: jnp.clip(w + jnp.where(active[:, None], t[None, :], 0.), lo, hi),
+        W, trace, _LO, _HI,
+    )
+
+
+@pytest.mark.parametrize('backend', POST_BACKENDS)
+def test_dense_on_post_grads_match_reference(backend):
+    W, rng = _ad_inputs(1)
+    spike = jnp.asarray(_EVENT_PATTERN[:_AD_POST], dtype=jnp.float32)
+    trace = jnp.asarray(rng.uniform(-0.6, 0.6, _AD_PRE), dtype=jnp.float32)
+    active = np.asarray(spike != 0)
+
+    check_plasticity_grads(
+        lambda w, t, lo, hi: update_dense_on_binary_post(w, t, spike, lo, hi, backend=backend),
+        lambda w, t, lo, hi: jnp.clip(w + jnp.where(active[None, :], t[:, None], 0.), lo, hi),
+        W, trace, _LO, _HI,
+    )
+
+
+@pytest.mark.parametrize('prim', [update_dense_on_binary_pre_p, update_dense_on_binary_post_p])
+def test_dense_plasticity_transpose_rejects_spikes_and_zero_ct(prim):
+    from jax.interpreters import ad
+    W, _ = _ad_inputs(2)
+    rule = ad.primitive_transposes[prim.primitive]
+    if prim is update_dense_on_binary_pre_p:
+        args, spike_pos, trace_pos = [W, jnp.ones(_AD_PRE), jnp.ones(_AD_POST)], 1, 2
+    else:
+        args, spike_pos, trace_pos = [W, jnp.ones(_AD_PRE), jnp.ones(_AD_POST)], 2, 1
+    bad = list(args)
+    bad[spike_pos] = ad.UndefinedPrimal(jax.typeof(args[spike_pos]))
+    with pytest.raises(ValueError):
+        rule([jnp.ones_like(W)], *bad, backend=None)
+    und = list(args)
+    und[0] = ad.UndefinedPrimal(jax.typeof(W))
+    und[trace_pos] = ad.UndefinedPrimal(jax.typeof(args[trace_pos]))
+    out = rule([ad.Zero(jax.typeof(W))], *und, backend=None)
+    assert type(out[0]) is ad.Zero and type(out[trace_pos]) is ad.Zero

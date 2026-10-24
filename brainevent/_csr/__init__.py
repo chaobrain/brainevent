@@ -29,6 +29,7 @@ from .plasticity_binary import (
     update_csc_on_binary_pre,
     update_csc_on_binary_post,
 )
+from .plasticity_generic import csr_apply_on_pre, csr_apply_on_post
 from .slice import csr_slice_rows, csr_slice_rows_p
 from .spsolve import csr_solve
 from .dt2t import csrmv_dt2t, cscmv_dt2t, csrmv_dt2t_p, csrmm_dt2t, cscmm_dt2t, csrmm_dt2t_p
@@ -46,6 +47,7 @@ __all__ = [
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',
+    'csr_apply_on_pre', 'csr_apply_on_post',
     'csr_slice_rows', 'csr_slice_rows_p',
     'HybridConfig', 'get_hybrid_config', 'init_csr_config',
 ]

@@ -29,6 +29,7 @@ from ._csr import (
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
     update_csc_on_binary_pre, update_csc_on_binary_post,
+    csr_apply_on_pre, csr_apply_on_post,
     csr_slice_rows, csr_slice_rows_p,
     HybridConfig, get_hybrid_config, init_csr_config,
 )
@@ -173,6 +174,7 @@ __all__ = [
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',
+    'csr_apply_on_pre', 'csr_apply_on_post',
     'csr_slice_rows', 'csr_slice_rows_p',
 
     # --- dense matrix --- #
