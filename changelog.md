@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`--xla_gpu_deterministic_ops` reaches brainevent's GPU kernels (#216).** The
+  default `cuda_raw` kernels add with float atomics, so their results varied
+  from call to call even when XLA was asked for deterministic ops. With the flag
+  set in `XLA_FLAGS`, primitives without an explicit backend choice now lower
+  with `jax_raw` on GPU, which follows the flag; a primitive without a `jax_raw`
+  GPU kernel warns once. Explicit `backend=` / `set_backend` choices are kept.
+
 ## [0.3.0] - 2026-10-24
 
 A minor release driven by brainpy.state's upstream issues. It makes "active

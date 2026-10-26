@@ -264,6 +264,14 @@ def set_backend(platform: str, backend: Optional[str]):
     therefore part of the cache key, so it composes safely with concurrent
     dispatch.
 
+    **Determinism on GPU.** The default GPU kernels (``cuda_raw``) accumulate
+    with float atomics, so their results can differ in the last bits from one
+    call to the next. When ``XLA_FLAGS`` sets ``--xla_gpu_deterministic_ops``
+    (read when a primitive is lowered), every primitive without an explicit
+    choice lowers with ``'jax_raw'`` on GPU, whose XLA scatters and reductions
+    follow the flag; a primitive without a ``'jax_raw'`` GPU kernel warns once.
+    An explicit choice (``backend=`` on the call, or this function) is kept.
+
     Examples
     --------
     .. code-block:: python

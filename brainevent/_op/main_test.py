@@ -21,9 +21,15 @@
 * M13 - a global backend that is not registered for a platform no longer fails
   silently: the selection emits a (deduplicated) warning and falls back to the
   primitive default, still producing the correct result.
+* #216 - ``--xla_gpu_deterministic_ops`` in ``XLA_FLAGS`` makes primitives without
+  an explicit backend choice lower with ``jax_raw`` on GPU, so the event products
+  give the same bits on every call.
 """
 
 import importlib.util
+import os
+import subprocess
+import sys
 import warnings
 from unittest import mock
 
@@ -36,7 +42,7 @@ from jax.interpreters import xla
 
 from brainevent import KernelCompilationError, KernelFallbackExhaustedError
 from brainevent._compatible_import import apply_primitive
-from brainevent._op.main import XLACustomKernel
+from brainevent._op.main import DETERMINISTIC_GPU_BACKEND, XLACustomKernel, xla_gpu_deterministic_ops
 from brainevent.config import set_backend, clear_backends
 
 numba_installed = importlib.util.find_spec('numba') is not None
@@ -388,3 +394,118 @@ def test_f19_validation_raises_typed_errors_not_asserts():
     with pytest.raises(TypeError, match="'some_list'") as excinfo:
         prim(x, outs=[jax.ShapeDtypeStruct((4,), jnp.float32)], some_list=[1, 2, 3])
     assert 'hashable' in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# #216 -- ``--xla_gpu_deterministic_ops`` reaches the backend selection: the
+# atomic ``cuda_raw`` kernels ignore it, so without an explicit choice the GPU
+# lowers with ``jax_raw``, whose XLA scatters and reductions follow it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('flags, expected', [
+    ('', False),
+    ('--xla_gpu_deterministic_ops', True),
+    ('--xla_gpu_deterministic_ops=true', True),
+    ('--xla_gpu_deterministic_ops=TRUE', True),
+    ('--xla_gpu_deterministic_ops=1', True),
+    ('--xla_gpu_deterministic_ops=false', False),
+    ('--xla_gpu_deterministic_ops=0', False),
+    ('--xla_gpu_autotune_level=0 --xla_gpu_deterministic_ops=true', True),
+    ('--xla_gpu_deterministic_ops=true --xla_gpu_deterministic_ops=false', False),
+    ('--xla_gpu_deterministic_ops_other=true', False),
+    ('--noxla_gpu_deterministic_ops', False),
+])
+def test_216_xla_gpu_deterministic_ops_flag(monkeypatch, flags, expected):
+    """The flag is read from ``XLA_FLAGS`` as XLA reads it: the last occurrence wins."""
+    monkeypatch.setenv('XLA_FLAGS', flags)
+    assert xla_gpu_deterministic_ops() is expected
+
+
+def test_216_xla_gpu_deterministic_ops_flag_unset(monkeypatch):
+    monkeypatch.delenv('XLA_FLAGS', raising=False)
+    assert xla_gpu_deterministic_ops() is False
+
+
+def _gpu_probe(name, *gpu_backends):
+    prim = XLACustomKernel(name)
+    for i, b in enumerate(gpu_backends):
+        prim.def_kernel(b, 'gpu', _offset_kernel_generator(float(i)))
+    prim.def_kernel('backend_a', 'cpu', _offset_kernel_generator(1.0))
+    prim.def_kernel(DETERMINISTIC_GPU_BACKEND, 'cpu', _offset_kernel_generator(2.0))
+    return prim
+
+
+def test_216_deterministic_flag_selects_jax_raw_on_gpu_only(monkeypatch):
+    prim = _gpu_probe('p216_selection_probe', 'cuda_raw', DETERMINISTIC_GPU_BACKEND)
+    monkeypatch.delenv('XLA_FLAGS', raising=False)
+    assert prim._resolve_backend('gpu') == 'cuda_raw'  # the first-registered default
+    monkeypatch.setenv('XLA_FLAGS', '--xla_gpu_deterministic_ops=true')
+    assert prim._resolve_backend('gpu') == DETERMINISTIC_GPU_BACKEND
+    assert prim._resolve_backend('cpu') == 'backend_a'  # a GPU flag: CPU is unchanged
+    monkeypatch.setenv('XLA_FLAGS', '--xla_gpu_deterministic_ops=false')
+    assert prim._resolve_backend('gpu') == 'cuda_raw'
+
+
+def test_216_explicit_choices_win_over_the_flag(monkeypatch):
+    prim = _gpu_probe('p216_explicit_probe', 'cuda_raw', DETERMINISTIC_GPU_BACKEND)
+    monkeypatch.setenv('XLA_FLAGS', '--xla_gpu_deterministic_ops')
+    assert prim._resolve_backend('gpu', 'cuda_raw') == 'cuda_raw'  # per call
+    try:
+        set_backend('gpu', 'cuda_raw')  # global
+        assert prim._resolve_backend('gpu') == 'cuda_raw'
+    finally:
+        clear_backends()
+    assert prim._resolve_backend('gpu') == DETERMINISTIC_GPU_BACKEND
+
+
+def test_216_flag_without_a_jax_raw_kernel_warns_once(monkeypatch):
+    prim = _gpu_probe('p216_no_jax_raw_probe', 'cuda_raw', 'cublas')
+    monkeypatch.setenv('XLA_FLAGS', '--xla_gpu_deterministic_ops=true')
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        assert prim._resolve_backend('gpu') == 'cuda_raw'
+        assert prim._resolve_backend('gpu') == 'cuda_raw'
+    text = [str(w.message) for w in caught if 'deterministic' in str(w.message)]
+    assert len(text) == 1 and 'p216_no_jax_raw_probe' in text[0], text
+
+
+def test_216_resolution_errors_are_unchanged():
+    prim = XLACustomKernel('p216_errors_probe')
+    with pytest.raises(KernelFallbackExhaustedError, match='No kernels registered'):
+        prim._resolve_backend('gpu')
+    prim.def_kernel('cuda_raw', 'gpu', _offset_kernel_generator(0.0))
+    with pytest.raises(ValueError, match='empty string'):
+        prim._resolve_backend('gpu', '')
+    with pytest.raises(KernelFallbackExhaustedError, match='warp not available'):
+        prim._resolve_backend('gpu', 'warp')
+
+
+_REPRODUCIBILITY_PROBE = r'''
+import jax, jax.numpy as jnp, numpy as np
+import brainevent
+rng = np.random.default_rng(0)
+n_pre, n_post = 1000, 500
+spikes = jnp.asarray(rng.random((4, n_pre)) < 0.3)
+W = jnp.asarray(rng.uniform(0.1, 1.0, (n_pre, n_post)).astype(np.float32))
+mask = rng.random((n_pre, n_post)) < 0.1
+cols = np.nonzero(mask)[1].astype(np.int32)
+indptr = np.concatenate([[0], np.cumsum(mask.sum(1))]).astype(np.int32)
+data = jnp.asarray(rng.uniform(0.1, 1.0, cols.size).astype(np.float32))
+csr = brainevent.CSR((data, jnp.asarray(cols), jnp.asarray(indptr)), shape=(n_pre, n_post))
+for name, f in (('dense', jax.jit(lambda s: brainevent.BinaryArray(s) @ W)),
+                ('csr', jax.jit(lambda s: brainevent.BinaryArray(s[0]) @ csr))):
+    outs = [np.asarray(f(spikes)) for _ in range(20)]
+    print(name, all(np.array_equal(outs[0], o) for o in outs[1:]))
+'''
+
+
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='needs a GPU backend')
+def test_216_event_kernels_are_reproducible_under_the_flag():
+    """Binary dense and CSR products give the same bits on every call (fresh process,
+    because XLA reads ``XLA_FLAGS`` when its backend starts)."""
+    env = {**os.environ, 'XLA_FLAGS': '--xla_gpu_deterministic_ops=true'}
+    r = subprocess.run([sys.executable, '-c', _REPRODUCIBILITY_PROBE], env=env,
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert r.stdout.split() == ['dense', 'True', 'csr', 'True'], r.stdout
