@@ -15,6 +15,8 @@
 # ==============================================================================
 
 import functools
+import os
+import re
 import warnings
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
@@ -38,6 +40,42 @@ __all__ = [
     'XLACustomKernel',
     'KernelEntry',
 ]
+
+
+#: The GPU backend used when ``XLA_FLAGS`` asks for deterministic ops: the pure-JAX
+#: kernels lower to XLA scatters and reductions, which honour the flag, whereas the
+#: atomic CUDA kernels (``cuda_raw``) accumulate in thread-arrival order.
+DETERMINISTIC_GPU_BACKEND = 'jax_raw'
+
+_XLA_GPU_DETERMINISTIC_OPS = re.compile(r'(?:^|\s)--xla_gpu_deterministic_ops(?:=(\S*))?(?=\s|$)')
+
+
+def xla_gpu_deterministic_ops() -> bool:
+    """Whether ``XLA_FLAGS`` sets ``--xla_gpu_deterministic_ops`` to true.
+
+    As in XLA, the last occurrence wins, and a bare ``--xla_gpu_deterministic_ops``
+    means true.
+
+    Returns
+    -------
+    bool
+        ``True`` if the flag is present with no value, ``true`` or ``1``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import os
+        >>> from brainevent._op.main import xla_gpu_deterministic_ops
+        >>> os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=true'
+        >>> xla_gpu_deterministic_ops()
+        True
+        >>> os.environ['XLA_FLAGS'] = ''
+        >>> xla_gpu_deterministic_ops()
+        False
+    """
+    values = _XLA_GPU_DETERMINISTIC_OPS.findall(os.environ.get('XLA_FLAGS', ''))
+    return bool(values) and values[-1].lower() in ('', 'true', '1')
 
 
 @dataclass
@@ -229,6 +267,88 @@ class XLACustomKernel:
             return
         self._warned_backends.add(message)
         warnings.warn(message, stacklevel=3)
+
+    def _resolve_backend(self, platform: str, requested: Optional[str] = None) -> str:
+        """The backend that lowers this primitive on *platform*.
+
+        Priority: the per-call *requested* backend, then the global
+        :func:`~brainevent.config.set_backend` choice, then the per-primitive
+        default, then the first registered kernel. On GPU, when ``XLA_FLAGS``
+        sets ``--xla_gpu_deterministic_ops`` (:func:`xla_gpu_deterministic_ops`),
+        the deterministic backend (``'jax_raw'``) replaces the per-primitive
+        default or first-registered kernel; explicit choices are kept.
+
+        Parameters
+        ----------
+        platform : str
+            The platform being lowered (``'cpu'``, ``'gpu'``, ``'tpu'``).
+        requested : str or None, optional
+            The ``backend=`` keyword of the call.
+
+        Returns
+        -------
+        str
+            A backend registered for *platform*.
+
+        Raises
+        ------
+        ValueError
+            If *requested* is an empty string.
+        KernelFallbackExhaustedError
+            If *requested* is not registered for *platform*, or no kernel is.
+        """
+        kernels = self._kernels.get(platform, {})
+        if not kernels:
+            raise KernelFallbackExhaustedError(
+                f"No kernels registered for platform '{platform}' in primitive '{self.name}'."
+            )
+        if requested is not None:
+            if isinstance(requested, str) and requested == '':
+                raise ValueError(
+                    f"backend cannot be an empty string in primitive '{self.name}'."
+                )
+            if requested not in kernels:
+                raise KernelFallbackExhaustedError(
+                    f'{requested} not available for platform {platform} in primitive '
+                    f'{self.name}.'
+                )
+            return requested
+        global_be = get_backend(platform)
+        if global_be is not None and global_be in kernels:
+            return global_be
+        if global_be is not None:
+            # A global backend was requested but is not registered for this
+            # platform/primitive.  The per-call path raises here; the global path
+            # stays lenient, but must not *silently* discard the user's choice (M13).
+            self._warn_backend_once(
+                f"Global backend '{global_be}' is not registered for "
+                f"platform '{platform}' in primitive '{self.name}'; "
+                f"ignoring it and using the primitive default."
+            )
+        backend = self._defaults.get(platform)
+        if platform == 'gpu' and xla_gpu_deterministic_ops() and backend != DETERMINISTIC_GPU_BACKEND:
+            # The atomic CUDA kernels ignore XLA's determinism flag (#216).
+            if DETERMINISTIC_GPU_BACKEND in kernels:
+                return DETERMINISTIC_GPU_BACKEND
+            self._warn_backend_once(
+                f"--xla_gpu_deterministic_ops is set, but primitive '{self.name}' has no "
+                f"'{DETERMINISTIC_GPU_BACKEND}' GPU kernel; its default GPU backend may not "
+                f"be deterministic."
+            )
+        if not backend or backend not in kernels:
+            # No explicit/global/default backend resolved: fall back to the
+            # first registered kernel.  When more than one is registered the
+            # choice is dict-insertion-order arbitrary, so log it (M13).
+            fallback_be = next(iter(kernels))
+            if len(kernels) > 1:
+                self._warn_backend_once(
+                    f"No default backend set for platform '{platform}' in "
+                    f"primitive '{self.name}'; using first-registered backend "
+                    f"'{fallback_be}' out of {sorted(kernels)}. "
+                    f"Set one explicitly with set_default('{platform}', <backend>)."
+                )
+            backend = fallback_be
+        return backend
 
     def _abstract_eval(self, *ins, outs: Sequence[ShapeDtype], **kwargs):
         """Compute the abstract output types for the primitive.
@@ -494,58 +614,8 @@ class XLACustomKernel:
         """
 
         def fallback_kernel_fn(*args, **kwargs):
-            # Get kernels dict for this platform
-            kernels = self._kernels.get(platform, {})
-            if not kernels:
-                raise KernelFallbackExhaustedError(
-                    f"No kernels registered for platform '{platform}' in primitive '{self.name}'."
-                )
-
-            # Determine which backend to use
-            # Priority: per-call > global > per-primitive > first registered
-            backend_to_use = kwargs.pop('backend', None)
-            if backend_to_use is not None:
-                if isinstance(backend_to_use, str) and backend_to_use == '':
-                    raise ValueError(
-                        f"backend cannot be an empty string in primitive '{self.name}'."
-                    )
-                if backend_to_use not in kernels:
-                    raise KernelFallbackExhaustedError(
-                        f'{backend_to_use} not available for platform {platform} in primitive '
-                        f'{self.name}.'
-                    )
-            else:
-                # Check global backend setting
-                global_be = get_backend(platform)
-                if global_be is not None and global_be in kernels:
-                    backend_to_use = global_be
-                else:
-                    if global_be is not None:
-                        # A global backend was requested but is not registered for
-                        # this platform/primitive.  The per-call path raises here;
-                        # the global path stays lenient, but must not *silently*
-                        # discard the user's choice (M13).
-                        self._warn_backend_once(
-                            f"Global backend '{global_be}' is not registered for "
-                            f"platform '{platform}' in primitive '{self.name}'; "
-                            f"ignoring it and using the primitive default."
-                        )
-                    backend_to_use = self._defaults.get(platform)
-
-            # Get the kernel entry
-            if not backend_to_use or backend_to_use not in kernels:
-                # No explicit/global/default backend resolved: fall back to the
-                # first registered kernel.  When more than one is registered the
-                # choice is dict-insertion-order arbitrary, so log it (M13).
-                fallback_be = next(iter(kernels))
-                if len(kernels) > 1:
-                    self._warn_backend_once(
-                        f"No default backend set for platform '{platform}' in "
-                        f"primitive '{self.name}'; using first-registered backend "
-                        f"'{fallback_be}' out of {sorted(kernels)}. "
-                        f"Set one explicitly with set_default('{platform}', <backend>)."
-                    )
-                backend_to_use = fallback_be
+            backend_to_use = self._resolve_backend(platform, kwargs.pop('backend', None))
+            kernels = self._kernels[platform]
 
             if backend_to_use == 'pallas':
                 check_pallas_jax_version()

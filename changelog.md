@@ -107,6 +107,12 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
 
 ### Fixed
 
+- **`--xla_gpu_deterministic_ops` reaches brainevent's GPU kernels (#216).** The
+  default `cuda_raw` kernels add with float atomics, so their results varied
+  from call to call even when XLA was asked for deterministic ops. With the flag
+  set in `XLA_FLAGS`, primitives without an explicit backend choice now lower
+  with `jax_raw` on GPU, which follows the flag; a primitive without a `jax_raw`
+  GPU kernel warns once. Explicit `backend=` / `set_backend` choices are kept.
 - A CSR/CSC/FixedNum matrix closed over by two jitted functions raised
   `UnexpectedTracerError` after its first binary product (the lazily built
   task workspace was a tracer cached on the matrix), also after
