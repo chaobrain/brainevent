@@ -193,6 +193,47 @@ def _promote_float_operands(*arrays):
     return tuple(jnp.asarray(a, dtype) for a in arrays)
 
 
+@functools.partial(jax.custom_jvp, nondiff_argnums=(0,))
+def _with_linear_param_grads(coefficients, data, params):
+    """Attach the derivative of JITC weights with respect to their parameters.
+
+    The JITC ``*_to_csr`` kernels draw every stored weight as a linear
+    combination of the scalar distribution parameters (``w_loc + z * w_scale``,
+    ``w_low + u * (w_high - w_low)``), but their primitives have no AD rules.
+    The caller builds ``data`` from ``jax.lax.stop_gradient(params)``, so the
+    forward value is the drawn weights bit for bit, and passes ``params``
+    again here. Under differentiation, ``coefficients()`` returns one array
+    per parameter, shaped like ``data``, holding ``d data / d param``; it is
+    only called then, so plain forward calls do not pay for it.
+
+    Parameters
+    ----------
+    coefficients : callable
+        Returns a tuple of arrays, one per entry of ``params``.
+    data : jax.Array
+        Weights drawn with the parameters stopped.
+    params : tuple of jax.Array
+        The parameters, each of shape ``(1,)``.
+
+    Returns
+    -------
+    jax.Array
+        ``data``, differentiable with respect to ``params``.
+    """
+    del coefficients, params
+    return data
+
+
+@_with_linear_param_grads.defjvp
+def _with_linear_param_grads_jvp(coefficients, primals, tangents):
+    data, _ = primals
+    _, param_dots = tangents
+    tangent = jnp.zeros_like(data)
+    for coefficient, dot in zip(coefficients(), param_dots):
+        tangent = tangent + coefficient * jnp.reshape(dot, ()).astype(data.dtype)
+    return data, tangent
+
+
 def _normalize_dtype(dtype):
     return np.dtype(dtype)
 

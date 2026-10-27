@@ -22,6 +22,7 @@ import brainstate
 import braintools
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from brainevent._csr.dt2t import (
@@ -393,3 +394,63 @@ def test_dt2t_jvp_under_jit_promotes_mixed_dtypes():
         assert jnp.allclose(out, _MIXED_W.astype(jnp.float64) * y_rows)
         # d(w * y) = dw * y + w * dy
         assert jnp.allclose(tangent, y_rows + _MIXED_W.astype(jnp.float64) * 10. * y_rows)
+
+
+# A (3, 4) CSR with an empty row and a column (3) that owns several entries.
+_GRAD_INDICES = jnp.asarray([0, 3, 1, 3, 3], dtype=jnp.int32)
+_GRAD_INDPTR = jnp.asarray([0, 2, 2, 5], dtype=jnp.int32)
+_GRAD_ROWS = jnp.asarray([0, 0, 2, 2, 2], dtype=jnp.int32)
+_DT2T_GRAD_CASES = [
+    pytest.param(fn, impl, id=f'{fn.__name__}-{impl}')
+    for fn, impls in ((csrmv_dt2t, CSRMV_dt2t_IMPLEMENTATIONS), (csrmm_dt2t, CSRMM_dt2t_IMPLEMENTATIONS))
+    for impl in impls
+]
+
+
+@pytest.mark.parametrize('fn, implementation', _DT2T_GRAD_CASES)
+@pytest.mark.parametrize('transpose', [False, True])
+def test_dt2t_reverse_mode_matches_the_product_rule(fn, implementation, transpose):
+    """``out = w * y[g]``: the ``w`` cotangent is ``ct * y[g]``; the ``y`` cotangent sums ``ct * w`` per index."""
+    gather = _GRAD_INDICES if transpose else _GRAD_ROWS
+    n = 4 if transpose else 3
+    y = jnp.arange(1., n + 1., dtype=jnp.float32)
+    w = jnp.asarray([2., 3., 5., 7., 11.], dtype=jnp.float32)
+    ct = jnp.asarray([1., -2., 0.5, 4., -3.], dtype=jnp.float32)
+    if fn is csrmm_dt2t:
+        y, w, ct = jnp.stack([y, 2. * y]), jnp.stack([w, -w]), jnp.stack([ct, 3. * ct])
+
+    f = lambda y_, w_: fn(y_, w_, _GRAD_INDICES, _GRAD_INDPTR, shape=(3, 4), transpose=transpose,
+                          backend=implementation)
+    out, vjp = jax.vjp(f, y, w)
+    ct_y, ct_w = vjp(ct)
+
+    expected_ct_y = jnp.zeros_like(y).at[..., gather].add(ct * w)
+    assert jnp.allclose(out, w * y[..., gather])
+    assert jnp.allclose(ct_w, ct * y[..., gather])
+    assert jnp.allclose(ct_y, expected_ct_y)
+    # Row 1 is empty in the non-transposed case, so it gets no cotangent.
+    if not transpose:
+        assert jnp.all(ct_y[..., 1] == 0.)
+
+
+def test_dt2t_grad_under_jit_with_a_single_differentiated_operand():
+    f = jax.jit(lambda y, w: csrmv_dt2t(y, w, _GRAD_INDICES, _GRAD_INDPTR, shape=(3, 4)).sum())
+    y = jnp.asarray([1., 2., 3.], dtype=jnp.float32)
+    w = jnp.ones(5, dtype=jnp.float32)
+    assert jnp.allclose(jax.grad(f, argnums=1)(y, w), y[_GRAD_ROWS])
+    assert jnp.allclose(jax.grad(f, argnums=0)(y, w), jnp.asarray([2., 0., 3.]))
+
+
+@pytest.mark.parametrize('cls_name', ['CSR', 'CSC'])
+@pytest.mark.parametrize('method', ['dt2t', 'dt2t_transposed'])
+def test_matrix_dt2t_passes_check_grads_in_reverse_mode(cls_name, method):
+    import brainevent
+    from jax.test_util import check_grads
+
+    dense = np.array([[1., 0., 2., 0.], [0., 0., 0., 0.], [3., 4., 0., 5.]])
+    with jax_x64_enabled():
+        mat = getattr(brainevent, cls_name).fromdense(jnp.asarray(dense))
+        n = mat.shape[0] if method == 'dt2t' else mat.shape[1]
+        y = jnp.linspace(0.5, 2., n)
+        f = lambda y_, w_: getattr(mat, method)(y_, w_)
+        check_grads(f, (y, mat.data), order=1, modes=['rev'])

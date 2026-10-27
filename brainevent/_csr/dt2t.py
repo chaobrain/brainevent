@@ -20,6 +20,7 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.interpreters import ad
 
 from brainevent._misc import _check_csr_cuda_structure_dtypes, namescope
 from brainevent._op import load_cuda_file
@@ -336,6 +337,34 @@ def _csrmv_dt2t_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwarg
     return csrmv_dt2t_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
+def _dt2t_transpose(p_call, jax_kernel, ct, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    """Transpose rule shared by the CSR dt2t primitives (``out = w * y[g]``).
+
+    Each primitive application is linear in exactly one of ``y`` and ``w``:
+    the ``w`` cotangent is ``ct * y[g]`` (the primitive itself with ``ct`` as
+    weights), and the ``y`` cotangent scatters ``ct * w`` back over the same
+    indices ``g``, obtained by transposing the pure-JAX kernel.
+    """
+    if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr):
+        raise ValueError("Cannot transpose with respect to sparse indices.")
+    ct = ct[0]
+    if ad.is_undefined_primal(y):
+        if type(ct) is ad.Zero:
+            return ad.Zero(y.aval), w, indices, indptr
+        kernel = jax_kernel(shape=shape, transpose=transpose, **kwargs)
+        y_info = jax.ShapeDtypeStruct(y.aval.shape, y.aval.dtype)
+        ct_y, = jax.linear_transpose(lambda y_: kernel(y_, w, indices, indptr)[0], y_info)(ct)
+        return ct_y, w, indices, indptr
+    if type(ct) is ad.Zero:
+        return y, ad.Zero(w.aval), indices, indptr
+    ct_w = p_call(y, ct, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])[0]
+    return y, ct_w, indices, indptr
+
+
+def _csrmv_dt2t_transpose_rule(ct, y, w, indices, indptr, **kwargs):
+    return _dt2t_transpose(csrmv_dt2t_p_call, _csrmv_dt2t_jax_kernel, ct, y, w, indices, indptr, **kwargs)
+
+
 def _csrmv_dt2t_benchmark_data(*, platform):
     """
     Benchmark configurations for ``csrmv_dt2t``.
@@ -540,6 +569,7 @@ csrmv_dt2t_p.def_kernel('jax_raw', 'cpu', _csrmv_dt2t_jax_kernel)
 csrmv_dt2t_p.def_kernel('jax_raw', 'gpu', _csrmv_dt2t_jax_kernel)
 csrmv_dt2t_p.def_kernel('jax_raw', 'tpu', _csrmv_dt2t_jax_kernel)
 csrmv_dt2t_p.def_jvp_rule2(_csrmv_dt2t_jvp_y, _csrmv_dt2t_jvp_w, None, None)
+csrmv_dt2t_p.def_transpose_rule(_csrmv_dt2t_transpose_rule)
 csrmv_dt2t_p.def_call(csrmv_dt2t_p_call)
 csrmv_dt2t_p.def_tags('csr', 'float')
 csrmv_dt2t_p.def_benchmark_data(_csrmv_dt2t_benchmark_data)
@@ -864,6 +894,10 @@ def _csrmm_dt2t_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwarg
     return csrmm_dt2t_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
+def _csrmm_dt2t_transpose_rule(ct, y, w, indices, indptr, **kwargs):
+    return _dt2t_transpose(csrmm_dt2t_p_call, _csrmm_dt2t_jax_kernel, ct, y, w, indices, indptr, **kwargs)
+
+
 def _csrmm_dt2t_benchmark_data(*, platform):
     """
     Benchmark configurations for ``csrmm_dt2t``.
@@ -1071,6 +1105,7 @@ csrmm_dt2t_p.def_kernel('jax_raw', 'cpu', _csrmm_dt2t_jax_kernel)
 csrmm_dt2t_p.def_kernel('jax_raw', 'gpu', _csrmm_dt2t_jax_kernel)
 csrmm_dt2t_p.def_kernel('jax_raw', 'tpu', _csrmm_dt2t_jax_kernel)
 csrmm_dt2t_p.def_jvp_rule2(_csrmm_dt2t_jvp_y, _csrmm_dt2t_jvp_w, None, None)
+csrmm_dt2t_p.def_transpose_rule(_csrmm_dt2t_transpose_rule)
 csrmm_dt2t_p.def_call(csrmm_dt2t_p_call)
 csrmm_dt2t_p.def_tags('csr', 'float')
 csrmm_dt2t_p.def_benchmark_data(_csrmm_dt2t_benchmark_data)

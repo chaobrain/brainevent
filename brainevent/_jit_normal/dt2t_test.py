@@ -471,3 +471,48 @@ def test_jitnmv_dt2t_fused_fill_drops_the_same_candidates(device, implementation
     filled[rows, np.asarray(indices)] = True
     assert nnz == mask.sum()
     assert np.array_equal(filled, mask)
+
+
+@pytest.mark.parametrize('prob', [0.25, 0.3])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_jitnmv_dt2t_reverse_mode_matches_finite_differences(transpose, corder, prob):
+    from jax.test_util import check_grads
+    from brainevent._test_util import jax_x64_enabled
+
+    shape = (12, 9)
+    with jax_x64_enabled():
+        y = jnp.linspace(0.5, 2., shape[1] if transpose else shape[0])
+        f = lambda a, b, y_: jitnmv_dt2t(a, b, prob, y_, 7, shape=shape, transpose=transpose, corder=corder)
+        check_grads(f, (jnp.asarray(1.5), jnp.asarray(0.3), y), order=1, modes=['rev'])
+
+
+def test_jitnmv_dt2t_forward_values_are_unchanged_by_the_gradient_path():
+    """The structure is drawn with the parameters stopped; the value must still be the drawn weights."""
+    y = jnp.linspace(0.5, 2., 12)
+    f = lambda a, b: jitnmv_dt2t(a, b, 0.3, y, 7, shape=(12, 9))
+    params = (jnp.asarray(1.5), jnp.asarray(0.3))
+    out_on_grad_path, _ = jax.vjp(f, *params)
+    np.testing.assert_array_equal(np.asarray(out_on_grad_path), np.asarray(f(*params)))
+
+
+def test_jitc_normal_matrix_dt2t_differentiates_both_parameters():
+    from jax.test_util import check_grads
+    from brainevent._test_util import jax_x64_enabled
+
+    with jax_x64_enabled():
+        y = jnp.linspace(0.5, 2., 12)
+        loss = lambda a, b: brainevent.JITCNormalR(a, b, prob=0.3, seed=7, shape=(12, 9)).dt2t(y, None)
+        check_grads(loss, (jnp.asarray(1.5), jnp.asarray(0.3)), order=1, modes=['rev'])
+
+
+def test_jitnmv_dt2t_scale_gradient_at_zero_scale_is_the_normal_draw():
+    """At ``w_scale = 0`` every weight equals ``w_loc``; d/d(scale) is still the drawn ``z``."""
+    from brainevent._test_util import jax_x64_enabled
+
+    with jax_x64_enabled():
+        y = jnp.ones(12)
+        g = jax.grad(lambda s: jitnmv_dt2t(jnp.asarray(1.5), s, 0.3, y, 7, shape=(12, 9)).sum())(jnp.asarray(0.))
+        z = jitnmv_dt2t(jnp.asarray(0.), jnp.asarray(1.), 0.3, y, 7, shape=(12, 9))
+        assert jnp.allclose(g, z.sum())
+        assert float(jnp.abs(z).sum()) > 0.

@@ -708,3 +708,46 @@ def test_tcsr_dt2t_promotes_a_float64_operand_under_x64(method):
         assert out.dtype == jnp.float64
         # Both store the non-zeros in row-major order.
         np.testing.assert_allclose(np.asarray(out), np.asarray(expected))
+
+
+@pytest.mark.parametrize("service", [csrmv_dt2t, csrmm_dt2t])
+@pytest.mark.parametrize("transpose", [False, True])
+def test_vjp_matches_the_reference_gather(service, transpose):
+    with _explicit_int64_allowed():
+        matrix = _matrix()
+        neuron_count = matrix._base_shape[1 if transpose else 0]
+        y = jnp.arange(neuron_count, dtype=jnp.float32) + 1.0
+        w = jnp.arange(matrix.nse, dtype=jnp.float32) + 2.0
+        ct = jnp.asarray([1.0, -2.0, 0.5, 4.0, -3.0], dtype=jnp.float32)
+        if service is csrmm_dt2t:
+            y, w, ct = jnp.stack((y, y + 3.0)), jnp.stack((w, w + 5.0)), jnp.stack((ct, 2.0 * ct))
+        call = lambda y_, w_: service(
+            y_,
+            w_,
+            matrix._tcsr_indices,
+            matrix._tcsr_indptr,
+            shape=matrix._base_shape,
+            transpose=transpose,
+            buffers=matrix._tcs_buffers,
+            backend="jax_raw",
+        )
+        reference = lambda y_, w_: _expected(
+            y_, w_, matrix._tcsr_indices, matrix._tcsr_indptr, transpose=transpose,
+        )
+
+        _, vjp = jax.vjp(call, y, w)
+        _, reference_vjp = jax.vjp(reference, y, w)
+        for got, expected in zip(vjp(ct), reference_vjp(ct)):
+            np.testing.assert_allclose(got, expected)
+
+
+@pytest.mark.parametrize("method", ["dt2t", "dt2t_transposed"])
+def test_tcsr_object_dt2t_passes_check_grads_in_reverse_mode(method):
+    from jax.test_util import check_grads
+
+    dense = np.array([[1., 0., 2., 0.], [0., 0., 0., 0.], [3., 4., 0., 5.]])
+    with _explicit_int64_allowed():
+        mat = TCSR.fromdense(jnp.asarray(dense))
+        n = mat.shape[0] if method == "dt2t" else mat.shape[1]
+        y = jnp.linspace(0.5, 2.0, n)
+        check_grads(lambda y_, w_: getattr(mat, method)(y_, w_), (y, mat.data), order=1, modes=["rev"])
