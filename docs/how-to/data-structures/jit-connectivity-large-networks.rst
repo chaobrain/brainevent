@@ -21,11 +21,8 @@ or :class:`~brainevent.JITCScalarC` (column variant):
    import jax.numpy as jnp
 
    conn = brainevent.JITCScalarR(
-       num_pre=100_000,
-       num_post=100_000,
-       prob=0.01,       # connection probability
-       weight=0.5,      # shared synaptic weight
-       seed=0,          # fixes the realised connectivity
+       (0.5, 0.01, 0),          # (shared weight, connection probability, seed)
+       shape=(100_000, 100_000),
    )
 
    spikes = brainevent.BinaryArray(jnp.zeros(100_000).at[::1000].set(1.0))
@@ -50,16 +47,44 @@ stored. Use distinct seeds for statistically independent populations:
 
 .. code-block:: python
 
-   exc = brainevent.JITCScalarR(num_pre=n, num_post=n, prob=0.02, weight=1.6, seed=1)
-   inh = brainevent.JITCScalarR(num_pre=n, num_post=n, prob=0.02, weight=-9.0, seed=2)
+   exc = brainevent.JITCScalarR((1.6, 0.02, 1), shape=(n, n))
+   inh = brainevent.JITCScalarR((-9.0, 0.02, 2), shape=(n, n))
 
 
-Choosing ``R`` vs ``C``
------------------------
+Choosing the event-driven side
+------------------------------
 
-The ``R`` variants are row-oriented and the ``C`` variants column-oriented. Pick the one
-whose orientation matches how your spike vector is laid out so the contraction runs along
-contiguous memory. If unsure, profile both with :func:`~brainevent.benchmark_function`.
+A JITC matrix regenerates its connections along one direction, and only products along
+that direction skip inactive events. Pick it from the product your model computes:
+
+=========================================  ===================================
+your product                               construct with
+=========================================  ===================================
+``spikes @ W`` (``W`` is ``[pre, post]``)  ``event_side='left'`` (the default)
+``W @ spikes`` (``W`` is ``[post, pre]``)  ``event_side='right'``
+dense ``W @ x``                            ``event_side='left'`` (the default)
+dense ``x @ W`` (rate models)              ``event_side='right'``
+=========================================  ===================================
+
+.. code-block:: python
+
+   W = brainevent.JITCScalarR((0.5, 0.01, 0), shape=(n_post, n_pre), event_side='right')
+   currents = W @ spikes          # event-driven: only active presynaptic columns are walked
+
+``event_side`` is the readable name of ``corder`` (``'left'`` is ``corder=True``). The two
+settings draw different connectivity with the same statistics, so fix one per matrix; ``M.T``
+flips it, so a matrix and its transpose describe the same connections. For
+``spikes @ W`` the default is also fast when training: the input gradient is the dense
+``W @ ct``, which runs on the fast gather.
+
+A product on the other side still gives the right result, but walks the whole matrix; the
+first such call emits a :class:`~brainevent.PerformanceWarning`. If you need the *same*
+connectivity fast in both directions and it fits in memory, materialise it once with
+``W.tocsr()``. A :class:`~brainevent.CSR` matrix runs its other direction as a gather over
+the stored indices instead of regenerating the matrix, and on GPU with the ``cuda_raw``
+backend both directions are event-driven once its transpose layout is cached. The price is
+``O(nnz)`` memory: 8 bytes per connection (800 MB for ``100k x 100k`` at ``p = 0.01``),
+about twice that with the transpose layout.
 
 .. note::
 

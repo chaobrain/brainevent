@@ -899,6 +899,20 @@ def _normalize_shapes_and_dtypes(
     return normalized_shapes, normalized_dtypes
 
 
+def _numba_target_options(kernel) -> tuple:
+    """Return the dispatcher's compile options (``parallel``, ``fastmath``, ...).
+
+    They are not part of the Python function, so the content fingerprint must
+    include them: otherwise a ``parallel=True`` kernel reuses the target of a
+    byte-identical serial one.
+    """
+    options = getattr(kernel, 'targetoptions', None) or {}
+    return tuple(
+        (key, frozenset(value) if isinstance(value, set) else value)
+        for key, value in sorted(options.items())
+    )
+
+
 def _register_numba_cpu_ffi_target(
     kernel,
     input_shapes: Tuple[Tuple[int, ...], ...],
@@ -949,7 +963,7 @@ def _register_numba_cpu_ffi_target(
         if cached_name is not None:
             return cached_name, out_types
 
-        fingerprint = kernel_content_fingerprint(kernel)
+        fingerprint = kernel_content_fingerprint(kernel, extra=_numba_target_options(kernel))
         if fingerprint is not None:
             target_name = f'brainevent_numba_ffi_{fingerprint}'
             existing_fingerprint = _NUMBA_CPU_FFI_NAME_FINGERPRINTS.get(target_name)

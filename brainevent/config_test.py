@@ -82,6 +82,49 @@ def test_set_numba_parallel_records_thread_count_and_calls_numba():
     assert numba.get_num_threads() == 2
 
 
+def test_set_numba_parallel_clears_jax_caches_only_on_change():
+    current = config.get_numba_parallel()
+    with mock.patch('jax.clear_caches') as clear:
+        config.set_numba_parallel(current)
+        clear.assert_not_called()
+        config.set_numba_parallel(not current)
+        clear.assert_called_once()
+
+
+def test_set_numba_parallel_takes_effect_after_first_compile():
+    # Regression: once a kernel had been compiled, flipping the flag reused
+    # the cached executable and the serial FFI target, so it had no effect.
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from brainevent._op import numba_ffi
+
+    seen = []
+    real = numba_ffi._register_numba_cpu_ffi_target
+
+    def spy(kernel, *args):
+        name, out_types = real(kernel, *args)
+        seen.append((kernel.targetoptions.get('parallel', False), name))
+        return name, out_types
+
+    rng = np.random.default_rng(0)
+    dense = (rng.random((12, 7)) < 0.4) * rng.random((12, 7))
+    csr = brainevent.CSR.fromdense(jnp.asarray(dense, jnp.float32))
+    v = jnp.asarray(rng.random(7), jnp.float32)
+    f = jax.jit(lambda w, x: brainevent.csrmv(
+        w, csr.indices, csr.indptr, x, shape=csr.shape, backend='numba'))
+    expected = dense.astype(np.float32) @ np.asarray(v)
+
+    cpu = jax.devices('cpu')[0]
+    with mock.patch.object(numba_ffi, '_register_numba_cpu_ffi_target', spy), jax.default_device(cpu):
+        config.set_numba_parallel(False)
+        np.testing.assert_allclose(f(csr.data, v), expected, rtol=1e-5)
+        config.set_numba_parallel(True)
+        np.testing.assert_allclose(f(csr.data, v), expected, rtol=1e-5)
+    assert [opt for opt, _ in seen] == [False, True], seen
+    assert seen[0][1] != seen[1][1], seen
+
+
 def test_numba_helpers_are_exposed_on_the_package_namespace():
     # The package re-exports the getters/setters used in the docstring examples.
     assert brainevent.config.get_numba_parallel is config.get_numba_parallel
@@ -124,6 +167,15 @@ def test_set_backend_none_clears_only_that_platform():
     config.set_backend("gpu", None)
     assert config.get_backend("gpu") is None
     assert config.get_backend("cpu") == "numba"
+
+
+@pytest.mark.parametrize("platform", ["cuda", "GPU", "rocm", ""])
+def test_set_backend_rejects_unknown_platform(platform):
+    # Regression: an unknown platform name used to be stored and then never
+    # consulted, so ``set_backend('cuda', ...)`` silently did nothing.
+    with pytest.raises(ValueError, match="platform must be one of"):
+        config.set_backend(platform, "cuda_raw")
+    assert config.get_backend(platform) is None
 
 
 def test_set_backend_none_on_unset_platform_is_a_noop():

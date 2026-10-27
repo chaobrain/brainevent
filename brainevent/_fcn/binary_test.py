@@ -128,27 +128,6 @@ def test_binary_fcnmm_cuda_operator_names_are_not_col_scatter():
     assert "binary_fcnmm_col_scatter" not in cuda_kernel_source
 
 
-def test_binary_fcnmm_cuda_raw_transpose_true_out_shape_is_raw_batch_first():
-    source = inspect.getsource(binary_mod.binary_fcnmm_p_call)
-    assert binary_mod._binary_fcnmm_uses_raw_batch_first(transpose=True, backend='cuda_raw')
-    assert not binary_mod._binary_fcnmm_uses_raw_batch_first(transpose=False, backend='cuda_raw')
-    assert not binary_mod._binary_fcnmm_uses_raw_batch_first(transpose=True, backend='jax_raw')
-    assert "(matrix.shape[1], n_post)" in source
-
-
-def test_binary_fcnmm_transform_adapter_contract():
-    helper_source = inspect.getsource(binary_mod._binary_fcnmm_uses_raw_batch_first)
-    ct_shape_source = inspect.getsource(binary_mod._logical_transpose_true_shape_from_cotangent)
-    matrix_source = inspect.getsource(binary_mod._binary_fcnmm_jvp_matrix)
-    weights_source = inspect.getsource(binary_mod._binary_fcnmm_jvp_weights)
-    transpose_source = inspect.getsource(binary_mod._binary_fcnmm_transpose_rule)
-    combined = helper_source + ct_shape_source + matrix_source + weights_source + transpose_source
-    assert "_maybe_transpose_to_expected" in combined
-    assert "cuda_raw" in combined
-    assert "expected_shape" in combined
-    assert "_logical_transpose_true_shape_from_cotangent" in transpose_source
-
-
 # ---------------------------------------------------------------------------
 # Reference helpers
 # ---------------------------------------------------------------------------
@@ -493,8 +472,10 @@ def test_binary_fcnmm_cuda_event_abi_uses_weight_dtype_as_native(
 
         def run(*args):
             captured['events'] = args[-1]
-            infos = out_info if isinstance(out_info, (list, tuple)) else (out_info,)
-            return tuple(jnp.zeros(info.shape, info.dtype) for info in infos)
+            # Mirror jax.ffi.ffi_call: a single result spec returns a bare array.
+            if isinstance(out_info, (list, tuple)):
+                return tuple(jnp.zeros(info.shape, info.dtype) for info in out_info)
+            return jnp.zeros(out_info.shape, out_info.dtype)
 
         return run
 
@@ -705,8 +686,10 @@ def _capture_fcn_ffi(monkeypatch):
 
         def run(*args):
             captured['events'] = args[-1]
-            infos = out_info if isinstance(out_info, (list, tuple)) else (out_info,)
-            return tuple(jnp.zeros(info.shape, info.dtype) for info in infos)
+            # Mirror jax.ffi.ffi_call: a single result spec returns a bare array.
+            if isinstance(out_info, (list, tuple)):
+                return tuple(jnp.zeros(info.shape, info.dtype) for info in out_info)
+            return jnp.zeros(out_info.shape, out_info.dtype)
 
         return run
 
@@ -1033,3 +1016,54 @@ def _np_entry_active(values_1d, indices, transpose):
     act = np.asarray(values_1d) != 0
     idx = np.asarray(indices)
     return np.broadcast_to(act[:, None], idx.shape) if transpose else act[idx]
+
+
+@pytest.mark.parametrize('backend', FCNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_fcnmm_square_output_layout_and_grads(backend, homo, transpose):
+    # Regression: with ``n_batch`` equal to the output size the cuda_raw
+    # scatter layout was guessed from shapes, returning (and differentiating)
+    # the transpose of the logical ``(n_out, n_batch)`` product.
+    n_pre, n_post, n_conn = 5, 4, 2
+    rng = np.random.default_rng(0)
+    indices = jnp.asarray(
+        np.stack([rng.choice(n_post, n_conn, replace=False) for _ in range(n_pre)]), jnp.int32
+    )
+    weights = jnp.asarray([1.5] if homo else rng.random((n_pre, n_conn)) + 0.5, jnp.float32)
+    n_in, n_out = (n_pre, n_post) if transpose else (n_post, n_pre)
+    matrix = jnp.asarray(rng.random((n_in, n_out)) > 0.4, jnp.float32)
+    dense = jnp.zeros((n_pre, n_post), jnp.float32).at[
+        jnp.repeat(jnp.arange(n_pre), n_conn), indices.ravel()
+    ].add(jnp.broadcast_to(weights, indices.shape).ravel())
+    dense_op = dense.T if transpose else dense
+
+    def f(w, m):
+        return binary_fcnmm(w, indices, m, shape=(n_pre, n_post), transpose=transpose, backend=backend)
+
+    def ref(w, m):
+        d = jnp.zeros((n_pre, n_post), jnp.float32).at[
+            jnp.repeat(jnp.arange(n_pre), n_conn), indices.ravel()
+        ].add(jnp.broadcast_to(w, indices.shape).ravel())
+        return (d.T if transpose else d) @ m
+
+    out = f(weights, matrix)
+    assert out.shape == (n_out, n_out)
+    assert jnp.allclose(out, dense_op @ matrix, atol=1e-5)
+    assert jnp.allclose(jax.jit(f)(weights, matrix), dense_op @ matrix, atol=1e-5)
+
+    ct = jnp.asarray(rng.random((n_out, n_out)), jnp.float32)
+    _, vjp = jax.vjp(f, weights, matrix)
+    _, vjp_ref = jax.vjp(ref, weights, matrix)
+    for g, g_ref in zip(vjp(ct), vjp_ref(ct)):
+        assert jnp.allclose(g, g_ref, atol=1e-4)
+
+    w_dot = jnp.ones_like(weights)
+    m_dot = jnp.asarray(rng.random(matrix.shape), jnp.float32)
+    _, t = jax.jvp(f, (weights, matrix), (w_dot, m_dot))
+    _, t_ref = jax.jvp(ref, (weights, matrix), (w_dot, m_dot))
+    assert jnp.allclose(t, t_ref, atol=1e-4)
+
+    batched = jnp.stack([matrix, 1.0 - matrix])
+    got = jax.vmap(lambda m: f(weights, m))(batched)
+    assert jnp.allclose(got, jnp.einsum('ij,bjk->bik', dense_op, batched), atol=1e-5)

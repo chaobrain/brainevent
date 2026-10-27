@@ -21,9 +21,8 @@ Give a connectivity weight a unit and the result of the matrix product inherits 
    spikes = brainevent.BinaryArray(jnp.array([1, 0, 1, 0, 1], dtype=jnp.float32))
 
    conn = brainevent.JITCScalarR(
-       num_pre=5, num_post=3, prob=0.5,
-       weight=1.62 * u.mS,        # weight carries a unit
-       seed=0,
+       (1.62 * u.mS, 0.5, 0),     # (weight with a unit, prob, seed)
+       shape=(5, 3),
    )
 
    current = spikes @ conn        # current is a unit-aware quantity (mS-scaled)

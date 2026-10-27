@@ -476,12 +476,16 @@ def _csrmv_transpose_rule(
 
 def _csrmv_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if any(axis is not None for index, axis in enumerate(axes) if index != 3):
+    if any(axes[index] is not None for index in (1, 2, 4, 5)):
+        # The tile metadata is derived from the structure; mapping one without
+        # the other would silently pair mismatched layouts.
         raise NotImplementedError(
-            "TCSR float batching only supports a mapped dense operand"
+            "TCSR float batching only supports a mapped weight or dense operand, "
+            "not mapped sparse structure"
         )
     dense_axis = axes[3]
-    if dense_axis is None:
+    if dense_axis is None or axes[0] is not None:
+        # Mapped weights: one primitive call per batch element.
         return general_batching_rule(csrmv_p, args, axes, **kwargs)
     if args[3].ndim != 2:
         raise ValueError("batched TCSR float MV requires a rank-two operand")
@@ -501,6 +505,9 @@ def _csrmv_batching(args, axes, **kwargs):
 
 
 def _csrmv_benchmark_data(*, platform):
+    if platform == 'gpu' and not jax.config.jax_enable_x64:
+        # The CUDA kernels need int64 row pointers, which require x64.
+        return []
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1098,12 +1105,16 @@ def _csrmm_transpose_rule(
 
 def _csrmm_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if any(axis is not None for index, axis in enumerate(axes) if index != 3):
+    if any(axes[index] is not None for index in (1, 2, 4, 5)):
+        # The tile metadata is derived from the structure; mapping one without
+        # the other would silently pair mismatched layouts.
         raise NotImplementedError(
-            "TCSR float batching only supports a mapped dense operand"
+            "TCSR float batching only supports a mapped weight or dense operand, "
+            "not mapped sparse structure"
         )
     dense_axis = axes[3]
-    if dense_axis is None:
+    if dense_axis is None or axes[0] is not None:
+        # Mapped weights: one primitive call per batch element.
         return general_batching_rule(csrmm_p, args, axes, **kwargs)
     if args[3].ndim != 3:
         raise ValueError("nested TCSR float MM batching requires rank three")
@@ -1124,6 +1135,9 @@ def _csrmm_batching(args, axes, **kwargs):
 
 
 def _csrmm_benchmark_data(*, platform):
+    if platform == 'gpu' and not jax.config.jax_enable_x64:
+        # The CUDA kernels need int64 row pointers, which require x64.
+        return []
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):

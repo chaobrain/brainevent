@@ -938,7 +938,11 @@ def _csrmv_transpose_rule(
                     tile_offsets,
                     backend=kwargs['backend'],
                 )
-            elif kwargs['backend'] == 'cuda_raw':
+            elif (
+                kwargs['backend'] == 'cuda_raw'
+                and indices.size > 0
+                and _float_sddmm_supported(ct.dtype, indices.dtype)
+            ):
                 slot_values = tcsr_sddmv_dweight_binary(
                     events,
                     ct,
@@ -979,6 +983,10 @@ def _csrmv_transpose_rule(
 
 def _csrmv_batching(args, axes, **kwargs):
     axes = tuple(axes)
+    if axes[3] not in (None, 0):
+        # Both paths below expect the event batch dimension on axis 0.
+        args = (*args[:3], jnp.moveaxis(args[3], axes[3], 0), *args[4:])
+        axes = (*axes[:3], 0, *axes[4:])
     task_capacity = kwargs.get('task_capacity', args[4].shape[0])
     if axes == (None, None, None, 0, None, None, None, None, None, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
@@ -1001,11 +1009,6 @@ def _csrmv_batching(args, axes, **kwargs):
         )
         math_out = r[0] if kwargs['transpose'] else r[0].T
         return (math_out, args[4], args[5], args[6]), (0, None, None, None)
-
-    if axes[3] is not None and axes[3] != 0:
-        raise NotImplementedError(
-            "binary CSRMV batching requires the event batch dimension on axis 0"
-        )
 
     def prepared_call(*call_args, **call_kwargs):
         workspace = _workspace_from_task_operands(
@@ -1764,12 +1767,19 @@ def _binary_csrmm_tile_cuda_kernel(
             transpose,
             **kwargs,
         )
+    nnz = kwargs['indices_info'].size
+    if nnz == 0:
+        # Without connections the product is exactly zero; the tile kernel
+        # itself needs at least one connection.
+        out_cols = kwargs["shape"][1]
+
+        def zero_kernel(weights, indices, indptr, B, task_begin, task_end, status, *_):
+            return jnp.zeros((B.shape[0], out_cols), weight_info.dtype), task_begin, task_end, status
+
+        return zero_kernel
     weight_suffix = _tile_weight_suffix(weight_info.dtype, vector_info.dtype)
     if jnp.dtype(kwargs['indptr_info'].dtype) != jnp.dtype(jnp.int64):
         raise TypeError("TCSR CUDA tile MM currently requires int64 indptr")
-    nnz = kwargs['indices_info'].size
-    if nnz == 0:
-        raise NotImplementedError("TCSR CUDA tile MM does not support zero nnz")
     is_homogeneous = weight_info.size == 1
     if not is_homogeneous and weight_info.size != nnz:
         raise ValueError(
@@ -1972,7 +1982,15 @@ def _csrmm_transpose_rule(
                 tile_offsets,
                 backend=kwargs['backend'],
             )
-        elif kwargs['backend'] == 'cuda_raw':
+        elif (
+            kwargs['backend'] == 'cuda_raw'
+            and indices.size > 0
+            and _float_sddmm_supported(
+                ct.dtype, indices.dtype, B.shape[0] if transpose else B.shape[1]
+            )
+        ):
+            # The CUDA SDDMM kernels take only float32/float64 cotangents and
+            # batches of 4..512; anything else uses the pure-JAX slot rule.
             slot_values = tcsr_sddmm_dweight_binary(
                 B if transpose else B.T,
                 ct if transpose else ct.T,
@@ -2013,6 +2031,10 @@ def _csrmm_transpose_rule(
 
 def _csrmm_batching(args, axes, **kwargs):
     axes = tuple(axes)
+    if axes[3] not in (None, 0):
+        # Both paths below expect the outer batch dimension on axis 0.
+        args = (*args[:3], jnp.moveaxis(args[3], axes[3], 0), *args[4:])
+        axes = (*axes[:3], 0, *axes[4:])
     if axes == (None, None, None, 0, None, None, None, None, None, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         outer_size = args[3].shape[0]
@@ -2050,11 +2072,6 @@ def _csrmm_batching(args, axes, **kwargs):
                 0,
             )
         return (r, args[4], args[5], args[6]), (0, None, None, None)
-
-    if axes[3] is not None:
-        raise NotImplementedError(
-            "binary CSRMM nested batching requires the outer batch dimension on axis 0"
-        )
 
     def prepared_call(*call_args, **call_kwargs):
         workspace = _workspace_from_task_operands(

@@ -539,3 +539,26 @@ def test_csrmm_vmap_normalizes_real_nested_batch_axes(transpose, mapped_axis):
         actual = jax.vmap(operation, in_axes=mapped_axis)(operand)
     expected = canonical @ (dense if transpose else dense.T)
     np.testing.assert_allclose(actual, expected)
+
+
+def test_vmap_over_weights():
+    # Regression: mapped weights (``vmap`` over ``data``) raised
+    # NotImplementedError in the float batching rules.
+    from brainevent._tcsr.main import TCSR
+
+    rng = np.random.default_rng(0)
+    dense = (rng.random((40, 30)) < 0.3) * (rng.random((40, 30)) + 0.5)
+    with jax.enable_x64():
+        matrix = TCSR.fromdense(jnp.asarray(dense, jnp.float32))
+    datas = jnp.stack([matrix.data, 2 * matrix.data])
+    v_np = rng.random(30).astype(np.float32)
+    B_np = rng.random((30, 4)).astype(np.float32)
+    v, B = jnp.asarray(v_np), jnp.asarray(B_np)
+    # References in float64 numpy (a jnp matmul may use TF32 on GPU).
+    dense = dense.astype(np.float32).astype(np.float64)
+    got = jax.vmap(lambda d: matrix.with_data(d) @ v)(datas)
+    np.testing.assert_allclose(got, np.stack([dense @ v_np, 2 * dense @ v_np]), rtol=1e-5, atol=1e-5)
+    got = jax.vmap(lambda d: matrix.with_data(d) @ B)(datas)
+    np.testing.assert_allclose(got, np.stack([dense @ B_np, 2 * dense @ B_np]), rtol=1e-5, atol=1e-5)
+    got = jax.vmap(lambda d, x: matrix.with_data(d) @ x)(datas, jnp.stack([v, 3 * v]))
+    np.testing.assert_allclose(got, np.stack([dense @ v_np, 6 * dense @ v_np]), rtol=1e-5, atol=1e-5)

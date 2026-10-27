@@ -70,23 +70,33 @@ def set_numba_parallel(parallel: bool = True, num_threads: Optional[int] = None)
     ``numba.set_num_threads``. This affects all subsequent Numba JIT-compiled
     functions, not just those in brainevent.
 
+    Kernels read the flag when they are compiled, and JAX caches compiled
+    executables independently of it. If this call changes the flag it
+    therefore calls ``jax.clear_caches()``, so already-compiled call sites
+    recompile with the new setting on their next use. Like
+    :func:`set_backend`, it is a setup-time, single-threaded control.
+
     Examples
     --------
     .. code-block:: python
 
         >>> import brainevent
-        >>> brainevent.set_numba_parallel(True, num_threads=4)
-        >>> brainevent.get_numba_parallel()
+        >>> brainevent.config.set_numba_parallel(True, num_threads=4)
+        >>> brainevent.config.get_numba_parallel()
         True
-        >>> brainevent.get_numba_num_threads()
+        >>> brainevent.config.get_numba_num_threads()
         4
     """
     global _numba_parallel, _numba_num_threads
+    changed = _numba_parallel != parallel
     _numba_parallel = parallel
     _numba_num_threads = num_threads
     if num_threads is not None:
         import numba
         numba.set_num_threads(num_threads)
+    if changed:
+        import jax
+        jax.clear_caches()
 
 
 def get_numba_parallel() -> bool:
@@ -107,10 +117,10 @@ def get_numba_parallel() -> bool:
     .. code-block:: python
 
         >>> import brainevent
-        >>> brainevent.get_numba_parallel()
+        >>> brainevent.config.get_numba_parallel()
         False
-        >>> brainevent.set_numba_parallel(True)
-        >>> brainevent.get_numba_parallel()
+        >>> brainevent.config.set_numba_parallel(True)
+        >>> brainevent.config.get_numba_parallel()
         True
     """
     return _numba_parallel
@@ -136,9 +146,9 @@ def get_numba_num_threads() -> Optional[int]:
     .. code-block:: python
 
         >>> import brainevent
-        >>> brainevent.get_numba_num_threads()  # None by default
-        >>> brainevent.set_numba_parallel(True, num_threads=8)
-        >>> brainevent.get_numba_num_threads()
+        >>> brainevent.config.get_numba_num_threads()  # None by default
+        >>> brainevent.config.set_numba_parallel(True, num_threads=8)
+        >>> brainevent.config.get_numba_num_threads()
         8
     """
     return _numba_num_threads
@@ -215,6 +225,7 @@ def get_lfsr_algorithm() -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 _global_backends: Dict[str, str] = {}
+_PLATFORMS = ('cpu', 'gpu', 'tpu')
 
 
 def set_backend(platform: str, backend: Optional[str]):
@@ -227,16 +238,17 @@ def set_backend(platform: str, backend: Optional[str]):
     Parameters
     ----------
     platform : str
-        The platform name (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
+        The platform name: ``'cpu'``, ``'gpu'`` or ``'tpu'``.
     backend : str or None
-        The backend name (e.g., ``'warp'``, ``'pallas'``, ``'numba'``).
-        Pass ``None`` to clear the global default for this platform,
-        reverting to per-primitive defaults.
+        The backend name (e.g., ``'numba'``, ``'jax_raw'``, ``'cuda_raw'``,
+        ``'pallas'``). Pass ``None`` to clear the global default for this
+        platform, reverting to per-primitive defaults.
 
     Raises
     ------
     ValueError
-        If *backend* is an empty string.
+        If *platform* is not ``'cpu'``, ``'gpu'`` or ``'tpu'``, or if
+        *backend* is an empty string.
 
     See Also
     --------
@@ -269,13 +281,15 @@ def set_backend(platform: str, backend: Optional[str]):
     .. code-block:: python
 
         >>> import brainevent
-        >>> brainevent.set_backend('gpu', 'warp')
-        >>> brainevent.get_backend('gpu')
-        'warp'
-        >>> brainevent.set_backend('gpu', None)  # clear
-        >>> brainevent.get_backend('gpu') is None
+        >>> brainevent.config.set_backend('gpu', 'cuda_raw')
+        >>> brainevent.config.get_backend('gpu')
+        'cuda_raw'
+        >>> brainevent.config.set_backend('gpu', None)  # clear
+        >>> brainevent.config.get_backend('gpu') is None
         True
     """
+    if platform not in _PLATFORMS:
+        raise ValueError(f"platform must be one of {_PLATFORMS}, got {platform!r}.")
     if isinstance(backend, str) and backend == '':
         raise ValueError("backend cannot be an empty string.")
     if backend is None:
@@ -313,9 +327,9 @@ def get_backend(platform: str) -> Optional[str]:
     .. code-block:: python
 
         >>> import brainevent
-        >>> brainevent.get_backend('cpu')  # None by default
-        >>> brainevent.set_backend('cpu', 'numba')
-        >>> brainevent.get_backend('cpu')
+        >>> brainevent.config.get_backend('cpu')  # None by default
+        >>> brainevent.config.set_backend('cpu', 'numba')
+        >>> brainevent.config.get_backend('cpu')
         'numba'
     """
     return _global_backends.get(platform)
@@ -348,9 +362,9 @@ def clear_backends():
     .. code-block:: python
 
         >>> import brainevent
-        >>> brainevent.set_backend('gpu', 'warp')
-        >>> brainevent.clear_backends()
-        >>> brainevent.get_backend('gpu') is None
+        >>> brainevent.config.set_backend('gpu', 'cuda_raw')
+        >>> brainevent.config.clear_backends()
+        >>> brainevent.config.get_backend('gpu') is None
         True
     """
     if _global_backends:

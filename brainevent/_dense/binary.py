@@ -583,7 +583,7 @@ def _binary_densemv_benchmark_data(*, platform):
         else:
             spikes = jnp.asarray(np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (weights, spikes)))
+        configs.append(BenchmarkConfig(name, (weights, spikes), {'transpose': False}))
     return configs
 
 
@@ -1116,7 +1116,7 @@ def _binary_densemm_benchmark_data(*, platform):
         else:
             spikes = jnp.asarray(np.random.rand(n_post, 10), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (weights, spikes)))
+        configs.append(BenchmarkConfig(name, (weights, spikes), {'transpose': False}))
     return configs
 
 

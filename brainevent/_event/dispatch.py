@@ -18,6 +18,7 @@ from typing import Any, Optional, Tuple
 
 from .binary import BinaryArray
 from .bitpack_binary import BitPackedBinary
+from .compact_binary import CompactBinary
 from .weighted import WeightedArray
 
 __all__ = [
@@ -39,8 +40,9 @@ def as_event_operand(x: Any) -> Optional[Tuple[Any, bool]]:
     Returns
     -------
     result : tuple of (array, bool) or None
-        ``(value, weighted)`` for :class:`BinaryArray` /
-        :class:`BitPackedBinary` (``weighted=False``) and
+        ``(value, weighted)`` for :class:`BinaryArray`,
+        :class:`BitPackedBinary` and :class:`CompactBinary`
+        (``weighted=False``, with the unpacked event array) and
         :class:`WeightedArray` (``weighted=True``); ``None`` for any other
         operand, which callers treat as a dense float operand.
 
@@ -59,6 +61,6 @@ def as_event_operand(x: Any) -> Optional[Tuple[Any, bool]]:
     """
     if isinstance(x, WeightedArray):
         return x.value, True
-    if isinstance(x, (BinaryArray, BitPackedBinary)):
+    if isinstance(x, (BinaryArray, BitPackedBinary, CompactBinary)):
         return x.value, False
     return None

@@ -28,7 +28,7 @@ from brainevent._numba_random import (
     lfsr113_random_integers,
     lfsr128_seed, lfsr128_rand, lfsr128_randn,
     lfsr128_random_integers,
-    light_rng_uniform01, light_rng_normal01, get_numba_light_rng_funcs,
+    light_rng_uniform01, light_rng_normal01, light_rng_keep, get_numba_light_rng_funcs,
 )
 
 _NUMBA_AVAILABLE = importlib.util.find_spec('numba') is not None
@@ -95,6 +95,34 @@ class TestLightRNGNormalHash:
         assert 'normal01' in funcs
         actual = funcs['normal01'](np.uint32(42), 3, 7)
         assert np.allclose(np.float32(actual), np.float32(0.12243907153606415), rtol=1e-6, atol=1e-6)
+
+
+class TestLightRNGKeep:
+    """The thinning test that makes JITC densities exact (``clen[1]`` is ``thr``)."""
+
+    def test_keep_one_keeps_every_candidate(self):
+        assert all(light_rng_keep(1 << 24, 7, r, c) for r in range(5) for c in range(50))
+
+    def test_zero_threshold_keeps_nothing(self):
+        assert not any(light_rng_keep(0, 7, r, c) for r in range(5) for c in range(50))
+
+    def test_keep_rate_matches_threshold(self):
+        thr = int(0.3 * (1 << 24))
+        kept = np.mean([light_rng_keep(thr, 123, r, c) for r in range(40) for c in range(200)])
+        assert abs(kept - 0.3) < 4 * np.sqrt(0.3 * 0.7 / 8000)
+
+    def test_matches_the_numpy_reference_walk(self):
+        from brainevent._jit_scalar._test_util import keep as reference_keep
+        thr = int(0.77 * (1 << 24))
+        for seed, row, col in [(0, 0, 0), (42, 3, 7), (123, 19, 29), (np.uint32(0xFFFFFFFF), 65535, 123456)]:
+            assert bool(light_rng_keep(thr, seed, row, col)) == reference_keep(thr, seed, row, col)
+
+    @pytest.mark.skipif(not _NUMBA_AVAILABLE, reason='numba is not installed')
+    def test_dispatch_exposes_njit_keep(self):
+        keep = get_numba_light_rng_funcs()['keep']
+        thr = np.uint32(int(0.77 * (1 << 24)))
+        for row, col in [(0, 0), (3, 7), (19, 29)]:
+            assert bool(keep(thr, np.uint32(42), row, col)) == bool(light_rng_keep(thr, 42, row, col))
 
 
 class TestLFSR88Rand:
@@ -560,3 +588,29 @@ class TestNumbaCompiledPrimitives:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+@pytest.mark.parametrize('seed_fn,randint_fn,mins', [
+    (lfsr88_seed, lfsr88_randint, (2, 8, 16)),
+    (lfsr113_seed, None, (2, 8, 16, 128)),
+])
+@pytest.mark.parametrize('seed', [-1, -2, -5, -16, -128, 2**32 - 1, 0, 42])
+def test_lfsr_seed_components_never_degenerate(seed_fn, randint_fn, mins, seed):
+    # Regression: seeds just below 0 (mod 2**32) put the Tausworthe components
+    # below their minimum, so they stayed zero and seed -1 / -2 gave an
+    # all-zero stream. Only those seeds change.
+    state = seed_fn(seed)
+    for value, low in zip(state, mins):
+        assert int(value) >= low
+    if 0 <= seed < 2**31:
+        assert [int(v) for v in state[:len(mins)]] == [(seed + m) % 2**32 for m in mins]
+    if randint_fn is not None:
+        assert any(int(randint_fn(state)) != 0 for _ in range(8))
+
+
+@pytest.mark.skipif(not _NUMBA_AVAILABLE, reason='requires numba')
+@pytest.mark.parametrize('seed', [-1, -2])
+def test_compiled_lfsr_seed_is_not_degenerate(seed):
+    from brainevent._numba_random import get_numba_lfsr_seed
+    state = get_numba_lfsr_seed()(seed)
+    assert all(int(v) > 0 for v in state[:3])

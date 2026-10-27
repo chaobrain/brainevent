@@ -5,8 +5,6 @@ light-RNG walk so a divergence *between* packages cannot hide behind a shared
 helper.
 """
 
-import math
-
 import numpy as np
 
 # One warp = one (row, chunk) task, one lane per residue class: local_j = lane + 32 * q.
@@ -69,11 +67,34 @@ def hash_uniform01(seed, row, col):
     return np.float32((h & _u32(0x00FFFFFF)) * np.float32(1.0 / 16777216.0))
 
 
+# ``thr`` value that keeps every walked candidate, and the walk-stride cap.
+KEEP_ONE = 1 << 24
+CLEN_MAX = 1 << 25
+
+
 def conn_length(prob):
-    prob = float(prob)
-    if prob == 0.0:
-        return 0
-    return max(2, int(math.ceil(2.0 / prob)))
+    """``(cl, thr)``: walk stride and 24-bit keep threshold, in host float32 arithmetic."""
+    p = np.float32(prob)
+    if not p > np.float32(0):
+        return CLEN_MAX, 0
+    r = np.float32(2) / p
+    n = np.float32(np.round(r))
+    is_int = abs(r - n) <= np.float32(1e-6) * r
+    cl = np.float32(min(max(n if is_int else np.float32(np.floor(r)), np.float32(2)), np.float32(CLEN_MAX)))
+    if is_int and cl == n:
+        return int(cl), KEEP_ONE
+    thr = np.float32(np.round(p * cl * np.float32(1 << 23)))
+    return int(cl), int(min(max(thr, np.float32(0)), np.float32(KEEP_ONE)))
+
+
+def keep(thr, seed, row, col):
+    """Thinning test of the walked candidate ``(row, col)``."""
+    if int(thr) >= KEEP_ONE:
+        return True
+    h = _u32(_u32(seed) ^ _u32(0x2545F491))
+    h = _u32(h ^ _u32((np.uint64(_u32(row)) * np.uint64(0x9E3779B1)) & np.uint64(0xFFFFFFFF)))
+    h = _u32(h ^ _u32((np.uint64(_u32(col)) * np.uint64(0x632BE5AB)) & np.uint64(0xFFFFFFFF)))
+    return int(mix32(h) >> _u32(8)) < int(thr)
 
 
 def default_chunk_size(walk_length):
@@ -83,7 +104,8 @@ def default_chunk_size(walk_length):
 
 def iter_edges(seed, clen, n_rows, n_cols, *, corder, stride=LANE_STRIDE, chunk_size=None):
     seed0 = _u32(seed)
-    cl = _u32(max(2, int(clen)))
+    cl = _u32(max(2, int(clen[0])))
+    thr = int(clen[1])
     cs = default_chunk_size(n_cols) if chunk_size is None else int(chunk_size)
     n_chunks = 0 if n_cols <= 0 else (int(n_cols) + cs - 1) // cs
     for row in range(int(n_rows)):
@@ -97,10 +119,11 @@ def iter_edges(seed, clen, n_rows, n_cols, *, corder, stride=LANE_STRIDE, chunk_
                 local_j = lane + int(stride) * int(q)
                 while local_j < chunk_width:
                     col = chunk_start + local_j
-                    if corder:
-                        yield row, col, row, col
-                    else:
-                        yield col, row, row, col
+                    if keep(thr, seed0, row, col):
+                        if corder:
+                            yield row, col, row, col
+                        else:
+                            yield col, row, row, col
                     state = light_rng_next(state)
                     q = q + _u32(1) + fast_bounded_u32(state, cl - _u32(1))
                     local_j = lane + int(stride) * int(q)

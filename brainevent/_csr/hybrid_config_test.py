@@ -74,3 +74,53 @@ def test_binary_hybrid_cuda_exports_use_csr_abi_names():
 
         binary_names = {name for name in exported if name.startswith('binary')}
         assert not {name for name in binary_names if 'fcnmm' in name or 'const_block' in name}
+
+
+import numpy as np
+import pytest
+
+from brainevent._csr.hybrid_config import (
+    HybridConfig, hybrid_capacity_bound, hybrid_task_capacity, max_row_nnz,
+)
+
+
+def _capacity(indptr, config):
+    lengths = np.diff(indptr)
+    heavy = lengths > config.tpr_threshold
+    return int(((lengths[heavy] + config.task_nnz - 1) // config.task_nnz).sum())
+
+
+@pytest.mark.parametrize('config', [HybridConfig(), HybridConfig(tpr_threshold=0, task_nnz=1),
+                                    HybridConfig(tpr_threshold=3, task_nnz=5)])
+def test_capacity_bound_is_never_below_the_exact_capacity(config):
+    # The bound sizes the hybrid task queue from static shapes; it must cover
+    # every structure with those shapes or the CUDA kernel drops work.
+    rng = np.random.default_rng(0)
+    for _ in range(300):
+        n_rows = int(rng.integers(1, 40))
+        lengths = rng.integers(0, int(rng.choice([4, 50, 9000])), n_rows)
+        if rng.random() < 0.3:
+            lengths[rng.integers(n_rows)] = int(rng.integers(0, 20000))
+        indptr = np.concatenate([[0], np.cumsum(lengths)])
+        nse = int(indptr[-1])
+        exact = _capacity(indptr, config)
+        assert hybrid_capacity_bound(nse, n_rows, config=config) >= exact
+        assert hybrid_capacity_bound(nse, n_rows, max_row_nnz(indptr), config=config) >= exact
+
+
+def test_capacity_bound_uses_the_row_length_hint():
+    config = HybridConfig()
+    # No heavy row: the hint proves the queue is never used.
+    assert hybrid_capacity_bound(10_000, 100, max_row_nnz=config.tpr_threshold, config=config) == 0
+    assert hybrid_capacity_bound(10_000, 100, config=config) > 0
+    assert hybrid_capacity_bound(0, 100, config=config) == 0
+    assert hybrid_capacity_bound(10, 0, config=config) == 0
+    # A single 9000-long row needs ceil(9000 / task_nnz) chunks.
+    assert hybrid_capacity_bound(9000, 1, max_row_nnz=9000, config=config) == 3
+
+
+def test_max_row_nnz_and_exact_capacity_agree_on_concrete_indptr():
+    indptr = np.array([0, 129, 129 + 4096, 129 + 4096 + 4097])
+    assert max_row_nnz(indptr) == 4097
+    assert max_row_nnz(np.array([0])) == 0
+    assert hybrid_task_capacity(indptr) == _capacity(indptr, HybridConfig())

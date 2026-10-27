@@ -31,7 +31,9 @@ from brainevent._test_util import jax_x64_enabled, requires_gpu
 
 PLATFORM = jax.default_backend()
 BACKENDS = tuple(csr_delay_deliver_layout_p.available_backends(PLATFORM))
-EVENT_DTYPES = ('bool', 'int8', 'int32', 'float32')
+# float16/bfloat16 events have no numba type; the numba kernel reads them
+# through their mask (binary) or as float32 (weighted).
+EVENT_DTYPES = ('bool', 'int8', 'int32', 'float32', 'float16', 'bfloat16')
 
 N_PRE, N_POST, MAX_CONN, L = 40, 30, 9, 7
 

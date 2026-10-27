@@ -20,7 +20,9 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import uuid
+import warnings
 from pathlib import Path
 
 from brainevent._version import __version__
@@ -36,6 +38,12 @@ _KEY_SCHEMA = "2"
 # exactly (rather than a bare ``<name>_`` prefix) keeps ``clear("add")`` from
 # also deleting sibling entries such as ``add_fast_<key>`` (finding 19).
 _CACHE_KEY_RE = "[0-9a-f]{16}"
+
+
+def _user_tag() -> str:
+    """Per-user suffix for the temp-dir fallback (uid where available)."""
+    getuid = getattr(os, "getuid", None)
+    return str(getuid()) if getuid is not None else os.environ.get("USERNAME", "user")
 
 
 class CompilationCache:
@@ -63,12 +71,27 @@ class CompilationCache:
     """
 
     def __init__(self, base_dir: str | None = None):
-        self.base_dir = Path(
-            base_dir
-            or os.environ.get("BRAINEVENT_CACHE_DIR")
-            or str(Path.home() / ".cache" / "brainevent" / __version__)
-        )
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        explicit = base_dir or os.environ.get("BRAINEVENT_CACHE_DIR")
+        if explicit:
+            # A directory the user chose must be usable; report it if not.
+            self.base_dir = Path(explicit)
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            return
+        self.base_dir = Path.home() / ".cache" / "brainevent" / __version__
+        try:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # An unwritable (or missing) home directory must not break
+            # compilation: fall back to a per-user directory under the temp dir.
+            fallback = Path(tempfile.gettempdir()) / f"brainevent-{_user_tag()}" / __version__
+            warnings.warn(
+                f"Cannot create the brainevent compilation cache at {self.base_dir} ({exc}); "
+                f"using {fallback}. Set BRAINEVENT_CACHE_DIR to choose a directory.",
+                UserWarning,
+                stacklevel=2,
+            )
+            self.base_dir = fallback
+            self.base_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
 

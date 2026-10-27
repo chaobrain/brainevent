@@ -61,9 +61,10 @@ _COO_MIGRATION = (
 )
 _FCN_PACK_MIGRATION = (
     'The explicit bitpack_/compact_ FCN kernels were removed in brainevent '
-    '0.1.0; they were unified into fcnmv / fcnmm, which dispatch on the input '
-    'event type. Wrap spikes with brainevent.BitPackedBinary or '
-    'brainevent.CompactBinary and call brainevent.fcnmv / brainevent.fcnmm.'
+    '0.1.0. Multiply a brainevent.FixedNumPerPre / FixedNumPerPost matrix '
+    'with spikes wrapped in brainevent.BinaryArray (or BitPackedBinary / '
+    'CompactBinary), which dispatches on the event type, or call '
+    'brainevent.binary_fcnmv / brainevent.binary_fcnmm with the raw spikes.'
 )
 _LAYOUT_MIGRATION = (
     'The fixed-number-connection layout abstraction was removed. Use '

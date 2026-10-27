@@ -255,3 +255,71 @@ def test_dt2t_signature_matches_0_1_2():
     assert params == tuple(p.strip() for p in 'weight'.split(',')) + (
         'prob', 'y', 'seed', 'shape', 'transpose', 'corder', 'backend',
     )
+
+
+# ---- Thinned probabilities (``2 / p`` not an integer, so ``clen[1] < 2**24``) ----
+
+from brainevent._jit_scalar.float import jits
+
+
+def _dense_yw_reference(dense, y, transpose):
+    """``W[r, c] * y[c]`` (transpose) or ``W[r, c] * y[r]`` over the non-zeros of the
+    dense ``W``, row by row with columns ascending (the canonical CSR order)."""
+    dense = np.asarray(dense)
+    rows, cols = np.nonzero(dense)
+    return dense[rows, cols] * np.asarray(y)[cols if transpose else rows]
+
+
+@requires_dt2t_backend
+@pytest.mark.parametrize('implementation', JITS_dt2t_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (150, 133)])
+@pytest.mark.parametrize('prob', [0.3, 0.7])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_jitsmv_dt2t_thinned_matches_dense_reference(implementation, shape, prob, corder, transpose):
+    # The dense generator does not share the count/fill kernels dt2t composes over.
+    # (150, 133) walks chunks longer than 32, so lanes take several positions.
+    y = jnp.linspace(-1.0, 2.0, shape[1] if transpose else shape[0], dtype=jnp.float32)
+    out = jitsmv_dt2t(
+        1.5, prob, y, 123,
+        shape=shape, transpose=transpose, corder=corder, backend=implementation,
+    )
+    dense = jits(1.5, prob, 123, shape=shape, corder=corder)
+    assert allclose(out, _dense_yw_reference(dense, y, transpose))
+
+
+@requires_dt2t_backend
+@pytest.mark.parametrize('implementation', JITS_dt2t_IMPLEMENTATIONS)
+@pytest.mark.parametrize('prob', [0.3, 0.7])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_jitsmv_dt2t_fused_fill_drops_the_same_candidates(implementation, prob, transpose):
+    # The fused kernel, the count kernel and the fill kernel each apply the keep
+    # hash; all three must drop the same walk candidates, the dense matrix's zeros.
+    shape = (150, 133)
+    y = jnp.linspace(0.2, 1.7, shape[1] if transpose else shape[0], dtype=jnp.float32)
+    w = jnp.asarray([1.5], dtype=jnp.float32)
+    clen = _initialize_conn_length(prob)
+    assert int(clen[1]) < 2 ** 24
+    seed = jnp.asarray([123], dtype=jnp.int32)
+
+    cc = jits_csr_count_p_call(w, clen, seed, shape=shape, corder=True, backend=implementation)[0]
+    cc = cc.astype(jnp.int32)
+    indptr = jnp.concatenate([jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(cc.sum(axis=1), dtype=jnp.int32)])
+    chunk_offsets = indptr[:-1, None] + jnp.cumsum(cc, axis=1, dtype=jnp.int32) - cc
+    nnz = int(indptr[-1])
+    indices, weights = jits_csr_fill_p_call(
+        w, clen, seed, chunk_offsets, nnz, shape=shape, corder=True, backend=implementation,
+    )
+    out = jitsmv_dt2t_p_call(
+        w, clen, y, seed, chunk_offsets, nnz,
+        shape=shape, transpose=transpose, backend=implementation,
+    )[0]
+    rows = np.repeat(np.arange(shape[0]), np.diff(np.asarray(indptr)))
+    expected = weights * (y[indices] if transpose else y[rows])
+    assert allclose(out, expected)
+
+    filled = np.zeros(shape, dtype=bool)
+    filled[rows, np.asarray(indices)] = True
+    mask = np.asarray(jits(1.5, prob, 123, shape=shape, corder=True)) != 0
+    assert nnz == mask.sum()
+    assert np.array_equal(filled, mask)

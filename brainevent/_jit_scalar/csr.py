@@ -121,6 +121,7 @@ def _jits_csr_count_numba_kernel(
     _rng_next = _rng['next']
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
+    _rng_keep = _rng['keep']
 
     stride = _LANE_STRIDE
     n_cols = int(shape[1])
@@ -138,6 +139,7 @@ def _jits_csr_count_numba_kernel(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             for row in range(m):
                 for chunk_id in range(n_chunks):
                     chunk_start = chunk_id * cs_val
@@ -154,7 +156,8 @@ def _jits_csr_count_numba_kernel(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            cnt += 1
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                cnt += 1
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -171,6 +174,7 @@ def _jits_csr_count_numba_kernel(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             n_chunks = (k + cs_val - 1) // cs_val
             for row in range(m_walk):
                 for chunk_id in range(n_chunks):
@@ -186,7 +190,8 @@ def _jits_csr_count_numba_kernel(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            row_counts[chunk_start + local_j] += 1
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                row_counts[chunk_start + local_j] += 1
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -213,6 +218,7 @@ def jits_csr_count_p_call(
     chunk_size_value = _chunk_size(walk)
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
+    assert clen.shape == (2,), f"clen must hold (cl, thr), but got shape {clen.shape}."
     seed = jnp.atleast_1d(seed)
     # Counting only depends on shape/probability/seed; cast low-precision
     # scalar weights so Numba does not reject unsupported array arguments.
@@ -309,6 +315,7 @@ def _jits_csr_fill_numba_kernel(
     _rng_next = _rng['next']
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
+    _rng_keep = _rng['keep']
 
     stride = _LANE_STRIDE
     n_cols = int(shape[1])
@@ -327,6 +334,7 @@ def _jits_csr_fill_numba_kernel(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             for row in range(m):
                 for chunk_id in range(n_chunks):
                     chunk_start = chunk_id * cs_val
@@ -342,9 +350,10 @@ def _jits_csr_fill_numba_kernel(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            indices[pos] = chunk_start + local_j
-                            data[pos] = w
-                            pos += 1
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                indices[pos] = chunk_start + local_j
+                                data[pos] = w
+                                pos += 1
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -361,6 +370,7 @@ def _jits_csr_fill_numba_kernel(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             n_chunks = (k + cs_val - 1) // cs_val
             for row in range(m_walk):
                 for chunk_id in range(n_chunks):
@@ -376,11 +386,12 @@ def _jits_csr_fill_numba_kernel(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            j = chunk_start + local_j
-                            pos = offsets[j] + cursor[j]
-                            cursor[j] += 1
-                            indices[pos] = row
-                            data[pos] = w
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                j = chunk_start + local_j
+                                pos = offsets[j] + cursor[j]
+                                cursor[j] += 1
+                                indices[pos] = row
+                                data[pos] = w
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -416,6 +427,7 @@ def jits_csr_fill_p_call(
         # so compute it through float32 and restore the public dtype.
         kernel_weight = weight.astype(jnp.float32)
     clen = jnp.atleast_1d(clen)
+    assert clen.shape == (2,), f"clen must hold (cl, thr), but got shape {clen.shape}."
     seed = jnp.atleast_1d(seed)
     offsets = jnp.asarray(offsets, dtype=jnp.int32)
     nnz = int(nnz)

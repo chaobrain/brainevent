@@ -31,6 +31,18 @@ __all__ = [
 ]
 
 
+def _lfsr_component(seed, minimum: int):
+    """Initial state ``seed + minimum`` (mod 2**32), kept at or above ``minimum``.
+
+    A Tausworthe component that starts below its minimum stays zero forever;
+    only seeds just below 0 (mod 2**32) land there, so lift those.
+    """
+    if isinstance(seed, (int, np.integer)):
+        seed = jnp.asarray(int(seed) % (1 << 32), dtype=jnp.uint32)
+    z = jnp.asarray(seed).astype(jnp.uint32) + jnp.uint32(minimum)
+    return jnp.where(z < minimum, z + jnp.uint32(minimum), z)
+
+
 class LFSRBase(abc.ABC):
     """Abstract base class for Linear Feedback Shift Register random number generators.
 
@@ -502,8 +514,9 @@ class PallasLFSR88RNG(LFSRBase):
         -----
         The LFSR88 algorithm requires that the initial seeds are at
         least 2, 8, and 16 for the three components respectively.
-        This method adds these offsets to the provided seed to ensure
-        the constraint is always satisfied.
+        This method adds these offsets to the provided seed (mod 2**32)
+        and lifts any component that wraps below its minimum, so the
+        constraint holds for every seed.
 
         Examples
         --------
@@ -515,9 +528,9 @@ class PallasLFSR88RNG(LFSRBase):
             4
         """
         return (
-            jnp.asarray(seed + 2, dtype=jnp.uint32),
-            jnp.asarray(seed + 8, dtype=jnp.uint32),
-            jnp.asarray(seed + 16, dtype=jnp.uint32),
+            _lfsr_component(seed, 2),
+            _lfsr_component(seed, 8),
+            _lfsr_component(seed, 16),
             jnp.asarray(0, dtype=jnp.uint32)
         )
 
@@ -750,8 +763,9 @@ class PallasLFSR113RNG(LFSRBase):
         -----
         The LFSR113 algorithm requires that the initial seeds are at
         least 2, 8, 16, and 128 for the four components respectively.
-        This method adds these offsets to the provided seed to ensure
-        the constraint is always satisfied.
+        This method adds these offsets to the provided seed (mod 2**32)
+        and lifts any component that wraps below its minimum, so the
+        constraint holds for every seed.
 
         Examples
         --------
@@ -763,10 +777,10 @@ class PallasLFSR113RNG(LFSRBase):
             4
         """
         return (
-            jnp.asarray(seed + 2, dtype=jnp.uint32),
-            jnp.asarray(seed + 8, dtype=jnp.uint32),
-            jnp.asarray(seed + 16, dtype=jnp.uint32),
-            jnp.asarray(seed + 128, dtype=jnp.uint32)
+            _lfsr_component(seed, 2),
+            _lfsr_component(seed, 8),
+            _lfsr_component(seed, 16),
+            _lfsr_component(seed, 128)
         )
 
     def generate_next_key(self) -> PallasRandomKey:

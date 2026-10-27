@@ -851,3 +851,24 @@ def test_binary_jitumv_grads_use_activity_mask(implementation, cls_name, corder,
 @pytest.mark.parametrize('op', ['mm', 'mr'])
 def test_binary_jitumm_grads_use_activity_mask(implementation, cls_name, corder, op):
     _check_activity_grads(implementation, cls_name, corder, op)
+
+
+@pytest.mark.parametrize('backend', JITUMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [False, True])
+def test_weight_grads_keep_weight_dtype_under_x64(backend, transpose, corder):
+    # Regression: the JVP/transpose rules passed Python ``1.``/``0.`` as
+    # weights, which become float64 under x64: float64 gradients for float32
+    # weights, dtype assertion errors, and (cuda_raw) float32 buffers read as
+    # float64.
+    from brainevent._test_util import check_jitc_weight_grads, jax_x64_enabled
+    shape = (7, 9)
+    n_in = shape[0] if transpose else shape[1]
+    kw = dict(shape=shape, transpose=transpose, corder=corder, backend=backend)
+    rng = np.random.default_rng(0)
+    with jax_x64_enabled():
+        params = tuple(jnp.asarray(w, jnp.float32) for w in (0.5, 1.5))
+        ev = jnp.asarray(rng.random(n_in) > 0.5)
+        EB = jnp.asarray(rng.random((n_in, 3)) > 0.5)
+        check_jitc_weight_grads(lambda a, b: binary_jitumv(a, b, 0.4, ev, 11, **kw), params)
+        check_jitc_weight_grads(lambda a, b: binary_jitumm(a, b, 0.4, EB, 11, **kw), params)

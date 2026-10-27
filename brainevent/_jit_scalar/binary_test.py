@@ -624,11 +624,14 @@ def test_binary_jitsmm_grads_use_activity_mask(implementation, cls_name, corder,
 
 @pytest.mark.parametrize('implementation', JITSMV_PARAMS)
 def test_issue_198_jitc_scalar_weight_grad_regression(implementation):
-    """Issue #198 repro: grad must be 3.0 (mask), not 4.0 (raw event values)."""
+    """Issue #198 repro: grad must be 3.0 (mask), not 4.0 (raw event values).
+
+    ``corder=False`` pins the issue's matrix (the default before 0.4.0).
+    """
     x = jnp.array([0., 2., 1.])
 
     def loss(w):
-        mat = _be.JITCScalarR((w, 0.5, 123), shape=(3, 2), backend=implementation)
+        mat = _be.JITCScalarR((w, 0.5, 123), shape=(3, 2), corder=False, backend=implementation)
         return (_be.BinaryArray(x) @ mat).sum()
 
     w = jnp.array(1.5, dtype=jnp.float32)
@@ -644,18 +647,18 @@ def test_issue_198_jitc_scalar_mm_and_negative_weight_grad_regression(implementa
     dense_mask = (np.asarray(x) != 0).astype(np.float32)
 
     def loss(w):
-        mat = _be.JITCScalarR((w, 0.5, 123), shape=(3, 2), backend=implementation)
+        mat = _be.JITCScalarR((w, 0.5, 123), shape=(3, 2), corder=False, backend=implementation)
         return (_be.BinaryArray(x) @ mat).sum()
 
     def ref(w):
-        return (jnp.asarray(dense_mask) @ _be.JITCScalarR((w, 0.5, 123), shape=(3, 2)).todense()).sum()
+        return (jnp.asarray(dense_mask) @ _be.JITCScalarR((w, 0.5, 123), shape=(3, 2), corder=False).todense()).sum()
 
     w = jnp.array(1.5, dtype=jnp.float32)
     assert np.allclose(loss(w), ref(w))
     assert np.allclose(jax.grad(loss)(w), jax.grad(ref)(w))
     # Rows 0 and 1 contribute 3.0 each (the issue's mm number), the -1 row adds
     # its own (active) connections.
-    assert np.allclose(jax.grad(ref)(w), 6.0 + float(np.asarray(_be.JITCScalarR((1.0, 0.5, 123), shape=(3, 2)).todense())[0].sum()))
+    assert np.allclose(jax.grad(ref)(w), 6.0 + float(np.asarray(_be.JITCScalarR((1.0, 0.5, 123), shape=(3, 2), corder=False).todense())[0].sum()))
 
 
 @pytest.mark.skipif(
@@ -704,3 +707,24 @@ def test_cuda_grid_guard_raises_python_exception_instead_of_aborting(op):
     assert proc.returncode >= 0, f'process killed by signal {-proc.returncode}:\n{proc.stderr[-2000:]}'
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert 'RAISED True' in proc.stdout, (proc.stdout, proc.stderr[-2000:])
+
+
+@pytest.mark.parametrize('backend', JITSMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [False, True])
+def test_weight_grads_keep_weight_dtype_under_x64(backend, transpose, corder):
+    # Regression: the JVP/transpose rules passed Python ``1.``/``0.`` as
+    # weights, which become float64 under x64: float64 gradients for float32
+    # weights, dtype assertion errors, and (cuda_raw) float32 buffers read as
+    # float64.
+    from brainevent._test_util import check_jitc_weight_grads, jax_x64_enabled
+    shape = (7, 9)
+    n_in = shape[0] if transpose else shape[1]
+    kw = dict(shape=shape, transpose=transpose, corder=corder, backend=backend)
+    rng = np.random.default_rng(0)
+    with jax_x64_enabled():
+        params = tuple(jnp.asarray(w, jnp.float32) for w in (1.5,))
+        ev = jnp.asarray(rng.random(n_in) > 0.5)
+        EB = jnp.asarray(rng.random((n_in, 3)) > 0.5)
+        check_jitc_weight_grads(lambda a: binary_jitsmv(a, 0.4, ev, 11, **kw), params)
+        check_jitc_weight_grads(lambda a: binary_jitsmm(a, 0.4, EB, 11, **kw), params)

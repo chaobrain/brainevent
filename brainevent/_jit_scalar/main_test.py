@@ -1028,3 +1028,177 @@ def test_inactive_events_isolate_nonfinite_params_dtypes(backend, op, dtype, cor
             silent = count == 0 if x.any() else np.ones(y.shape, bool)
             assert np.array_equal(y[silent], np.zeros(int(silent.sum()))), (bad, y)
             assert not np.isfinite(y[~silent]).any(), bad
+
+
+# ---- reductions ----
+import brainunit as _u
+
+
+@pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+@pytest.mark.parametrize('axis', [None, 0, 1])
+def test_sum_matches_dense(cls, axis):
+    # Regression: ``sum()`` returned the bare homogeneous weight.
+    M = cls((1.5 * _u.mV, 0.5, 3), shape=(6, 8))
+    assert _u.math.allclose(M.sum(axis), M.todense().sum(axis))
+
+
+@pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+def test_sum_rejects_bad_axis(cls):
+    with pytest.raises(ValueError):
+        cls((1.5, 0.5, 3), shape=(6, 8)).sum(2)
+
+
+# ---- Exact density by thinning, and the ``corder=True`` default (0.4.0) ----
+from brainevent._jit_scalar._test_util import dense_scalar_reference as _t_reference
+from brainevent._jit_scalar.binary import binary_jitsmv as _t_binary_mv
+from brainevent._jit_scalar.float import jits as _t_generate, jitsmv as _t_mv
+from brainevent._test_util import (
+    JITC_GOLDEN_0_3_0,
+    check_jitc_grads_match_dense,
+    check_jitc_ops_match_dense,
+    jitc_kernel_orientations,
+    jitc_mask_digest,
+)
+
+_T_PARAMS = (1.5,)
+_T_THINNED = (0.3, 0.7, 0.93)
+_T_CLASSES = ['JITCScalarR', 'JITCScalarC']
+
+
+def _t_matrix(cls_name, prob, *, corder=True, seed=11, shape=(60, 90), params=_T_PARAMS):
+    return getattr(brainevent, cls_name)((*params, prob, seed), shape=shape, corder=corder)
+
+
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('prob', [0.6, 0.7, 0.9, 0.99, 1 / 3, 0.3, 0.15])
+def test_density_is_exact_for_any_prob(prob, corder):
+    """Density used to be ``2 / ceil(2 / p)`` (0.5 for p=0.6, 0.667 for p=0.9)."""
+    shape = (300, 400)
+    n = shape[0] * shape[1]
+    dense = _t_matrix('JITCScalarR', prob, corder=corder, seed=3, shape=shape).todense()
+    nnz = int((np.asarray(dense) != 0).sum())
+    assert abs(nnz - prob * n) <= 4 * np.sqrt(n * prob * (1 - prob)) + 1
+
+
+@pytest.mark.parametrize('cls_name', _T_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('prob', _T_THINNED)
+def test_thinned_matrix_matches_reference_and_every_op(cls_name, prob, corder):
+    mat = _t_matrix(cls_name, prob, corder=corder)
+    expected = _t_reference(*_T_PARAMS, prob, 11, shape=(60, 90), corder=corder)
+    np.testing.assert_array_equal(np.asarray(mat.todense()) != 0, expected != 0)
+    check_jitc_ops_match_dense(mat)
+
+
+@pytest.mark.parametrize('prob, corder', sorted(JITC_GOLDEN_0_3_0))
+def test_integer_stride_draws_the_0_3_0_matrix(prob, corder):
+    """When ``2 / p`` is an integer nothing is thinned: the 0.3.0 matrix, bit for bit."""
+    mat = _t_matrix('JITCScalarR', prob, corder=corder, seed=123, shape=(37, 129))
+    assert jitc_mask_digest(mat.todense()) == JITC_GOLDEN_0_3_0[(prob, corder)]
+
+
+@pytest.mark.parametrize('cls_name', _T_CLASSES)
+def test_default_corder_makes_events_at_matrix_event_driven(cls_name):
+    mat = getattr(brainevent, cls_name)((*_T_PARAMS, 0.1, 0), shape=(20, 30))
+    assert mat.corder is True
+    assert mat.T.corder is False
+    # ``events @ M`` must take the scatter walk (one stream per event) ...
+    left = jitc_kernel_orientations(lambda x: brainevent.BinaryArray(x) @ mat, jnp.zeros(20, bool))
+    assert [c for _, _, c in left] == [False]
+    # ... and ``M @ v`` the row-parallel gather.
+    right = jitc_kernel_orientations(lambda x: mat @ x, jnp.zeros(30, jnp.float32))
+    assert [c for _, _, c in right] == [True]
+
+
+@pytest.mark.parametrize('prob', _T_THINNED)
+def test_matrix_passed_into_jit_draws_the_same_connectivity(prob):
+    """Inside ``jit`` ``prob`` is a tracer; ``(cl, thr)`` must come out identical."""
+    mat = _t_matrix('JITCScalarR', prob)
+    v = jnp.linspace(-1., 1., 90, dtype=jnp.float32)
+    np.testing.assert_array_equal(np.asarray(jax.jit(lambda m: m.todense())(mat)), np.asarray(mat.todense()))
+    np.testing.assert_allclose(np.asarray(jax.jit(lambda m, x: m @ x)(mat, v)), np.asarray(mat @ v),
+                               rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('cls_name', _T_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+def test_thinned_gradients_match_dense(cls_name, corder):
+    check_jitc_grads_match_dense(
+        lambda *p: _t_matrix(cls_name, 0.7, corder=corder, params=p), _T_PARAMS,
+    )
+
+
+@pytest.mark.parametrize('prob', [1.5, -0.1, float('nan'), float('inf')])
+def test_functional_api_rejects_invalid_prob(prob):
+    v = jnp.ones(5, jnp.float32)
+    with pytest.raises(ValueError, match='prob'):
+        _t_generate(*_T_PARAMS, prob, 0, shape=(4, 5))
+    with pytest.raises(ValueError, match='prob'):
+        _t_mv(*_T_PARAMS, prob, v, 0, shape=(4, 5))
+    with pytest.raises(ValueError, match='prob'):
+        _t_binary_mv(*_T_PARAMS, prob, v > 0, 0, shape=(4, 5))
+
+
+def test_vmap_over_prob_matches_per_prob_calls():
+    """A batched ``prob`` batches ``clen = (cl, thr)`` to shape ``(B, 2)``."""
+    probs = jnp.asarray([0.1, 0.3, 0.7], jnp.float32)
+    v = jnp.linspace(-1., 1., 30, dtype=jnp.float32)
+    for f in (lambda p: _t_mv(*_T_PARAMS, p, v, 0, shape=(20, 30)),
+              lambda p: _t_binary_mv(*_T_PARAMS, p, v > 0, 0, shape=(20, 30)),
+              lambda p: _t_generate(*_T_PARAMS, p, 0, shape=(20, 30))):
+        batched = np.asarray(jax.vmap(f)(probs))
+        looped = np.stack([np.asarray(f(float(p))) for p in probs])
+        np.testing.assert_allclose(batched, looped, rtol=1e-5, atol=1e-5)
+
+
+from brainevent._test_util import jax_x64_enabled as _t_x64
+
+
+@pytest.mark.parametrize('cls_name', _T_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('prob', [0.3, 0.7])
+def test_thinned_matrix_is_identical_under_x64(cls_name, prob, corder):
+    """``(cl, thr)`` is computed in float32 either way, so x64 draws the same matrix."""
+    digest = jitc_mask_digest(_t_matrix(cls_name, prob, corder=corder).todense())
+    with _t_x64():
+        mat = _t_matrix(cls_name, prob, corder=corder)
+        assert jitc_mask_digest(mat.todense()) == digest
+        check_jitc_ops_match_dense(mat)
+
+
+def _t_within(observed, expected, sigma, what):
+    assert abs(observed - expected) <= 5 * sigma, (
+        f'{what}: observed {observed:.5g}, expected {expected:.5g} (5 sigma = {5 * sigma:.3g})'
+    )
+
+
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('prob', [0.25, 0.3, 0.7])
+def test_thinned_walk_has_no_structure(prob, corder):
+    """Thinning must not correlate streams, lanes or chunk positions.
+
+    The three JITC families share one connectivity walk, so this scalar test
+    covers all of them. A stream is a row of the matrix for ``corder=True`` and
+    a column for ``corder=False``; it walks its positions in 4 chunks, lane
+    ``l`` taking positions ``l, l + 32, ...`` of each chunk. ``p = 0.25`` is the
+    unthinned (integer ``2 / p``) baseline. The sigmas are binomial, an upper
+    bound for the walk's more regular counts.
+    """
+    dense = np.asarray(_t_matrix('JITCScalarR', prob, corder=corder, seed=5, shape=(400, 640)).todense()) != 0
+    streams = dense if corder else dense.T
+    n_streams, length = streams.shape
+    chunk = -(-length // 4)
+    sq = prob ** 2
+    _t_within(streams.sum(1).mean(), length * prob,
+              np.sqrt(length * prob * (1 - prob) / n_streams), 'non-zeros per stream')
+    _t_within((streams[1:] & streams[:-1]).sum(1).mean(), length * sq,
+              np.sqrt(length * sq * (1 - sq) / (n_streams - 1)), 'overlap of adjacent streams')
+    _t_within((streams[:, 1:] & streams[:, :-1]).sum(0).mean(), n_streams * sq,
+              np.sqrt(n_streams * sq * (1 - sq) / (length - 1)), 'overlap of adjacent positions')
+    local = np.arange(length) % chunk
+    for lane in range(32):
+        part = streams[:, local % 32 == lane]
+        _t_within(part.mean(), prob, np.sqrt(prob * (1 - prob) / part.size), f'density of lane {lane}')
+    for quarter in range(4):
+        part = streams[:, local * 4 // chunk == quarter]
+        _t_within(part.mean(), prob, np.sqrt(prob * (1 - prob) / part.size), f'density of chunk quarter {quarter}')

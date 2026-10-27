@@ -28,7 +28,9 @@ from brainevent._test_util import check_event_op_grads, jax_x64_enabled, require
 
 PLATFORM = jax.default_backend()
 BACKENDS = tuple(csr_delay_deliver_p.available_backends(PLATFORM))
-EVENT_DTYPES = ('bool', 'int8', 'int32', 'float32')
+# float16/bfloat16 events have no numba type; the numba kernel reads them
+# through their mask (binary) or as float32 (weighted).
+EVENT_DTYPES = ('bool', 'int8', 'int32', 'float32', 'float16', 'bfloat16')
 
 
 # ---------------------------------------------------------------------------
@@ -54,9 +56,9 @@ def make_events(n_pre, dtype, seed=1):
     if dtype == 'bool':
         return rng.random(n_pre) < 0.5
     vals = rng.choice(np.array([2.0, -1.0, 0.0, 0.5, 0.0, 3.0]), n_pre)
-    if np.dtype(dtype).kind == 'i':
+    if jnp.dtype(dtype).kind == 'i':
         vals = np.round(vals * 2)
-    return vals.astype(dtype)
+    return vals.astype(jnp.dtype(dtype))
 
 
 def reference(ring, events, data, indices, indptr, delays, t, weighted=False):

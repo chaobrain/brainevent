@@ -57,8 +57,10 @@ from .binary import (
     _event_contrib,
     _numba_event_mask,
     _numba_weighted_events,
-    _workspace_from_task_operands,
-    _workspace_task_operands,
+    _hybrid_scratch,
+    _task_capacity,
+    _warn_workspace_deprecated,
+    _check_max_row_nnz,
 )
 from .float import csrmv, csrmm
 from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
@@ -71,7 +73,25 @@ __all__ = [
 ]
 
 
-@namescope(static_argnames=("shape", "transpose", "weighted"))
+@namescope(name="brainevent.binary_csrmv_indexed", static_argnames=("shape", "transpose", "weighted", "max_row_nnz"))
+def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpose, backend, weighted, max_row_nnz):
+    data, unitd = u.split_mantissa_unit(data)
+    v, unitv = u.split_mantissa_unit(v)
+    res = binary_csrmv_indexed_p_call(
+        data,
+        indices,
+        indptr,
+        perm,
+        v,
+        shape=shape,
+        transpose=transpose,
+        backend=backend,
+        weighted=weighted,
+        max_row_nnz=max_row_nnz,
+    )[0]
+    return u.maybe_decimal(res * (unitd * unitv))
+
+
 def binary_csrmv_indexed(
     data: Data,
     indices: Index,
@@ -80,10 +100,11 @@ def binary_csrmv_indexed(
     v: Data,
     *,
     shape: MatrixShape,
-    workspace,
     transpose: bool = False,
     backend: Optional[str] = None,
     weighted: bool = False,
+    max_row_nnz: Optional[int] = None,
+    workspace=None,
 ) -> Data:
     """Event-driven CSR matrix-vector product with a fused weight gather index.
 
@@ -113,9 +134,6 @@ def binary_csrmv_indexed(
         active), and weights are never scaled by its value.
     shape : tuple of int
         Logical shape ``(m, k)`` of the traversed structure.
-    workspace
-        Explicit binary task workspace with ``task_capacity``,
-        ``task_begin``, ``task_end``, and ``status`` attributes.
     transpose : bool, optional
         If ``True``, compute the transposed (scatter) product.  Default
         ``False``.
@@ -125,6 +143,13 @@ def binary_csrmv_indexed(
         If ``True``, ``v`` holds value-weighted events
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value instead of by ``1``.  Default ``False``.
+    max_row_nnz : int or None, optional
+        Upper bound on the longest row of the traversed ``indptr``, used to
+        size the ``cuda_raw`` hybrid task queue (see
+        :func:`brainevent.binary_csrmv`); validated when ``indptr`` is
+        concrete.
+    workspace : optional
+        Deprecated and ignored; passing it emits a ``DeprecationWarning``.
 
     Returns
     -------
@@ -135,21 +160,12 @@ def binary_csrmv_indexed(
     --------
     brainevent._csr.binary.binary_csrmv : The non-indexed event-driven product.
     """
-    data, unitd = u.split_mantissa_unit(data)
-    v, unitv = u.split_mantissa_unit(v)
-    res = binary_csrmv_indexed_p_call(
-        data,
-        indices,
-        indptr,
-        perm,
-        v,
-        workspace=workspace,
-        shape=shape,
-        transpose=transpose,
-        backend=backend,
-        weighted=weighted,
-    )[0]
-    return u.maybe_decimal(res * (unitd * unitv))
+    _warn_workspace_deprecated(workspace)
+    _check_max_row_nnz(indptr, max_row_nnz)
+    return _binary_csrmv_indexed_jit(
+        data, indices, indptr, perm, v,
+        shape=shape, transpose=transpose, backend=backend, weighted=weighted, max_row_nnz=max_row_nnz,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -215,11 +231,11 @@ def _csrmv_indexed_numba_kernel(
     if kwargs.get('weighted', False):
         mv_w = _csrmv_indexed_numba_weighted(weight_info.size == 1, transpose)
 
-        def weighted_kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+        def weighted_kernel(weights, indices, indptr, perm, vector):
             output = numba_kernel(mv_w, outs=kwargs['outs'][0])(
                 weights, indices, indptr, perm, _numba_weighted_events(vector))
             math_out = output[0] if isinstance(output, (tuple, list)) else output
-            return math_out, task_begin, task_end, status
+            return (math_out,)
 
         return weighted_kernel
 
@@ -307,12 +323,12 @@ def _csrmv_indexed_numba_kernel(
                                 r += weights[perm[j]]
                         posts[i] = r
 
-    def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+    def kernel(weights, indices, indptr, perm, vector):
         if mask_events:
             vector = event_active(vector)
         output = numba_kernel(mv, outs=kwargs['outs'][0])(weights, indices, indptr, perm, vector)
         math_out = output[0] if isinstance(output, (tuple, list)) else output
-        return math_out, task_begin, task_end, status
+        return (math_out,)
 
     return kernel
 
@@ -335,7 +351,7 @@ def _binary_csrmv_indexed_jax_kernel(
     weighted = kwargs.get('weighted', False)
 
     if transpose:
-        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, vector):
             row_ids = jnp.repeat(
                 jnp.arange(m, dtype=indptr.dtype),
                 jnp.diff(indptr),
@@ -344,9 +360,9 @@ def _binary_csrmv_indexed_jax_kernel(
             w = weights[0] if is_homo else weights[perm]
             contrib = _event_contrib(w, vector[row_ids], dtype=out_dtype, weighted=weighted)
             math_out = jnp.zeros(k, dtype=out_dtype).at[indices].add(contrib)
-            return math_out, task_begin, task_end, status
+            return (math_out,)
     else:
-        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, vector):
             row_ids = jnp.repeat(
                 jnp.arange(m, dtype=indptr.dtype),
                 jnp.diff(indptr),
@@ -355,7 +371,7 @@ def _binary_csrmv_indexed_jax_kernel(
             w = weights[0] if is_homo else weights[perm]
             contrib = _event_contrib(w, vector[indices], dtype=out_dtype, weighted=weighted)
             math_out = jnp.zeros(m, dtype=out_dtype).at[row_ids].add(contrib)
-            return math_out, task_begin, task_end, status
+            return (math_out,)
 
     return kernel
 
@@ -401,22 +417,22 @@ def _binary_csrmv_indexed_cuda_kernel(
         )
         kernel_name = f'{_mod}.binary_csrmv_wat_hybrid_homo{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, vector):
             vector = event_abi.prepare(vector)
-            return jax.ffi.ffi_call(
+            scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
+            math_out = jax.ffi.ffi_call(
                 kernel_name,
-                kwargs['outs'],
+                (out_info, *scratch_info),
                 input_output_aliases={4: 1, 5: 2, 6: 3},
             )(
                 weights,
                 indices,
                 indptr,
                 vector,
-                task_begin,
-                task_end,
-                status,
+                *scratch,
                 task_capacity=kwargs['task_capacity'],
-            )
+            )[0]
+            return (math_out,)
 
     elif transpose:
         _cfg = get_hybrid_config()
@@ -429,11 +445,12 @@ def _binary_csrmv_indexed_cuda_kernel(
         )
         kernel_name = f'{_mod}.binary_indexed_csrmv_wat_hybrid_hetero{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, vector):
             vector = event_abi.prepare(vector)
-            return jax.ffi.ffi_call(
+            scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
+            math_out = jax.ffi.ffi_call(
                 kernel_name,
-                kwargs['outs'],
+                (out_info, *scratch_info),
                 input_output_aliases={5: 1, 6: 2, 7: 3},
             )(
                 weights,
@@ -441,11 +458,10 @@ def _binary_csrmv_indexed_cuda_kernel(
                 indptr,
                 perm,
                 vector,
-                task_begin,
-                task_end,
-                status,
+                *scratch,
                 task_capacity=kwargs['task_capacity'],
-            )
+            )[0]
+            return (math_out,)
 
     elif is_homo:
         load_cuda_file(
@@ -454,10 +470,10 @@ def _binary_csrmv_indexed_cuda_kernel(
         )
         kernel_name = f'csr_binary_csrmv.binary_csrmv_nt_auto_homo{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, vector):
             vector = event_abi.prepare(vector)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
-            return math_out, task_begin, task_end, status
+            return (math_out,)
 
     else:
         load_cuda_file(
@@ -466,10 +482,10 @@ def _binary_csrmv_indexed_cuda_kernel(
         )
         kernel_name = f'csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, vector, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, vector):
             vector = event_abi.prepare(vector)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, perm, vector)
-            return math_out, task_begin, task_end, status
+            return (math_out,)
 
     return kernel
 
@@ -480,12 +496,12 @@ def binary_csrmv_indexed_p_call(
     indptr,
     perm,
     vector,
-    workspace,
     *,
     shape: MatrixShape,
     transpose: bool,
     backend: Optional[str] = None,
     weighted: bool = False,
+    max_row_nnz: Optional[int] = None,
 ):
     """Low-level primitive call for fused indexed event-driven CSR mat-vec.
 
@@ -497,9 +513,6 @@ def binary_csrmv_indexed_p_call(
     weights, indices, indptr, perm, vector : jax.Array
         See :func:`binary_csrmv_indexed`.  ``perm`` shares ``indices``'
         shape and integer dtype.
-    workspace
-        Explicit binary task workspace.  Expanded into task operands in the
-        primitive ABI and returned unchanged by math-only backends.
     shape : tuple of int
         Logical shape ``(m, k)`` of the traversed structure.
     transpose : bool
@@ -509,12 +522,13 @@ def binary_csrmv_indexed_p_call(
     weighted : bool, optional
         Multiply the weights by the event value instead of the activity
         mask.  Default ``False``.
+    max_row_nnz : int or None, optional
+        Upper bound on the longest row of ``indptr`` (hybrid task queue size).
 
     Returns
     -------
     tuple of jax.Array
-        The result vector followed by ``task_begin``, ``task_end``, and
-        ``status`` task workspace outputs.
+        A one-element tuple holding the result vector.
     """
     assert perm.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "perm must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
@@ -538,21 +552,13 @@ def binary_csrmv_indexed_p_call(
         if transpose else
         jax.ShapeDtypeStruct([shape[0]], weights.dtype)
     )
-    task_capacity, task_begin, task_end, status = _workspace_task_operands(workspace, indptr)
-    task_begin_info = jax.ShapeDtypeStruct(task_begin.shape, task_begin.dtype)
-    task_end_info = jax.ShapeDtypeStruct(task_end.shape, task_end.dtype)
-    status_info = jax.ShapeDtypeStruct(status.shape, status.dtype)
-
     return binary_csrmv_indexed_p(
         weights,
         indices,
         indptr,
         perm,
         vector,
-        task_begin,
-        task_end,
-        status,
-        outs=(out_info, task_begin_info, task_end_info, status_info),
+        outs=[out_info],
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -562,61 +568,50 @@ def binary_csrmv_indexed_p_call(
         perm_info=jax.ShapeDtypeStruct(perm.shape, perm.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
-        task_begin_info=task_begin_info,
-        task_end_info=task_end_info,
-        status_info=status_info,
-        task_capacity=task_capacity,
+        max_row_nnz=max_row_nnz,
+        task_capacity=_task_capacity(indices, indptr, max_row_nnz),
     )
 
 
 # --------------------------------------------------------------------------- #
 # autodiff rules (registered in Phase 3 / below)
 # --------------------------------------------------------------------------- #
-def _idx_jvp_v(v_dot, weights, indices, indptr, perm, v, task_begin, task_end, status, *, shape, transpose, **kw):
+def _idx_jvp_v(v_dot, weights, indices, indptr, perm, v, *, shape, transpose, **kw):
     w = weights if weights.shape[0] == 1 else weights[perm]
-    # v_dot is a dense/float tangent, so this intentionally uses float csrmv;
-    # the binary task workspace is only needed for event-driven primal paths.
-    return (
-        csrmv(w, indices, indptr, v_dot.astype(w.dtype), shape=shape, transpose=transpose, backend=kw['backend']),
-        jnp.zeros_like(task_begin),
-        jnp.zeros_like(task_end),
-        jnp.zeros_like(status),
-    )
+    # v_dot is a dense/float tangent, so this intentionally uses float csrmv.
+    return [csrmv(w, indices, indptr, v_dot.astype(w.dtype), shape=shape, transpose=transpose, backend=kw['backend'])]
 
 
-def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, task_begin, task_end, status, *, shape, transpose, **kw):
-    workspace = _workspace_from_task_operands(kw['task_capacity'], task_begin, task_end, status)
-    tangent = binary_csrmv_indexed_p_call(
+def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, *, shape, transpose, **kw):
+    return binary_csrmv_indexed_p_call(
         w_dot,
         indices,
         indptr,
         perm,
         v,
-        workspace,
         shape=shape,
         transpose=transpose,
         backend=kw['backend'],
         weighted=kw.get('weighted', False),
-    )[0]
-    return tangent, jnp.zeros_like(task_begin), jnp.zeros_like(task_end), jnp.zeros_like(status)
+        max_row_nnz=kw.get('max_row_nnz'),
+    )
 
 
-def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, task_begin, task_end, status, *, shape, transpose, **kw):
+def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, *, shape, transpose, **kw):
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr) or ad.is_undefined_primal(perm):
         raise ValueError("Cannot transpose with respect to sparse structure / perm.")
     ct = ct[0]
-    workspace = _workspace_from_task_operands(kw['task_capacity'], task_begin, task_end, status)
     if ad.is_undefined_primal(events):
         if type(ct) is ad.Zero:
-            ct_events = ad.Zero(events)
+            ct_events = ad.Zero(events.aval)
         else:
             w = weights if weights.shape[0] == 1 else weights[perm]
             # ct_events is dense/float cotangent data, not binary events.
             ct_events = csrmv(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
-        return weights, indices, indptr, perm, ct_events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
+        return weights, indices, indptr, perm, ct_events
     else:
         if type(ct) is ad.Zero:
-            ct_w = ad.Zero(weights)
+            ct_w = ad.Zero(weights.aval)
         else:
             weighted = kw.get('weighted', False)
             # (row, col) of the traversed structure at slot k; weight at slot k is
@@ -628,8 +623,8 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, task_begin, 
                 def unit_product(ct):
                     base = binary_csrmv_indexed_p_call(
                         jnp.ones(1, dtype=weights.aval.dtype), indices, indptr, perm, events,
-                        workspace, shape=shape, transpose=transpose, backend=kw['backend'],
-                        weighted=weighted,
+                        shape=shape, transpose=transpose, backend=kw['backend'],
+                        weighted=weighted, max_row_nnz=kw.get('max_row_nnz'),
                     )[0]
                     return jnp.inner(ct, base)
 
@@ -643,46 +638,26 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, task_begin, 
             else:
                 per_slot = _entry_weight_ct(events, ct, row, col, transpose=transpose, weighted=weighted)
                 ct_w = jnp.zeros(weights.aval.shape, weights.aval.dtype).at[perm].add(per_slot)
-        return ct_w, indices, indptr, perm, events, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
+        return ct_w, indices, indptr, perm, events
 
 
 def _idx_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    task_capacity = kwargs.get('task_capacity', args[5].shape[0])
-    workspace = _workspace_from_task_operands(task_capacity, args[5], args[6], args[7])
-    if axes == (None, None, None, None, 0, None, None, None):
-        assert args[4].ndim == 2, 'Batching axis 0 requires 2D input.'
+    if axes in ((None, None, None, None, 0), (None, None, None, None, 1)):
+        assert args[4].ndim == 2, f'Batching axis {axes[4]} requires 2D input.'
         r = binary_csrmm_indexed_p_call(
             args[0],
             args[1],
             args[2],
             args[3],
-            args[4].T,
-            workspace,
+            args[4].T if axes[4] == 0 else args[4],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
+            max_row_nnz=kwargs.get('max_row_nnz'),
         )
-        math_out = r[0]
-        return (math_out, args[5], args[6], args[7]), (1, None, None, None)
-
-    if axes == (None, None, None, None, 1, None, None, None):
-        assert args[4].ndim == 2, 'Batching axis 1 requires 2D input.'
-        r = binary_csrmm_indexed_p_call(
-            args[0],
-            args[1],
-            args[2],
-            args[3],
-            args[4],
-            workspace,
-            shape=kwargs['shape'],
-            transpose=kwargs['transpose'],
-            backend=kwargs['backend'],
-            weighted=kwargs.get('weighted', False),
-        )
-        math_out = r[0]
-        return (math_out, args[5], args[6], args[7]), (1, None, None, None)
+        return r, [1]
 
     return general_batching_rule(binary_csrmv_indexed_p, args, axes, **kwargs)
 
@@ -704,7 +679,7 @@ binary_csrmv_indexed_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_indexed_jax_ke
 binary_csrmv_indexed_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_indexed_jax_kernel)
 binary_csrmv_indexed_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_indexed_jax_kernel)
 binary_csrmv_indexed_p.def_cuda_raw_kernel(_binary_csrmv_indexed_cuda_kernel, asdefault=True)
-binary_csrmv_indexed_p.def_jvp_rule2(_idx_jvp_weights, None, None, None, _idx_jvp_v, None, None, None)
+binary_csrmv_indexed_p.def_jvp_rule2(_idx_jvp_weights, None, None, None, _idx_jvp_v)
 binary_csrmv_indexed_p.def_transpose_rule(_idx_transpose_rule)
 binary_csrmv_indexed_p.def_batching_rule(_idx_batching)
 binary_csrmv_indexed_p.def_call(binary_csrmv_indexed_p_call)
@@ -716,7 +691,18 @@ binary_csrmv_indexed_p.def_tags('csr', 'binary', 'indexed')
 # =========================================================================== #
 
 
-@namescope(static_argnames=("shape", "transpose", "weighted"))
+@namescope(name="brainevent.binary_csrmm_indexed", static_argnames=("shape", "transpose", "weighted", "max_row_nnz"))
+def _binary_csrmm_indexed_jit(data, indices, indptr, perm, B, *, shape, transpose, backend, weighted, max_row_nnz):
+    data, unitd = u.split_mantissa_unit(data)
+    B, unitb = u.split_mantissa_unit(B)
+    res = binary_csrmm_indexed_p_call(
+        data, indices, indptr, perm, B,
+        shape=shape, transpose=transpose, backend=backend, weighted=weighted,
+        max_row_nnz=max_row_nnz,
+    )[0]
+    return u.maybe_decimal(res * (unitd * unitb))
+
+
 def binary_csrmm_indexed(
     data: Data,
     indices: Index,
@@ -725,10 +711,11 @@ def binary_csrmm_indexed(
     B: Data,
     *,
     shape: MatrixShape,
-    workspace,
     transpose: bool = False,
     backend: Optional[str] = None,
     weighted: bool = False,
+    max_row_nnz: Optional[int] = None,
+    workspace=None,
 ) -> Data:
     """Event-driven CSR matrix-matrix product with a fused weight gather index.
 
@@ -766,6 +753,13 @@ def binary_csrmm_indexed(
         If ``True``, ``B`` holds value-weighted events
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value instead of by ``1``.  Default ``False``.
+    max_row_nnz : int or None, optional
+        Upper bound on the longest row of the traversed ``indptr``, used to
+        size the ``cuda_raw`` hybrid task queue (see
+        :func:`brainevent.binary_csrmv`); validated when ``indptr`` is
+        concrete.
+    workspace : optional
+        Deprecated and ignored; passing it emits a ``DeprecationWarning``.
 
     Returns
     -------
@@ -778,13 +772,12 @@ def binary_csrmm_indexed(
     brainevent._csr.binary.binary_csrmm : The non-indexed event-driven product.
     brainevent._csr.binary_indexed.binary_csrmv_indexed : The matvec analog.
     """
-    data, unitd = u.split_mantissa_unit(data)
-    B, unitb = u.split_mantissa_unit(B)
-    res = binary_csrmm_indexed_p_call(
-        data, indices, indptr, perm, B, workspace,
-        shape=shape, transpose=transpose, backend=backend, weighted=weighted,
-    )[0]
-    return u.maybe_decimal(res * (unitd * unitb))
+    _warn_workspace_deprecated(workspace)
+    _check_max_row_nnz(indptr, max_row_nnz)
+    return _binary_csrmm_indexed_jit(
+        data, indices, indptr, perm, B,
+        shape=shape, transpose=transpose, backend=backend, weighted=weighted, max_row_nnz=max_row_nnz,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -859,11 +852,11 @@ def _csrmm_indexed_numba_kernel(
     if kwargs.get('weighted', False):
         mm_w = _csrmm_indexed_numba_weighted(weight_info.size == 1, transpose)
 
-        def weighted_kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
+        def weighted_kernel(weights, indices, indptr, perm, B):
             output = numba_kernel(mm_w, outs=kwargs['outs'][0])(
                 weights, indices, indptr, perm, _numba_weighted_events(B))
             math_out = output[0] if isinstance(output, (tuple, list)) else output
-            return math_out, task_begin, task_end, status
+            return (math_out,)
 
         return weighted_kernel
 
@@ -970,12 +963,12 @@ def _csrmm_indexed_numba_kernel(
                                     r[k] += w
                         posts[i] = r
 
-    def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
+    def kernel(weights, indices, indptr, perm, B):
         if mask_events:
             B = event_active(B)
         output = numba_kernel(mm, outs=kwargs['outs'][0])(weights, indices, indptr, perm, B)
         math_out = output[0] if isinstance(output, (tuple, list)) else output
-        return math_out, task_begin, task_end, status
+        return (math_out,)
 
     return kernel
 
@@ -999,7 +992,7 @@ def _binary_csrmm_indexed_jax_kernel(
     weighted = kwargs.get('weighted', False)
 
     if transpose:
-        def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, B):
             row_ids = jnp.repeat(
                 jnp.arange(m, dtype=indptr.dtype),
                 jnp.diff(indptr),
@@ -1008,9 +1001,9 @@ def _binary_csrmm_indexed_jax_kernel(
             w = weights[0] if is_homo else weights[perm][:, None]
             contrib = _event_contrib(w, B[row_ids], dtype=out_dtype, weighted=weighted)  # [nse, n]
             math_out = jnp.zeros((k, n), dtype=out_dtype).at[indices].add(contrib)
-            return math_out, task_begin, task_end, status
+            return (math_out,)
     else:
-        def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, B):
             row_ids = jnp.repeat(
                 jnp.arange(m, dtype=indptr.dtype),
                 jnp.diff(indptr),
@@ -1019,7 +1012,7 @@ def _binary_csrmm_indexed_jax_kernel(
             w = weights[0] if is_homo else weights[perm][:, None]
             contrib = _event_contrib(w, B[indices], dtype=out_dtype, weighted=weighted)  # [nse, n]
             math_out = jnp.zeros((m, n), dtype=out_dtype).at[row_ids].add(contrib)
-            return math_out, task_begin, task_end, status
+            return (math_out,)
 
     return kernel
 
@@ -1064,26 +1057,24 @@ def _binary_csrmm_indexed_cuda_kernel(
             (logical_out_info.shape[1], logical_out_info.shape[0]),
             logical_out_info.dtype,
         )
-        out_info = (physical_out_info, *kwargs['outs'][1:])
         kernel_name = f'{_mod}.binary_csrmm_sraw_hybrid_homo{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, B):
             B = event_abi.prepare(B)
-            output, task_begin_out, task_end_out, status_out = jax.ffi.ffi_call(
+            scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
+            output = jax.ffi.ffi_call(
                 kernel_name,
-                out_info,
+                (physical_out_info, *scratch_info),
                 input_output_aliases={4: 1, 5: 2, 6: 3},
             )(
                 weights,
                 indices,
                 indptr,
                 B,
-                task_begin,
-                task_end,
-                status,
+                *scratch,
                 task_capacity=kwargs['task_capacity'],
-            )
-            return jnp.transpose(output), task_begin_out, task_end_out, status_out
+            )[0]
+            return (jnp.transpose(output),)
 
     elif transpose:
         _cfg = get_hybrid_config()
@@ -1099,14 +1090,14 @@ def _binary_csrmm_indexed_cuda_kernel(
             (logical_out_info.shape[1], logical_out_info.shape[0]),
             logical_out_info.dtype,
         )
-        out_info = (physical_out_info, *kwargs['outs'][1:])
         kernel_name = f'{_mod}.binary_indexed_csrmm_sraw_hybrid_hetero{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, B):
             B = event_abi.prepare(B)
-            output, task_begin_out, task_end_out, status_out = jax.ffi.ffi_call(
+            scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
+            output = jax.ffi.ffi_call(
                 kernel_name,
-                out_info,
+                (physical_out_info, *scratch_info),
                 input_output_aliases={5: 1, 6: 2, 7: 3},
             )(
                 weights,
@@ -1114,12 +1105,10 @@ def _binary_csrmm_indexed_cuda_kernel(
                 indptr,
                 perm,
                 B,
-                task_begin,
-                task_end,
-                status,
+                *scratch,
                 task_capacity=kwargs['task_capacity'],
-            )
-            return jnp.transpose(output), task_begin_out, task_end_out, status_out
+            )[0]
+            return (jnp.transpose(output),)
 
     elif is_homo:
         load_cuda_file(
@@ -1128,10 +1117,10 @@ def _binary_csrmm_indexed_cuda_kernel(
         )
         kernel_name = f'csr_binary_csrmm.binary_csrmm_nt_auto_homo{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, B):
             B = event_abi.prepare(B)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
-            return math_out, task_begin, task_end, status
+            return (math_out,)
 
     else:
         load_cuda_file(
@@ -1140,10 +1129,10 @@ def _binary_csrmm_indexed_cuda_kernel(
         )
         kernel_name = f'csr_binary_indexed_csrmm.binary_csrmm_nt_auto_perm_hetero{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, B, task_begin, task_end, status):
+        def kernel(weights, indices, indptr, perm, B):
             B = event_abi.prepare(B)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, perm, B)
-            return math_out, task_begin, task_end, status
+            return (math_out,)
 
     return kernel
 
@@ -1154,12 +1143,12 @@ def binary_csrmm_indexed_p_call(
     indptr,
     perm,
     B,
-    workspace,
     *,
     shape: MatrixShape,
     transpose: bool,
     backend: Optional[str] = None,
     weighted: bool = False,
+    max_row_nnz: Optional[int] = None,
 ):
     """Low-level primitive call for fused indexed event-driven CSR matmat.
 
@@ -1189,17 +1178,9 @@ def binary_csrmm_indexed_p_call(
         if transpose else
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
     )
-    task_capacity, task_begin, task_end, status = _workspace_task_operands(workspace, indptr)
-    task_begin_info = jax.ShapeDtypeStruct(task_begin.shape, task_begin.dtype)
-    task_end_info = jax.ShapeDtypeStruct(task_end.shape, task_end.dtype)
-    status_info = jax.ShapeDtypeStruct(status.shape, status.dtype)
-
     return binary_csrmm_indexed_p(
         weights, indices, indptr, perm, B,
-        task_begin,
-        task_end,
-        status,
-        outs=(out_info, task_begin_info, task_end_info, status_info),
+        outs=[out_info],
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -1209,51 +1190,42 @@ def binary_csrmm_indexed_p_call(
         perm_info=jax.ShapeDtypeStruct(perm.shape, perm.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
-        task_begin_info=task_begin_info,
-        task_end_info=task_end_info,
-        status_info=status_info,
-        task_capacity=task_capacity,
+        max_row_nnz=max_row_nnz,
+        task_capacity=_task_capacity(indices, indptr, max_row_nnz),
     )
 
 
 # --------------------------------------------------------------------------- #
 # autodiff rules
 # --------------------------------------------------------------------------- #
-def _csrmm_idx_jvp_data(data_dot, data, indices, indptr, perm, B, task_begin, task_end, status, *, shape, transpose, **kw):
+def _csrmm_idx_jvp_data(data_dot, data, indices, indptr, perm, B, *, shape, transpose, **kw):
     # Linear in weights (events fixed): re-enter the indexed primitive.
-    workspace = _workspace_from_task_operands(kw['task_capacity'], task_begin, task_end, status)
-    tangent = binary_csrmm_indexed_p_call(
-        data_dot, indices, indptr, perm, B, workspace, shape=shape, transpose=transpose, backend=kw['backend'],
-        weighted=kw.get('weighted', False),
-    )[0]
-    return tangent, jnp.zeros_like(task_begin), jnp.zeros_like(task_end), jnp.zeros_like(status)
-
-
-def _csrmm_idx_jvp_B(B_dot, data, indices, indptr, perm, B, task_begin, task_end, status, *, shape, transpose, **kw):
-    # Event indicator is a step; surrogate tangent routes through float csrmm.
-    w = data if data.shape[0] == 1 else data[perm]
-    return (
-        csrmm(w, indices, indptr, B_dot.astype(w.dtype), shape=shape, transpose=transpose, backend=kw['backend']),
-        jnp.zeros_like(task_begin),
-        jnp.zeros_like(task_end),
-        jnp.zeros_like(status),
+    return binary_csrmm_indexed_p_call(
+        data_dot, indices, indptr, perm, B, shape=shape, transpose=transpose, backend=kw['backend'],
+        weighted=kw.get('weighted', False), max_row_nnz=kw.get('max_row_nnz'),
     )
 
 
-def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, task_begin, task_end, status, *, shape, transpose, **kw):
+def _csrmm_idx_jvp_B(B_dot, data, indices, indptr, perm, B, *, shape, transpose, **kw):
+    # Event indicator is a step; surrogate tangent routes through float csrmm.
+    w = data if data.shape[0] == 1 else data[perm]
+    return [csrmm(w, indices, indptr, B_dot.astype(w.dtype), shape=shape, transpose=transpose, backend=kw['backend'])]
+
+
+def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, *, shape, transpose, **kw):
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr) or ad.is_undefined_primal(perm):
         raise ValueError("Cannot transpose with respect to sparse structure / perm.")
     ct = ct[0]
     if ad.is_undefined_primal(B):
         if type(ct) is ad.Zero:
-            ct_B = ad.Zero(B)
+            ct_B = ad.Zero(B.aval)
         else:
             w = data if data.shape[0] == 1 else data[perm]
             ct_B = csrmm(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
-        return data, indices, indptr, perm, ct_B, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
+        return data, indices, indptr, perm, ct_B
     else:
         if type(ct) is ad.Zero:
-            ct_w = ad.Zero(data)
+            ct_w = ad.Zero(data.aval)
         else:
             # weight at slot k is weights[perm[k]]; scatter the per-slot cotangent
             # back via perm. Inactive (slot, column) pairs contribute exactly 0.
@@ -1265,68 +1237,37 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, task_begin, ta
                 ct_w = jnp.sum(d_data).astype(data.aval.dtype).reshape(*data.aval.shape)
             else:
                 ct_w = jnp.zeros(data.aval.shape, data.aval.dtype).at[perm].add(d_data)
-        return ct_w, indices, indptr, perm, B, ad.Zero(task_begin), ad.Zero(task_end), ad.Zero(status)
+        return ct_w, indices, indptr, perm, B
 
 
 def _csrmm_idx_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    workspace = _workspace_from_task_operands(kwargs['task_capacity'], args[5], args[6], args[7])
-    if axes == (None, None, None, None, 0, None, None, None):
-        assert args[4].ndim == 3, 'Batching axis 0 requires 3D input.'
-        batch_size, m, n = args[4].shape
-        B = jnp.transpose(args[4], (1, 0, 2)).reshape(m, batch_size * n)
+    if axes[:4] == (None, None, None, None) and axes[4] in (0, 1, 2):
+        assert args[4].ndim == 3, f'Batching axis {axes[4]} requires 3D input.'
+        if axes[4] == 0:
+            batch_size, m, n = args[4].shape
+            B = jnp.transpose(args[4], (1, 0, 2)).reshape(m, batch_size * n)
+        elif axes[4] == 1:
+            m, batch_size, n = args[4].shape
+            B = args[4].reshape(m, batch_size * n)
+        else:
+            m, n, batch_size = args[4].shape
+            B = args[4].reshape(m, batch_size * n)
         r = binary_csrmm_indexed_p_call(
             args[0],
             args[1],
             args[2],
             args[3],
             B,
-            workspace,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
+            max_row_nnz=kwargs.get('max_row_nnz'),
         )[0]
-        r = jnp.reshape(r, [r.shape[0], batch_size, n])
-        return (r, args[5], args[6], args[7]), (1, None, None, None)
-
-    if axes == (None, None, None, None, 1, None, None, None):
-        assert args[4].ndim == 3, 'Batching axis 1 requires 3D input.'
-        m, batch_size, n = args[4].shape
-        B = args[4].reshape(m, batch_size * n)
-        r = binary_csrmm_indexed_p_call(
-            args[0],
-            args[1],
-            args[2],
-            args[3],
-            B,
-            workspace,
-            shape=kwargs['shape'],
-            transpose=kwargs['transpose'],
-            backend=kwargs['backend'],
-            weighted=kwargs.get('weighted', False),
-        )[0]
-        r = jnp.reshape(r, [r.shape[0], batch_size, n])
-        return (r, args[5], args[6], args[7]), (1, None, None, None)
-
-    if axes == (None, None, None, None, 2, None, None, None):
-        assert args[4].ndim == 3, 'Batching axis 2 requires 3D input.'
-        m, n, batch_size = args[4].shape
-        B = args[4].reshape(m, batch_size * n)
-        r = binary_csrmm_indexed_p_call(
-            args[0],
-            args[1],
-            args[2],
-            args[3],
-            B,
-            workspace,
-            shape=kwargs['shape'],
-            transpose=kwargs['transpose'],
-            backend=kwargs['backend'],
-            weighted=kwargs.get('weighted', False),
-        )[0]
-        r = jnp.reshape(r, [r.shape[0], n, batch_size])
-        return (r, args[5], args[6], args[7]), (2, None, None, None)
+        if axes[4] == 2:
+            return [jnp.reshape(r, [r.shape[0], n, batch_size])], [2]
+        return [jnp.reshape(r, [r.shape[0], batch_size, n])], [1]
 
     return general_batching_rule(binary_csrmm_indexed_p, args, axes, **kwargs)
 
@@ -1346,7 +1287,7 @@ binary_csrmm_indexed_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_indexed_jax_ke
 binary_csrmm_indexed_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_indexed_jax_kernel)
 binary_csrmm_indexed_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_indexed_jax_kernel)
 binary_csrmm_indexed_p.def_cuda_raw_kernel(_binary_csrmm_indexed_cuda_kernel, asdefault=True)
-binary_csrmm_indexed_p.def_jvp_rule2(_csrmm_idx_jvp_data, None, None, None, _csrmm_idx_jvp_B, None, None, None)
+binary_csrmm_indexed_p.def_jvp_rule2(_csrmm_idx_jvp_data, None, None, None, _csrmm_idx_jvp_B)
 binary_csrmm_indexed_p.def_transpose_rule(_csrmm_idx_transpose_rule)
 binary_csrmm_indexed_p.def_batching_rule(_csrmm_idx_batching)
 binary_csrmm_indexed_p.def_call(binary_csrmm_indexed_p_call)
