@@ -262,7 +262,8 @@ def csr_diag_add(csr_value, positions, diag_value):
         by :func:`csr_diag_position`.
     diag_value : jax.Array or Quantity
         Values to add to the diagonal, with shape ``(min(shape),)``. Must carry
-        units compatible with ``csr_value`` and share its dtype.
+        units compatible with ``csr_value``. The result has the promoted dtype
+        of the two value arrays.
 
     Returns
     -------
@@ -274,8 +275,7 @@ def csr_diag_add(csr_value, positions, diag_value):
     Raises
     ------
     AssertionError
-        If ``csr_value`` or ``diag_value`` is not 1-D, if their dtypes differ, if
-        the plan index arrays are not 1-D integer arrays, if ``diag_value`` does
+        If ``csr_value`` or ``diag_value`` is not 1-D, if the plan index arrays are not 1-D integer arrays, if ``diag_value`` does
         not have one entry per diagonal, if ``csr_value`` does not match the
         original ``nse``, or if the units are incompatible.
 
@@ -313,7 +313,6 @@ def csr_diag_add(csr_value, positions, diag_value):
     assert u.fail_for_dimension_mismatch(csr_value, diag_value)
     assert csr_value.ndim == 1, "csr_value must be a 1D array"
     assert diag_value.ndim == 1, "diag_value must be a 1D array"
-    assert csr_value.dtype == diag_value.dtype, "csr_value and diag_value must have the same dtype"
     _, new_indices, old_to_new, diag_dest = positions
     assert old_to_new.ndim == 1, "old_to_new must be a 1D array"
     assert diag_dest.ndim == 1, "diag_dest must be a 1D array"
@@ -324,7 +323,8 @@ def csr_diag_add(csr_value, positions, diag_value):
 
     diag_value = u.Quantity(diag_value).to(u.get_unit(csr_value)).mantissa
     csr_value, csr_unit = u.split_mantissa_unit(csr_value)
-    new_data = jnp.zeros(new_indices.shape[0], dtype=csr_value.dtype)
+    # Promote like ``W + diag(d)``: a float64 diagonal gives float64 values.
+    new_data = jnp.zeros(new_indices.shape[0], dtype=jnp.result_type(csr_value, diag_value))
     new_data = new_data.at[old_to_new].set(csr_value)
     new_data = new_data.at[diag_dest].add(diag_value)
     return u.maybe_decimal(new_data * csr_unit)

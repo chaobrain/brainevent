@@ -28,7 +28,7 @@ import pytest
 import brainevent
 from brainevent._error import KernelError, KernelRegistrationError
 from brainevent._op.kernix_pipeline import _cache_header_paths
-from brainevent._test_util import requires_gpu
+from brainevent._test_util import jax_x64_enabled, requires_gpu
 
 
 PIPELINE_CUDA_SRC = r"""
@@ -628,8 +628,8 @@ def test_two_outputs(multi_out_module):
 #
 # Grouped into a class so that the GPU requirement and the x64 autouse fixture
 # stay scoped to these tests. Both were module-level when this lived in its own
-# file; at module level here the fixture would flip ``jax_enable_x64`` on for
-# every other test in this file -- and it deliberately never restores it.
+# file; at module level here the fixture would turn ``jax_enable_x64`` on for
+# every other test in this file.
 # ---------------------------------------------------------------------------
 
 COPY_KERNEL_SRC = r"""
@@ -750,10 +750,9 @@ class TestDtypes:
 
     @pytest.fixture(autouse=True)
     def _enable_x64(self):
-        """Ensure 64-bit types are available for every test in this class."""
-        jax.config.update("jax_enable_x64", True)
-        yield
-        # intentionally do not restore — other test modules may rely on x64
+        """Enable 64-bit types for every test in this class, then restore the setting."""
+        with jax_x64_enabled():
+            yield
 
     # -- Copy (byte-level) tests for all dtypes ------------------------------
 

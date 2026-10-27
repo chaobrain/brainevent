@@ -55,6 +55,7 @@ from brainevent._op.util import (
     event_factor,
     cuda_event_abi,
 )
+from brainevent._test_util import with_jax_x64
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -404,6 +405,7 @@ def test_dtype_suffixes_are_distinct():
         (jnp.int32, '_bool', True),
     ],
 )
+@with_jax_x64
 def test_cuda_event_abi_table(dtype, suffix, converts):
     """Only bool and the native float are passed through; the rest become masks (#199, #204)."""
     abi = cuda_event_abi(dtype)

@@ -343,15 +343,6 @@ def test_validation_fails_before_cuda_loading(monkeypatch):
     )
     with _explicit_int64_allowed():
         matrix = _matrix()
-        with pytest.raises(AssertionError, match="same dtype"):
-            csrmv_dt2t(
-                jnp.ones(3, dtype=jnp.float16),
-                jnp.ones(matrix.nse, dtype=jnp.float32),
-                matrix._tcsr_indices,
-                matrix._tcsr_indptr,
-                shape=matrix._base_shape,
-                backend="cuda_raw",
-            )
         with pytest.raises(AssertionError, match="Batch mismatch"):
             csrmm_dt2t(
                 jnp.ones((2, 3), dtype=jnp.float32),
@@ -701,3 +692,19 @@ def test_empty_structure_and_zero_batch_work_on_jax_and_cuda(transpose):
 
             assert mv_result.shape == (0,)
             assert mm_result.shape == (0, 0)
+
+
+@pytest.mark.parametrize('method', ['dt2t', 'dt2t_transposed'])
+def test_tcsr_dt2t_promotes_a_float64_operand_under_x64(method):
+    from brainevent._test_util import jax_x64_enabled
+
+    dense = np.array([[1., 0., 2.], [0., 3., 0.]], dtype=np.float32)
+    with jax_x64_enabled():
+        mat = TCSR.fromdense(jnp.asarray(dense))
+        plain = PlainCSR.fromdense(jnp.asarray(dense, dtype=jnp.float64))
+        y = jnp.arange(1., (2 if method == 'dt2t' else 3) + 1.)
+        out = getattr(mat, method)(y, mat.data)
+        expected = getattr(plain, method)(y, plain.data)
+        assert out.dtype == jnp.float64
+        # Both store the non-zeros in row-major order.
+        np.testing.assert_allclose(np.asarray(out), np.asarray(expected))

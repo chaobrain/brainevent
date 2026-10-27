@@ -34,7 +34,7 @@ from brainevent._csr.plasticity_binary import (
 from brainevent._csr._test_util import (
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
 )
-from brainevent._test_util import jax_x64_enabled
+from brainevent._test_util import jax_x64_enabled, with_jax_x64
 
 PLATFORM = jax.default_backend()
 PRE_BACKENDS = tuple(update_csr_on_binary_pre_p.available_backends(PLATFORM))
@@ -466,6 +466,7 @@ def test_plasticity_cuda_generators_accept_int64_indptr_without_real_cuda(monkey
 
 
 @requires_gpu_backend
+@with_jax_x64
 def test_plasticity_pre_cuda_accepts_int64_indptr():
     weights, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)
@@ -481,6 +482,7 @@ def test_plasticity_pre_cuda_accepts_int64_indptr():
 
 
 @requires_gpu_backend
+@with_jax_x64
 def test_plasticity_post_cuda_accepts_int64_indptr():
     weights = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32)
     indices = jnp.array([0, 1, 0, 1], dtype=jnp.int32)

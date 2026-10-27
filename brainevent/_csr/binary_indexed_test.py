@@ -39,7 +39,7 @@ from brainevent._csr._test_util import (
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend,
     shape_of, strip_hybrid_suffix,
 )
-from brainevent._test_util import jax_x64_enabled
+from brainevent._test_util import jax_x64_enabled, with_jax_x64
 from brainevent import BinaryArray, CSC, CSR, FixedNumPerPre
 
 
@@ -1019,6 +1019,7 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
 
 @requires_gpu_backend
 @pytest.mark.parametrize('transpose', [False, True])
+@with_jax_x64
 def test_binary_indexed_cuda_accepts_int64_indptr(transpose):
     weights, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)
@@ -1035,6 +1036,7 @@ def test_binary_indexed_cuda_accepts_int64_indptr(transpose):
 
 @requires_gpu_backend
 @pytest.mark.parametrize('transpose', [False, True])
+@with_jax_x64
 def test_binary_indexed_csrmm_cuda_accepts_int64_indptr(transpose):
     weights, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)

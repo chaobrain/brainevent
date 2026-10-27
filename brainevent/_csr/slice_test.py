@@ -28,7 +28,7 @@ from brainevent._csr.main import CSR, CSC
 from brainevent._csr._test_util import (
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
 )
-from brainevent._test_util import jax_x64_enabled
+from brainevent._test_util import jax_x64_enabled, with_jax_x64
 
 platform = jax.default_backend()
 SLICE_IMPLEMENTATIONS = tuple(csr_slice_rows_p.available_backends(platform))
@@ -616,6 +616,7 @@ def test_slice_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch
 
 
 @requires_gpu_backend
+@with_jax_x64
 def test_slice_cuda_accepts_int64_indptr():
     weights, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)
@@ -630,6 +631,7 @@ def test_slice_cuda_accepts_int64_indptr():
 
 
 @requires_gpu_backend
+@with_jax_x64
 def test_slice_grad_cuda_accepts_int64_indptr():
     _, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)

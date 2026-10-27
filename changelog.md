@@ -92,6 +92,11 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
   dtype (`jnp.result_type`); non-float results raise `TypeError`. Mixed dtypes
   used to read garbage on CUDA (`csrmm` with an int32 `B`: error 10.5) or crash
   numba (bf16 vectors).
+- `dt2t`/`dt2t_transposed` on CSR, CSC and TCSR (and `csrmv_dt2t`,
+  `csrmm_dt2t`, `cscmv_dt2t`, `cscmm_dt2t`), `CSR/CSC.diag_add` and
+  `CSR/CSC.solve` promote their operands the same way. With `jax_enable_x64`
+  on, a float32 matrix combined with a default-dtype (float64) array such as
+  `jnp.ones(n)` used to raise an `AssertionError` or `ValueError`.
 - `JITCUniform*` accepts `w_low > w_high` (same distribution as the ordered
   bounds), so `-M`, `M * c` with `c < 0` and `c - M` work.
 - JITC normal/uniform operators whose result leaves the family (`c / M`;

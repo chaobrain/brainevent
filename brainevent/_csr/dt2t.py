@@ -132,6 +132,9 @@ def csrmv_dt2t(
     """
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
+    # The kernels read ``y`` with the weight dtype; promote both like ``w * y``.
+    dtype = jnp.result_type(w, y)
+    w, y = jnp.asarray(w, dtype), jnp.asarray(y, dtype)
     res = csrmv_dt2t_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=backend)[0]
     return u.maybe_decimal(res * w_unit)
 
@@ -644,6 +647,9 @@ def csrmm_dt2t(
     """
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
+    # The kernels read ``y`` with the weight dtype; promote both like ``w * y``.
+    dtype = jnp.result_type(w, y)
+    w, y = jnp.asarray(w, dtype), jnp.asarray(y, dtype)
     res = csrmm_dt2t_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=backend)[0]
     return u.maybe_decimal(res * w_unit)
 

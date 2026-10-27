@@ -31,7 +31,7 @@ from brainevent._csr._test_util import (
     get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix,
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
 )
-from brainevent._test_util import jax_x64_enabled
+from brainevent._test_util import jax_x64_enabled, with_jax_x64
 
 platform = jax.default_backend()
 CSRMV_IMPLEMENTATIONS = tuple(csrmv_p.available_backends(platform))
@@ -448,6 +448,7 @@ def test_float_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch
 @requires_gpu_backend
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('homo', [False, True])
+@with_jax_x64
 def test_float_csrmv_cuda_accepts_int64_indptr(transpose, homo):
     weights, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)
@@ -463,6 +464,7 @@ def test_float_csrmv_cuda_accepts_int64_indptr(transpose, homo):
 @requires_gpu_backend
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('homo', [False, True])
+@with_jax_x64
 def test_float_csrmm_cuda_accepts_int64_indptr(transpose, homo):
     weights, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)

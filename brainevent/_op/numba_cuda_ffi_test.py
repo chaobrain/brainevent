@@ -28,6 +28,7 @@ import pytest
 
 from brainevent._op import numba_cuda_ffi
 from brainevent._op.numba_cuda_ffi import _compute_launch_config
+from brainevent._test_util import with_jax_x64
 
 # Check if Numba CUDA is available
 numba_installed = importlib.util.find_spec('numba') is not None
@@ -106,6 +107,7 @@ class TestNumbaCudaKernelBasic(unittest.TestCase):
         self.assertTrue(jnp.allclose(result, expected))
         jax.block_until_ready((a, b, result, expected))
 
+    @with_jax_x64
     def test_different_dtypes(self):
         """Test kernel with different data types."""
         from numba import cuda
@@ -1498,6 +1500,7 @@ class TestNumbaCudaCallableRepeatedCalls(unittest.TestCase):
 class TestNumbaCudaCallableDtypes(unittest.TestCase):
     """Test callables with different data types."""
 
+    @with_jax_x64
     def test_float64(self):
         from numba import cuda
         from brainevent import numba_cuda_callable

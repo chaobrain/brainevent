@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import brainunit as u
+import jax.numpy as jnp
 from jax.experimental.sparse.linalg import spsolve
 
 __all__ = [
@@ -50,7 +51,8 @@ def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
     Returns
     -------
     jax.Array or brainunit.Quantity
-        Solution vector ``x`` with the same dtype and size as ``b``.
+        Solution vector ``x`` with the size of ``b`` and the promoted dtype of
+        ``data`` and ``b``.
 
     Notes
     -----
@@ -64,5 +66,8 @@ def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
     """
     data, data_unit = u.split_mantissa_unit(data)
     b, b_unit = u.split_mantissa_unit(b)
+    # ``spsolve`` needs one dtype for the matrix and the right-hand side.
+    dtype = jnp.result_type(data, b)
+    data, b = jnp.asarray(data, dtype), jnp.asarray(b, dtype)
     res = spsolve(data, indices, indptr, b, tol=tol, reorder=reorder)
     return u.maybe_decimal(res * b_unit / data_unit)
