@@ -91,7 +91,9 @@ def jitsmv_dt2t(
     # each structural non-zero, taken in that CSR's flat order.  Composing over
     # ``jits_to_csr`` keeps both corder values and both directions consistent with
     # the materialized structure and is deterministic.
-    csr = jits_to_csr(weight, prob, seed, shape=shape, corder=corder, backend=backend)
+    # The structure does not depend on the weight; stop it so the CSR primitives
+    # (which have no AD rules) are not differentiated.
+    csr = jits_to_csr(jax.lax.stop_gradient(weight), prob, seed, shape=shape, corder=corder, backend=backend)
     indptr = csr.indptr
     nnz = int(indptr[-1])
     if nnz == 0:

@@ -84,6 +84,11 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
   that names the event-driven product (`events @ M` or `M @ events`), plus a
   read-only `M.event_side`. An event product on the other side emits a one-time
   `PerformanceWarning` that names the setting to use.
+- Reverse-mode AD (`jax.grad`, `jax.vjp`) for `dt2t` / `dt2t_transposed` on
+  CSR, CSC and TCSR (and `csrmv_dt2t`, `csrmm_dt2t`, `cscmv_dt2t`,
+  `cscmm_dt2t`), with respect to both `y` and the weights. JITC `dt2t` is now
+  differentiable with respect to the weight parameters (`weight`,
+  `w_loc`/`w_scale`, `w_low`/`w_high`); forward values are unchanged.
 
 ### Changed
 

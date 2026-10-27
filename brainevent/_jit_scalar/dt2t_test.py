@@ -323,3 +323,25 @@ def test_jitsmv_dt2t_fused_fill_drops_the_same_candidates(implementation, prob, 
     mask = np.asarray(jits(1.5, prob, 123, shape=shape, corder=True)) != 0
     assert nnz == mask.sum()
     assert np.array_equal(filled, mask)
+
+
+@pytest.mark.parametrize('prob', [0.25, 0.3])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_jitsmv_dt2t_reverse_mode_matches_finite_differences(transpose, corder, prob):
+    from jax.test_util import check_grads
+    from brainevent._test_util import jax_x64_enabled
+
+    shape = (12, 9)
+    with jax_x64_enabled():
+        y = jnp.linspace(0.5, 2., shape[1] if transpose else shape[0])
+        f = lambda w, y_: jitsmv_dt2t(w, prob, y_, 7, shape=shape, transpose=transpose, corder=corder)
+        check_grads(f, (jnp.asarray(1.5), y), order=1, modes=['rev'])
+
+
+def test_jitc_scalar_matrix_dt2t_differentiates_the_weight():
+    y = jnp.linspace(0.5, 2., 12)
+    loss = lambda w: brainevent.JITCScalarR(w, prob=0.3, seed=7, shape=(12, 9)).dt2t(y, None).sum()
+    mat = brainevent.JITCScalarR(1., prob=0.3, seed=7, shape=(12, 9))
+    # d/dw sum(w * y[row]) = sum over stored entries of y[row]
+    assert jnp.allclose(jax.grad(loss)(1.5), mat.dt2t(y, None).sum())

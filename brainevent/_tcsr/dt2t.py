@@ -21,6 +21,7 @@ from typing import Optional
 import brainunit as u
 import jax
 import jax.numpy as jnp
+from jax.interpreters import ad
 
 from brainevent._op import XLACustomKernel, load_cuda_file
 from brainevent._op.util import dtype_suffix
@@ -351,7 +352,9 @@ def _csrmv_dt2t_jax_kernel(*, transpose: bool, **kwargs):
         values = w if not transpose else w[permutation]
         expanded = values * y[rows]
         if transpose:
-            return (jnp.zeros_like(w).at[permutation].set(expanded),)
+            # ``permutation`` holds each slot once (``validate_tcsc_mirror``), which
+            # also makes the scatter transposable for reverse-mode AD.
+            return (jnp.zeros_like(w).at[permutation].set(expanded, unique_indices=True),)
         return (expanded,)
 
     return kernel
@@ -416,6 +419,50 @@ def _csrmv_dt2t_jvp_w(
     )
 
 
+def _dt2t_transpose(
+    p_call, jax_kernel, ct, y, w, indices, indptr, permutation, *, shape, transpose, **kwargs
+):
+    """Transpose rule shared by the TCSR dt2t primitives (``out = w * y[g]``).
+
+    Each primitive application is linear in exactly one of ``y`` and ``w``:
+    the ``w`` cotangent is the primitive itself with ``ct`` as weights, and
+    the ``y`` cotangent scatters ``ct * w`` back over the same slots, obtained
+    by transposing the pure-JAX kernel.
+    """
+    if any(ad.is_undefined_primal(x) for x in (indices, indptr, permutation)):
+        raise ValueError("Cannot transpose with respect to sparse indices.")
+    ct = ct[0]
+    if ad.is_undefined_primal(y):
+        if type(ct) is ad.Zero:
+            return ad.Zero(y.aval), w, indices, indptr, permutation
+        kernel = jax_kernel(shape=shape, transpose=transpose, **kwargs)
+        y_info = jax.ShapeDtypeStruct(y.aval.shape, y.aval.dtype)
+        (ct_y,) = jax.linear_transpose(
+            lambda y_: kernel(y_, w, indices, indptr, permutation)[0], y_info
+        )(ct)
+        return ct_y, w, indices, indptr, permutation
+    if type(ct) is ad.Zero:
+        return y, ad.Zero(w.aval), indices, indptr, permutation
+    ct_w = p_call(
+        y,
+        ct,
+        indices,
+        indptr,
+        shape=shape,
+        transpose=transpose,
+        backend=kwargs["backend"],
+        permutation=permutation,
+        mirror_enabled=kwargs["mirror_enabled"],
+    )[0]
+    return y, ct_w, indices, indptr, permutation
+
+
+def _csrmv_dt2t_transpose_rule(ct, y, w, indices, indptr, permutation, **kwargs):
+    return _dt2t_transpose(
+        csrmv_dt2t_p_call, _csrmv_dt2t_jax_kernel, ct, y, w, indices, indptr, permutation, **kwargs
+    )
+
+
 def _normalize_mapped_pair(args, axes):
     """Move mapped data axes to zero and broadcast an unmapped partner."""
     y, w = args[:2]
@@ -471,6 +518,7 @@ csrmv_dt2t_p.def_jvp_rule2(
     None,
     None,
 )
+csrmv_dt2t_p.def_transpose_rule(_csrmv_dt2t_transpose_rule)
 csrmv_dt2t_p.def_batching_rule(_csrmv_dt2t_batching)
 csrmv_dt2t_p.def_call(csrmv_dt2t_p_call)
 csrmv_dt2t_p.def_tags("tcsr", "float")
@@ -676,7 +724,8 @@ def _csrmm_dt2t_jax_kernel(*, transpose: bool, **kwargs):
         values = w if not transpose else w[:, permutation]
         expanded = values * y[:, rows]
         if transpose:
-            return (jnp.zeros_like(w).at[:, permutation].set(expanded),)
+            # ``permutation`` holds each slot once; see the vector kernel.
+            return (jnp.zeros_like(w).at[:, permutation].set(expanded, unique_indices=True),)
         return (expanded,)
 
     return kernel
@@ -741,6 +790,12 @@ def _csrmm_dt2t_jvp_w(
     )
 
 
+def _csrmm_dt2t_transpose_rule(ct, y, w, indices, indptr, permutation, **kwargs):
+    return _dt2t_transpose(
+        csrmm_dt2t_p_call, _csrmm_dt2t_jax_kernel, ct, y, w, indices, indptr, permutation, **kwargs
+    )
+
+
 def _csrmm_dt2t_batching(args, axes, **kwargs):
     """Normalize an outer mapped axis while preserving inner BN layout."""
     if any(axis is not None for axis in axes[2:]):
@@ -779,6 +834,7 @@ csrmm_dt2t_p.def_jvp_rule2(
     None,
     None,
 )
+csrmm_dt2t_p.def_transpose_rule(_csrmm_dt2t_transpose_rule)
 csrmm_dt2t_p.def_batching_rule(_csrmm_dt2t_batching)
 csrmm_dt2t_p.def_call(csrmm_dt2t_p_call)
 csrmm_dt2t_p.def_tags("tcsr", "float")
