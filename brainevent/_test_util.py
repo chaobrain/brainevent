@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+import hashlib
 import random
 from contextlib import contextmanager
 from typing import Union
@@ -23,6 +24,7 @@ from typing import Union
 import brainstate
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import brainevent
@@ -352,6 +354,38 @@ def _tree_vdot(a, b):
     return sum(jax.tree_util.tree_leaves(leaves))
 
 
+def check_jitc_weight_grads(op, params, *, atol=1e-4):
+    """Check the weight JVPs and gradients of a JITC operator.
+
+    ``op(*params)`` must be linear in the scalar weight ``params`` (as every
+    JITC product is), so its derivative along parameter ``k`` is ``op`` at the
+    unit weights ``e_k``. Verifies the JVP and gradient values against that,
+    and that each tangent and gradient keeps the dtype of the output and the
+    parameter (the rules must not compute in a promoted dtype).
+
+    Parameters
+    ----------
+    op : callable
+        Maps the scalar weight parameters to the operator output.
+    params : sequence of jax.Array
+        The weight parameters, as 0-d floating arrays.
+    atol : float, optional
+        Absolute tolerance of the value comparisons.
+    """
+    params = tuple(params)
+    out = op(*params)
+    ct = jax.random.uniform(jax.random.PRNGKey(0), out.shape, out.dtype)
+    grads = jax.grad(lambda *p: jnp.sum(op(*p) * ct), argnums=tuple(range(len(params))))(*params)
+    for k, (p, g) in enumerate(zip(params, grads)):
+        unit = tuple(jnp.ones_like(q) if i == k else jnp.zeros_like(q) for i, q in enumerate(params))
+        basis = op(*unit)
+        _, tangent = jax.jvp(op, params, unit)
+        assert tangent.dtype == out.dtype, (k, tangent.dtype, out.dtype)
+        assert jnp.allclose(tangent, basis, atol=atol), (k, tangent, basis)
+        assert g.dtype == p.dtype, (k, g.dtype, p.dtype)
+        assert jnp.allclose(g, jnp.sum(basis * ct), atol=atol), (k, g, jnp.sum(basis * ct))
+
+
 def check_event_op_grads(
     op,
     dense_op,
@@ -564,3 +598,96 @@ def check_plasticity_grads(
     gv_ref = jax.vmap(jax.grad(loss(ref), argnums=(0, 1)))(ws, ts)
     for a, b in zip(gv, gv_ref):
         assert jnp.allclose(a, b, rtol=rtol, atol=atol), f'vmap(grad) mismatch:\n{a}\nvs\n{b}'
+
+
+# Mask digests (:func:`jitc_mask_digest`) of the row-class JITC matrices
+# ``shape=(37, 129), seed=123`` drawn by brainevent 0.3.0, keyed by
+# ``(prob, corder)``. The three families share one walk, hence one mask.
+JITC_GOLDEN_0_3_0 = {
+    (0.1, False): '89f2ebf82eea0cfc',
+    (0.25, False): '3e1d1fa632214caf',
+    (0.1, True): '43ce994bddcf6b25',
+    (0.25, True): '88612f59e30adab3',
+}
+
+
+def jitc_mask_digest(dense) -> str:
+    """Short digest of the non-zero pattern of a dense matrix."""
+    mask = np.asarray(dense) != 0
+    return hashlib.sha256(np.packbits(mask).tobytes() + str(mask.shape).encode()).hexdigest()[:16]
+
+
+def check_jitc_ops_match_dense(mat, *, seed=0, rtol=1e-4, atol=1e-4):
+    """Check every product, ``.T`` and ``tocsr`` of a JITC matrix against its ``todense``.
+
+    Covers float and binary-event operands on both sides, as vectors and
+    matrices, so each walk (gather and scatter, mv and mm) is exercised.
+    """
+    dense = np.asarray(mat.todense(), np.float64)
+    m, n = dense.shape
+    rng = np.random.default_rng(seed)
+    f32 = lambda x: jnp.asarray(x, jnp.float32)
+    v_r, v_l = rng.normal(size=n), rng.normal(size=m)
+    b_r, b_l = rng.normal(size=(n, 3)), rng.normal(size=(3, m))
+    e_r, e_l = rng.random(n) < 0.3, rng.random(m) < 0.3
+    E_r, E_l = rng.random((n, 3)) < 0.3, rng.random((3, m)) < 0.3
+    pairs = {
+        'M @ v': (mat @ f32(v_r), dense @ v_r),
+        'v @ M': (f32(v_l) @ mat, v_l @ dense),
+        'M @ B': (mat @ f32(b_r), dense @ b_r),
+        'B @ M': (f32(b_l) @ mat, b_l @ dense),
+        'M @ events': (mat @ brainevent.BinaryArray(jnp.asarray(e_r)), dense @ e_r),
+        'events @ M': (brainevent.BinaryArray(jnp.asarray(e_l)) @ mat, e_l @ dense),
+        'M @ event matrix': (mat @ brainevent.BinaryArray(jnp.asarray(E_r)), dense @ E_r),
+        'event matrix @ M': (brainevent.BinaryArray(jnp.asarray(E_l)) @ mat, E_l @ dense),
+        'M.T': (mat.T.todense(), dense.T),
+        'tocsr': (mat.tocsr().todense(), dense),
+    }
+    for name, (got, want) in pairs.items():
+        np.testing.assert_allclose(np.asarray(got, np.float64), want, rtol=rtol, atol=atol, err_msg=name)
+
+
+def check_jitc_grads_match_dense(make, params, *, seed=0, rtol=1e-4, atol=1e-4):
+    """Check weight and operand gradients of ``v @ M`` and ``M @ x`` against ``todense``.
+
+    Parameters
+    ----------
+    make : callable
+        Maps the weight parameters to a JITC matrix.
+    params : sequence of float
+        The weight parameters.
+    """
+    params = tuple(jnp.asarray(p, jnp.float32) for p in params)
+    m, n = make(*params).shape
+    rng = np.random.default_rng(seed)
+    operands = {
+        'left': jnp.asarray(rng.normal(size=m), jnp.float32),
+        'right': jnp.asarray(rng.normal(size=n), jnp.float32),
+    }
+    for side, a in operands.items():
+        def loss(p, a, dense):
+            mat = make(*p)
+            mat = mat.todense() if dense else mat
+            return jnp.sum(jnp.sin(a @ mat if side == 'left' else mat @ a))
+
+        got = jax.grad(lambda p, a: loss(p, a, False), argnums=(0, 1))(params, a)
+        want = jax.grad(lambda p, a: loss(p, a, True), argnums=(0, 1))(params, a)
+        for g, w in zip(jax.tree.leaves(got), jax.tree.leaves(want)):
+            np.testing.assert_allclose(np.asarray(g), np.asarray(w), rtol=rtol, atol=atol, err_msg=side)
+
+
+def jitc_kernel_orientations(fn, *args):
+    """``(primitive, transpose, corder)`` of every JITC kernel call in ``fn(*args)``."""
+    found = []
+
+    def visit(jaxpr):
+        for eqn in jaxpr.eqns:
+            if 'corder' in eqn.params and 'transpose' in eqn.params:
+                found.append((eqn.primitive.name, eqn.params['transpose'], eqn.params['corder']))
+            for param in eqn.params.values():
+                inner = getattr(param, 'jaxpr', param)
+                if hasattr(inner, 'eqns'):
+                    visit(inner)
+
+    visit(jax.make_jaxpr(fn)(*args).jaxpr)
+    return found

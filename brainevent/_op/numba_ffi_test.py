@@ -1181,6 +1181,33 @@ class TestContentDerivedNaming:
         name2 = self._target_name_for(add_two_diff)
         assert name1 != name2
 
+    def test_target_options_are_part_of_the_name(self):
+        """Regression: a ``parallel=True`` kernel reused the target of a
+        byte-identical serial kernel, so ``set_numba_parallel`` had no effect
+        once that kernel had been registered."""
+
+        def make_kernel(**options):
+            import numba
+
+            @numba.njit(**options)
+            def triple_fresh(x, out):
+                for i in numba.prange(out.size):
+                    out[i] = x[i] * 3.0
+
+            return triple_fresh
+
+        serial = make_kernel(parallel=False, fastmath=True)
+        parallel = make_kernel(parallel=True, fastmath=True)
+        fastmath_set = make_kernel(parallel=False, fastmath={'nnan', 'ninf'})
+        x = jnp.arange(4, dtype=jnp.float32)
+        for kernel in (serial, parallel, fastmath_set):
+            out = numba_kernel(kernel, outs=jax.ShapeDtypeStruct((4,), jnp.float32))(x)
+            out = out[0] if isinstance(out, tuple) else out
+            np.testing.assert_allclose(np.asarray(out), np.asarray(x) * 3.0)
+        names = {self._target_name_for(k) for k in (serial, parallel, fastmath_set)}
+        assert len(names) == 3, names
+        assert all(re.match(r'^brainevent_numba_ffi_[0-9a-f]{16}$', n) for n in names), names
+
     def test_name_collision_different_fingerprint_raises(self):
         """A same-name-different-fingerprint registration must raise rather
         than silently rebind the XLA target to a different kernel body."""

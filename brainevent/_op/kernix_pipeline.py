@@ -49,7 +49,17 @@ from .kernix_toolchain import (
 )
 
 # Shared cache instance
-_cache = CompilationCache()
+#: Created on first use, so importing brainevent never touches the filesystem.
+_cache: CompilationCache | None = None
+
+
+def _get_cache() -> CompilationCache:
+    """Return the process-wide compilation cache, creating it on first use."""
+    global _cache
+    if _cache is None:
+        _cache = CompilationCache()
+    return _cache
+
 
 # In-process map of FFI target name -> the so_path it was registered from.
 # Re-loading the same artefact (cache hit, same target_prefix) is a no-op, but
@@ -249,7 +259,7 @@ def set_cache_dir(path: str | Path) -> None:
 
 def get_cache_dir() -> str:
     """Return the current compilation cache directory path."""
-    return str(_cache.base_dir)
+    return str(_get_cache().base_dir)
 
 
 def load_cuda_inline(
@@ -372,7 +382,7 @@ def load_cuda_inline(
     # rebuilds; also the resolved specs, include search path, injected-header
     # bytes, and the jaxlib FFI ABI version — see CompilationCache.cache_key).
     cuda_ldflags = _cuda_runtime_lib_linker_search_flags(toolchain.cuda_home)
-    cache_key = _cache.cache_key(
+    cache_key = _get_cache().cache_key(
         source=user_source,
         arch=arch_key,
         cxx_version=f"{toolchain.nvcc_version}|{toolchain.cxx_version}",
@@ -390,7 +400,7 @@ def load_cuda_inline(
     )
 
     # Check cache
-    cached_so = None if force_rebuild else _cache.lookup(name, cache_key)
+    cached_so = None if force_rebuild else _get_cache().lookup(name, cache_key)
 
     if cached_so is not None:
         so_path = str(cached_so)
@@ -405,7 +415,7 @@ def load_cuda_inline(
             build_dir, cleanup = build_directory, False
         else:
             build_dir = os.path.join(
-                str(_cache.base_dir), f".build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+                str(_get_cache().base_dir), f".build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
             cleanup = True
         os.makedirs(build_dir, exist_ok=True)
         so_path = os.path.join(build_dir, f"{name}{so_ext()}")
@@ -426,7 +436,7 @@ def load_cuda_inline(
             )
             # A user-supplied build_directory is the caller's: copy (don't move)
             # the artefact into the cache so their file stays put.
-            so_path = str(_cache.store(
+            so_path = str(_get_cache().store(
                 name, cache_key, so_path, source_is_user_dir=bool(build_directory)))
         finally:
             if cleanup:
@@ -604,7 +614,7 @@ def load_cpp_inline(
 
     # Cache key (resolved specs, include search path, injected-header bytes, and
     # the jaxlib FFI ABI version participate — see CompilationCache.cache_key).
-    cache_key = _cache.cache_key(
+    cache_key = _get_cache().cache_key(
         source=user_source,
         arch="cpu",
         cxx_version=toolchain.cxx_version,
@@ -616,7 +626,7 @@ def load_cpp_inline(
         extra_digests=inc_header_digests,
     )
 
-    cached_so = None if force_rebuild else _cache.lookup(name, cache_key)
+    cached_so = None if force_rebuild else _get_cache().lookup(name, cache_key)
 
     if cached_so is not None:
         so_path = str(cached_so)
@@ -627,7 +637,7 @@ def load_cpp_inline(
             build_dir, cleanup = build_directory, False
         else:
             build_dir = os.path.join(
-                str(_cache.base_dir), f".build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+                str(_get_cache().base_dir), f".build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
             cleanup = True
         os.makedirs(build_dir, exist_ok=True)
         so_path = os.path.join(build_dir, f"{name}{so_ext()}")
@@ -644,7 +654,7 @@ def load_cpp_inline(
             )
             # A user-supplied build_directory is the caller's: copy (don't move)
             # the artefact into the cache so their file stays put.
-            so_path = str(_cache.store(
+            so_path = str(_get_cache().store(
                 name, cache_key, so_path, source_is_user_dir=bool(build_directory)))
         finally:
             if cleanup:
@@ -691,7 +701,7 @@ def load_cpp_file(
 
 def clear_cache(name: str | None = None) -> int:
     """Clear the compilation cache.  Returns number of entries removed."""
-    return _cache.clear(name)
+    return _get_cache().clear(name)
 
 
 # ---------------------------------------------------------------------------
@@ -719,14 +729,14 @@ def print_diagnostics() -> None:
         print(f"GPU architectures: ERROR ({e.__class__.__name__})")
 
     # Cache
-    entries, total_bytes = _cache.size()
+    entries, total_bytes = _get_cache().size()
     if total_bytes > 1_000_000:
         size_str = f"{total_bytes / 1_000_000:.1f} MB"
     elif total_bytes > 1_000:
         size_str = f"{total_bytes / 1_000:.1f} KB"
     else:
         size_str = f"{total_bytes} bytes"
-    print(f"Cache: {_cache.base_dir} ({entries} entries, {size_str})")
+    print(f"Cache: {_get_cache().base_dir} ({entries} entries, {size_str})")
 
     # Registered targets
     print(f"Registered FFI targets: {len(_REGISTERED_TARGETS)}")

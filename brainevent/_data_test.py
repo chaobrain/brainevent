@@ -25,7 +25,9 @@ import pytest
 import brainevent
 import brainevent as be
 from brainevent import BrainEventError, DataRepresentation, UnsupportedOperationError
-from brainevent._data import JITCMatrix, _initialize_seed, _initialize_conn_length
+from brainevent._data import (
+    JITC_CLEN_MAX, JITC_KEEP_ONE, JITCMatrix, _initialize_conn_length, _initialize_seed,
+)
 
 
 class _DummyJITCMatrix(JITCMatrix):
@@ -131,23 +133,57 @@ def test_initialize_seed_none():
     assert 0 <= value < int(1e8)
 
 
-def test_initialize_conn_length_values():
-    clen = _initialize_conn_length(0.25)
+@pytest.mark.parametrize('prob, cl', [
+    (1.0, 2), (0.5, 4), (0.4, 5), (2 / 3, 3), (1 / 3, 6), (0.25, 8), (0.2, 10),
+    (0.1, 20), (0.05, 40), (0.02, 100), (0.01, 200), (0.004, 500), (1e-7, 20_000_000),
+])
+def test_initialize_conn_length_integer_stride_keeps_all(prob, cl):
+    """An integer ``2 / p`` walks with stride ``2 / p`` and keeps every candidate (0.3.0 walk)."""
+    clen = _initialize_conn_length(prob)
     assert clen.dtype == jnp.int32
-    assert int(clen) == 8
-
-    clen2 = _initialize_conn_length(0.6)
-    assert clen2.dtype == jnp.int32
-    assert int(clen2) == 4
+    assert clen.shape == (2,)
+    assert np.asarray(clen).tolist() == [cl, JITC_KEEP_ONE]
 
 
-def test_initialize_conn_length_jit():
-    @jax.jit
-    def f(p):
-        return _initialize_conn_length(p)
+@pytest.mark.parametrize('prob', [0.6, 0.7, 0.9, 0.99, 0.3, 0.15, 0.037, 7e-4])
+def test_initialize_conn_length_thins_to_exact_density(prob):
+    cl, thr = np.asarray(_initialize_conn_length(prob)).tolist()
+    assert cl == max(2, int(np.floor(2 / np.float32(prob))))
+    assert 0 < thr < JITC_KEEP_ONE
+    density = (2 / cl) * (thr / JITC_KEEP_ONE)
+    assert abs(density - prob) <= 1e-6 * prob + 2 ** -24
 
-    clen = f(0.5)
-    assert int(clen) == 4
+
+def test_initialize_conn_length_zero_and_tiny_probabilities():
+    assert np.asarray(_initialize_conn_length(0.0)).tolist() == [JITC_CLEN_MAX, 0]
+    # Below 2 / JITC_CLEN_MAX the stride is capped and thinning supplies the rest.
+    cl, thr = np.asarray(_initialize_conn_length(1e-9)).tolist()
+    assert cl == JITC_CLEN_MAX
+    assert abs((2 / cl) * (thr / JITC_KEEP_ONE) - 1e-9) < 1e-14
+
+
+@pytest.mark.parametrize('prob', [float('nan'), float('inf'), -0.1, 1.5, np.array([0.1, 0.2])])
+def test_initialize_conn_length_rejects_invalid_concrete_prob(prob):
+    with pytest.raises(ValueError, match='prob'):
+        _initialize_conn_length(prob)
+
+
+def test_initialize_conn_length_traced_matches_eager():
+    """A traced ``prob`` (e.g. a JITC matrix passed into ``jit``) must draw the same walk."""
+    rng = np.random.default_rng(0)
+    probs = np.concatenate([
+        rng.uniform(0, 1, 300), 10.0 ** rng.uniform(-9, 0, 300), 2.0 / np.arange(2, 300), [0., 1.],
+    ]).astype(np.float32)
+    traced = np.asarray(jax.jit(jax.vmap(_initialize_conn_length))(jnp.asarray(probs)))
+    eager = np.stack([np.asarray(_initialize_conn_length(float(p))) for p in probs])
+    np.testing.assert_array_equal(traced, eager)
+
+
+@pytest.mark.parametrize('prob, expected', [(-0.5, 0), (float('nan'), 0), (1.5, JITC_KEEP_ONE)])
+def test_initialize_conn_length_traced_out_of_range_clips(prob, expected):
+    """A traced ``prob`` cannot be validated: out-of-range values give an empty or full matrix."""
+    clen = np.asarray(jax.jit(_initialize_conn_length)(jnp.float32(prob)))
+    assert clen[1] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +404,9 @@ class TestPytreeRoundTrip:
 # ===========================================================================
 
 class TestCSRBuffers:
+    # Since 0.4.0 CSR/CSC ``buffers`` is a read-only view of the structure
+    # caches -- the mirror layout (``'csc'`` for CSR, ``'csr'`` for CSC) and
+    # the ``diag_add`` plan -- which are carried as pytree leaves.
     @pytest.fixture
     def csr_mat(self):
         data = jnp.array([1.0, 2.0, 3.0, 4.0])
@@ -379,67 +418,61 @@ class TestCSRBuffers:
         assert csr_mat.buffers == {}
         assert not hasattr(csr_mat, 'diag_positions')
 
-    def test_csr_register_buffer_then_access(self, csr_mat):
-        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
-        assert 'diag_positions' in csr_mat._buffer_registry
-        np.testing.assert_array_equal(csr_mat.diag_positions, jnp.array([0, 3]))
+    def test_csr_mirror_buffer_after_build(self, csr_mat):
+        built = csr_mat.build_weight_indices()
+        mirror = built.buffers['csc']
+        assert len(mirror) == 3
+        np.testing.assert_array_equal(mirror[0], jnp.array([0, 2, 3, 4]))
 
-    def test_csr_pytree_roundtrip(self, csr_mat):
-        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
-        children, aux = csr_mat.tree_flatten()
+    def test_csr_pytree_roundtrip_carries_mirror_as_leaves(self, csr_mat):
+        built = csr_mat.build_weight_indices()
+        children, aux = built.tree_flatten()
+        assert len(children) == 6
         restored = brainevent.CSR.tree_unflatten(aux, children)
-        np.testing.assert_array_equal(restored.diag_positions, jnp.array([0, 3]))
-        assert 'diag_positions' in restored._buffer_registry
+        for got, expected in zip(restored.buffers['csc'], built.buffers['csc']):
+            np.testing.assert_array_equal(got, expected)
 
-    def test_csr_jit_preserves_registered_buffer(self, csr_mat):
-        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
+    def test_csr_jit_preserves_mirror(self, csr_mat):
+        built = csr_mat.build_weight_indices()
+        result = jax.jit(lambda m: m)(built)
+        for got, expected in zip(result.buffers['csc'], built.buffers['csc']):
+            np.testing.assert_array_equal(got, expected)
 
-        @jax.jit
-        def identity(m):
-            return m
+    def test_csr_structure_preserving_ops_share_the_cache(self, csr_mat):
+        built = csr_mat.build_weight_indices()
+        mirror = built.buffers['csc']
+        for derived in (
+            built.with_data(jnp.array([10.0, 20.0, 30.0, 40.0])),
+            built.apply(lambda x: x ** 2),
+            built * 2.0,
+            2.0 * built,
+        ):
+            assert derived.buffers['csc'] is mirror
 
-        result = identity(csr_mat)
-        np.testing.assert_array_equal(result.diag_positions, jnp.array([0, 3]))
+    def test_csr_transpose_hands_mirror_to_csc(self, csr_mat):
+        built = csr_mat.build_weight_indices()
+        csc = built.transpose()
+        assert csc.buffers['csr'] is built.buffers['csc']
+        assert csc.T.buffers['csc'] is built.buffers['csc']
 
-    def test_csr_with_data_preserves_buffers(self, csr_mat):
-        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
-        new_data = jnp.array([10.0, 20.0, 30.0, 40.0])
-        new_csr = csr_mat.with_data(new_data)
-        np.testing.assert_array_equal(new_csr.diag_positions, jnp.array([0, 3]))
-        np.testing.assert_array_equal(new_csr.data, new_data)
+    def test_lazy_mirror_is_shared_with_derived_matrices(self, csr_mat):
+        derived = csr_mat.with_data(csr_mat.data * 2)
+        assert derived._mirror() is not None
+        assert csr_mat.buffers['csc'] is derived.buffers['csc']
 
-    def test_csr_apply_preserves_buffers(self, csr_mat):
-        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
-        squared = csr_mat.apply(lambda x: x ** 2)
-        np.testing.assert_array_equal(squared.diag_positions, jnp.array([0, 3]))
-        np.testing.assert_array_equal(squared.data, jnp.array([1.0, 4.0, 9.0, 16.0]))
+    def test_csr_buffers_kwarg_in_constructor(self, csr_mat):
+        mirror = csr_mat.build_weight_indices().buffers['csc']
+        csr = brainevent.CSR((csr_mat.data, csr_mat.indices, csr_mat.indptr), shape=(2, 3), buffers={'csc': mirror})
+        assert all(a is b for a, b in zip(csr.buffers['csc'], mirror))
 
-    def test_csr_transpose_preserves_buffers(self, csr_mat):
-        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
-        csc = csr_mat.transpose()
-        assert 'diag_positions' in csc._buffer_registry
-        np.testing.assert_array_equal(csc.diag_positions, jnp.array([0, 3]))
-
-    def test_csr_arithmetic_preserves_buffers(self, csr_mat):
-        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
-        scaled = csr_mat * 2.0
-        assert 'diag_positions' in scaled._buffer_registry
-        np.testing.assert_array_equal(scaled.diag_positions, jnp.array([0, 3]))
-
-    def test_csr_reflected_arithmetic_preserves_buffers(self, csr_mat):
-        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
-        scaled = 2.0 * csr_mat
-        assert 'diag_positions' in scaled._buffer_registry
-        np.testing.assert_array_equal(scaled.diag_positions, jnp.array([0, 3]))
-
-    def test_csr_buffers_kwarg_in_constructor(self):
-        data = jnp.array([1.0, 2.0])
-        indices = jnp.array([0, 1])
-        indptr = jnp.array([0, 1, 2])
-        bufs = {'diag_positions': jnp.array([0, 1])}
-        csr = brainevent.CSR((data, indices, indptr), shape=(2, 2), buffers=bufs)
-        np.testing.assert_array_equal(csr.diag_positions, jnp.array([0, 1]))
-        assert 'diag_positions' in csr._buffer_registry
+    def test_csr_rejects_unknown_buffers(self, csr_mat):
+        with pytest.raises(ValueError, match='my_mask'):
+            csr_mat.register_buffer('my_mask', jnp.array([True, False]))
+        with pytest.raises(ValueError, match='my_mask'):
+            brainevent.CSR(
+                (csr_mat.data, csr_mat.indices, csr_mat.indptr), shape=(2, 3),
+                buffers={'my_mask': jnp.array([True])},
+            )
 
     def test_csr_no_buffers_pytree_roundtrip(self, csr_mat):
         children, aux = csr_mat.tree_flatten()
@@ -466,35 +499,37 @@ class TestCSCBuffers:
         assert csc_mat.buffers == {}
         assert not hasattr(csc_mat, 'diag_positions')
 
+    def test_csc_mirror_is_the_row_major_view(self, csc_mat):
+        built = csc_mat.build_weight_indices()
+        csr_indptr, csr_indices, perm = built.buffers['csr']
+        dense = np.asarray(csc_mat.todense())
+        rows, cols = np.nonzero(dense)
+        np.testing.assert_array_equal(csr_indices, cols)
+        np.testing.assert_array_equal(np.asarray(csc_mat.data)[np.asarray(perm)], dense[rows, cols])
+
     def test_csc_pytree_roundtrip(self, csc_mat):
-        csc_mat.register_buffer('diag_positions', jnp.array([0, 2]))
-        children, aux = csc_mat.tree_flatten()
+        built = csc_mat.build_weight_indices()
+        children, aux = built.tree_flatten()
         restored = brainevent.CSC.tree_unflatten(aux, children)
-        np.testing.assert_array_equal(restored.diag_positions, jnp.array([0, 2]))
+        for got, expected in zip(restored.buffers['csr'], built.buffers['csr']):
+            np.testing.assert_array_equal(got, expected)
 
-    def test_csc_with_data_preserves_buffers(self, csc_mat):
-        csc_mat.register_buffer('diag_positions', jnp.array([0, 2]))
-        new_csc = csc_mat.with_data(jnp.array([10.0, 20.0, 30.0, 40.0]))
-        np.testing.assert_array_equal(new_csc.diag_positions, jnp.array([0, 2]))
+    def test_csc_with_data_and_apply_share_the_cache(self, csc_mat):
+        built = csc_mat.build_weight_indices()
+        assert built.with_data(built.data * 2).buffers['csr'] is built.buffers['csr']
+        assert built.apply(lambda x: x * 3).buffers['csr'] is built.buffers['csr']
 
-    def test_csc_apply_preserves_buffers(self, csc_mat):
-        csc_mat.register_buffer('diag_positions', jnp.array([0, 2]))
-        result = csc_mat.apply(lambda x: x * 3)
-        np.testing.assert_array_equal(result.diag_positions, jnp.array([0, 2]))
-
-    def test_csc_transpose_preserves_buffers(self, csc_mat):
-        csc_mat.register_buffer('diag_positions', jnp.array([0, 2]))
-        csr = csc_mat.transpose()
-        assert 'diag_positions' in csr._buffer_registry
-        np.testing.assert_array_equal(csr.diag_positions, jnp.array([0, 2]))
+    def test_csc_transpose_hands_mirror_to_csr(self, csc_mat):
+        built = csc_mat.build_weight_indices()
+        assert built.transpose().buffers['csc'] is built.buffers['csr']
 
 
 # ===========================================================================
-# 8. diag_add integration (buffers carry through real operations)
+# 8. diag_add integration (the plan is cached and carried through jit)
 # ===========================================================================
 
 class TestDiagAddBufferIntegration:
-    def test_diag_add_lazily_registers_diag_positions(self):
+    def test_diag_add_lazily_caches_diag_positions(self):
         n = 4
         data = jnp.ones(n * 2, dtype=jnp.float32)
         indices = jnp.array([0, 1, 1, 2, 2, 3, 3, 0], dtype=jnp.int32)
@@ -503,10 +538,9 @@ class TestDiagAddBufferIntegration:
 
         assert not hasattr(csr, 'diag_positions')
         result = csr.diag_add(jnp.ones(n))
-        assert hasattr(csr, 'diag_positions')
-        assert 'diag_positions' in csr._buffer_registry
-        assert 'diag_positions' in result._buffer_registry
-        assert result.diag_positions is not None
+        assert len(csr.diag_positions) == 4
+        assert len(result.diag_positions) == 4
+        assert 'diag_positions' in result.buffers
 
     def test_diag_add_reuses_cached_positions(self):
         n = 3
@@ -537,13 +571,7 @@ class TestDiagAddBufferIntegration:
         csr = brainevent.CSR((data, indices, indptr), shape=(n, n))
 
         result = csr.diag_add(jnp.ones(n))
-
-        @jax.jit
-        def identity(m):
-            return m
-
-        jitted = identity(result)
-        assert 'diag_positions' in jitted._buffer_registry
+        jitted = jax.jit(lambda m: m)(result)
         # The structural plan is a tuple of arrays; compare component by component.
         assert len(jitted.diag_positions) == len(result.diag_positions)
         for got, expected in zip(jitted.diag_positions, result.diag_positions):
@@ -575,21 +603,6 @@ class TestMultipleBuffers:
         a.register_buffer('only_on_a', 10)
         assert 'only_on_a' in a._buffer_registry
         assert 'only_on_a' not in b._buffer_registry
-
-    def test_csr_multiple_custom_buffers(self):
-        data = jnp.array([1.0, 2.0])
-        indices = jnp.array([0, 1])
-        indptr = jnp.array([0, 1, 2])
-        csr = brainevent.CSR((data, indices, indptr), shape=(2, 2))
-        csr.register_buffer('my_mask', jnp.array([True, False]))
-        csr.register_buffer('scale_factor', jnp.array(0.5))
-
-        children, aux = csr.tree_flatten()
-        restored = brainevent.CSR.tree_unflatten(aux, children)
-        np.testing.assert_array_equal(restored.my_mask, jnp.array([True, False]))
-        assert float(restored.scale_factor) == 0.5
-        assert 'my_mask' in restored._buffer_registry
-        assert 'scale_factor' in restored._buffer_registry
 
 
 # ===========================================================================
@@ -910,3 +923,137 @@ def test_fcn_fromdense_rejects_non_2d():
 def test_fcn_deprecated_aliases_removed(name):
     pre = be.FixedNumPerPre.fromdense(_DENSE, num_conn=2)
     assert not hasattr(pre, name)
+
+
+# ---------------------------------------------------------------------------
+# ``event_side``: choosing the event-driven product of a JITC matrix
+# ---------------------------------------------------------------------------
+
+import warnings as _warnings
+
+from brainevent import PerformanceWarning
+from brainevent._data import _WARNED_NOT_EVENT_DRIVEN
+from brainevent._test_util import jitc_mask_digest
+
+_ES_PARAMS = {
+    'JITCScalarR': (1.5,), 'JITCScalarC': (1.5,),
+    'JITCNormalR': (1.5, 0.1), 'JITCNormalC': (1.5, 0.1),
+    'JITCUniformR': (0.5, 1.5), 'JITCUniformC': (0.5, 1.5),
+}
+_ES_CLASSES = sorted(_ES_PARAMS)
+_ES_SHAPE = (20, 30)
+
+
+def _es_matrix(cls_name, **kw):
+    return getattr(be, cls_name)((*_ES_PARAMS[cls_name], 0.3, 7), shape=_ES_SHAPE, **kw)
+
+
+@pytest.mark.parametrize('cls_name', _ES_CLASSES)
+@pytest.mark.parametrize('kw, corder', [
+    ({}, True),
+    ({'event_side': 'left'}, True),
+    ({'event_side': 'right'}, False),
+    ({'corder': False}, False),
+    ({'corder': True, 'event_side': 'left'}, True),
+    ({'corder': False, 'event_side': 'right'}, False),
+])
+def test_event_side_selects_corder(cls_name, kw, corder):
+    mat = _es_matrix(cls_name, **kw)
+    assert mat.corder is corder
+    assert mat.event_side == ('left' if corder else 'right')
+    # ``M.T`` names the same connectivity, so the event-driven side flips with it.
+    assert mat.T.event_side == ('right' if corder else 'left')
+
+
+@pytest.mark.parametrize('cls_name', _ES_CLASSES)
+@pytest.mark.parametrize('kw, match', [
+    ({'corder': True, 'event_side': 'right'}, 'contradicts'),
+    ({'corder': False, 'event_side': 'left'}, 'contradicts'),
+    ({'event_side': 'up'}, 'event_side'),
+    ({'event_side': True}, 'event_side'),
+])
+def test_event_side_rejects_invalid_or_conflicting_values(cls_name, kw, match):
+    with pytest.raises(ValueError, match=match):
+        _es_matrix(cls_name, **kw)
+
+
+@pytest.mark.parametrize('cls_name', _ES_CLASSES)
+@pytest.mark.parametrize('side, corder', [('left', True), ('right', False)])
+def test_event_side_draws_the_corder_matrix(cls_name, side, corder):
+    by_side = _es_matrix(cls_name, event_side=side)
+    by_corder = _es_matrix(cls_name, corder=corder)
+    assert jitc_mask_digest(by_side.todense()) == jitc_mask_digest(by_corder.todense())
+    # The pytree keeps only ``corder``: a round trip preserves the event-driven side.
+    leaves, treedef = jax.tree_util.tree_flatten(by_side)
+    assert jax.tree_util.tree_unflatten(treedef, leaves).event_side == side
+
+
+def _es_event_products(mat):
+    rng = np.random.default_rng(0)
+    left = jnp.asarray(rng.random(_ES_SHAPE[0]) < 0.4)
+    right = jnp.asarray(rng.random(_ES_SHAPE[1]) < 0.4)
+    return {
+        'left': (lambda: be.BinaryArray(left) @ mat, np.asarray(left, np.float64)),
+        'right': (lambda: mat @ be.BinaryArray(right), np.asarray(right, np.float64)),
+    }
+
+
+@pytest.mark.parametrize('cls_name', _ES_CLASSES)
+@pytest.mark.parametrize('event_side', ['left', 'right'])
+def test_slow_event_side_warns_once_and_fast_side_never(cls_name, event_side):
+    mat = _es_matrix(cls_name, event_side=event_side)
+    slow = 'right' if event_side == 'left' else 'left'
+    products = _es_event_products(mat)
+    _WARNED_NOT_EVENT_DRIVEN.clear()
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter('always')
+        for _ in range(2):
+            products[event_side][0]()
+        fast_warnings = [w for w in caught if issubclass(w.category, PerformanceWarning)]
+        for _ in range(3):
+            products[slow][0]()
+    perf = [w for w in caught if issubclass(w.category, PerformanceWarning)]
+    assert fast_warnings == []
+    assert len(perf) == 1
+    message = str(perf[0].message)
+    assert f"event_side={slow!r}" in message and 'tocsr' in message
+
+
+@pytest.mark.parametrize('event_side', ['left', 'right'])
+def test_not_event_driven_warning_points_at_user_code(event_side):
+    # Co-located tests live inside the package, so run the product from code
+    # compiled under a filename outside it, as a user script would be.
+    mat = _es_matrix('JITCNormalR', event_side=event_side)
+    slow = 'right' if event_side == 'left' else 'left'
+    user_file = '/not/brainevent/user_script.py'
+    code = compile('\n\nproduct()\n', user_file, 'exec')
+    _WARNED_NOT_EVENT_DRIVEN.clear()
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter('always')
+        exec(code, {'product': _es_event_products(mat)[slow][0]})
+    perf = [w for w in caught if issubclass(w.category, PerformanceWarning)]
+    assert [(w.filename, w.lineno) for w in perf] == [(user_file, 3)]
+
+
+@pytest.mark.parametrize('cls_name', _ES_CLASSES)
+@pytest.mark.parametrize('event_side', ['left', 'right'])
+def test_event_products_match_dense_on_both_sides(cls_name, event_side):
+    mat = _es_matrix(cls_name, event_side=event_side)
+    dense = np.asarray(mat.todense(), np.float64)
+    with _warnings.catch_warnings():
+        _warnings.simplefilter('ignore', PerformanceWarning)
+        products = _es_event_products(mat)
+        got_left = np.asarray(products['left'][0](), np.float64)
+        got_right = np.asarray(products['right'][0](), np.float64)
+    np.testing.assert_allclose(got_left, products['left'][1] @ dense, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(got_right, dense @ products['right'][1], rtol=1e-5, atol=1e-5)
+
+
+def test_dense_products_do_not_warn():
+    mat = _es_matrix('JITCScalarR')
+    _WARNED_NOT_EVENT_DRIVEN.clear()
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter('always')
+        mat @ jnp.ones(_ES_SHAPE[1])
+        jnp.ones(_ES_SHAPE[0]) @ mat
+    assert not [w for w in caught if issubclass(w.category, PerformanceWarning)]

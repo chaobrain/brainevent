@@ -37,6 +37,7 @@
 #include <cstdlib>
 
 #include "cuda_common.h"
+#include "jitc_walk.h"
 #include "brainevent/common.h"
 
 // =========================================================================
@@ -178,6 +179,7 @@ __global__ void _notrans_f32_kern(
     float w = READ_F32(__ldg(&weight[0]));
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);
     if (cl < 2U)
         cl = 2U;
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
@@ -190,10 +192,12 @@ __global__ void _notrans_f32_kern(
     float acc = 0.0f;
     while (local_j < chunk_width)
     {
-        int j = chunk_start + (int)local_j;
-        if (IS_ACTIVE_PACKED(packed_col, j))
-        {
-                        acc += w;
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {
+            int j = chunk_start + (int)local_j;
+            if (IS_ACTIVE_PACKED(packed_col, j))
+            {
+                            acc += w;
+            }
         }
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
         local_j = (unsigned int)lane + 32U * q;
@@ -246,6 +250,7 @@ __global__ void _trans_f32_kern(
     float w = READ_F32(__ldg(&weight[0]));
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);
     if (cl < 2U)
         cl = 2U;
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
@@ -255,8 +260,10 @@ __global__ void _trans_f32_kern(
     unsigned int local_j = (unsigned int)lane + 32U * q;
     while (local_j < chunk_width)
     {
-        int j = chunk_start + (int)local_j;
-        atomic_add_f32(&output[(size_t)j * n + col], w);
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {
+            int j = chunk_start + (int)local_j;
+            atomic_add_f32(&output[(size_t)j * n + col], w);
+        }
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
         local_j = (unsigned int)lane + 32U * q;
     }
@@ -397,6 +404,7 @@ __global__ void _notrans##SFX##_kern(                                           
     if (chunk_width == 0U) return;                                                            \
     ACC_T w = READ_W(__ldg(&weight[0]));                                                      \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                                          \
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);                                         \
     if (cl < 2U) cl = 2U;                                                                     \
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                                       \
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);                        \
@@ -405,8 +413,10 @@ __global__ void _notrans##SFX##_kern(                                           
     unsigned int local_j = (unsigned int)lane + 32U * q;                                      \
     ACC_T acc = (ACC_T)0;                                                                     \
     while (local_j < chunk_width) {                                                           \
-        int j = chunk_start + (int)local_j;                                                   \
-        if (IS_ACTIVE_PACKED(packed_col, j)) acc += w;                                        \
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {                         \
+            int j = chunk_start + (int)local_j;                                               \
+            if (IS_ACTIVE_PACKED(packed_col, j)) acc += w;                                    \
+        }                                                                                     \
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);                            \
         local_j = (unsigned int)lane + 32U * q;                                               \
     }                                                                                         \
@@ -441,14 +451,17 @@ __global__ void _trans##SFX##_kern(                                             
     if (chunk_width == 0U) return;                                              \
     ACC_T w = READ_W(__ldg(&weight[0]));                                        \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                            \
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);                           \
     if (cl < 2U) cl = 2U;                                                       \
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                         \
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);          \
     unsigned int q = stationary_initial_q(&rng, cl);                            \
     unsigned int local_j = (unsigned int)lane + 32U * q;                        \
     while (local_j < chunk_width) {                                             \
-        int j = chunk_start + (int)local_j;                                     \
-        ATOMIC_ADD(&output[(size_t)j * n + col], w);                            \
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {           \
+            int j = chunk_start + (int)local_j;                                 \
+            ATOMIC_ADD(&output[(size_t)j * n + col], w);                        \
+        }                                                                       \
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);              \
         local_j = (unsigned int)lane + 32U * q;                                 \
     }                                                                           \

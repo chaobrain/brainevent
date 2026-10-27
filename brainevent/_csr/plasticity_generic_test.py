@@ -232,8 +232,8 @@ def test_csr_methods():
         np.testing.assert_allclose(np.asarray(new[k]), np.asarray(exp[k]))
     # gradient through the method w.r.t. the matrix data
     dep = lambda w, pre, post, p: w - p * pre
-    g = jax.grad(lambda c: c.apply_on_post(dep, post_spike, pre_vals=pre_vals['x'], params=0.1).sum())(csr)
-    np.testing.assert_allclose(np.asarray(g.data), np.ones(csr.nse))
+    g = jax.grad(lambda d: csr.with_data(d).apply_on_post(dep, post_spike, pre_vals=pre_vals['x'], params=0.1).sum())(csr.data)
+    np.testing.assert_allclose(np.asarray(g), np.ones(csr.nse))
 
     homo = brainevent.CSR((jnp.ones(1), csr.indices, csr.indptr), shape=SHAPE)
     with pytest.raises(ValueError, match='homogeneous'):

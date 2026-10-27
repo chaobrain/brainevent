@@ -477,3 +477,49 @@ def test_float_csrmm_cuda_accepts_int64_indptr(transpose, homo):
     expected = csrmm(data, indices, indptr32, matrix, shape=(2, 3), transpose=transpose, backend='jax_raw')
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('backend', CSRMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('dtype', ['int32', 'bool', 'bfloat16', 'float16'])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_mixed_operand_dtype_is_promoted(backend, dtype, homo, transpose):
+    # Regression: the kernels read the vector / B with the weight dtype, so a
+    # non-float32 operand crashed numba (half precision) or was misread on CUDA.
+    import numpy as np
+    rng = np.random.default_rng(0)
+    dense = (rng.random((6, 5)) < 0.5) * (rng.random((6, 5)) + 0.5)
+    if homo:
+        dense = (dense != 0) * 1.5
+    rows, cols = np.nonzero(dense)
+    indptr = jnp.asarray(np.searchsorted(rows, np.arange(7)), jnp.int32)
+    indices = jnp.asarray(cols, jnp.int32)
+    data = jnp.asarray([1.5] if homo else dense[rows, cols], jnp.float32)
+    op = dense.T if transpose else dense
+    n_in = op.shape[1]
+    v = jnp.asarray(rng.random(n_in) * 3, jnp.float32).astype(dtype)
+    B = jnp.asarray(rng.random((n_in, 4)) * 3, jnp.float32).astype(dtype)
+    tol = 5e-2 if dtype in ('bfloat16', 'float16') else 1e-5
+    for fn, x, impls in ((csrmv, v, CSRMV_IMPLEMENTATIONS), (csrmm, B, CSRMM_IMPLEMENTATIONS)):
+        if backend not in impls:
+            continue
+        out = fn(data, indices, indptr, x, shape=(6, 5), transpose=transpose, backend=backend)
+        assert out.dtype == jnp.float32
+        assert np.allclose(np.asarray(out), op @ np.asarray(x, np.float64), rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize('undefined', ['B', 'data'])
+def test_csrmm_transpose_rule_symbolic_zero_cotangent(undefined):
+    # A symbolic-zero cotangent must map to symbolic zeros, not be fed to a kernel.
+    from jax.interpreters import ad
+    data = jnp.asarray([1.0, 2.0, 3.0], jnp.float32)
+    indices = jnp.asarray([0, 2, 1], jnp.int32)
+    indptr = jnp.asarray([0, 2, 3], jnp.int32)
+    B = jnp.ones((3, 4), jnp.float32)
+    ct = [ad.Zero(jax.core.ShapedArray((2, 4), jnp.float32))]
+    args = [data, indices, indptr, B]
+    position = 3 if undefined == 'B' else 0
+    args[position] = ad.UndefinedPrimal(jax.core.ShapedArray(args[position].shape, jnp.float32))
+    out = float_mod._csrmm_transpose_rule(ct, *args, shape=(2, 3), transpose=False, backend=None)
+    assert type(out[position]) is ad.Zero
+    assert out[position].aval.shape == args[position].aval.shape

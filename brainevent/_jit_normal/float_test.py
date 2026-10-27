@@ -973,3 +973,47 @@ def test_jitnmm_weight_jvp_uses_unit_tangent_directions(implementation, transpos
     _, t_scale = jax.jvp(lambda b: f(w_loc, b), (w_scale,), (one,))
     assert np.allclose(t_loc, f(one, zero), rtol=1e-4, atol=1e-4)
     assert np.allclose(t_scale, f(zero, one), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize('backend', JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [False, True])
+def test_weight_grads_keep_weight_dtype_under_x64(backend, transpose, corder):
+    # Regression: the JVP/transpose rules passed Python ``1.``/``0.`` as
+    # weights, which become float64 under x64: float64 gradients for float32
+    # weights, dtype assertion errors, and (cuda_raw) float32 buffers read as
+    # float64.
+    from brainevent._test_util import check_jitc_weight_grads, jax_x64_enabled
+    shape = (7, 9)
+    n_in = shape[0] if transpose else shape[1]
+    kw = dict(shape=shape, transpose=transpose, corder=corder, backend=backend)
+    rng = np.random.default_rng(0)
+    with jax_x64_enabled():
+        params = tuple(jnp.asarray(w, jnp.float32) for w in (1.5, 0.4))
+        v = jnp.asarray(rng.random(n_in), jnp.float32)
+        B = jnp.asarray(rng.random((n_in, 3)), jnp.float32)
+        check_jitc_weight_grads(lambda a, b: jitnmv(a, b, 0.4, v, 11, **kw), params)
+        check_jitc_weight_grads(lambda a, b: jitnmm(a, b, 0.4, B, 11, **kw), params)
+        check_jitc_weight_grads(lambda a, b: jitn(a, b, 0.4, 11, **kw), params)
+
+
+@pytest.mark.parametrize('backend', JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('dtype', ['int32', 'bool', 'bfloat16', 'float16'])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_mixed_operand_dtype_is_promoted(backend, dtype, transpose):
+    # Regression: the kernels read the vector / B with the weight dtype, so a
+    # non-float32 operand crashed numba (half precision), returned wrong values
+    # (integers) or was misread on CUDA.
+    shape = (6, 5)
+    rng = np.random.default_rng(0)
+    ws = tuple(jnp.asarray(w, jnp.float32) for w in (1.5, 0.3))
+    dense = np.asarray(jitn(*ws, 0.5, 7, shape=shape, transpose=transpose, corder=True), np.float64)
+    n_in = dense.shape[1]
+    v = jnp.asarray(rng.random(n_in) * 3, jnp.float32).astype(dtype)
+    B = jnp.asarray(rng.random((n_in, 4)) * 3, jnp.float32).astype(dtype)
+    tol = 5e-2 if dtype in ('bfloat16', 'float16') else 1e-5
+    kw = dict(shape=shape, transpose=transpose, corder=True, backend=backend)
+    for fn, x in ((jitnmv, v), (jitnmm, B)):
+        out = fn(*ws, 0.5, x, 7, **kw)
+        assert out.dtype == jnp.float32
+        assert np.allclose(np.asarray(out), dense @ np.asarray(x, np.float64), rtol=tol, atol=tol)

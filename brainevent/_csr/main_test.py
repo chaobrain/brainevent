@@ -30,15 +30,6 @@ from brainevent import CSR, CSC, BinaryArray
 from brainevent._csr._test_util import (
     get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix, small_csr,
 )
-from brainevent._csr.main import (
-    _BinaryTaskWorkspace,
-    _binary_workspace,
-    _binary_workspace_helpers,
-    _binary_task_capacity_from_indptr,
-    _ensure_binary_workspace,
-    _make_binary_task_workspace,
-    _with_binary_workspace,
-)
 from brainevent._test_util import jax_x64_enabled
 
 # The operator tests below dispatch to the native ``numba`` backend (the default backend),
@@ -46,7 +37,7 @@ from brainevent._test_util import jax_x64_enabled
 # the default ``pytest`` run skips it; CI runs them via ``pytest -m ""``. Kernel correctness on
 # the cheap ``jax_raw`` backend is still covered by ``float_test.py`` in the default run. The
 # marker is per-test rather than module-wide so the pure-Python structural tests further down
-# (workspace bookkeeping, dtype policy) stay in the default run.
+# (pytree contract, dtype policy) stay in the default run.
 
 platform = jax.default_backend()
 BINARY_CSRMV_IMPLEMENTATIONS = tuple(brainevent.binary_csrmv_p.available_backends(platform))
@@ -1183,11 +1174,21 @@ class Test_diag_add:
         def run(mat, d):
             return mat.diag_add(d)
 
-        new_csr = run(csr, diag)
-        # Structure arrays must survive jit as concrete (non-traced) values.
+        # A jit argument has a traced structure, so the host-side plan must be
+        # prepared beforehand.
+        with pytest.raises(ValueError, match='prepare_diag_add'):
+            run(csr, diag)
+        new_csr = run(csr.prepare_diag_add(), diag)
         assert not isinstance(new_csr.indices, jax.core.Tracer)
         assert jnp.allclose(new_csr.todense(),
                             dense.at[jnp.diag_indices(3)].add(diag))
+        # The result carries its own plan, so a second jitted diag_add works.
+        again = run(new_csr, diag)
+        assert jnp.allclose(again.todense(),
+                            dense.at[jnp.diag_indices(3)].add(2 * diag))
+        # A closed-over (concrete) matrix needs no preparation.
+        closed = jax.jit(lambda d: csr.diag_add(d).todense())(diag)
+        assert jnp.allclose(closed, dense.at[jnp.diag_indices(3)].add(diag))
 
     def test_repeated_diag_add_accumulates(self):
         dense = jnp.array([[0., 1.],
@@ -1246,6 +1247,84 @@ class Test_solve:
         assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
 
         jax.block_until_ready((dense, b, x, x2))
+
+    @pytest.mark.parametrize('cls', [CSR, CSC])
+    def test_solve_nonsymmetric_matches_dense(self, cls):
+        # A non-symmetric, well-conditioned matrix: a solver that silently
+        # solves ``W.T x = b`` gives a large residual here.
+        dense = np.array([[4., 1., 0.], [0., 3., 2.], [1., 0., 5.]], dtype=np.float32)
+        b = np.array([1., 2., 3.], dtype=np.float32)
+        x = cls.fromdense(jnp.asarray(dense)).solve(jnp.asarray(b))
+        np.testing.assert_allclose(dense @ np.asarray(x), b, atol=1e-5)
+        np.testing.assert_allclose(np.asarray(x), np.linalg.solve(dense, b), atol=1e-5)
+
+    def test_csr_solve_forwards_tol_and_reorder(self, monkeypatch):
+        seen = {}
+
+        def fake_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
+            seen.update(tol=tol, reorder=reorder)
+            return b
+
+        monkeypatch.setattr(brainevent._csr.main, 'csr_solve', fake_solve)
+        csr = CSR.fromdense(jnp.eye(3))
+        csr.solve(jnp.ones(3), tol=1e-3, reorder=0)
+        assert seen == {'tol': 1e-3, 'reorder': 0}
+
+
+class Test_compressed_elementwise_ops:
+    dense = np.array([[1., 0., 2.], [0., 3., 0.]], dtype=np.float32)
+
+    @pytest.mark.parametrize('cls', [CSR, CSC])
+    def test_mul_matrix_with_shared_structure(self, cls):
+        m = cls.fromdense(jnp.asarray(self.dense))
+        m2 = m.with_data(m.data * 2)
+        for out, ref in [(m * m2, self.dense * self.dense * 2),
+                         (m2 / m, np.where(self.dense != 0, 2., 0.))]:
+            assert isinstance(out, cls)
+            np.testing.assert_allclose(np.asarray(out.todense()), ref)
+
+    @pytest.mark.parametrize('cls', [CSR, CSC])
+    @pytest.mark.parametrize('scalar', [1, 2.5, np.float32(1.5)])
+    def test_add_sub_python_scalar(self, cls, scalar):
+        m = cls.fromdense(jnp.asarray(self.dense))
+        np.testing.assert_allclose(np.asarray(m + scalar), self.dense + scalar)
+        np.testing.assert_allclose(np.asarray(scalar + m), scalar + self.dense)
+        np.testing.assert_allclose(np.asarray(m - scalar), self.dense - scalar)
+        np.testing.assert_allclose(np.asarray(scalar - m), scalar - self.dense)
+
+    @pytest.mark.parametrize('cls', [CSR, CSC])
+    def test_add_incompatible_shape_raises(self, cls):
+        m = cls.fromdense(jnp.asarray(self.dense))
+        with pytest.raises(ValueError):
+            m + jnp.ones((3, 3))
+
+    @pytest.mark.parametrize('cls', [CSR, CSC])
+    @pytest.mark.parametrize('n_data', [0, 2, 4])
+    def test_constructor_rejects_data_size_mismatch(self, cls, n_data):
+        # nse == 3: data must hold 1 (homogeneous) or 3 values.
+        indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+        shape = (2, 3) if cls is CSR else (3, 2)
+        with pytest.raises(ValueError, match='data'):
+            cls((jnp.ones(n_data), indices, indptr), shape=shape)
+
+    @pytest.mark.parametrize('cls', [CSR, CSC])
+    @pytest.mark.parametrize('n_data', [1, 3])
+    def test_constructor_accepts_homogeneous_and_full_data(self, cls, n_data):
+        indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+        shape = (2, 3) if cls is CSR else (3, 2)
+        m = cls((jnp.ones(n_data), indices, indptr), shape=shape)
+        assert m.nse == 3
+
+    @pytest.mark.parametrize('cls', [CSR, CSC])
+    def test_constructor_accepts_scalar_homogeneous_data(self, cls):
+        indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+        shape = (2, 3) if cls is CSR else (3, 2)
+        scalar = cls((jnp.asarray(2.0), indices, indptr), shape=shape)
+        homo = cls((jnp.full((1,), 2.0), indices, indptr), shape=shape)
+        assert jnp.array_equal(scalar.todense(), homo.todense())
 
 
 # ---- weight-indices lifecycle (Phase 4) ----
@@ -1510,7 +1589,7 @@ def test_csc_matmat_golden():
 
 @pytest.mark.slow
 def test_csr_matmat_unfavorable_jax_raw_route_skips_weight_indices():
-    # jax_raw BinaryArray routing uses the direct CSR structure and workspace.
+    # jax_raw BinaryArray routing uses the direct CSR structure.
     # Only explicit cuda_raw uses the mirror indexed route that builds 'csc'.
     rng = np.random.default_rng(2)
     csr = next(_csr_cases())
@@ -1520,12 +1599,11 @@ def test_csr_matmat_unfavorable_jax_raw_route_skips_weight_indices():
     assert csr.buffers.get('csc') is None
     _ = csr @ BinaryArray(right)
     assert csr.buffers.get('csc') is None
-    assert 'csr' in csr.buffers.get('binary_workspace', {})
 
 
 @pytest.mark.slow
 def test_csc_matmat_unfavorable_jax_raw_route_skips_weight_indices():
-    # jax_raw BinaryArray routing uses the direct CSC structure and workspace.
+    # jax_raw BinaryArray routing uses the direct CSC structure.
     # Only explicit cuda_raw uses the mirror indexed route that builds 'csr'.
     rng = np.random.default_rng(3)
     csc = next(_csr_cases()).T
@@ -1535,7 +1613,6 @@ def test_csc_matmat_unfavorable_jax_raw_route_skips_weight_indices():
     assert csc.buffers.get('csr') is None
     _ = BinaryArray(left) @ csc
     assert csc.buffers.get('csr') is None
-    assert 'csc' in csc.buffers.get('binary_workspace', {})
 
 
 @pytest.mark.slow
@@ -1553,152 +1630,6 @@ def test_csr_matmat_units_and_jit():
     f = jax.jit(lambda d: CSR((d, csr.indices, csr.indptr), shape=csr.shape) @ BinaryArray(M))
     got_jit = f(csr.data)
     assert jnp.allclose(got_jit, ref, atol=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Binary task workspace: capacity accounting, pytree behaviour and the
-# transpose re-keying that keeps a CSR workspace usable after ``.T``.
-# Pure structural bookkeeping -- no kernel compilation, so not marked ``slow``.
-# ---------------------------------------------------------------------------
-
-
-def test_binary_task_capacity_ignores_short_rows():
-    indptr = jnp.array([0, 10, 138, 139], dtype=jnp.int32)
-
-    assert _binary_task_capacity_from_indptr(indptr) == 0
-
-
-def test_binary_task_capacity_counts_heavy_row_chunks():
-    with jax_x64_enabled():
-        indptr = jnp.array([0, 129, 129 + 4096, 129 + 4096 + 4097], dtype=jnp.int64)
-
-        assert _binary_task_capacity_from_indptr(indptr) == 1 + 1 + 2
-
-
-def test_binary_task_capacity_rejects_non_monotonic_indptr():
-    indptr = jnp.array([0, 10, 9], dtype=jnp.int32)
-
-    try:
-        _binary_task_capacity_from_indptr(indptr)
-    except ValueError as exc:
-        assert "non-negative" in str(exc)
-    else:
-        raise AssertionError("expected ValueError for non-monotonic indptr")
-
-
-def test_make_binary_task_workspace_shapes_dtypes_and_pytree():
-    with jax_x64_enabled():
-        indptr = jnp.array([0, 129, 129 + 4097], dtype=jnp.int64)
-
-        workspace = _make_binary_task_workspace(indptr)
-        leaves, treedef = jax.tree_util.tree_flatten(workspace)
-        restored = jax.tree_util.tree_unflatten(treedef, leaves)
-
-        assert isinstance(workspace, _BinaryTaskWorkspace)
-        assert workspace.task_capacity == 3
-        assert workspace.task_begin.shape == (3,)
-        assert workspace.task_end.shape == (3,)
-        assert workspace.status.shape == (2,)
-        assert workspace.task_begin.dtype == indptr.dtype
-        assert workspace.task_end.dtype == indptr.dtype
-        assert workspace.status.dtype == jnp.int32
-        assert len(leaves) == 3
-        assert all(isinstance(leaf, jax.Array) for leaf in leaves)
-        assert restored.task_capacity == workspace.task_capacity
-        assert restored.task_begin.shape == workspace.task_begin.shape
-        assert restored.task_end.shape == workspace.task_end.shape
-        assert restored.status.shape == workspace.status.shape
-
-
-def test_binary_workspace_buffer_is_pytree_leaf_and_hidden_buffer():
-    csr = CSR(
-        (
-            jnp.array([1.0], dtype=jnp.float32),
-            jnp.array([0], dtype=jnp.int32),
-            jnp.array([0, 1], dtype=jnp.int32),
-        ),
-        shape=(1, 1),
-    )
-    workspace = _make_binary_task_workspace(csr.indptr)
-    csr = _with_binary_workspace(csr, "csr", workspace)
-
-    leaves, treedef = jax.tree_util.tree_flatten(csr)
-    restored = jax.tree_util.tree_unflatten(treedef, leaves)
-    restored_workspace = _binary_workspace(restored, "csr")
-
-    assert "binary_workspace" in csr.buffers
-    assert [getattr(leaf, "shape", None) for leaf in leaves] == [
-        csr.data.shape,
-        workspace.task_begin.shape,
-        workspace.task_end.shape,
-        workspace.status.shape,
-    ]
-    assert restored_workspace.task_capacity == workspace.task_capacity
-    assert restored_workspace.status.shape == (2,)
-
-
-def test_binary_workspace_helpers_are_closure_backed():
-    assert _binary_workspace.__closure__ is not None
-    assert _with_binary_workspace.__closure__ is not None
-    assert _ensure_binary_workspace.__closure__ is not None
-    assert _binary_workspace_helpers.__closure__ is None
-
-
-def test_ensure_binary_workspace_reuses_existing_workspace():
-    csr = CSR(
-        (
-            jnp.ones((129,), dtype=jnp.float32),
-            jnp.zeros((129,), dtype=jnp.int32),
-            jnp.array([0, 129], dtype=jnp.int32),
-        ),
-        shape=(1, 1),
-    )
-
-    prepared = _ensure_binary_workspace(csr, "csr", csr.indptr)
-    prepared_again = _ensure_binary_workspace(prepared, "csr", csr.indptr)
-
-    assert prepared is csr
-    assert prepared_again is csr
-    assert "binary_workspace" in csr.buffers
-    first = _binary_workspace(prepared, "csr")
-    second = _binary_workspace(prepared_again, "csr")
-    assert first.task_capacity == 1
-    assert second.task_capacity == first.task_capacity
-    assert second.task_begin is first.task_begin
-
-
-def test_csr_transpose_rekeys_binary_workspace_csc_to_csr():
-    csr = CSR(
-        (
-            jnp.ones((129,), dtype=jnp.float32),
-            jnp.zeros((129,), dtype=jnp.int32),
-            jnp.array([0, 129], dtype=jnp.int32),
-        ),
-        shape=(1, 1),
-    )
-    csc_indptr = jnp.array([0, 129], dtype=jnp.int32)
-    csr = _with_binary_workspace(csr, "csc", _make_binary_task_workspace(csc_indptr))
-
-    csc = csr.T
-
-    assert _binary_workspace(csc, "csr").task_capacity == 1
-
-
-def test_csc_transpose_rekeys_binary_workspace_csr_to_csc():
-    csc = CSR(
-        (
-            jnp.ones((129,), dtype=jnp.float32),
-            jnp.zeros((129,), dtype=jnp.int32),
-            jnp.array([0, 129], dtype=jnp.int32),
-        ),
-        shape=(1, 1),
-    ).T
-    csr_indptr = jnp.array([0, 129], dtype=jnp.int32)
-    csc = _with_binary_workspace(csc, "csr", _make_binary_task_workspace(csr_indptr))
-
-    csr = csc.T
-
-    assert _binary_workspace(csr, "csc").task_capacity == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2007,7 +1938,7 @@ def test_weighted_array_cuda_raw_unfavorable_routes_pass_weighted(monkeypatch):
     csc = CSC.fromdense(dense, backend="cuda_raw")
     seen = []
 
-    def fake(data, indices, indptr, perm, v, *, shape, transpose, backend=None, workspace=None, weighted=False):
+    def fake(data, indices, indptr, perm, v, *, shape, transpose, backend=None, weighted=False, **kw):
         seen.append(weighted)
         out = shape[1] if transpose else shape[0]
         return jnp.zeros((out,) + v.shape[1:], dtype=data.dtype)
@@ -2085,3 +2016,272 @@ def test_event_matmul_ignores_nonfinite_weights_of_inactive_events(backend, fmt,
     out = np.asarray(out)
     assert np.isfinite(out).all()
     np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+@pytest.mark.parametrize('scalar_shape', [(), (1,), (1, 1)])
+def test_compressed_mul_by_size_one_operand_keeps_data_shape(cls, scalar_shape):
+    dense = np.array([[1., 0., 2.], [0., 3., 0.]], dtype=np.float32)
+    m = cls.fromdense(jnp.asarray(dense))
+    for out in (m * jnp.full(scalar_shape, 2.), jnp.full(scalar_shape, 2.) * m):
+        assert out.data.shape == m.data.shape
+        np.testing.assert_allclose(np.asarray(out.todense()), dense * 2)
+
+
+# ---------------------------------------------------------------------------
+# Pytree / workspace contract (0.4.0): ``indices``/``indptr`` (and cached
+# mirrors) are dynamic pytree leaves, and no lazily built buffer may mutate a
+# matrix under a trace. Gradients go through ``M.data`` + ``with_data``.
+# ---------------------------------------------------------------------------
+
+_PYTREE_BACKENDS = ('jax_raw', 'numba') if platform == 'cpu' else ('jax_raw', 'cuda_raw')
+
+
+def _compressed_parts(dense, cls):
+    # CSC of ``W`` is, array for array, the CSR of ``W.T``.
+    mat = np.asarray(dense if cls is CSR else dense.T)
+    rows, cols = np.nonzero(mat)
+    indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=mat.shape[0]))])
+    return (
+        jnp.asarray(mat[rows, cols], jnp.float32),
+        jnp.asarray(cols, jnp.int32),
+        jnp.asarray(indptr, jnp.int32),
+    )
+
+
+def _pytree_matrix(cls, backend=None, shape=(12, 9), seed=0, prob=0.35):
+    rng = np.random.default_rng(seed)
+    dense = ((rng.random(shape) < prob) * rng.uniform(0.5, 1.5, shape)).astype(np.float32)
+    return cls(_compressed_parts(dense, cls), shape=shape, backend=backend), dense
+
+
+def _spike_vector(n, seed=1):
+    return jnp.asarray(np.random.default_rng(seed).random(n) < 0.5)
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+@pytest.mark.parametrize('backend', _PYTREE_BACKENDS)
+def test_closed_over_matrix_binary_matmul_survives_two_jits(cls, backend):
+    # Regression: the binary task workspace was built lazily (``jnp.empty``)
+    # under the first trace and cached on the closed-over matrix, so the next
+    # trace, or ``jax.clear_caches()``, raised ``UnexpectedTracerError``.
+    M, dense = _pytree_matrix(cls, backend)
+    x, y = _spike_vector(M.shape[1]), _spike_vector(M.shape[0], seed=2)
+    right = jax.jit(lambda s: M @ BinaryArray(s))
+    left = jax.jit(lambda s: BinaryArray(s) @ M)
+    for _ in range(2):
+        np.testing.assert_allclose(right(x), dense @ np.asarray(x, np.float32), rtol=1e-5)
+        np.testing.assert_allclose(left(y), np.asarray(y, np.float32) @ dense, rtol=1e-5)
+        jax.clear_caches()
+    np.testing.assert_allclose(M @ BinaryArray(x), dense @ np.asarray(x, np.float32), rtol=1e-5)
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+@pytest.mark.parametrize('binary', [False, True])
+def test_jit_reuses_one_entry_for_structurally_equal_matrices(cls, binary):
+    # Regression: index arrays lived in pytree aux data, so passing a second,
+    # structurally equal matrix (distinct array objects) raised while JAX
+    # compared the metadata.
+    M1, dense = _pytree_matrix(cls, 'jax_raw')
+    M2 = cls(
+        (M1.data * 2, jnp.array(np.asarray(M1.indices)), jnp.array(np.asarray(M1.indptr))),
+        shape=M1.shape, backend='jax_raw',
+    )
+    x = _spike_vector(M1.shape[1])
+    f = jax.jit(lambda M, s: M @ (BinaryArray(s) if binary else s.astype(jnp.float32)))
+    expected = dense @ np.asarray(x, np.float32)
+    np.testing.assert_allclose(f(M1, x), expected, rtol=1e-5)
+    np.testing.assert_allclose(f(M2, x), 2 * expected, rtol=1e-5)
+    assert f._cache_size() == 1
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+@pytest.mark.parametrize('mirror', [False, True])
+@pytest.mark.parametrize('backend', _PYTREE_BACKENDS)
+def test_scan_carry_with_binary_matmul_and_plasticity(cls, mirror, backend):
+    # Regression: a lazily registered workspace changed the pytree structure of
+    # a ``lax.scan`` carry. Without a mirror, the unfavorable direction must
+    # fall back to a mirror-free kernel instead of building one under the trace.
+    M, dense = _pytree_matrix(cls, backend)
+    if mirror:
+        M = M.build_weight_indices()
+    n_pre, n_post = M.shape
+    rng = np.random.default_rng(3)
+    pre = jnp.asarray(rng.random((4, n_pre)) < 0.5)
+    post = jnp.asarray(rng.random((4, n_post)) < 0.5)
+    pre_trace = jnp.asarray(rng.random(n_pre), jnp.float32)
+    post_trace = jnp.asarray(rng.random(n_post), jnp.float32)
+
+    def step(W, spikes):
+        pre_s, post_s = spikes
+        out = (W @ BinaryArray(post_s), BinaryArray(pre_s) @ W)
+        W = W.update_on_pre(pre_s, post_trace, w_max=2.0)
+        W = W.update_on_post(pre_trace, post_s, w_max=2.0)
+        return W, out
+
+    final, (outs_r, outs_l) = jax.lax.scan(step, M, (pre, post))
+
+    W = M
+    for t in range(4):
+        W, (r, l) = step(W, (pre[t], post[t]))
+        np.testing.assert_allclose(outs_r[t], r, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(outs_l[t], l, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(final.todense(), W.todense(), rtol=1e-5, atol=1e-6)
+    assert type(final) is cls
+
+
+def _record_task_capacities(monkeypatch):
+    """Spy on primitive calls: record ``(name, task_capacity, indptr)`` and skip execution."""
+    from brainevent._op.main import XLACustomKernel
+    calls = []
+    real = XLACustomKernel.__call__
+
+    def spy(self, *ins, outs, **kwargs):
+        if 'task_capacity' in kwargs:
+            calls.append((self.name, int(kwargs['task_capacity']), np.asarray(ins[2])))
+            return jax.tree.map(lambda o: jnp.zeros(o.shape, o.dtype), outs)
+        return real(self, *ins, outs=outs, **kwargs)
+
+    monkeypatch.setattr(XLACustomKernel, '__call__', spy)
+    return calls
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_task_capacity_covers_heavy_rows_in_every_orientation(cls, monkeypatch):
+    # Regression: ``.T`` re-keyed only one direction of the cached workspace, so
+    # ``events @ csr.T`` after ``events @ csr`` on cuda_raw ran with a task
+    # queue sized for the other orientation and silently dropped work.
+    from brainevent._csr.hybrid_config import hybrid_task_capacity
+    calls = _record_task_capacities(monkeypatch)
+    rng = np.random.default_rng(0)
+    shape = (4096, 3)
+    dense = (rng.random(shape) < 0.9).astype(np.float32)  # three heavy columns
+    M = cls(_compressed_parts(dense, cls), shape=shape, backend='cuda_raw')
+    with jax.disable_jit():  # the spy reads ``indptr`` concretely
+        for V in (M, M.T, M.T.T, M.T, M):
+            V @ BinaryArray(jnp.ones(V.shape[1], bool))
+            BinaryArray(jnp.ones(V.shape[0], bool)) @ V
+    assert len(calls) == 10
+    for name, capacity, indptr in calls:
+        assert capacity >= hybrid_task_capacity(indptr), (name, capacity)
+
+
+@pytest.mark.skipif(platform != 'gpu', reason='cuda_raw parity needs a GPU')
+@pytest.mark.parametrize('cls', [CSR, CSC])
+@pytest.mark.parametrize('shape', [(4096, 3), (3, 8192)])
+def test_cuda_raw_heavy_lines_match_dense_after_transpose(cls, shape):
+    rng = np.random.default_rng(0)
+    dense = (rng.random(shape) < 0.9).astype(np.float32)
+    M = cls(_compressed_parts(dense, cls), shape=shape, backend='cuda_raw')
+    for V, D in ((M, dense), (M.T, dense.T), (M.T.T, dense), (M.T, dense.T)):
+        x, y = _spike_vector(V.shape[1]), _spike_vector(V.shape[0], seed=2)
+        np.testing.assert_allclose(V @ BinaryArray(x), D @ np.asarray(x, np.float32), rtol=1e-5)
+        np.testing.assert_allclose(BinaryArray(y) @ V, np.asarray(y, np.float32) @ D, rtol=1e-5)
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_structure_is_a_pytree_leaf_and_unflatten_does_not_validate(cls):
+    # Regression: ``tree_unflatten`` ran the constructor, so ``jax.eval_shape``,
+    # ``jit(...).lower`` and ``tree.map`` with non-array leaves crashed.
+    M, dense = _pytree_matrix(cls, 'jax_raw')
+    v = jnp.ones(M.shape[1], jnp.float32)
+    leaves = jax.tree.leaves(M)
+    assert any(leaf is M.indices for leaf in leaves)
+    assert any(leaf is M.indptr for leaf in leaves)
+    assert jax.eval_shape(lambda W, x: W @ x, M, v).shape == (M.shape[0],)
+    assert jax.eval_shape(lambda W, x: W @ BinaryArray(x), M, v > 0).shape == (M.shape[0],)
+    jax.jit(lambda W, x: W @ x).lower(M, v)
+    nones = jax.tree.map(lambda _: None, M)
+    assert type(nones) is cls and nones.indices is None
+    shapes = jax.tree.map(lambda a: a.shape, M)
+    assert shapes.indptr == M.indptr.shape
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+@pytest.mark.parametrize('nnz_per_row', [20, 200])
+def test_hlo_size_does_not_grow_with_nse(cls, nnz_per_row):
+    # Regression: index arrays in aux data were embedded as HLO constants
+    # (160 MB HLO and 10-30x slower compiles at 10M non-zeros).
+    n = 1000
+    rng = np.random.default_rng(0)
+    indptr = jnp.asarray(np.arange(n + 1) * nnz_per_row, jnp.int32)
+    indices = jnp.asarray(rng.integers(0, n, n * nnz_per_row), jnp.int32)
+    M = cls((jnp.ones(n * nnz_per_row, jnp.float32), indices, indptr), shape=(n, n), backend='jax_raw')
+    text = jax.jit(lambda W, x: W @ x).lower(M, jnp.ones(n, jnp.float32)).as_text()
+    assert len(text) < 30_000
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_gradients_through_data_and_allow_int(cls):
+    M, dense = _pytree_matrix(cls, 'jax_raw')
+    v = jnp.asarray(np.random.default_rng(4).random(M.shape[1]), jnp.float32)
+    mask = jnp.asarray(dense != 0)
+
+    def loss(W):
+        return jnp.sum((W @ v) ** 2)
+
+    g_data = jax.grad(lambda d: loss(M.with_data(d)))(M.data)
+    g_dense = jax.grad(lambda D: jnp.sum((D @ v) ** 2))(jnp.asarray(dense))
+    np.testing.assert_allclose(cls(_compressed_parts(np.where(mask, g_dense, 0), cls), shape=M.shape).data,
+                               g_data, rtol=1e-5)
+    g_M = jax.grad(loss, allow_int=True)(M)
+    assert type(g_M) is cls
+    np.testing.assert_allclose(g_M.data, g_data, rtol=1e-5)
+    assert g_M.indices.dtype == jax.dtypes.float0
+
+
+@pytest.mark.parametrize('backend', _PYTREE_BACKENDS)
+@pytest.mark.parametrize('transpose', [False, True])
+def test_public_binary_functions_need_no_workspace(backend, transpose):
+    # Regression: the public ``binary_csrmv``/``binary_csrmm`` required a
+    # private ``workspace=`` built from a concrete ``indptr``.
+    M, dense = _pytree_matrix(CSR, backend)
+    D = dense.T if transpose else dense
+    x = _spike_vector(D.shape[1])
+    X = jnp.asarray(np.random.default_rng(5).random((D.shape[1], 3)) < 0.5)
+    mv = jax.jit(lambda d, i, p, s: brainevent.binary_csrmv(
+        d, i, p, s, shape=M.shape, transpose=transpose, backend=backend))
+    mm = jax.jit(lambda d, i, p, s: brainevent.binary_csrmm(
+        d, i, p, s, shape=M.shape, transpose=transpose, backend=backend))
+    np.testing.assert_allclose(mv(M.data, M.indices, M.indptr, x), D @ np.asarray(x, np.float32), rtol=1e-5)
+    np.testing.assert_allclose(mm(M.data, M.indices, M.indptr, X), D @ np.asarray(X, np.float32), rtol=1e-5)
+
+
+def test_passing_a_workspace_is_deprecated():
+    M, dense = _pytree_matrix(CSR, 'jax_raw')
+    x = _spike_vector(M.shape[1])
+    with pytest.warns(DeprecationWarning, match='workspace'):
+        out = brainevent.binary_csrmv(M.data, M.indices, M.indptr, x, shape=M.shape, workspace=object())
+    np.testing.assert_allclose(out, dense @ np.asarray(x, np.float32), rtol=1e-5)
+
+
+@pytest.mark.parametrize('indexed', [False, True])
+def test_understated_max_row_nnz_is_rejected_for_concrete_indptr(indexed):
+    # An understated hint shrinks the cuda_raw task queue and silently drops
+    # work, so it is rejected whenever ``indptr`` is concrete.
+    M, dense = _pytree_matrix(CSR, 'jax_raw')
+    longest = int(np.diff(np.asarray(M.indptr)).max())
+    x = _spike_vector(M.shape[1])
+    if indexed:
+        perm = jnp.arange(M.nse)
+        call = lambda hint: brainevent.binary_csrmv_indexed(
+            M.data, M.indices, M.indptr, perm, x, shape=M.shape, max_row_nnz=hint)
+    else:
+        call = lambda hint: brainevent.binary_csrmv(M.data, M.indices, M.indptr, x, shape=M.shape, max_row_nnz=hint)
+    with pytest.raises(ValueError, match='max_row_nnz'):
+        call(longest - 1)
+    np.testing.assert_allclose(call(longest), dense @ np.asarray(x, np.float32), rtol=1e-5)
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_nnz_hint_is_a_power_of_two_upper_bound(cls):
+    # The hint lives in the pytree metadata; rounding keeps re-drawn matrices
+    # of one family on the same compilation.
+    M, _ = _pytree_matrix(cls, 'jax_raw')
+    longest = int(np.diff(np.asarray(M.indptr)).max())
+    hint = jax.tree_util.tree_flatten(M)[1].node_data()[1][4]
+    assert hint >= longest and hint & (hint - 1) == 0
+    M2 = M.build_weight_indices()
+    mirror_longest = int(np.diff(np.asarray(M2.buffers[M2._mirror_key][0])).max())
+    mirror_hint = jax.tree_util.tree_flatten(M2)[1].node_data()[1][5]
+    assert mirror_hint >= mirror_longest and mirror_hint & (mirror_hint - 1) == 0

@@ -77,6 +77,7 @@ __all__ = [
     'light_rng_uniform01',
     'light_rng_normal01',
     'light_rng_initial_q',
+    'light_rng_keep',
     # Dispatch helpers (for kernel generators)
     'get_numba_lfsr_seed',
     'get_numba_lfsr_random_integers',
@@ -105,10 +106,18 @@ def lfsr88_seed(seed):
         A ``(4,)`` ``uint32`` array ``[s1, s2, s3, 0]``.
     """
     state = np.empty(4, dtype=np.uint32)
-    state[0] = np.uint32(seed + 2)
-    state[1] = np.uint32(seed + 8)
-    state[2] = np.uint32(seed + 16)
+    state[0] = np.uint32((seed + 2) & 0xFFFFFFFF)
+    state[1] = np.uint32((seed + 8) & 0xFFFFFFFF)
+    state[2] = np.uint32((seed + 16) & 0xFFFFFFFF)
     state[3] = np.uint32(0)
+    # Components must start at >= 2, 8, 16 or they stay zero; only seeds just
+    # below 0 (mod 2**32) land under, so lift those.
+    if state[0] < np.uint32(2):
+        state[0] += np.uint32(2)
+    if state[1] < np.uint32(8):
+        state[1] += np.uint32(8)
+    if state[2] < np.uint32(16):
+        state[2] += np.uint32(16)
     return state
 
 
@@ -205,10 +214,20 @@ def lfsr113_seed(seed):
         A ``(4,)`` ``uint32`` array ``[s1, s2, s3, s4]``.
     """
     state = np.empty(4, dtype=np.uint32)
-    state[0] = np.uint32(seed + 2)
-    state[1] = np.uint32(seed + 8)
-    state[2] = np.uint32(seed + 16)
-    state[3] = np.uint32(seed + 128)
+    state[0] = np.uint32((seed + 2) & 0xFFFFFFFF)
+    state[1] = np.uint32((seed + 8) & 0xFFFFFFFF)
+    state[2] = np.uint32((seed + 16) & 0xFFFFFFFF)
+    state[3] = np.uint32((seed + 128) & 0xFFFFFFFF)
+    # Components must start at >= 2, 8, 16, 128 or they stay zero; only seeds
+    # just below 0 (mod 2**32) land under, so lift those.
+    if state[0] < np.uint32(2):
+        state[0] += np.uint32(2)
+    if state[1] < np.uint32(8):
+        state[1] += np.uint32(8)
+    if state[2] < np.uint32(16):
+        state[2] += np.uint32(16)
+    if state[3] < np.uint32(128):
+        state[3] += np.uint32(128)
     return state
 
 
@@ -486,6 +505,23 @@ def light_rng_normal01(seed, row, col):
     return np.float32(z)
 
 
+def light_rng_keep(thr, seed, row, col):
+    """Thinning test for a walked candidate ``(row, col)`` (the CUDA ``jitc_keep``).
+
+    ``thr`` is ``clen[1]``: a candidate is kept iff ``thr >= 2**24`` or a
+    stateless 24-bit hash of ``(seed, row, col)`` is below ``thr``. The hash
+    uses its own salt and multipliers, independent of the edge-weight hash
+    (:func:`light_rng_uniform01`) keyed by the same pair.
+    """
+    if np.uint32(thr) >= np.uint32(16777216):
+        return True
+    h = np.uint32(np.uint32(seed) ^ np.uint32(0x2545f491))
+    h = np.uint32(h ^ np.uint32((np.uint64(np.uint32(row)) * np.uint64(0x9e3779b1)) & np.uint64(0xFFFFFFFF)))
+    h = np.uint32(h ^ np.uint32((np.uint64(np.uint32(col)) * np.uint64(0x632be5ab)) & np.uint64(0xFFFFFFFF)))
+    h = light_rng_mix32(h)
+    return np.uint32(h >> np.uint32(8)) < np.uint32(thr)
+
+
 def light_rng_initial_q(state, cl):
     """Draw the stationary residual ``q`` and return ``(q, new_state)``.
 
@@ -524,6 +560,7 @@ _LFSR_FUNC_NAMES = (
 _LIGHT_RNG_FUNC_NAMES = (
     'light_rng_mix32', 'light_rng_bounded', 'light_rng_next',
     'light_rng_init', 'light_rng_uniform01', 'light_rng_normal01', 'light_rng_initial_q',
+    'light_rng_keep',
 )
 
 # Dispatch tables mapping an algorithm name to its primitive. They are populated
@@ -638,7 +675,7 @@ def get_numba_light_rng_funcs():
     -------
     dict
         Keys: ``'init'``, ``'next'``, ``'bounded'``, ``'uniform01'``,
-        ``'normal01'``, ``'initial_q'``, ``'mix32'`` -- the
+        ``'normal01'``, ``'initial_q'``, ``'keep'``, ``'mix32'`` -- the
         ``@numba.njit(inline='always')`` dispatchers used to
         regenerate the same JIT connectivity matrix that the CUDA kernels draw.
     """
@@ -651,6 +688,7 @@ def get_numba_light_rng_funcs():
         'uniform01': g['light_rng_uniform01'],
         'normal01': g['light_rng_normal01'],
         'initial_q': g['light_rng_initial_q'],
+        'keep': g['light_rng_keep'],
         'mix32': g['light_rng_mix32'],
     }
 

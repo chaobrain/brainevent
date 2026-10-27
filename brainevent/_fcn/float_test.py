@@ -117,3 +117,27 @@ def test_fcnmm_chunked_matches_reference(homo_w, transpose, conn, monkeypatch):
         y = fcnmm(w, indices, x, shape=(m, n_post), transpose=False)
         y_ref = fcn_matrix(x, w, indices, (m, n_post))
     assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize('dtype', ['int32', 'bool', 'bfloat16', 'float16'])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_mixed_operand_dtype_is_promoted(dtype, homo, transpose):
+    # Regression: a boolean operand raised in the homogeneous scatter, and
+    # half-precision operands accumulated in half precision.
+    import numpy as np
+    rng = np.random.default_rng(0)
+    indices = np.stack([rng.choice(5, 2, replace=False) for _ in range(6)]).astype(np.int32)
+    w = np.full((6, 2), 1.5) if homo else rng.random((6, 2)) + 0.5
+    dense = np.zeros((6, 5))
+    np.add.at(dense, (np.repeat(np.arange(6), 2), indices.ravel()), w.ravel())
+    weights = jnp.asarray([1.5] if homo else w, jnp.float32)
+    op = dense.T if transpose else dense
+    n_in = op.shape[1]
+    v = jnp.asarray(rng.random(n_in) * 3, jnp.float32).astype(dtype)
+    B = jnp.asarray(rng.random((n_in, 4)) * 3, jnp.float32).astype(dtype)
+    tol = 5e-2 if dtype in ('bfloat16', 'float16') else 1e-5
+    for fn, x in ((fcnmv, v), (fcnmm, B)):
+        out = fn(weights, jnp.asarray(indices), x, shape=(6, 5), transpose=transpose)
+        assert out.dtype == jnp.float32
+        assert np.allclose(np.asarray(out), op @ np.asarray(x, np.float64), rtol=tol, atol=tol)

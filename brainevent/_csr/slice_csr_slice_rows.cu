@@ -68,8 +68,9 @@ __device__ __forceinline__ int4 load_int4(const int32_t* __restrict__ ptr) {
 // Forward: Thread kernel
 //
 // 1 thread per selected row.  Thread serially iterates all nonzeros in its
-// CSR row and writes directly to the pre-zeroed output.  Because the thread
-// has exclusive ownership of output row k, no atomicAdd is needed.
+// CSR row and accumulates into the pre-zeroed output (a repeated column
+// adds up).  Because the thread has exclusive ownership of output row k, no
+// atomicAdd is needed.
 //
 // Grid: (ceil(num_selected / 256), 1, 1)   Block: (256, 1, 1)
 // =========================================================================
@@ -91,8 +92,10 @@ __global__ void _slice_fwd_thread_homo_kern##SUFFIX(                    \
     IndptrT start = indptr[r], end = indptr[r + 1];                         \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                 \
     WEIGHT_T w = WRITE_W(READ_W(data[0]));                              \
-    for (IndptrT j = start; j < end; j++)                                   \
-        row_out[indices[j]] = w;                                        \
+    for (IndptrT j = start; j < end; j++) {                                 \
+        int col = indices[j];                                           \
+        row_out[col] = WRITE_W(READ_W(row_out[col]) + READ_W(w));       \
+    }                                                                   \
 }
 
 #define DEFINE_SLICE_FWD_THREAD_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
@@ -111,16 +114,19 @@ __global__ void _slice_fwd_thread_hetero_kern##SUFFIX(                    \
     if (r < 0 || r >= m) return;                                          \
     IndptrT start = indptr[r], end = indptr[r + 1];                           \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                   \
-    for (IndptrT j = start; j < end; j++)                                     \
-        row_out[indices[j]] = WRITE_W(READ_W(data[j]));                   \
+    for (IndptrT j = start; j < end; j++) {                                   \
+        int col = indices[j];                                             \
+        row_out[col] = WRITE_W(READ_W(row_out[col]) + READ_W(data[j]));   \
+    }                                                                     \
 }
 
 // =========================================================================
 // Forward: Warp kernel (ITERATION 2: Vectorized loads)
 //
 // 1 warp (32 threads) per selected row.  Threads stride by 32 over the
-// row's nonzeros; each thread writes to a distinct output column (unique
-// column assumption).  No atomicAdd needed.  Best all-round variant for
+// row's nonzeros and atomically adds into the output row, so a column
+// repeated within a row accumulates (as on the numba / jax backends).
+// Best all-round variant for
 // moderate nnz/row (avg_nnz in [8, 512)).
 //
 // ITERATION 2 OPTIMIZATIONS:
@@ -133,7 +139,7 @@ __global__ void _slice_fwd_thread_hetero_kern##SUFFIX(                    \
 // i.e. 8 warps (= 8 selected rows) per block, grid-strided over the capped grid.
 // =========================================================================
 
-#define DEFINE_SLICE_FWD_WARP_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+#define DEFINE_SLICE_FWD_WARP_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W, ATOMIC_ADD_W) \
 template <typename IndptrT> \
 __global__ void _slice_fwd_warp_homo_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                \
@@ -154,11 +160,11 @@ __global__ void _slice_fwd_warp_homo_kern##SUFFIX(                    \
         IndptrT start = indptr[r], end = indptr[r + 1];               \
         WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;           \
         for (IndptrT j = start + lane; j < end; j += 32)              \
-            row_out[indices[j]] = w;                                  \
+            ATOMIC_ADD_W(&row_out[indices[j]], READ_W(w));            \
     }                                                                 \
 }
 
-#define DEFINE_SLICE_FWD_WARP_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+#define DEFINE_SLICE_FWD_WARP_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W, ATOMIC_ADD_W) \
 template <typename IndptrT> \
 __global__ void _slice_fwd_warp_hetero_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                  \
@@ -179,8 +185,7 @@ __global__ void _slice_fwd_warp_hetero_kern##SUFFIX(                    \
         WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;             \
         for (IndptrT j = start + lane; j < end; j += 32) {              \
             int col = __ldg(&indices[j]);                               \
-            WEIGHT_T val = WRITE_W(READ_W(__ldg(&data[j])));            \
-            row_out[col] = val;                                         \
+            ATOMIC_ADD_W(&row_out[col], READ_W(__ldg(&data[j])));       \
         }                                                               \
     }                                                                   \
 }
@@ -189,13 +194,14 @@ __global__ void _slice_fwd_warp_hetero_kern##SUFFIX(                    \
 // Forward: Block kernel (ITERATION 2: Vectorized loads + __ldg)
 //
 // 1 block (256 threads) per selected row.  Threads stride by 256 over the
-// row's nonzeros; each thread writes to a distinct output column.  Best for
+// row's nonzeros and atomically adds into the output row (repeated columns
+// accumulate).  Best for
 // dense rows (avg_nnz >= 512).
 //
 // Grid: (num_selected, 1, 1)   Block: (256, 1, 1)
 // =========================================================================
 
-#define DEFINE_SLICE_FWD_BLOCK_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+#define DEFINE_SLICE_FWD_BLOCK_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W, ATOMIC_ADD_W) \
 template <typename IndptrT> \
 __global__ void _slice_fwd_block_homo_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                 \
@@ -214,10 +220,10 @@ __global__ void _slice_fwd_block_homo_kern##SUFFIX(                    \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                \
     WEIGHT_T w = WRITE_W(READ_W(data[0]));                             \
     for (IndptrT j = start + tid; j < end; j += blockDim.x)                \
-        row_out[indices[j]] = w;                                       \
+        ATOMIC_ADD_W(&row_out[indices[j]], READ_W(w));                 \
 }
 
-#define DEFINE_SLICE_FWD_BLOCK_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+#define DEFINE_SLICE_FWD_BLOCK_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W, ATOMIC_ADD_W) \
 template <typename IndptrT> \
 __global__ void _slice_fwd_block_hetero_kern##SUFFIX(                    \
     const WEIGHT_T* __restrict__ data,                                   \
@@ -236,8 +242,7 @@ __global__ void _slice_fwd_block_hetero_kern##SUFFIX(                    \
     WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                  \
     for (IndptrT j = start + tid; j < end; j += blockDim.x) {                \
         int col = __ldg(&indices[j]);                                    \
-        WEIGHT_T val = WRITE_W(READ_W(__ldg(&data[j])));                 \
-        row_out[col] = val;                                              \
+        ATOMIC_ADD_W(&row_out[col], READ_W(__ldg(&data[j])));            \
     }                                                                    \
 }
 
@@ -324,40 +329,40 @@ __global__ void _slice_grad_warp_kern##SUFFIX(                 \
 // ---- float32 ----
 DEFINE_SLICE_FWD_THREAD_HOMO  (_f32, float,  READ_F32,  WRITE_F32)
 DEFINE_SLICE_FWD_THREAD_HETERO(_f32, float,  READ_F32,  WRITE_F32)
-DEFINE_SLICE_FWD_WARP_HOMO    (_f32, float,  READ_F32,  WRITE_F32)
-DEFINE_SLICE_FWD_WARP_HETERO  (_f32, float,  READ_F32,  WRITE_F32)
-DEFINE_SLICE_FWD_BLOCK_HOMO   (_f32, float,  READ_F32,  WRITE_F32)
-DEFINE_SLICE_FWD_BLOCK_HETERO (_f32, float,  READ_F32,  WRITE_F32)
+DEFINE_SLICE_FWD_WARP_HOMO(_f32, float,  READ_F32,  WRITE_F32, atomic_add_f32)
+DEFINE_SLICE_FWD_WARP_HETERO(_f32, float,  READ_F32,  WRITE_F32, atomic_add_f32)
+DEFINE_SLICE_FWD_BLOCK_HOMO(_f32, float,  READ_F32,  WRITE_F32, atomic_add_f32)
+DEFINE_SLICE_FWD_BLOCK_HETERO(_f32, float,  READ_F32,  WRITE_F32, atomic_add_f32)
 DEFINE_SLICE_GRAD_THREAD      (_f32, float,  atomic_add_f32)
 DEFINE_SLICE_GRAD_WARP        (_f32, float,  atomic_add_f32)
 
 // ---- float64 ----
 DEFINE_SLICE_FWD_THREAD_HOMO  (_f64, double, READ_F64,  WRITE_F64)
 DEFINE_SLICE_FWD_THREAD_HETERO(_f64, double, READ_F64,  WRITE_F64)
-DEFINE_SLICE_FWD_WARP_HOMO    (_f64, double, READ_F64,  WRITE_F64)
-DEFINE_SLICE_FWD_WARP_HETERO  (_f64, double, READ_F64,  WRITE_F64)
-DEFINE_SLICE_FWD_BLOCK_HOMO   (_f64, double, READ_F64,  WRITE_F64)
-DEFINE_SLICE_FWD_BLOCK_HETERO (_f64, double, READ_F64,  WRITE_F64)
+DEFINE_SLICE_FWD_WARP_HOMO(_f64, double, READ_F64,  WRITE_F64, atomic_add_f64)
+DEFINE_SLICE_FWD_WARP_HETERO(_f64, double, READ_F64,  WRITE_F64, atomic_add_f64)
+DEFINE_SLICE_FWD_BLOCK_HOMO(_f64, double, READ_F64,  WRITE_F64, atomic_add_f64)
+DEFINE_SLICE_FWD_BLOCK_HETERO(_f64, double, READ_F64,  WRITE_F64, atomic_add_f64)
 DEFINE_SLICE_GRAD_THREAD      (_f64, double, atomic_add_f64)
 DEFINE_SLICE_GRAD_WARP        (_f64, double, atomic_add_f64)
 
 // ---- float16 (accumulate in float16; atomicAdd requires sm_70+) ----
 DEFINE_SLICE_FWD_THREAD_HOMO  (_f16, __half, READ_F16,  WRITE_F16)
 DEFINE_SLICE_FWD_THREAD_HETERO(_f16, __half, READ_F16,  WRITE_F16)
-DEFINE_SLICE_FWD_WARP_HOMO    (_f16, __half, READ_F16,  WRITE_F16)
-DEFINE_SLICE_FWD_WARP_HETERO  (_f16, __half, READ_F16,  WRITE_F16)
-DEFINE_SLICE_FWD_BLOCK_HOMO   (_f16, __half, READ_F16,  WRITE_F16)
-DEFINE_SLICE_FWD_BLOCK_HETERO (_f16, __half, READ_F16,  WRITE_F16)
+DEFINE_SLICE_FWD_WARP_HOMO(_f16, __half, READ_F16,  WRITE_F16, atomic_add_f16)
+DEFINE_SLICE_FWD_WARP_HETERO(_f16, __half, READ_F16,  WRITE_F16, atomic_add_f16)
+DEFINE_SLICE_FWD_BLOCK_HOMO(_f16, __half, READ_F16,  WRITE_F16, atomic_add_f16)
+DEFINE_SLICE_FWD_BLOCK_HETERO(_f16, __half, READ_F16,  WRITE_F16, atomic_add_f16)
 DEFINE_SLICE_GRAD_THREAD      (_f16, __half, atomic_add_f16)
 DEFINE_SLICE_GRAD_WARP        (_f16, __half, atomic_add_f16)
 
 // ---- bfloat16 (atomicAdd requires sm_80+) ----
 DEFINE_SLICE_FWD_THREAD_HOMO  (_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16)
 DEFINE_SLICE_FWD_THREAD_HETERO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16)
-DEFINE_SLICE_FWD_WARP_HOMO    (_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16)
-DEFINE_SLICE_FWD_WARP_HETERO  (_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16)
-DEFINE_SLICE_FWD_BLOCK_HOMO   (_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16)
-DEFINE_SLICE_FWD_BLOCK_HETERO (_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16)
+DEFINE_SLICE_FWD_WARP_HOMO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16, atomic_add_bf16)
+DEFINE_SLICE_FWD_WARP_HETERO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16, atomic_add_bf16)
+DEFINE_SLICE_FWD_BLOCK_HOMO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16, atomic_add_bf16)
+DEFINE_SLICE_FWD_BLOCK_HETERO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16, atomic_add_bf16)
 DEFINE_SLICE_GRAD_THREAD      (_bf16, __nv_bfloat16, atomic_add_bf16)
 DEFINE_SLICE_GRAD_WARP        (_bf16, __nv_bfloat16, atomic_add_bf16)
 

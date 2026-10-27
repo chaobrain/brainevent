@@ -24,9 +24,9 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._compatible_import import Tracer
-from brainevent._data import _initialize_seed, _initialize_conn_length
+from brainevent._data import _check_prob_argument, _initialize_seed, _initialize_conn_length
 from brainevent._misc import (
-    namescope, _chunk_size, _walk_length, _LANE_STRIDE,
+    namescope, _chunk_size, _walk_length, _LANE_STRIDE, _promote_float_operands,
 )
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
@@ -60,7 +60,7 @@ def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
     return prob_scalar == 0.
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
+@namescope(static_argnames=("shape", "transpose", "corder"), precheck=_check_prob_argument)
 def jitu(
     w_low: Data,
     w_high: Data,
@@ -97,9 +97,12 @@ def jitu(
     transpose : bool, optional
         If True, generate the transposed matrix of shape ``(n, m)``.
         Default is False.
-    corder : bool, optional
-        Memory layout order for the connectivity generation. True for C-order
-        (row-major), False for Fortran-order (column-major). Default is True.
+    corder : bool, default=True
+        Which index owns a random stream. ``True``: one stream per output row,
+        walked over the input (a gather, no atomics). ``False``: one stream per
+        input index, scattered into the output (zero inputs are skipped). The two
+        values draw different matrices; ``transpose=True, corder=not c`` uses
+        exactly the transpose of the matrix drawn by ``transpose=False, corder=c``.
     backend : str, optional
         Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
@@ -169,7 +172,7 @@ def jitu(
     return u.maybe_decimal(res * unitd)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
+@namescope(static_argnames=("shape", "transpose", "corder"), precheck=_check_prob_argument)
 def jitumv(
     w_low: Data,
     w_high: Data,
@@ -217,9 +220,12 @@ def jitumv(
     transpose : bool, optional
         If True, compute ``A.T @ vector`` instead of ``A @ vector``.
         Default is False.
-    corder : bool, optional
-        Memory layout order for the connectivity generation. True for C-order
-        (row-major), False for Fortran-order (column-major). Default is True.
+    corder : bool, default=True
+        Which index owns a random stream. ``True``: one stream per output row,
+        walked over the input (a gather, no atomics). ``False``: one stream per
+        input index, scattered into the output (zero inputs are skipped). The two
+        values draw different matrices; ``transpose=True, corder=not c`` uses
+        exactly the transpose of the matrix drawn by ``transpose=False, corder=c``.
     backend : str, optional
         Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
@@ -288,7 +294,7 @@ def jitumv(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
+@namescope(static_argnames=("shape", "transpose", "corder"), precheck=_check_prob_argument)
 def jitumm(
     w_low: Data,
     w_high: Data,
@@ -334,9 +340,12 @@ def jitumm(
     transpose : bool, optional
         If True, compute ``A.T @ B`` instead of ``A @ B``.
         Default is False.
-    corder : bool, optional
-        Memory layout order for the connectivity generation. True for C-order
-        (row-major), False for Fortran-order (column-major). Default is True.
+    corder : bool, default=True
+        Which index owns a random stream. ``True``: one stream per output row,
+        walked over the input (a gather, no atomics). ``False``: one stream per
+        input index, scattered into the output (zero inputs are skipped). The two
+        values draw different matrices; ``transpose=True, corder=not c`` uses
+        exactly the transpose of the matrix drawn by ``transpose=False, corder=c``.
     backend : str, optional
         Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
@@ -434,6 +443,7 @@ def _jitu_numba_kernel_generator(
     _rng_next = _rng['next']
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
+    _rng_keep = _rng['keep']
     _rng_uniform01 = _rng['uniform01']
 
     stride = _LANE_STRIDE
@@ -453,6 +463,7 @@ def _jitu_numba_kernel_generator(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             n_chunks = (n_cols + chunk_size - 1) // chunk_size
             for row in range(n_rows):
                 for chunk_id in range(n_chunks):
@@ -468,9 +479,10 @@ def _jitu_numba_kernel_generator(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            col = chunk_start + local_j
-                            u01 = _rng_uniform01(seed0, row, col)
-                            posts[row, col] = w_low0 + u01 * span
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                col = chunk_start + local_j
+                                u01 = _rng_uniform01(seed0, row, col)
+                                posts[row, col] = w_low0 + u01 * span
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -488,6 +500,7 @@ def _jitu_numba_kernel_generator(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             n_chunks = (n_cols + chunk_size - 1) // chunk_size
             for row in range(n_rows):
                 for chunk_id in range(n_chunks):
@@ -503,9 +516,10 @@ def _jitu_numba_kernel_generator(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            col = chunk_start + local_j
-                            u01 = _rng_uniform01(seed0, row, col)
-                            posts[col, row] = w_low0 + u01 * span
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                col = chunk_start + local_j
+                                u01 = _rng_uniform01(seed0, row, col)
+                                posts[col, row] = w_low0 + u01 * span
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -571,7 +585,7 @@ def _jitu_jvp_wlow(w_low_dot, w_low, w_high, clen, seed, *, shape, transpose: bo
     reflecting the affine structure ``A = w_low + (w_high - w_low) * U``.
     """
     u_basis = jitu_p_call(
-        0., w_low_dot, clen, seed, shape=shape, transpose=transpose, corder=corder,
+        jnp.zeros_like(w_low_dot), w_low_dot, clen, seed, shape=shape, transpose=transpose, corder=corder,
         backend=kwargs['backend'],
     )[0]
     c_basis = jitu_p_call(
@@ -606,7 +620,7 @@ def _jitu_jvp_whigh(w_high_dot, w_low, w_high, clen, seed, *, shape, transpose: 
         Single-element list containing the JVP result.
     """
     return jitu_p_call(
-        0., w_high_dot, clen, seed, shape=shape, transpose=transpose, corder=corder,
+        jnp.zeros_like(w_high_dot), w_high_dot, clen, seed, shape=shape, transpose=transpose, corder=corder,
         backend=kwargs['backend'],
     )
 
@@ -622,7 +636,8 @@ def _wlow_tranpose(ct, seed, clen, **kwargs):
     seed : jax.Array
         Random seed.
     clen : jax.Array
-        Connection length parameter.
+        Walk parameters ``(cl, thr)`` from ``_initialize_conn_length(prob)``,
+        ``int32`` of shape ``(2,)``.
     **kwargs
         Keyword arguments passed to ``jitu_p_call`` including ``shape``,
         ``transpose``, ``corder``, and ``backend``.
@@ -639,8 +654,8 @@ def _wlow_tranpose(ct, seed, clen, **kwargs):
     where ``U = jitu(0, 1)`` represents the uniform random fractions.
     """
     # JITC * (high - low) + low
-    forward = jitu_p_call(0., 1., clen, seed, **kwargs)[0]
-    count = jitu_p_call(1., 1., clen, seed, **kwargs)[0]
+    forward = jitu_p_call(jnp.zeros((1,), ct.dtype), jnp.ones((1,), ct.dtype), clen, seed, **kwargs)[0]
+    count = jitu_p_call(jnp.ones((1,), ct.dtype), jnp.ones((1,), ct.dtype), clen, seed, **kwargs)[0]
     return jnp.expand_dims((ct * (count - forward)).sum(), axis=0)
 
 
@@ -655,7 +670,8 @@ def _whigh_tranpose(ct, seed, clen, **kwargs):
     seed : jax.Array
         Random seed.
     clen : jax.Array
-        Connection length parameter.
+        Walk parameters ``(cl, thr)`` from ``_initialize_conn_length(prob)``,
+        ``int32`` of shape ``(2,)``.
     **kwargs
         Keyword arguments passed to ``jitu_p_call`` including ``shape``,
         ``transpose``, ``corder``, and ``backend``.
@@ -672,7 +688,7 @@ def _whigh_tranpose(ct, seed, clen, **kwargs):
     where ``U = jitu(0, 1)`` represents the uniform random fractions.
     """
     # JITC * (high - low) + low
-    forward = jitu_p_call(0., 1., clen, seed, **kwargs)[0]
+    forward = jitu_p_call(jnp.zeros((1,), ct.dtype), jnp.ones((1,), ct.dtype), clen, seed, **kwargs)[0]
     return jnp.expand_dims((ct * forward).sum(), axis=0)
 
 
@@ -779,8 +795,8 @@ def _jitu_benchmark_data(*, platform):
         for corder in (True, False):
             w_low = jnp.zeros(1, dtype=dtype)
             w_high = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(np.ceil(2.0 / prob), dtype=jnp.int32))
-            seed = jnp.asarray(42, dtype=jnp.uint32)
+            clen = _initialize_conn_length(prob)
+            seed = _initialize_seed(42)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
             configs.append(BenchmarkConfig(name, (w_low, w_high, clen, seed), {
                 'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
@@ -814,16 +830,20 @@ def jitu_p_call(
         Upper weight bound as a 1-D array of shape ``(1,)`` with the same dtype
         as ``w_low``.
     clen : jax.Array
-        Connection length parameter as a 1-D array of shape ``(1,)``, derived
-        from the connection probability via ``ceil(2 / prob)``.
+        Walk parameters ``(cl, thr)`` from ``_initialize_conn_length(prob)``,
+        ``int32`` of shape ``(2,)``.
     seed : jax.Array
         Random seed as a 1-D array of shape ``(1,)``.
     shape : MatrixShape
         Shape ``(m, n)`` of the output matrix.
     transpose : bool
         If True, the output shape is reversed to ``(n, m)``.
-    corder : bool
-        Memory layout order flag for the connectivity generation.
+    corder : bool, default=True
+        Which index owns a random stream. ``True``: one stream per output row,
+        walked over the input (a gather, no atomics). ``False``: one stream per
+        input index, scattered into the output (zero inputs are skipped). The two
+        values draw different matrices; ``transpose=True, corder=not c`` uses
+        exactly the transpose of the matrix drawn by ``transpose=False, corder=c``.
     backend : str, optional
         Computation backend (``'numba'`` or ``'pallas'``).
 
@@ -843,7 +863,9 @@ def jitu_p_call(
     """
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
+    w_low, w_high = _promote_float_operands(w_low, w_high)
     clen = jnp.atleast_1d(clen)
+    assert clen.shape == (2,), f"clen must hold (cl, thr), but got shape {clen.shape}."
     seed = jnp.atleast_1d(seed)
     assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
     assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
@@ -938,6 +960,7 @@ def _jitumv_numba_kernel_generator(
     _rng_next = _rng['next']
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
+    _rng_keep = _rng['keep']
     _rng_uniform01 = _rng['uniform01']
 
     stride = _LANE_STRIDE
@@ -955,6 +978,7 @@ def _jitumv_numba_kernel_generator(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
                 out = np.float64(0.)
@@ -971,11 +995,12 @@ def _jitumv_numba_kernel_generator(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            col = chunk_start + local_j
-                            v = vector[col]
-                            if v != 0.:  # zero events are skipped
-                                u01 = _rng_uniform01(seed0, row, col)
-                                out += v * (w_low0 + u01 * span)
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                col = chunk_start + local_j
+                                v = vector[col]
+                                if v != 0.:  # zero events are skipped
+                                    u01 = _rng_uniform01(seed0, row, col)
+                                    out += v * (w_low0 + u01 * span)
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -993,6 +1018,7 @@ def _jitumv_numba_kernel_generator(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
                 v = vector[row]
@@ -1011,9 +1037,10 @@ def _jitumv_numba_kernel_generator(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            col = chunk_start + local_j
-                            u01 = _rng_uniform01(seed0, row, col)
-                            posts[col] += v * (w_low0 + u01 * span)
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                col = chunk_start + local_j
+                                u01 = _rng_uniform01(seed0, row, col)
+                                posts[col] += v * (w_low0 + u01 * span)
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -1102,7 +1129,7 @@ def _jitumv_jvp_wlow(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpo
         backend=kwargs['backend'],
     )[0]
     u_basis = jitumv_p_call(
-        0., w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder,
+        jnp.zeros_like(w_dot), w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder,
         backend=kwargs['backend'],
     )[0]
     return [c_basis - u_basis]
@@ -1133,7 +1160,7 @@ def _jitumv_jvp_whigh(w_dot, w_low, w_high, clen, vector, seed, *, shape, transp
         Single-element list containing the JVP result.
     """
     return jitumv_p_call(
-        0., w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+        jnp.zeros_like(w_dot), w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
@@ -1329,10 +1356,10 @@ def _jitumv_benchmark_data(*, platform):
         for corder in (True, False):
             w_low = jnp.zeros(1, dtype=dtype)
             w_high = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(np.ceil(2.0 / prob), dtype=jnp.int32))
+            clen = _initialize_conn_length(prob)
             v_size = n_post if not transpose else n_pre
             vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
+            seed = _initialize_seed(42)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
             configs.append(
                 BenchmarkConfig(
@@ -1371,8 +1398,8 @@ def jitumv_p_call(
         Upper weight bound as a 1-D array of shape ``(1,)`` with the same dtype
         as ``w_low``.
     clen : jax.Array
-        Connection length parameter as a 1-D array of shape ``(1,)``, derived
-        from the connection probability via ``ceil(2 / prob)``.
+        Walk parameters ``(cl, thr)`` from ``_initialize_conn_length(prob)``,
+        ``int32`` of shape ``(2,)``.
     vector : jax.Array
         Input dense vector, a 1-D array. Length must match ``shape[1]``
         (if ``transpose=False``) or ``shape[0]`` (if ``transpose=True``).
@@ -1382,8 +1409,12 @@ def jitumv_p_call(
         Shape ``(m, n)`` of the logical connectivity matrix.
     transpose : bool
         If True, compute ``A.T @ vector``; otherwise compute ``A @ vector``.
-    corder : bool
-        Memory layout order flag for the connectivity generation.
+    corder : bool, default=True
+        Which index owns a random stream. ``True``: one stream per output row,
+        walked over the input (a gather, no atomics). ``False``: one stream per
+        input index, scattered into the output (zero inputs are skipped). The two
+        values draw different matrices; ``transpose=True, corder=not c`` uses
+        exactly the transpose of the matrix drawn by ``transpose=False, corder=c``.
     backend : str, optional
         Computation backend (``'numba'`` or ``'pallas'``).
 
@@ -1405,11 +1436,12 @@ def jitumv_p_call(
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
+    assert clen.shape == (2,), f"clen must hold (cl, thr), but got shape {clen.shape}."
+    w_low, w_high, vector = _promote_float_operands(w_low, w_high, vector)
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert w_low.shape == (1,), f"The weight shape should be (1,), but got {w_low.shape}."
     assert w_high.shape == (1,), f"The weight shape should be (1,), but got {w_high.shape}."
-    assert clen.shape == (1,), f"The clen shape should be (1,), but got {clen.shape}."
     assert vector.ndim == 1, f"The vector should be a 1D array, but got {vector.ndim}D."
     assert seed.shape == (1,), f"The seed shape should be (1,), but got {seed.shape}."
     assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
@@ -1510,6 +1542,7 @@ def _jitumm_numba_kernel_generator(
     _rng_next = _rng['next']
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
+    _rng_keep = _rng['keep']
     _rng_uniform01 = _rng['uniform01']
 
     stride = _LANE_STRIDE
@@ -1529,6 +1562,7 @@ def _jitumm_numba_kernel_generator(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
                 out = np.zeros(n, dtype=B.dtype)
@@ -1545,13 +1579,14 @@ def _jitumm_numba_kernel_generator(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            col = chunk_start + local_j
-                            u01 = _rng_uniform01(seed0, row, col)
-                            w = w_low0 + u01 * span
-                            for c in range(n):
-                                b = B[col, c]
-                                if b != 0.:  # zero events are skipped (never ``0 * w``)
-                                    out[c] += b * w
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                col = chunk_start + local_j
+                                u01 = _rng_uniform01(seed0, row, col)
+                                w = w_low0 + u01 * span
+                                for c in range(n):
+                                    b = B[col, c]
+                                    if b != 0.:  # zero events are skipped (never ``0 * w``)
+                                        out[c] += b * w
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -1571,6 +1606,7 @@ def _jitumm_numba_kernel_generator(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             n_chunks = (k + chunk_size - 1) // chunk_size
             for row in range(m):
                 out = B[row]
@@ -1589,13 +1625,14 @@ def _jitumm_numba_kernel_generator(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            col = chunk_start + local_j
-                            u01 = _rng_uniform01(seed0, row, col)
-                            w = w_low0 + u01 * span
-                            for c in range(n):
-                                b = out[c]
-                                if b != 0.:  # zero events are skipped (never ``0 * w``)
-                                    posts[col, c] += b * w
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                col = chunk_start + local_j
+                                u01 = _rng_uniform01(seed0, row, col)
+                                w = w_low0 + u01 * span
+                                for c in range(n):
+                                    b = out[c]
+                                    if b != 0.:  # zero events are skipped (never ``0 * w``)
+                                        posts[col, c] += b * w
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -1667,7 +1704,7 @@ def _jitumm_jvp_wlow(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, c
         backend=kwargs['backend'],
     )[0]
     u_basis = jitumm_p_call(
-        0., w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        jnp.zeros_like(w_dot), w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
         backend=kwargs['backend'],
     )[0]
     return [c_basis - u_basis]
@@ -1698,7 +1735,7 @@ def _jitumm_jvp_whigh(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, 
         Single-element list containing the JVP result.
     """
     return jitumm_p_call(
-        0., w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
+        jnp.zeros_like(w_dot), w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder,
         backend=kwargs['backend'],
     )
 
@@ -1949,10 +1986,10 @@ def _jitumm_benchmark_data(*, platform):
         for corder in (True, False):
             w_low = jnp.zeros(1, dtype=dtype)
             w_high = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(np.ceil(2.0 / prob), dtype=jnp.int32))
+            clen = _initialize_conn_length(prob)
             b_rows = n_post if not transpose else n_pre
             B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
+            seed = _initialize_seed(42)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
             configs.append(
                 BenchmarkConfig(
@@ -1991,8 +2028,8 @@ def jitumm_p_call(
         Upper weight bound as a 1-D array of shape ``(1,)`` with the same dtype
         as ``w_low``.
     clen : jax.Array
-        Connection length parameter as a 1-D array of shape ``(1,)``, derived
-        from the connection probability via ``ceil(2 / prob)``.
+        Walk parameters ``(cl, thr)`` from ``_initialize_conn_length(prob)``,
+        ``int32`` of shape ``(2,)``.
     B : jax.Array
         Input dense matrix, a 2-D array of shape ``(n, k)`` (if
         ``transpose=False``) or ``(m, k)`` (if ``transpose=True``).
@@ -2002,8 +2039,12 @@ def jitumm_p_call(
         Shape ``(m, n)`` of the logical connectivity matrix.
     transpose : bool
         If True, compute ``A.T @ B``; otherwise compute ``A @ B``.
-    corder : bool
-        Memory layout order flag for the connectivity generation.
+    corder : bool, default=True
+        Which index owns a random stream. ``True``: one stream per output row,
+        walked over the input (a gather, no atomics). ``False``: one stream per
+        input index, scattered into the output (zero inputs are skipped). The two
+        values draw different matrices; ``transpose=True, corder=not c`` uses
+        exactly the transpose of the matrix drawn by ``transpose=False, corder=c``.
     backend : str, optional
         Computation backend (``'numba'`` or ``'pallas'``).
 
@@ -2025,6 +2066,8 @@ def jitumm_p_call(
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
+    assert clen.shape == (2,), f"clen must hold (cl, thr), but got shape {clen.shape}."
+    w_low, w_high, B = _promote_float_operands(w_low, w_high, B)
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert B.ndim == 2, "The input matrix B should be a 2D array."
@@ -2034,7 +2077,6 @@ def jitumm_p_call(
     assert clen.ndim == 1, "The clen should be a 1D array."
     assert w_low.shape == (1,), "The weight should be a scalar."
     assert w_high.shape == (1,), "The weight should be a scalar."
-    assert clen.shape == (1,), "The clen should be a scalar."
     assert seed.shape == (1,), "The seed should be a scalar."
     if transpose:
         assert shape[0] == B.shape[0], f"The matrix shape and B shape do not match. {B.shape} @ {shape}"

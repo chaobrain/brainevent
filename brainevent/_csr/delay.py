@@ -28,7 +28,7 @@ from brainevent._compatible_import import Tracer
 from brainevent._misc import _check_csr_cuda_structure_dtypes, _check_csr_structure_dtypes, namescope
 from brainevent._op import load_cuda_file, numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, select_active
+from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, numba_event_mask, select_active
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
 __all__ = [
@@ -328,6 +328,10 @@ def _numba_kernel_generator(weighted: bool, weight_info, **kwargs):
                         flat[buf[k]] += w0 if is_homo else weights[start + k]
 
     def kernel(ring, events, data, indices, indptr, delays, t):
+        if numba_event_mask(events.dtype):
+            # Numba has no float16/bfloat16: read binary events as their mask
+            # and weighted events as float32 (exact for both).
+            events = events.astype(jnp.float32) if weighted else event_active(events)
         return numba_kernel(deliver, outs=kwargs['outs'], input_output_aliases={0: 0})(
             ring, events, data, indices, indptr, delays, jnp.reshape(t, (1,)),
         )

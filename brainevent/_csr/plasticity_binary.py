@@ -448,6 +448,29 @@ def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shap
 
 
 
+def _update_csr_on_binary_post_masked(weight, indices, indptr, pre_trace, post_spike, w_min, w_max, *, shape):
+    """Mirror-free :func:`update_csr_on_binary_post` over the stored CSR arrays.
+
+    Streams over every stored synapse and tests its postsynaptic spike, so it
+    needs no column-major mirror (``O(nse)`` per call instead of the
+    event-driven cost). Same result as :func:`update_csr_on_binary_post`; used
+    when the structure is traced and no mirror was carried into the trace.
+    """
+    weight, wunit = u.split_mantissa_unit(weight)
+    if weight.size == 1 and indices.shape[0] > 1:
+        raise ValueError(
+            "Plasticity updates require per-synapse (heterogeneous) weights, but received "
+            "a homogeneous (size-1) weight. Materialize per-synapse weights first "
+            "(e.g. broadcast to the connectivity shape) before applying a plasticity update."
+        )
+    pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
+    row_ids = _csr_row_ids(indptr, shape[0], indices.shape[0])
+    active = event_active(post_spike[indices])
+    # Select the old weight so inactive edges stay bit-identical.
+    weight = jnp.where(active, weight + pre_trace[row_ids], weight)
+    return u.math.clip(u.maybe_decimal(weight * wunit), w_min, w_max)
+
+
 def _csr_row_ids(indptr, n_rows: int, nse: int):
     """Return the row id of every stored element of a CSR structure."""
     return jnp.repeat(

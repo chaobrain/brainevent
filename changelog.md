@@ -5,7 +5,105 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - Unreleased
+
+### ⚠️ Breaking changes & migration
+
+**CSR, CSC, FixedNumPerPre and FixedNumPerPost store their structure as pytree
+leaves.** `indices`/`indptr` (and the cached mirror layout and `diag_add` plan)
+used to live in pytree metadata. That embedded them as constants in every
+compiled program (160 MB of HLO and 10-30x slower compiles at 10M non-zeros),
+raised when a second matrix of the same shape was passed to a jitted function,
+and broke `lax.scan` carries. They are now ordinary leaves, as in TCSR:
+
+| `0.3.x` | `0.4.0` |
+| --- | --- |
+| `jax.grad(loss)(W)` | `jax.grad(lambda d: loss(W.with_data(d)))(W.data)`, or `jax.grad(loss, allow_int=True)(W)` |
+| `jax.tree.map(f, W)` maps `data` only | `f` also sees the index leaves; use `W.apply(f)` |
+| `jax.vmap` with `in_axes=0` / `out_axes=0` for a matrix | pass an axes tree: `jax.tree.map(lambda x: 0 if x is W.data else None, W)` |
+| `W.diag_add(d)` under `jax.jit` with `W` an argument | `W = W.prepare_diag_add()` before `jax.jit` |
+| `FixedNum*` must be built outside `jax.jit` | build anywhere; value checks run when the indices are concrete |
+
+A matrix whose structure is traced (a jitted-function argument) and that
+carries no mirror layout runs the unfavorable direction on a mirror-free path:
+a gather for `W @ events` on `cuda_raw` (CSR) and for the FixedNum unfavorable
+product, a masked update for CSR `update_on_post` / CSC `update_on_pre`. It
+warns once with the new `brainevent.PerformanceWarning`. Call
+`W = W.build_weight_indices()` (or pass `precompute_weight_indices=True`)
+before `jax.jit` to keep it event-driven. A matrix closed over by the jitted
+function has a concrete structure and builds and caches the mirror as before.
+
+**`buffers` on CSR/CSC/FixedNum is a read-only view of the structure caches.**
+Only the mirror (`'csc'` for CSR and FixedNum, `'csr'` for CSC) and
+`'diag_positions'` are accepted; other names raise `ValueError`.
+
+**The hybrid task workspace is gone.** `binary_csrmv`, `binary_csrmm`,
+`binary_csrmv_indexed` and `binary_csrmm_indexed` no longer need
+`workspace=`; a passed workspace is ignored with a `DeprecationWarning`. The
+`cuda_raw` kernels size their task queue from static shapes plus an optional
+`max_row_nnz=` hint, and the `*_p_call` functions return only the result.
+
+**JITC matrices (`JITCScalar*`, `JITCNormal*`, `JITCUniform*`) default to
+`corder=True`.** `corder` picks which index owns a random stream. With
+`True` (one stream per row) `events @ M`, the usual spikes-times-weights
+product, walks only the active rows, and `M @ x` is a row-parallel gather.
+The other two directions trade places (µs per step, n = 100k, p = 0.01, 1%
+active events, RTX 3090, scalar weights):
+
+| product | `corder=False` (0.3.x default) | `corder=True` (0.4.0 default) |
+| --- | --- | --- |
+| `events @ M` | 438 | 55 |
+| `M @ x` | 1768 | 434 |
+| `M @ events` | 56 | 441 |
+| dense `x @ M` | 428 | 1775 |
+
+A matrix built without `corder=` draws a different connectivity than in
+0.3.x. Pass `corder=False` (or `event_side='right'`) to reproduce 0.3.x
+matrices and speeds, for example for rate models that compute dense `x @ M`. `M.T` flips the flag,
+so a matrix and its transpose always name the same connectivity.
+
+**JITC connection probabilities are exact.** The walk used to visit a
+fraction `2 / ceil(2 / p)` of the entries: 0.5 for `p = 0.6` and 0.667 for
+`p = 0.9`. It now walks with stride `floor(2 / p)` and drops candidates with
+a stateless per-entry hash, so the density is `p` (to `2**-24`) on every
+backend, bit for bit. When `2 / p` is an integer (`p` = 1, 0.5, 0.25, 0.2,
+0.1, 0.05, 0.02, 0.01, 1/3, ...) nothing is dropped and the matrix is
+bit-identical to 0.3.x for the same `corder`; for other `p` the matrix
+changes. The hash costs nothing on scatter products. On gather products it
+costs up to ~30% for scalar weights and ~10% for normal weights, and only
+when `2 / p` is not an integer. The low-level `clen` operand of the JITC
+`*_p_call` functions is now the int32 pair `(cl, thr)` of shape `(2,)`.
+
+### Added
+
+- `brainevent.PerformanceWarning`, raised once per fallback when an operation
+  runs correctly on a slower path.
+- `CSR/CSC.prepare_diag_add()`; `precompute_weight_indices=` on the CSR/CSC
+  constructors; `max_row_nnz=` on the public binary CSR functions.
+- `event_side='left' | 'right'` on the JITC classes: a readable alias of `corder`
+  that names the event-driven product (`events @ M` or `M @ events`), plus a
+  read-only `M.event_side`. An event product on the other side emits a one-time
+  `PerformanceWarning` that names the setting to use.
+
+### Changed
+
+- Functional products (`csrmv`/`csrmm`, `fcnmv`/`fcnmm`, `jits*`/`jitn*`/`jitu*`
+  `mv`/`mm`) promote the weight and the vector/matrix operand to a common float
+  dtype (`jnp.result_type`); non-float results raise `TypeError`. Mixed dtypes
+  used to read garbage on CUDA (`csrmm` with an int32 `B`: error 10.5) or crash
+  numba (bf16 vectors).
+- `JITCUniform*` accepts `w_low > w_high` (same distribution as the ordered
+  bounds), so `-M`, `M * c` with `c < 0` and `c - M` work.
+- JITC normal/uniform operators whose result leaves the family (`c / M`;
+  `abs(M)` for normal, and for uniform when the bounds straddle zero) raise
+  `UnsupportedOperationError` instead of returning a wrong matrix.
+- The functional JITC products (`jits`, `jitsmv`, ..., `binary_jitumm`) raise
+  `ValueError` for a concrete `prob` that is not a finite scalar in `[0, 1]`
+  (NaN and values above 1 gave a fully connected matrix, negative values an
+  empty one). A traced `prob` cannot be checked and is clipped.
+- `brainevent.config.set_backend` raises `ValueError` for platforms other than
+  `'cpu'`, `'gpu'` and `'tpu'`; `set_backend('cuda', ...)` used to be a silent
+  no-op.
 
 ### Fixed
 
@@ -15,6 +113,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set in `XLA_FLAGS`, primitives without an explicit backend choice now lower
   with `jax_raw` on GPU, which follows the flag; a primitive without a `jax_raw`
   GPU kernel warns once. Explicit `backend=` / `set_backend` choices are kept.
+- A CSR/CSC/FixedNum matrix closed over by two jitted functions raised
+  `UnexpectedTracerError` after its first binary product (the lazily built
+  task workspace was a tracer cached on the matrix), also after
+  `jax.clear_caches()` or `brainevent.config.set_backend`.
+- `events @ csr.T` on `cuda_raw` after `events @ csr` gave wrong results (up
+  to 4.0 absolute error on heavy-row matrices): the cached task workspace was
+  sized for the other orientation.
+- `jax.eval_shape`, `jax.jit(f).lower(W, x)` and `jax.tree.map` with
+  non-array leaves crashed on CSR/CSC (the pytree unflatten ran the
+  constructor's validation).
+- `CSR * CSR` with shared structure raised `TypeError`; `CSR/CSC ± scalar`
+  raised `AttributeError`.
+- The CSR/CSC constructors accepted `data` of a size other than 1 or `nse`,
+  which gave wrong products.
+- `CSC.solve` solved `W^T x = b`; `CSR.solve` ignored `tol` and `reorder`.
+- `events @ FixedNum*` returned the transpose on `cuda_raw` when the batch
+  size equaled `n_post` (the output layout was guessed from shapes; gradients
+  were affected too). FixedNum `*` and `/` with a same-shape dense array always
+  failed.
+- `JITCNormal*` `*`, `/` and `-M` changed only `wloc`; `JITCUniform*` `-M` and
+  `c - M` raised. `.sum()` returned the bare weight (scalar) or raised
+  (normal, uniform); it is now exact, with units.
+- JITC weight gradients passed Python literals to the kernels: under x64 the
+  CUDA kernel read float32 buffers as float64 (`grad(jitnmv)` 3.29 instead of
+  407) and `jitumv`/`jitu` gradients raised. Gradients now keep the weight
+  dtype.
+- `CompactBinary` was exported and documented as an event type, but no matrix
+  product accepted it.
+- TCSR: the `cuda_raw` binary weight gradient now falls back for batch sizes
+  outside 4..512; matrices with no non-zeros work on GPU; `vmap` over events on
+  a non-leading axis and over weights works.
+- `csr_delay_deliver` and `csr_delay_deliver_layout` crashed on the numba
+  backend with float16/bfloat16 events.
+- `csr_slice_rows` on CUDA overwrote duplicate columns instead of summing them.
+- `csrmm` transpose rules failed on symbolic-zero cotangents.
+- `brainevent benchmark-performance` recorded every JITC and dense binary
+  configuration as failed (bad benchmark data), and on GPU the FixedNum
+  `transpose=False` matvec and, without x64, the TCSR float configurations.
+- `import brainevent` failed when `$HOME` was not writable. The compile cache
+  is now created on first use and falls back to a temporary directory with a
+  warning; an explicitly configured directory that cannot be created raises.
+- LFSR seeds whose components wrapped below their minimum (for example -1, -2
+  or 2**32 - 1) produced an all-zero random stream; negative seeds raised
+  `OverflowError` in the pallas generators. Other seeds are unchanged.
+- `brainevent.config.set_numba_parallel` had no effect on kernels that were
+  already compiled: the FFI target ignored numba's compile options, and JAX
+  kept the cached executables. It now clears JAX caches when the value changes.
+  Enabling it speeds up the CPU gather kernels 3-5x (`CSR @ b`, 20k x 200).
+- The JITC `corder` docstrings described a memory layout and claimed that
+  `corder=False` makes `transpose=True` use the transpose of the
+  `transpose=False` matrix. The rule is `transpose=True, corder=not c` uses
+  the transpose of the matrix drawn by `transpose=False, corder=c`.
+- Docstrings and error messages referred to a non-existent
+  `brainevent.set_backend`; they now use `brainevent.config.set_backend`.
+
+### Performance
+
+- A CSR/CSC/FixedNum matrix passed to a jitted function no longer embeds its
+  index arrays in the compiled program. First call (trace, compile, run) of
+  `jax.jit(lambda M, s: BinaryArray(s) @ M)` on an RTX 3090: 0.26 s -> 0.04 s
+  at 10M non-zeros, 2.2 s -> 0.02 s at 100M. Per-step event-product times are
+  unchanged (within 1 µs, `lax.scan`, 4k-100k neurons).
+- `events @ M` on a default-constructed JITC matrix is event-driven:
+  438 µs -> 55 µs per step (n = 100k, p = 0.01, RTX 3090; see the `corder`
+  table above for the other directions).
+
+### Known limitations
+
+- On CPU the default numba kernels raise for float16/bfloat16 weights (CSR/CSC,
+  TCSR, JITC, and the FixedNum event products). Compute in float32 on CPU;
+  the GPU backends accept half precision.
+- JITC `prob` and `seed` are pytree leaves, so they are traced inside
+  `jax.jit` and visible to `jax.tree.map`; they are not differentiable.
+- `CSR.tocoo().todense()` drops duplicate entries on GPU. The COO type and
+  its `todense` come from `brainunit`, whose GPU path (cuSPARSE via JAX) does
+  not sum duplicates; `CSR.todense()` is correct.
 
 ## [0.3.0] - 2026-10-24
 

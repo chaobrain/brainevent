@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+import operator
 from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
@@ -24,7 +25,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
-from brainevent._data import JITCMatrix
+from brainevent._data import JITCMatrix, _resolve_corder
+from brainevent._error import UnsupportedOperationError
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitumv, binary_jitumm
 from .csr import jitu_to_csr
@@ -64,7 +66,19 @@ class JITCUniformMatrix(JITCMatrix):
     shape : MatrixShape
         The shape of the matrix as a tuple (rows, columns).
     corder : bool, optional
-        Memory layout order flag, by default False.
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Defaults to ``True`` unless ``event_side`` is
+        given. Before brainevent 0.4.0 the default was ``False``; pass
+        ``corder=False`` to reproduce matrices drawn by those versions.
+    event_side : {'left', 'right'}, optional
+        Alternative to ``corder`` named after the event-driven product:
+        ``'left'`` makes ``events @ M`` event-driven (``corder=True``) and
+        ``'right'`` makes ``M @ events`` event-driven (``corder=False``). Must
+        agree with ``corder`` when both are given.
     backend : str, optional
         Computation backend override.
 
@@ -75,7 +89,10 @@ class JITCUniformMatrix(JITCMatrix):
         Can be a plain JAX array or a quantity with units.
     whigh : Union[jax.Array, u.Quantity]
         The upper bound of the uniform distribution for non-zero elements.
-        Can be a plain JAX array or a quantity with units.
+        Can be a plain JAX array or a quantity with units. Each weight is
+        ``wlow + (whigh - wlow) * U`` with ``U ~ Uniform[0, 1)``, so
+        ``wlow > whigh`` is allowed (it arises from ``-M`` or a negative
+        scale) and gives weights in ``(whigh, wlow]``.
     prob : Union[float, jax.Array]
         Connection probability determining the sparsity of the matrix.
         Values range from 0 (no connections) to 1 (fully connected).
@@ -84,15 +101,19 @@ class JITCUniformMatrix(JITCMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    corder : bool, default=True
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Before brainevent 0.4.0 the default was ``False``;
+        pass ``corder=False`` to reproduce matrices drawn by those versions.
 
     Raises
     ------
     ValueError
-        If ``prob`` is not a finite scalar in [0, 1], or if ``wlow > whigh``
-        element-wise.
+        If ``prob`` is not a finite scalar in [0, 1].
 
     See Also
     --------
@@ -137,7 +158,8 @@ class JITCUniformMatrix(JITCMatrix):
         seed=None,
         *,
         shape: MatrixShape,
-        corder: bool = False,
+        corder: Optional[bool] = None,
+        event_side: Optional[str] = None,
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
     ):
@@ -159,9 +181,24 @@ class JITCUniformMatrix(JITCMatrix):
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
         corder : bool, optional
-            Memory layout order flag, by default False.
-            - False: Fortran-order (column-major)
-            - True: C-order (row-major)
+            Which index of the matrix owns a random stream. ``True``: one stream per
+            row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+            event-driven (only active rows are walked). ``False``: one stream per
+            column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+            two values draw different connectivity; ``M.T`` flips the flag so it
+            names the same matrix. Defaults to ``True`` unless ``event_side`` is
+            given. Before brainevent 0.4.0 the default was ``False``; pass
+            ``corder=False`` to reproduce matrices drawn by those versions.
+        event_side : {'left', 'right'}, optional
+            Alternative to ``corder`` named after the event-driven product:
+            ``'left'`` makes ``events @ M`` event-driven (``corder=True``) and
+            ``'right'`` makes ``M @ events`` event-driven (``corder=False``). Must
+            agree with ``corder`` when both are given.
+
+        Raises
+        ------
+        ValueError
+            If ``event_side`` is not ``'left'`` or ``'right'``, or contradicts ``corder``.
 
         Notes
         -----
@@ -187,16 +224,9 @@ class JITCUniformMatrix(JITCMatrix):
 
         low, high = u.math.promote_dtypes(low, high)
         u.fail_for_dimension_mismatch(low, high, "wlow and whigh must have the same dimension.")
-        low_m = u.get_mantissa(low)
-        high_m = u.get_mantissa(high)
-        if not (isinstance(low_m, Tracer) or isinstance(high_m, Tracer)):
-            low_arr = np.asarray(low_m)
-            high_arr = np.asarray(high_m)
-            if np.any(low_arr > high_arr):
-                raise ValueError("wlow must be <= whigh element-wise.")
         self.wlow = u.math.asarray(low)
         self.whigh = u.math.asarray(high)
-        self.corder = corder
+        self.corder = _resolve_corder(corder, event_side)
         self.backend = backend
         super().__init__(data, shape=shape, buffers=buffers)
 
@@ -214,7 +244,7 @@ class JITCUniformMatrix(JITCMatrix):
         --------
         >>> matrix = JITCUniformMatrix((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> repr(matrix)
-        'JITUniformMatrix(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)'
+        'JITUniformMatrix(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=True)'
         """
         return (
             f"{self.__class__.__name__}("
@@ -507,6 +537,117 @@ class JITCUniformMatrix(JITCMatrix):
             )
 
 
+    # ------------------------------------------------------------------ #
+    # Elementwise operators
+    #
+    # Every stored weight is ``wlow + (whigh - wlow) * U`` with ``U`` drawn from
+    # the fixed per-edge stream, so an affine map ``f`` gives exactly the
+    # weights ``f(wlow) + (f(whigh) - f(wlow)) * U``: apply it to both bounds.
+    # A negative slope leaves ``wlow > whigh``, which is kept as is (swapping
+    # the bounds would pair each edge with ``1 - U`` and change the matrix).
+    # ------------------------------------------------------------------ #
+
+    def _unitary_op(self, op):
+        """
+        Apply a unary operation to every stored weight.
+
+        Parameters
+        ----------
+        op : callable
+            An *affine* map (``operator.neg``, ``operator.pos``, scaling, a
+            unit change, a dtype cast, ...), applied to both bounds, or
+            ``operator.abs``.
+
+        Returns
+        -------
+        JITCUniformMatrix
+            A matrix of the same class whose weights are ``op(w)``.
+
+        Raises
+        ------
+        UnsupportedOperationError
+            For ``abs`` when the bounds are traced or straddle zero: the result
+            is then not uniformly distributed.
+        """
+        if op is operator.abs:
+            low, high = u.get_mantissa(self.wlow), u.get_mantissa(self.whigh)
+            if isinstance(low, Tracer) or isinstance(high, Tracer):
+                raise UnsupportedOperationError(
+                    f"abs() of a {type(self).__name__} needs concrete bounds."
+                )
+            if np.all(np.minimum(low, high) >= 0):
+                return self._new_mat(self.wlow, self.whigh)
+            if np.all(np.maximum(low, high) <= 0):
+                return self._new_mat(-self.wlow, -self.whigh)
+            raise UnsupportedOperationError(
+                f"abs() of a {type(self).__name__} whose bounds straddle zero is not "
+                f"uniformly distributed; convert with .todense() or .tocsr() first."
+            )
+        return self._new_mat(op(self.wlow), op(self.whigh))
+
+    def _binary_op(self, other, op):
+        """
+        Apply ``op(w, other)`` to every stored weight ``w``, with a scalar ``other``.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            A scalar (size-1) operand.
+        op : callable
+            ``operator.add``, ``operator.sub``, ``operator.mul`` or ``operator.truediv``.
+
+        Returns
+        -------
+        JITCUniformMatrix
+            A matrix of the same class whose weights are ``op(w, other)``.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix or not a scalar.
+        UnsupportedOperationError
+            For any other ``op`` (e.g. ``%``): the result is not a uniform-weight matrix.
+        """
+        other = self._scalar_operand(other, op)
+        if op in (operator.add, operator.sub, operator.mul, operator.truediv):
+            return self._new_mat(op(self.wlow, other), op(self.whigh, other))
+        raise UnsupportedOperationError(
+            f"{op} on a {type(self).__name__} does not give uniformly distributed "
+            f"weights and cannot be represented."
+        )
+
+    def _binary_rop(self, other, op):
+        """
+        Apply ``op(other, w)`` to every stored weight ``w``, with a scalar ``other``.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            A scalar (size-1) operand.
+        op : callable
+            ``operator.add``, ``operator.sub`` or ``operator.mul``.
+
+        Returns
+        -------
+        JITCUniformMatrix
+            A matrix of the same class whose weights are ``op(other, w)``.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix or not a scalar.
+        UnsupportedOperationError
+            For any other ``op`` (e.g. ``c / M``): the result is not a uniform-weight matrix.
+        """
+        other = self._scalar_operand(other, op)
+        if op in (operator.add, operator.sub, operator.mul):
+            return self._new_mat(op(other, self.wlow), op(other, self.whigh))
+        raise UnsupportedOperationError(
+            f"{op} with a {type(self).__name__} on the right does not give uniformly "
+            f"distributed weights and cannot be represented."
+        )
+
+
 @jax.tree_util.register_pytree_node_class
 class JITCUniformR(JITCUniformMatrix):
     """
@@ -529,7 +670,10 @@ class JITCUniformR(JITCUniformMatrix):
         Can be a plain JAX array or a quantity with units.
     whigh : Union[jax.Array, u.Quantity]
         The upper bound of the uniform distribution for non-zero elements.
-        Can be a plain JAX array or a quantity with units.
+        Can be a plain JAX array or a quantity with units. Each weight is
+        ``wlow + (whigh - wlow) * U`` with ``U ~ Uniform[0, 1)``, so
+        ``wlow > whigh`` is allowed (it arises from ``-M`` or a negative
+        scale) and gives weights in ``(whigh, wlow]``.
     prob : Union[float, jax.Array]
         Connection probability determining the sparsity of the matrix.
         Values range from 0 (no connections) to 1 (fully connected).
@@ -538,9 +682,14 @@ class JITCUniformR(JITCUniformMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    corder : bool, default=True
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Before brainevent 0.4.0 the default was ``False``;
+        pass ``corder=False`` to reproduce matrices drawn by those versions.
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -556,7 +705,7 @@ class JITCUniformR(JITCUniformMatrix):
         # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
         >>> uniform_matrix = JITCUniformR((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> uniform_matrix
-        JITCUniformR(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
+        JITCUniformR(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=True)
 
         # Create a uniform matrix with units
         >>> uniform_matrix_mv = JITCUniformR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
@@ -758,83 +907,6 @@ class JITCUniformR(JITCUniformMatrix):
             buffers=self.buffers,
         )
 
-    def _unitary_op(self, op) -> 'JITCUniformR':
-        """
-        Apply a unary operation to both weight bounds.
-
-        Parameters
-        ----------
-        op : callable
-            A unary function to apply element-wise to ``wlow`` and ``whigh``.
-
-        Returns
-        -------
-        JITCUniformR
-            A new matrix with the operation applied to both bounds.
-        """
-        return self._new_mat(op(self.wlow), op(self.whigh))
-
-    def _binary_op(self, other, op) -> 'JITCUniformR':
-        """
-        Apply a binary operation between the weight bounds and a scalar operand.
-
-        Parameters
-        ----------
-        other : jax.typing.ArrayLike or u.Quantity
-            The right-hand operand. Must be a scalar (size 1) or another sparse matrix.
-        op : callable
-            A binary function (e.g., ``operator.mul``) to apply.
-
-        Returns
-        -------
-        JITCUniformR
-            A new matrix with the operation applied to both bounds.
-
-        Raises
-        ------
-        NotImplementedError
-            If ``other`` is a sparse matrix or has a non-scalar shape.
-        """
-        if isinstance(other, u.sparse.SparseMatrix):
-            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
-
-        other = u.math.asarray(other)
-        if other.size == 1:
-            return self._new_mat(op(self.wlow, other), op(self.whigh, other))
-
-        else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
-
-    def _binary_rop(self, other, op) -> 'JITCUniformR':
-        """
-        Apply a reflected binary operation with this matrix as the right operand.
-
-        Parameters
-        ----------
-        other : jax.typing.ArrayLike or u.Quantity
-            The left-hand operand. Must be a scalar (size 1) or another sparse matrix.
-        op : callable
-            A binary function (e.g., ``operator.mul``) to apply.
-
-        Returns
-        -------
-        JITCUniformR
-            A new matrix with the operation applied to both bounds.
-
-        Raises
-        ------
-        NotImplementedError
-            If ``other`` is a sparse matrix or has a non-scalar shape.
-        """
-        if isinstance(other, u.sparse.SparseMatrix):
-            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
-
-        other = u.math.asarray(other)
-        if other.size == 1:
-            return self._new_mat(op(other, self.wlow), op(other, self.whigh))
-        else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
-
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         """
         Compute matrix multiplication ``self @ other``.
@@ -874,6 +946,7 @@ class JITCUniformR(JITCUniformMatrix):
 
         other, event = self._split_event_operand(other, self.wlow)
         if event is not None:
+            self._warn_if_not_event_driven('right')
             other = event[0]
             if other.ndim == 1:
                 # JIT matrix @ events
@@ -980,6 +1053,7 @@ class JITCUniformR(JITCUniformMatrix):
 
         other, event = self._split_event_operand(other, self.wlow)
         if event is not None:
+            self._warn_if_not_event_driven('left')
             other = event[0]
             if other.ndim == 1:
                 #
@@ -1085,7 +1159,10 @@ class JITCUniformC(JITCUniformMatrix):
         Can be a plain JAX array or a quantity with units.
     whigh : Union[jax.Array, u.Quantity]
         The upper bound of the uniform distribution for non-zero elements.
-        Can be a plain JAX array or a quantity with units.
+        Can be a plain JAX array or a quantity with units. Each weight is
+        ``wlow + (whigh - wlow) * U`` with ``U ~ Uniform[0, 1)``, so
+        ``wlow > whigh`` is allowed (it arises from ``-M`` or a negative
+        scale) and gives weights in ``(whigh, wlow]``.
     prob : Union[float, jax.Array]
         Connection probability determining the sparsity of the matrix.
         Values range from 0 (no connections) to 1 (fully connected).
@@ -1094,9 +1171,14 @@ class JITCUniformC(JITCUniformMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    corder : bool, default=True
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Before brainevent 0.4.0 the default was ``False``;
+        pass ``corder=False`` to reproduce matrices drawn by those versions.
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -1112,7 +1194,7 @@ class JITCUniformC(JITCUniformMatrix):
         # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
         >>> uniform_matrix = JITCUniformC((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> uniform_matrix
-        JITCUniformC(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
+        JITCUniformC(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=True)
 
         # Create a uniform matrix with units
         >>> uniform_matrix_mv = JITCUniformC((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
@@ -1318,83 +1400,6 @@ class JITCUniformC(JITCUniformMatrix):
             buffers=self.buffers,
         )
 
-    def _unitary_op(self, op) -> 'JITCUniformC':
-        """
-        Apply a unary operation to both weight bounds.
-
-        Parameters
-        ----------
-        op : callable
-            A unary function to apply element-wise to ``wlow`` and ``whigh``.
-
-        Returns
-        -------
-        JITCUniformC
-            A new matrix with the operation applied to both bounds.
-        """
-        return self._new_mat(op(self.wlow), op(self.whigh))
-
-    def _binary_op(self, other, op) -> 'JITCUniformC':
-        """
-        Apply a binary operation between the weight bounds and a scalar operand.
-
-        Parameters
-        ----------
-        other : jax.typing.ArrayLike or u.Quantity
-            The right-hand operand. Must be a scalar (size 1) or another sparse matrix.
-        op : callable
-            A binary function (e.g., ``operator.mul``) to apply.
-
-        Returns
-        -------
-        JITCUniformC
-            A new matrix with the operation applied to both bounds.
-
-        Raises
-        ------
-        NotImplementedError
-            If ``other`` is a sparse matrix or has a non-scalar shape.
-        """
-        if isinstance(other, u.sparse.SparseMatrix):
-            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
-
-        other = u.math.asarray(other)
-        if other.size == 1:
-            return self._new_mat(op(self.wlow, other), op(self.whigh, other))
-
-        else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
-
-    def _binary_rop(self, other, op) -> 'JITCUniformC':
-        """
-        Apply a reflected binary operation with this matrix as the right operand.
-
-        Parameters
-        ----------
-        other : jax.typing.ArrayLike or u.Quantity
-            The left-hand operand. Must be a scalar (size 1) or another sparse matrix.
-        op : callable
-            A binary function (e.g., ``operator.mul``) to apply.
-
-        Returns
-        -------
-        JITCUniformC
-            A new matrix with the operation applied to both bounds.
-
-        Raises
-        ------
-        NotImplementedError
-            If ``other`` is a sparse matrix or has a non-scalar shape.
-        """
-        if isinstance(other, u.sparse.SparseMatrix):
-            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
-
-        other = u.math.asarray(other)
-        if other.size == 1:
-            return self._new_mat(op(other, self.wlow), op(other, self.whigh))
-        else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
-
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         """
         Compute matrix multiplication ``self @ other``.
@@ -1435,6 +1440,7 @@ class JITCUniformC(JITCUniformMatrix):
 
         other, event = self._split_event_operand(other, self.wlow)
         if event is not None:
+            self._warn_if_not_event_driven('right')
             other = event[0]
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
@@ -1546,6 +1552,7 @@ class JITCUniformC(JITCUniformMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         other, event = self._split_event_operand(other, self.wlow)
         if event is not None:
+            self._warn_if_not_event_driven('left')
             other = event[0]
             if other.ndim == 1:
                 #

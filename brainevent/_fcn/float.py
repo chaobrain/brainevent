@@ -21,7 +21,7 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 
-from brainevent._misc import check_fixed_conn_num_shape, namescope
+from brainevent._misc import _promote_float_operands, check_fixed_conn_num_shape, namescope
 
 __all__ = [
     'fcnmv',
@@ -117,6 +117,7 @@ def fcnmv(
     )
     vector, v_unit = u.split_mantissa_unit(vector)
     weights, w_unit = u.split_mantissa_unit(weights)
+    weights, vector = _promote_float_operands(weights, vector)
     if transpose:
         if weights.ndim == 0:
             r = weights * jnp.zeros(n_post, vector.dtype).at[indices].add(
@@ -267,6 +268,7 @@ def fcnmm(
     )
     weights, w_unit = u.split_mantissa_unit(weights)
     matrix, m_unit = u.split_mantissa_unit(matrix)
+    weights, matrix = _promote_float_operands(weights, matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
     if transpose:
         # Scatter mode: Y[n_post, n], Y[indices[i, k], :] += weights[i, k] * matrix[i, :]

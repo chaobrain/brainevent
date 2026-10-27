@@ -1772,3 +1772,86 @@ def test_tcsr_inactive_weight_cotangent_is_exactly_zero(
     _check_isolation_weight_cotangent(
         binary_backend, homogeneous, op, kind, backward_algorithm, bad
     )
+
+
+def _random_tcsr(**kwargs):
+    from brainevent._tcsr.main import TCSR
+
+    rng = np.random.default_rng(0)
+    dense = (rng.random((40, 30)) < 0.3) * (rng.random((40, 30)) + 0.5)
+    with _explicit_int64_allowed():
+        return TCSR.fromdense(jnp.asarray(dense, jnp.float32), **kwargs), dense
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+def test_vmap_events_on_axis_one(weighted):
+    # Regression: an event batch on any axis but 0 raised NotImplementedError.
+    matrix, dense = _random_tcsr()
+    rng = np.random.default_rng(1)
+    events = jnp.asarray(rng.random((30, 5)) > 0.5)
+    left = jnp.asarray(rng.random((40, 5)) > 0.5)
+    wrap = WeightedArray if weighted else BinaryArray
+    if weighted:
+        events, left = events.astype(jnp.float32) * 2, left.astype(jnp.float32) * 2
+    got = jax.vmap(lambda e: matrix @ wrap(e), in_axes=1)(events)
+    np.testing.assert_allclose(got, (dense @ np.asarray(events, np.float64)).T, atol=1e-4)
+    got = jax.vmap(lambda e: wrap(e) @ matrix, in_axes=1)(left)
+    np.testing.assert_allclose(got, (np.asarray(left, np.float64).T @ dense), atol=1e-4)
+    batched = jnp.stack([events, events], axis=2)
+    got = jax.vmap(lambda e: matrix @ wrap(e), in_axes=2)(batched)
+    expected = dense @ np.asarray(events, np.float64)
+    np.testing.assert_allclose(got, np.stack([expected, expected]), atol=1e-4)
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize("batch", [3, 4, 600])
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_cuda_raw_weight_grad_any_batch(batch, side):
+    # Regression: the cuda_raw SDDMM weight-gradient kernel only takes batches
+    # of 4..512, and had no fallback for the others.
+    matrix, dense = _random_tcsr(binary_backend="cuda_raw")
+    rng = np.random.default_rng(2)
+    events = jnp.asarray(rng.random((batch, 40) if side == "left" else (30, batch)) > 0.5)
+    ev = np.asarray(events, np.float64)
+
+    def loss(data):
+        m = matrix.with_data(data)
+        out = BinaryArray(events) @ m if side == "left" else m @ BinaryArray(events)
+        return jnp.sum(out * jnp.arange(out.size, dtype=out.dtype).reshape(out.shape) / out.size)
+
+    grad_dense = jax.grad(
+        lambda d: jnp.sum(
+            ((jnp.asarray(ev) @ d) if side == "left" else (d @ jnp.asarray(ev)))
+            * jnp.arange(batch * (30 if side == "left" else 40)).reshape(
+                (batch, 30) if side == "left" else (40, batch)
+            ) / (batch * (30 if side == "left" else 40))
+        )
+    )(jnp.asarray(dense))
+    with _explicit_int64_allowed():
+        grad = jax.grad(loss)(matrix.data)
+        expected = matrix.with_data(grad).todense()
+    np.testing.assert_allclose(
+        np.asarray(expected), np.where(dense != 0, np.asarray(grad_dense), 0.), rtol=1e-4, atol=1e-3
+    )
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+def test_zero_nnz_products_are_zero(weighted):
+    # Regression: the CUDA tile MM (default on GPU for ``events @ M``) raised
+    # for a matrix without connections.
+    from brainevent._tcsr.main import TCSR
+
+    with _explicit_int64_allowed():
+        matrix = TCSR.fromdense(jnp.zeros((8, 6), jnp.float32))
+    wrap = WeightedArray if weighted else BinaryArray
+    dt = jnp.float32 if weighted else jnp.bool_
+    cases = {
+        (8,): lambda: matrix @ wrap(jnp.ones(6, dt)),
+        (6,): lambda: wrap(jnp.ones(8, dt)) @ matrix,
+        (8, 4): lambda: matrix @ wrap(jnp.ones((6, 4), dt)),
+        (4, 6): lambda: wrap(jnp.ones((4, 8), dt)) @ matrix,
+    }
+    for shape, product in cases.items():
+        out = product()
+        assert out.shape == shape
+        assert not np.any(np.asarray(out))

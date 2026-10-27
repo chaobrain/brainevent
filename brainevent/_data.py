@@ -16,7 +16,10 @@
 # -*- coding: utf-8 -*-
 
 import operator
+import os
+import sys
 import warnings
+from types import FrameType
 from typing import Union, Sequence, Optional, Dict
 
 import brainunit as u
@@ -24,7 +27,7 @@ import jax
 import numpy as np
 from jax import numpy as jnp
 
-from brainevent._error import UnsupportedOperationError
+from brainevent._error import PerformanceWarning, UnsupportedOperationError
 
 __all__ = [
     'DataRepresentation',
@@ -408,6 +411,50 @@ class DataRepresentation(u.sparse.SparseMatrix):
         raise NotImplementedError(f"{type(self).__name__}.update_on_post")
 
 
+_EVENT_SIDES = ('left', 'right')
+
+
+def _resolve_corder(corder: Optional[bool], event_side: Optional[str]) -> bool:
+    """Return the ``corder`` flag selected by ``corder`` and/or ``event_side``.
+
+    ``event_side='left'`` makes ``events @ M`` event-driven (``corder=True``);
+    ``event_side='right'`` makes ``M @ events`` event-driven (``corder=False``).
+    With neither given the default is ``corder=True``.
+
+    Raises
+    ------
+    ValueError
+        If ``event_side`` is not ``None``, ``'left'`` or ``'right'``, or if it
+        contradicts an explicitly given ``corder``.
+    """
+    if event_side is None:
+        return True if corder is None else bool(corder)
+    if event_side not in _EVENT_SIDES:
+        raise ValueError(f"event_side must be 'left', 'right' or None, but got {event_side!r}.")
+    selected = event_side == 'left'
+    if corder is not None and bool(corder) != selected:
+        raise ValueError(
+            f"event_side={event_side!r} selects corder={selected}, which contradicts corder={corder}. "
+            f"Pass only one of them."
+        )
+    return selected
+
+
+# ``(class name, side)`` pairs that already warned about a non-event-driven product.
+_WARNED_NOT_EVENT_DRIVEN: set = set()
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _user_stacklevel() -> int:
+    """``stacklevel`` (for a ``warnings.warn`` in the caller) of the first frame outside brainevent."""
+    frame: Optional[FrameType] = sys._getframe(1)
+    level = 1
+    while frame is not None and frame.f_code.co_filename.startswith(_PACKAGE_DIR):
+        frame = frame.f_back
+        level += 1
+    return level
+
+
 class JITCMatrix(DataRepresentation):
     """
     Just-in-time Connectivity (JITC) matrix.
@@ -428,6 +475,60 @@ class JITCMatrix(DataRepresentation):
     :class:`brainunit.sparse.SparseMatrix` are inherited.
     """
     __module__ = 'brainevent'
+
+    @property
+    def event_side(self) -> str:
+        """Side of the event operand whose product is event-driven.
+
+        ``'left'`` (``corder=True``): ``events @ M`` walks only the active rows.
+        ``'right'`` (``corder=False``): ``M @ events`` walks only the active
+        columns. The product with events on the other side walks every random
+        stream. ``M.T`` flips the value, so ``events @ M`` and ``M.T @ events``
+        always run the same kernel.
+
+        Returns
+        -------
+        str
+            ``'left'`` or ``'right'``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> M = brainevent.JITCScalarR((1.5, 0.1, 42), shape=(10, 20))
+            >>> M.event_side
+            'left'
+            >>> M.T.event_side
+            'right'
+        """
+        return 'left' if self.corder else 'right'
+
+    def _warn_if_not_event_driven(self, side: str) -> None:
+        """Warn once if a binary-event product on ``side`` is not event-driven.
+
+        Parameters
+        ----------
+        side : str
+            ``'left'`` for ``events @ M``, ``'right'`` for ``M @ events``.
+        """
+        if (side == 'left') == bool(self.corder):
+            return
+        name = type(self).__name__
+        key = (name, side)
+        if key in _WARNED_NOT_EVENT_DRIVEN:
+            return
+        _WARNED_NOT_EVENT_DRIVEN.add(key)
+        product, walked = ('events @ M', 'column') if side == 'left' else ('M @ events', 'row')
+        warnings.warn(
+            f"{name}(corder={bool(self.corder)}): `{product}` is not event-driven; it walks the "
+            f"random stream of every {walked}. event_side={side!r} (corder={not self.corder}) makes it "
+            f"event-driven but draws a different, statistically equivalent connectivity. `M.tocsr()` "
+            f"keeps this connectivity in memory (O(nnz)) and gathers over stored indices instead of "
+            f"regenerating the matrix.",
+            PerformanceWarning,
+            stacklevel=_user_stacklevel(),
+        )
 
     @staticmethod
     def _split_event_operand(other, weight):
@@ -461,6 +562,81 @@ class JITCMatrix(DataRepresentation):
         if not jnp.issubdtype(dtype, jnp.floating):
             dtype = jnp.result_type(dtype, 1.0)
         return u.math.asarray(event[0]).astype(dtype), None
+
+    @staticmethod
+    def _scalar_operand(other, op):
+        """Return ``other`` as a 0-d operand for an elementwise ``op``.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Operand of a binary elementwise operation.
+        op : callable
+            The operation, used in error messages.
+
+        Returns
+        -------
+        jax.Array or u.Quantity
+            ``other`` reshaped to ``()``, so the weight parameters keep their shape.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix or has more than one element.
+        """
+        if isinstance(other, u.sparse.SparseMatrix):
+            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
+        other = u.math.asarray(other)
+        if other.size != 1:
+            raise NotImplementedError(
+                f"binary operation {op} with an object of shape {other.shape}; "
+                f"JITC matrices only support scalar operands."
+            )
+        return other.reshape(())
+
+    def sum(self, axis: Optional[int] = None):
+        """
+        Sum of the represented matrix entries.
+
+        Computed exactly from the generated connectivity with one
+        matrix-vector product, without materializing the matrix.
+
+        Parameters
+        ----------
+        axis : int or None, optional
+            ``None`` (default) sums every entry, ``0`` (or ``-2``) gives the
+            column sums of shape ``(shape[1],)`` and ``1`` (or ``-1``) the row
+            sums of shape ``(shape[0],)``.
+
+        Returns
+        -------
+        jax.Array or u.Quantity
+            The sum, carrying the unit of the weights.
+
+        Raises
+        ------
+        ValueError
+            If ``axis`` is not ``None``, ``0``, ``1``, ``-1`` or ``-2``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((1.5, 0.5, 42), shape=(4, 6))
+            >>> bool(jnp.allclose(mat.sum(), mat.todense().sum()))
+            True
+            >>> mat.sum(axis=0).shape
+            (6,)
+        """
+        if axis is not None and axis not in (0, 1, -1, -2):
+            raise ValueError(f"axis must be None, 0 or 1 for a 2-D matrix, got {axis}.")
+        dtype = self.dtype
+        if axis in (0, -2):
+            return jnp.ones(self.shape[0], dtype=dtype) @ self
+        row_sums = self @ jnp.ones(self.shape[1], dtype=dtype)
+        return row_sums if axis is not None else row_sums.sum()
 
     def _unitary_op(self, op):
         """
@@ -1261,37 +1437,87 @@ def _initialize_seed(seed=None):
     return jnp.asarray(jnp.atleast_1d(seed), dtype=jnp.int32)
 
 
+# ``clen[1]`` value meaning "keep every walked candidate" (24-bit keep hash).
+JITC_KEEP_ONE = 1 << 24
+# Upper bound on the walk stride ``clen[0]``: keeps ``lane + 32 * q`` inside
+# ``uint32`` in every kernel. Sparser probabilities are reached by thinning.
+JITC_CLEN_MAX = 1 << 25
+
+
+def _validate_conn_prob(conn_prob) -> None:
+    """Raise ``ValueError`` unless a concrete ``conn_prob`` is a finite scalar in ``[0, 1]``."""
+    if isinstance(conn_prob, jax.core.Tracer):
+        return
+    prob = np.asarray(conn_prob)
+    if prob.size != 1:
+        raise ValueError(f"prob must be a scalar, but got shape {prob.shape}.")
+    prob = float(prob.reshape(()))
+    if not np.isfinite(prob):
+        raise ValueError(f"prob must be finite, but got {prob}.")
+    if not (0. <= prob <= 1.):
+        raise ValueError(f"prob must be in [0, 1], but got {prob}.")
+
+
+def _check_prob_argument(arguments: dict) -> None:
+    """``namescope`` precheck: validate a concrete ``prob`` before it is traced."""
+    if 'prob' in arguments:
+        _validate_conn_prob(arguments['prob'])
+
+
 def _initialize_conn_length(conn_prob: float):
     """
-    Convert connection probability to connection length parameter for sparse matrix generation.
+    Convert a connection probability into the walk parameters ``clen = (cl, thr)``.
 
-    This function transforms a connection probability (proportion of non-zero entries)
-    into a connection length parameter used by the sparse sampling algorithms.
-    The connection length is approximately the inverse of the connection probability,
-    scaled by a factor of 2 to ensure adequate sparsity in the generated matrices.
+    The JIT connectivity kernels walk each row with skips drawn uniformly from
+    ``{1, ..., cl - 1}``, which visits a fraction ``2 / cl`` of the positions,
+    and keep a visited position ``(row, j)`` only when a stateless 24-bit hash
+    of it is below ``thr``. Together this gives density ``p`` exactly (up to the
+    ``2**-24`` resolution of ``thr``):
 
-    The function ensures the calculation happens at compile time when used in JIT-compiled
-    functions by using JAX's compile_time_eval context.
+    - when ``2 / p`` is an integer (``p = 1, 0.5, 0.1, 0.01, 1/3, ...``),
+      ``cl = 2 / p`` and ``thr = 2**24`` (keep all), so the walk is the one used
+      before thinning was introduced;
+    - otherwise ``cl = floor(2 / p)`` (density ``>= p``) and
+      ``thr = round(p * cl / 2 * 2**24)`` thins it down to ``p``;
+    - ``p == 0`` keeps nothing.
 
     Parameters
     ----------
-    conn_prob : float
-        The connection probability (between 0 and 1) representing the fraction
-        of non-zero entries in the randomly generated matrix.
+    conn_prob : float or jax.Array
+        Connection probability in ``[0, 1]``. A concrete value is validated; a
+        traced value is not (out-of-range values clip to an empty or a full
+        matrix, NaN gives an empty one).
 
     Returns
     -------
     jax.Array
-        A JAX array containing the connection length value as an int32,
-        which is approximately 2/conn_prob.
+        ``int32`` array of shape ``(2,)`` holding ``(cl, thr)``.
+
+    Raises
+    ------
+    ValueError
+        If a concrete ``conn_prob`` is not a finite scalar in ``[0, 1]``.
 
     Notes
     -----
-    The connection length parameter is used in the kernels to determine the
-    average distance between sampled connections when generating sparse matrices.
-    Larger values result in sparser matrices (fewer connections).
+    The arithmetic is done in ``float32`` with the same ``jax.numpy`` operations
+    whether ``conn_prob`` is concrete or traced, so a matrix passed into
+    ``jax.jit`` (where ``prob`` becomes a tracer) draws exactly the same
+    connectivity as outside it, with or without ``jax_enable_x64``.
     """
+    _validate_conn_prob(conn_prob)
     with jax.ensure_compile_time_eval():
-        clen = jnp.ceil(2 / conn_prob)
-        clen = jnp.asarray(clen, dtype=jnp.int32)
+        p = jnp.reshape(jnp.asarray(conn_prob, dtype=jnp.float32), ())
+        positive = p > 0.  # False for NaN
+        r = 2. / jnp.where(positive, p, 1.)
+        n = jnp.round(r)
+        is_int = jnp.abs(r - n) <= 1e-6 * r
+        cl = jnp.clip(jnp.where(is_int, n, jnp.floor(r)), 2., float(JITC_CLEN_MAX))
+        exact = is_int & (cl == n)
+        thr = jnp.where(
+            exact, float(JITC_KEEP_ONE), jnp.clip(jnp.round(p * cl * float(1 << 23)), 0., float(JITC_KEEP_ONE))
+        )
+        cl = jnp.where(positive, cl, float(JITC_CLEN_MAX))
+        thr = jnp.where(positive, thr, 0.)
+        clen = jnp.stack([cl, thr]).astype(jnp.int32)
     return clen

@@ -640,3 +640,30 @@ def test_slice_grad_cuda_accepts_int64_indptr():
     expected = jnp.array([1.0, 3.0, 20.0, 30.0], dtype=jnp.float32)
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('implementation', SLICE_IMPLEMENTATIONS)
+@pytest.mark.parametrize('nnz_per_row', [4, 64, 1024])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('dtype', ['float32', 'float16', 'bfloat16'])
+def test_duplicate_columns_accumulate(implementation, nnz_per_row, homo, dtype):
+    # Regression: the CUDA kernels assigned instead of accumulating, so a
+    # column repeated within a row kept only one of its values. The three
+    # row lengths select the thread, warp and block kernels.
+    if implementation == 'numba' and dtype != 'float32':
+        pytest.skip('numba has no float16/bfloat16 data type')
+    rng = np.random.default_rng(0)
+    n_rows, n_cols = 6, 16
+    indices = rng.integers(0, n_cols, (n_rows, nnz_per_row)).astype(np.int32)
+    indptr = np.arange(n_rows + 1, dtype=np.int32) * nnz_per_row
+    values = np.full(n_rows * nnz_per_row, 0.25) if homo else rng.integers(1, 4, n_rows * nnz_per_row) / 4
+    dense = np.zeros((n_rows, n_cols))
+    np.add.at(dense, (np.repeat(np.arange(n_rows), nnz_per_row), indices.ravel()), values)
+    data = jnp.asarray([0.25] if homo else values, jnp.dtype(dtype))
+    rows = jnp.asarray([4, 0, 4, 2], jnp.int32)
+    out = csr_slice_rows(
+        data, jnp.asarray(indices.ravel()), jnp.asarray(indptr), rows,
+        shape=(n_rows, n_cols), backend=implementation,
+    )
+    # Values are multiples of 1/4 with sums below 2^8: exact in every dtype.
+    np.testing.assert_array_equal(np.asarray(out, np.float64), dense[np.asarray(rows)])

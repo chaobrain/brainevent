@@ -55,6 +55,29 @@ fixed probability. :class:`~brainevent.FixedNumPerPre` and
 faithful and more memory-predictable than a probabilistic format when the degree is known.
 
 
+Matrices under ``jax.jit`` and ``jax.grad``
+--------------------------------------------
+
+CSR, CSC and the fixed-degree formats are JAX pytrees whose leaves are the values
+(``data``) *and* the structure (``indices``, ``indptr``). The structure is therefore an
+ordinary input of a jitted function: it is not baked into the compiled program, and two
+matrices with the same shapes share one compilation.
+
+* **Gradients** flow through the values. Differentiate ``M.data`` and rebuild the matrix
+  with ``M.with_data(d)``; ``jax.grad(f, allow_int=True)(M)`` also works and returns
+  ``float0`` cotangents for the index leaves.
+* **Mirror layout.** The unfavorable product direction (and the matching plasticity
+  update) is event-driven through a *mirror*: the other compression of the same structure.
+  It is built once from a concrete structure and shared by ``with_data``, ``apply``,
+  arithmetic and ``.T``. A matrix that enters a jitted function as an argument has a traced
+  structure, so call ``M = M.build_weight_indices()`` first; otherwise that direction runs
+  on a slower mirror-free path and warns once with :class:`~brainevent.PerformanceWarning`.
+  A matrix closed over by the jitted function needs nothing.
+* **Structure-changing operations** plan the new structure on the host:
+  ``diag_add`` needs ``M = M.prepare_diag_add()`` before ``jax.jit`` when ``M`` is an
+  argument; ``slice_rows`` on CSR/CSC needs concrete row indices.
+
+
 Summary
 -------
 

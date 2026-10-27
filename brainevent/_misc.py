@@ -163,6 +163,36 @@ def _n_chunks(n_cols: int, chunk_size: int) -> int:
     return 0 if n_cols <= 0 else cdiv(int(n_cols), int(chunk_size))
 
 
+def _promote_float_operands(*arrays):
+    """Cast the operands of a float kernel to their common floating dtype.
+
+    The float kernels read every operand with the weight dtype, so an operand
+    of another dtype (an integer, boolean or half-precision vector with
+    ``float32`` weights, or weights of mixed precision) would be misread on
+    CUDA or rejected by numba. Promotion follows JAX's rules, so a Python
+    scalar weight adopts the dtype of the array operand.
+
+    Parameters
+    ----------
+    *arrays : jax.typing.ArrayLike
+        Weights and dense operands of one kernel call.
+
+    Returns
+    -------
+    tuple of jax.Array
+        The operands, all of the common dtype.
+
+    Raises
+    ------
+    TypeError
+        If the common dtype is not floating.
+    """
+    dtype = jnp.result_type(*arrays)
+    if not jnp.issubdtype(dtype, jnp.floating):
+        raise TypeError(f"float kernels need a floating operand; the common dtype is {dtype}.")
+    return tuple(jnp.asarray(a, dtype) for a in arrays)
+
+
 def _normalize_dtype(dtype):
     return np.dtype(dtype)
 
@@ -1686,6 +1716,59 @@ def csc_to_csr_index(
     return csr_indptr, csr_indices, perm
 
 
+def csr_to_csc_index_traced(
+    csr_indptr: jax.Array,
+    csr_indices: jax.Array,
+    *,
+    shape: Tuple[int, int],
+):
+    """Traceable :func:`csr_to_csc_index`: same outputs, and it works on tracers.
+
+    :func:`csr_to_csc_index` needs concrete arrays (it calls ``jnp.unique`` or
+    NumPy). This variant uses only fixed-shape operations (a stable argsort of
+    the column indices and a scatter-add histogram), so it runs inside
+    ``jax.jit`` with traced structure at ``O(nse log nse)`` cost per call.
+
+    Parameters
+    ----------
+    csr_indptr : jax.Array
+        Row pointer array of the CSR structure, shape ``(shape[0] + 1,)``.
+    csr_indices : jax.Array
+        Column index array of the CSR structure, shape ``(nse,)``.
+    shape : tuple of int
+        ``(n_rows, n_cols)`` of the CSR matrix.
+
+    Returns
+    -------
+    csc_indptr : jax.Array
+        Column pointer array, shape ``(shape[1] + 1,)``.
+    csc_indices : jax.Array
+        Row index array in column-major order (int32), shape ``(nse,)``.
+    perm : jax.Array
+        ``csr_data[perm]`` is the data in column-major order.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax
+        >>> import jax.numpy as jnp
+        >>> from brainevent._misc import csr_to_csc_index_traced
+        >>> indptr = jnp.array([0, 2, 3, 5])
+        >>> indices = jnp.array([0, 2, 1, 0, 3])
+        >>> f = jax.jit(lambda p, i: csr_to_csc_index_traced(p, i, shape=(3, 4)))
+        >>> csc_indptr, csc_indices, perm = f(indptr, indices)
+    """
+    nse = csr_indices.shape[0]
+    offset_dtype = _resolve_indptr_dtype(nse, "auto")
+    rows, cols = _csr_to_coo(csr_indices, csr_indptr)
+    perm = jnp.argsort(cols, stable=True).astype(offset_dtype)
+    csc_indices = rows[perm].astype(jnp.int32)
+    counts = jnp.zeros((shape[1],), offset_dtype).at[cols].add(1)
+    csc_indptr = jnp.concatenate([jnp.zeros((1,), offset_dtype), jnp.cumsum(counts, dtype=offset_dtype)])
+    return csc_indptr, csc_indices, perm
+
+
 class NameScope:
     """A callable that caches a separate JIT-compiled function per unique ``backend`` value.
 
@@ -1712,6 +1795,11 @@ class NameScope:
     static_argnames : sequence of str or str, optional
         Keyword argument names to treat as static (passed through to
         ``jax.jit``). Defaults to ``()``.
+    precheck : callable or None, optional
+        Called with the ``{name: value}`` mapping of the bound call arguments
+        before entering ``jax.jit``, where the values are still concrete (unless
+        the caller is itself traced). Use it to validate arguments that are
+        traced inside the compiled function. Defaults to ``None``.
 
     See Also
     --------
@@ -1736,15 +1824,18 @@ class NameScope:
         module: str = 'brainevent',
         static_argnums: Sequence[int] | int = (),
         static_argnames: Sequence[str] | str = (),
+        precheck: Optional[Callable[[dict], None]] = None,
     ):
         self._fn = fn
         self._static_argnums = static_argnums
         self._static_argnames = static_argnames
+        self._precheck = precheck
         fn.__name__ = name if name is not None else f"{prefix}.{fn.__name__}"
         self._cache: dict[Optional[str], Callable] = {}  # backend -> jit_compiled_fn
         # Check whether the wrapped function accepts a 'backend' keyword.
         # True when the function either has an explicit backend parameter or accepts **kwargs.
         sig = inspect.signature(fn)
+        self._signature = sig
         self._has_backend = (
             'backend' in sig.parameters or
             any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
@@ -1768,6 +1859,8 @@ class NameScope:
 
     def __call__(self, *args, **kwargs):
         backend = kwargs.pop('backend', None)
+        if self._precheck is not None:
+            self._precheck(self._signature.bind_partial(*args, **kwargs).arguments)
         jit_fn = self._get_jit_fn(backend)
         return jit_fn(*args, **kwargs)
 
@@ -1781,7 +1874,8 @@ def namescope(
     prefix: str = "brainevent",
     module: str = 'brainevent',
     static_argnums: Sequence[int] = (),
-    static_argnames: Sequence[str] = ()
+    static_argnames: Sequence[str] = (),
+    precheck: Optional[Callable[[dict], None]] = None,
 ):
     """Decorator that wraps a function with per-backend JIT compilation.
 
@@ -1808,6 +1902,9 @@ def namescope(
     static_argnames : sequence of str, optional
         Keyword argument names to treat as static (passed through to
         ``jax.jit``). Defaults to ``()``.
+    precheck : callable or None, optional
+        Validator called with the bound call arguments before ``jax.jit``
+        (see :class:`NameScope`). Defaults to ``None``.
 
     Returns
     -------
@@ -1841,7 +1938,8 @@ def namescope(
                 prefix=prefix,
                 module=module,
                 static_argnums=static_argnums,
-                static_argnames=static_argnames
+                static_argnames=static_argnames,
+                precheck=precheck,
             )
 
         return decorator
@@ -1853,5 +1951,6 @@ def namescope(
             prefix=prefix,
             module=module,
             static_argnums=static_argnums,
-            static_argnames=static_argnames
+            static_argnames=static_argnames,
+            precheck=precheck,
         )

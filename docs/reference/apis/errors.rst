@@ -97,3 +97,16 @@ unusable. Each carries a stable ``E-`` diagnostic code in its message.
    HostCompilerNotFoundError
    GpuArchDetectionError
    UnsupportedArchError
+
+
+Warnings
+--------
+
+:class:`PerformanceWarning` is a :class:`UserWarning`, not an error: the
+operation still runs correctly, on a slower code path.
+
+.. autosummary::
+   :toctree: generated/
+   :template: classtemplate.rst
+
+   PerformanceWarning

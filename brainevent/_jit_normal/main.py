@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+import operator
 from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
@@ -24,7 +25,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
-from brainevent._data import JITCMatrix
+from brainevent._data import JITCMatrix, _resolve_corder
+from brainevent._error import UnsupportedOperationError
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitnmv, binary_jitnmm
 from .csr import jitn_to_csr
@@ -61,7 +63,19 @@ class JITCNormalMatrix(JITCMatrix):
     shape : MatrixShape
         The shape of the matrix as a tuple ``(rows, columns)``.
     corder : bool, optional
-        Memory layout order flag, by default False.
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Defaults to ``True`` unless ``event_side`` is
+        given. Before brainevent 0.4.0 the default was ``False``; pass
+        ``corder=False`` to reproduce matrices drawn by those versions.
+    event_side : {'left', 'right'}, optional
+        Alternative to ``corder`` named after the event-driven product:
+        ``'left'`` makes ``events @ M`` event-driven (``corder=True``) and
+        ``'right'`` makes ``M @ events`` event-driven (``corder=False``). Must
+        agree with ``corder`` when both are given.
     backend : str or None, optional
         The computation backend to use.
 
@@ -133,9 +147,14 @@ class JITCNormalMatrix(JITCMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    corder : bool, default=True
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Before brainevent 0.4.0 the default was ``False``;
+        pass ``corder=False`` to reproduce matrices drawn by those versions.
     """
     __module__ = 'brainevent'
 
@@ -155,7 +174,8 @@ class JITCNormalMatrix(JITCMatrix):
         seed=None,
         *,
         shape: MatrixShape,
-        corder: bool = False,
+        corder: Optional[bool] = None,
+        event_side: Optional[str] = None,
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
     ):
@@ -177,9 +197,24 @@ class JITCNormalMatrix(JITCMatrix):
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
         corder : bool, optional
-            Memory layout order flag, by default False.
-            - False: Fortran-order (column-major)
-            - True: C-order (row-major)
+            Which index of the matrix owns a random stream. ``True``: one stream per
+            row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+            event-driven (only active rows are walked). ``False``: one stream per
+            column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+            two values draw different connectivity; ``M.T`` flips the flag so it
+            names the same matrix. Defaults to ``True`` unless ``event_side`` is
+            given. Before brainevent 0.4.0 the default was ``False``; pass
+            ``corder=False`` to reproduce matrices drawn by those versions.
+        event_side : {'left', 'right'}, optional
+            Alternative to ``corder`` named after the event-driven product:
+            ``'left'`` makes ``events @ M`` event-driven (``corder=True``) and
+            ``'right'`` makes ``M @ events`` event-driven (``corder=False``). Must
+            agree with ``corder`` when both are given.
+
+        Raises
+        ------
+        ValueError
+            If ``event_side`` is not ``'left'`` or ``'right'``, or contradicts ``corder``.
 
         Notes
         -----
@@ -197,7 +232,7 @@ class JITCNormalMatrix(JITCMatrix):
         u.fail_for_dimension_mismatch(loc, scale, "loc and scale must have the same dimension.")
         self.wloc = u.math.asarray(loc)
         self.wscale = u.math.asarray(scale)
-        self.corder = corder
+        self.corder = _resolve_corder(corder, event_side)
         self.backend = backend
         super().__init__(data, shape=shape, buffers=buffers)
 
@@ -215,7 +250,7 @@ class JITCNormalMatrix(JITCMatrix):
         --------
         >>> matrix = JITCNormalMatrix((0.5, 0.1, 0.2, 42), shape=(10, 10))
         >>> repr(matrix)
-        'JITNormalMatrix(shape=(10, 10), wloc=0.5, wscale=0.1, prob=0.2, seed=42, corder=False)'
+        'JITNormalMatrix(shape=(10, 10), wloc=0.5, wscale=0.1, prob=0.2, seed=42, corder=True)'
         """
         return (
             f"{self.__class__.__name__}("
@@ -493,6 +528,117 @@ class JITCNormalMatrix(JITCMatrix):
             )
 
 
+    # ------------------------------------------------------------------ #
+    # Elementwise operators
+    #
+    # Every stored weight is ``wloc + wscale * z`` with ``z`` drawn from the
+    # fixed per-edge stream, so an operator is supported exactly when it maps
+    # that family onto itself: scaling (both parameters), shifting (``wloc``)
+    # and negation. Anything else is not a normal-weight matrix and raises.
+    # ------------------------------------------------------------------ #
+
+    def _unitary_op(self, op):
+        """
+        Apply a unary operation to every stored weight.
+
+        Parameters
+        ----------
+        op : callable
+            ``operator.neg``, ``operator.pos``, or a *linear* map
+            (``op(a * x) == a * op(x)``, e.g. scaling, a unit change, or a
+            dtype cast), applied to both ``wloc`` and ``wscale``.
+
+        Returns
+        -------
+        JITCNormalMatrix
+            A matrix of the same class whose weights are ``op(w)``.
+
+        Raises
+        ------
+        UnsupportedOperationError
+            For ``abs``: the result is not normally distributed.
+        """
+        if op is operator.pos:
+            return self._new_mat(self.wloc, self.wscale)
+        if op is operator.neg:
+            return self._new_mat(-self.wloc, -self.wscale)
+        if op is operator.abs:
+            raise UnsupportedOperationError(
+                f"abs() of a {type(self).__name__} is not normally distributed and "
+                f"cannot be represented; convert with .todense() or .tocsr() first."
+            )
+        return self._new_mat(op(self.wloc), op(self.wscale))
+
+    def _binary_op(self, other, op):
+        """
+        Apply ``op(w, other)`` to every stored weight ``w``, with a scalar ``other``.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            A scalar (size-1) operand.
+        op : callable
+            ``operator.mul`` or ``operator.truediv`` (scale both parameters),
+            ``operator.add`` or ``operator.sub`` (shift ``wloc``).
+
+        Returns
+        -------
+        JITCNormalMatrix
+            A matrix of the same class whose weights are ``op(w, other)``.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix or not a scalar.
+        UnsupportedOperationError
+            For any other ``op`` (e.g. ``%``): the result is not a normal-weight matrix.
+        """
+        other = self._scalar_operand(other, op)
+        if op is operator.mul or op is operator.truediv:
+            return self._new_mat(op(self.wloc, other), op(self.wscale, other))
+        if op is operator.add or op is operator.sub:
+            return self._new_mat(op(self.wloc, other), self.wscale)
+        raise UnsupportedOperationError(
+            f"{op} on a {type(self).__name__} does not give normally distributed "
+            f"weights and cannot be represented."
+        )
+
+    def _binary_rop(self, other, op):
+        """
+        Apply ``op(other, w)`` to every stored weight ``w``, with a scalar ``other``.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            A scalar (size-1) operand.
+        op : callable
+            ``operator.mul``, ``operator.add`` or ``operator.sub``.
+
+        Returns
+        -------
+        JITCNormalMatrix
+            A matrix of the same class whose weights are ``op(other, w)``.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix or not a scalar.
+        UnsupportedOperationError
+            For any other ``op`` (e.g. ``c / M``): the result is not a normal-weight matrix.
+        """
+        other = self._scalar_operand(other, op)
+        if op is operator.mul:
+            return self._new_mat(other * self.wloc, other * self.wscale)
+        if op is operator.add:
+            return self._new_mat(other + self.wloc, self.wscale)
+        if op is operator.sub:
+            return self._new_mat(other - self.wloc, -self.wscale)
+        raise UnsupportedOperationError(
+            f"{op} with a {type(self).__name__} on the right does not give normally "
+            f"distributed weights and cannot be represented."
+        )
+
+
 @jax.tree_util.register_pytree_node_class
 class JITCNormalR(JITCNormalMatrix):
     """
@@ -519,9 +665,14 @@ class JITCNormalR(JITCNormalMatrix):
         Random seed used for initialization of the sparse structure.
     shape : MatrixShape
         The shape of the matrix as a tuple (rows, cols).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    corder : bool, default=True
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Before brainevent 0.4.0 the default was ``False``;
+        pass ``corder=False`` to reproduce matrices drawn by those versions.
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -537,7 +688,7 @@ class JITCNormalR(JITCNormalMatrix):
         # Create a normal distribution matrix with mean 1.5, std 0.2, probability 0.1, and seed 42
         >>> normal_matrix = JITCNormalR((1.5, 0.2, 0.1, 42), shape=(10, 10))
         >>> normal_matrix
-        JITCNormalR(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=False)
+        JITCNormalR(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=True)
 
         >>> # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
@@ -717,85 +868,6 @@ class JITCNormalR(JITCNormalMatrix):
             buffers=self.buffers,
         )
 
-    def _unitary_op(self, op) -> 'JITCNormalR':
-        """
-        Apply a unary operation to the location parameter of the matrix.
-
-        The operation is applied only to ``wloc``; ``wscale`` is preserved unchanged.
-
-        Parameters
-        ----------
-        op : callable
-            A unary function to apply to the location parameter.
-
-        Returns
-        -------
-        JITCNormalR
-            A new matrix with the operation applied to ``wloc``.
-        """
-        return self._new_mat(op(self.wloc), self.wscale)
-
-    def _binary_op(self, other, op) -> 'JITCNormalR':
-        """
-        Apply a binary operation between this matrix's location parameter and a scalar.
-
-        Parameters
-        ----------
-        other : jax.typing.ArrayLike or u.Quantity
-            The right-hand operand. Must be a scalar (size 1).
-        op : callable
-            A binary function (e.g., ``operator.mul``) to apply.
-
-        Returns
-        -------
-        JITCNormalR
-            A new matrix with the operation applied to ``wloc``.
-
-        Raises
-        ------
-        NotImplementedError
-            If ``other`` is a sparse matrix or has size greater than 1.
-        """
-        if isinstance(other, u.sparse.SparseMatrix):
-            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
-
-        other = u.math.asarray(other)
-        if other.size == 1:
-            return self._new_mat(op(self.wloc, other), self.wscale)
-
-        else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
-
-    def _binary_rop(self, other, op) -> 'JITCNormalR':
-        """
-        Apply a reflected binary operation with this matrix's location parameter.
-
-        Parameters
-        ----------
-        other : jax.typing.ArrayLike or u.Quantity
-            The left-hand operand. Must be a scalar (size 1).
-        op : callable
-            A binary function (e.g., ``operator.mul``) to apply as ``op(other, wloc)``.
-
-        Returns
-        -------
-        JITCNormalR
-            A new matrix with the reflected operation applied to ``wloc``.
-
-        Raises
-        ------
-        NotImplementedError
-            If ``other`` is a sparse matrix or has size greater than 1.
-        """
-        if isinstance(other, u.sparse.SparseMatrix):
-            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
-
-        other = u.math.asarray(other)
-        if other.size == 1:
-            return self._new_mat(op(other, self.wloc), self.wscale)
-        else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
-
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         """
         Compute the matrix product ``self @ other``.
@@ -841,6 +913,7 @@ class JITCNormalR(JITCNormalMatrix):
 
         other, event = self._split_event_operand(other, self.wloc)
         if event is not None:
+            self._warn_if_not_event_driven('right')
             other = event[0]
             if other.ndim == 1:
                 # JIT matrix @ events
@@ -943,6 +1016,7 @@ class JITCNormalR(JITCNormalMatrix):
 
         other, event = self._split_event_operand(other, self.wloc)
         if event is not None:
+            self._warn_if_not_event_driven('left')
             other = event[0]
             if other.ndim == 1:
                 #
@@ -1051,9 +1125,14 @@ class JITCNormalC(JITCNormalMatrix):
         Random seed used for initialization of the sparse structure.
     shape : MatrixShape
         The shape of the matrix as a tuple (rows, cols).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    corder : bool, default=True
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Before brainevent 0.4.0 the default was ``False``;
+        pass ``corder=False`` to reproduce matrices drawn by those versions.
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -1069,7 +1148,7 @@ class JITCNormalC(JITCNormalMatrix):
         # Create a normal distribution matrix with mean 1.5, std 0.2, probability 0.1, and seed 42
         >>> normal_matrix = JITCNormalC((1.5, 0.2, 0.1, 42), shape=(10, 10))
         >>> normal_matrix
-        JITCNormalC(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=False)
+        JITCNormalC(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=True)
 
         >>> # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
@@ -1250,85 +1329,6 @@ class JITCNormalC(JITCNormalMatrix):
             buffers=self.buffers,
         )
 
-    def _unitary_op(self, op) -> 'JITCNormalC':
-        """
-        Apply a unary operation to the location parameter of the matrix.
-
-        The operation is applied only to ``wloc``; ``wscale`` is preserved unchanged.
-
-        Parameters
-        ----------
-        op : callable
-            A unary function to apply to the location parameter.
-
-        Returns
-        -------
-        JITCNormalC
-            A new matrix with the operation applied to ``wloc``.
-        """
-        return self._new_mat(op(self.wloc), self.wscale)
-
-    def _binary_op(self, other, op) -> 'JITCNormalC':
-        """
-        Apply a binary operation between this matrix's location parameter and a scalar.
-
-        Parameters
-        ----------
-        other : jax.typing.ArrayLike or u.Quantity
-            The right-hand operand. Must be a scalar (size 1).
-        op : callable
-            A binary function (e.g., ``operator.mul``) to apply.
-
-        Returns
-        -------
-        JITCNormalC
-            A new matrix with the operation applied to ``wloc``.
-
-        Raises
-        ------
-        NotImplementedError
-            If ``other`` is a sparse matrix or has size greater than 1.
-        """
-        if isinstance(other, u.sparse.SparseMatrix):
-            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
-
-        other = u.math.asarray(other)
-        if other.size == 1:
-            return self._new_mat(op(self.wloc, other), self.wscale)
-
-        else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
-
-    def _binary_rop(self, other, op) -> 'JITCNormalC':
-        """
-        Apply a reflected binary operation with this matrix's location parameter.
-
-        Parameters
-        ----------
-        other : jax.typing.ArrayLike or u.Quantity
-            The left-hand operand. Must be a scalar (size 1).
-        op : callable
-            A binary function (e.g., ``operator.mul``) to apply as ``op(other, wloc)``.
-
-        Returns
-        -------
-        JITCNormalC
-            A new matrix with the reflected operation applied to ``wloc``.
-
-        Raises
-        ------
-        NotImplementedError
-            If ``other`` is a sparse matrix or has size greater than 1.
-        """
-        if isinstance(other, u.sparse.SparseMatrix):
-            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
-
-        other = u.math.asarray(other)
-        if other.size == 1:
-            return self._new_mat(op(other, self.wloc), self.wscale)
-        else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
-
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         """
         Compute the matrix product ``self @ other``.
@@ -1363,6 +1363,7 @@ class JITCNormalC(JITCNormalMatrix):
 
         other, event = self._split_event_operand(other, self.wloc)
         if event is not None:
+            self._warn_if_not_event_driven('right')
             other = event[0]
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
@@ -1472,6 +1473,7 @@ class JITCNormalC(JITCNormalMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         other, event = self._split_event_operand(other, self.wloc)
         if event is not None:
+            self._warn_if_not_event_driven('left')
             other = event[0]
             if other.ndim == 1:
                 #

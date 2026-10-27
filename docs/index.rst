@@ -13,7 +13,7 @@ than dense matrix operations — while integrating seamlessly with JAX's autodif
    import jax.numpy as jnp
 
    spikes = brainevent.BinaryArray(jnp.array([1, 0, 1, 0, 1]))
-   conn = brainevent.JITCScalarR(num_pre=5, num_post=3, prob=0.5, weight=0.2, seed=0)
+   conn = brainevent.JITCScalarR((0.2, 0.5, 0), shape=(5, 3))  # (weight, prob, seed)
 
    output = spikes @ conn        # only active spikes are processed
 

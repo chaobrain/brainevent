@@ -631,7 +631,7 @@ class XLACustomKernel:
                     f" Available backend(s) for platform '{platform}': {available}. "
                     f"Switch with backend='<name>' on this call, or "
                     f"{self.name}.set_default('{platform}', '<name>') / "
-                    f"brainevent.set_backend('{platform}', '<name>') to change "
+                    f"brainevent.config.set_backend('{platform}', '<name>') to change "
                     f"the default."
                 )
 
@@ -905,7 +905,7 @@ class XLACustomKernel:
         with the new default on their next invocation; setting the same
         value it already has is a no-op and does not clear caches.
 
-        Like :func:`brainevent.set_backend`, this is a **setup-time,
+        Like :func:`brainevent.config.set_backend`, this is a **setup-time,
         single-threaded** control -- call it before the hot loop, not
         concurrently from multiple threads while other work is compiling.
         For thread-safe, per-call backend selection use the ``backend=``

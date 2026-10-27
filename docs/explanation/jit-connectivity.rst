@@ -56,8 +56,42 @@ transiently inside the kernel, you cannot inspect, slice, or learn individual we
 model needs plastic or addressable synapses, an explicit :class:`~brainevent.CSR` matrix is
 the right tool instead (see :doc:`sparse-formats`).
 
-.. note::
 
-   The row- (``R``) and column- (``C``) oriented variants differ only in which dimension is
-   regenerated contiguously. As with CSR/CSC, choose the one that aligns with your spike
-   vector's orientation for best performance.
+Which side is event-driven
+--------------------------
+
+The random streams are regenerated per row (``corder=True``, the default) or per column
+(``corder=False``). A product that runs along the streams scatters each active input and
+skips the rest; a product that runs across them gathers by walking every stream:
+
+=====================  ==============================  ==============================
+product                ``corder=True`` (default)       ``corder=False``
+=====================  ==============================  ==============================
+``events @ M``         event-driven scatter            gather over every column
+``M @ events``         gather over every row           event-driven scatter
+dense ``x @ M``        scatter (atomic adds)           gather
+dense ``M @ x``        gather                          scatter (atomic adds)
+=====================  ==============================  ==============================
+
+The two settings draw different matrices. ``M.T`` flips the flag, so a matrix and its
+transpose always describe the same connectivity, and every product, ``todense()``,
+``tocsr()`` and gradient of one matrix agree with one another. The ``R`` and ``C`` classes
+are each other's transpose (``JITCScalarR(...).T`` is a ``JITCScalarC``); use ``corder``,
+or its readable alias ``event_side`` (``'left'``: ``events @ M``, ``'right'``:
+``M @ events``), not the class, to choose the event-driven side.
+
+No setting can make both sides event-driven for one matrix: a stream lists the columns of
+its row, and finding the rows that reach a given column means walking every stream. That is
+why the slow side costs about as much as generating the whole matrix, whatever the event
+rate.
+
+
+Exact density
+-------------
+
+Each stream jumps ahead by random skips drawn uniformly from ``1 … cl - 1`` with
+``cl = floor(2 / p)``, which visits a fraction ``2 / cl ≥ p`` of the entries. When ``2 / p``
+is not an integer, a candidate is then kept only if a hash of its position is below a
+threshold, which brings the density down to exactly ``p``. The hash depends only on the
+seed and the position, so every product, on every backend, regenerates the same
+connections.

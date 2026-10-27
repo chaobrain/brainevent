@@ -27,7 +27,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, load_cuda_file
-from brainevent.config import get_backend, get_numba_parallel
+from brainevent.config import get_numba_parallel
 from .float import fcnmv, fcnmm
 from brainevent._op.util import (
     active_sum, cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask,
@@ -503,11 +503,8 @@ def _binary_fcnmv_transpose_rule(
 
 
 def _binary_fcnmv_batching(args, axes, **kwargs):
-    # The cuda_raw scatter matmat returns the raw batch-first layout
-    # ``(batch, num_post)``; every other backend returns ``(out, batch)``.
-    out_axis = 0 if _binary_fcnmm_uses_raw_batch_first(
-        transpose=kwargs['transpose'], backend=kwargs['backend']
-    ) else 1
+    # binary_fcnmm returns ``(out, batch)`` on every backend.
+    out_axis = 1
     if tuple(axes) == (None, None, 0):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_fcnmm_p_call(
@@ -538,7 +535,9 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
 
 def _binary_fcnmv_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    for transpose in (False, True):
+    # cuda_raw has no ``transpose=False`` kernel (the classes route that
+    # direction through ``binary_csrmv_indexed``), so GPU configs skip it.
+    for transpose in ((True,) if platform == 'gpu' else (False, True)):
         for homo in (True, False):
             for bool_event in (True, False):
                 n_conn = max(1, int(n_post * prob))
@@ -788,13 +787,6 @@ def binary_fcnmm(
         backend=backend,
         weighted=weighted,
     )[0]
-    if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=backend):
-        # The cuda_raw scatter kernel emits a raw "batch-first" ``(n, num_post)``
-        # layout for efficiency; normalise it to the logical ``(num_post, n)``
-        # shape promised by this function (and produced by the other backends).
-        r = _maybe_transpose_to_expected(
-            r, (shape[1], matrix.shape[1]), op_name='binary_fcnmm'
-        )
     return u.maybe_decimal(r * m_unit * w_unit)
 
 
@@ -1082,10 +1074,11 @@ def _binary_fcnmm_sraw_cuda_kernel(
         name='fcn_binary_mm',
     )
 
-    sraw_out = jax.ShapeDtypeStruct(
-        kwargs['outs'][0].shape,
-        kwargs['outs'][0].dtype,
-    )
+    # The scatter kernel writes a batch-first ``(n_batch, n_post)`` buffer;
+    # transposing it inside the kernel keeps the primitive's output in the
+    # logical ``(n_post, n_batch)`` layout of every other backend.
+    out_info = kwargs['outs'][0]
+    sraw_out = jax.ShapeDtypeStruct(out_info.shape[::-1], out_info.dtype)
     sfx = dtype_suffix(weight_info.dtype)
     mode_sfx = '_homo' if weight_info.size == 1 else '_hetero'
     abi = cuda_event_abi(
@@ -1101,40 +1094,10 @@ def _binary_fcnmm_sraw_cuda_kernel(
 
     def kernel(weights, indices, matrix):
         raw = jax.ffi.ffi_call(kernel_name, sraw_out)(weights, indices, abi.prepare(matrix))
-        return raw,
+        return raw.T,
 
     return kernel
 
-
-def _binary_fcnmm_uses_raw_batch_first(*, transpose, backend, platform=None):
-    if not transpose:
-        return False
-    if backend == 'cuda_raw':
-        return True
-    if backend is None:
-        platform = jax.default_backend() if platform is None else platform
-        if platform == 'gpu':
-            gpu_backend = get_backend('gpu')
-            return gpu_backend in (None, 'cuda_raw')
-    return False
-
-
-def _maybe_transpose_to_expected(value, expected_shape, *, op_name):
-    if type(value) is ad.Zero:
-        return value
-    if tuple(value.shape) == tuple(expected_shape):
-        return value
-    if value.ndim == 2 and tuple(value.T.shape) == tuple(expected_shape):
-        return value.T
-    raise ValueError(
-        f'{op_name} shape mismatch: got {value.shape}, expected {expected_shape}.'
-    )
-
-
-def _logical_transpose_true_shape_from_cotangent(ct, shape):
-    if tuple(ct.shape)[0] == shape[1]:
-        return tuple(ct.shape)
-    return (shape[1], ct.shape[0])
 
 def _binary_fcnmm_jax_kernel(
     shape: Tuple[int, int],
@@ -1175,11 +1138,6 @@ def _binary_fcnmm_jax_kernel(
 
 def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
     tangent = fcnmm(weights, indices, matrix_dot, shape=shape, transpose=transpose).astype(weights.dtype)
-    if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=kwargs.get('backend')):
-        expected_shape = (matrix.shape[1], shape[1])
-        tangent = _maybe_transpose_to_expected(
-            tangent, expected_shape, op_name='binary_fcnmm matrix JVP'
-        )
     return tangent,
 
 
@@ -1189,11 +1147,6 @@ def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, t
         weights_dot, indices, matrix, shape=shape, transpose=transpose, backend=kwargs['backend'],
         weighted=weighted,
     )[0]
-    if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=kwargs.get('backend')):
-        expected_shape = (matrix.shape[1], shape[1])
-        tangent = _maybe_transpose_to_expected(
-            tangent, expected_shape, op_name='binary_fcnmm weight JVP'
-        )
     return tangent,
 
 
@@ -1203,14 +1156,6 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
     ct = ct[0]
-    if (
-        type(ct) is not ad.Zero
-        and _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=kwargs.get('backend'))
-    ):
-        logical_ct_shape = _logical_transpose_true_shape_from_cotangent(ct, shape)
-        ct = _maybe_transpose_to_expected(
-            ct, logical_ct_shape, op_name='binary_fcnmm transpose cotangent'
-        )
 
     # dL/dspk = dL/dy * dy/dspk
     homo = weight_info.size == 1
@@ -1238,9 +1183,6 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
                 backend=kwargs['backend'],
                 weighted=weighted,
             )[0]
-            ct_weight = _maybe_transpose_to_expected(
-                ct_weight, ct.shape, op_name='binary_fcnmm transpose homo weight'
-            )
             # <ct, r> with r = prim(1): outputs reached by no active event
             # (r == 0) contribute exactly 0, even where ``ct`` is NaN/Inf
             # (select, not ``ct * 0``).
@@ -1278,11 +1220,6 @@ def _batching_base_fn(args, axis=1, **kwargs):
         weighted=kwargs.get('weighted', False),
     )
     raw = r[0]
-    if _binary_fcnmm_uses_raw_batch_first(transpose=kwargs['transpose'], backend=kwargs['backend']):
-        # cuda_raw scatter emits the raw batch-first layout ``(cols, num_post)``
-        # for the primitive as well, so the batch axis precedes ``num_post``.
-        r = jnp.reshape(raw, [maybe_batch1, maybe_batch2, raw.shape[1]])
-        return [r], [axis - 1]
     r = jnp.reshape(raw, [raw.shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 
@@ -1382,8 +1319,6 @@ def binary_fcnmm_p_call(
     binary_fcnmm : High-level wrapper with unit support.
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
-    if _binary_fcnmm_uses_raw_batch_first(transpose=transpose, backend=backend):
-        out = jax.ShapeDtypeStruct((matrix.shape[1], n_post), weights.dtype)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
     return binary_fcnmm_p(
         weights,

@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import jax
 import pytest
 
 from brainevent._cli import _build_parser, _filter_primitives, main
@@ -213,3 +214,34 @@ class TestMultiBenchmarkIntegration:
                 )
 
 
+
+
+def _benchmarked_primitives():
+    import brainevent  # noqa: F401  (registers every primitive)
+    from brainevent._registry import get_registry
+
+    platform = jax.default_backend()
+    return sorted(
+        name for name, prim in get_registry().items()
+        if prim._call_fn is not None
+        and prim._benchmark_data_fn is not None
+        and prim.available_backends(platform)
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('name', _benchmarked_primitives())
+def test_every_benchmark_config_runs(name):
+    # Regression: the JITC configs passed a 0-d seed and the dense binary
+    # configs omitted ``transpose``, so ``benchmark-performance`` silently
+    # recorded every one of them as failed.
+    from brainevent._registry import get_registry
+
+    prim = get_registry()[name]
+    platform = jax.default_backend()
+    backend = prim.available_backends(platform)[0]
+    result = prim.benchmark(
+        platform=platform, n_warmup=0, n_runs=1, compare_results=False, backends=[backend],
+    )
+    failed = [(r.label, r.error) for r in result.records if not r.success]
+    assert not failed, failed

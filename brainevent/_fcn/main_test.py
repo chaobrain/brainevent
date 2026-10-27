@@ -144,21 +144,20 @@ class Test_To_Dense:
 
 
 @pytest.mark.slow
-def test_fixed_post_num_conn_tree_flatten_data_only_leaf():
+def test_fixed_post_num_conn_tree_flatten_structure_leaves():
     indices = jnp.array([[0, 1], [1, 2]], dtype=jnp.int32)
     data = jnp.array([1.5], dtype=jnp.float32)
     conn = brainevent.FixedNumPerPre((data, indices), shape=(2, 3))
 
     children, aux = conn.tree_flatten()
-    aux_dict, buffers = aux
 
-    # ``data`` is the only traced leaf; indices/shape/backend live in static aux
-    # (mirrors CompressedSparseData / CSR).
-    assert len(children) == 1
+    # ``data`` and ``indices`` are leaves (0.4.0); aux holds only hashable
+    # metadata ``(shape, backend, has_mirror, mirror_hint)``.
+    assert len(children) == 2
     assert children[0] is conn.data
-    assert aux_dict['indices'] is conn.indices
-    assert aux_dict['shape'] == (2, 3)
-    assert isinstance(buffers, dict)
+    assert children[1] is conn.indices
+    assert aux == ((2, 3), None, False, None)
+    hash(aux)
 
 
 @pytest.mark.slow
@@ -331,31 +330,39 @@ class Test_Lazy_Csc_Layout:
 
 
 @pytest.mark.slow
-class Test_Init_Outside_JIT:
-    def test_fixed_post_init_rejects_first_construction_inside_jax_jit(self):
+class Test_Init_Inside_JIT:
+    # Since 0.4.0 the structure is a pytree leaf, so construction from traced
+    # indices works under ``jax.jit`` (value checks need concrete indices and
+    # are skipped there; shape and dtype checks still run).
+    def test_fixed_post_construction_inside_jax_jit(self):
+        idx = jnp.array([[0, 1], [1, 3]], dtype=jnp.int32)
+        data = jnp.array([[1., 2.], [3., 4.]], dtype=jnp.float32)
+
         @jax.jit
-        def build():
-            idx = jnp.array([[0, 1], [1, 3]], dtype=jnp.int32)
-            data = jnp.array([[1., 2.], [3., 4.]], dtype=jnp.float32)
-            conn = brainevent.FixedNumPerPre((data, idx), shape=(2, 4))
-            return conn.nse
+        def build(d, i):
+            return brainevent.FixedNumPerPre((d, i), shape=(2, 4)).todense()
 
-        with pytest.raises(RuntimeError, match='must be first constructed outside'):
-            build()
+        expected = brainevent.FixedNumPerPre((data, idx), shape=(2, 4)).todense()
+        assert jnp.allclose(build(data, idx), expected)
 
-    def test_fixed_pre_init_rejects_first_construction_inside_brainstate_jit(self):
+    def test_fixed_pre_construction_inside_brainstate_jit(self):
+        idx = jnp.array([[0, 1], [2, 1], [3, 0]], dtype=jnp.int32)
+        data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
+
         @brainstate.transform.jit
-        def build():
-            idx = jnp.array([[0, 1], [2, 1], [3, 0]], dtype=jnp.int32)
-            data = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
-            conn = brainevent.FixedNumPerPost(
-                (data, idx),
-                shape=(4, 3),
-            )
-            return conn.nse
+        def build(d, i):
+            return brainevent.FixedNumPerPost((d, i), shape=(4, 3)).todense()
 
-        with pytest.raises(RuntimeError, match='must be first constructed outside'):
-            build()
+        expected = brainevent.FixedNumPerPost((data, idx), shape=(4, 3)).todense()
+        assert jnp.allclose(build(data, idx), expected)
+
+    def test_static_checks_still_run_under_jit(self):
+        @jax.jit
+        def build(i):
+            return brainevent.FixedNumPerPre((jnp.ones(i.shape), i), shape=(3, 4)).nse
+
+        with pytest.raises(ValueError, match='row number mismatch'):
+            build(jnp.zeros((2, 2), jnp.int32))
 
 
 @pytest.mark.slow
@@ -934,18 +941,18 @@ def test_fcn_buffers_and_build_weight_indices():
 
 
 @pytest.mark.slow
-def test_fcn_pytree_roundtrip_data_only_leaf():
+def test_fcn_pytree_roundtrip_carries_mirror_leaves():
     rng = np.random.default_rng(1)
     idx = jnp.asarray(rng.integers(0, 5, size=(6, 3)).astype(np.int32))
     dat = jnp.asarray(rng.random((6, 3)) + 0.5, dtype=jnp.float32)
     m = brainevent.FixedNumPerPre(dat, idx, shape=(6, 5), precompute_weight_indices=True)
     leaves, treedef = jax.tree_util.tree_flatten(m)
-    assert len(leaves) == 1  # data only
+    assert len(leaves) == 5  # data, indices and the three mirror arrays
     m2 = jax.tree_util.tree_unflatten(treedef, leaves)
     assert jnp.allclose(m2.data, m.data)
     assert jnp.array_equal(m2.indices, m.indices)
     assert m2.shape == m.shape
-    assert m2.buffers.get('csc') is not None  # mirror carried through aux
+    assert m2.buffers.get('csc') is not None  # mirror carried as leaves
 
 
 @pytest.mark.slow
@@ -1160,29 +1167,6 @@ def test_fixed_num_per_post_rmatmul_mirror_path_transposes_indexed_output():
 
 
 @pytest.mark.slow
-def test_fcn_binary_matmat_dispatch_contract():
-    dispatch_source = inspect.getsource(fcn_main_mod.FixedNumConn._dispatch)
-    assert "_align_binary_matmat_output" in dispatch_source
-    assert "_binary_matmat(value.T, transpose_W).T" not in dispatch_source
-    assert "expected_shape = (value.shape[0], self.shape[1])" in dispatch_source
-    assert "expected_shape = (self.shape[0], value.shape[1])" in dispatch_source
-
-
-@pytest.mark.slow
-def test_fcn_binary_matmat_output_adapter_contract():
-    raw_batch_first = jnp.ones((3, 5))
-    raw_neuron_first = jnp.ones((5, 3))
-    assert fcn_main_mod._align_binary_matmat_output(
-        raw_batch_first, (3, 5), "pre"
-    ).shape == (3, 5)
-    assert fcn_main_mod._align_binary_matmat_output(
-        raw_neuron_first, (3, 5), "pre"
-    ).shape == (3, 5)
-    with pytest.raises(ValueError, match="binary matmat output shape mismatch"):
-        fcn_main_mod._align_binary_matmat_output(jnp.ones((2, 4)), (3, 5), "pre")
-
-
-@pytest.mark.slow
 def test_fcn_matmat_unfavorable_builds_weight_indices():
     # Unfavorable matmat must build the cached CSC mirror (perm-fused path),
     # exactly as the matvec unfavorable path does. FixedNumPerPre mirrors CSR,
@@ -1308,10 +1292,11 @@ class TestToCsr:
         conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4), backend='numba')
         assert conn.tocsr().backend == 'numba'
 
-    def test_requires_outside_jit(self):
-        conn = FixedNumPerPre((DUP_DATA, DUP_INDICES), shape=(3, 4))
-        with pytest.raises(RuntimeError, match='outside'):
-            jax.jit(lambda m: m.tocsr())(conn)
+    @pytest.mark.parametrize('cls,shape', [(FixedNumPerPre, (3, 4)), (FixedNumPerPost, (4, 3))])
+    def test_traceable_under_jit(self, cls, shape):
+        conn = cls((DUP_DATA, DUP_INDICES), shape=shape)
+        got = jax.jit(lambda m: m.tocsr().todense())(conn)
+        assert allclose(got, conn.todense())
 
 
 class TestToCsc:
@@ -1653,3 +1638,206 @@ def test_fcn_weighted_array_differs_from_binary_array():
                                    rtol=1e-5, atol=1e-5)
         np.testing.assert_allclose(BinaryArray(x) @ M, (x != 0).astype(jnp.float32) @ dense,
                                    rtol=1e-5, atol=1e-5)
+
+
+def _small_fixed_num(cls, n_pre, n_post, n_conn, seed=0):
+    rng = np.random.default_rng(seed)
+    n_rows, n_cols = (n_pre, n_post) if cls is FixedNumPerPre else (n_post, n_pre)
+    indices = np.stack([rng.choice(n_cols, n_conn, replace=False) for _ in range(n_rows)])
+    data = rng.random((n_rows, n_conn)) + 0.5
+    return cls((jnp.asarray(data, jnp.float32), jnp.asarray(indices, jnp.int32)), shape=(n_pre, n_post))
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+@pytest.mark.parametrize('event', ['binary', 'weighted'])
+@pytest.mark.parametrize('batch_equals', ['n_pre', 'n_post'])
+def test_binary_matmat_batch_equal_to_matrix_dim_keeps_layout(cls, event, batch_equals):
+    # Regression: the output layout used to be guessed from shapes, so a batch
+    # equal to a matrix dimension returned the transpose of the product.
+    n_pre, n_post = 3, 4
+    M = _small_fixed_num(cls, n_pre, n_post, n_conn=2)
+    dense = M.todense()
+    batch = n_pre if batch_equals == 'n_pre' else n_post
+    rng = np.random.default_rng(1)
+    wrap = BinaryArray if event == 'binary' else brainevent.WeightedArray
+
+    def events(shape):
+        mask = rng.random(shape) > 0.4
+        if event == 'binary':
+            return jnp.asarray(mask), jnp.asarray(mask, jnp.float32)
+        vals = jnp.asarray(mask * (rng.random(shape) + 0.5), jnp.float32)
+        return vals, vals
+
+    left, left_ref = events((batch, n_pre))
+    got = wrap(left) @ M
+    assert got.shape == (batch, n_post)
+    assert jnp.allclose(got, left_ref @ dense, atol=1e-5)
+
+    right, right_ref = events((n_post, batch))
+    got = M @ wrap(right)
+    assert got.shape == (n_pre, batch)
+    assert jnp.allclose(got, dense @ right_ref, atol=1e-5)
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+@pytest.mark.parametrize('homo', [True, False])
+@pytest.mark.parametrize('op', ['mul', 'truediv'])
+def test_elementwise_op_with_dense_matches_dense(cls, homo, op):
+    # Regression: the dense operand was gathered to a flat ``(nse,)`` vector
+    # and never broadcast against ``data`` of shape ``indices.shape``.
+    import operator
+    fn = getattr(operator, op)
+    M = _small_fixed_num(cls, 3, 4, n_conn=2)
+    if homo:
+        M = cls((jnp.full((1,), 1.5, jnp.float32), M.indices), shape=M.shape)
+    dense = M.todense()
+    mask = dense != 0
+    other = jnp.asarray(np.random.default_rng(2).random((3, 4)) + 0.5, jnp.float32)
+    for got, ref in ((fn(M, other), fn(dense, other)), (fn(other, M), fn(other, dense))):
+        assert type(got) is cls
+        assert jnp.allclose(got.todense(), jnp.where(mask, ref, 0.), atol=1e-6)
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+@pytest.mark.parametrize('scalar_shape', [(), (1,), (1, 1)])
+def test_elementwise_op_with_size_one_operand_keeps_data_shape(cls, scalar_shape):
+    M = _small_fixed_num(cls, 3, 4, n_conn=2)
+    scalar = jnp.full(scalar_shape, 2.0, jnp.float32)
+    for got in (M * scalar, scalar * M):
+        assert got.data.shape == M.data.shape
+        assert jnp.allclose(got.todense(), 2.0 * M.todense())
+
+
+# ---------------------------------------------------------------------------
+# Pytree / workspace contract (0.4.0): ``indices`` (and the cached CSC mirror)
+# are dynamic pytree leaves; nothing lazily built may mutate a matrix under a
+# trace. Gradients go through ``M.data`` + ``with_data``.
+# ---------------------------------------------------------------------------
+
+_PYTREE_BACKENDS = ('jax_raw', 'numba') if platform == 'cpu' else ('jax_raw', 'cuda_raw')
+_FIXED_NUM = [FixedNumPerPre, FixedNumPerPost]
+
+
+def _pytree_fixed_num(cls, backend=None, n_pre=7, n_post=9, n_conn=3, seed=0):
+    M = _small_fixed_num(cls, n_pre, n_post, n_conn, seed=seed)
+    M = cls((M.data, M.indices), shape=M.shape, backend=backend)
+    return M, np.asarray(M.todense())
+
+
+def _spike_vector(n, seed=1):
+    return jnp.asarray(np.random.default_rng(seed).random(n) < 0.5)
+
+
+@pytest.mark.parametrize('cls', _FIXED_NUM)
+@pytest.mark.parametrize('backend', _PYTREE_BACKENDS)
+def test_closed_over_fixed_num_binary_matmul_survives_two_jits(cls, backend):
+    # Regression: the binary workspace was built under the first trace and
+    # cached on the closed-over matrix (``UnexpectedTracerError`` afterwards).
+    M, dense = _pytree_fixed_num(cls, backend)
+    x, y = _spike_vector(M.shape[1]), _spike_vector(M.shape[0], seed=2)
+    right = jax.jit(lambda s: M @ BinaryArray(s))
+    left = jax.jit(lambda s: BinaryArray(s) @ M)
+    for _ in range(2):
+        np.testing.assert_allclose(right(x), dense @ np.asarray(x, np.float32), rtol=1e-5)
+        np.testing.assert_allclose(left(y), np.asarray(y, np.float32) @ dense, rtol=1e-5)
+        jax.clear_caches()
+
+
+@pytest.mark.parametrize('cls', _FIXED_NUM)
+def test_jit_reuses_one_entry_for_structurally_equal_fixed_num(cls):
+    # Regression: ``indices`` lived in pytree aux data.
+    M1, dense = _pytree_fixed_num(cls, 'jax_raw')
+    M2 = cls((M1.data * 2, jnp.array(np.asarray(M1.indices))), shape=M1.shape, backend='jax_raw')
+    x = _spike_vector(M1.shape[1])
+    f = jax.jit(lambda M, s: M @ BinaryArray(s))
+    expected = dense @ np.asarray(x, np.float32)
+    np.testing.assert_allclose(f(M1, x), expected, rtol=1e-5)
+    np.testing.assert_allclose(f(M2, x), 2 * expected, rtol=1e-5)
+    assert f._cache_size() == 1
+
+
+@pytest.mark.parametrize('cls', _FIXED_NUM)
+@pytest.mark.parametrize('mirror', [False, True])
+@pytest.mark.parametrize('backend', _PYTREE_BACKENDS)
+def test_scan_carry_fixed_num_with_binary_matmul_and_plasticity(cls, mirror, backend):
+    M, dense = _pytree_fixed_num(cls, backend)
+    if mirror:
+        M = M.build_weight_indices()
+    n_pre, n_post = M.shape
+    rng = np.random.default_rng(3)
+    pre = jnp.asarray(rng.random((4, n_pre)) < 0.5)
+    post = jnp.asarray(rng.random((4, n_post)) < 0.5)
+    pre_trace = jnp.asarray(rng.random(n_pre), jnp.float32)
+    post_trace = jnp.asarray(rng.random(n_post), jnp.float32)
+
+    def step(W, spikes):
+        pre_s, post_s = spikes
+        out = (W @ BinaryArray(post_s), BinaryArray(pre_s) @ W)
+        W = W.update_on_pre(pre_s, post_trace, w_max=2.0)
+        W = W.update_on_post(pre_trace, post_s, w_max=2.0)
+        return W, out
+
+    final, (outs_r, outs_l) = jax.lax.scan(step, M, (pre, post))
+    W = M
+    for t in range(4):
+        W, (r, l) = step(W, (pre[t], post[t]))
+        np.testing.assert_allclose(outs_r[t], r, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(outs_l[t], l, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(final.todense(), W.todense(), rtol=1e-5, atol=1e-6)
+    assert type(final) is cls
+
+
+@pytest.mark.parametrize('cls', _FIXED_NUM)
+def test_fixed_num_structure_is_a_pytree_leaf(cls):
+    M, dense = _pytree_fixed_num(cls, 'jax_raw')
+    v = jnp.ones(M.shape[1], jnp.float32)
+    assert any(leaf is M.indices for leaf in jax.tree.leaves(M))
+    assert jax.eval_shape(lambda W, x: W @ x, M, v).shape == (M.shape[0],)
+    assert jax.eval_shape(lambda W, x: W @ BinaryArray(x), M, v > 0).shape == (M.shape[0],)
+    jax.jit(lambda W, x: W @ x).lower(M, v)
+    nones = jax.tree.map(lambda _: None, M)
+    assert type(nones) is cls and nones.indices is None
+
+
+@pytest.mark.parametrize('cls', _FIXED_NUM)
+def test_fixed_num_builds_and_converts_under_jit(cls):
+    # Construction, ``with_data``, ``tocsr`` and ``.T`` used to host-copy (or
+    # reject) traced indices.
+    M, dense = _pytree_fixed_num(cls, 'jax_raw')
+    v = jnp.asarray(np.random.default_rng(4).random(M.shape[1]), jnp.float32)
+
+    @jax.jit
+    def f(data, indices, x):
+        W = cls((data, indices), shape=M.shape, backend='jax_raw')
+        return W @ x, W.with_data(data * 2) @ x, W.tocsr() @ x, x @ W.T
+
+    a, b, c, d = f(M.data, M.indices, v)
+    expected = dense @ np.asarray(v)
+    for out, scale in ((a, 1), (b, 2), (c, 1), (d, 1)):
+        np.testing.assert_allclose(out, scale * expected, rtol=1e-5)
+
+
+@pytest.mark.parametrize('cls', _FIXED_NUM)
+def test_fixed_num_hlo_size_does_not_grow_with_nse(cls):
+    n = 1000
+    rng = np.random.default_rng(0)
+    for n_conn in (20, 200):
+        indices = jnp.asarray(rng.integers(0, n, (n, n_conn)), jnp.int32)
+        M = cls((jnp.ones((n, n_conn), jnp.float32), indices), shape=(n, n), backend='jax_raw')
+        text = jax.jit(lambda W, x: W @ x).lower(M, jnp.ones(n, jnp.float32)).as_text()
+        assert len(text) < 30_000, n_conn
+
+
+@pytest.mark.parametrize('cls', _FIXED_NUM)
+def test_fixed_num_gradients_through_data_and_allow_int(cls):
+    M, dense = _pytree_fixed_num(cls, 'jax_raw')
+    v = jnp.asarray(np.random.default_rng(4).random(M.shape[1]), jnp.float32)
+
+    def loss(W):
+        return jnp.sum((W @ v) ** 2)
+
+    g_data = jax.grad(lambda d: loss(M.with_data(d)))(M.data)
+    g_M = jax.grad(loss, allow_int=True)(M)
+    assert type(g_M) is cls
+    np.testing.assert_allclose(g_M.data, g_data, rtol=1e-5)
+    assert g_M.indices.dtype == jax.dtypes.float0
