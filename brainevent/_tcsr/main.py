@@ -894,6 +894,8 @@ class TiledCompressedSparseData(DataRepresentation):
         index : int, list, tuple, array, or slice
             Row selector along axis 0. Negative indices wrap and concrete
             out-of-bounds indices raise ``IndexError``.
+            A tuple is a list of rows: ``M[1, 2]`` returns rows 1 and 2, not the
+            NumPy element ``(1, 2)``.
 
         Returns
         -------

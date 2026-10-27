@@ -1081,3 +1081,185 @@ def test_inactive_events_isolate_nonfinite_params_dtypes(backend, op, dtype, cor
             silent = count == 0 if x.any() else np.ones(y.shape, bool)
             assert np.array_equal(y[silent], np.zeros(int(silent.sum()))), (bad, y)
             assert not np.isfinite(y[~silent]).any(), bad
+
+
+# ---- elementwise operators and reductions ----
+import operator as _op
+
+import brainunit as _u
+
+
+def _normal_pair(cls):
+    return cls((1.5, 0.4, 0.5, 3), shape=(6, 8))
+
+
+@pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
+@pytest.mark.parametrize('name,fn,ref', [
+    ('2*M', lambda M: 2. * M, lambda D: 2. * D),
+    ('M*-2', lambda M: M * -2., lambda D: D * -2.),
+    ('M/4', lambda M: M / 4., lambda D: D / 4.),
+    ('M+1', lambda M: M + 1., lambda D: D + 1.),
+    ('M-1', lambda M: M - 1., lambda D: D - 1.),
+    ('1+M', lambda M: 1. + M, lambda D: 1. + D),
+    ('1-M', lambda M: 1. - M, lambda D: 1. - D),
+    ('-M', lambda M: -M, lambda D: -D),
+    ('+M', lambda M: +M, lambda D: D),
+    ('linear apply', lambda M: M.apply(lambda w: 3. * w), lambda D: 3. * D),
+])
+def test_scalar_ops_act_on_every_weight(cls, name, fn, ref):
+    # Regression: ``*``, ``/`` and ``-M`` used to touch only ``wloc``.
+    M = _normal_pair(cls)
+    D = M.todense()
+    got = fn(M)
+    assert type(got) is cls
+    assert jnp.allclose(got.todense(), jnp.where(D != 0, ref(D), 0.), atol=1e-5)
+    assert jnp.allclose(got.T.todense(), jnp.where(D != 0, ref(D), 0.).T, atol=1e-5)
+
+
+@pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
+def test_scalar_ops_with_units(cls):
+    M = _normal_pair(cls)
+    got = M * (2. * _u.mV)
+    assert _u.get_unit(got.wloc) == _u.mV and _u.get_unit(got.wscale) == _u.mV
+    assert _u.math.allclose(got.todense(), M.todense() * 2. * _u.mV)
+    shifted = got + 1. * _u.mV
+    D = M.todense()
+    assert _u.math.allclose(shifted.todense(), _u.math.where(D != 0, (2. * D + 1.) * _u.mV, 0. * _u.mV))
+
+
+@pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
+@pytest.mark.parametrize('fn', [
+    abs,
+    lambda M: 2. / M,
+    lambda M: M % 2.,
+    lambda M: 2. % M,
+])
+def test_unrepresentable_ops_raise(cls, fn):
+    with pytest.raises(brainevent.UnsupportedOperationError):
+        fn(_normal_pair(cls))
+
+
+@pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
+@pytest.mark.parametrize('axis', [None, 0, 1, -1])
+def test_sum_matches_dense(cls, axis):
+    M = _normal_pair(cls)
+    assert jnp.allclose(M.sum(axis), M.todense().sum(axis), atol=1e-4)
+    assert jnp.allclose(jax.jit(lambda m: m.sum(axis))(M), M.todense().sum(axis), atol=1e-4)
+
+
+# ---- Exact density by thinning, and the ``corder=True`` default (0.4.0) ----
+from brainevent._jit_normal._test_util import dense_normal_reference as _t_reference
+from brainevent._jit_normal.binary import binary_jitnmv as _t_binary_mv
+from brainevent._jit_normal.float import jitn as _t_generate, jitnmv as _t_mv
+from brainevent._test_util import (
+    JITC_GOLDEN_0_3_0,
+    check_jitc_grads_match_dense,
+    check_jitc_ops_match_dense,
+    jitc_kernel_orientations,
+    jitc_mask_digest,
+)
+
+_T_PARAMS = (1.5, 0.15)
+_T_THINNED = (0.3, 0.7, 0.93)
+_T_CLASSES = ['JITCNormalR', 'JITCNormalC']
+
+
+def _t_matrix(cls_name, prob, *, corder=True, seed=11, shape=(60, 90), params=_T_PARAMS):
+    return getattr(brainevent, cls_name)((*params, prob, seed), shape=shape, corder=corder)
+
+
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('prob', [0.6, 0.7, 0.9, 0.99, 1 / 3, 0.3, 0.15])
+def test_density_is_exact_for_any_prob(prob, corder):
+    """Density used to be ``2 / ceil(2 / p)`` (0.5 for p=0.6, 0.667 for p=0.9)."""
+    shape = (300, 400)
+    n = shape[0] * shape[1]
+    dense = _t_matrix('JITCNormalR', prob, corder=corder, seed=3, shape=shape).todense()
+    nnz = int((np.asarray(dense) != 0).sum())
+    assert abs(nnz - prob * n) <= 4 * np.sqrt(n * prob * (1 - prob)) + 1
+
+
+@pytest.mark.parametrize('cls_name', _T_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('prob', _T_THINNED)
+def test_thinned_matrix_matches_reference_and_every_op(cls_name, prob, corder):
+    mat = _t_matrix(cls_name, prob, corder=corder)
+    expected = _t_reference(*_T_PARAMS, prob, 11, shape=(60, 90), corder=corder)
+    np.testing.assert_array_equal(np.asarray(mat.todense()) != 0, expected != 0)
+    check_jitc_ops_match_dense(mat)
+
+
+@pytest.mark.parametrize('prob, corder', sorted(JITC_GOLDEN_0_3_0))
+def test_integer_stride_draws_the_0_3_0_matrix(prob, corder):
+    """When ``2 / p`` is an integer nothing is thinned: the 0.3.0 matrix, bit for bit."""
+    mat = _t_matrix('JITCNormalR', prob, corder=corder, seed=123, shape=(37, 129))
+    assert jitc_mask_digest(mat.todense()) == JITC_GOLDEN_0_3_0[(prob, corder)]
+
+
+@pytest.mark.parametrize('cls_name', _T_CLASSES)
+def test_default_corder_makes_events_at_matrix_event_driven(cls_name):
+    mat = getattr(brainevent, cls_name)((*_T_PARAMS, 0.1, 0), shape=(20, 30))
+    assert mat.corder is True
+    assert mat.T.corder is False
+    # ``events @ M`` must take the scatter walk (one stream per event) ...
+    left = jitc_kernel_orientations(lambda x: brainevent.BinaryArray(x) @ mat, jnp.zeros(20, bool))
+    assert [c for _, _, c in left] == [False]
+    # ... and ``M @ v`` the row-parallel gather.
+    right = jitc_kernel_orientations(lambda x: mat @ x, jnp.zeros(30, jnp.float32))
+    assert [c for _, _, c in right] == [True]
+
+
+@pytest.mark.parametrize('prob', _T_THINNED)
+def test_matrix_passed_into_jit_draws_the_same_connectivity(prob):
+    """Inside ``jit`` ``prob`` is a tracer; ``(cl, thr)`` must come out identical."""
+    mat = _t_matrix('JITCNormalR', prob)
+    v = jnp.linspace(-1., 1., 90, dtype=jnp.float32)
+    np.testing.assert_array_equal(np.asarray(jax.jit(lambda m: m.todense())(mat)), np.asarray(mat.todense()))
+    np.testing.assert_allclose(np.asarray(jax.jit(lambda m, x: m @ x)(mat, v)), np.asarray(mat @ v),
+                               rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('cls_name', _T_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+def test_thinned_gradients_match_dense(cls_name, corder):
+    check_jitc_grads_match_dense(
+        lambda *p: _t_matrix(cls_name, 0.7, corder=corder, params=p), _T_PARAMS,
+    )
+
+
+@pytest.mark.parametrize('prob', [1.5, -0.1, float('nan'), float('inf')])
+def test_functional_api_rejects_invalid_prob(prob):
+    v = jnp.ones(5, jnp.float32)
+    with pytest.raises(ValueError, match='prob'):
+        _t_generate(*_T_PARAMS, prob, 0, shape=(4, 5))
+    with pytest.raises(ValueError, match='prob'):
+        _t_mv(*_T_PARAMS, prob, v, 0, shape=(4, 5))
+    with pytest.raises(ValueError, match='prob'):
+        _t_binary_mv(*_T_PARAMS, prob, v > 0, 0, shape=(4, 5))
+
+
+def test_vmap_over_prob_matches_per_prob_calls():
+    """A batched ``prob`` batches ``clen = (cl, thr)`` to shape ``(B, 2)``."""
+    probs = jnp.asarray([0.1, 0.3, 0.7], jnp.float32)
+    v = jnp.linspace(-1., 1., 30, dtype=jnp.float32)
+    for f in (lambda p: _t_mv(*_T_PARAMS, p, v, 0, shape=(20, 30)),
+              lambda p: _t_binary_mv(*_T_PARAMS, p, v > 0, 0, shape=(20, 30)),
+              lambda p: _t_generate(*_T_PARAMS, p, 0, shape=(20, 30))):
+        batched = np.asarray(jax.vmap(f)(probs))
+        looped = np.stack([np.asarray(f(float(p))) for p in probs])
+        np.testing.assert_allclose(batched, looped, rtol=1e-5, atol=1e-5)
+
+
+from brainevent._test_util import jax_x64_enabled as _t_x64
+
+
+@pytest.mark.parametrize('cls_name', _T_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('prob', [0.3, 0.7])
+def test_thinned_matrix_is_identical_under_x64(cls_name, prob, corder):
+    """``(cl, thr)`` is computed in float32 either way, so x64 draws the same matrix."""
+    digest = jitc_mask_digest(_t_matrix(cls_name, prob, corder=corder).todense())
+    with _t_x64():
+        mat = _t_matrix(cls_name, prob, corder=corder)
+        assert jitc_mask_digest(mat.todense()) == digest
+        check_jitc_ops_match_dense(mat)

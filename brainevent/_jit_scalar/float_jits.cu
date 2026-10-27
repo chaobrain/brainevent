@@ -25,6 +25,7 @@
 #include <cstdlib>
 
 #include "cuda_common.h"
+#include "jitc_walk.h"
 #include "brainevent/common.h"
 
 #define LIGHT_TARGET_CHUNKS 4
@@ -128,6 +129,7 @@ __global__ void _jits_f32_kern(
     float w = READ_F32(__ldg(&weight[0]));
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);
     if (cl < 2U) cl = 2U;
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
@@ -135,11 +137,13 @@ __global__ void _jits_f32_kern(
     unsigned int q = stationary_initial_q(&rng, cl);
     unsigned int local_j = (unsigned int)lane + 32U * q;
     while (local_j < chunk_width) {
-        int col = chunk_start + (int)local_j;
-        size_t offset = transpose
-            ? ((size_t)col * n_rows + row)
-            : ((size_t)row * n_cols + col);
-        output[offset] = w;
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {
+            int col = chunk_start + (int)local_j;
+            size_t offset = transpose
+                ? ((size_t)col * n_rows + row)
+                : ((size_t)row * n_cols + col);
+            output[offset] = w;
+        }
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
         local_j = (unsigned int)lane + 32U * q;
     }
@@ -233,17 +237,20 @@ __global__ void _jits##SFX##_kern(                                              
     if (chunk_width == 0U) return;                                              \
     ACC_T w = READ_W(__ldg(&weight[0]));                                        \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                            \
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);                           \
     if (cl < 2U) cl = 2U;                                                       \
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                         \
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);          \
     unsigned int q = stationary_initial_q(&rng, cl);                            \
     unsigned int local_j = (unsigned int)lane + 32U * q;                        \
     while (local_j < chunk_width) {                                             \
-        int col = chunk_start + (int)local_j;                                   \
-        size_t offset = transpose                                               \
-            ? ((size_t)col * n_rows + row)                                      \
-            : ((size_t)row * n_cols + col);                                     \
-        output[offset] = WRITE_W(w);                                            \
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {           \
+            int col = chunk_start + (int)local_j;                               \
+            size_t offset = transpose                                           \
+                ? ((size_t)col * n_rows + row)                                  \
+                : ((size_t)row * n_cols + col);                                 \
+            output[offset] = WRITE_W(w);                                        \
+        }                                                                       \
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);              \
         local_j = (unsigned int)lane + 32U * q;                                 \
     }                                                                           \

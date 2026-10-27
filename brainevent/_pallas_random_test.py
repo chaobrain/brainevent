@@ -629,9 +629,9 @@ class TestEdgeCases:
 
     def test_negative_seed(self):
         """Test that negative seed values work correctly."""
-        # LFSR88 adds constants to seed (seed + 1, seed + 7, seed + 15)
-        # Negative seeds will fail due to overflow after adding constants
-        pytest.skip("Negative seeds cause overflow in LFSR88/113 due to seed + constant")
+        for seed in (-1, -100, -2 ** 31):
+            value = PallasLFSR88RNG(seed=seed).rand()
+            assert 0.0 <= value < 1.0
 
     def test_minimum_seed(self):
         """Test that minimum seed value works."""
@@ -789,3 +789,13 @@ class TestJAXIntegration:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+@pytest.mark.parametrize('cls_name', ['PallasLFSR88RNG', 'PallasLFSR113RNG'])
+@pytest.mark.parametrize('seed', [-1, -2, -100])
+def test_lfsr_degenerate_seeds_produce_a_stream(cls_name, seed):
+    # Regression: seeds just below 0 put the Tausworthe components below their
+    # minimum and the generator returned zeros forever.
+    import brainevent
+    rng = getattr(brainevent, cls_name)(seed)
+    assert any(int(rng.randint()) != 0 for _ in range(8))

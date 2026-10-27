@@ -20,6 +20,7 @@ __all__ = [
     'BrainEventError',
     'MathError',
     'UnsupportedOperationError',
+    'PerformanceWarning',
     'KernelNotAvailableError',
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
@@ -115,6 +116,28 @@ class UnsupportedOperationError(BrainEventError):
         >>> raise UnsupportedOperationError(
         ...     "JITC connectivity cannot recover (prob, seed) from a dense matrix"
         ... )  # doctest: +SKIP
+    """
+    __module__ = 'brainevent'
+
+
+class PerformanceWarning(UserWarning):
+    """Warned when an operation runs correctly but on a slower code path.
+
+    The usual cause is a sparse matrix whose structure is traced (it was passed
+    into ``jax.jit`` as an argument) and that carries no cached mirror layout,
+    so the unfavorable product direction cannot use its event-driven kernel.
+    Build the mirror before tracing, e.g. ``M = M.build_weight_indices()``.
+
+    Each distinct fallback warns once per process. Silence it with the standard
+    :mod:`warnings` filters.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import warnings
+        >>> import brainevent
+        >>> warnings.simplefilter('ignore', brainevent.PerformanceWarning)
     """
     __module__ = 'brainevent'
 

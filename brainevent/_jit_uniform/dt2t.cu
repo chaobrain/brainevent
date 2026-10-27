@@ -26,6 +26,7 @@
 #include <cstdlib>
 
 #include "cuda_common.h"
+#include "jitc_walk.h"
 #include "brainevent/common.h"
 
 __device__ __forceinline__ unsigned int fast_bounded_u32(
@@ -126,6 +127,8 @@ __device__ __forceinline__ unsigned int count_lane_connections(
     int chunk_id,
     int lane,
     unsigned int cl,
+    unsigned int thr,
+    int chunk_start,
     unsigned int chunk_width
 ) {
     unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
@@ -133,7 +136,9 @@ __device__ __forceinline__ unsigned int count_lane_connections(
     unsigned int local_j = (unsigned int)lane + 32U * q;
     unsigned int count = 0U;
     while (local_j < chunk_width) {
-        count += 1U;
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {
+            count += 1U;
+        }
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
         local_j = (unsigned int)lane + 32U * q;
     }
@@ -167,11 +172,12 @@ __global__ void _fill_dt2t_f32_kern(
     if (chunk_width == 0U) return;
 
     unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);
     if (cl < 2U) cl = 2U;
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
 
     unsigned int lane_count = count_lane_connections(
-        seed0, row, chunk_id, lane, cl, chunk_width
+        seed0, row, chunk_id, lane, cl, thr, chunk_start, chunk_width
     );
     unsigned int lane_offset = warp_exclusive_prefix_u32(lane_count, lane);
     int base = __ldg(&chunk_offsets[(size_t)row * n_chunks + chunk_id]) + (int)lane_offset;
@@ -184,12 +190,14 @@ __global__ void _fill_dt2t_f32_kern(
     unsigned int local_j = (unsigned int)lane + 32U * q;
     int write = 0;
     while (local_j < chunk_width) {
-        int j = chunk_start + (int)local_j;
-        int pos = base + write;
-        float y_value = TRANSPOSE ? __ldg(&y[j]) : y_row;
-        float u01 = hash_uniform01(seed0, row, j);
-        data[pos] = (wlo + u01 * range) * y_value;
-        write += 1;
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {
+            int j = chunk_start + (int)local_j;
+            int pos = base + write;
+            float y_value = TRANSPOSE ? __ldg(&y[j]) : y_row;
+            float u01 = hash_uniform01(seed0, row, j);
+            data[pos] = (wlo + u01 * range) * y_value;
+            write += 1;
+        }
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
         local_j = (unsigned int)lane + 32U * q;
     }
@@ -221,10 +229,11 @@ __global__ void _fill_dt2t##SFX##_kern( \
     unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start); \
     if (chunk_width == 0U) return; \
     unsigned int cl = (unsigned int)__ldg(&clen[0]); \
+    unsigned int thr = (unsigned int)__ldg(&clen[1]); \
     if (cl < 2U) cl = 2U; \
     unsigned int seed0 = (unsigned int)__ldg(&seed[0]); \
     unsigned int lane_count = count_lane_connections( \
-        seed0, row, chunk_id, lane, cl, chunk_width \
+        seed0, row, chunk_id, lane, cl, thr, chunk_start, chunk_width \
     ); \
     unsigned int lane_offset = warp_exclusive_prefix_u32(lane_count, lane); \
     int base = __ldg(&chunk_offsets[(size_t)row * n_chunks + chunk_id]) + (int)lane_offset; \
@@ -236,12 +245,14 @@ __global__ void _fill_dt2t##SFX##_kern( \
     unsigned int local_j = (unsigned int)lane + 32U * q; \
     int write = 0; \
     while (local_j < chunk_width) { \
-        int j = chunk_start + (int)local_j; \
-        int pos = base + write; \
-        ACC_T y_value = TRANSPOSE ? READ_W(__ldg(&y[j])) : y_row; \
-        float u01 = hash_uniform01(seed0, row, j); \
-        data[pos] = WRITE_W((wlo + (ACC_T)u01 * range) * y_value); \
-        write += 1; \
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) { \
+            int j = chunk_start + (int)local_j; \
+            int pos = base + write; \
+            ACC_T y_value = TRANSPOSE ? READ_W(__ldg(&y[j])) : y_row; \
+            float u01 = hash_uniform01(seed0, row, j); \
+            data[pos] = WRITE_W((wlo + (ACC_T)u01 * range) * y_value); \
+            write += 1; \
+        } \
         q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U); \
         local_j = (unsigned int)lane + 32U * q; \
     } \

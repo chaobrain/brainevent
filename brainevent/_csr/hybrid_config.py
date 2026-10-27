@@ -65,6 +65,8 @@ __all__ = [
     "get_hybrid_config",
     "save_hybrid_config",
     "hybrid_task_capacity",
+    "hybrid_capacity_bound",
+    "max_row_nnz",
     "current_device_kind",
 ]
 
@@ -322,3 +324,75 @@ def hybrid_task_capacity(indptr) -> int:
     if task_capacity > _INT32_MAX:
         raise ValueError("binary task capacity exceeds int32 range.")
     return task_capacity
+
+
+def max_row_nnz(indptr) -> int:
+    """Longest row of a concrete *indptr* (``0`` for a matrix without rows).
+
+    A config-independent hint for :func:`hybrid_capacity_bound`: it stays valid
+    when the hybrid config changes, unlike a cached capacity.
+    """
+    indptr_np = np.asarray(indptr, dtype=np.int64)
+    if indptr_np.size < 2:
+        return 0
+    return int(np.diff(indptr_np).max())
+
+
+def hybrid_capacity_bound(
+    nse: int,
+    n_rows: int,
+    max_row_nnz: int | None = None,
+    config: HybridConfig | None = None,
+) -> int:
+    """Upper bound on :func:`hybrid_task_capacity` from static sizes.
+
+    A row longer than ``tpr_threshold`` needs ``ceil(len / task_nnz)`` tasks, so
+    over at most ``min(n_rows, nse // (tpr_threshold + 1))`` such rows the queue
+    needs at most ``ceil(nse / task_nnz)`` tasks plus one per heavy row. With a
+    ``max_row_nnz`` hint, every heavy row needs at most ``ceil(max_row_nnz /
+    task_nnz)`` tasks, and a hint ``<= tpr_threshold`` means no row uses the
+    queue. The bound depends only on shapes and the hint, so it can be computed
+    while tracing, with ``indices`` and ``indptr`` traced.
+
+    Parameters
+    ----------
+    nse : int
+        Number of stored elements.
+    n_rows : int
+        Number of compressed rows (``indptr.size - 1``).
+    max_row_nnz : int or None, optional
+        Upper bound on the longest row; ``None`` when unknown. A value below
+        the true longest row makes the CUDA hybrid kernels drop work.
+    config : HybridConfig or None, optional
+        Defaults to :func:`get_hybrid_config`.
+
+    Returns
+    -------
+    int
+        A task capacity that is at least the exact one for every structure
+        with these sizes.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._csr.hybrid_config import HybridConfig, hybrid_capacity_bound
+        >>> hybrid_capacity_bound(9000, 1, max_row_nnz=9000, config=HybridConfig())
+        3
+        >>> hybrid_capacity_bound(9000, 100, max_row_nnz=50, config=HybridConfig())
+        0
+    """
+    config = get_hybrid_config() if config is None else config
+    nse, n_rows = int(nse), int(n_rows)
+    tpr, task_nnz = config.tpr_threshold, config.task_nnz
+    if nse <= 0 or n_rows <= 0:
+        return 0
+    heavy_rows = min(n_rows, nse // (tpr + 1))
+    bound = -(-nse // task_nnz) + heavy_rows
+    if max_row_nnz is not None:
+        if max_row_nnz <= tpr:
+            return 0
+        bound = min(bound, heavy_rows * -(-min(int(max_row_nnz), nse) // task_nnz))
+    if bound > _INT32_MAX:
+        raise ValueError("binary task capacity exceeds int32 range.")
+    return bound

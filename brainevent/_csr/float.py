@@ -24,6 +24,7 @@ from jax.experimental.sparse import csr_matvec_p, csr_matmat_p
 from jax.interpreters import ad
 
 from brainevent._misc import (
+    _promote_float_operands,
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
     _csr_to_coo,
@@ -496,6 +497,7 @@ def csrmv_p_call(
 
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    weights, vector = _promote_float_operands(weights, vector)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1]], weights.dtype)
@@ -836,9 +838,13 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
     ct = ct[0]
 
     if ad.is_undefined_primal(B):
+        if type(ct) is ad.Zero:
+            return data, indices, indptr, ad.Zero(B.aval)
         dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kwargs['backend'])
         return data, indices, indptr, dB
     else:
+        if type(ct) is ad.Zero:
+            return ad.Zero(data.aval), indices, indptr, B
         B = jnp.asarray(B)
         if data.aval.shape[0] == 1:  # scalar
             r = csrmm_p_call(
@@ -1046,6 +1052,7 @@ def csrmm_p_call(
 
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    weights, B = _promote_float_operands(weights, B)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], weights.dtype)

@@ -151,6 +151,7 @@ def _jitnmv_dt2t_fill_numba_kernel(
     _rng_next = _rng['next']
     _rng_bounded = _rng['bounded']
     _rng_initial_q = _rng['initial_q']
+    _rng_keep = _rng['keep']
     _rng_normal01 = _rng['normal01']
 
     stride = _LANE_STRIDE
@@ -168,6 +169,7 @@ def _jitnmv_dt2t_fill_numba_kernel(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             for row in range(m):
                 for chunk_id in range(n_chunks):
                     chunk_start = chunk_id * cs_val
@@ -183,10 +185,11 @@ def _jitnmv_dt2t_fill_numba_kernel(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            j = chunk_start + local_j
-                            n01 = _rng_normal01(seed0, row, j)
-                            data[pos] = (w_loc0 + n01 * w_scale0) * y[j]
-                            pos += 1
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                j = chunk_start + local_j
+                                n01 = _rng_normal01(seed0, row, j)
+                                data[pos] = (w_loc0 + n01 * w_scale0) * y[j]
+                                pos += 1
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -201,6 +204,7 @@ def _jitnmv_dt2t_fill_numba_kernel(
             cl = np.uint32(clen[0])
             if cl < np.uint32(2):
                 cl = np.uint32(2)
+            thr = np.uint32(clen[1])
             for row in range(m):
                 yrow = y[row]
                 for chunk_id in range(n_chunks):
@@ -217,10 +221,11 @@ def _jitnmv_dt2t_fill_numba_kernel(
                         q, state = _rng_initial_q(state, cl)
                         local_j = lane + stride * int(q)
                         while local_j < chunk_width:
-                            j = chunk_start + local_j
-                            n01 = _rng_normal01(seed0, row, j)
-                            data[pos] = (w_loc0 + n01 * w_scale0) * yrow
-                            pos += 1
+                            if _rng_keep(thr, seed0, row, chunk_start + local_j):
+                                j = chunk_start + local_j
+                                n01 = _rng_normal01(seed0, row, j)
+                                data[pos] = (w_loc0 + n01 * w_scale0) * yrow
+                                pos += 1
                             state = _rng_next(state)
                             q = q + np.uint32(1) + _rng_bounded(state, cl - np.uint32(1))
                             local_j = lane + stride * int(q)
@@ -249,6 +254,7 @@ def jitnmv_dt2t_p_call(
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)
+    assert clen.shape == (2,), f"clen must hold (cl, thr), but got shape {clen.shape}."
     y = jnp.asarray(y)
     seed = jnp.atleast_1d(seed)
     chunk_offsets = jnp.asarray(chunk_offsets, dtype=jnp.int32)

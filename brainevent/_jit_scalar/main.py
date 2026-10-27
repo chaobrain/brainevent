@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
-from brainevent._data import JITCMatrix
+from brainevent._data import JITCMatrix, _resolve_corder
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitsmv, binary_jitsmm
 from .csr import jits_to_csr
@@ -59,7 +59,19 @@ class JITCScalarMatrix(JITCMatrix):
     shape : MatrixShape
         The shape of the matrix as a tuple ``(rows, columns)``.
     corder : bool, optional
-        Memory layout order flag, by default False.
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Defaults to ``True`` unless ``event_side`` is
+        given. Before brainevent 0.4.0 the default was ``False``; pass
+        ``corder=False`` to reproduce matrices drawn by those versions.
+    event_side : {'left', 'right'}, optional
+        Alternative to ``corder`` named after the event-driven product:
+        ``'left'`` makes ``events @ M`` event-driven (``corder=True``) and
+        ``'right'`` makes ``M @ events`` event-driven (``corder=False``). Must
+        agree with ``corder`` when both are given.
     backend : str or None, optional
         The computation backend to use.
 
@@ -123,9 +135,14 @@ class JITCScalarMatrix(JITCMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         Tuple specifying the dimensions of the matrix as (rows, columns).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    corder : bool, default=True
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Before brainevent 0.4.0 the default was ``False``;
+        pass ``corder=False`` to reproduce matrices drawn by those versions.
     backend : str or None
         The computation backend to use (e.g., ``'numba'``, ``'pallas'``). If ``None``,
         the default backend is selected automatically.
@@ -146,7 +163,8 @@ class JITCScalarMatrix(JITCMatrix):
         seed=None,
         *,
         shape: MatrixShape,
-        corder: bool = False,
+        corder: Optional[bool] = None,
+        event_side: Optional[str] = None,
         backend: Optional[str] = None,
         buffers: Optional[Dict] = None,
     ):
@@ -166,9 +184,19 @@ class JITCScalarMatrix(JITCMatrix):
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
         corder : bool, optional
-            Memory layout order flag, by default False.
-            - False: Fortran-order (column-major)
-            - True: C-order (row-major)
+            Which index of the matrix owns a random stream. ``True``: one stream per
+            row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+            event-driven (only active rows are walked). ``False``: one stream per
+            column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+            two values draw different connectivity; ``M.T`` flips the flag so it
+            names the same matrix. Defaults to ``True`` unless ``event_side`` is
+            given. Before brainevent 0.4.0 the default was ``False``; pass
+            ``corder=False`` to reproduce matrices drawn by those versions.
+        event_side : {'left', 'right'}, optional
+            Alternative to ``corder`` named after the event-driven product:
+            ``'left'`` makes ``events @ M`` event-driven (``corder=True``) and
+            ``'right'`` makes ``M @ events`` event-driven (``corder=False``). Must
+            agree with ``corder`` when both are given.
         backend : str or None, optional
             The computation backend to use. If ``None``, the default backend is
             selected automatically.
@@ -177,6 +205,7 @@ class JITCScalarMatrix(JITCMatrix):
         ------
         ValueError
             If ``prob`` is not a scalar, is not finite, or is outside [0, 1].
+            If ``event_side`` is not ``'left'`` or ``'right'``, or contradicts ``corder``.
 
         Notes
         -----
@@ -199,7 +228,7 @@ class JITCScalarMatrix(JITCMatrix):
             if not (0. <= prob <= 1.):
                 raise ValueError(f"prob must be in [0, 1], but got {prob}.")
         self.weight = u.math.asarray(weight)
-        self.corder = corder
+        self.corder = _resolve_corder(corder, event_side)
         self.backend = backend
         super().__init__(data, shape=shape, buffers=buffers)
 
@@ -217,7 +246,7 @@ class JITCScalarMatrix(JITCMatrix):
         --------
         >>> matrix = JITCScalarMatrix((0.5, 0.1, 42), shape=(10, 10))
         >>> repr(matrix)
-        'JITHomoMatrix(shape=(10, 10), weight=0.5, prob=0.1, seed=42, corder=False)'
+        'JITHomoMatrix(shape=(10, 10), weight=0.5, prob=0.1, seed=42, corder=True)'
         """
         return (
             f"{self.__class__.__name__}("
@@ -521,9 +550,14 @@ class JITCScalarR(JITCScalarMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         The shape of the matrix as a tuple (rows, cols).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    corder : bool, default=True
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Before brainevent 0.4.0 the default was ``False``;
+        pass ``corder=False`` to reproduce matrices drawn by those versions.
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -539,12 +573,12 @@ class JITCScalarR(JITCScalarMatrix):
         # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
         >>> homo_matrix = JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
         >>> homo_matrix
-        JITCScalarR(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
+        JITCScalarR(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=True)
 
         # Create a matrix with units
         >>> weighted_matrix = JITCScalarR((1.5 * u.mV, 0.1, 42), shape=(10, 10))
         >>> weighted_matrix
-        JITCScalarR(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
+        JITCScalarR(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=True)
 
         # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
@@ -859,6 +893,7 @@ class JITCScalarR(JITCScalarMatrix):
 
         other, event = self._split_event_operand(other, self.weight)
         if event is not None:
+            self._warn_if_not_event_driven('right')
             other = event[0]
             if other.ndim == 1:
                 # JIT matrix @ events
@@ -930,6 +965,7 @@ class JITCScalarR(JITCScalarMatrix):
 
         other, event = self._split_event_operand(other, self.weight)
         if event is not None:
+            self._warn_if_not_event_driven('left')
             other = event[0]
             if other.ndim == 1:
                 #
@@ -1033,9 +1069,14 @@ class JITCScalarC(JITCScalarMatrix):
         Using the same seed produces identical connectivity patterns.
     shape : MatrixShape
         The shape of the matrix as a tuple (rows, cols).
-    corder : bool
-        Flag indicating the memory layout order of the matrix.
-        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    corder : bool, default=True
+        Which index of the matrix owns a random stream. ``True``: one stream per
+        row, so ``M @ v`` is a row-parallel gather and ``events @ M`` is
+        event-driven (only active rows are walked). ``False``: one stream per
+        column, so ``M @ events`` is event-driven and ``v @ M`` is a gather. The
+        two values draw different connectivity; ``M.T`` flips the flag so it
+        names the same matrix. Before brainevent 0.4.0 the default was ``False``;
+        pass ``corder=False`` to reproduce matrices drawn by those versions.
     dtype
         The data type of the matrix elements (property inherited from parent).
 
@@ -1051,12 +1092,12 @@ class JITCScalarC(JITCScalarMatrix):
         # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
         >>> homo_matrix = JITCScalarC((1.5, 0.1, 42), shape=(10, 10))
         >>> homo_matrix
-        JITCScalarC(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
+        JITCScalarC(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=True)
 
         # Create a matrix with units
         >>> weighted_matrix = JITCScalarC((1.5 * u.mV, 0.1, 42), shape=(10, 10))
         >>> weighted_matrix
-        JITCScalarC(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
+        JITCScalarC(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=True)
 
         # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
@@ -1356,6 +1397,7 @@ class JITCScalarC(JITCScalarMatrix):
 
         other, event = self._split_event_operand(other, self.weight)
         if event is not None:
+            self._warn_if_not_event_driven('right')
             other = event[0]
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
@@ -1455,6 +1497,7 @@ class JITCScalarC(JITCScalarMatrix):
 
         other, event = self._split_event_operand(other, self.weight)
         if event is not None:
+            self._warn_if_not_event_driven('left')
             other = event[0]
             if other.ndim == 1:
                 #

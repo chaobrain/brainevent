@@ -799,3 +799,29 @@ def test_check_structure_tracer_skips_value_checks():
 
     # Non-monotonic values but valid shape/dtype: tracer path must not raise.
     jax.jit(f)(jnp.array([0, 3, 2], dtype=jnp.int32))
+
+
+def test_namescope_precheck_sees_concrete_arguments_before_jit():
+    """``precheck`` runs on the caller's (concrete) values, ahead of the jit trace."""
+    from brainevent._misc import namescope
+
+    seen = []
+
+    def check(arguments):
+        seen.append({k: type(v) for k, v in arguments.items()})
+        if isinstance(arguments['scale'], jax.core.Tracer):
+            return
+        if float(arguments['scale']) < 0:
+            raise ValueError('scale must be non-negative')
+
+    @namescope(static_argnames=('n',), precheck=check)
+    def f(x, scale, *, n, backend=None):
+        return x * scale * n
+
+    np.testing.assert_allclose(f(jnp.ones(3), 2.0, n=2), 4.0)
+    assert seen[-1]['scale'] is float  # not a tracer
+    with pytest.raises(ValueError, match='non-negative'):
+        f(jnp.ones(3), -1.0, n=2)
+    # Under an outer trace the precheck receives the tracer (and skips it).
+    np.testing.assert_allclose(jax.jit(lambda s: f(jnp.ones(3), s, n=2))(-1.0), -2.0)
+    assert issubclass(seen[-1]['scale'], jax.core.Tracer)
