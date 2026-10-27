@@ -46,3 +46,46 @@ def test_diag_add_int32_case_still_works():
     dense = np.asarray(out.todense())
     expected = np.array([[6.0, 0.0, 2.0], [0.0, 10.0, 0.0]], dtype=np.float32)
     np.testing.assert_allclose(dense, expected)
+
+
+@pytest.mark.parametrize('cls_name', ['CSR', 'CSC'])
+def test_diag_add_promotes_a_float64_diagonal_to_the_common_dtype(cls_name):
+    """Under x64, ``jnp.ones(n)`` is float64; a float32 matrix must accept it like ``W + diag(d)``."""
+    import brainevent
+    from brainevent._test_util import jax_x64_enabled
+
+    dense = np.array([[1., 0., 2.], [0., 0., 3.], [4., 0., 0.]], dtype=np.float32)
+    with jax_x64_enabled():
+        mat = getattr(brainevent, cls_name).fromdense(jnp.asarray(dense))
+        diag = jnp.asarray([0.5, 1.5, 2.5])
+        assert mat.data.dtype == jnp.float32 and diag.dtype == jnp.float64
+        out = mat.diag_add(diag)
+        assert out.data.dtype == jnp.float64
+        np.testing.assert_allclose(np.asarray(out.todense()), dense + np.diag(np.asarray(diag)))
+
+
+def test_diag_add_promotes_mixed_dtypes_and_keeps_units():
+    import brainunit as u
+    import brainevent
+    from brainevent._test_util import jax_x64_enabled
+
+    dense = np.array([[1., 0., 2.], [0., 0., 3.], [4., 0., 0.]], dtype=np.float32)
+    with jax_x64_enabled():
+        mat = brainevent.CSR.fromdense(jnp.asarray(dense) * u.mV)
+        out = mat.diag_add(jnp.asarray([1., 2., 3.]) * u.mV)
+        assert u.get_unit(out.data) == u.mV
+        assert out.data.dtype == jnp.float64
+        np.testing.assert_allclose(u.get_mantissa(out.todense()), dense + np.diag([1., 2., 3.]))
+        # Promotion does not relax the unit check.
+        with pytest.raises(u.DimensionMismatchError):
+            mat.diag_add(jnp.asarray([1., 2., 3.]) * u.second)
+
+
+def test_diag_add_promotes_integer_data_with_a_float_diagonal():
+    import brainevent
+
+    dense = np.array([[1, 0, 2], [0, 0, 3], [4, 0, 0]], dtype=np.int32)
+    mat = brainevent.CSR.fromdense(jnp.asarray(dense))
+    out = mat.diag_add(jnp.asarray([0.5, 0.5, 0.5], dtype=jnp.float32))
+    assert out.data.dtype == jnp.float32
+    np.testing.assert_allclose(np.asarray(out.todense()), dense + 0.5 * np.eye(3))

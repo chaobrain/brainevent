@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from brainevent._test_util import requires_gpu
+from brainevent._test_util import jax_x64_enabled, requires_gpu
 
 
 from brainevent._op.kernix_codegen import normalize_tokens
@@ -234,9 +234,9 @@ def test_parse_annotations_inline_spec_macro_generated():
 
 @pytest.fixture(autouse=True)
 def _enable_x64():
-    """Ensure 64-bit types are available for every test in this module."""
-    jax.config.update("jax_enable_x64", True)
-    yield
+    """Enable 64-bit types for every test in this module, then restore the setting."""
+    with jax_x64_enabled():
+        yield
 
 # ---------------------------------------------------------------------------
 # Shared CUDA source

@@ -33,7 +33,7 @@ from brainevent._csr._test_util import (
     get_csr,
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
 )
-from brainevent._test_util import jax_x64_enabled
+from brainevent._test_util import jax_x64_enabled, with_jax_x64
 
 platform = jax.default_backend()
 CSRMV_dt2t_IMPLEMENTATIONS = tuple(csrmv_dt2t_p.available_backends(platform))
@@ -338,6 +338,7 @@ def test_dt2t_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch)
 
 
 @requires_gpu_backend
+@with_jax_x64
 def test_dt2t_cuda_accepts_int64_indptr():
     weights, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)
@@ -347,3 +348,48 @@ def test_dt2t_cuda_accepts_int64_indptr():
     expected = csrmv_dt2t(y, weights, indices, indptr32, shape=(2, 3), backend='jax_raw')
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
+
+
+_MIXED_W = jnp.asarray([0.5, 0.3, 0.7, 0.1], dtype=jnp.float32)
+_MIXED_INDICES = jnp.asarray([0, 2, 1, 2], dtype=jnp.int32)
+_MIXED_INDPTR = jnp.asarray([0, 2, 4], dtype=jnp.int32)
+_MIXED_ROWS = jnp.asarray([0, 0, 1, 1], dtype=jnp.int32)
+
+
+@pytest.mark.parametrize('fn, compressed_axis', [(csrmv_dt2t, 0), (cscmv_dt2t, 1), (csrmm_dt2t, 0), (cscmm_dt2t, 1)])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_dt2t_promotes_a_float64_operand_to_the_common_dtype(fn, compressed_axis, transpose):
+    """Under x64, ``jnp.ones(n)`` is float64; float32 weights must not trip the dtype assert."""
+    # The arrays describe a (2, 3) CSR matrix, i.e. a (3, 2) CSC matrix.
+    shape = (2, 3) if compressed_axis == 0 else (3, 2)
+    # Which index ``y`` is gathered with: the compressed one (rows of the CSR arrays)
+    # or the stored one, depending on the format and ``transpose``.
+    by_compressed = (compressed_axis == 0) != transpose
+    n = 2 if by_compressed else 3
+    gather = _MIXED_ROWS if by_compressed else _MIXED_INDICES
+    batched = fn in (csrmm_dt2t, cscmm_dt2t)
+    with jax_x64_enabled():
+        y = jnp.arange(1., n + 1.)
+        w = _MIXED_W
+        if batched:
+            # ``(n_batch, n)`` vectors and ``(n_batch, nse)`` weights.
+            y = jnp.stack([y, 2. * y])
+            w = jnp.stack([w, 3. * w])
+        assert y.dtype == jnp.float64 and w.dtype == jnp.float32
+        out = fn(y, w, _MIXED_INDICES, _MIXED_INDPTR, shape=shape, transpose=transpose)
+        expected = w.astype(jnp.float64) * y[..., gather]
+        assert out.dtype == jnp.float64
+        assert jnp.allclose(out, expected)
+
+
+def test_dt2t_jvp_under_jit_promotes_mixed_dtypes():
+    """Forward-mode AD runs on the promoted operands; tangents come out float64."""
+    with jax_x64_enabled():
+        y = jnp.asarray([1., 2.])
+        f = jax.jit(lambda y, w: csrmv_dt2t(y, w, _MIXED_INDICES, _MIXED_INDPTR, shape=(2, 3)))
+        out, tangent = jax.jvp(f, (y, _MIXED_W), (jnp.asarray([10., 20.]), jnp.ones(4, dtype=jnp.float32)))
+        y_rows = y[_MIXED_ROWS]
+        assert out.dtype == tangent.dtype == jnp.float64
+        assert jnp.allclose(out, _MIXED_W.astype(jnp.float64) * y_rows)
+        # d(w * y) = dw * y + w * dy
+        assert jnp.allclose(tangent, y_rows + _MIXED_W.astype(jnp.float64) * 10. * y_rows)

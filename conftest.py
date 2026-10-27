@@ -78,3 +78,23 @@ def _kernix_toolchain_state_is_restored():
         f'test leaked kernix toolchain state (nvcc discovery, compute capabilities): '
         f'{before!r} -> {after!r}; restore it with monkeypatch or try/finally'
     )
+
+
+@pytest.fixture(autouse=True)
+def _jax_x64_state_is_restored():
+    """Fail any test that leaves ``jax_enable_x64`` (or the explicit-x64 policy) changed.
+
+    Both are process-global. A leaked ``jax_enable_x64=True`` turns default
+    arrays such as ``jnp.ones(n)`` into float64 for every later test in the
+    same worker, so failures then depend on how pytest-xdist distributes the
+    tests. Use ``brainevent._test_util.jax_x64_enabled()`` to scope x64.
+    """
+    import jax
+
+    before = (jax.config.jax_enable_x64, jax.config.jax_explicit_x64_dtypes)
+    yield
+    after = (jax.config.jax_enable_x64, jax.config.jax_explicit_x64_dtypes)
+    assert after == before, (
+        f'test leaked JAX x64 state (jax_enable_x64, jax_explicit_x64_dtypes): '
+        f'{before!r} -> {after!r}; scope it with brainevent._test_util.jax_x64_enabled()'
+    )

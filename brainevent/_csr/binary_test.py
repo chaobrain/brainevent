@@ -45,7 +45,7 @@ from brainevent._csr._test_util import (
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend,
     shape_of, strip_hybrid_suffix,
 )
-from brainevent._test_util import jax_x64_enabled
+from brainevent._test_util import jax_x64_enabled, with_jax_x64
 
 # The backend-sweeping tests below loop over all native backends (incl. ``numba``), which
 # compile per test and dominate wall-clock, so each carries ``@pytest.mark.slow`` and the
@@ -1252,6 +1252,7 @@ def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatc
 @requires_gpu_backend
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('homo', [False, True])
+@with_jax_x64
 def test_binary_csrmv_cuda_accepts_int64_indptr(transpose, homo):
     weights, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)
@@ -1269,6 +1270,7 @@ def test_binary_csrmv_cuda_accepts_int64_indptr(transpose, homo):
 @requires_gpu_backend
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('homo', [False, True])
+@with_jax_x64
 def test_binary_csrmm_cuda_accepts_int64_indptr(transpose, homo):
     weights, indices, indptr32 = int64_structure(jnp.int32)
     indptr64 = indptr32.astype(jnp.int64)

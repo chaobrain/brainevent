@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+import functools
 import hashlib
 import random
 from contextlib import contextmanager
@@ -74,6 +75,40 @@ def jax_x64_enabled():
         yield
     finally:
         jax.config.update("jax_enable_x64", old_x64)
+
+
+def with_jax_x64(fn):
+    """Run a test function inside :func:`jax_x64_enabled`.
+
+    Parameters
+    ----------
+    fn : callable
+        Test function that needs int64 or float64 arrays.
+
+    Returns
+    -------
+    callable
+        ``fn`` wrapped so x64 is on during the call and restored afterwards.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._test_util import with_jax_x64
+        >>> @with_jax_x64
+        ... def int64_dtype():
+        ...     return jnp.array([0, 1], dtype=jnp.int64).dtype
+        >>> int64_dtype()
+        dtype('int64')
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with jax_x64_enabled():
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def generate_fixed_conn_num_indices(
