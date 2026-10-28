@@ -438,34 +438,41 @@ def test_f11_concurrent_store_publishes_valid_artifact(tmp_path):
     assert not list(dest.parent.glob("*.tmp*"))
 
 
+def _deny_mkdir_under(monkeypatch, locked: Path) -> None:
+    # Simulate an unwritable directory. ``chmod`` cannot be used: Windows
+    # ignores POSIX mode bits on directories, and root bypasses them.
+    real_mkdir = Path.mkdir
+
+    def mkdir(self, *args, **kwargs):
+        if self == locked or locked in self.parents:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+
+
 def test_default_dir_falls_back_to_tempdir_when_home_unwritable(tmp_path, monkeypatch):
     # Regression: an unwritable $HOME made ``import brainevent`` fail while
     # creating the default cache directory.
     home = tmp_path / "home"
     home.mkdir()
-    home.chmod(0o555)
+    _deny_mkdir_under(monkeypatch, home)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("BRAINEVENT_CACHE_DIR", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path / "tmp"))
-    try:
-        with pytest.warns(UserWarning, match="cache"):
-            cache = CompilationCache()
-        assert cache.base_dir.is_dir()
-        assert str(cache.base_dir).startswith(str(tmp_path / "tmp"))
-    finally:
-        home.chmod(0o755)
+    with pytest.warns(UserWarning, match="cache"):
+        cache = CompilationCache()
+    assert cache.base_dir.is_dir()
+    assert str(cache.base_dir).startswith(str(tmp_path / "tmp"))
 
 
-def test_explicit_unwritable_dir_raises(tmp_path):
+def test_explicit_unwritable_dir_raises(tmp_path, monkeypatch):
     locked = tmp_path / "locked"
     locked.mkdir()
-    locked.chmod(0o555)
-    try:
-        with pytest.raises(OSError):
-            CompilationCache(base_dir=str(locked / "cache"))
-    finally:
-        locked.chmod(0o755)
+    _deny_mkdir_under(monkeypatch, locked)
+    with pytest.raises(OSError):
+        CompilationCache(base_dir=str(locked / "cache"))
 
 
 def test_import_does_not_create_the_cache(tmp_path):
