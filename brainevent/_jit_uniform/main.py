@@ -26,10 +26,11 @@ import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix, _resolve_corder
+from brainevent._jitc_structure import JITCStructure
 from brainevent._error import UnsupportedOperationError
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitumv, binary_jitumm
-from .csr import jitu_to_csr
+from .csr import jitu_structure, jitu_to_csr
 from .float import jitu, jitumv, jitumm
 from .dt2t import jitumv_dt2t
 
@@ -354,12 +355,17 @@ class JITCUniformMatrix(JITCMatrix):
         assert high.shape == self.whigh.shape
         assert u.get_unit(low) == u.get_unit(self.wlow)
         assert u.get_unit(high) == u.get_unit(self.whigh)
-        return type(self)(
+        return self._keep_structure(type(self)(
             (low, high, self.prob, self.seed),
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
+        ))
+
+    def _draw_structure(self):
+        return jitu_structure(
+            self.prob, self.seed, shape=self.shape, corder=self.corder, backend=self.backend,
         )
 
     def tocsr(self):
@@ -378,9 +384,12 @@ class JITCUniformMatrix(JITCMatrix):
 
         Notes
         -----
-        Generation uses a count pass followed by a fill pass; the number of
-        stored elements is read back between the two passes, so ``tocsr`` is an
-        eager-only conversion and cannot be traced under ``jax.jit``. Because
+        Generation uses a count pass followed by a fill pass. The connectivity
+        (count pass and the order of the entries) depends only on ``prob``,
+        ``seed`` and ``shape``; it is drawn at trace time, so ``tocsr`` works
+        under ``jax.jit``, ``jax.vmap`` and ``jax.grad`` with traced weights.
+        Inside ``jax.jit`` the matrix must be closed over (concrete ``prob`` and
+        ``seed``), unless it was prepared with :meth:`prepare_structure`. Because
         the connectivity is reproduced from the seed rather than read from a
         dense buffer, peak memory is ``O(nnz)`` rather than ``O(rows * cols)``.
 
@@ -396,7 +405,7 @@ class JITCUniformMatrix(JITCMatrix):
         """
         return jitu_to_csr(
             self.wlow, self.whigh, self.prob, self.seed,
-            shape=self.shape, corder=self.corder, backend=self.backend,
+            shape=self.shape, corder=self.corder, backend=self.backend, structure=self._structure,
         )
 
     def dt2t(
@@ -421,6 +430,7 @@ class JITCUniformMatrix(JITCMatrix):
             transpose=False,
             corder=self.corder,
             backend=self.backend,
+            structure=self._structure,
         )
 
     def dt2t_transposed(
@@ -445,6 +455,7 @@ class JITCUniformMatrix(JITCMatrix):
             transpose=True,
             corder=self.corder,
             backend=self.backend,
+            structure=self._structure,
         )
 
     def tree_flatten(self):
@@ -464,7 +475,10 @@ class JITCUniformMatrix(JITCMatrix):
         for transformations such as ``jax.jit``, ``jax.grad``, and ``jax.vmap``.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
-        return (self.wlow, self.whigh, self.prob, self.seed), (aux, self.buffers)
+        children = (self.wlow, self.whigh, self.prob, self.seed)
+        if self._structure is not None:
+            children = children + tuple(self._structure)
+        return children, (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -490,7 +504,8 @@ class JITCUniformMatrix(JITCMatrix):
         ``object.__new__`` and directly setting attributes.
         """
         obj = object.__new__(cls)
-        obj.wlow, obj.whigh, obj.prob, obj.seed = children
+        obj.wlow, obj.whigh, obj.prob, obj.seed = children[:4]
+        obj._structure = JITCStructure(*children[4:]) if len(children) > 4 else None
         aux_data, buffer = aux_data
         obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
@@ -894,7 +909,7 @@ class JITCUniformR(JITCUniformMatrix):
         JITCUniformR
             A new row-oriented matrix with the specified weight bounds.
         """
-        return JITCUniformR(
+        return self._keep_structure(JITCUniformR(
             (
                 wlow,
                 whigh,
@@ -905,7 +920,7 @@ class JITCUniformR(JITCUniformMatrix):
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
-        )
+        ), prob, seed)
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         """
@@ -1387,7 +1402,7 @@ class JITCUniformC(JITCUniformMatrix):
         JITCUniformC
             A new column-oriented matrix with the specified weight bounds.
         """
-        return JITCUniformC(
+        return self._keep_structure(JITCUniformC(
             (
                 wlow,
                 whigh,
@@ -1398,7 +1413,7 @@ class JITCUniformC(JITCUniformMatrix):
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
-        )
+        ), prob, seed)
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         """

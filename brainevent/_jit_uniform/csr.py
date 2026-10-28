@@ -26,11 +26,13 @@ exactly as in ``jitumv``); the matrix class flips it on transpose.
 
 Generation is split into two passes (``nnz`` is data dependent, XLA needs static shapes):
 
-1. count : per-(row, chunk) counts (notrans) or per-row counts (trans)
+1. count : per-(row, chunk) counts of the row-stream walk
 2. fill  : column indices + values, given the offsets derived from the counts
 
-Both CUDA and ``numba`` backends draw the same matrix; the two-pass flow is
-eager either way (``nnz`` is read back between the passes).
+The connectivity depends only on ``(shape, prob, seed, corder)``; it is drawn
+once at trace time (see :mod:`brainevent._jitc_structure`), and only the weight
+fill runs in the compiled program, so ``to_csr`` works under ``jax.jit``.
+``corder=False`` fills the transposed shape with the row-stream kernel.
 """
 
 from pathlib import Path
@@ -42,10 +44,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._data import _initialize_conn_length, _initialize_seed
-from brainevent._misc import (
-    _resolve_indptr_dtype, _require_jax_x64_for_int64, _as_int32_cuda_offsets,
-    _is_static_zero, _n_chunks,
+from brainevent._compatible_import import Tracer
+from brainevent._jitc_structure import (
+    JITCStructure, build_jitc_structure, check_jitc_structure, concrete_seed, fill_shape,
 )
+from brainevent._misc import _is_static_zero, _n_chunks, _with_linear_param_grads
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
@@ -450,6 +453,43 @@ jitu_csr_fill_p.def_tags('jit_uniform', 'csr', 'light_rng')
 #  High-level orchestration
 # ──────────────────────────────────────────────────────────────────────
 
+def jitu_structure(prob, seed, *, shape: MatrixShape, corder: bool, backend: Optional[str] = None):
+    """Draw the connectivity of a JIT uniform matrix (see :func:`~brainevent._jitc_structure.build_jitc_structure`).
+
+    Parameters
+    ----------
+    prob : float or array_like
+        Connection probability (concrete).
+    seed : int or array_like
+        Random seed (concrete).
+    shape : tuple of int
+        Logical ``(n_rows, n_cols)``.
+    corder : bool
+        Stream ownership.
+    backend : str, optional
+        Backend for the count and fill kernels.
+
+    Returns
+    -------
+    JITCStructure
+        The canonical CSR connectivity.
+    """
+    zero, one = np.zeros((1,), np.float32), np.ones((1,), np.float32)
+    structure, _ = _draw_structure(zero, one, prob, seed, shape=shape, corder=corder, backend=backend)
+    return structure
+
+
+def _draw_structure(w_low, w_high, prob, seed, *, shape, corder, backend):
+    zero, one = np.zeros((1,), np.float32), np.ones((1,), np.float32)
+    return build_jitc_structure(
+        lambda clen, seed_, s: jitu_csr_count_p_call(
+            zero, one, clen, seed_, shape=s, corder=True, backend=backend)[0],
+        lambda clen, seed_, offsets, nnz, s: jitu_csr_fill_p_call(
+            w_low, w_high, clen, seed_, offsets, nnz, shape=s, corder=True, backend=backend),
+        prob, seed, shape=shape, corder=corder, what='jitu_to_csr',
+    )
+
+
 def jitu_to_csr(
     w_low,
     w_high,
@@ -459,80 +499,97 @@ def jitu_to_csr(
     shape: MatrixShape,
     corder: bool,
     backend: Optional[str] = None,
+    structure: Optional[JITCStructure] = None,
 ):
     """Materialize the light-RNG JIT uniform matrix as a :class:`~brainevent.CSR`.
 
     ``jitu_to_csr`` reproduces exactly the matrix drawn by ``jitu(corder=...)``
-    (and thus by ``jitumv`` / ``jitumm``).
+    (and thus by ``jitumv`` / ``jitumm``). It works under ``jax.jit``,
+    ``jax.vmap`` and ``jax.grad``: the connectivity is drawn at trace time from
+    a concrete ``prob`` and ``seed`` (or taken from ``structure``), and the
+    weight parameters may be traced. ``data`` is differentiable with respect
+    to ``w_low`` and ``w_high``.
+
+    Parameters
+    ----------
+    w_low : float, array_like or Quantity
+        Lower bound of the uniform weights.
+    w_high : float, array_like or Quantity
+        Upper bound of the uniform weights, in the unit of ``w_low``.
+    prob : float or array_like
+        Connection probability. Must be concrete unless ``structure`` is given.
+    seed : int, array_like or None
+        Random seed. Must be concrete unless ``structure`` is given.
+    shape : tuple of int
+        Logical ``(n_rows, n_cols)``.
+    corder : bool
+        Stream ownership.
+    backend : str, optional
+        Backend for the count and fill kernels.
+    structure : JITCStructure, optional
+        Connectivity from :func:`jitu_structure` (or ``M.prepare_structure()``).
+
+    Returns
+    -------
+    CSR
+        The matrix, with column-sorted rows.
+
+    Raises
+    ------
+    ValueError
+        If ``prob`` or ``seed`` is traced and ``structure`` is not given.
     """
     from brainevent._csr import CSR
 
     n_rows, n_cols = int(shape[0]), int(shape[1])
-    walk = _walk_length(shape, False, corder)
-    chunk_size_value = _chunk_size(walk)
-
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unitd = u.split_mantissa_unit(w_low)
     w_high = u.Quantity(w_high).to(unitd).mantissa
     dtype = jnp.result_type(w_low, w_high)
     w_low = jnp.atleast_1d(jnp.asarray(w_low, dtype=dtype))
     w_high = jnp.atleast_1d(jnp.asarray(w_high, dtype=dtype))
-    seed = _initialize_seed(seed)
 
-    if n_rows == 0 or n_cols == 0 or _is_static_zero(prob):
+    if structure is None and (n_rows == 0 or n_cols == 0 or _is_static_zero(prob)):
         indptr = jnp.zeros((n_rows + 1,), dtype=jnp.int32)
         indices = jnp.zeros((0,), dtype=jnp.int32)
-        data = u.maybe_decimal(jnp.zeros((0,), dtype=w_low.dtype) * unitd)
+        data = u.maybe_decimal(jnp.zeros((0,), dtype=dtype) * unitd)
         return CSR((data, indices, indptr), shape=(n_rows, n_cols))
+
+    # The connectivity never depends on the weights: draw it with them stopped,
+    # and attach the weight derivative below.
+    stopped = jax.lax.stop_gradient((w_low, w_high))
+    seed = concrete_seed(seed)
+    data = None
+    if structure is None:
+        concrete = not any(isinstance(x, Tracer) for x in stopped)
+        first, second = stopped if concrete else (np.zeros((1,), np.float32), np.ones((1,), np.float32))
+        structure, drawn = _draw_structure(
+            first, second, prob, seed, shape=shape, corder=corder, backend=backend,
+        )
+        if concrete:
+            data = drawn
+    else:
+        check_jitc_structure(structure, shape=shape, corder=corder)
 
     clen = _initialize_conn_length(prob)
+    seed_arr = _initialize_seed(seed)
+    fshape = fill_shape(shape, corder)
+    nnz = structure.nnz
 
-    chunk_counts = jitu_csr_count_p_call(
-        w_low, w_high, clen, seed,
-        shape=(n_rows, n_cols), corder=corder,
-        backend=backend,
-    )[0]
-    # notrans returns 2D per-(row, chunk) counts; trans returns 1D per-row counts.
-    row_counts = chunk_counts.sum(axis=1, dtype=jnp.int32) if corder else chunk_counts
-    row_counts_np = np.asarray(jax.device_get(row_counts), dtype=np.int64)
-    nnz = int(row_counts_np.sum())
+    def draw(a, b, clen_, seed_, offsets, order):
+        filled = jitu_csr_fill_p_call(
+            a, b, clen_, seed_, offsets, nnz, shape=fshape, corder=True, backend=backend,
+        )[1]
+        return filled[order]
 
-    # ``indptr`` offsets range up to ``nnz``; auto-promote to int64 when that
-    # exceeds the int32 range (gated on ``jax_enable_x64``). ``indices`` (columns)
-    # stay int32.
-    offset_dtype = _resolve_indptr_dtype(nnz, "auto")
-    _require_jax_x64_for_int64(offset_dtype, "jitu_to_csr indptr")
-    indptr = jnp.concatenate(
-        [jnp.zeros((1,), dtype=offset_dtype), jnp.cumsum(row_counts, dtype=offset_dtype)]
-    )
-    if nnz == 0:
-        indices = jnp.zeros((0,), dtype=jnp.int32)
-        data = u.maybe_decimal(jnp.zeros((0,), dtype=w_low.dtype) * unitd)
-        return CSR((data, indices, indptr), shape=(n_rows, n_cols))
+    operands = (clen, seed_arr, structure.fill_offsets, structure.order)
+    if data is None:
+        data = draw(stopped[0], stopped[1], clen, seed_arr, structure.fill_offsets, structure.order)
 
-    if corder:
-        # per-(row, chunk) exclusive offsets within each row's CSR slice.
-        cc = chunk_counts.astype(offset_dtype)
-        offsets = indptr[:-1, None] + jnp.cumsum(cc, axis=1, dtype=offset_dtype) - cc
-    else:
-        offsets = indptr
-    # The light fill kernel has an int32-only offset ABI; refuse (rather than
-    # silently truncate) when the nnz forced int64 offsets.
-    offsets = _as_int32_cuda_offsets(offsets, "jitu_to_csr fill offsets")
+    def coefficients(clen_, seed_, offsets, order):
+        # Each weight is ``w_low + v * (w_high - w_low)``; ``v`` is the draw on [0, 1).
+        v = draw(jnp.zeros((1,), dtype), jnp.ones((1,), dtype), clen_, seed_, offsets, order)
+        return 1. - v, v
 
-    indices, data = jitu_csr_fill_p_call(
-        w_low, w_high, clen, seed, offsets, nnz,
-        shape=(n_rows, n_cols), corder=corder,
-        backend=backend,
-    )
-    # The light fill emits per-row entries in lane order (notrans) or atomic order
-    # (trans, non-deterministic); reorder to canonical column-sorted CSR so the
-    # output is deterministic and matches the conventional CSR layout. Rows are
-    # already contiguous, so a stable sort by (row, col) only reorders within rows.
-    if nnz > 1:
-        seg = np.repeat(np.arange(n_rows, dtype=np.int64), row_counts_np)
-        order = jnp.asarray(np.lexsort((np.asarray(jax.device_get(indices)), seg)))
-        indices = indices[order]
-        data = data[order]
-    data = u.maybe_decimal(data * unitd)
-    return CSR((data, indices, indptr), shape=(n_rows, n_cols))
+    data = _with_linear_param_grads(coefficients, data, (w_low, w_high), operands)
+    return CSR((u.maybe_decimal(data * unitd), structure.indices, structure.indptr), shape=(n_rows, n_cols))

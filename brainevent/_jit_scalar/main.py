@@ -25,9 +25,10 @@ import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix, _resolve_corder
+from brainevent._jitc_structure import JITCStructure
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitsmv, binary_jitsmm
-from .csr import jits_to_csr
+from .csr import jits_structure, jits_to_csr
 from .float import jits, jitsmv, jitsmm
 from .dt2t import jitsmv_dt2t
 
@@ -329,12 +330,17 @@ class JITCScalarMatrix(JITCMatrix):
         weight = u.math.asarray(data)
         assert weight.shape == self.weight.shape
         assert u.get_unit(weight) == u.get_unit(self.weight)
-        return type(self)(
+        return self._keep_structure(type(self)(
             (weight, self.prob, self.seed),
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
+        ))
+
+    def _draw_structure(self):
+        return jits_structure(
+            self.prob, self.seed, shape=self.shape, corder=self.corder, backend=self.backend,
         )
 
     def tocsr(self):
@@ -361,9 +367,12 @@ class JITCScalarMatrix(JITCMatrix):
 
         Notes
         -----
-        Generation uses a count pass followed by a fill pass; the number of
-        stored elements is read back between the two passes, so ``tocsr`` is an
-        eager-only conversion and cannot be traced under ``jax.jit``. Peak
+        Generation uses a count pass followed by a fill pass. The connectivity
+        (count pass and the order of the entries) depends only on ``prob``,
+        ``seed`` and ``shape``; it is drawn at trace time, so ``tocsr`` works
+        under ``jax.jit``, ``jax.vmap`` and ``jax.grad`` with traced weights.
+        Inside ``jax.jit`` the matrix must be closed over (concrete ``prob`` and
+        ``seed``), unless it was prepared with :meth:`prepare_structure`. Peak
         memory is ``O(nnz)`` rather than ``O(rows * cols)``.
 
         Examples
@@ -378,7 +387,7 @@ class JITCScalarMatrix(JITCMatrix):
         """
         return jits_to_csr(
             self.weight, self.prob, self.seed,
-            shape=self.shape, corder=self.corder, backend=self.backend,
+            shape=self.shape, corder=self.corder, backend=self.backend, structure=self._structure,
         )
 
     def dt2t(
@@ -402,6 +411,7 @@ class JITCScalarMatrix(JITCMatrix):
             transpose=False,
             corder=self.corder,
             backend=self.backend,
+            structure=self._structure,
         )
 
     def dt2t_transposed(
@@ -425,6 +435,7 @@ class JITCScalarMatrix(JITCMatrix):
             transpose=True,
             corder=self.corder,
             backend=self.backend,
+            structure=self._structure,
         )
 
     def tree_flatten(self):
@@ -443,7 +454,10 @@ class JITCScalarMatrix(JITCMatrix):
         tree_unflatten : Reconstruct the matrix from flattened representation.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
-        return (self.weight, self.prob, self.seed), (aux, self.buffers)
+        children = (self.weight, self.prob, self.seed)
+        if self._structure is not None:
+            children = children + tuple(self._structure)
+        return children, (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -469,7 +483,8 @@ class JITCScalarMatrix(JITCMatrix):
         tree_flatten : Flatten the matrix for JAX pytree operations.
         """
         obj = object.__new__(cls)
-        obj.weight, obj.prob, obj.seed = children
+        obj.weight, obj.prob, obj.seed = children[:3]
+        obj._structure = JITCStructure(*children[3:]) if len(children) > 3 else None
         aux_data, buffer = aux_data
         obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
@@ -757,7 +772,7 @@ class JITCScalarR(JITCScalarMatrix):
         JITCScalarR
             A new row-oriented matrix with the updated weight.
         """
-        return JITCScalarR(
+        return self._keep_structure(JITCScalarR(
             (
                 weight,
                 self.prob if prob is None else prob,
@@ -767,7 +782,7 @@ class JITCScalarR(JITCScalarMatrix):
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
-        )
+        ), prob, seed)
 
     def _unitary_op(self, op) -> 'JITCScalarR':
         """
@@ -1268,7 +1283,7 @@ class JITCScalarC(JITCScalarMatrix):
         JITCScalarC
             A new column-oriented matrix with the updated weight.
         """
-        return JITCScalarC(
+        return self._keep_structure(JITCScalarC(
             (
                 weight,
                 self.prob if prob is None else prob,
@@ -1278,7 +1293,7 @@ class JITCScalarC(JITCScalarMatrix):
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
-        )
+        ), prob, seed)
 
     def _unitary_op(self, op) -> 'JITCScalarC':
         """

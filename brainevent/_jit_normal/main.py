@@ -26,10 +26,11 @@ import numpy as np
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix, _resolve_corder
+from brainevent._jitc_structure import JITCStructure
 from brainevent._error import UnsupportedOperationError
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitnmv, binary_jitnmm
-from .csr import jitn_to_csr
+from .csr import jitn_structure, jitn_to_csr
 from .float import jitn, jitnmv, jitnmm
 from .dt2t import jitnmv_dt2t
 
@@ -341,12 +342,17 @@ class JITCNormalMatrix(JITCMatrix):
         assert scale.shape == self.wscale.shape
         assert u.get_unit(loc) == u.get_unit(self.wloc)
         assert u.get_unit(scale) == u.get_unit(self.wscale)
-        return type(self)(
+        return self._keep_structure(type(self)(
             (loc, scale, self.prob, self.seed),
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
+        ))
+
+    def _draw_structure(self):
+        return jitn_structure(
+            self.prob, self.seed, shape=self.shape, corder=self.corder, backend=self.backend,
         )
 
     def tocsr(self):
@@ -373,9 +379,12 @@ class JITCNormalMatrix(JITCMatrix):
 
         Notes
         -----
-        Generation uses a count pass followed by a fill pass; the number of
-        stored elements is read back between the two passes, so ``tocsr`` is an
-        eager-only conversion and cannot be traced under ``jax.jit``. Peak
+        Generation uses a count pass followed by a fill pass. The connectivity
+        (count pass and the order of the entries) depends only on ``prob``,
+        ``seed`` and ``shape``; it is drawn at trace time, so ``tocsr`` works
+        under ``jax.jit``, ``jax.vmap`` and ``jax.grad`` with traced weights.
+        Inside ``jax.jit`` the matrix must be closed over (concrete ``prob`` and
+        ``seed``), unless it was prepared with :meth:`prepare_structure`. Peak
         memory is ``O(nnz)`` rather than ``O(rows * cols)``.
 
         Examples
@@ -390,7 +399,7 @@ class JITCNormalMatrix(JITCMatrix):
         """
         return jitn_to_csr(
             self.wloc, self.wscale, self.prob, self.seed,
-            shape=self.shape, corder=self.corder, backend=self.backend,
+            shape=self.shape, corder=self.corder, backend=self.backend, structure=self._structure,
         )
 
     def dt2t(
@@ -415,6 +424,7 @@ class JITCNormalMatrix(JITCMatrix):
             transpose=False,
             corder=self.corder,
             backend=self.backend,
+            structure=self._structure,
         )
 
     def dt2t_transposed(
@@ -439,6 +449,7 @@ class JITCNormalMatrix(JITCMatrix):
             transpose=True,
             corder=self.corder,
             backend=self.backend,
+            structure=self._structure,
         )
 
     def tree_flatten(self):
@@ -457,7 +468,10 @@ class JITCNormalMatrix(JITCMatrix):
         tree_unflatten : Reconstruct the matrix from flattened data.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
-        return (self.wloc, self.wscale, self.prob, self.seed), (aux, self.buffers)
+        children = (self.wloc, self.wscale, self.prob, self.seed)
+        if self._structure is not None:
+            children = children + tuple(self._structure)
+        return children, (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -481,7 +495,8 @@ class JITCNormalMatrix(JITCMatrix):
         tree_flatten : Flatten the matrix for JAX pytree serialization.
         """
         obj = object.__new__(cls)
-        obj.wloc, obj.wscale, obj.prob, obj.seed = children
+        obj.wloc, obj.wscale, obj.prob, obj.seed = children[:4]
+        obj._structure = JITCStructure(*children[4:]) if len(children) > 4 else None
         aux_data, buffer = aux_data
         obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
@@ -855,7 +870,7 @@ class JITCNormalR(JITCNormalMatrix):
         JITCNormalR
             A new row-oriented normal distribution matrix.
         """
-        return JITCNormalR(
+        return self._keep_structure(JITCNormalR(
             (
                 loc,
                 scale,
@@ -866,7 +881,7 @@ class JITCNormalR(JITCNormalMatrix):
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
-        )
+        ), prob, seed)
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         """
@@ -1316,7 +1331,7 @@ class JITCNormalC(JITCNormalMatrix):
         JITCNormalC
             A new column-oriented normal distribution matrix.
         """
-        return JITCNormalC(
+        return self._keep_structure(JITCNormalC(
             (
                 loc,
                 scale,
@@ -1327,7 +1342,7 @@ class JITCNormalC(JITCNormalMatrix):
             corder=self.corder,
             backend=self.backend,
             buffers=self.buffers,
-        )
+        ), prob, seed)
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         """

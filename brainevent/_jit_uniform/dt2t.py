@@ -40,8 +40,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import Tracer
-from brainevent._data import _initialize_seed
-from brainevent._misc import _with_linear_param_grads
+from brainevent._jitc_structure import JITCStructure
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
@@ -67,8 +66,14 @@ def jitumv_dt2t(
     transpose: bool = False,
     corder: bool = True,
     backend: Optional[str] = None,
+    structure: Optional[JITCStructure] = None,
 ):
-    """Generate per-synapse ``y * w`` values for a uniform JITC (mv) matrix."""
+    """Generate per-synapse ``y * w`` values for a uniform JITC (mv) matrix.
+
+    ``structure`` is an optional connectivity from ``M.prepare_structure()``; without
+    it, ``prob`` and ``seed`` must be concrete. Works under ``jax.jit``, ``jax.vmap``
+    and ``jax.grad``.
+    """
     shape = (int(shape[0]), int(shape[1]))
     n_rows, n_cols = shape
 
@@ -80,7 +85,6 @@ def jitumv_dt2t(
     w_low = jnp.atleast_1d(jnp.asarray(w_low, dtype=common_dtype))
     w_high = jnp.atleast_1d(jnp.asarray(w_high, dtype=common_dtype))
     y = jnp.asarray(y, dtype=common_dtype)
-    seed = _initialize_seed(seed)
 
     if y.ndim != 1:
         raise AssertionError("y must be 1D.")
@@ -89,21 +93,18 @@ def jitumv_dt2t(
     else:
         assert n_rows == y.shape[0], "Shape mismatch for non-transpose operation."
 
-    if not isinstance(prob, Tracer) and float(np.asarray(prob)) == 0.0:
+    if structure is None and not isinstance(prob, Tracer) and float(np.asarray(prob)) == 0.0:
         data = jnp.zeros(0, dtype=common_dtype)
         return u.maybe_decimal(data * unitd * unity)
 
     # Materialize the canonical (column-sorted) mv CSR; dt2t is ``weight * y`` at
-    # each structural non-zero, taken in that CSR's flat order.  Composing over
-    # ``jitu_to_csr`` keeps both corder values and both directions consistent with
-    # the materialized structure and is deterministic.
-    low_stopped, high_stopped = jax.lax.stop_gradient((w_low, w_high))
+    # each structural non-zero, taken in that CSR's flat order. ``jitu_to_csr`` draws the
+    # connectivity at trace time and keeps ``data`` differentiable in the weights.
     csr = jitu_to_csr(
-        low_stopped, high_stopped, prob, seed,
-        shape=shape, corder=corder, backend=backend,
+        w_low, w_high, prob, seed,
+        shape=shape, corder=corder, backend=backend, structure=structure,
     )
-    indptr = csr.indptr
-    nnz = int(indptr[-1])
+    nnz = csr.indices.shape[0]
     if nnz == 0:
         return u.maybe_decimal(jnp.zeros(0, dtype=common_dtype) * unitd * unity)
 
@@ -111,20 +112,10 @@ def jitumv_dt2t(
         gathered = y[csr.indices]                                     # weight * y[col]
     else:
         row_ids = jnp.repeat(
-            jnp.arange(n_rows, dtype=jnp.int32), jnp.diff(indptr), total_repeat_length=nnz
+            jnp.arange(n_rows, dtype=jnp.int32), jnp.diff(csr.indptr), total_repeat_length=nnz
         )
         gathered = y[row_ids]                                         # weight * y[row]
-
-    def coefficients():
-        # Each weight is ``w_low + v * (w_high - w_low)``; ``v`` is the draw on [0, 1).
-        v = jitu_to_csr(
-            jnp.zeros_like(low_stopped), jnp.ones_like(high_stopped), prob, seed,
-            shape=shape, corder=corder, backend=backend,
-        ).data
-        return 1. - v, v
-
-    data = _with_linear_param_grads(coefficients, csr.data, (w_low, w_high))
-    return u.maybe_decimal(data * gathered * unitd * unity)
+    return u.maybe_decimal(csr.data * gathered * unitd * unity)
 
 
 # ---------------------------------------------------------------------- #
