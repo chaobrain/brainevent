@@ -254,6 +254,8 @@ def test_dt2t_signature_matches_0_1_2():
     params = tuple(inspect.signature(jitsmv_dt2t).parameters)
     assert params == tuple(p.strip() for p in 'weight'.split(',')) + (
         'prob', 'y', 'seed', 'shape', 'transpose', 'corder', 'backend',
+        # 0.4.0 appends the keyword-only ``structure`` (backward compatible).
+        'structure',
     )
 
 

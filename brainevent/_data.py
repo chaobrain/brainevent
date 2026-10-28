@@ -504,6 +504,86 @@ class JITCMatrix(DataRepresentation):
         """
         return 'left' if self.corder else 'right'
 
+    #: Connectivity drawn by :meth:`prepare_structure`, or ``None``.
+    _structure = None
+
+    @property
+    def structure(self):
+        """Connectivity stored by :meth:`prepare_structure`, or ``None``.
+
+        Returns
+        -------
+        JITCStructure or None
+            The canonical CSR connectivity carried as pytree leaves.
+        """
+        return self._structure
+
+    def prepare_structure(self):
+        """Return a copy of the matrix that carries its connectivity as pytree leaves.
+
+        ``tocsr``, ``dt2t`` and ``dt2t_transposed`` draw the connectivity from
+        ``prob`` and ``seed`` at trace time, so under ``jax.jit`` they need the
+        matrix closed over (concrete ``prob`` / ``seed``), and the connectivity
+        is embedded in the compiled program as constants. A prepared matrix
+        instead carries it as leaves: passed into ``jax.jit`` as an argument, it
+        is an input of the program (not a constant), and ``prob`` / ``seed`` may
+        be traced.
+
+        Closing over a matrix embeds the connectivity in the program: compiling
+        is slow for large matrices (seconds at a few million connections), but
+        XLA then optimizes the gathers over the constant indices. A prepared
+        matrix passed as an argument compiles in a fraction of that time and
+        runs the gathers over input indices, which can be slower per call.
+
+        The structure costs ``O(nnz)`` device memory. Weight-only operations
+        (``with_data``, scaling, ...) keep it; ``.T`` and operations that change
+        ``prob`` or ``seed`` drop it. Do not change ``prob`` or ``seed`` of a
+        prepared matrix by other means: the stored connectivity would no longer
+        match.
+
+        Returns
+        -------
+        JITCMatrix
+            A copy holding the structure, with a concrete ``seed``.
+
+        Raises
+        ------
+        ValueError
+            If ``prob`` or ``seed`` is traced.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax
+            >>> import jax.numpy as jnp
+            >>> import brainevent
+            >>> M = brainevent.JITCNormalR((1.0, 0.1, 0.2, 42), shape=(100, 50)).prepare_structure()
+            >>> f = jax.jit(lambda m, y: m.dt2t(y, None))
+            >>> f(M, jnp.ones(100)).shape == (M.structure.nnz,)
+            True
+        """
+        import copy
+
+        from brainevent._jitc_structure import concrete_seed
+
+        new = copy.copy(self)
+        new.seed = concrete_seed(self.seed)
+        new._structure = new._draw_structure()
+        return new
+
+    def _draw_structure(self):
+        """Draw the connectivity of this matrix (implemented per weight family)."""
+        raise NotImplementedError
+
+    def _keep_structure(self, new, prob=None, seed=None):
+        """Hand the stored structure to ``new`` unless ``prob`` or ``seed`` changes."""
+        same_prob = prob is None or prob is self.prob
+        same_seed = seed is None or seed is self.seed
+        if same_prob and same_seed:
+            new._structure = self._structure
+        return new
+
     def _warn_if_not_event_driven(self, side: str) -> None:
         """Warn once if a binary-event product on ``side`` is not event-driven.
 

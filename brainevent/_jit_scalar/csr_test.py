@@ -196,4 +196,6 @@ def test_to_csr_signature_matches_0_1_2():
     import inspect
     assert tuple(inspect.signature(jits_to_csr).parameters) == tuple(
         p.strip() for p in 'weight'.split(',')
-    ) + ('prob', 'seed', 'shape', 'corder', 'backend')
+    ) + ('prob', 'seed', 'shape', 'corder', 'backend',
+    # 0.4.0 appends the keyword-only ``structure`` (backward compatible).
+    'structure')

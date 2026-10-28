@@ -86,6 +86,24 @@ backend both directions are event-driven once its transpose layout is cached. Th
 ``O(nnz)`` memory: 8 bytes per connection (800 MB for ``100k x 100k`` at ``p = 0.01``),
 about twice that with the transpose layout.
 
+``W.tocsr()`` and the per-synapse values ``W.dt2t(y, None)`` work inside ``jax.jit``,
+``jax.vmap`` and ``jax.grad``; the weights (``W.data``) may be traced and are
+differentiable. The connectivity is drawn once at trace time from ``prob`` and ``seed``,
+so inside ``jax.jit`` close over ``W`` rather than passing it as an argument. To pass it
+as an argument (for example to keep the connectivity out of the compiled program, where
+it is otherwise embedded as constants), prepare it first:
+
+.. code-block:: python
+
+    W = brainevent.JITCNormalR((1.0, 0.1, 0.01, 42), shape=(10_000, 10_000)).prepare_structure()
+
+    @jax.jit
+    def per_synapse(W, y):
+        return W.dt2t(y, None)    # the structure is an input, prob/seed may be traced
+
+A prepared matrix stores ``O(nnz)`` indices. Weight-only operations keep the
+structure; ``W.T`` and new ``prob`` / ``seed`` values drop it.
+
 .. note::
 
    JITC weights cannot be inspected or learned individually — the matrix only exists

@@ -89,6 +89,11 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
   `cscmm_dt2t`), with respect to both `y` and the weights. JITC `dt2t` is now
   differentiable with respect to the weight parameters (`weight`,
   `w_loc`/`w_scale`, `w_low`/`w_high`); forward values are unchanged.
+- `M.prepare_structure()` and `M.structure` on the JITC classes: the connectivity
+  as pytree leaves, so a JITC matrix passed into `jax.jit` as an argument (traced
+  `prob` / `seed`) supports `tocsr`, `dt2t` and `dt2t_transposed`, and the
+  connectivity is a program input instead of an embedded constant. Weight-only
+  operations keep it; `.T` and new `prob` / `seed` values drop it.
 
 ### Changed
 
@@ -117,6 +122,14 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
 
 ### Fixed
 
+- JITC `tocsr()`, `jit*_to_csr` and `dt2t` / `dt2t_transposed` work under
+  `jax.jit`, `jax.vmap` and `jax.grad` (they failed in any trace: the count pass
+  was traced and then read back). The connectivity is drawn at trace time, so a
+  matrix must be closed over or prepared with `prepare_structure()`; otherwise a
+  `ValueError` says so. `tocsr().data` is differentiable with respect to the
+  weight parameters. `corder=False` now fills with the deterministic row-stream
+  kernel over the transposed shape (same matrix, bit for bit) instead of the
+  atomic column-stream fill.
 - **`--xla_gpu_deterministic_ops` reaches brainevent's GPU kernels (#216).** The
   default `cuda_raw` kernels add with float atomics, so their results varied
   from call to call even when XLA was asked for deterministic ops. With the flag
