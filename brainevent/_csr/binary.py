@@ -27,6 +27,7 @@ from brainevent._misc import (
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
     _csr_to_coo,
+    _cusparse_accepts_nse,
     namescope,
 )
 from brainevent._op import load_cuda_file
@@ -803,7 +804,9 @@ def _binary_csrmv_cusparse_kernel(
     weight with binary events scales the exact active-event count by
     selection. Otherwise cuSPARSE runs unchanged when every weight is finite
     (``0 * w`` is then exact) and any NaN/Inf weight takes the select-based
-    ``jax_raw`` product via ``lax.cond``.
+    ``jax_raw`` product via ``lax.cond``. A matrix storing more entries than
+    it has elements (repeated entries) always takes the select-based product,
+    because cuSPARSE rejects it.
     """
     import jax.experimental.sparse as jsparse
     m, k = shape
@@ -813,6 +816,10 @@ def _binary_csrmv_cusparse_kernel(
     weighted = kwargs.get('weighted', False)
     # Exact select-based fallback for non-finite weights.
     select_kernel = _binary_csrmv_jax_kernel(weight_info, vector_info, shape, transpose, **kwargs)
+    if not _cusparse_accepts_nse(nse, shape):
+        # Repeated entries outnumber the matrix elements, which cuSPARSE
+        # rejects: the exact select-based kernel adds them instead (#223).
+        return select_kernel
 
     def kernel(weights, indices, indptr, vector):
         events = event_factor(vector, dtype=out_dtype, weighted=weighted)
@@ -1496,7 +1503,9 @@ def _binary_csrmm_cusparse_kernel(
     every column. A homogeneous weight with binary events scales the exact
     active-event counts by selection. Otherwise cuSPARSE runs unchanged when
     every weight is finite (``0 * w`` is then exact) and any NaN/Inf weight
-    takes the select-based ``jax_raw`` product via ``lax.cond``.
+    takes the select-based ``jax_raw`` product via ``lax.cond``. A matrix
+    storing more entries than it has elements (repeated entries) always takes
+    the select-based product, because cuSPARSE rejects it.
     """
     import jax.experimental.sparse as jsparse
     m, k = shape
@@ -1506,6 +1515,10 @@ def _binary_csrmm_cusparse_kernel(
     weighted = kwargs.get('weighted', False)
     # Exact select-based fallback for non-finite weights.
     select_kernel = _binary_csrmm_jax_kernel(weight_info, vector_info, shape, transpose, **kwargs)
+    if not _cusparse_accepts_nse(nse, shape):
+        # Repeated entries outnumber the matrix elements, which cuSPARSE
+        # rejects: the exact select-based kernel adds them instead (#223).
+        return select_kernel
 
     def kernel(weights, indices, indptr, B):
         events = event_factor(B, dtype=out_dtype, weighted=weighted)

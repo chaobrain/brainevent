@@ -24,6 +24,7 @@ from jax.interpreters import ad
 from brainevent._misc import (
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
+    _cusparse_accepts_nse,
 )
 from brainevent._op import load_cuda_file
 from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel
@@ -523,6 +524,10 @@ def _binary_csrmv_cusparse_kernel(
     select_kernel = _binary_csrmv_jax_kernel(
         weight_info, vector_info, shape, transpose, **kwargs
     )
+    if not _cusparse_accepts_nse(nse, shape):
+        # Repeated entries outnumber the matrix elements, which cuSPARSE
+        # rejects: the exact select-based kernel adds them instead (#223).
+        return select_kernel
 
     def kernel(weights, indices, indptr, vector, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):
@@ -1481,6 +1486,10 @@ def _binary_csrmm_cusparse_kernel(
     select_kernel = _binary_csrmm_jax_kernel(
         weight_info, vector_info, shape, transpose, **kwargs
     )
+    if not _cusparse_accepts_nse(nse, shape):
+        # Repeated entries outnumber the matrix elements, which cuSPARSE
+        # rejects: the exact select-based kernel adds them instead (#223).
+        return select_kernel
 
     def kernel(weights, indices, indptr, B, task_begin, task_end, status,
                local_targets, tile_offsets, permutation):

@@ -30,6 +30,7 @@ from brainevent._misc import (
     _as_int32_cuda_offsets,
     _as_int32_indices,
     _check_compressed_structure,
+    _cusparse_accepts_nse,
     _require_jax_x64_for_int64,
     _resolve_indptr_dtype,
     coo2csr,
@@ -825,3 +826,16 @@ def test_namescope_precheck_sees_concrete_arguments_before_jit():
     # Under an outer trace the precheck receives the tracer (and skips it).
     np.testing.assert_allclose(jax.jit(lambda s: f(jnp.ones(3), s, n=2))(-1.0), -2.0)
     assert issubclass(seen[-1]['scale'], jax.core.Tracer)
+
+
+@pytest.mark.parametrize('nse,shape,accepts', [
+    (0, (2, 3), True),
+    (6, (2, 3), True),  # one entry per element: the largest count cuSPARSE takes
+    (7, (2, 3), False),  # repeated entries outnumber the elements (#223)
+    (5, (1, 1), False),
+    (1, (0, 3), False),
+    (2 ** 31, (2 ** 16, 2 ** 16), True),  # Python ints: no int32 overflow
+    (np.int64(9), (np.int32(3), np.int32(3)), True),
+])
+def test_cusparse_accepts_nse(nse, shape, accepts):
+    assert _cusparse_accepts_nse(nse, shape) is accepts

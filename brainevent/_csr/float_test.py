@@ -525,3 +525,117 @@ def test_csrmm_transpose_rule_symbolic_zero_cotangent(undefined):
     out = float_mod._csrmm_transpose_rule(ct, *args, shape=(2, 3), transpose=False, backend=None)
     assert type(out[position]) is ad.Zero
     assert out[position].aval.shape == args[position].aval.shape
+
+
+# ---------------------------------------------------------------------------
+# Repeated (row, col) entries add, also when they outnumber the matrix
+# elements (#223). cuSPARSE rejects a CSR descriptor with ``nnz > rows * cols``,
+# so the heterogeneous ``cuda_raw`` kernels must not hand such a matrix to it.
+# ---------------------------------------------------------------------------
+
+def _repeated_entry_csr(m, k, nse, homo, seed=0):
+    """Row-sorted CSR of ``nse`` entries drawn with replacement, and its dense sum."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    rows = np.sort(rng.integers(0, m, nse))
+    cols = rng.integers(0, k, nse)
+    w = np.full(nse, 1.5) if homo else rng.standard_normal(nse)
+    dense = np.zeros((m, k))
+    np.add.at(dense, (rows, cols), w)
+    data = jnp.asarray([1.5] if homo else w, jnp.float32)
+    indptr = jnp.asarray(np.searchsorted(rows, np.arange(m + 1)), jnp.int32)
+    return data, jnp.asarray(cols, jnp.int32), indptr, dense
+
+
+# (m, k, nse): 2 x 3 storing 8 (the issue's case), 1 x 1 storing 5, a random
+# matrix storing 3x its elements, and one whose 20 entries (15 distinct) fit
+# in its 30 elements, which cuSPARSE takes and adds.
+_REPEATED_CASES = [(2, 3, 8), (1, 1, 5), (7, 5, 105), (6, 5, 20)]
+
+
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('m,k,nse', _REPEATED_CASES)
+def test_repeated_entries_add(backend, homo, transpose, m, k, nse):
+    import numpy as np
+    data, indices, indptr, dense = _repeated_entry_csr(m, k, nse, homo)
+    op = dense.T if transpose else dense
+    rng = np.random.default_rng(1)
+    v = rng.standard_normal(op.shape[1]).astype(np.float32)
+    B = rng.standard_normal((op.shape[1], 4)).astype(np.float32)
+    for fn, x, impls in ((csrmv, v, CSRMV_IMPLEMENTATIONS), (csrmm, B, CSRMM_IMPLEMENTATIONS)):
+        if backend not in impls:
+            continue
+        out = fn(data, indices, indptr, jnp.asarray(x), shape=(m, k), transpose=transpose, backend=backend)
+        assert np.allclose(np.asarray(out), op @ x, rtol=1e-4, atol=1e-4), (fn.__name__, backend)
+
+
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('batch', [None, 3])
+def test_repeated_entries_beyond_matrix_size_gradients(backend, transpose, batch):
+    # Reverse-mode gradients w.r.t. the weights and the operand, against the
+    # same product written densely (repeated entries summed by a scatter-add).
+    import numpy as np
+    m, k, nse = 4, 3, 30
+    data, indices, indptr, _ = _repeated_entry_csr(m, k, nse, homo=False)
+    rows = jnp.asarray(np.repeat(np.arange(m), np.diff(np.asarray(indptr))))
+    n_in = m if transpose else k
+    rng = np.random.default_rng(2)
+    x = jnp.asarray(rng.standard_normal((n_in,) if batch is None else (n_in, batch)), jnp.float32)
+    fn = csrmv if batch is None else csrmm
+    if backend not in (CSRMV_IMPLEMENTATIONS if batch is None else CSRMM_IMPLEMENTATIONS):
+        pytest.skip(f'{backend} has no {fn.__name__}')
+
+    def sparse(w, x):
+        return fn(w, indices, indptr, x, shape=(m, k), transpose=transpose, backend=backend)
+
+    def dense(w, x):
+        mat = jnp.zeros((m, k), w.dtype).at[rows, indices].add(w)
+        return (mat.T if transpose else mat) @ x
+
+    out, vjp = jax.vjp(sparse, data, x)
+    ref, vjp_ref = jax.vjp(dense, data, x)
+    ct = jnp.asarray(rng.standard_normal(out.shape), jnp.float32)
+    assert np.allclose(np.asarray(out), np.asarray(ref), rtol=1e-4, atol=1e-4)
+    for got, want in zip(vjp(ct), vjp_ref(ct)):
+        assert np.allclose(np.asarray(got), np.asarray(want), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize('generator,jax_kernel,primitive,vector_shape', [
+    ('_csrmv_cuda_kernel', '_csrmv_jax_kernel', 'csr_matvec_p', (2,)),
+    ('_csrmm_cuda_kernel', '_csrmm_jax_kernel', 'csr_matmat_p', (2, 4)),
+])
+@pytest.mark.parametrize('nse,uses_cusparse', [(6, True), (7, False)])
+def test_cuda_hetero_kernel_skips_cusparse_beyond_matrix_size(
+    monkeypatch, generator, jax_kernel, primitive, vector_shape, nse, uses_cusparse,
+):
+    # Static routing, checked without a GPU: a (2, 3) matrix storing at most
+    # 6 entries goes to cuSPARSE; storing more takes the exact pure-JAX kernel.
+    sentinel = object()
+    monkeypatch.setattr(float_mod, jax_kernel, lambda *a, **kw: sentinel)
+    bound = []
+
+    class _Recorder:
+        def bind(self, *args, **kwargs):
+            bound.append(kwargs)
+            return jnp.zeros(1)
+
+    monkeypatch.setattr(float_mod, primitive, _Recorder())
+    kernel = getattr(float_mod, generator)(
+        shape_of(jnp.float32, (nse,)),
+        True,
+        outs=[shape_of(jnp.float32, (3,) + vector_shape[1:])],
+        shape=(2, 3),
+        indices_info=shape_of(jnp.int32, (nse,)),
+        indptr_info=shape_of(jnp.int32, (3,)),
+        vector_info=shape_of(jnp.float32, vector_shape),
+    )
+    if uses_cusparse:
+        assert kernel is not sentinel
+        kernel(jnp.ones(nse), jnp.zeros(nse, jnp.int32), jnp.asarray([0, nse, nse], jnp.int32),
+               jnp.ones(vector_shape))
+        assert bound == [{'shape': (2, 3), 'transpose': True}]
+    else:
+        assert kernel is sentinel

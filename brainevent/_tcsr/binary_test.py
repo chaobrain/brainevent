@@ -1855,3 +1855,80 @@ def test_zero_nnz_products_are_zero(weighted):
         out = product()
         assert out.shape == shape
         assert not np.any(np.asarray(out))
+
+
+# ---------------------------------------------------------------------------
+# Repeated (row, col) entries add, also when they outnumber the matrix
+# elements (#223). cuSPARSE rejects a CSR descriptor with ``nnz > rows * cols``,
+# so the ``cusparse`` backend must not hand such a matrix to it.
+# ---------------------------------------------------------------------------
+
+def _repeated_entry_tcsr(binary_backend, homogeneous, m, k, nse, seed=0):
+    """TCSR of ``nse`` entries drawn with replacement, plus its dense sum."""
+    from brainevent._tcsr.main import TCSR
+
+    rng = np.random.default_rng(seed)
+    rows = rng.integers(0, m, nse)
+    cols = rng.integers(0, k, nse)
+    order = np.lexsort((cols, rows))
+    rows, cols = rows[order], cols[order]
+    w = np.full(nse, 1.5) if homogeneous else rng.standard_normal(nse)
+    dense = np.zeros((m, k))
+    np.add.at(dense, (rows, cols), w)
+    source = PlainCSR(
+        (
+            jnp.asarray([1.5] if homogeneous else w, jnp.float32),
+            jnp.asarray(cols, jnp.int32),
+            jnp.asarray(np.searchsorted(rows, np.arange(m + 1)), jnp.int64),
+        ),
+        shape=(m, k),
+    )
+    return TCSR.from_sorted_csr(source, binary_backend=binary_backend), dense
+
+
+@pytest.mark.parametrize(
+    "binary_backend",
+    [b for b in ("jax", "cuda_raw", "cusparse")
+     if b in binary_csrmv_p.available_backends(jax.default_backend()) or b == "jax"],
+)
+@pytest.mark.parametrize("homogeneous", [False, True])
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("m,k,nse", [(2, 3, 8), (7, 5, 105), (6, 5, 20)])
+def test_repeated_entries_add(binary_backend, homogeneous, weighted, m, k, nse):
+    with _explicit_int64_allowed():
+        matrix, dense = _repeated_entry_tcsr(binary_backend, homogeneous, m, k, nse)
+        rng = np.random.default_rng(1)
+        x = (rng.random(m) < 0.6) * rng.standard_normal(m)
+        X = (rng.random((3, m)) < 0.6) * rng.standard_normal((3, m))
+        wrap = WeightedArray if weighted else BinaryArray
+        for events, out in (
+            (x, wrap(jnp.asarray(x, jnp.float32)) @ matrix),
+            (X, wrap(jnp.asarray(X, jnp.float32)) @ matrix),
+        ):
+            factor = events if weighted else (events != 0)
+            np.testing.assert_allclose(np.asarray(out), factor @ dense, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("generator,jax_kernel,rank", [
+    ("_binary_csrmv_cusparse_kernel", "_binary_csrmv_jax_kernel", 1),
+    ("_binary_csrmm_cusparse_kernel", "_binary_csrmm_jax_kernel", 2),
+])
+@pytest.mark.parametrize("homogeneous", [False, True])
+@pytest.mark.parametrize("nse,uses_cusparse", [(6, True), (7, False)])
+def test_cusparse_kernel_skips_cusparse_beyond_matrix_size(
+    monkeypatch, generator, jax_kernel, rank, homogeneous, nse, uses_cusparse,
+):
+    # Static routing, checked without a GPU: a (2, 3) matrix storing at most 6
+    # entries goes to cuSPARSE; storing more takes the exact pure-JAX kernel.
+    sentinel = object()
+    monkeypatch.setattr(binary, jax_kernel, lambda *a, **kw: sentinel)
+    kernel = getattr(binary, generator)(
+        jax.ShapeDtypeStruct((1 if homogeneous else nse,), jnp.float32),
+        jax.ShapeDtypeStruct((2,) if rank == 1 else (2, 2), jnp.float32),
+        (2, 3),
+        True,
+        mirror_enabled=False,
+        indices_info=jax.ShapeDtypeStruct((nse,), jnp.int32),
+        outs=[jax.ShapeDtypeStruct((3,) if rank == 1 else (2, 3), jnp.float32)],
+    )
+    assert (kernel is not sentinel) == uses_cusparse

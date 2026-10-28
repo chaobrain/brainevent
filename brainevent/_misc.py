@@ -585,6 +585,32 @@ def _check_csr_cuda_structure_dtypes(indices_info, indptr_info) -> None:
         )
 
 
+def _cusparse_accepts_nse(nse: int, shape: MatrixShape) -> bool:
+    """Whether cuSPARSE accepts a sparse matrix of ``nse`` stored entries.
+
+    ``cusparseCreateCsr`` rejects ``nnz > rows * cols`` ("invalid value").
+    brainevent matrices may store repeated ``(row, col)`` entries, which add
+    (e.g. multapses), so ``nse`` can exceed the number of matrix elements.
+    Such a matrix must not reach the cuSPARSE lowering of
+    :mod:`jax.experimental.sparse`; callers take an exact kernel instead.
+    Repeated entries with ``nse <= rows * cols`` are accepted, and cuSPARSE
+    adds them.
+
+    Parameters
+    ----------
+    nse : int
+        Number of stored entries (static).
+    shape : MatrixShape
+        The ``(rows, cols)`` matrix shape.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``nse <= rows * cols``.
+    """
+    return int(nse) <= int(shape[0]) * int(shape[1])
+
+
 def _csr_todense(
     data: Data,
     indices: Index,
