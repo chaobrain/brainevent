@@ -122,6 +122,15 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
 
 ### Fixed
 
+- **`CSR.solve` / `CSC.solve` / `csr_solve` add repeated entries and accept
+  unsorted columns (#225).** jax's `spsolve` assumes a canonical CSR. With a
+  repeated `(row, col)` entry, the GPU (cuSOLVER) solve kept one copy and
+  returned a wrong solution without an error. The CPU (SciPy) solve raised
+  `ValueError: WRITEBACKIFCOPY base is read-only`, and also did so for unsorted
+  columns. The matrix is now made canonical inside the graph before the solve;
+  an already canonical matrix gives the same bits as before. Gradients in
+  forward and reverse mode go through `jax.lax.custom_linear_solve`, and a
+  `data` of shape `(1,)` is a weight shared by every entry.
 - **A CSR with more stored entries than matrix elements works on GPU (#223).**
   Repeated `(row, col)` entries (e.g. multapses) add. When they outnumber the
   elements (`nse > rows * cols`), a float product with heterogeneous weights on
