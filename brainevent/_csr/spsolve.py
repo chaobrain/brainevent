@@ -58,6 +58,12 @@ def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
         Solution vector ``x`` with the size of ``b`` and the promoted dtype of
         ``data`` and ``b``.
 
+    Raises
+    ------
+    ValueError
+        If the matrix stores no entries (``nse == 0``) and ``b`` is not
+        empty: the system is singular.
+
     Notes
     -----
     The system solved is:
@@ -68,8 +74,12 @@ def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
     indptr)`` in CSR format.  Repeated ``(row, col)`` entries add, and the
     column indices need not be sorted within a row: the matrix is made
     canonical (sorted, repeats summed) before the solve, which a canonical
-    matrix passes unchanged.  ``data`` of shape ``(1,)`` is a weight shared
-    by every stored entry.
+    matrix passes unchanged (a stored ``-0.0`` becomes ``+0.0``).  ``data``
+    of shape ``(1,)`` is a weight shared by every stored entry.
+
+    A singular matrix with stored entries (e.g. all-zero ``data``) follows
+    jax's ``spsolve``: the CPU backend returns ``nan`` and the GPU backend
+    raises ``Singular matrix in linear solve``.
 
     The solve is differentiable in forward and reverse mode with respect to
     ``data`` and ``b`` (implicit differentiation through
@@ -84,6 +94,11 @@ def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
     if data.size == 1 and indices.size != 1:
         data = jnp.broadcast_to(data.reshape(()), indices.shape)
     n = indptr.shape[0] - 1
+    if n == 0:
+        return u.maybe_decimal(b * b_unit / data_unit)  # the empty system
+    if indices.shape[0] == 0:
+        # cuSOLVER fails deep inside csrlsvqr on an empty matrix; SciPy returns nan.
+        raise ValueError(f'csr_solve: the {n} x {n} matrix stores no entries (nse = 0), so it is singular.')
     rows, cols = _csr_to_coo(indices, indptr)
 
     def matvec(x):
@@ -109,7 +124,8 @@ def _canonical_csr(data, rows, cols, n, indptr_dtype):
     slot. The number of distinct entries is data-dependent, so the arrays keep
     the static size ``min(nse, n * n)``; slots past ``indptr[-1]`` are zero
     and outside the matrix, which both backends ignore. A canonical input
-    comes back unchanged.
+    comes back unchanged, except that a stored ``-0.0`` becomes ``+0.0``
+    (each slot is ``0 + value``); that does not change the solve.
 
     Parameters
     ----------
@@ -134,6 +150,7 @@ def _canonical_csr(data, rows, cols, n, indptr_dtype):
     if nse > 1:
         first = first.at[1:].set((rows[1:] != rows[:-1]) | (cols[1:] != cols[:-1]))
     slot = jnp.cumsum(first) - 1
+    # 0 + (-0.0) is +0.0: the only bits of a canonical input that change.
     data_c = jnp.zeros((size,), data.dtype).at[slot].add(data)
     cols_c = jnp.zeros((size,), cols.dtype).at[slot].set(cols)
     counts = jnp.zeros((n,), indptr_dtype).at[rows].add(first.astype(indptr_dtype))

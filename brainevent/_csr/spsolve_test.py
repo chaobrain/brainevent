@@ -212,3 +212,44 @@ def test_canonical_csr_layout():
     np.testing.assert_array_equal(np.asarray(d), [2., 4., 4., 0.])
     np.testing.assert_array_equal(np.asarray(i), [2, 0, 1, 0])
     np.testing.assert_array_equal(np.asarray(p), [0, 1, 2, 3])
+
+
+def test_csr_solve_no_stored_entries_raises():
+    # nse = 0 is singular; cuSOLVER would fail inside csrlsvqr, SciPy returns nan.
+    empty = (jnp.zeros((0,)), jnp.zeros((0,), jnp.int32), jnp.zeros((3,), jnp.int32))
+    with pytest.raises(ValueError, match='stores no entries'):
+        csr_solve(*empty, jnp.ones(2))
+    with pytest.raises(ValueError, match='stores no entries'):
+        brainevent.CSR(empty, shape=(2, 2)).solve(jnp.ones(2))
+    with pytest.raises(ValueError, match='stores no entries'):  # a shared weight with no entries
+        csr_solve(jnp.ones((1,)), *empty[1:], jnp.ones(2))
+
+
+def test_csr_solve_empty_system():
+    x = csr_solve(jnp.zeros((0,)), jnp.zeros((0,), jnp.int32), jnp.zeros((1,), jnp.int32), jnp.zeros((0,)))
+    assert x.shape == (0,)
+
+
+@pytest.mark.filterwarnings('ignore::scipy.sparse.linalg.MatrixRankWarning')
+def test_csr_solve_all_zero_data_follows_spsolve():
+    # Stored entries, all zero: singular. As jax's spsolve: nan on CPU, an error on GPU.
+    data = jnp.zeros((3,))
+    indices = jnp.asarray([0, 1, 1], jnp.int32)
+    indptr = jnp.asarray([0, 2, 3], jnp.int32)
+    if jax.default_backend() == 'cpu':
+        x = csr_solve(data, indices, indptr, jnp.ones(2))
+        assert np.isnan(np.asarray(x)).all()
+    else:
+        with pytest.raises(Exception, match='Singular matrix'):
+            jax.block_until_ready(csr_solve(data, indices, indptr, jnp.ones(2)))
+
+
+def test_canonical_csr_turns_negative_zero_positive():
+    # The one change to a canonical input: each slot is 0 + value.
+    from brainevent._csr.spsolve import _canonical_csr
+    d, i, p = _canonical_csr(jnp.asarray([-0.0, 2.0]), jnp.asarray([0, 1], jnp.int32),
+                             jnp.asarray([0, 1], jnp.int32), 2, jnp.int32)
+    assert not np.signbit(np.asarray(d)).any()
+    np.testing.assert_array_equal(np.asarray(d), [0.0, 2.0])
+    np.testing.assert_array_equal(np.asarray(i), [0, 1])
+    np.testing.assert_array_equal(np.asarray(p), [0, 1, 2])
