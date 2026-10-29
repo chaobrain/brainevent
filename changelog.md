@@ -122,6 +122,13 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
 
 ### Fixed
 
+- **A CSR with more stored entries than matrix elements works on GPU (#223).**
+  Repeated `(row, col)` entries (e.g. multapses) add. When they outnumber the
+  elements (`nse > rows * cols`), a float product with heterogeneous weights on
+  the default `cuda_raw` backend crashed in cuSPARSE (`cusparseCreateCsr`:
+  invalid value). So did the opt-in `cusparse` backend of the binary CSR and
+  TCSR products. Those kernels now take the exact pure-JAX kernel of the
+  primitive in this case. Matrices with `nse <= rows * cols` still use cuSPARSE.
 - JITC `tocsr()`, `jit*_to_csr` and `dt2t` / `dt2t_transposed` work under
   `jax.jit`, `jax.vmap` and `jax.grad` (they failed in any trace: the count pass
   was traced and then read back). The connectivity is drawn at trace time, so a

@@ -2102,3 +2102,66 @@ def test_csrmm_transpose_rule_symbolic_zero_cotangent(undefined):
     assert len(out) == 4
     assert type(out[position]) is ad.Zero
     assert out[position].aval.shape == args[position].aval.shape
+
+
+# ---------------------------------------------------------------------------
+# Repeated (row, col) entries add, also when they outnumber the matrix
+# elements (#223). cuSPARSE rejects a CSR descriptor with ``nnz > rows * cols``,
+# so the ``cusparse`` backend must not hand such a matrix to it.
+# ---------------------------------------------------------------------------
+
+def _repeated_entry_csr(m, k, nse, homo, seed=0):
+    """Row-sorted CSR of ``nse`` entries drawn with replacement, and its dense sum."""
+    rng = np.random.default_rng(seed)
+    rows = np.sort(rng.integers(0, m, nse))
+    cols = rng.integers(0, k, nse)
+    w = np.full(nse, 1.5) if homo else rng.standard_normal(nse)
+    dense = np.zeros((m, k))
+    np.add.at(dense, (rows, cols), w)
+    data = jnp.asarray([1.5] if homo else w, jnp.float32)
+    indptr = jnp.asarray(np.searchsorted(rows, np.arange(m + 1)), jnp.int32)
+    return data, jnp.asarray(cols, jnp.int32), indptr, dense
+
+
+@pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('m,k,nse', [(2, 3, 8), (7, 5, 105), (6, 5, 20)])
+def test_repeated_entries_add(backend, homo, transpose, weighted, m, k, nse):
+    data, indices, indptr, dense = _repeated_entry_csr(m, k, nse, homo)
+    op = dense.T if transpose else dense
+    rng = np.random.default_rng(1)
+    v = (rng.random(op.shape[1]) < 0.6) * rng.standard_normal(op.shape[1])
+    B = (rng.random((op.shape[1], 4)) < 0.6) * rng.standard_normal((op.shape[1], 4))
+    for fn, x, impls in ((binary_csrmv, v, CSRMV_IMPLEMENTATIONS), (binary_csrmm, B, CSRMM_IMPLEMENTATIONS)):
+        if backend not in impls:
+            continue
+        out = fn(data, indices, indptr, jnp.asarray(x, jnp.float32), shape=(m, k),
+                 transpose=transpose, backend=backend, weighted=weighted)
+        events = x if weighted else (x != 0)
+        assert np.allclose(np.asarray(out), op @ events, rtol=1e-4, atol=1e-4), (fn.__name__, backend)
+
+
+@pytest.mark.parametrize('generator,jax_kernel,vector_shape', [
+    (_binary_csrmv_cusparse_kernel, '_binary_csrmv_jax_kernel', (2,)),
+    (_binary_csrmm_cusparse_kernel, '_binary_csrmm_jax_kernel', (2, 4)),
+])
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('nse,uses_cusparse', [(6, True), (7, False)])
+def test_cusparse_kernel_skips_cusparse_beyond_matrix_size(
+    monkeypatch, generator, jax_kernel, vector_shape, homo, nse, uses_cusparse,
+):
+    # Static routing, checked without a GPU: a (2, 3) matrix storing at most 6
+    # entries goes to cuSPARSE; storing more takes the exact pure-JAX kernel.
+    sentinel = object()
+    monkeypatch.setattr(binary_mod, jax_kernel, lambda *a, **kw: sentinel)
+    kernel = generator(
+        jax.ShapeDtypeStruct((1 if homo else nse,), jnp.float32),
+        jax.ShapeDtypeStruct(vector_shape, jnp.float32),
+        (2, 3),
+        True,
+        indices_info=jax.ShapeDtypeStruct((nse,), jnp.int32),
+        outs=[jax.ShapeDtypeStruct((3,) + vector_shape[1:], jnp.float32)],
+    )
+    assert (kernel is not sentinel) == uses_cusparse

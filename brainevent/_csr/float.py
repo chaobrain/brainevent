@@ -28,6 +28,7 @@ from brainevent._misc import (
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
     _csr_to_coo,
+    _cusparse_accepts_nse,
     namescope,
 )
 from brainevent._op import load_cuda_file
@@ -127,6 +128,9 @@ def csrmv(
     For homogeneous weights (``data`` of shape ``(1,)``), ``A[i, j]``
     equals the constant ``data[0]`` for all structural non-zero
     positions.
+
+    Repeated ``(row, col)`` entries (e.g. multapses) add: every stored
+    entry contributes its own term, so ``nse`` may exceed ``m * k``.
 
     References
     ----------
@@ -232,6 +236,11 @@ def _csrmv_cuda_kernel(
         def kernel(weights, indices, indptr, vector):
             v_cast = vector.astype(weight_info.dtype) if vector.dtype != weight_info.dtype else vector
             return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, v_cast)
+
+    elif not _cusparse_accepts_nse(kwargs['indices_info'].size, kwargs['shape']):
+        # Repeated entries outnumber the matrix elements, which cuSPARSE
+        # rejects: the exact pure-JAX kernel adds them instead (#223).
+        return _csrmv_jax_kernel(weight_info, transpose=transpose, **kwargs)
 
     else:
         def kernel(weights, indices, indptr, vector):
@@ -635,6 +644,9 @@ def csrmm(
     equals the constant ``data[0]`` for all structural non-zero
     positions.
 
+    Repeated ``(row, col)`` entries (e.g. multapses) add: every stored
+    entry contributes its own term, so ``nse`` may exceed ``m * k``.
+
     References
     ----------
     .. [1] F. G. Gustavson, "Two Fast Algorithms for Sparse Matrices:
@@ -772,6 +784,11 @@ def _csrmm_cuda_kernel(
 
         def kernel(weights, indices, indptr, B):
             return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
+
+    elif not _cusparse_accepts_nse(kwargs['indices_info'].size, kwargs['shape']):
+        # Repeated entries outnumber the matrix elements, which cuSPARSE
+        # rejects: the exact pure-JAX kernel adds them instead (#223).
+        return _csrmm_jax_kernel(weight_info, transpose=transpose, **kwargs)
 
     else:
         def kernel(weights, indices, indptr, B):
