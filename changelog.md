@@ -217,6 +217,13 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
 - `events @ M` on a default-constructed JITC matrix is event-driven:
   438 µs -> 55 µs per step (n = 100k, p = 0.01, RTX 3090; see the `corder`
   table above for the other directions).
+- `CSRDelayLayout.build` (and `CSR.delay_layout`) sorts one chunk of whole rows
+  at a time, with 16-bit radix keys, and writes its outputs in their final
+  dtypes (#229). Its NumPy temporaries fall from 36-40 to 13 B/edge. The build
+  takes 2.0 s -> 0.29 s at 2e7 edges and 11.8 s -> 1.5 s at 1e8 (CPU); it gains
+  less (4.1 s -> 2.4 s) when `delay_ptr` dominates, with 2e6 rows of 10 edges.
+  The layout is bit-identical. A malformed `indptr` (not starting at 0, or
+  decreasing) now raises a `ValueError` that says so.
 
 ### Known limitations
 

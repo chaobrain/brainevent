@@ -16,7 +16,7 @@
 """Per-edge-delay delivery on a precomputed delay-major CSR layout (#203, #205)."""
 
 from pathlib import Path
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Iterator, Optional, Sequence, Tuple
 
 import brainunit as u
 import jax
@@ -44,6 +44,42 @@ __all__ = [
     'csr_delay_deliver_layout',
     'csr_delay_deliver_layout_p',
 ]
+
+# CSRDelayLayout.build sorts one chunk of whole rows at a time (#229), so its host
+# temporaries scale with the chunk, not with ``nse``.
+#: Edges per chunk; a longer row is a chunk of its own.
+_BUILD_CHUNK_EDGES = 1 << 20
+#: Chunks whose keys ``(row - r0) * n_slots + delay`` span at most this many values sort
+#: ``uint16`` keys, for which NumPy's stable sort is a radix sort.
+_UINT16_KEYS = 1 << 16
+#: Wider chunks sort ``int32`` keys up to this many values, ``int64`` keys beyond.
+_INT32_KEYS = 1 << 31
+#: ``perm`` is ``int32`` for fewer stored edges than this, ``int64`` otherwise.
+_INT32_PERM = 1 << 31
+
+
+def _row_chunks(indptr: np.ndarray, n_slots: int) -> Iterator[Tuple[int, int]]:
+    """Yield ``(r0, r1)``: chunks of whole rows for :meth:`CSRDelayLayout.build`.
+
+    A chunk holds at most ``_BUILD_CHUNK_EDGES`` edges, unless it is a single row, and
+    at most ``_UINT16_KEYS // n_slots`` rows (at least one).
+    """
+    n_pre = indptr.shape[0] - 1
+    max_rows = max(1, _UINT16_KEYS // n_slots)
+    r0 = 0
+    while r0 < n_pre:
+        # the last row boundary within _BUILD_CHUNK_EDGES edges of the chunk's start
+        r1 = int(np.searchsorted(indptr, indptr[r0] + _BUILD_CHUNK_EDGES, side='right')) - 1
+        r1 = min(max(r1, r0 + 1), r0 + max_rows, n_pre)
+        yield r0, r1
+        r0 = r1
+
+
+@jax.jit
+def _take(data, perm):
+    """``data[perm]`` as one compiled gather; eager indexing first materialises the
+    wrapped (non-negative) copy of ``perm``."""
+    return data[perm]
 
 
 @jax.tree_util.register_pytree_node_class
@@ -229,31 +265,60 @@ class CSRDelayLayout:
             raise ValueError(f'delays must have shape ({nse},) or be a scalar; got {delays_np.shape}.')
         _check_concrete_delays(delays_np, n_slots)
 
-        counts = np.diff(indptr_np).astype(np.int64)
-        row_ids = np.repeat(np.arange(n_pre, dtype=np.int64), counts)
-        # Sort by (row, delay); lexsort is stable, so ties keep the original order.
-        perm = np.lexsort((delays_np, row_ids))
-        keys = row_ids * n_slots + delays_np[perm].astype(np.int64)
-        seg_counts = np.bincount(keys, minlength=n_pre * n_slots)
-        delay_ptr = np.zeros(n_pre * n_slots, dtype=np.int64)
-        np.cumsum(seg_counts[:-1], out=delay_ptr[1:])
+        offsets = indptr_np.astype(np.int64)
+        if offsets[0] != 0 or np.any(offsets[1:] < offsets[:-1]):
+            raise ValueError('indptr must start at 0 and be non-decreasing.')
 
         ptr_dtype = indptr_np.dtype if indptr_np.dtype in (np.int32, np.int64) else np.int32
-        perm_dtype = np.int32 if nse < 2 ** 31 else np.int64
+        perm_dtype = np.int32 if nse < _INT32_PERM else np.int64
         data_arr = data if isinstance(data, u.Quantity) else jnp.asarray(data)
         if np.ndim(data_arr) == 0:
             data_arr = data_arr.reshape(1)
         if np.shape(data_arr)[0] not in (1, nse) or np.ndim(data_arr) != 1:
             raise ValueError(f'data must be a scalar, shape (1,) or ({nse},); got {np.shape(data_arr)}.')
-        perm_j = jnp.asarray(perm.astype(perm_dtype))
+
+        # Sort the edges of every row by delay; ties keep their original order. Rows are
+        # contiguous, so a chunk of whole rows [r0, r1) keeps its positions
+        # [indptr[r0], indptr[r1]) in the layout and is sorted on its own: a stable sort
+        # of the keys (row - r0) * n_slots + delay. The outputs are written in their final
+        # dtypes; no array of nse int64 values is made.
+        perm = np.empty(nse, perm_dtype)
+        indices_out = np.empty(nse, np.int32)
+        delays_out = np.empty(nse, np.int32)
+        delay_ptr = np.empty(n_pre * n_slots, ptr_dtype)
+        for r0, r1 in _row_chunks(offsets, n_slots):
+            start, stop = int(offsets[r0]), int(offsets[r1])
+            n_keys = (r1 - r0) * n_slots
+            key_dtype = np.uint16 if n_keys <= _UINT16_KEYS else np.int32 if n_keys <= _INT32_KEYS else np.int64
+            row_keys = (np.arange(r1 - r0, dtype=np.int64) * n_slots).astype(key_dtype)
+            keys = np.repeat(row_keys, np.diff(offsets[r0:r1 + 1]))
+            keys += delays_np[start:stop].astype(key_dtype)
+            order = np.argsort(keys, kind='stable')
+            perm[start:stop] = order + start
+            indices_out[start:stop] = indices_np[start:stop][order].astype(np.int32)
+            delays_out[start:stop] = delays_np[start:stop][order].astype(np.int32)
+            # delay_ptr[i, d]: the first layout position of delay d in row i
+            seg = np.empty(n_keys, np.int64)
+            seg[0] = start
+            np.cumsum(np.bincount(keys, minlength=n_keys)[:-1], out=seg[1:])
+            seg[1:] += start
+            delay_ptr[r0 * n_slots:r1 * n_slots] = seg.astype(ptr_dtype)
+
+        # Move each host array to the device and drop it before the next one.
+        indices_j = jnp.asarray(indices_out)
+        del indices_out
+        delays_j = jnp.asarray(delays_out)
+        del delays_out
+        perm_j = jnp.asarray(perm)
+        del perm
         if np.shape(data_arr)[0] == nse and nse != 1:
-            data_arr = data_arr[perm_j]
+            data_arr = _take(data_arr, perm_j)
         return cls(
             data_arr,
-            jnp.asarray(indices_np[perm].astype(np.int32)),
+            indices_j,
             jnp.asarray(indptr_np.astype(ptr_dtype)),
-            jnp.asarray(delays_np[perm].astype(np.int32)),
-            jnp.asarray(delay_ptr.reshape(n_pre, n_slots).astype(ptr_dtype)),
+            delays_j,
+            jnp.asarray(delay_ptr.reshape(n_pre, n_slots)),
             perm_j,
             shape=(n_pre, n_post),
         )
