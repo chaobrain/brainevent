@@ -31,17 +31,17 @@ from brainevent._misc import (
 )
 from brainevent._structure import StructureCache, is_concrete, nnz_hint, warn_mirror_fallback
 from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
-from .binary import binary_csrmv, binary_csrmm
-from .binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
-from .diag_add import csr_diag_position, csr_diag_add
-from .float import csrmv, csrmm
-from .plasticity_binary import (
+from .binary.binary import binary_csrmv, binary_csrmm
+from .binary.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
+from .diag.diag_add import csr_diag_position, csr_diag_add
+from .float.float import csrmv, csrmm
+from .plasticity.plasticity_binary import (
     update_csr_on_binary_pre, update_csr_on_binary_post, _update_csr_on_binary_post_masked,
 )
-from .plasticity_generic import csr_apply_on_pre, csr_apply_on_post
-from .slice import csr_slice_rows
-from .spsolve import csr_solve
-from .dt2t import csrmv_dt2t
+from .plasticity.plasticity_generic import csr_apply_on_pre, csr_apply_on_post
+from .slice.slice import csr_slice_rows
+from .solve.spsolve import csr_solve
+from .dt2t.dt2t import csrmv_dt2t
 
 __all__ = [
     'CSR',
@@ -1692,7 +1692,7 @@ class CSR(CompressedSparseData):
                    [1., 0.],
                    [0., 2.]], dtype=float32)
         """
-        from .delay import csr_delay_deliver  # pylint: disable=import-outside-toplevel
+        from .delay.delay import csr_delay_deliver  # pylint: disable=import-outside-toplevel
 
         return csr_delay_deliver(
             ring, events, self.data, self.indices, self.indptr, delays, t,
@@ -1739,7 +1739,7 @@ class CSR(CompressedSparseData):
                    [1., 0.],
                    [0., 2.]], dtype=float32)
         """
-        from .delay_layout import CSRDelayLayout  # pylint: disable=import-outside-toplevel
+        from .delay.delay_layout import CSRDelayLayout  # pylint: disable=import-outside-toplevel
 
         return CSRDelayLayout.build(
             self.data, self.indices, self.indptr, delays, n_slots=n_slots, shape=self.shape,

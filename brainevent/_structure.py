@@ -60,7 +60,7 @@ def nnz_hint(indptr) -> Optional[int]:
     """Power-of-two upper bound on the longest line of ``indptr``.
 
     It sizes the ``cuda_raw`` hybrid task queue (see
-    :func:`brainevent._csr.hybrid_config.hybrid_capacity_bound`). Rounding up
+    :func:`brainevent._csr.binary.hybrid_config.hybrid_capacity_bound`). Rounding up
     to a power of two keeps the hint, which lives in the pytree metadata, the
     same across random draws of one connectivity family, so re-drawing a
     matrix does not force a recompilation.

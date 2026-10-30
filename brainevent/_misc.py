@@ -1469,7 +1469,7 @@ def _load_csr_to_csc_cuda_module():
         from ._op import load_cuda_file
 
         _CSR_TO_CSC_CUDA_MODULE = load_cuda_file(
-            Path(__file__).resolve().parent / "_csr" / "csr_to_csc.cu",
+            Path(__file__).resolve().parent / "_csr" / "_support" / "csr_to_csc.cu",
             name="csr_to_csc",
         )
     return _CSR_TO_CSC_CUDA_MODULE

@@ -244,6 +244,13 @@ cython_debug/
 /dev/REVIEW_AND_PLAN.md
 /a.py
 dev/
+!brainevent/_csr/dev/
+!brainevent/_tcsr/dev/
+!brainevent/_dense/dev/
+!brainevent/_fcn/dev/
+!brainevent/_jit_normal/dev/
+!brainevent/_jit_scalar/dev/
+!brainevent/_jit_uniform/dev/
 
 # brainx-sphinx-header build artifacts
 docs/_brand/

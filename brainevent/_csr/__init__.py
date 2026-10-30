@@ -14,27 +14,27 @@
 # ==============================================================================
 
 
-from .binary import binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p
-from .binary_indexed import (
+from .binary.binary import binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p
+from .binary.binary_indexed import (
     binary_csrmv_indexed, binary_csrmv_indexed_p,
     binary_csrmm_indexed, binary_csrmm_indexed_p,
 )
-from .delay import csr_delay_deliver, csr_delay_deliver_p
-from .delay_layout import CSRDelayLayout, csr_delay_deliver_layout, csr_delay_deliver_layout_p
-from .float import csrmv, csrmv_p, csrmm, csrmm_p
-from .hybrid_config import HybridConfig, get_hybrid_config
+from .delay.delay import csr_delay_deliver, csr_delay_deliver_p
+from .delay.delay_layout import CSRDelayLayout, csr_delay_deliver_layout, csr_delay_deliver_layout_p
+from .float.float import csrmv, csrmv_p, csrmm, csrmm_p
+from .binary.hybrid_config import HybridConfig, get_hybrid_config
 from .main import CSR, CSC
-from .initialize import init_csr_config
-from .plasticity_binary import (
+from .binary.initialize import init_csr_config
+from .plasticity.plasticity_binary import (
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
     update_csc_on_binary_pre,
     update_csc_on_binary_post,
 )
-from .plasticity_generic import csr_apply_on_pre, csr_apply_on_post
-from .slice import csr_slice_rows, csr_slice_rows_p
-from .spsolve import csr_solve
-from .dt2t import csrmv_dt2t, cscmv_dt2t, csrmv_dt2t_p, csrmm_dt2t, cscmm_dt2t, csrmm_dt2t_p
+from .plasticity.plasticity_generic import csr_apply_on_pre, csr_apply_on_post
+from .slice.slice import csr_slice_rows, csr_slice_rows_p
+from .solve.spsolve import csr_solve
+from .dt2t.dt2t import csrmv_dt2t, cscmv_dt2t, csrmv_dt2t_p, csrmm_dt2t, cscmm_dt2t, csrmm_dt2t_p
 
 __all__ = [
     'CSR', 'CSC',

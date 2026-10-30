@@ -28,7 +28,8 @@ from brainevent._data import JITCMatrix, _resolve_corder
 from brainevent._jitc_structure import JITCStructure
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitsmv, binary_jitsmm
-from .csr import jits_structure, jits_to_csr
+from .csr import jits_to_csr
+from .csr.csr import jits_structure
 from .float import jits, jitsmv, jitsmm
 from .dt2t import jitsmv_dt2t
 

@@ -27,11 +27,15 @@ build-backend = "setuptools.build_meta"
 # "py.typed" is the PEP 561 marker that tells downstream type checkers brainevent ships
 # inline type information; it must be bundled in the wheel to have any effect.
 "brainevent" = ["include/brainevent/*.h", "py.typed"]
+# Tile MM loads both local CUDA headers at runtime.
+"brainevent._tcsr.binary.tile_mm" = ["*.cu", "*.cuh"]
 
 
 [tool.setuptools.packages.find]
 exclude = [
     "dev*",
+    "*.dev",
+    "*.dev.*",
     "docs*",
     "tests*",
     "examples*",
@@ -125,6 +129,7 @@ testing = ['pytest', 'pytest-cov']
 # Run ONLY the slow variants with:                     pytest -m slow
 # CI runs the full suite (see .github/workflows/CI.yml).
 testpaths = ["brainevent"]
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "dev"]
 addopts = "-m 'not slow'"
 markers = [
     "slow: compilation-heavy backend variants (numba/native); deselected by default, run in CI via `pytest -m ''`",
@@ -138,7 +143,7 @@ markers = [
 # import must resolve to `Any` via ignore_missing_imports. python_version and
 # platform are pinned so the mypy verdict reproduces exactly on CI.
 files = ["brainevent"]
-exclude = ['_test\.py$']
+exclude = ['_test\.py$', '(^|/)dev/']
 python_version = "3.13"
 platform = "linux"
 ignore_missing_imports = true

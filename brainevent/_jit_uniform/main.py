@@ -30,7 +30,8 @@ from brainevent._jitc_structure import JITCStructure
 from brainevent._error import UnsupportedOperationError
 from brainevent._typing import MatrixShape, WeightScalar
 from .binary import binary_jitumv, binary_jitumm
-from .csr import jitu_structure, jitu_to_csr
+from .csr import jitu_to_csr
+from .csr.csr import jitu_structure
 from .float import jitu, jitumv, jitumm
 from .dt2t import jitumv_dt2t
 

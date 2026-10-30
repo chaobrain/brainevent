@@ -312,11 +312,11 @@ def strip_hybrid_suffix(name):
     Notes
     -----
     The hybrid ``.so`` module names embed the active
-    :func:`~brainevent._csr.hybrid_config.get_hybrid_config` so different configs
+    :func:`~brainevent._csr.binary.hybrid_config.get_hybrid_config` so different configs
     compile to distinct modules. These tests only care about the logical module
     identity, so the suffix is normalised away to stay config-agnostic.
     """
-    from brainevent._csr.hybrid_config import get_hybrid_config, module_suffix_for_config
+    from brainevent._csr.binary.hybrid_config import get_hybrid_config, module_suffix_for_config
 
     suffix = module_suffix_for_config(get_hybrid_config())
     return name.replace(suffix, '') if suffix else name

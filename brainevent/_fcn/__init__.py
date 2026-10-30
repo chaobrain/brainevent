@@ -22,7 +22,7 @@ from .binary import (
 from .float import fcnmv, fcnmm
 from .dt2t import fcnmv_dt2t, fcnmm_dt2t
 from .main import FixedNumConn, FixedNumPerPost, FixedNumPerPre
-from .plasticity_binary import (
+from .plasticity import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
     fcn_plasticity_row_p,

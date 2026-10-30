@@ -26,9 +26,9 @@ import numpy as np
 if TYPE_CHECKING:
     from brainevent._csr.main import CSR
 
-from brainevent._csr.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
-from brainevent._csr.plasticity_binary import update_csr_on_binary_post, _update_csr_on_binary_post_masked
-from brainevent._csr.slice import csr_slice_rows
+from brainevent._csr.binary.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
+from brainevent._csr.plasticity.plasticity_binary import update_csr_on_binary_post, _update_csr_on_binary_post_masked
+from brainevent._csr.slice.slice import csr_slice_rows
 from brainevent._data import DataRepresentation
 from brainevent._structure import StructureCache, is_concrete, nnz_hint, warn_mirror_fallback
 from brainevent._event.dispatch import as_event_operand
@@ -40,7 +40,7 @@ from brainevent._misc import (
 from brainevent._typing import ArrayData, Data, MatrixShape, Index
 from .binary import binary_fcnmv, binary_fcnmm
 from .float import fcnmv, fcnmm
-from .plasticity_binary import (
+from .plasticity import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
 )

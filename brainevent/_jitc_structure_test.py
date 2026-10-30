@@ -24,7 +24,8 @@ import pytest
 
 import brainevent
 from brainevent._jit_normal.csr import jitn_to_csr
-from brainevent._jit_scalar.csr import jits_structure, jits_to_csr
+from brainevent._jit_scalar.csr import jits_to_csr
+from brainevent._jit_scalar.csr.csr import jits_structure
 from brainevent._jit_uniform.csr import jitu_to_csr
 from brainevent._jitc_structure import JITCStructure
 from brainevent._test_util import jax_x64_enabled
