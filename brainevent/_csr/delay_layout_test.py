@@ -25,6 +25,7 @@ from brainevent import (
     BinaryArray, CSR, CSRDelayLayout, WeightedArray, csr_delay_deliver, csr_delay_deliver_layout,
     csr_delay_deliver_layout_p,
 )
+from brainevent._csr import delay_layout as delay_layout_mod
 from brainevent._csr.delay_layout import _benchmark_data, csr_delay_deliver_layout_p_call
 from brainevent._csr.delay_test import make_csr, make_events, reference
 from brainevent._test_util import jax_x64_enabled, requires_gpu
@@ -162,6 +163,183 @@ class TestBuild:
         lay2 = csr.delay_layout(dl, n_slots=L)
         np.testing.assert_array_equal(np.asarray(lay2.indices), np.asarray(lay.indices))
         np.testing.assert_array_equal(np.asarray(lay2.data), np.asarray(lay.data))
+
+
+# ---------------------------------------------------------------------------
+# The chunked build against the algorithm it replaced (#229)
+# ---------------------------------------------------------------------------
+
+def _build_c8f65a1(data, indices, indptr, delays, *, n_slots, shape, int32_perm=2 ** 31):
+    """``CSRDelayLayout.build`` as of main c8f65a1 (one lexsort over all edges), frozen.
+
+    Returns the six layout arrays in the order of :meth:`CSRDelayLayout.tree_flatten`.
+    ``int32_perm`` stands for the literal ``2 ** 31`` of the perm-dtype choice, so that a
+    test can lower it together with ``delay_layout._INT32_PERM``.
+    """
+    n_pre = int(shape[0])
+    indices_np = np.asarray(indices)
+    indptr_np = np.asarray(indptr)
+    nse = indices_np.shape[0]
+    delays_np = np.asarray(delays)
+    if delays_np.size == 1 and delays_np.shape != (nse,):
+        delays_np = np.broadcast_to(delays_np.reshape(()), (nse,))
+    counts = np.diff(indptr_np).astype(np.int64)
+    row_ids = np.repeat(np.arange(n_pre, dtype=np.int64), counts)
+    perm = np.lexsort((delays_np, row_ids))
+    keys = row_ids * n_slots + delays_np[perm].astype(np.int64)
+    seg_counts = np.bincount(keys, minlength=n_pre * n_slots)
+    delay_ptr = np.zeros(n_pre * n_slots, dtype=np.int64)
+    np.cumsum(seg_counts[:-1], out=delay_ptr[1:])
+    ptr_dtype = indptr_np.dtype if indptr_np.dtype in (np.int32, np.int64) else np.int32
+    perm_dtype = np.int32 if nse < int32_perm else np.int64
+    data_arr = data if isinstance(data, u.Quantity) else jnp.asarray(data)
+    if np.ndim(data_arr) == 0:
+        data_arr = data_arr.reshape(1)
+    perm_j = jnp.asarray(perm.astype(perm_dtype))
+    if np.shape(data_arr)[0] == nse and nse != 1:
+        data_arr = data_arr[perm_j]
+    return (
+        data_arr,
+        jnp.asarray(indices_np[perm].astype(np.int32)),
+        jnp.asarray(indptr_np.astype(ptr_dtype)),
+        jnp.asarray(delays_np[perm].astype(np.int32)),
+        jnp.asarray(delay_ptr.reshape(n_pre, n_slots).astype(ptr_dtype)),
+        perm_j,
+    )
+
+
+def _random_csr(rng, n_pre, n_post, max_conn, n_slots, indptr_dtype, delay_dtype, *, long_row=0):
+    """Random CSR: empty rows, repeated targets in a row (multapses), few distinct delays
+    (many ties) and optionally one row of ``long_row`` edges."""
+    counts = rng.integers(0, max_conn + 1, n_pre)
+    counts[rng.random(n_pre) < 0.2] = 0
+    if long_row and n_pre:
+        counts[rng.integers(n_pre)] = long_row
+    indptr = np.concatenate([[0], np.cumsum(counts)]).astype(indptr_dtype)
+    nse = int(indptr[-1])
+    indices = rng.integers(0, max(1, n_post // 3), nse).astype(np.int32)  # repeats in a row
+    hi = min(n_slots, 4) if rng.random() < 0.5 else n_slots  # half the cases: many ties
+    hi = min(hi, int(np.iinfo(delay_dtype).max) + 1)
+    delays = rng.integers(1, hi, nse).astype(delay_dtype)
+    weights = rng.normal(size=nse).astype(np.float32)
+    return weights, indices, indptr, delays
+
+
+def _assert_same_layout(lay, ref):
+    got = jax.tree_util.tree_leaves(lay, is_leaf=lambda x: isinstance(x, u.Quantity))
+    assert len(got) == len(ref) == 6
+    for name, a, b in zip(('data', 'indices', 'indptr', 'delays', 'delay_ptr', 'perm'), got, ref):
+        assert type(a) is type(b), name
+        if isinstance(b, u.Quantity):
+            assert u.get_unit(a) == u.get_unit(b), name
+        ma, mb = u.get_mantissa(a), u.get_mantissa(b)
+        assert ma.dtype == mb.dtype and ma.shape == mb.shape, (name, ma.dtype, mb.dtype, ma.shape, mb.shape)
+        np.testing.assert_array_equal(np.asarray(ma), np.asarray(mb), err_msg=name)
+
+
+class TestBuildMatchesC8f65a1:
+    """The chunked build gives the layout of the algorithm it replaced: the same perm (the
+    same stable tie order), the same arrays and the same dtypes."""
+
+    @pytest.mark.parametrize('chunk_edges', [1 << 20, 7, 1])
+    @pytest.mark.parametrize('indptr_dtype', [np.int32, np.int64])
+    @pytest.mark.parametrize('delay_dtype', [np.int32, np.int64, np.uint8])
+    def test_random_csrs(self, monkeypatch, chunk_edges, indptr_dtype, delay_dtype):
+        # chunk_edges 7 and 1: many chunks, rows longer than a chunk, chunk ends at empty rows
+        monkeypatch.setattr(delay_layout_mod, '_BUILD_CHUNK_EDGES', chunk_edges)
+        rng = np.random.default_rng(int(chunk_edges) * 7 + np.dtype(indptr_dtype).itemsize
+                                    + np.dtype(delay_dtype).itemsize)
+        with jax_x64_enabled():
+            for case in range(12):
+                n_pre = int(rng.integers(0, 60)) if case else 0
+                n_post = int(rng.integers(1, 40))
+                n_slots = int(rng.choice([2, 3, 7, 50, 300]))
+                csr = _random_csr(rng, n_pre, n_post, int(rng.integers(0, 12)), n_slots, indptr_dtype,
+                                  delay_dtype, long_row=40 if case % 3 == 0 else 0)
+                w, idx, ipt, dl = csr
+                for data in (jnp.asarray(w), jnp.asarray(w[:1]) if w.size else jnp.float32(0.5),
+                             0.25, jnp.asarray(w) * u.mV):
+                    kw = dict(n_slots=n_slots, shape=(n_pre, n_post))
+                    _assert_same_layout(CSRDelayLayout.build(data, idx, ipt, dl, **kw),
+                                        _build_c8f65a1(data, idx, ipt, dl, **kw))
+                if idx.size:  # a scalar delay
+                    kw = dict(n_slots=n_slots, shape=(n_pre, n_post))
+                    _assert_same_layout(CSRDelayLayout.build(jnp.asarray(w), idx, ipt, 1, **kw),
+                                        _build_c8f65a1(jnp.asarray(w), idx, ipt, 1, **kw))
+
+    def test_x64_disabled(self):
+        # without x64, int64 indptr and delay_ptr become int32 on the device as before
+        rng = np.random.default_rng(11)
+        w, idx, ipt, dl = _random_csr(rng, 30, 20, 8, 9, np.int64, np.int64)
+        kw = dict(n_slots=9, shape=(30, 20))
+        _assert_same_layout(CSRDelayLayout.build(jnp.asarray(w), idx, ipt, dl, **kw),
+                            _build_c8f65a1(jnp.asarray(w), idx, ipt, dl, **kw))
+
+    @pytest.mark.parametrize('n_slots', [2 ** 16, 2 ** 16 + 1])
+    def test_rings_at_the_16_bit_key_limit(self, n_slots):
+        # 2**16 slots: one row per chunk, uint16 keys up to 65535; one more: int32 keys
+        rng = np.random.default_rng(n_slots)
+        w, idx, ipt, dl = _random_csr(rng, 5, 10, 30, n_slots, np.int32, np.int32)
+        dl[:3] = n_slots - 1
+        kw = dict(n_slots=n_slots, shape=(5, 10))
+        _assert_same_layout(CSRDelayLayout.build(jnp.asarray(w), idx, ipt, dl, **kw),
+                            _build_c8f65a1(jnp.asarray(w), idx, ipt, dl, **kw))
+
+    @pytest.mark.parametrize('keys', ['int32', 'int64'])
+    def test_wide_key_fallbacks(self, monkeypatch, keys):
+        """The int32 and int64 key paths (rings longer than 2**16 and 2**31 slots), reached
+        by lowering their thresholds."""
+        monkeypatch.setattr(delay_layout_mod, '_UINT16_KEYS', 1)
+        if keys == 'int64':
+            monkeypatch.setattr(delay_layout_mod, '_INT32_KEYS', 1)
+        seen = []
+        argsort = np.argsort
+
+        def spy(a, *args, **kwargs):
+            seen.append(a.dtype)
+            return argsort(a, *args, **kwargs)
+
+        monkeypatch.setattr(delay_layout_mod.np, 'argsort', spy)
+        rng = np.random.default_rng(5)
+        with jax_x64_enabled():
+            for n_slots in (2, 7, 300):
+                w, idx, ipt, dl = _random_csr(rng, 40, 30, 10, n_slots, np.int64, np.int64, long_row=25)
+                kw = dict(n_slots=n_slots, shape=(40, 30))
+                _assert_same_layout(CSRDelayLayout.build(jnp.asarray(w), idx, ipt, dl, **kw),
+                                    _build_c8f65a1(jnp.asarray(w), idx, ipt, dl, **kw))
+        assert set(seen) == {np.dtype(keys)}
+
+    def test_int64_perm_fallback(self, monkeypatch):
+        """``nse >= 2**31`` gives an int64 perm, reached by lowering the threshold."""
+        monkeypatch.setattr(delay_layout_mod, '_INT32_PERM', 10)
+        rng = np.random.default_rng(9)
+        with jax_x64_enabled():
+            w, idx, ipt, dl = _random_csr(rng, 20, 15, 6, 5, np.int64, np.int32)
+            assert idx.size >= 10
+            kw = dict(n_slots=5, shape=(20, 15))
+            lay = CSRDelayLayout.build(jnp.asarray(w), idx, ipt, dl, **kw)
+            assert lay.perm.dtype == np.int64
+            _assert_same_layout(lay, _build_c8f65a1(jnp.asarray(w), idx, ipt, dl, int32_perm=10, **kw))
+
+    def test_chunks_cover_the_rows(self, monkeypatch):
+        monkeypatch.setattr(delay_layout_mod, '_BUILD_CHUNK_EDGES', 10)
+        indptr = np.array([0, 0, 4, 30, 30, 31, 35, 50, 50], np.int64)  # a 26-edge row, empty rows
+        for n_slots in (2, 7, 2 ** 15, 2 ** 17):
+            chunks = list(delay_layout_mod._row_chunks(indptr, n_slots))
+            assert [r0 for r0, _ in chunks] == [0] + [r1 for _, r1 in chunks[:-1]] and chunks[-1][1] == 8
+            for r0, r1 in chunks:
+                assert r1 - r0 <= max(1, 2 ** 16 // n_slots)
+                assert r1 - r0 == 1 or indptr[r1] - indptr[r0] <= 10
+        assert list(delay_layout_mod._row_chunks(np.zeros(1, np.int64), 7)) == []
+
+    @pytest.mark.parametrize('indptr', [[1, 3, 3], [0, 3, 2, 3]])
+    def test_malformed_indptr(self, indptr):
+        # main raised a ValueError from lexsort (rows do not cover the edges) or from
+        # np.repeat (a negative row length); the message now names the problem
+        indptr = np.asarray(indptr, np.int32)
+        n_pre = indptr.size - 1
+        with pytest.raises(ValueError, match='indptr must start at 0 and be non-decreasing'):
+            CSRDelayLayout.build(jnp.ones(3), np.zeros(3, np.int32), indptr, 1, n_slots=3, shape=(n_pre, 2))
 
 
 # ---------------------------------------------------------------------------
