@@ -18,6 +18,7 @@ import jax.numpy as jnp
 from jax.experimental import sparse
 from jax.experimental.sparse import BCOO
 
+from brainevent._compatible_import import match_varying_axes
 from brainevent._misc import namescope
 
 __all__ = [
@@ -76,6 +77,10 @@ def sddmm_indices(
     result_data = sparse.bcoo_dot_general_sampled(
         A, B, indices, dimension_numbers=(((1,), (0,)), ((), ()))
     )
+    # Under shard_map, jax's bcoo_dot_general_sampled types its result as replicated
+    # even when A, B or indices vary over manual mesh axes; its values are per shard.
+    # Re-type it as varying over them (#245).
+    result_data = match_varying_axes(result_data, A, B, indices)
     return BCOO((result_data, indices), shape=(A.shape[0], B.shape[1]))
 
 

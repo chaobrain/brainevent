@@ -343,5 +343,39 @@ class TestSddmmConsistency(unittest.TestCase):
         self.assertTrue(jnp.any(dB != 0))
 
 
+class TestSddmmUnderShardMap(unittest.TestCase):
+    """#245: jax's ``bcoo_dot_general_sampled`` types its result as replicated under
+    ``shard_map``; ``sddmm_indices`` re-types it as varying like its operands."""
+
+    def _run(self, a_spec):
+        from jax.sharding import PartitionSpec as P
+        from brainevent._compatible_import import varying_axes
+
+        A = jnp.arange(6, dtype=jnp.float32).reshape(2, 3) + 1
+        B = jnp.arange(12, dtype=jnp.float32).reshape(3, 4) / 2
+        indices = jnp.array([[0, 0], [1, 2], [0, 3]], dtype=jnp.int32)
+        seen = []
+
+        def local(A_, B_):
+            A_ = A_[0] if a_spec == P('s') else A_
+            data = sddmm_indices(A_, B_[0], indices).data
+            seen.append(varying_axes(jax.typeof(data)))
+            return data[None]
+
+        mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ('s',))
+        f = jax.shard_map(local, mesh=mesh, in_specs=(a_spec, P('s')), out_specs=P('s'))
+        got = jax.jit(f)(A[None] if a_spec == P('s') else A, B[None])
+        self.assertEqual(seen, [frozenset({'s'})])
+        np.testing.assert_allclose(got[0], sddmm_indices(A, B, indices).data)
+
+    def test_varying_operands(self):
+        from jax.sharding import PartitionSpec as P
+        self._run(P('s'))
+
+    def test_one_replicated_operand(self):
+        from jax.sharding import PartitionSpec as P
+        self._run(P())
+
+
 if __name__ == '__main__':
     unittest.main()

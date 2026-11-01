@@ -15,7 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
-"""Comprehensive tests for brainevent._compatible_import.init_zero."""
+"""Tests for brainevent._compatible_import: init_zero and the vma helpers (#245)."""
 
 import contextlib
 import unittest
@@ -25,7 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._compatible_import import init_zero
+from brainevent._compatible_import import init_zero, match_varying_axes, pvary, varying_axes, with_varying_axes
 
 
 @contextlib.contextmanager
@@ -352,6 +352,67 @@ class TestInitZeroIdempotency(unittest.TestCase):
             init_zero(jnp.array(1.0, dtype=jnp.float32))
         except Exception as e:
             self.fail(f"init_zero raised unexpectedly: {e}")
+
+
+def _in_shard_map(f, check_vma=True):
+    """Trace ``f(x_varying, y_replicated)`` inside ``shard_map`` on a 1-device mesh (a
+    size-1 mesh axis is still tracked) and return what ``f`` returned."""
+    mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ('s',))
+    out = []
+
+    def local(x, y):
+        out.append(f(x[0], y))
+        return x
+
+    P = jax.sharding.PartitionSpec
+    jax.make_jaxpr(jax.shard_map(local, mesh=mesh, in_specs=(P('s'), P()), out_specs=P('s'),
+                                 check_vma=check_vma))(jnp.ones((1, 2), jnp.float32), jnp.ones((2,), jnp.float32))
+    return out[0]
+
+
+class TestVaryingAxes(unittest.TestCase):
+    """The vma accessors behave the same on every supported jax version (#245)."""
+
+    def test_empty_outside_shard_map(self):
+        self.assertEqual(varying_axes(jax.typeof(jnp.ones(3))), frozenset())
+
+    def test_empty_for_values_without_the_field(self):
+        self.assertEqual(varying_axes(object()), frozenset())
+
+    def test_varying_and_replicated_operands_inside_shard_map(self):
+        got = _in_shard_map(lambda x, y: (varying_axes(jax.typeof(x)), varying_axes(jax.typeof(y))))
+        self.assertEqual(got, (frozenset({'s'}), frozenset()))
+
+    def test_empty_under_check_vma_false(self):
+        got = _in_shard_map(lambda x, y: varying_axes(jax.typeof(x)), check_vma=False)
+        self.assertEqual(got, frozenset())
+
+    def test_with_varying_axes_keeps_shape_and_dtype(self):
+        def f(x, y):
+            aval = with_varying_axes(jax.core.ShapedArray((3, 4), jnp.int32), frozenset({'s'}),
+                                     jax.typeof(x).sharding.mesh)
+            return aval.shape, aval.dtype, varying_axes(aval)
+
+        self.assertEqual(_in_shard_map(f), ((3, 4), jnp.dtype('int32'), frozenset({'s'})))
+
+    def test_pvary_marks_a_replicated_value_varying(self):
+        def f(x, y):
+            z = pvary(y, ('s',))
+            return varying_axes(jax.typeof(z)), z.shape, z.dtype
+
+        self.assertEqual(_in_shard_map(f), (frozenset({'s'}), (2,), jnp.dtype('float32')))
+
+    def test_match_varying_axes(self):
+        def f(x, y):
+            return (varying_axes(jax.typeof(match_varying_axes(y, x, y))),  # re-typed
+                    match_varying_axes(x, y) is x,  # already varying
+                    match_varying_axes(y, y) is y)  # nothing varies
+
+        self.assertEqual(_in_shard_map(f), (frozenset({'s'}), True, True))
+
+    def test_match_varying_axes_outside_shard_map_is_identity(self):
+        x = jnp.ones(3)
+        self.assertIs(match_varying_axes(x, jnp.zeros(2)), x)
 
 
 if __name__ == '__main__':

@@ -352,7 +352,7 @@ def _dt2t_transpose(p_call, jax_kernel, ct, y, w, indices, indptr, *, shape, tra
         if type(ct) is ad.Zero:
             return ad.Zero(y.aval), w, indices, indptr
         kernel = jax_kernel(shape=shape, transpose=transpose, **kwargs)
-        y_info = jax.ShapeDtypeStruct(y.aval.shape, y.aval.dtype)
+        y_info = y.aval  # keeps the varying manual axes under shard_map (#245)
         ct_y, = jax.linear_transpose(lambda y_: kernel(y_, w, indices, indptr)[0], y_info)(ct)
         return ct_y, w, indices, indptr
     if type(ct) is ad.Zero:

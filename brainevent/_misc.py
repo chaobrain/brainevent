@@ -23,7 +23,7 @@ import numpy as np
 from jax.experimental.sparse import coo_todense_p
 
 from ._typing import MatrixShape, Data, Index
-from ._compatible_import import Tracer
+from ._compatible_import import Tracer, match_varying_axes
 
 
 # -*- coding: utf-8 -*-
@@ -609,6 +609,34 @@ def _cusparse_accepts_nse(nse: int, shape: MatrixShape) -> bool:
         ``True`` when ``nse <= rows * cols``.
     """
     return int(nse) <= int(shape[0]) * int(shape[1])
+
+
+def _cusparse_product(fn, mat, events, **kwargs):
+    """``fn(mat, events, **kwargs)`` for a ``jax.experimental.sparse`` CSR product.
+
+    Under ``jax.shard_map``, ``csr_matvec`` and ``csr_matmat`` type their result
+    as replicated over the manual mesh axes, although it is computed per shard
+    from operands that may vary over them. The result is re-typed as varying
+    like its operands, so it matches the other branch of a ``lax.cond`` (#245).
+
+    Parameters
+    ----------
+    fn : callable
+        ``jax.experimental.sparse.csr_matvec`` or ``csr_matmat``.
+    mat : jax.experimental.sparse.CSR
+        The sparse matrix.
+    events : jax.Array
+        The dense vector or matrix.
+    **kwargs
+        Forwarded to ``fn`` (e.g. ``transpose``).
+
+    Returns
+    -------
+    jax.Array
+        The product.
+    """
+    out = fn(mat, events, **kwargs)
+    return match_varying_axes(out, mat.data, mat.indices, mat.indptr, events)
 
 
 def _csr_todense(

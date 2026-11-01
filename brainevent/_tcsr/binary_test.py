@@ -1909,6 +1909,37 @@ def test_repeated_entries_add(binary_backend, homogeneous, weighted, m, k, nse):
             np.testing.assert_allclose(np.asarray(out), factor @ dense, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize(
+    "binary_backend",
+    [b for b in ("jax", "cuda_raw", "cusparse")
+     if b in binary_csrmv_p.available_backends(jax.default_backend()) or b == "jax"],
+)
+@pytest.mark.parametrize("homogeneous", [False, True])
+def test_products_under_shard_map_keep_the_varying_axes(binary_backend, homogeneous):
+    """#245: under ``shard_map`` the products vary like the events (the cuSPARSE
+    library product included) and equal the unsharded ones."""
+    from jax.sharding import PartitionSpec as P
+    from brainevent._compatible_import import varying_axes
+
+    with _explicit_int64_allowed():
+        matrix, dense = _repeated_entry_tcsr(binary_backend, homogeneous, 6, 5, 20)
+        x = np.asarray([1., 0., 2., 0., 3., 1.], np.float32)
+        X = np.stack([x, 2 * x[::-1], x])
+        types = []
+
+        def local(x_, X_):
+            y, Y = BinaryArray(x_[0]) @ matrix, BinaryArray(X_[0]) @ matrix
+            types.append((varying_axes(jax.typeof(y)), varying_axes(jax.typeof(Y))))
+            return y[None], Y[None]
+
+        mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ("s",))
+        f = jax.shard_map(local, mesh=mesh, in_specs=(P("s"), P("s")), out_specs=(P("s"), P("s")))
+        y, Y = jax.jit(f)(jnp.asarray(x)[None], jnp.asarray(X)[None])
+        assert types == [(frozenset({"s"}), frozenset({"s"}))]
+        np.testing.assert_allclose(np.asarray(y[0]), (x != 0) @ dense, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(np.asarray(Y[0]), (X != 0) @ dense, rtol=1e-4, atol=1e-4)
+
+
 @pytest.mark.parametrize("generator,jax_kernel,rank", [
     ("_binary_csrmv_cusparse_kernel", "_binary_csrmv_jax_kernel", 1),
     ("_binary_csrmm_cusparse_kernel", "_binary_csrmm_jax_kernel", 2),

@@ -19,12 +19,12 @@ import os
 import re
 import warnings
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import jax
 from jax.interpreters import batching, ad, mlir
 
-from brainevent._compatible_import import Primitive, apply_primitive
+from brainevent._compatible_import import Primitive, apply_primitive, pvary, varying_axes, with_varying_axes
 from brainevent._error import KernelCompilationError, KernelFallbackExhaustedError
 from brainevent._registry import register_primitive
 from brainevent._typing import KernelGenerator
@@ -76,6 +76,60 @@ def xla_gpu_deterministic_ops() -> bool:
     """
     values = _XLA_GPU_DETERMINISTIC_OPS.findall(os.environ.get('XLA_FLAGS', ''))
     return bool(values) and values[-1].lower() in ('', 'true', '1')
+
+
+def _union_varying_axes(avals: Sequence) -> tuple[frozenset, Any]:
+    """The union of the varying manual axes of ``avals``, and their mesh.
+
+    Parameters
+    ----------
+    avals : sequence of jax.core.AbstractValue
+        The abstract inputs of a primitive.
+
+    Returns
+    -------
+    tuple
+        ``(vma, mesh)``: the union of the varying axes (empty outside
+        ``jax.shard_map`` or under ``check_vma=False``), and the mesh of the
+        first input that varies (``None`` when none does).
+    """
+    vma: frozenset = frozenset()
+    mesh = None
+    for aval in avals:
+        axes = varying_axes(aval)
+        if axes:
+            vma |= axes
+            if mesh is None:
+                mesh = aval.sharding.mesh
+    return vma, mesh
+
+
+def _pvary_to_union(ins: Sequence) -> tuple:
+    """Mark every input varying over the union of the inputs' manual axes.
+
+    jax's own primitives do this for operands of different ``vma`` (an
+    implicit ``pvary``), so that reverse mode sums the cotangent of a
+    replicated operand over the shards. Inputs already varying over the
+    union, and all inputs outside ``jax.shard_map``, are returned as is.
+
+    Parameters
+    ----------
+    ins : sequence
+        The operands of a primitive call.
+
+    Returns
+    -------
+    tuple
+        The operands, each varying over the union.
+    """
+    in_vmas = [varying_axes(jax.typeof(x)) for x in ins]
+    vma = frozenset().union(*in_vmas)
+    if all(v == vma for v in in_vmas):
+        return tuple(ins)
+    return tuple(
+        x if v == vma else pvary(x, sorted(vma - v, key=str))
+        for x, v in zip(ins, in_vmas)
+    )
 
 
 @dataclass
@@ -355,15 +409,17 @@ class XLACustomKernel:
 
         This method defines how JAX determines the shape and dtype of the
         primitive's outputs based on its inputs, without performing the
-        actual computation.  In this implementation the output shapes and
-        dtypes are explicitly provided via the ``outs`` parameter during
-        the ``primitive.bind`` call and are returned directly.
+        actual computation.  The output shapes and dtypes are explicitly
+        provided via the ``outs`` parameter during the ``primitive.bind``
+        call.  Under ``jax.shard_map``, each output also varies over the
+        union of the manual mesh axes the inputs vary over (their ``vma``),
+        as for JAX's own primitives (#245).
 
         Parameters
         ----------
         *ins : jax.core.ShapedArray
-            Abstract values corresponding to the input operands.  Not
-            directly used because the output specification is pre-determined.
+            Abstract values corresponding to the input operands.  Only
+            their varying manual axes are used.
         outs : OutType
             A sequence of ``jax.core.ShapedArray`` objects specifying the
             expected shape and dtype of each output.
@@ -374,9 +430,13 @@ class XLACustomKernel:
         Returns
         -------
         tuple of jax.core.ShapedArray
-            The abstract output types, identical to the ``outs`` parameter.
+            The ``outs``, typed as varying over the inputs' manual axes when
+            there are any; otherwise the ``outs`` themselves.
         """
-        return tuple(outs)
+        vma, mesh = _union_varying_axes(ins)
+        if not vma:
+            return tuple(outs)
+        return tuple(with_varying_axes(out, vma, mesh) for out in outs)
 
     def __call__(self, *ins, outs: OutType, **kwargs):
         """Invoke the primitive with the given inputs and output specification.
@@ -430,6 +490,12 @@ class XLACustomKernel:
         results are then unflattened to match the original pytree
         structure.
 
+        Under ``jax.shard_map``, inputs that vary over fewer manual mesh
+        axes than the others are first marked varying over all of them
+        (``jax.lax.pcast(..., to='varying')``), as JAX's own primitives
+        do.  Reverse mode then sums the cotangent of a replicated input
+        over the shards (#245).
+
         Examples
         --------
         .. code-block:: python
@@ -455,6 +521,7 @@ class XLACustomKernel:
                 ) from exc
 
         flat_outs, tree_def = abstract_arguments(outs)
+        ins = _pvary_to_union(ins)
         r = self.primitive.bind(*ins, **kwargs, outs=tuple(flat_outs))
         if len(r) != len(flat_outs):
             raise ValueError('The number of outputs does not match the expected.')

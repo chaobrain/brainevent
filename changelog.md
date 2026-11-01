@@ -122,6 +122,19 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
 
 ### Fixed
 
+- **Every primitive keeps the varying manual axes (`vma`) under `jax.shard_map`
+  (#245).** With `check_vma=True` (the default), outputs were typed as
+  replicated over the mesh axes, even when the inputs varied over them. A
+  `fori_loop` or `scan` whose carry was a brainevent output then raised a
+  `TypeError`. Reverse mode summed each shard's cotangent over all shards, so a
+  per-shard weight gradient also contained the other shards' gradients; with
+  replicated weights, `jax.grad` raised `ValueError`. Each output now varies
+  over the union of the inputs' axes. An operand that varies over fewer axes is
+  first marked varying (`jax.lax.pcast`), as jax primitives do, so the
+  cotangent of a replicated operand is summed over the shards. The dt2t `y`
+  cotangent, the CSR mat-mat weight cotangent (SDDMM) and the `cusparse`
+  binary products keep the axes too; jax's `jax.experimental.sparse` ops drop
+  them. Outside `shard_map` and under `check_vma=False`, nothing changes.
 - **`CSR.solve` / `CSC.solve` / `csr_solve` add repeated entries and accept
   unsorted columns (#225).** jax's `spsolve` assumes a canonical CSR. With a
   repeated `(row, col)` entry, the GPU (cuSOLVER) solve kept one copy and
