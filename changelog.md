@@ -131,10 +131,16 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
   replicated weights, `jax.grad` raised `ValueError`. Each output now varies
   over the union of the inputs' axes. An operand that varies over fewer axes is
   first marked varying (`jax.lax.pcast`), as jax primitives do, so the
-  cotangent of a replicated operand is summed over the shards. The dt2t `y`
-  cotangent, the CSR mat-mat weight cotangent (SDDMM) and the `cusparse`
-  binary products keep the axes too; jax's `jax.experimental.sparse` ops drop
-  them. Outside `shard_map` and under `check_vma=False`, nothing changes.
+  cotangent of a replicated operand is summed over the shards. This cast is
+  made even when `jax_auto_pcast` is `False`, which makes jax's own operations
+  reject such operands instead; it is the cast jax inserts by default, and the
+  gradients are correct. The dt2t `y` cotangent, the `cusparse` binary products,
+  the `cublas` dense binary products and the TCSR `cuda_raw` weight cotangents
+  keep the axes too (jax's `jax.experimental.sparse` ops and `jax.ffi.ffi_call`
+  type their results as replicated). The CSR mat-mat weight cotangent (SDDMM)
+  is computed in jnp when an operand varies, so second-order reverse mode stays
+  per shard; otherwise jax's `bcoo_dot_general_sampled` still computes it.
+  Outside `shard_map` and under `check_vma=False`, nothing changes.
 - **`CSR.solve` / `CSC.solve` / `csr_solve` add repeated entries and accept
   unsorted columns (#225).** jax's `spsolve` assumes a canonical CSR. With a
   repeated `(row, col)` entry, the GPU (cuSOLVER) solve kept one copy and

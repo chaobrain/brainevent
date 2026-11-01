@@ -25,7 +25,9 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._compatible_import import init_zero, match_varying_axes, pvary, varying_axes, with_varying_axes
+from brainevent._compatible_import import (
+    init_zero, match_varying_axes, pvary, varying_axes, varying_axes_of, with_varying_axes,
+)
 
 
 @contextlib.contextmanager
@@ -413,6 +415,60 @@ class TestVaryingAxes(unittest.TestCase):
     def test_match_varying_axes_outside_shard_map_is_identity(self):
         x = jnp.ones(3)
         self.assertIs(match_varying_axes(x, jnp.zeros(2)), x)
+
+    def test_varying_axes_of_is_the_union(self):
+        got = _in_shard_map(lambda x, y: (varying_axes_of(x, y), varying_axes_of(y), varying_axes_of()))
+        self.assertEqual(got, (frozenset({'s'}), frozenset(), frozenset()))
+        self.assertEqual(varying_axes_of(jnp.ones(3), jnp.zeros(2)), frozenset())
+
+
+class _Jax09Aval:
+    """Stands in for a jax 0.9 ``ShapedArray``: a ``vma`` field and no
+    ``manual_axis_type``. ``update`` records its keywords."""
+
+    def __init__(self, vma):
+        self.vma = vma
+
+    def update(self, **kwargs):
+        return kwargs
+
+
+class _Jax010Aval(_Jax09Aval):
+    """Stands in for a jax >= 0.10 ``ShapedArray``: ``manual_axis_type.varying``."""
+
+    def __init__(self, varying):
+        super().__init__(vma=frozenset({'stale'}))  # must be ignored when manual_axis_type exists
+        self.manual_axis_type = jax.sharding.ManualAxisType(varying=varying) if hasattr(
+            jax.sharding, 'ManualAxisType') else type('MAT', (), {'varying': varying})()
+
+
+class TestVaryingAxesVersionBranches(unittest.TestCase):
+    """Both spellings of the vma accessors, on fake abstract values, whatever jax
+    version runs the tests (#245)."""
+
+    def setUp(self):
+        self.mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ('s',))
+
+    def test_jax09_vma_field(self):
+        self.assertEqual(varying_axes(_Jax09Aval(frozenset({'s'}))), frozenset({'s'}))
+        self.assertEqual(varying_axes(_Jax09Aval(frozenset())), frozenset())
+        self.assertEqual(varying_axes(_Jax09Aval(None)), frozenset())
+
+    def test_jax09_with_varying_axes_sets_vma(self):
+        got = with_varying_axes(_Jax09Aval(frozenset()), frozenset({'s'}), self.mesh)
+        self.assertEqual(set(got), {'sharding', 'vma'})
+        self.assertEqual(got['vma'], frozenset({'s'}))
+        self.assertEqual(got['sharding'], jax.sharding.NamedSharding(self.mesh, jax.sharding.PartitionSpec()))
+
+    def test_jax010_manual_axis_type_wins(self):
+        self.assertEqual(varying_axes(_Jax010Aval(frozenset({'s'}))), frozenset({'s'}))
+        self.assertEqual(varying_axes(_Jax010Aval(frozenset())), frozenset())
+
+    @unittest.skipUnless(hasattr(jax.sharding, 'ManualAxisType'), 'jax >= 0.10 constructor')
+    def test_jax010_with_varying_axes_sets_manual_axis_type(self):
+        got = with_varying_axes(_Jax010Aval(frozenset()), frozenset({'s'}), self.mesh)
+        self.assertEqual(set(got), {'sharding', 'manual_axis_type'})
+        self.assertEqual(got['manual_axis_type'].varying, frozenset({'s'}))
 
 
 if __name__ == '__main__':

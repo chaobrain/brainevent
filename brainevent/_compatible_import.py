@@ -21,6 +21,7 @@ __all__ = [
     'pallas_triton_params',
     'pallas_mosaic_tpu_params',
     'varying_axes',
+    'varying_axes_of',
     'with_varying_axes',
     'pvary',
     'match_varying_axes',
@@ -145,13 +146,36 @@ def pvary(x, axes):
     return jax.lax.pcast(x, tuple(axes), to='varying')
 
 
+def varying_axes_of(*values) -> frozenset:
+    """The union of the manual mesh axes that ``values`` vary over.
+
+    Parameters
+    ----------
+    *values : jax.Array
+        Values (or tracers) to inspect.
+
+    Returns
+    -------
+    frozenset
+        The union of their varying axes; empty outside ``shard_map`` and
+        under ``check_vma=False``.
+    """
+    return frozenset().union(*(varying_axes(jax.typeof(v)) for v in values))
+
+
 def match_varying_axes(x, *operands):
     """``x`` marked varying over every manual axis that one of ``operands`` varies over.
 
-    For the results of jax operations that type their output as replicated under
-    ``shard_map`` although it is computed per shard from varying operands (such as
-    ``jax.experimental.sparse.csr_matvec``, ``csr_matmat`` and
-    ``bcoo_dot_general_sampled``).
+    For results that a call types as replicated under ``shard_map`` although they
+    are computed per shard from varying operands: ``jax.ffi.ffi_call`` (typed by
+    its ``result_shape_dtypes``) and ``jax.experimental.sparse.csr_matvec`` /
+    ``csr_matmat``.
+
+    Use it only where ``x`` is not differentiated through: inside a kernel
+    lowering, or on the result of a call without a derivative rule. The cast is a
+    ``pcast(..., to='varying')``, whose transpose sums the cotangent over the
+    axes (``psum``); for a value that is per shard rather than replicated, that
+    sum is wrong (#245).
 
     Parameters
     ----------
@@ -165,6 +189,5 @@ def match_varying_axes(x, *operands):
     jax.Array
         ``x``, varying over the union of the operands' varying axes as well.
     """
-    vma = frozenset().union(*(varying_axes(jax.typeof(o)) for o in operands))
-    missing = vma - varying_axes(jax.typeof(x))
+    missing = varying_axes_of(*operands) - varying_axes(jax.typeof(x))
     return pvary(x, sorted(missing, key=str)) if missing else x

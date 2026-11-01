@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._compatible_import import match_varying_axes
 from brainevent._misc import namescope
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
@@ -496,7 +497,10 @@ def _binary_densemv_cublas_kernel(
         return _exact_dense_mv(weights, spikes, transpose=transpose, weighted=False)
 
     def product(weights, spikes):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))[0]
+        out = jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))[0]
+        # Under shard_map ffi_call types its result as replicated; _guard_nonfinite's
+        # cond needs the operands' varying axes on both branches (#245).
+        return match_varying_axes(out, weights, spikes)
 
     def kernel(weights, spikes):
         # cuBLAS multiplies every weight by its 0/1 event. A non-finite result
@@ -1331,7 +1335,10 @@ def _binary_densemm_cublas_kernel(
     kernel_name = f'dense_binary_cublas.binary_densemm_cublas_{suffix}_f32_bool'
 
     def product(weights, spikes):
-        return jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))[0]
+        out = jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))[0]
+        # Under shard_map ffi_call types its result as replicated; _guard_nonfinite's
+        # cond needs the operands' varying axes on both branches (#245).
+        return match_varying_axes(out, weights, spikes)
 
     def exact(weights, spikes):
         return _exact_dense_mm(weights, spikes, transpose=transpose, weighted=False)

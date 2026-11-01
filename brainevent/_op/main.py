@@ -494,7 +494,10 @@ class XLACustomKernel:
         axes than the others are first marked varying over all of them
         (``jax.lax.pcast(..., to='varying')``), as JAX's own primitives
         do.  Reverse mode then sums the cotangent of a replicated input
-        over the shards (#245).
+        over the shards (#245).  The cast is made even when the
+        ``jax_auto_pcast`` config option is ``False``, under which JAX's
+        own operations reject operands of different varying axes instead:
+        it is the cast JAX inserts by default, and the gradients are correct.
 
         Examples
         --------
