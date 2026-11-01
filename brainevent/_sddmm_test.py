@@ -353,13 +353,13 @@ class TestSddmmUnderShardMap(unittest.TestCase):
     indices = jnp.array([[0, 0], [1, 2], [0, 3]], dtype=jnp.int32)
 
     @staticmethod
-    def _primitives(f, *args):
-        """Names of every primitive in the jaxpr of ``f``, nested jaxprs included."""
-        names = set()
+    def _eqns(f, *args):
+        """Every equation in the jaxpr of ``f``, nested jaxprs included."""
+        eqns = []
 
         def walk(jaxpr):
             for eqn in jaxpr.eqns:
-                names.add(eqn.primitive.name)
+                eqns.append(eqn)
                 for value in eqn.params.values():
                     for sub in value if isinstance(value, (tuple, list)) else (value,):
                         sub = getattr(sub, 'jaxpr', sub)  # ClosedJaxpr -> Jaxpr
@@ -367,7 +367,12 @@ class TestSddmmUnderShardMap(unittest.TestCase):
                             walk(sub)
 
         walk(jax.make_jaxpr(f)(*args).jaxpr)
-        return names
+        return eqns
+
+    @classmethod
+    def _primitives(cls, f, *args):
+        """Names of every primitive in the jaxpr of ``f``, nested jaxprs included."""
+        return {eqn.primitive.name for eqn in cls._eqns(f, *args)}
 
     def _run(self, a_spec, check_vma=True):
         from jax.sharding import PartitionSpec as P
@@ -387,19 +392,25 @@ class TestSddmmUnderShardMap(unittest.TestCase):
         got = jax.jit(f)(*args)
         # the same operations as bcoo_dot_general_sampled: the same values
         np.testing.assert_array_equal(got[0], jax.jit(sddmm_indices)(self.A, self.B, self.indices).data)
-        return seen, self._primitives(f, *args)
+        return seen, self._eqns(f, *args)
 
     def test_varying_operands(self):
         from jax.sharding import PartitionSpec as P
-        seen, prims = self._run(P('s'))
+        seen, eqns = self._run(P('s'))
         self.assertEqual(seen, [frozenset({'s'})])
-        self.assertNotIn('bcoo_dot_general_sampled', prims)
+        self.assertNotIn('bcoo_dot_general_sampled', {e.primitive.name for e in eqns})
+        # bcoo_dot_general_sampled's precision; it decides the values on TPU and on
+        # GPUs that use TF32, though not on CPU
+        dots = [e for e in eqns if e.primitive.name == 'dot_general']
+        self.assertEqual(len(dots), 1)
+        highest = jax.lax.Precision.HIGHEST
+        self.assertIn(dots[0].params['precision'], (highest, (highest, highest)))
 
     def test_one_replicated_operand(self):
         from jax.sharding import PartitionSpec as P
-        seen, prims = self._run(P())
+        seen, eqns = self._run(P())
         self.assertEqual(seen, [frozenset({'s'})])
-        self.assertNotIn('bcoo_dot_general_sampled', prims)
+        self.assertNotIn('bcoo_dot_general_sampled', {e.primitive.name for e in eqns})
 
     def test_out_of_range_indices_give_zero_on_both_paths(self):
         from jax.sharding import PartitionSpec as P
@@ -415,9 +426,9 @@ class TestSddmmUnderShardMap(unittest.TestCase):
 
     def test_check_vma_false_keeps_bcoo_dot_general_sampled(self):
         from jax.sharding import PartitionSpec as P
-        seen, prims = self._run(P('s'), check_vma=False)
+        seen, eqns = self._run(P('s'), check_vma=False)
         self.assertEqual(seen, [frozenset()])
-        self.assertIn('bcoo_dot_general_sampled', prims)
+        self.assertIn('bcoo_dot_general_sampled', {e.primitive.name for e in eqns})
 
     def test_unsharded_result_is_bcoo_dot_general_sampled_bit_for_bit(self):
         from jax.experimental import sparse
