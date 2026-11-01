@@ -24,13 +24,19 @@
 * #216 - ``--xla_gpu_deterministic_ops`` in ``XLA_FLAGS`` makes primitives without
   an explicit backend choice lower with ``jax_raw`` on GPU, so the event products
   give the same bits on every call.
+* #245 - under ``jax.shard_map``, outputs keep the varying manual axes (``vma``) of
+  the operands, and operands are made varying over the union first, so loop carries
+  type-check and reverse mode sums the cotangent of a replicated operand. Second-order
+  reverse mode through the SDDMM weight cotangents keeps the gradients per shard.
 """
 
+import functools
 import importlib.util
 import os
 import subprocess
 import sys
 import warnings
+from pathlib import Path
 from unittest import mock
 
 import jax
@@ -39,9 +45,16 @@ import numpy as np
 import pytest
 
 from jax.interpreters import xla
+from jax.sharding import NamedSharding, PartitionSpec as P
 
+import brainevent
 from brainevent import KernelCompilationError, KernelFallbackExhaustedError
-from brainevent._compatible_import import apply_primitive
+from brainevent._compatible_import import apply_primitive, varying_axes
+from brainevent._csr.binary import binary_csrmm_p, binary_csrmv_p
+from brainevent._csr.binary_indexed import binary_csrmm_indexed_p
+from brainevent._csr.delay_layout import csr_delay_deliver_layout_p
+from brainevent._csr.dt2t import csrmm_dt2t_p, csrmv_dt2t_p
+from brainevent._csr.float import csrmm_p, csrmv_p
 from brainevent._op.main import DETERMINISTIC_GPU_BACKEND, XLACustomKernel, xla_gpu_deterministic_ops
 from brainevent.config import set_backend, clear_backends
 
@@ -509,3 +522,409 @@ def test_216_event_kernels_are_reproducible_under_the_flag():
                        capture_output=True, text=True, timeout=600)
     assert r.returncode == 0, r.stderr[-2000:]
     assert r.stdout.split() == ['dense', 'True', 'csr', 'True'], r.stdout
+
+
+# ---------------------------------------------------------------------------
+# #245: under shard_map, outputs keep the operands' varying manual axes (vma)
+# ---------------------------------------------------------------------------
+#
+# Tests named ``test_245_sharded_*`` shard over ``_N`` devices: two where this
+# process has two, else one. With one device the types are still checked (a size-1
+# mesh axis is tracked), and ``test_245_rerun_on_two_cpu_devices`` repeats them in a
+# fresh process with two CPU devices, where a cross-shard gradient leak shows.
+
+_AXIS = 'shard'
+_N = min(2, jax.device_count())
+_PLATFORM = jax.default_backend()
+
+# A 4 x 4 CSR matrix with 5 stored entries, and per-edge delays for a ring of 5 slots.
+_INDICES = np.array([0, 1, 2, 0, 3], np.int32)
+_INDPTR = np.array([0, 2, 3, 5, 5], np.int32)
+_ROWS = np.repeat(np.arange(4), np.diff(_INDPTR)).astype(np.int32)
+_DELAYS = np.array([1, 3, 2, 1, 4], np.int32)
+_N_SLOTS = 5
+
+
+@functools.cache
+def _layout():
+    with jax.ensure_compile_time_eval():  # concrete arrays, even if first called while tracing
+        return brainevent.CSRDelayLayout.build(
+            np.ones(5, np.float32), _INDICES, _INDPTR, _DELAYS, n_slots=_N_SLOTS, shape=(4, 4))
+
+
+def _csrmv(w, x, backend=None):
+    """``x @ A`` with ``A = CSR(w)``."""
+    return brainevent.csrmv(w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), x, shape=(4, 4),
+                            transpose=True, backend=backend)
+
+
+def _csrmv_ref(w, x):
+    return jax.ops.segment_sum(x[_ROWS] * w, jnp.asarray(_INDICES), num_segments=4)
+
+
+def _binary_csrmv(w, x, backend=None):
+    """``x @ A`` for binary events ``x != 0``."""
+    return brainevent.binary_csrmv(w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), x, shape=(4, 4),
+                                   transpose=True, backend=backend)
+
+
+def _binary_csrmv_ref(w, x):
+    return jax.ops.segment_sum((x[_ROWS] != 0).astype(w.dtype) * w, jnp.asarray(_INDICES), num_segments=4)
+
+
+def _deliver(ring, x, w, t, backend=None, weighted=True):
+    """The fused per-edge-delay delivery of ``x`` into ``ring``."""
+    return brainevent.csr_delay_deliver_layout(ring, x, _layout().with_data(w), t, weighted=weighted,
+                                               backend=backend)
+
+
+def _deliver_ref(ring, x, w, t, weighted=True):
+    f = x if weighted else (x != 0).astype(ring.dtype)
+    return ring.at[(t + _DELAYS) % _N_SLOTS, _INDICES].add(w * f[_ROWS])
+
+
+def _backends(prim):
+    return prim.available_backends(_PLATFORM)
+
+
+def _mesh():
+    return jax.sharding.Mesh(np.asarray(jax.devices()[:_N]), (_AXIS,))
+
+
+def _put(x, spec):
+    return jax.device_put(jnp.asarray(x), NamedSharding(_mesh(), spec))
+
+
+def _shard_data():
+    """Per-shard weights ``w (N, 5)``, events ``x (N, 4)``, rings ``(N, L, 4)`` and
+    cotangent weights ``v``, all different between shards."""
+    w = np.arange(5 * _N, dtype=np.float32).reshape(_N, 5) / 4 + 1
+    x = np.asarray([[1., 0., 3., 4.], [5., 6., 0., 8.]], np.float32)[:_N]
+    ring = np.arange(_N * _N_SLOTS * 4, dtype=np.float32).reshape(_N, _N_SLOTS, 4) / 8
+    v4 = np.asarray([[1., 10., 100., 1000.], [1e4, 1e5, 1e6, 1e7]], np.float32)[:_N] / 1e3
+    v_ring = np.arange(_N * _N_SLOTS * 4, dtype=np.float32).reshape(_N, _N_SLOTS, 4) % 7 + 1
+    return w, x, ring, v4, v_ring
+
+
+_TYPE_OPS = {
+    'csrmv': lambda w, x, ring: _csrmv(w, x),
+    'binary_csrmv': lambda w, x, ring: _binary_csrmv(w, x),
+    'deliver': lambda w, x, ring: _deliver(ring, x, w, jnp.int32(2)),
+}
+
+
+@pytest.mark.parametrize('op', sorted(_TYPE_OPS))
+@pytest.mark.parametrize('case', ['all-varying', 'replicated-weights', 'all-replicated'])
+def test_245_sharded_output_types_follow_the_operands(op, case):
+    w, x, ring, _, _ = _shard_data()
+    w_spec = P(_AXIS) if case == 'all-varying' else P()
+    xr_spec = P() if case == 'all-replicated' else P(_AXIS)
+    seen = []
+
+    def local(w, x, ring):
+        w = w[0] if w_spec == P(_AXIS) else w
+        x, ring = (x, ring) if xr_spec == P() else (x[0], ring[0])
+        out = _TYPE_OPS[op](w, x, ring)
+        seen.append((varying_axes(jax.typeof(ring)), varying_axes(jax.typeof(out))))
+        return out[None]
+
+    f = jax.shard_map(local, mesh=_mesh(), in_specs=(w_spec, xr_spec, xr_spec), out_specs=P(_AXIS))
+    jax.make_jaxpr(f)(w if w_spec == P(_AXIS) else w[0], x if xr_spec == P(_AXIS) else x[0],
+                      ring if xr_spec == P(_AXIS) else ring[0])
+    (in_vma, out_vma), = seen
+    expected = frozenset() if case == 'all-replicated' else frozenset({_AXIS})
+    assert in_vma == expected, f'precondition: shard_map must track the vma; got {in_vma}'
+    assert out_vma == expected
+
+
+@pytest.mark.parametrize('backend', _backends(csr_delay_deliver_layout_p))
+@pytest.mark.parametrize('weighted', [True, False])
+def test_245_sharded_delay_delivery_carries_the_ring_in_fori_loop(backend, weighted):
+    w, x, ring, _, _ = _shard_data()
+
+    def run(deliver):
+        def local(ring, x, w):
+            body = lambda t, r: deliver(r, x[0], w[0], t, weighted=weighted)
+            return jax.lax.fori_loop(0, 3, body, ring[0])[None]
+
+        f = jax.shard_map(local, mesh=_mesh(), in_specs=(P(_AXIS),) * 3, out_specs=P(_AXIS))
+        return np.asarray(jax.jit(f)(_put(ring, P(_AXIS)), _put(x, P(_AXIS)), _put(w, P(_AXIS))))
+
+    got = run(functools.partial(_deliver, backend=backend))
+    np.testing.assert_allclose(got, run(_deliver_ref), rtol=1e-6)
+
+
+@pytest.mark.parametrize('backend', _backends(csrmv_p))
+def test_245_sharded_csr_product_carries_the_vector_in_fori_loop(backend):
+    w, x, _, _, _ = _shard_data()
+
+    def run(mv):
+        def local(w, x):
+            return jax.lax.fori_loop(0, 3, lambda i, c: mv(w[0], c) / 4, x[0])[None]
+
+        f = jax.shard_map(local, mesh=_mesh(), in_specs=(P(_AXIS),) * 2, out_specs=P(_AXIS))
+        return np.asarray(jax.jit(f)(_put(w, P(_AXIS)), _put(x, P(_AXIS))))
+
+    np.testing.assert_allclose(run(functools.partial(_csrmv, backend=backend)), run(_csrmv_ref), rtol=1e-6)
+
+
+def _sharded_loss(mv, w_spec):
+    """``sum_s sum(v_s * mv(w_s, x_s))``; ``w`` is per shard or replicated."""
+
+    def local(w, x, v):
+        return jax.lax.psum(jnp.sum(v[0] * mv(w[0] if w_spec == P(_AXIS) else w, x[0])), _AXIS)
+
+    return jax.shard_map(local, mesh=_mesh(), in_specs=(w_spec, P(_AXIS), P(_AXIS)), out_specs=P())
+
+
+def _assert_grads_match(mv, mv_ref, w_spec, argnums):
+    w, x, _, v4, _ = _shard_data()
+    w = w if w_spec == P(_AXIS) else w[0]
+    args = (_put(w, w_spec), _put(x, P(_AXIS)), _put(v4, P(_AXIS)))
+    loss, loss_ref = _sharded_loss(mv, w_spec), _sharded_loss(mv_ref, w_spec)
+    np.testing.assert_allclose(jax.jit(loss)(*args), jax.jit(loss_ref)(*args), rtol=1e-6)
+    got = jax.jit(jax.grad(loss, argnums=argnums))(*args)
+    want = jax.jit(jax.grad(loss_ref, argnums=argnums))(*args)
+    for g, r in zip(got, want):
+        np.testing.assert_allclose(np.asarray(g), np.asarray(r), rtol=1e-6)
+    # forward mode, along the weights
+    tangent = jnp.ones_like(args[0])
+    _, jvp = jax.jit(lambda *a: jax.jvp(lambda w: loss(w, *a[1:]), (a[0],), (tangent,)))(*args)
+    _, jvp_ref = jax.jit(lambda *a: jax.jvp(lambda w: loss_ref(w, *a[1:]), (a[0],), (tangent,)))(*args)
+    np.testing.assert_allclose(np.asarray(jvp), np.asarray(jvp_ref), rtol=1e-6)
+
+
+_W_SPECS = pytest.mark.parametrize('w_spec', [P(_AXIS), P()], ids=['per-shard-w', 'replicated-w'])
+
+
+@_W_SPECS
+@pytest.mark.parametrize('backend', _backends(csrmv_p))
+def test_245_sharded_csr_product_gradients_match_pure_jax(backend, w_spec):
+    _assert_grads_match(functools.partial(_csrmv, backend=backend), _csrmv_ref, w_spec, (0, 1))
+
+
+@_W_SPECS
+@pytest.mark.parametrize('backend', _backends(binary_csrmv_p))
+def test_245_sharded_binary_csr_product_gradients_match_pure_jax(backend, w_spec):
+    _assert_grads_match(functools.partial(_binary_csrmv, backend=backend), _binary_csrmv_ref, w_spec, (0,))
+
+
+@_W_SPECS
+@pytest.mark.parametrize('backend', _backends(csr_delay_deliver_layout_p))
+def test_245_sharded_delay_delivery_gradients_match_pure_jax(backend, w_spec):
+    w, x, ring, _, v_ring = _shard_data()
+    w = w if w_spec == P(_AXIS) else w[0]
+    args = (_put(w, w_spec), _put(x, P(_AXIS)), _put(ring, P(_AXIS)), _put(v_ring, P(_AXIS)))
+
+    def loss(deliver):
+        def local(w, x, ring, v):
+            out = deliver(ring[0], x[0], w[0] if w_spec == P(_AXIS) else w, jnp.int32(3))
+            return jax.lax.psum(jnp.sum(v[0] * out), _AXIS)
+
+        return jax.shard_map(local, mesh=_mesh(), in_specs=(w_spec,) + (P(_AXIS),) * 3, out_specs=P())
+
+    got = jax.jit(jax.grad(loss(functools.partial(_deliver, backend=backend)), argnums=(0, 1, 2)))(*args)
+    want = jax.jit(jax.grad(loss(_deliver_ref), argnums=(0, 1, 2)))(*args)
+    for g, r in zip(got, want):
+        np.testing.assert_allclose(np.asarray(g), np.asarray(r), rtol=1e-6)
+
+
+# Transpose rules that build a cotangent outside the primitive itself: the dt2t
+# ``y`` cotangent (``jax.linear_transpose`` of the pure-JAX kernel) and the CSR
+# mat-mat weight cotangent (``sddmm_indices``).
+_B = np.asarray([[1., 2.], [0., 3.], [4., 0.], [5., 6.]], np.float32)  # (4, 2) events / dense block
+
+_GRAD_CASES = {
+    # name: (primitive, per-shard op, argnums of the differentiable operands)
+    'csrmm': (csrmm_p, lambda be: lambda w, B: brainevent.csrmm(
+        w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), B, shape=(4, 4), transpose=True, backend=be), (0, 1)),
+    'csrmm-homo': (csrmm_p, lambda be: lambda w, B: brainevent.csrmm(
+        w[:1], jnp.asarray(_INDICES), jnp.asarray(_INDPTR), B, shape=(4, 4), transpose=True, backend=be), (0, 1)),
+    'binary_csrmm': (binary_csrmm_p, lambda be: lambda w, B: brainevent.binary_csrmm(
+        w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), B, shape=(4, 4), transpose=True, backend=be), (0,)),
+    'csrmv_dt2t': (csrmv_dt2t_p, lambda be: lambda w, B: brainevent.csrmv_dt2t(
+        B[:, 0], w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), shape=(4, 4), backend=be), (0, 1)),
+    'csrmm_dt2t': (csrmm_dt2t_p, lambda be: lambda w, B: brainevent.csrmm_dt2t(
+        B.T, jnp.stack([w, 2 * w]), jnp.asarray(_INDICES), jnp.asarray(_INDPTR), shape=(4, 4), backend=be), (0, 1)),
+}
+
+
+@pytest.mark.parametrize('case,backend', [
+    (case, be) for case, (prim, _, _) in sorted(_GRAD_CASES.items()) for be in _backends(prim)])
+def test_245_sharded_transpose_rules_keep_gradients_per_shard(case, backend):
+    """Per-shard gradients under shard_map equal the gradients of each shard's
+    computation without shard_map."""
+    _, make, argnums = _GRAD_CASES[case]
+    op = make(backend)
+    w, _, _, _, _ = _shard_data()
+    B = np.stack([_B * (s + 1) for s in range(_N)])
+    out_shape = jax.eval_shape(op, w[0], B[0]).shape
+    v = np.arange(_N * int(np.prod(out_shape)), dtype=np.float32).reshape((_N,) + out_shape) % 5 + 1
+
+    def local(w, B, v):
+        return jax.lax.psum(jnp.sum(v[0] * op(w[0], B[0])), _AXIS)
+
+    f = jax.shard_map(local, mesh=_mesh(), in_specs=(P(_AXIS),) * 3, out_specs=P())
+    args = (_put(w, P(_AXIS)), _put(B, P(_AXIS)), _put(v, P(_AXIS)))
+    shard_loss = lambda w, B, v: jnp.sum(v * op(w, B))
+    np.testing.assert_allclose(jax.jit(f)(*args), sum(jax.jit(shard_loss)(w[s], B[s], v[s]) for s in range(_N)),
+                               rtol=1e-6)
+    got = jax.jit(jax.grad(f, argnums=argnums))(*args)
+    per_shard = [jax.jit(jax.grad(shard_loss, argnums=argnums))(w[s], B[s], v[s]) for s in range(_N)]
+    for k in range(len(argnums)):
+        np.testing.assert_allclose(np.asarray(got[k]), np.stack([np.asarray(g[k]) for g in per_shard]), rtol=1e-6)
+
+
+# Reverse-over-reverse (Hessian-vector products) through the CSR mat-mat weight
+# cotangent, which is an SDDMM: under shard_map it must not pick up a ``psum``
+# (the transpose of a re-typing ``pcast``) that sums the other shards in.
+_PERM = np.array([2, 0, 4, 1, 3], np.int32)
+
+_HVP_CASES = {
+    # name: (primitive, per-shard op of the weights w (5,) and the dense block B (4, 2))
+    'csrmm': (csrmm_p, lambda be: lambda w, B: brainevent.csrmm(
+        w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), B, shape=(4, 4), transpose=True, backend=be)),
+    'binary_csrmm': (binary_csrmm_p, lambda be: lambda w, B: brainevent.binary_csrmm(
+        w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), B, shape=(4, 4), transpose=True, backend=be)),
+    'binary_csrmm-homo': (binary_csrmm_p, lambda be: lambda w, B: brainevent.binary_csrmm(
+        w[:1], jnp.asarray(_INDICES), jnp.asarray(_INDPTR), B, shape=(4, 4), transpose=True, backend=be)),
+    'binary_csrmm_indexed': (binary_csrmm_indexed_p, lambda be: lambda w, B: brainevent.binary_csrmm_indexed(
+        w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), jnp.asarray(_PERM), B, shape=(4, 4), transpose=True,
+        backend=be)),
+}
+
+
+@_W_SPECS
+@pytest.mark.parametrize('case,backend', [
+    (case, be) for case, (prim, _) in sorted(_HVP_CASES.items()) for be in _backends(prim)])
+def test_245_sharded_second_order_gradients_stay_per_shard(case, backend, w_spec):
+    """Hessian-vector products of ``sum_s sum(v_s * op(w, B_s) ** 2)`` in ``w``,
+    reverse-over-reverse and forward-over-reverse, equal those of each shard's
+    computation without shard_map (summed over the shards for a replicated ``w``)."""
+    _, make = _HVP_CASES[case]
+    op = make(backend)
+    w, _, _, _, _ = _shard_data()
+    B = np.stack([np.roll(_B, s, axis=0) * (s + 1) for s in range(_N)])  # other events on every shard
+    v = np.arange(_N * 8, dtype=np.float32).reshape(_N, 4, 2) % 5 + 1
+    u = np.arange(5 * _N, dtype=np.float32).reshape(_N, 5) % 3 - 1  # the direction
+    per_shard_w = w_spec == P(_AXIS)
+    w, u = (w, u) if per_shard_w else (w[0], u[0])
+
+    def local(w, B, v):
+        return jax.lax.psum(jnp.sum(v[0] * op(w[0] if per_shard_w else w, B[0]) ** 2), _AXIS)
+
+    f = jax.shard_map(local, mesh=_mesh(), in_specs=(w_spec, P(_AXIS), P(_AXIS)), out_specs=P())
+
+    def shard_loss(w, B, v):
+        return jnp.sum(v * op(w, B) ** 2)
+
+    def rev_rev(loss, w, u, *a):
+        return jax.grad(lambda w: jnp.vdot(jax.grad(loss)(w, *a), u))(w)
+
+    def fwd_rev(loss, w, u, *a):
+        return jax.jvp(lambda w: jax.grad(loss)(w, *a), (w,), (u,))[1]
+
+    args = (_put(w, w_spec), _put(u, w_spec), _put(B, P(_AXIS)), _put(v, P(_AXIS)))
+    for hvp in (rev_rev, fwd_rev):
+        got = np.asarray(jax.jit(functools.partial(hvp, f))(*args))
+        shards = [np.asarray(jax.jit(functools.partial(hvp, shard_loss))(
+            w[s] if per_shard_w else w, u[s] if per_shard_w else u, B[s], v[s])) for s in range(_N)]
+        want = np.stack(shards) if per_shard_w else np.sum(shards, axis=0)
+        assert np.any(want != 0), 'precondition: a non-trivial Hessian-vector product'
+        np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-5, err_msg=hvp.__name__)
+
+
+def _add_primitive(name):
+    """A two-operand ``x + y`` primitive with a plain-JAX kernel on every platform."""
+    prim = XLACustomKernel(name)
+
+    def gen(**kwargs):
+        return lambda x, y: (x + y,)
+
+    for platform in ('cpu', 'gpu', 'tpu'):
+        prim.def_kernel('jax_raw', platform, gen)
+    return prim
+
+
+def test_245_sharded_operands_are_made_varying_before_bind():
+    prim = _add_primitive('p245_mixed_operands_probe')
+    outs = jax.ShapeDtypeStruct((3,), jnp.float32)
+
+    def local(x, y):
+        return prim(x[0], y, outs=outs)[None]
+
+    f = jax.shard_map(local, mesh=_mesh(), in_specs=(P(_AXIS), P()), out_specs=P(_AXIS))
+    jaxpr = jax.make_jaxpr(f)(jnp.ones((_N, 3), jnp.float32), jnp.ones((3,), jnp.float32))
+    body = jaxpr.eqns[0].params['jaxpr']
+    eqn, = [e for e in body.eqns if e.primitive is prim.primitive]
+    assert [varying_axes(v.aval) for v in eqn.invars] == [frozenset({_AXIS})] * 2
+    assert [varying_axes(v.aval) for v in eqn.outvars] == [frozenset({_AXIS})]
+
+
+@pytest.mark.parametrize('specs,expected', [
+    ((P('a'), P('b')), {'a', 'b'}),
+    ((P(), P('b')), {'b'}),
+    ((P('a'), P()), {'a'}),
+], ids=['a-b', 'replicated-b', 'a-replicated'])
+def test_245_sharded_direct_bind_types_outputs_by_the_union_of_all_operands(specs, expected):
+    """``primitive.bind`` without :meth:`XLACustomKernel.__call__` (which would cast
+    the operands to one ``vma`` first): the output varies over the union of the
+    operands' axes, not those of one operand."""
+    prim = _add_primitive('p245_direct_bind_probe_' + '_'.join(''.join(s) or 'r' for s in specs))
+    mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]).reshape(1, 1), ('a', 'b'))
+    outs = (jax.core.ShapedArray((3,), jnp.float32),)
+    seen = []
+
+    def local(x, y):
+        out, = prim.primitive.bind(x, y, outs=outs)
+        seen.append(([varying_axes(jax.typeof(z)) for z in (x, y)], varying_axes(jax.typeof(out))))
+        return out
+
+    f = jax.jit(jax.shard_map(local, mesh=mesh, in_specs=specs, out_specs=P(('a', 'b'))))
+    got = f(jnp.ones((3,), jnp.float32), jnp.arange(3, dtype=jnp.float32))
+    (in_vmas, out_vma), = seen
+    assert in_vmas == [frozenset(s) for s in specs], f'precondition: operands of different vma; got {in_vmas}'
+    assert out_vma == frozenset(expected)
+    np.testing.assert_array_equal(np.asarray(got), [1., 2., 3.])
+
+
+def test_245_unsharded_call_is_unchanged():
+    prim = _add_primitive('p245_unsharded_probe')
+    outs = jax.ShapeDtypeStruct((3,), jnp.float32)
+    x, y = jnp.ones((3,), jnp.float32), jnp.arange(3, dtype=jnp.float32)
+
+    jaxpr = jax.make_jaxpr(lambda x, y: prim(x, y, outs=outs))(x, y)
+    assert [e.primitive for e in jaxpr.eqns] == [prim.primitive]
+    assert jaxpr.out_avals == [jax.core.ShapedArray((3,), jnp.float32)]
+    np.testing.assert_array_equal(np.asarray(jax.jit(lambda x, y: prim(x, y, outs=outs))(x, y)), [1., 2., 3.])
+
+    # shard_map with check_vma=False tracks no vma: no casts, plain output types
+    def local(x, y):
+        out = prim(x[0], y, outs=outs)
+        assert varying_axes(jax.typeof(out)) == frozenset()
+        return out[None]
+
+    f = jax.shard_map(local, mesh=_mesh(), in_specs=(P(_AXIS), P()), out_specs=P(_AXIS), check_vma=False)
+    body = jax.make_jaxpr(f)(jnp.ones((_N, 3), jnp.float32), y).eqns[0].params['jaxpr']
+    assert not [e for e in body.eqns if 'pvary' in e.primitive.name or 'pcast' in e.primitive.name]
+
+
+@pytest.mark.skipif(_N >= 2, reason='this process already runs the sharded tests on two devices')
+@pytest.mark.parametrize('backend', ['jax_raw', 'numba'])
+def test_245_rerun_on_two_cpu_devices(backend):
+    """Rerun the ``test_245_sharded_*`` tests on two CPU devices in a fresh process
+    (XLA reads ``XLA_FLAGS`` when its backend starts); the per-shard gradients then
+    differ, so a gradient summed over shards fails them."""
+    if backend == 'numba' and not numba_installed:
+        pytest.skip('numba is not installed')
+    flags = f"{os.environ.get('XLA_FLAGS', '')} --xla_force_host_platform_device_count=2".strip()
+    env = {**os.environ, 'XLA_FLAGS': flags, 'JAX_PLATFORMS': 'cpu'}
+    select = 'test_245_sharded and ' + ('numba' if backend == 'numba' else 'not numba')
+    root = Path(__file__).resolve().parents[2]
+    r = subprocess.run(
+        [sys.executable, '-m', 'pytest', str(Path(__file__).resolve()), '-q', '-m', '', '-p', 'no:cacheprovider',
+         '-k', select],
+        env=env, cwd=root, capture_output=True, text=True, timeout=600,
+    )
+    assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
+    assert ' passed' in r.stdout and ' skipped' not in r.stdout, r.stdout[-2000:]

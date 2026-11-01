@@ -20,6 +20,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 
+from brainevent._compatible_import import match_varying_axes
 from brainevent._op import load_cuda_file
 from brainevent._op.util import event_active
 
@@ -67,6 +68,17 @@ def _native_binary_events(events: jax.Array, ct_dtype) -> jax.Array:
     ):
         return event_active(events)
     return events
+
+
+def _per_shard(dweight, *operands):
+    """Type a kernel's weight cotangent like its operands under ``shard_map``.
+
+    ``jax.ffi.ffi_call`` types its results by ``result_shape_dtypes``, i.e. as
+    replicated, although they are computed per shard; a varying weight would
+    then get a cotangent of the wrong type (#245). The kernels have no
+    derivative rule, so the re-typing ``pcast`` is never transposed.
+    """
+    return match_varying_axes(dweight, *operands)
 
 
 def tcsr_sddmm_dweight_binary(
@@ -220,7 +232,7 @@ def tcsr_sddmm_dweight_binary(
         input_layouts=[(0, 1), (0, 1), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0, 1, 2)],
     )(events.T, ct, local_targets, indptr, tile_offsets)
-    return dweight
+    return _per_shard(dweight, events, ct, indices, indptr, local_targets, tile_offsets)
 
 
 def tcsr_sddmm_dweight_float(
@@ -381,7 +393,7 @@ def tcsr_sddmm_dweight_float(
         input_layouts=[(0, 1), (0, 1), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0, 1, 2), (0,), (0, 1), (0, 1, 2)],
     )(B.T, ct, local_targets, indptr, tile_offsets)
-    return dweight
+    return _per_shard(dweight, B, ct, indices, indptr, local_targets, tile_offsets)
 
 
 def tcsr_sddmv_dweight_binary(
@@ -518,7 +530,7 @@ def tcsr_sddmv_dweight_binary(
         input_layouts=[(0,), (0,), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0,), (0,)],
     )(event, ct, local_targets, indptr, tile_offsets)
-    return dweight
+    return _per_shard(dweight, event, ct, indices, indptr, local_targets, tile_offsets)
 
 
 def tcsr_sddmv_dweight_float(
@@ -648,4 +660,4 @@ def tcsr_sddmv_dweight_float(
         input_layouts=[(0,), (0,), (0,), (0,), (0, 1)],
         output_layouts=[(0,), (0,), (0,)],
     )(event, ct, local_targets, indptr, tile_offsets)
-    return dweight
+    return _per_shard(dweight, event, ct, indices, indptr, local_targets, tile_offsets)

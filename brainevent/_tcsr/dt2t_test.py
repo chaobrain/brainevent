@@ -751,3 +751,39 @@ def test_tcsr_object_dt2t_passes_check_grads_in_reverse_mode(method):
         n = mat.shape[0] if method == "dt2t" else mat.shape[1]
         y = jnp.linspace(0.5, 2.0, n)
         check_grads(lambda y_, w_: getattr(mat, method)(y_, w_), (y, mat.data), order=1, modes=["rev"])
+
+
+@pytest.mark.parametrize("fn", ["mv", "mm"])
+def test_reverse_mode_under_shard_map_keeps_the_varying_axes(fn):
+    """#245: the ``y`` cotangent (``jax.linear_transpose`` of the pure-JAX kernel)
+    varies over the mesh axes like ``y``, and equals the unsharded gradient."""
+    from jax.sharding import PartitionSpec as P
+    from brainevent._compatible_import import varying_axes
+
+    with _explicit_int64_allowed():
+        matrix = _matrix()
+        y = jnp.arange(3, dtype=jnp.float32) + 1.0
+        w = jnp.asarray([13.0, 17.0, 19.0, 23.0, 29.0], dtype=jnp.float32)
+        if fn == "mm":
+            y, w = jnp.stack([y, 2 * y]), jnp.stack([w, w + 1])
+        op = csrmv_dt2t if fn == "mv" else csrmm_dt2t
+
+        def loss(y_, w_):
+            out = op(y_, w_, matrix._tcsr_indices, matrix._tcsr_indptr, shape=matrix._base_shape,
+                     buffers=matrix._tcs_buffers, backend="jax_raw")
+            return jnp.sum(out * jnp.arange(out.size, dtype=out.dtype).reshape(out.shape))
+
+        cts = []
+
+        def local(y_, w_):
+            g = jax.grad(loss, argnums=(0, 1))(y_[0], w_[0])
+            cts.append([varying_axes(jax.typeof(c)) for c in g])
+            return g[0][None], g[1][None]
+
+        mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ("s",))
+        f = jax.shard_map(local, mesh=mesh, in_specs=(P("s"), P("s")), out_specs=(P("s"), P("s")))
+        gy, gw = jax.jit(f)(y[None], w[None])
+        assert cts == [[frozenset({"s"})] * 2]
+        want_y, want_w = jax.grad(loss, argnums=(0, 1))(y, w)
+        np.testing.assert_allclose(gy[0], want_y)
+        np.testing.assert_allclose(gw[0], want_w)

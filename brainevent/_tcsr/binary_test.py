@@ -1909,6 +1909,37 @@ def test_repeated_entries_add(binary_backend, homogeneous, weighted, m, k, nse):
             np.testing.assert_allclose(np.asarray(out), factor @ dense, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize(
+    "binary_backend",
+    [b for b in ("jax", "cuda_raw", "cusparse")
+     if b in binary_csrmv_p.available_backends(jax.default_backend()) or b == "jax"],
+)
+@pytest.mark.parametrize("homogeneous", [False, True])
+def test_products_under_shard_map_keep_the_varying_axes(binary_backend, homogeneous):
+    """#245: under ``shard_map`` the products vary like the events (the cuSPARSE
+    library product included) and equal the unsharded ones."""
+    from jax.sharding import PartitionSpec as P
+    from brainevent._compatible_import import varying_axes
+
+    with _explicit_int64_allowed():
+        matrix, dense = _repeated_entry_tcsr(binary_backend, homogeneous, 6, 5, 20)
+        x = np.asarray([1., 0., 2., 0., 3., 1.], np.float32)
+        X = np.stack([x, 2 * x[::-1], x])
+        types = []
+
+        def local(x_, X_):
+            y, Y = BinaryArray(x_[0]) @ matrix, BinaryArray(X_[0]) @ matrix
+            types.append((varying_axes(jax.typeof(y)), varying_axes(jax.typeof(Y))))
+            return y[None], Y[None]
+
+        mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ("s",))
+        f = jax.shard_map(local, mesh=mesh, in_specs=(P("s"), P("s")), out_specs=(P("s"), P("s")))
+        y, Y = jax.jit(f)(jnp.asarray(x)[None], jnp.asarray(X)[None])
+        assert types == [(frozenset({"s"}), frozenset({"s"}))]
+        np.testing.assert_allclose(np.asarray(y[0]), (x != 0) @ dense, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(np.asarray(Y[0]), (X != 0) @ dense, rtol=1e-4, atol=1e-4)
+
+
 @pytest.mark.parametrize("generator,jax_kernel,rank", [
     ("_binary_csrmv_cusparse_kernel", "_binary_csrmv_jax_kernel", 1),
     ("_binary_csrmm_cusparse_kernel", "_binary_csrmm_jax_kernel", 2),
@@ -1932,3 +1963,61 @@ def test_cusparse_kernel_skips_cusparse_beyond_matrix_size(
         outs=[jax.ShapeDtypeStruct((3,) if rank == 1 else (2, 3), jnp.float32)],
     )
     assert (kernel is not sentinel) == uses_cusparse
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize("rank", ["mv", "mm"])
+@pytest.mark.parametrize("backward_algorithm", ["pp_prop", "bptt"])
+@pytest.mark.parametrize("transpose", [True, False])
+@pytest.mark.parametrize("w_spec", ["replicated", "varying"])
+def test_cuda_raw_weight_gradient_under_shard_map_keeps_the_varying_axes(
+    rank, backward_algorithm, transpose, w_spec,
+):
+    """#245: the CUDA SDDMM/SDDMV weight cotangents (``jax.ffi.ffi_call``, typed
+    replicated by jax) vary like the operands under ``shard_map``: the gradient
+    equals the unsharded one, and it can be a ``fori_loop`` carry."""
+    from jax.sharding import PartitionSpec as P
+    from brainevent._compatible_import import varying_axes
+    from brainevent._tcsr import binary
+
+    with _explicit_int64_allowed():
+        matrix = _non_square_tcsr()
+        buffers = matrix._tcs_buffers
+        if rank == "mv":
+            events = jnp.asarray([2.0, -1.0] if transpose else [2.0, -1.0, 3.0], jnp.float32)
+        else:
+            events = jnp.asarray(
+                [[2.0, -1.0], [0.0, 3.0], [-2.0, 4.0], [1.0, 0.0]] if transpose
+                else [[2.0, 0.0, -1.0, 3.0], [-1.0, 4.0, 0.0, 2.0], [3.0, -2.0, 1.0, 0.0]],
+                jnp.float32,
+            )
+        fn = binary.binary_csrmv if rank == "mv" else binary.binary_csrmm
+
+        def loss(weights, events):
+            result = fn(
+                weights, matrix._tcsr_indices, matrix._tcsr_indptr, events, shape=(2, 3),
+                workspace=buffers.tcsr_workspace, local_targets=buffers.tcsr_local_targets,
+                tile_offsets=buffers.tcsr_tile_offsets, buffers=buffers, transpose=transpose,
+                backend="cuda_raw", backward_algorithm=backward_algorithm,
+            )
+            return jnp.sum(result ** 2)
+
+        w0 = matrix._canonical_data
+        want = jax.jit(jax.grad(loss))(w0, events)
+        varying = w_spec == "varying"
+        types = []
+
+        def local(w, e):
+            w = w[0] if varying else w
+            g = jax.grad(loss)(w, e[0])
+            types.append(varying_axes(jax.typeof(g)))
+            carry = jax.lax.fori_loop(0, 2, lambda i, c: c - 0.0 * jax.grad(loss)(c, e[0]), w)
+            return g[None], carry[None]
+
+        mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ("s",))
+        f = jax.shard_map(local, mesh=mesh, in_specs=(P("s") if varying else P(), P("s")),
+                          out_specs=(P("s"), P("s")))
+        got, carry = jax.jit(f)(w0[None] if varying else w0, events[None])
+    assert types == [frozenset({"s"}) if varying else frozenset()]
+    np.testing.assert_allclose(np.asarray(got[0]), np.asarray(want), rtol=1e-6, atol=1e-6)
+    np.testing.assert_array_equal(np.asarray(carry[0]), np.asarray(w0))
