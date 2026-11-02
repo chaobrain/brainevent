@@ -5,7 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-11-02
+
+A minor release with breaking changes from a deep review of the package (#218).
+CSR, CSC and FixedNum matrices keep their structure in pytree leaves, so their
+index arrays are no longer compiled into every program. JITC matrices default
+to the event-driven `corder=True` and draw exactly the requested connection
+probability. Many correctness fixes come with it. `dt2t` becomes
+differentiable in reverse mode, and JITC connectivity works inside `jax.jit`.
+GPU kernels follow `--xla_gpu_deterministic_ops`. Primitives keep their
+varying manual axes under `jax.shard_map`. CSR multapses and `CSR.solve` give
+correct results on GPU.
+
+**Requirements:** Python ≥ 3.12, `jax` ≥ 0.9.0 (validated through 0.12.x),
+`brainunit` ≥ 0.0.8, `numpy` ≥ 2.0.
 
 ### ⚠️ Breaking changes & migration
 
@@ -254,6 +267,22 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
 - `CSR.tocoo().todense()` drops duplicate entries on GPU. The COO type and
   its `todense` come from `brainunit`, whose GPU path (cuSPARSE via JAX) does
   not sum duplicates; `CSR.todense()` is correct.
+
+### Internal
+
+- `.github/workflows/jax-ffi-compat.yml` checks PyPI daily for a jax release
+  newer than `_MAX_VALIDATED_JAX`. It runs the numba FFI bridge tests and every
+  numba/native kernel variant on Linux, macOS and Windows. Then it opens a PR
+  that bumps the validated version, or opens a jax-compat issue that lists the
+  failures (#213).
+- A conftest guard fails any test that leaks the `jax_enable_x64` state; tests
+  that need 64-bit dtypes opt in with `with_jax_x64` (#219). The test of an
+  unwritable cache directory simulates it portably, so it also runs on Windows
+  CI (#222).
+- Completed release checklists and finished chore specs were removed from
+  `docs/specs`, and `AGENTS.md` asks for a spec only when it guides the
+  implementation (#213, #214). The package author email is
+  `chaobrain@outlook.com`.
 
 ## [0.3.0] - 2026-10-24
 
@@ -1312,6 +1341,8 @@ replacement. Recommended updates:
 
 ## Version Comparison Links
 
+- [0.4.0](https://github.com/chaobrain/brainevent/compare/v0.3.0...v0.4.0)
+- [0.3.0](https://github.com/chaobrain/brainevent/compare/v0.2.1...v0.3.0)
 - [0.2.1](https://github.com/chaobrain/brainevent/compare/v0.2.0...v0.2.1)
 - [0.2.0](https://github.com/chaobrain/brainevent/compare/v0.1.2...v0.2.0)
 - [0.1.2](https://github.com/chaobrain/brainevent/compare/v0.1.1...v0.1.2)
