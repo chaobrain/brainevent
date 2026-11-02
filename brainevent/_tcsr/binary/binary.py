@@ -25,6 +25,7 @@ from brainevent._misc import (
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
     _cusparse_accepts_nse,
+    _cusparse_product,
 )
 from brainevent._op import load_cuda_file
 from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel
@@ -536,7 +537,7 @@ def _binary_csrmv_cusparse_kernel(
         if is_homo and not weighted:
             data = jnp.ones(nse, dtype=out_dtype)
             mat = jsparse.CSR((data, indices, cast_indptr), shape=(m, k))
-            count = jsparse.csr_matvec(mat, events, transpose=True)
+            count = _cusparse_product(jsparse.csr_matvec, mat, events, transpose=True)
             # ``count`` is an exact active-event count: select instead of
             # ``0 * w`` so a NaN/Inf homogeneous weight leaves idle outputs 0.
             math_out = select_active(count != 0, count * weights[0].astype(out_dtype))
@@ -552,7 +553,7 @@ def _binary_csrmv_cusparse_kernel(
                 (physical_weights.astype(out_dtype), indices, cast_indptr),
                 shape=(m, k),
             )
-            return jsparse.csr_matvec(mat, events, transpose=True)
+            return _cusparse_product(jsparse.csr_matvec, mat, events, transpose=True)
 
         def select_product(weights):
             return select_kernel(
@@ -1499,7 +1500,7 @@ def _binary_csrmm_cusparse_kernel(
         if is_homo and not weighted:
             data = jnp.ones(nse, dtype=out_dtype)
             mat = jsparse.CSR((data, indices, cast_indptr), shape=(m, k))
-            count = jsparse.csr_matmat(mat, events_nb, transpose=True)
+            count = _cusparse_product(jsparse.csr_matmat, mat, events_nb, transpose=True)
             # Exact active-event counts: select instead of ``0 * w``.
             math_out = select_active(count != 0, count * weights[0].astype(out_dtype))
             return (math_out.T if transpose else math_out), task_begin, task_end, status
@@ -1514,7 +1515,7 @@ def _binary_csrmm_cusparse_kernel(
                 (physical_weights.astype(out_dtype), indices, cast_indptr),
                 shape=(m, k),
             )
-            math_out = jsparse.csr_matmat(mat, events_nb, transpose=True)
+            math_out = _cusparse_product(jsparse.csr_matmat, mat, events_nb, transpose=True)
             return math_out.T if transpose else math_out
 
         def select_product(weights):

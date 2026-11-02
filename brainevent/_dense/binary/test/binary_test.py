@@ -918,3 +918,40 @@ def test_densemv_vmap_isolates_nonfinite_weights(backend, transpose):
     ref = _select_reference(w_k, _MM_EVENTS, False).T
     np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5, equal_nan=True)
     assert np.all(np.isfinite(np.asarray(out)[1:]))
+
+
+# ==============================================================================
+# #245: the cuBLAS products under jax.shard_map
+# ==============================================================================
+
+
+@requires_gpu
+@pytest.mark.parametrize('op', ['mv', 'mm'])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('w_spec', ['replicated', 'varying'])
+def test_dense_cublas_products_under_shard_map_keep_the_varying_axes(op, transpose, w_spec):
+    """The cuBLAS result goes through the non-finite guard's ``lax.cond``; under
+    ``shard_map`` both branches must vary like the events, and the products equal
+    the unsharded ones."""
+    from jax.sharding import PartitionSpec as P
+    from brainevent._compatible_import import varying_axes
+
+    rng = np.random.default_rng(245)
+    k, m, n = 32, 24, 3
+    W = jnp.asarray(rng.standard_normal((k, m) if transpose else (m, k)), jnp.float32)
+    x = jnp.asarray(rng.random((k, n) if op == 'mm' else (k,)) < 0.5)
+    fn = binary_densemm if op == 'mm' else binary_densemv
+    mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ('s',))
+    types = []
+
+    def local(w, x):
+        y = fn(w if w_spec == 'replicated' else w[0], x[0], transpose=transpose, backend='cublas')
+        types.append(varying_axes(jax.typeof(y)))
+        return y[None]
+
+    f = jax.shard_map(local, mesh=mesh, in_specs=(P() if w_spec == 'replicated' else P('s'), P('s')),
+                      out_specs=P('s'))
+    y = jax.jit(f)(W if w_spec == 'replicated' else W[None], x[None])
+    assert types == [frozenset({'s'})]
+    np.testing.assert_allclose(np.asarray(y[0]), np.asarray(fn(W, x, transpose=transpose, backend="cublas")),
+                               rtol=1e-6, atol=1e-6)

@@ -343,5 +343,108 @@ class TestSddmmConsistency(unittest.TestCase):
         self.assertTrue(jnp.any(dB != 0))
 
 
+class TestSddmmUnderShardMap(unittest.TestCase):
+    """#245: under ``shard_map`` with varying operands, ``sddmm_indices`` gathers in
+    jnp, so the result varies like its operands (jax's ``bcoo_dot_general_sampled``
+    types it as replicated); without varying operands it is unchanged."""
+
+    A = jnp.arange(6, dtype=jnp.float32).reshape(2, 3) + 1
+    B = jnp.arange(12, dtype=jnp.float32).reshape(3, 4) / 2
+    indices = jnp.array([[0, 0], [1, 2], [0, 3]], dtype=jnp.int32)
+
+    @staticmethod
+    def _eqns(f, *args):
+        """Every equation in the jaxpr of ``f``, nested jaxprs included."""
+        eqns = []
+
+        def walk(jaxpr):
+            for eqn in jaxpr.eqns:
+                eqns.append(eqn)
+                for value in eqn.params.values():
+                    for sub in value if isinstance(value, (tuple, list)) else (value,):
+                        sub = getattr(sub, 'jaxpr', sub)  # ClosedJaxpr -> Jaxpr
+                        if hasattr(sub, 'eqns'):
+                            walk(sub)
+
+        walk(jax.make_jaxpr(f)(*args).jaxpr)
+        return eqns
+
+    @classmethod
+    def _primitives(cls, f, *args):
+        """Names of every primitive in the jaxpr of ``f``, nested jaxprs included."""
+        return {eqn.primitive.name for eqn in cls._eqns(f, *args)}
+
+    def _run(self, a_spec, check_vma=True):
+        from jax.sharding import PartitionSpec as P
+        from brainevent._compatible_import import varying_axes
+
+        seen = []
+
+        def local(A_, B_):
+            A_ = A_[0] if a_spec == P('s') else A_
+            data = sddmm_indices(A_, B_[0], self.indices).data
+            seen.append(varying_axes(jax.typeof(data)))
+            return data[None]
+
+        mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ('s',))
+        f = jax.shard_map(local, mesh=mesh, in_specs=(a_spec, P('s')), out_specs=P('s'), check_vma=check_vma)
+        args = (self.A[None] if a_spec == P('s') else self.A, self.B[None])
+        got = jax.jit(f)(*args)
+        # the same operations as bcoo_dot_general_sampled: the same values
+        np.testing.assert_array_equal(got[0], jax.jit(sddmm_indices)(self.A, self.B, self.indices).data)
+        return seen, self._eqns(f, *args)
+
+    def test_varying_operands(self):
+        from jax.sharding import PartitionSpec as P
+        seen, eqns = self._run(P('s'))
+        self.assertEqual(seen, [frozenset({'s'})])
+        self.assertNotIn('bcoo_dot_general_sampled', {e.primitive.name for e in eqns})
+        # bcoo_dot_general_sampled's precision; it decides the values on TPU and on
+        # GPUs that use TF32, though not on CPU
+        dots = [e for e in eqns if e.primitive.name == 'dot_general']
+        self.assertEqual(len(dots), 1)
+        highest = jax.lax.Precision.HIGHEST
+        self.assertIn(dots[0].params['precision'], (highest, (highest, highest)))
+
+    def test_one_replicated_operand(self):
+        from jax.sharding import PartitionSpec as P
+        seen, eqns = self._run(P())
+        self.assertEqual(seen, [frozenset({'s'})])
+        self.assertNotIn('bcoo_dot_general_sampled', {e.primitive.name for e in eqns})
+
+    def test_out_of_range_indices_give_zero_on_both_paths(self):
+        from jax.sharding import PartitionSpec as P
+
+        indices = jnp.array([[0, 0], [2, 1], [1, 4]], dtype=jnp.int32)  # rows < 2, cols < 4
+        unsharded = sddmm_indices(self.A, self.B, indices).data
+        mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:1]), ('s',))
+        f = jax.shard_map(lambda a, b: sddmm_indices(a[0], b, indices).data[None], mesh=mesh,
+                          in_specs=(P('s'), P()), out_specs=P('s'))
+        sharded = jax.jit(f)(self.A[None], self.B)[0]
+        np.testing.assert_array_equal(np.asarray(unsharded)[1:], [0., 0.])
+        np.testing.assert_array_equal(np.asarray(sharded), np.asarray(unsharded))
+
+    def test_check_vma_false_keeps_bcoo_dot_general_sampled(self):
+        from jax.sharding import PartitionSpec as P
+        seen, eqns = self._run(P('s'), check_vma=False)
+        self.assertEqual(seen, [frozenset()])
+        self.assertIn('bcoo_dot_general_sampled', {e.primitive.name for e in eqns})
+
+    def test_unsharded_result_is_bcoo_dot_general_sampled_bit_for_bit(self):
+        from jax.experimental import sparse
+
+        rng = np.random.default_rng(245)
+        A = jnp.asarray(rng.standard_normal((7, 5)), jnp.float32)
+        B = jnp.asarray(rng.standard_normal((5, 6)), jnp.float32)
+        indices = jnp.asarray(np.stack([rng.integers(0, 7, 20), rng.integers(0, 6, 20)], 1), jnp.int32)
+        # both compiled: an eager dot may pick another GPU algorithm than a jitted one
+        want = jax.jit(lambda *a: sparse.bcoo_dot_general_sampled(*a, dimension_numbers=(((1,), (0,)), ((), ()))))
+        np.testing.assert_array_equal(np.asarray(jax.jit(sddmm_indices)(A, B, indices).data),
+                                      np.asarray(want(A, B, indices)))
+        prims = self._primitives(lambda *a: sddmm_indices(*a).data, A, B, indices)
+        self.assertIn('bcoo_dot_general_sampled', prims)
+        self.assertNotIn('gather', prims)
+
+
 if __name__ == '__main__':
     unittest.main()

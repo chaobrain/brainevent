@@ -28,6 +28,7 @@ from brainevent._misc import (
     _check_csr_structure_dtypes,
     _csr_to_coo,
     _cusparse_accepts_nse,
+    _cusparse_product,
     namescope,
 )
 from brainevent._op import load_cuda_file
@@ -827,7 +828,7 @@ def _binary_csrmv_cusparse_kernel(
         if is_homo and not weighted:
             data = jnp.ones(nse, dtype=out_dtype)
             mat = jsparse.CSR((data, cast_indices, indptr), shape=(m, k))
-            count = jsparse.csr_matvec(mat, events, transpose=transpose)
+            count = _cusparse_product(jsparse.csr_matvec, mat, events, transpose=transpose)
             # ``count`` is an exact active-event count: select instead of
             # ``0 * w`` so a NaN/Inf weight leaves idle outputs exactly 0.
             return (_homo_count_output(count, weights[0], out_dtype),)
@@ -835,7 +836,7 @@ def _binary_csrmv_cusparse_kernel(
         def library_product(weights):
             data = jnp.broadcast_to(weights, (nse,)).astype(out_dtype)
             mat = jsparse.CSR((data, cast_indices, indptr), shape=(m, k))
-            return jsparse.csr_matvec(mat, events, transpose=transpose)
+            return _cusparse_product(jsparse.csr_matvec, mat, events, transpose=transpose)
 
         def select_product(weights):
             return select_kernel(weights, indices, indptr, vector)[0]
@@ -1526,13 +1527,13 @@ def _binary_csrmm_cusparse_kernel(
         if is_homo and not weighted:
             data = jnp.ones(nse, dtype=out_dtype)
             mat = jsparse.CSR((data, cast_indices, indptr), shape=(m, k))
-            count = jsparse.csr_matmat(mat, events, transpose=transpose)
+            count = _cusparse_product(jsparse.csr_matmat, mat, events, transpose=transpose)
             return (_homo_count_output(count, weights[0], out_dtype),)
 
         def library_product(weights):
             data = jnp.broadcast_to(weights, (nse,)).astype(out_dtype)
             mat = jsparse.CSR((data, cast_indices, indptr), shape=(m, k))
-            return jsparse.csr_matmat(mat, events, transpose=transpose)
+            return _cusparse_product(jsparse.csr_matmat, mat, events, transpose=transpose)
 
         def select_product(weights):
             return select_kernel(weights, indices, indptr, B)[0]
