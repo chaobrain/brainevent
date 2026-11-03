@@ -588,3 +588,82 @@ def test_gpu_large_matches_plain():
     out = csr_delay_deliver_layout(ring, jnp.asarray(ev), lay, 17, backend='cuda_raw')
     plain = csr_delay_deliver(ring, jnp.asarray(ev), data, idx, ipt, dl, 17, shape=(3000, 2000), backend='jax_raw')
     np.testing.assert_allclose(np.asarray(out), np.asarray(plain), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.skipif('numba' not in BACKENDS, reason='numba backend unavailable')
+def test_numba_layouts_of_different_sizes_share_one_handler():
+    # #215: the native kernel reads shapes at runtime and closes over the ring's
+    # NumPy scalar class. Layouts that differ only in size must share one
+    # registered handler (one native compile), not get one each.
+    from brainevent._op.numba_ffi import _NUMBA_CPU_FFI_HANDLES
+
+    sizes = (5, 6, 11)
+    layouts = tuple(
+        CSRDelayLayout.build(jnp.ones(n, dtype=jnp.float32), jnp.arange(n, dtype=jnp.int32),
+                             jnp.array([0, n], dtype=jnp.int32), jnp.ones(n, dtype=jnp.int32),
+                             n_slots=2, shape=(1, n))
+        for n in sizes
+    )
+    previous = set(_NUMBA_CPU_FFI_HANDLES)
+
+    @jax.jit
+    def deliver():
+        return tuple(lay.deliver(jnp.zeros((2, lay.shape[1]), dtype=jnp.float32), jnp.array([True]), 0,
+                                 backend='numba')
+                     for lay in layouts)
+
+    outs = jax.block_until_ready(deliver())
+    for out in outs:
+        np.testing.assert_array_equal(np.asarray(out[0]), 0.)
+        np.testing.assert_array_equal(np.asarray(out[1]), 1.)
+    new = [h for name, h in _NUMBA_CPU_FFI_HANDLES.items()
+           if name not in previous and h.kernel.py_func.__name__ == 'deliver']
+    # Zero when an earlier test already registered the same kernel content.
+    assert len(new) <= 1, f'{len(new)} native deliver handlers for {len(sizes)} layout sizes'
+
+
+def test_build_of_host_arrays_compiles_nothing():
+    # #251: build moved its host arrays with ``jnp.asarray(ndarray)``, which on
+    # JAX 0.12 compiles one identity program (``lax.stage``) per new shape: about
+    # five XLA compiles per layout of a new size. ``jax.device_put`` compiles none.
+    def make(n):
+        return CSRDelayLayout.build(np.zeros((1,), np.float32), np.arange(n, dtype=np.int32) % 4,
+                                    np.array([0, n // 2, n], np.int32), 1 + np.arange(n, dtype=np.int32) % 2,
+                                    n_slots=3, shape=(2, 4))
+
+    make(10)  # the data scalar's own programs, if any
+    seen = []
+
+    def on(event, duration, **kw):
+        if event == '/jax/core/compile/backend_compile_duration':
+            seen.append(kw.get('fun_name', '?'))
+
+    jax.monitoring.register_event_duration_secs_listener(on)
+    try:
+        layouts = [make(n) for n in (13, 17, 23)]
+    finally:
+        jax.monitoring.unregister_event_duration_listener(on)
+    assert seen == [], seen
+    for n, lay in zip((13, 17, 23), layouts):
+        assert lay.nse == n and lay.indices.dtype == np.int32 and lay.delays.dtype == np.int32
+        assert lay.indptr.dtype == np.int32 and lay.delay_ptr.shape == (2, 3)
+
+
+def test_build_copies_its_host_arrays():
+    # The device arrays never alias a host array the caller keeps (``may_alias=False``).
+    idx = np.array([1, 0, 2], np.int32)
+    ptr = np.array([0, 3], np.int32)
+    lay = CSRDelayLayout.build(np.zeros((1,), np.float32), idx, ptr, np.ones(3, np.int32),
+                               n_slots=2, shape=(1, 3))
+    idx[:] = 9
+    ptr[:] = 7
+    np.testing.assert_array_equal(np.asarray(lay.indices), [1, 0, 2])
+    np.testing.assert_array_equal(np.asarray(lay.indptr), [0, 3])
+
+
+def test_build_inside_a_trace_keeps_its_arrays_as_constants():
+    # Under jit, host arrays stay constants (``jnp.asarray``), not traced ``device_put`` copies.
+    idx, ptr, dl = np.array([1, 0, 2], np.int32), np.array([0, 3], np.int32), np.ones(3, np.int32)
+    jaxpr = jax.make_jaxpr(lambda d: CSRDelayLayout.build(d, idx, ptr, dl, n_slots=2, shape=(1, 3)).indices)(
+        jnp.zeros((1,), jnp.float32))
+    assert 'device_put' not in str(jaxpr), jaxpr

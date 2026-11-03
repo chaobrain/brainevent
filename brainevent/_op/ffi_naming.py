@@ -31,7 +31,7 @@ cross-process stability for that kernel only, never correctness).
 
 import hashlib
 import types
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -44,6 +44,13 @@ __all__ = [
 # truncated, since a truncated hash could collide two genuinely different
 # kernels.
 _MAX_ARRAY_BYTES = 1 << 20  # 1 MiB
+
+# The built-in NumPy scalar classes (``np.float32``, ``np.int64``, ...).
+# Kernels close over them as converters (``ring_dtype = np.dtype(d).type``);
+# their behaviour is fixed by the NumPy version, so their name and dtype are
+# their identity. Lookup is by object identity (keyed on ``id``), so neither
+# a user subclass nor a class whose metaclass overrides ``__eq__`` matches.
+_NUMPY_SCALAR_CLASSES: Dict[int, type] = {id(cls): cls for cls in set(np.sctypeDict.values()) if cls is not None}
 
 
 def _serialize_value(value: Any, parts: list, depth: int = 0) -> bool:
@@ -73,6 +80,12 @@ def _serialize_value(value: Any, parts: list, depth: int = 0) -> bool:
             return False
         parts.append(f'ndarray:{value.dtype.str}:{value.shape}'.encode())
         parts.append(np.ascontiguousarray(value).tobytes())
+        return True
+    if isinstance(value, type) and _NUMPY_SCALAR_CLASSES.get(id(value)) is value:
+        # A scalar *class*, distinct from a dtype instance (``dtype:``) and a
+        # scalar value (``npscalar:``). The name separates aliases that share
+        # a dtype string on some platforms (e.g. ``intc`` and ``int32``).
+        parts.append(f'npscalarclass:{value.__name__}:{np.dtype(value).str}'.encode())
         return True
     if isinstance(value, np.generic):
         parts.append(f'npscalar:{value.dtype.str}:{value.item()!r}'.encode())
