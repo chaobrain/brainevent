@@ -24,6 +24,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+try:  # private, so guarded: without it ``_to_device`` is plain ``jnp.asarray``
+    from jax._src.core import trace_state_clean as _trace_state_clean
+except ImportError:  # pragma: no cover
+    _trace_state_clean = None
+
 from brainevent._compatible_import import Tracer
 from brainevent._misc import _check_csr_cuda_structure_dtypes, namescope
 from brainevent._op import load_cuda_file, XLACustomKernel, general_batching_rule
@@ -80,6 +85,20 @@ def _take(data, perm):
     """``data[perm]`` as one compiled gather; eager indexing first materialises the
     wrapped (non-negative) copy of ``perm``."""
     return data[perm]
+
+
+def _to_device(x: Any) -> jax.Array:
+    """``jnp.asarray(x)``; outside a trace a NumPy array is copied with ``jax.device_put``.
+
+    On JAX 0.12, ``jnp.asarray(ndarray)`` without a dtype compiles one identity XLA
+    program per new shape (``lax.stage``). ``device_put`` compiles nothing, gives the
+    same dtype, weak type and bits, and with ``may_alias=False`` never shares the host
+    buffer. Inside a trace it stays ``jnp.asarray`` (a constant), since a traced
+    ``device_put`` would add a copy to the program.
+    """
+    if isinstance(x, np.ndarray) and _trace_state_clean is not None and _trace_state_clean():
+        return jax.device_put(x, may_alias=False)
+    return jnp.asarray(x)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -271,7 +290,7 @@ class CSRDelayLayout:
 
         ptr_dtype = indptr_np.dtype if indptr_np.dtype in (np.int32, np.int64) else np.int32
         perm_dtype = np.int32 if nse < _INT32_PERM else np.int64
-        data_arr = data if isinstance(data, u.Quantity) else jnp.asarray(data)
+        data_arr = data if isinstance(data, u.Quantity) else _to_device(data)
         if np.ndim(data_arr) == 0:
             data_arr = data_arr.reshape(1)
         if np.shape(data_arr)[0] not in (1, nse) or np.ndim(data_arr) != 1:
@@ -305,20 +324,22 @@ class CSRDelayLayout:
             delay_ptr[r0 * n_slots:r1 * n_slots] = seg.astype(ptr_dtype)
 
         # Move each host array to the device and drop it before the next one.
-        indices_j = jnp.asarray(indices_out)
+        # ``device_put``, not ``jnp.asarray``: on JAX 0.12 the latter compiles an
+        # identity program (``lax.stage``) per new shape (#251).
+        indices_j = _to_device(indices_out)
         del indices_out
-        delays_j = jnp.asarray(delays_out)
+        delays_j = _to_device(delays_out)
         del delays_out
-        perm_j = jnp.asarray(perm)
+        perm_j = _to_device(perm)
         del perm
         if np.shape(data_arr)[0] == nse and nse != 1:
             data_arr = _take(data_arr, perm_j)
         return cls(
             data_arr,
             indices_j,
-            jnp.asarray(indptr_np.astype(ptr_dtype)),
+            _to_device(indptr_np.astype(ptr_dtype)),
             delays_j,
-            jnp.asarray(delay_ptr.reshape(n_pre, n_slots)),
+            _to_device(delay_ptr.reshape(n_pre, n_slots)),
             perm_j,
             shape=(n_pre, n_post),
         )
