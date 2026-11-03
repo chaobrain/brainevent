@@ -649,16 +649,39 @@ def test_build_of_host_arrays_compiles_nothing():
         assert lay.indptr.dtype == np.int32 and lay.delay_ptr.shape == (2, 3)
 
 
+def _aligned(n, dtype):
+    # a buffer at a 64-byte boundary: jax 0.12.0.1's CPU device_put zero-copies it (#254)
+    dt = np.dtype(dtype)
+    raw = np.empty(n * dt.itemsize + 64, np.uint8)
+    off = (-raw.ctypes.data) % 64
+    return raw[off:off + n * dt.itemsize].view(dt)
+
+
 def test_build_copies_its_host_arrays():
-    # The device arrays never alias a host array the caller keeps (``may_alias=False``).
-    idx = np.array([1, 0, 2], np.int32)
-    ptr = np.array([0, 3], np.int32)
-    lay = CSRDelayLayout.build(np.zeros((1,), np.float32), idx, ptr, np.ones(3, np.int32),
-                               n_slots=2, shape=(1, 3))
+    # #254: the device arrays never alias a host array the caller keeps, also when the
+    # buffers are 64-byte aligned (which device_put zero-copies even with may_alias=False).
+    data = _aligned(1, np.float32)
+    data[:] = 2.0
+    idx = _aligned(3, np.int32)
+    idx[:] = [1, 0, 2]
+    ptr = _aligned(2, np.int32)
+    ptr[:] = [0, 3]
+    lay = CSRDelayLayout.build(data, idx, ptr, np.ones(3, np.int32), n_slots=2, shape=(1, 3))
+    data[:] = 9.0
     idx[:] = 9
     ptr[:] = 7
+    np.testing.assert_array_equal(np.asarray(lay.data), [2.0])
     np.testing.assert_array_equal(np.asarray(lay.indices), [1, 0, 2])
     np.testing.assert_array_equal(np.asarray(lay.indptr), [0, 3])
+
+
+def test_to_device_copies_an_aligned_buffer():
+    # the helper itself: a host buffer the device array could share is copied first
+    x = _aligned(64, np.float32)
+    x[:] = 1.0
+    y = delay_layout_mod._to_device(x)
+    x[:] = 5.0
+    assert float(y[0]) == 1.0
 
 
 def test_build_inside_a_trace_keeps_its_arrays_as_constants():
