@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Content fingerprints of native kernels accept the built-in NumPy scalar
+  classes (`np.float32`, `np.float64`, ...) in closures (#215). The CPU
+  `csr_delay_deliver` Numba kernel closes over its ring's scalar class, so its
+  fingerprint was `None` and every layout shape got its own FFI handler and
+  Numba compilation (50 compilations on the first run of a 50-projection
+  network). Kernels that differ only in shape now share one handler; `float32`
+  and `float64` closures stay distinct, and user-defined classes keep the
+  fallback to a per-process name.
+
 ## [0.4.0] - 2026-11-02
 
 A minor release with breaking changes from a deep review of the package (#218).
