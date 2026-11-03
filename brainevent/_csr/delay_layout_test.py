@@ -659,3 +659,11 @@ def test_build_copies_its_host_arrays():
     ptr[:] = 7
     np.testing.assert_array_equal(np.asarray(lay.indices), [1, 0, 2])
     np.testing.assert_array_equal(np.asarray(lay.indptr), [0, 3])
+
+
+def test_build_inside_a_trace_keeps_its_arrays_as_constants():
+    # Under jit, host arrays stay constants (``jnp.asarray``), not traced ``device_put`` copies.
+    idx, ptr, dl = np.array([1, 0, 2], np.int32), np.array([0, 3], np.int32), np.ones(3, np.int32)
+    jaxpr = jax.make_jaxpr(lambda d: CSRDelayLayout.build(d, idx, ptr, dl, n_slots=2, shape=(1, 3)).indices)(
+        jnp.zeros((1,), jnp.float32))
+    assert 'device_put' not in str(jaxpr), jaxpr

@@ -24,6 +24,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+try:  # private, so guarded: without it ``_to_device`` is plain ``jnp.asarray``
+    from jax._src.core import trace_state_clean as _trace_state_clean
+except ImportError:  # pragma: no cover
+    _trace_state_clean = None
+
 from brainevent._compatible_import import Tracer
 from brainevent._misc import _check_csr_cuda_structure_dtypes, namescope
 from brainevent._op import load_cuda_file, XLACustomKernel, general_batching_rule
@@ -83,13 +88,15 @@ def _take(data, perm):
 
 
 def _to_device(x: Any) -> jax.Array:
-    """``jnp.asarray(x)``; a NumPy array is copied with ``jax.device_put`` (no compile).
+    """``jnp.asarray(x)``; outside a trace a NumPy array is copied with ``jax.device_put``.
 
     On JAX 0.12, ``jnp.asarray(ndarray)`` without a dtype compiles one identity XLA
-    program per new shape (``lax.stage``). ``device_put`` gives the same dtype, weak
-    type and bits, and with ``may_alias=False`` never shares the host buffer.
+    program per new shape (``lax.stage``). ``device_put`` compiles nothing, gives the
+    same dtype, weak type and bits, and with ``may_alias=False`` never shares the host
+    buffer. Inside a trace it stays ``jnp.asarray`` (a constant), since a traced
+    ``device_put`` would add a copy to the program.
     """
-    if isinstance(x, np.ndarray):
+    if isinstance(x, np.ndarray) and _trace_state_clean is not None and _trace_state_clean():
         return jax.device_put(x, may_alias=False)
     return jnp.asarray(x)
 
