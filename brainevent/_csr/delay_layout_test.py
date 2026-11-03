@@ -588,3 +588,35 @@ def test_gpu_large_matches_plain():
     out = csr_delay_deliver_layout(ring, jnp.asarray(ev), lay, 17, backend='cuda_raw')
     plain = csr_delay_deliver(ring, jnp.asarray(ev), data, idx, ipt, dl, 17, shape=(3000, 2000), backend='jax_raw')
     np.testing.assert_allclose(np.asarray(out), np.asarray(plain), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.skipif('numba' not in BACKENDS, reason='numba backend unavailable')
+def test_numba_layouts_of_different_sizes_share_one_handler():
+    # #215: the native kernel reads shapes at runtime and closes over the ring's
+    # NumPy scalar class. Layouts that differ only in size must share one
+    # registered handler (one native compile), not get one each.
+    from brainevent._op.numba_ffi import _NUMBA_CPU_FFI_HANDLES
+
+    sizes = (5, 6, 11)
+    layouts = tuple(
+        CSRDelayLayout.build(jnp.ones(n, dtype=jnp.float32), jnp.arange(n, dtype=jnp.int32),
+                             jnp.array([0, n], dtype=jnp.int32), jnp.ones(n, dtype=jnp.int32),
+                             n_slots=2, shape=(1, n))
+        for n in sizes
+    )
+    previous = set(_NUMBA_CPU_FFI_HANDLES)
+
+    @jax.jit
+    def deliver():
+        return tuple(lay.deliver(jnp.zeros((2, lay.shape[1]), dtype=jnp.float32), jnp.array([True]), 0,
+                                 backend='numba')
+                     for lay in layouts)
+
+    outs = jax.block_until_ready(deliver())
+    for out in outs:
+        np.testing.assert_array_equal(np.asarray(out[0]), 0.)
+        np.testing.assert_array_equal(np.asarray(out[1]), 1.)
+    new = [h for name, h in _NUMBA_CPU_FFI_HANDLES.items()
+           if name not in previous and h.kernel.py_func.__name__ == 'deliver']
+    # Zero when an earlier test already registered the same kernel content.
+    assert len(new) <= 1, f'{len(new)} native deliver handlers for {len(sizes)} layout sizes'
