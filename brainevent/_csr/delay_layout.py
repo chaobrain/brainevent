@@ -88,16 +88,18 @@ def _take(data, perm):
 
 
 def _to_device(x: Any) -> jax.Array:
-    """``jnp.asarray(x)``; outside a trace a NumPy array is copied with ``jax.device_put``.
+    """``jnp.asarray(x)``; outside a trace a NumPy array is copied, then ``device_put``.
 
     On JAX 0.12, ``jnp.asarray(ndarray)`` without a dtype compiles one identity XLA
-    program per new shape (``lax.stage``). ``device_put`` compiles nothing, gives the
-    same dtype, weak type and bits, and with ``may_alias=False`` never shares the host
-    buffer. Inside a trace it stays ``jnp.asarray`` (a constant), since a traced
-    ``device_put`` would add a copy to the program.
+    program per new shape (``lax.stage``, #251). ``device_put`` compiles nothing and
+    gives the same dtype, weak type and bits. The host copy comes first because on
+    jax/jaxlib 0.12.0.1 CPU ``device_put`` zero-copies a 64-byte-aligned NumPy buffer
+    even with ``may_alias=False`` (#254): without it, a caller who reuses its buffer
+    after ``build`` would change the layout. Inside a trace it stays ``jnp.asarray`` (a
+    constant), since a traced ``device_put`` would add a copy to the program.
     """
     if isinstance(x, np.ndarray) and _trace_state_clean is not None and _trace_state_clean():
-        return jax.device_put(x, may_alias=False)
+        return jax.device_put(np.array(x, copy=True))
     return jnp.asarray(x)
 
 
