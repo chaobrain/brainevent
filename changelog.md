@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-03
+
+A patch release with one fix. The CPU delay kernel now shares one native
+handler across layout shapes, so a network no longer pays one Numba
+compilation per delay layout shape on its first run (#215).
+
+**Requirements:** unchanged from 0.4.0: Python ≥ 3.12, `jax` ≥ 0.9.0
+(validated through 0.12.x), `brainunit` ≥ 0.0.8, `numpy` ≥ 2.0.
+
 ### Fixed
 
 - Content fingerprints of native kernels accept the built-in NumPy scalar
@@ -1354,6 +1363,7 @@ replacement. Recommended updates:
 
 ## Version Comparison Links
 
+- [0.4.1](https://github.com/chaobrain/brainevent/compare/v0.4.0...v0.4.1)
 - [0.4.0](https://github.com/chaobrain/brainevent/compare/v0.3.0...v0.4.0)
 - [0.3.0](https://github.com/chaobrain/brainevent/compare/v0.2.1...v0.3.0)
 - [0.2.1](https://github.com/chaobrain/brainevent/compare/v0.2.0...v0.2.1)
