@@ -26,7 +26,6 @@ from jax.interpreters import ad
 from brainevent._misc import (
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
-    _csr_to_coo,
     _cusparse_accepts_nse,
     _cusparse_product,
     namescope,
@@ -41,7 +40,7 @@ from .hybrid_config import (
     max_row_nnz as _longest_row,
 )
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._sddmm import sddmm_coo_indices
+from brainevent._sddmm import dispatch as _sddmm_dispatch
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from ..float.float import csrmv, csrmm, csrmv_p, csrmm_p
@@ -453,62 +452,6 @@ def _event_contrib(w, x, *, dtype, weighted: bool) -> jax.Array:
     w = jnp.asarray(w).astype(dtype)
     value = w * x.astype(dtype) if weighted else w
     return select_active(event_active(x), value)
-
-
-def _event_ct(events, ct, *, weighted: bool) -> jax.Array:
-    """Weight cotangent ``where(active, f(x) * ct, 0)`` of a per-entry product.
-
-    ``events`` and ``ct`` are already gathered per stored entry. Inactive
-    entries get exactly ``0`` even if ``ct`` is NaN or +-Inf.
-
-    Parameters
-    ----------
-    events : jax.Array
-        Event value of every stored entry.
-    ct : jax.Array
-        Output cotangent of every stored entry.
-    weighted : bool
-        Value-weighted events.
-
-    Returns
-    -------
-    jax.Array
-        The weight cotangent of every stored entry, in ``ct.dtype``.
-    """
-    value = events.astype(ct.dtype) * ct if weighted else ct
-    return select_active(event_active(events), value)
-
-
-def _entry_weight_ct(events, ct, row, col, *, transpose: bool, weighted: bool) -> jax.Array:
-    """Exact per-entry weight cotangent of a CSR event product, by selection.
-
-    Entry ``e`` reads the event of unit ``row(e)`` (``transpose``) or
-    ``col(e)`` and writes output ``col(e)`` or ``row(e)``. The result is
-    ``sum_b where(active[unit, b], f(x[unit, b]) * ct[out, b], 0)``: an event
-    that is inactive in a batch column contributes exactly ``0`` there, even
-    where ``ct`` is NaN/Inf.
-
-    Parameters
-    ----------
-    events : jax.Array
-        ``(n_ev,)`` or ``(n_ev, n)`` events.
-    ct : jax.Array
-        ``(n_out,)`` or ``(n_out, n)`` output cotangent.
-    row, col : jax.Array
-        COO coordinates of the stored entries.
-    transpose : bool
-        Product direction.
-    weighted : bool
-        Value-weighted events.
-
-    Returns
-    -------
-    jax.Array
-        ``(nse,)`` weight cotangent in ``ct.dtype``.
-    """
-    unit, out = (row, col) if transpose else (col, row)
-    values = _event_ct(events[unit], ct[out], weighted=weighted)
-    return values if values.ndim == 1 else jnp.sum(values, axis=1)
 
 
 def _homo_count_output(count, w, dtype):
@@ -987,37 +930,15 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose
             ct_values = ad.Zero(data.aval)
         else:
             weighted = kwargs.get('weighted', False)
-            row, col = _csr_to_coo(indices, indptr)
+            left, right = (events, ct) if transpose else (ct, events)
+            ct_values = _sddmm_dispatch.sddmm(
+                left, right, indices, indptr,
+                mode='weighted' if weighted else 'binary', transpose=transpose,
+                backend=_sddmm_dispatch._CSRBackend(binary_csrmv_p, kwargs['backend']),
+            )
             if data.aval.shape[0] == 1:  # scalar
-
-                def unit_product(ct):
-                    r = binary_csrmv_p_call(
-                        jnp.ones(1, dtype=data.aval.dtype),
-                        indices,
-                        indptr,
-                        events,
-                        shape=shape,
-                        transpose=transpose,
-                        backend=kwargs['backend'],
-                        weighted=weighted,
-                        max_row_nnz=kwargs.get('max_row_nnz'),
-                    )[0]
-                    return jnp.inner(ct, r)
-
-                def select_sum(ct):
-                    return jnp.sum(_entry_weight_ct(events, ct, row, col, transpose=transpose, weighted=weighted))
-
-                # ``ct * 0`` is exact for a finite cotangent; a NaN/Inf one
-                # takes the per-entry select so it cannot leak through an
-                # output that received only inactive events.
-                ct_values = jax.lax.cond(
-                    jnp.all(jnp.isfinite(ct)), unit_product, select_sum, ct,
-                ).astype(data.aval.dtype).reshape(*data.aval.shape)
-            else:  # heterogeneous values
-                # Binary: the forward selects the weight of active events. Weighted:
-                # it multiplies by the value. Inactive entries get exactly 0, by
-                # selection, even for a NaN/Inf output cotangent.
-                ct_values = _entry_weight_ct(events, ct, row, col, transpose=transpose, weighted=weighted)
+                ct_values = jnp.sum(ct_values).reshape(*data.aval.shape)
+            ct_values = ct_values.astype(data.aval.dtype)
         return ct_values, indices, indptr, events
 
 
@@ -1652,50 +1573,16 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
     else:
         B = jnp.asarray(B)
         weighted = kwargs.get('weighted', False)
-        row, col = _csr_to_coo(indices, indptr)
-        d_data = _csrmm_entry_weight_ct(B, ct, row, col, transpose=transpose, weighted=weighted)
+        left, right = (B, ct.T) if transpose else (ct, B.T)
+        d_data = _sddmm_dispatch.sddmm(
+            left, right, indices, indptr,
+            mode='weighted' if weighted else 'binary', transpose=transpose,
+            backend=_sddmm_dispatch._CSRBackend(binary_csrmm_p, kwargs['backend']),
+        )
         if data.aval.shape[0] == 1:  # scalar
             d_data = jnp.sum(d_data).reshape(*data.aval.shape)
         d_data = d_data.astype(data.aval.dtype)
         return d_data, indices, indptr, B
-
-
-def _csrmm_entry_weight_ct(B, ct, row, col, *, transpose: bool, weighted: bool) -> jax.Array:
-    """Per-entry weight cotangent of a CSR event mat-mat product.
-
-    A finite cotangent uses the fused SDDMM ``sum_b f(B[unit, b]) * ct[out, b]``
-    (``0 * ct`` is exact there); a NaN/Inf cotangent takes the per-column
-    select of :func:`_entry_weight_ct`, so it cannot leak through an event that
-    is inactive in that batch column.
-
-    Parameters
-    ----------
-    B : jax.Array
-        ``(n_ev, n)`` events.
-    ct : jax.Array
-        ``(n_out, n)`` output cotangent.
-    row, col : jax.Array
-        COO coordinates of the stored entries.
-    transpose : bool
-        Product direction.
-    weighted : bool
-        Value-weighted events.
-
-    Returns
-    -------
-    jax.Array
-        ``(nse,)`` weight cotangent in ``ct.dtype``.
-    """
-    unit, out = (row, col) if transpose else (col, row)
-
-    def sddmm(ct):
-        B_factor = event_factor(B, dtype=ct.dtype, weighted=weighted)
-        return sddmm_coo_indices(B_factor, ct.T, unit, out).data
-
-    def select(ct):
-        return _entry_weight_ct(B, ct, row, col, transpose=transpose, weighted=weighted)
-
-    return jax.lax.cond(jnp.all(jnp.isfinite(ct)), sddmm, select, ct)
 
 
 def _csrmm_batching(args, axes, **kwargs):

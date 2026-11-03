@@ -27,14 +27,13 @@ from brainevent._misc import (
     _promote_float_operands,
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
-    _csr_to_coo,
     _cusparse_accepts_nse,
     namescope,
 )
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._sddmm import sddmm_coo_indices
+from brainevent._sddmm import dispatch as _sddmm_dispatch
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from brainevent._op.util import dtype_suffix
@@ -303,9 +302,6 @@ def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, 
 
 
 def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose, **kwargs):
-    if ad.is_undefined_primal(indices):
-        raise ValueError("Cannot transpose with respect to sparse indices.")
-
     ct = ct[0]
 
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr):
@@ -328,20 +324,12 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose
         if type(ct) is ad.Zero:
             ct_values = ad.Zero(data)
         else:
+            left, right = (vector, ct) if transpose else (ct, vector)
+            ct_values = _sddmm_dispatch.sddmm(
+                left, right, indices, indptr, mode='float', transpose=transpose,
+            )
             if data.aval.shape[0] == 1:  # scalar
-                ct_values = csrmv_p_call(
-                    jnp.ones(1, dtype=data.aval.dtype),
-                    indices,
-                    indptr,
-                    vector,
-                    shape=shape,
-                    transpose=transpose,
-                    backend=kwargs['backend'],
-                )[0]
-                ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
-            else:  # heterogeneous values
-                row, col = _csr_to_coo(indices, indptr)
-                ct_values = vector[row] * ct[col] if transpose else vector[col] * ct[row]
+                ct_values = jnp.sum(ct_values).reshape(data.aval.shape)
         return ct_values, indices, indptr, vector
 
 
@@ -862,25 +850,13 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
     else:
         if type(ct) is ad.Zero:
             return ad.Zero(data.aval), indices, indptr, B
-        B = jnp.asarray(B)
+        left, right = (B, ct.T) if transpose else (ct, B.T)
+        d_data = _sddmm_dispatch.sddmm(
+            left, right, indices, indptr, mode='float', transpose=transpose,
+        )
         if data.aval.shape[0] == 1:  # scalar
-            r = csrmm_p_call(
-                jnp.ones(1, dtype=data.aval.dtype),
-                indices,
-                indptr,
-                B,
-                shape=shape,
-                transpose=transpose,
-                backend=kwargs['backend']
-            )[0]
-            return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B
-        else:
-            row, col = _csr_to_coo(indices, indptr)
-            if transpose:
-                d_data = sddmm_coo_indices(B, ct.T, row, col).data
-            else:
-                d_data = sddmm_coo_indices(B, ct.T, col, row).data
-            return d_data, indices, indptr, B
+            d_data = jnp.sum(d_data).reshape(data.aval.shape)
+        return d_data, indices, indptr, B
 
 
 def _csrmm_batching(args, axes, **kwargs):

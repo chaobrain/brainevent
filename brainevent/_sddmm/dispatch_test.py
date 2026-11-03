@@ -8,11 +8,9 @@ import numpy as np
 import pytest
 
 from brainevent._sddmm import (
-    sddmm, sddmm_indices, sddmm_coo_indices, sddmm_bcoo,
-    csr_sddmm_dweight, csr_sddmv_dweight, csr_sddmv_dweight_binary,
-    csr_sddmv_dweight_weighted, csr_sddmv_p,
+    sddmm, csr_sddmm_dweight, csr_sddmv_dweight,
 )
-from jax.experimental.sparse import BCOO
+from brainevent._registry import get_registry
 
 dispatch = importlib.import_module('brainevent._sddmm.dispatch')
 mv = importlib.import_module('brainevent._sddmm._mv.sddmv')
@@ -20,7 +18,7 @@ mm = importlib.import_module('brainevent._sddmm._mm.sddmm')
 
 
 @pytest.mark.parametrize('batch', [0, 1, 3])
-def test_wrappers_enter_one_dispatcher_and_expected_leaf(monkeypatch, batch):
+def test_dispatch_selects_leaf_by_contraction_size(monkeypatch, batch):
     calls = []
     for name, module in [('mv', mv), ('mm', mm)]:
         original = module.sampled
@@ -32,33 +30,42 @@ def test_wrappers_enter_one_dispatcher_and_expected_leaf(monkeypatch, batch):
     b = jnp.arange(batch * 3, dtype=jnp.float32).reshape(batch, 3)
     coordinates = jnp.array([[1, 2], [0, 0], [1, 2]], dtype=jnp.int32)
     expected = (a @ b)[coordinates[:, 0], coordinates[:, 1]]
-    for call in [lambda: sddmm(a, b, coordinates),
-                 lambda: sddmm_indices(a, b, coordinates).data,
-                 lambda: sddmm_coo_indices(a, b, coordinates[:, 0], coordinates[:, 1]).data,
-                 lambda: sddmm_bcoo(a, b, BCOO((jnp.ones(3), coordinates), shape=(2, 3))).data]:
-        # Each wrapper should trace through the dispatcher independently.
-        jax.clear_caches()
-        np.testing.assert_allclose(call(), expected)
-    assert calls == ['mv' if batch == 1 else 'mm'] * 4
+    np.testing.assert_allclose(jax.jit(sddmm)(a, b, coordinates), expected)
+    assert calls == ['mv' if batch == 1 else 'mm']
 
 
-def test_legacy_wrappers_reuse_their_jit_compilation(monkeypatch):
-    traces = []
-    original = mm.sampled
-    def record(*args, **kwargs):
-        traces.append(True)
-        return original(*args, **kwargs)
-    monkeypatch.setattr(mm, 'sampled', record)
-    a, b = jnp.ones((2, 3)), jnp.ones((3, 4))
-    coords = jnp.array([[0, 1]], jnp.int32)
-    for call in [lambda: sddmm_indices(a, b, coords),
-                 lambda: sddmm_coo_indices(a, b, coords[:, 0], coords[:, 1]),
-                 lambda: sddmm_bcoo(a, b, BCOO((jnp.ones(1), coords), shape=(2, 4)))]:
-        jax.clear_caches()
-        traces.clear()
-        np.testing.assert_array_equal(call().data, [3.])
-        np.testing.assert_array_equal(call().data, [3.])
-        assert len(traces) == 1
+@pytest.mark.parametrize('name,batch', [
+    ('csr_sddmv', None), ('csr_sddmm', None),
+    ('csr_sddmm', 0), ('csr_sddmm', 1), ('csr_sddmm', 3),
+])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_registry_calls_adapt_csr_operands_and_select_leaf(monkeypatch, name, batch, transpose, weighted):
+    calls = []
+    for leaf, module in [('mv', mv), ('mm', mm)]:
+        original = module.sampled
+
+        def record(*args, _leaf=leaf, _fn=original, **kwargs):
+            calls.append(_leaf)
+            return _fn(*args, **kwargs)
+
+        monkeypatch.setattr(module, 'sampled', record)
+    indices = jnp.array([2, 0, 1, 1], jnp.int32)
+    indptr = jnp.array([0, 2, 2, 4], jnp.int32)
+    rows = jnp.array([0, 0, 2, 2], jnp.int32)
+    tail = () if batch is None else (batch,)
+    events = jnp.asarray(np.resize([0., -2., 1., 3.], (3 if transpose else 4,) + tail))
+    ct = jnp.asarray(np.resize([2., 1., -3., .5], (4 if transpose else 3,) + tail))
+    unit, out = (rows, indices) if transpose else (indices, rows)
+    terms = events[unit] * ct[out] if weighted else ct[out]
+    expected = jnp.where(events[unit] != 0, terms, 0.)
+    if batch is not None:
+        expected = expected.sum(axis=1)
+    primitive = get_registry()[name]
+    fn = jax.jit(lambda e, c: primitive.call(
+        e, c, indices, indptr, transpose=transpose, weighted=weighted, backend='jax_raw'))
+    np.testing.assert_array_equal(fn(events, ct), expected)
+    assert calls == ['mv' if batch in (None, 1) else 'mm']
 
 
 @pytest.mark.parametrize('batch', [0, 1, 4])
@@ -96,10 +103,11 @@ def test_vectors_and_singleton_matrices_agree():
     np.testing.assert_array_equal(sddmm(a,b,coords), [10.,18.])
 
 
-def test_mm_is_callable_without_cuda_and_has_clear_cuda_placeholder(monkeypatch):
+def test_ordinary_mm_is_callable_without_cuda(monkeypatch):
     def fail_cuda(*args, **kwargs):
-        raise AssertionError('MM must use JAX until its CUDA backend is implemented')
+        raise AssertionError('ordinary MM must use JAX')
     monkeypatch.setattr(mv, 'load_cuda_file', fail_cuda)
+    monkeypatch.setattr(mm, 'load_cuda_file', fail_cuda)
     a, b = jnp.ones((2, 3)), jnp.ones((3, 4))
     coords = jnp.array([[0, 1]], jnp.int32)
     np.testing.assert_array_equal(jax.jit(sddmm)(a,b,coords), [3.])
@@ -131,11 +139,11 @@ def test_plain_float_keeps_zero_times_inf():
 def test_csr_singleton_matrices_and_vector_wrappers_share_native_routing(transpose):
     e, c = jnp.array([0., -2.]), jnp.array([jnp.inf, 3.])
     i, p = jnp.array([0, 1], jnp.int32), jnp.array([0, 1, 2], jnp.int32)
-    for weighted, wrapper in [(False, csr_sddmv_dweight_binary),
-                              (True, csr_sddmv_dweight_weighted)]:
+    for weighted in (False, True):
         expected = jnp.array([0., -6. if weighted else 3.])
-        np.testing.assert_array_equal(wrapper(e, c, i, p, transpose=transpose), expected)
-        np.testing.assert_array_equal(csr_sddmv_p.call(
+        np.testing.assert_array_equal(csr_sddmv_dweight(
+            e, c, i, p, transpose=transpose, weighted=weighted), expected)
+        np.testing.assert_array_equal(get_registry()['csr_sddmv'].call(
             e, c, i, p, transpose=transpose, weighted=weighted), expected)
         fn = jax.jit(lambda x, y: csr_sddmm_dweight(
             x, y, i, p, transpose=transpose, weighted=weighted, backend='auto'))
@@ -145,24 +153,22 @@ def test_csr_singleton_matrices_and_vector_wrappers_share_native_routing(transpo
 
 
 @pytest.mark.parametrize('batch', [1, 2])
-def test_backend_errors_and_mm_event_fallback(monkeypatch, batch):
+def test_backend_errors_and_nontransposed_event_fallback(monkeypatch, batch):
     def fail_cuda(*args, **kwargs):
         raise AssertionError('JAX execution must not load CUDA')
     monkeypatch.setattr(mv, 'load_cuda_file', fail_cuda)
+    monkeypatch.setattr(mm, 'load_cuda_file', fail_cuda)
     a, b = jnp.ones((2, batch)), jnp.ones((batch, 3))
     i, p = jnp.array([0, 1], jnp.int32), jnp.array([0, 1, 2], jnp.int32)
     with pytest.raises(ValueError, match='backend'):
         sddmm(a, b, i, p, backend='invalid')
     with pytest.raises(NotImplementedError, match='CUDA'):
         sddmm(a, b, i, p, backend='cuda_raw')
-    if batch > 1:
-        for backend in (None, 'auto', 'jax_raw'):
-            np.testing.assert_array_equal(sddmm(a, b, i, p, mode='weighted', backend=backend), [2., 2.])
-        with pytest.raises(NotImplementedError, match='CUDA'):
-            sddmm(a, b, i, p, mode='binary', backend='cuda_raw')
-    else:
-        with pytest.raises(ValueError, match='transpose=True'):
-            sddmm(a, b, i, p, mode='binary', transpose=False, backend='cuda_raw')
+    for backend in (None, 'auto', 'jax_raw'):
+        np.testing.assert_array_equal(sddmm(a, b, i, p, mode='weighted', transpose=False,
+                                           backend=backend), [batch, batch])
+    with pytest.raises(ValueError, match='transpose=True'):
+        sddmm(a, b, i, p, mode='binary', transpose=False, backend='cuda_raw')
 
 
 @pytest.mark.parametrize('change,error,match', [
@@ -196,4 +202,34 @@ def test_csr_wrappers_reject_ambiguous_ranks_and_flags():
     with pytest.raises(ValueError, match='both'):
         csr_sddmm_dweight(e[:, None], c, i, p, transpose=True)
     with pytest.raises(ValueError, match='rank 1'):
-        csr_sddmv_dweight(e[:, None], c[:, None], i, p, transpose=True)
+        get_registry()['csr_sddmv'].call(e[:, None], c[:, None], i, p, transpose=True)
+
+
+@pytest.mark.parametrize('batch', [0, 1, 3])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_explicit_jax_csr_keeps_derivatives(batch, transpose, weighted):
+    indices = jnp.array([2, 0, 1, 1], jnp.int32)
+    indptr = jnp.array([0, 2, 2, 4], jnp.int32)
+    rows = jnp.array([0, 0, 2, 2], jnp.int32)
+    events = jnp.asarray(np.resize([0., -2., 1., 3.], (3 if transpose else 4, batch)), jnp.float32)
+    ct_shape = (4 if transpose else 3, batch)
+    ct = jnp.arange(ct_shape[0] * batch, dtype=jnp.float32).reshape(ct_shape)
+    unit, out = (rows, indices) if transpose else (indices, rows)
+
+    def call(c):
+        return csr_sddmm_dweight(events, c, indices, indptr, transpose=transpose,
+                                 weighted=weighted, backend='jax_raw')
+
+    def reference(c):
+        x = events[unit]
+        return jnp.sum(jnp.where(x != 0, x * c[out] if weighted else c[out], 0), axis=1)
+
+    tangent = jnp.ones_like(ct)
+    actual = jax.jit(lambda c: jax.jvp(call, (c,), (tangent,))[1])(ct)
+    np.testing.assert_allclose(actual, reference(tangent))
+    def hvp(fn):
+        loss = lambda c: jnp.sum(fn(c) ** 2)
+        return jax.jit(lambda c: jax.jvp(jax.grad(loss), (c,), (tangent,))[1])(ct)
+
+    np.testing.assert_allclose(hvp(call), hvp(reference))

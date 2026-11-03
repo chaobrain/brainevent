@@ -730,7 +730,7 @@ def test_245_sharded_delay_delivery_gradients_match_pure_jax(backend, w_spec):
 
 # Transpose rules that build a cotangent outside the primitive itself: the dt2t
 # ``y`` cotangent (``jax.linear_transpose`` of the pure-JAX kernel) and the CSR
-# mat-mat weight cotangent (``sddmm_indices``).
+# mat-mat weight cotangent (the sampled-product dispatcher).
 _B = np.asarray([[1., 2.], [0., 3.], [4., 0.], [5., 6.]], np.float32)  # (4, 2) events / dense block
 
 _GRAD_CASES = {

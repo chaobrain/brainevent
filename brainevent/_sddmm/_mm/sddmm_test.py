@@ -71,11 +71,11 @@ def test_nonfinite_values_are_selected_before_batch_sum(value_dtype, transpose, 
 
 
 @pytest.mark.parametrize('transpose', [False, True])
-def test_activity_precedes_narrowing_and_reduction(transpose):
+def test_jax_activity_precedes_narrowing_and_reduction(transpose):
     i, p = jnp.array([0, 1], jnp.int32), jnp.array([0, 1, 2], jnp.int32)
     e = jnp.array([[1e-200, 0], [0, 0]], jnp.float64)
     c = jnp.full((2, 2), jnp.inf, jnp.float32)
-    result = csr_sddmm_dweight(e, c, i, p, transpose=transpose, weighted=True)
+    result = csr_sddmm_dweight(e, c, i, p, transpose=transpose, weighted=True, backend='jax_raw')
     assert jnp.isnan(result[0]) and result[1] == 0
 
 
@@ -116,7 +116,7 @@ def test_coo_empty_and_out_of_bounds_slots(batch, mode):
 
 def test_registry_call_and_no_event_derivative_rule():
     e, c, i, p = operands(jnp.float32, jnp.float32, True)
-    assert set(csr_sddmm_p.available_backends('gpu')) == {'jax_raw'}
+    assert set(csr_sddmm_p.available_backends('gpu')) == {'auto', 'cuda_raw', 'jax_raw'}
     np.testing.assert_allclose(csr_sddmm_p.call(e, c, i, p, transpose=True, weighted=True),
                                reference(e, c, i, transpose=True, weighted=True))
     with pytest.raises(NotImplementedError, match='Differentiation rule'):

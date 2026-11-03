@@ -14,22 +14,17 @@
 // ==============================================================================
 
 /*
- * hybrid_sddmv_prezeroed.cu -- Hybrid SDDMV v1 relying on a caller-zeroed dweight
+ * hybrid_sddmv_binary.cu -- Hybrid SDDMV relying on a caller-zeroed dweight
  * =============================================================================
  *
- * Experimental CUDA backend for the event-driven sampled product:
+ * CUDA backend for the event-driven sampled product:
  *
  *   dweight[j] = ct[indices[j]]
  *     for active row where vector[row] is active
  *     for j in indptr[row]:indptr[row + 1]
  *   dweight[j] = 0 for every slot of an inactive row
  *
- * Derived from new_mv_operator/baseline/binary_csrmv_hybrid.cu. Scheduling is
- * unchanged; only the data flow is swapped: hybrid MV reads weights[j] and
- * atomically scatters into output[indices[j]], this kernel gathers
- * ct[indices[j]] and stores it to dweight[j] without atomics.
- *
- * Strategy:
+ * Strategy (default tuning values; configurable through HybridConfig):
  *   0. Clear status only; dweight arrives zeroed (aliased dweight_in).
  *   1. Extract active rows. Rows with nnz <= 128 are gathered immediately by
  *      one thread per row.
@@ -38,9 +33,6 @@
  *   3. Launch a fixed number of 256-thread blocks. Each block reads the
  *      active task count on device and processes tasks with a grid-stride
  *      loop, avoiding D2H status reads and host synchronization.
- *
- * v1 gathers ct directly by global column index and ignores the ct working
- * set (no TCSR tile locality); see md/v1_hybrid_sddmv.md.
  *
  * Integration contract:
  *
@@ -58,16 +50,11 @@
  *   f64 additionally has _int8 and _double event entry points.
  *   Index dtypes are dispatched at run time.
  *
- *   Copy of hybrid-sddmv/hybrid_sddmv.cu with the nnz-long dweight memset
- *   removed: inactive rows are never written, so the caller must zero them.
- *
- *   task_capacity = sum(row_nnz > 128 ? ceil(row_nnz / 4096) : 0) over all
- *   static CSR rows, computed by the caller before launch.
+ *   task_capacity bounds the tasks required by all heavy rows. The Python
+ *   caller computes this bound from shapes and the captured HybridConfig.
  */
 
-#include "cuda_common.h"
-#include "brainevent/common.h"
-#include "brainevent/dtypes.h"
+#include "hybrid_sddmv.cuh"
 
 #include <limits>
 
@@ -89,33 +76,6 @@
 
 namespace
 {
-
-    template <typename T>
-    struct ValueTraits;
-    template <>
-    struct ValueTraits<float>
-    {
-        static constexpr BE::DType dtype = BE::DType::Float32;
-    };
-    template <>
-    struct ValueTraits<double>
-    {
-        static constexpr BE::DType dtype = BE::DType::Float64;
-    };
-    template <>
-    struct ValueTraits<__half>
-    {
-        static constexpr BE::DType dtype = BE::DType::Float16;
-    };
-    template <>
-    struct ValueTraits<__nv_bfloat16>
-    {
-        static constexpr BE::DType dtype = BE::DType::BFloat16;
-    };
-    inline bool is_signed_index(BE::DType dtype)
-    {
-        return dtype == BE::DType::Int32 || dtype == BE::DType::Int64;
-    }
 
     constexpr int kBlockSize = BE_HYBRID_BLOCK_SIZE;
     constexpr int kFixedScatterBlocks = BE_HYBRID_FIXED_SCATTER_BLOCKS;
@@ -263,6 +223,11 @@ namespace
         }
     }
 
+} // namespace
+
+namespace hybrid_sddmv
+{
+
     template <typename ValueT, typename EventT, typename IndexT, typename OffsetT>
     cudaError_t launch_binary(
         const ValueT *ct,
@@ -343,7 +308,39 @@ namespace
         return cudaSuccess;
     }
 
-} // namespace
+#define INSTANTIATE_HYBRID_BINARY(VALUE_T, EVENT_T, INDEX_T, OFFSET_T)       \
+    template cudaError_t launch_binary<VALUE_T, EVENT_T, INDEX_T, OFFSET_T>( \
+        const VALUE_T *, const INDEX_T *, const OFFSET_T *, const EVENT_T *, \
+        VALUE_T *, OFFSET_T *, OFFSET_T *, int32_t *, int, int64_t, int64_t, cudaStream_t);
+#define INSTANTIATE_HYBRID_INDICES(VALUE_T, EVENT_T)              \
+    INSTANTIATE_HYBRID_BINARY(VALUE_T, EVENT_T, int32_t, int32_t) \
+    INSTANTIATE_HYBRID_BINARY(VALUE_T, EVENT_T, int32_t, int64_t) \
+    INSTANTIATE_HYBRID_BINARY(VALUE_T, EVENT_T, int64_t, int32_t) \
+    INSTANTIATE_HYBRID_BINARY(VALUE_T, EVENT_T, int64_t, int64_t)
+
+    INSTANTIATE_HYBRID_INDICES(__half, int8_t)
+    INSTANTIATE_HYBRID_INDICES(__half, float)
+    INSTANTIATE_HYBRID_INDICES(__nv_bfloat16, int8_t)
+    INSTANTIATE_HYBRID_INDICES(__nv_bfloat16, float)
+    INSTANTIATE_HYBRID_INDICES(float, int8_t)
+    INSTANTIATE_HYBRID_INDICES(float, float)
+    INSTANTIATE_HYBRID_INDICES(double, int8_t)
+    INSTANTIATE_HYBRID_INDICES(double, float)
+    INSTANTIATE_HYBRID_INDICES(double, double)
+#undef INSTANTIATE_HYBRID_INDICES
+#undef INSTANTIATE_HYBRID_BINARY
+
+} // namespace hybrid_sddmv
+
+#ifndef BE_SDDMV_STANDALONE
+#include "cuda_common.h"
+#include "brainevent/common.h"
+#include "brainevent/dtypes.h"
+#include "../_common/op_traits.cuh"
+#include <cstdio>
+#include <cstdlib>
+
+using op_traits::ValueTraits;
 
 #ifndef BE_HYBRID_SDDMV_CHECK
 // Host-side check: throws BE::CheckError, which the generated FFI wrapper
@@ -377,7 +374,7 @@ namespace
                 dweight.dtype() == ValueTraits<VALUE_T>::dtype,                                                                          \
             "hybrid_sddmv_binary" #SUFFIX " expects matching ct and dweight dtype");                                                     \
         BE_HYBRID_SDDMV_CHECK(                                                                                                           \
-            is_signed_index(indices.dtype()) && is_signed_index(indptr.dtype()),                                   \
+            op_traits::is_signed_index(indices.dtype()) && op_traits::is_signed_index(indptr.dtype()),                                   \
             "hybrid_sddmv_binary" #SUFFIX " expects indices/indptr=s32/s64");                                                            \
         BE_HYBRID_SDDMV_CHECK(                                                                                                           \
             vector.dtype() == EVENT_DTYPE,                                                                               \
@@ -423,7 +420,7 @@ namespace
         cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);                                                               \
         cudaError_t launch_status = cudaSuccess;                                                                                         \
         BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, {                                                \
-            cudaError_t error = launch_binary<VALUE_T, EVENT_T, IndexT, OffsetT>(                                          \
+            cudaError_t error = hybrid_sddmv::launch_binary<VALUE_T, EVENT_T, IndexT, OffsetT>(                                          \
                 ct.data_ptr<const VALUE_T>(),                                                                                            \
                 indices.data_ptr<const IndexT>(),                                                                                        \
                 indptr.data_ptr<const OffsetT>(),                                                                                        \
@@ -462,3 +459,5 @@ DEFINE_HYBRID_SDDMV_BINARY(_f64_float, double, float, BE::DType::Float32)
 DEFINE_HYBRID_SDDMV_BINARY(_f64_int8, double, int8_t, BE::DType::Int8)
 // @BE hybrid_sddmv_binary_f64_double
 DEFINE_HYBRID_SDDMV_BINARY(_f64_double, double, double, BE::DType::Float64)
+
+#endif // BE_SDDMV_STANDALONE

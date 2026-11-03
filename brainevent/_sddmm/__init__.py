@@ -5,9 +5,6 @@
 
 import jax
 import jax.numpy as jnp
-from jax.experimental.sparse import BCOO
-
-from brainevent._misc import namescope
 
 from . import dispatch as _dispatch
 from .dispatch import sddmm
@@ -15,90 +12,10 @@ from ._mv.sddmv import csr_sddmv_p
 from ._mm.sddmm import csr_sddmm_p
 
 __all__ = [
-    'sddmm', 'sddmm_indices', 'sddmm_coo_indices', 'sddmm_bcoo',
+    'sddmm',
     'csr_sddmm_dweight', 'csr_sddmm_p',
-    'csr_sddmv_dweight', 'csr_sddmv_dweight_binary', 'csr_sddmv_dweight_weighted', 'csr_sddmv_p',
+    'csr_sddmv_dweight', 'csr_sddmv_p',
 ]
-
-
-@namescope
-def sddmm_indices(A: jax.Array, B: jax.Array, indices: jax.Array,
-                  *, backend: str | None = None) -> BCOO:
-    """Sample ``A @ B`` at COO coordinates through the common dispatcher.
-
-    Parameters
-    ----------
-    A, B : jax.Array
-        Dense matrices of shape ``(m, batch)`` and ``(batch, n)``.
-    indices : jax.Array
-        Integer COO coordinates of shape ``(nse, 2)``.
-    backend : str or None, optional
-        Leaf backend selection; ordinary products currently use JAX.
-
-    Returns
-    -------
-    BCOO
-        Shape ``(m, n)``, retaining the input coordinate order and duplicates.
-        Matrix values are computed only at the sampled slots. The ordinary
-        JAX implementation retains differentiation and shard_map support.
-    """
-    A, B, indices = map(jnp.asarray, (A, B, indices))
-    # Preserve the original public wrapper's rank/shape contract.
-    assert A.ndim == 2
-    assert B.ndim == 2
-    assert A.shape[1] == B.shape[0]
-    assert indices.ndim == 2
-    assert indices.shape[1] == 2
-    values = _dispatch.sddmm(A, B, indices, backend=backend)
-    return BCOO((values, indices), shape=(A.shape[0], B.shape[1]))
-
-
-@namescope
-def sddmm_coo_indices(A: jax.Array, B: jax.Array, pre_idx: jax.Array, post_idx: jax.Array,
-                      *, backend: str | None = None) -> BCOO:
-    """Sample a dense product at separate row and column coordinates.
-
-    Parameters
-    ----------
-    A, B : jax.Array
-        Dense matrices as in :func:`sddmm_indices`.
-    pre_idx, post_idx : jax.Array
-        Matching rank-one arrays of sampled row and column coordinates.
-    backend : str or None, optional
-        Leaf backend override.
-
-    Returns
-    -------
-    BCOO
-        Sampled values and coordinates, preserving the original API.
-    """
-    pre_idx, post_idx = map(jnp.asarray, (pre_idx, post_idx))
-    assert pre_idx.ndim == 1
-    assert post_idx.ndim == 1
-    assert pre_idx.shape == post_idx.shape
-    return sddmm_indices(A, B, jnp.stack([pre_idx, post_idx], axis=1), backend=backend)
-
-
-@namescope
-def sddmm_bcoo(A: jax.Array, B: jax.Array, sparsity_pattern: BCOO,
-               *, backend: str | None = None) -> BCOO:
-    """Sample a dense product using a BCOO coordinate pattern.
-
-    Parameters
-    ----------
-    A, B : jax.Array
-        Dense matrices as in :func:`sddmm_indices`.
-    sparsity_pattern : BCOO
-        Supplies the sparse coordinates; its numerical data are ignored.
-    backend : str or None, optional
-        Leaf backend override.
-
-    Returns
-    -------
-    BCOO
-        Sampled dense product in the supplied coordinate order.
-    """
-    return sddmm_indices(A, B, sparsity_pattern.indices, backend=backend)
 
 
 def csr_sddmm_dweight(
@@ -119,8 +36,12 @@ def csr_sddmm_dweight(
         Whether the forward product is ``W.T @ events``.
     weighted : bool, optional
         Use event amplitudes instead of binary activity alone.
+        CUDA tests weighted activity after casting events to ``ct.dtype``;
+        JAX tests the original events before casting.
     backend : str or None, optional
-        Forwarded to the chosen MV/MM implementation. MM currently uses JAX.
+        Forwarded to the chosen MV/MM implementation. GPU auto uses CUDA for
+        supported transposed CSR events and JAX otherwise. ``jax_raw`` forces
+        differentiable JAX in both directions without binding an event primitive.
 
     Returns
     -------
@@ -146,7 +67,7 @@ def csr_sddmv_dweight(
     events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array,
     *, transpose: bool, weighted: bool = False, backend: str | None = None,
 ) -> jax.Array:
-    """Compatibility vector entry into the unified CSR sampled dispatcher.
+    """Vector entry into the unified CSR sampled dispatcher.
 
     Parameters
     ----------
@@ -170,53 +91,6 @@ def csr_sddmv_dweight(
         raise ValueError('events and ct must be rank 1')
     return csr_sddmm_dweight(events, ct, indices, indptr, transpose=transpose,
                              weighted=weighted, backend=backend)
-
-
-def csr_sddmv_dweight_binary(
-    events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array,
-    *, transpose: bool, backend: str | None = None,
-) -> jax.Array:
-    """Compute binary-event vector weight cotangents.
-
-    Parameters
-    ----------
-    events, ct, indices, indptr : jax.Array
-        Vector and CSR operands as in :func:`csr_sddmv_dweight`.
-    transpose : bool
-        Direction of the forward CSR product.
-    backend : str or None, optional
-        Leaf backend override.
-
-    Returns
-    -------
-    jax.Array
-        Selected cotangents in physical CSR slot order.
-    """
-    return csr_sddmv_dweight(events, ct, indices, indptr, transpose=transpose, backend=backend)
-
-
-def csr_sddmv_dweight_weighted(
-    events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array,
-    *, transpose: bool, backend: str | None = None,
-) -> jax.Array:
-    """Compute value-weighted event vector weight cotangents.
-
-    Parameters
-    ----------
-    events, ct, indices, indptr : jax.Array
-        Vector and CSR operands as in :func:`csr_sddmv_dweight`.
-    transpose : bool
-        Direction of the forward CSR product.
-    backend : str or None, optional
-        Leaf backend override.
-
-    Returns
-    -------
-    jax.Array
-        Event-weighted cotangents in physical CSR slot order.
-    """
-    return csr_sddmv_dweight(events, ct, indices, indptr, transpose=transpose,
-                             weighted=True, backend=backend)
 
 
 # Registry calls also enter the facade, never bypassing batch dispatch.

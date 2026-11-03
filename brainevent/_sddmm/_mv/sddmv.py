@@ -18,21 +18,24 @@ GPU ``auto`` uses hybrid CUDA for transposed CSR events and JAX otherwise.
 directions on CPU/GPU/TPU. Ordinary outer products use differentiable JAX.
 
 JAX uses sampled multiplication for finite cotangents and exact selection
-otherwise. Mixed floating event types with nonfinite cotangents also use exact
-selection in the CUDA adapter, preserving activity before narrowing. Each
-``.cu`` owns its kernels and FFI bindings; output is zeroed per call, and private
+otherwise, preserving activity before narrowing. Weighted CUDA tests activity
+after casting events to the cotangent dtype and skips values cast to zero. Each
+``.cu`` owns its kernels and FFI bindings. The output dW is created and zeroed
+in JAX before each FFI call (the kernels write only active rows), and private
 scratch capacity uses the same captured ``HybridConfig`` as compilation.
 
 The CSR event primitive has no AD rule. Consumers handle shared-weight sums
 and indexed scatter-add into canonical weight order. Summing selected slot
 products avoids overflow from an intermediate unit-weight forward reduction.
-Existing CSR MV gradient entry points remain separate. Regression coverage is
-in ``test/sddmv_test.py`` (types, NaN/Inf, empty/heavy rows, vmap and shard_map).
+Explicit ``jax_raw`` calls execute JAX directly and retain differentiation
+for both CSR and COO inputs; CSR consumers pass their original structure.
+Regression coverage is in ``sddmv_test.py`` (types, NaN/Inf, empty/heavy rows,
+vmap and shard_map).
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -44,7 +47,7 @@ from brainevent._compatible_import import match_varying_axes, varying_axes_of
 from brainevent._misc import _csr_to_coo
 from brainevent._op import XLACustomKernel, load_cuda_file
 from brainevent._op.util import event_active, select_active
-from .._common import Mode, check_jax_backend, coordinates
+from .._common import BINARY_TARGET_SUFFIXES, VALUE_SUFFIXES, Mode, _CSRBackend, check_jax_backend
 
 if TYPE_CHECKING:
     from brainevent._csr.binary.hybrid_config import HybridConfig
@@ -57,86 +60,56 @@ def get_hybrid_config() -> HybridConfig:
 
 
 _DIRECTORY = Path(__file__).parent
-_VALUE_SUFFIXES = {
-    jnp.dtype(jnp.float16): 'f16', jnp.dtype(jnp.bfloat16): 'bf16',
-    jnp.dtype(jnp.float32): 'f32', jnp.dtype(jnp.float64): 'f64',
-}
-_BINARY_TARGET_SUFFIXES = {
-    (value_dtype, event_dtype): f'{suffix}_{event_suffix}'
-    for value_dtype, suffix in _VALUE_SUFFIXES.items()
-    for event_dtype, event_suffix in [(jnp.dtype(jnp.bool_), 'bool'), (jnp.dtype(jnp.float32), 'float')]
-}
-_BINARY_TARGET_SUFFIXES.update({
-    (jnp.dtype(jnp.float64), jnp.dtype(jnp.int8)): 'f64_int8',
-    (jnp.dtype(jnp.float64), jnp.dtype(jnp.float64)): 'f64_double',
-})
 
 
 @lru_cache(maxsize=None)
 def _load_hybrid(weighted: bool, config: HybridConfig) -> str:
     from brainevent._csr.binary.hybrid_config import compile_flags_for_config, module_suffix_for_config
     kind = 'weighted' if weighted else 'binary'
-    source = 'hybrid_sddmv_prezeroed_weighted.cu' if weighted else 'hybrid_sddmv_prezeroed.cu'
+    source = f'hybrid_sddmv_{kind}.cu'
     name = f'csr_sddmv_hybrid_{kind}' + module_suffix_for_config(config)
     load_cuda_file(
         _DIRECTORY / source, name=name,
         extra_cuda_cflags=compile_flags_for_config(config),
+        extra_include_paths=[str(_DIRECTORY), str(_DIRECTORY.parent / '_common')],
         allow_cuda_graph=False,
     )
     return name
 
 
-def _exact(events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array,
-           *, transpose: bool, weighted: bool) -> jax.Array:
-    """Select original event activity before reducing or narrowing amplitudes."""
-    row, col = _csr_to_coo(indices, indptr)
-    unit, out = (row, col) if transpose else (col, row)
-    x = events[unit]
-    value = x.astype(ct.dtype) * ct[out] if weighted else ct[out]
-    return select_active(event_active(x), value)
-
-
-def _sampled_jax(A: jax.Array, B: jax.Array, rows: jax.Array, cols: jax.Array) -> jax.Array:
-    """Rank-one sampled outer product, retaining JAX derivatives and fill rules."""
-    indices = jnp.stack([rows, cols], axis=1)
-    if varying_axes_of(A, B, indices):
-        return (A.at[rows].get(mode='fill', fill_value=0)
-                * B.at[cols].get(mode='fill', fill_value=0))
-    return sparse.bcoo_dot_general_sampled(
-        A, B, indices, dimension_numbers=(((), ()), ((), ())),
-    )
-
-
-def _event_jax(A: jax.Array, B: jax.Array, rows: jax.Array, cols: jax.Array,
-               *, transpose: bool, mode: Mode) -> jax.Array:
-    events, ct = (A, B) if transpose else (B, A)
+def _jax_kernel(events: jax.Array, ct: jax.Array, indices: jax.Array,
+                indptr: jax.Array | None, *, transpose: bool, weighted: bool,
+                **kwargs: Any) -> tuple[jax.Array]:
+    """Compute event slot values for CSR lowering or direct CSR/COO calls."""
+    if indptr is not None:
+        rows, cols = _csr_to_coo(indices, indptr)
+        indices = jnp.stack([rows, cols], axis=1)
+    else:
+        rows, cols = indices[:, 0], indices[:, 1]
     unit, out = (rows, cols) if transpose else (cols, rows)
-
-    def sampled(ct):
-        factors = events.astype(ct.dtype) if mode == 'weighted' else event_active(events).astype(ct.dtype)
-        left, right = (factors, ct) if transpose else (ct, factors)
-        return _sampled_jax(left, right, rows, cols)
-
-    def selected(ct):
-        x = events.at[unit].get(mode='fill', fill_value=0)
-        value = ct.at[out].get(mode='fill', fill_value=0)
-        if mode == 'weighted':
-            value = x.astype(ct.dtype) * value
-        return select_active(event_active(x), value)
-
-    return jax.lax.cond(jnp.all(jnp.isfinite(ct)), sampled, selected, ct)
-
-
-def _jax_kernel(*, transpose: bool, weighted: bool, **kwargs: Any):
-    """CSR event primitive lowered directly to this leaf's JAX implementation."""
-    def kernel(events, ct, indices, indptr):
-        if not indices.size:
-            return (jnp.zeros((0,), ct.dtype),)
-        row, col = coordinates(indices, indptr)
-        A, B = (events, ct) if transpose else (ct, events)
-        return (_event_jax(A, B, row, col, transpose=transpose,
-                           mode='weighted' if weighted else 'binary'),)
-    return kernel
+    factors = events.astype(ct.dtype) if weighted else event_active(events).astype(ct.dtype)
+    left, right = (factors, ct) if transpose else (ct, factors)
+    if varying_axes_of(left, right, indices):
+        sampled_product = partial(
+            jnp.multiply,
+            left.at[rows].get(mode='fill', fill_value=0),
+            right.at[cols].get(mode='fill', fill_value=0),
+        )
+    else:
+        sampled_product = partial(
+            sparse.bcoo_dot_general_sampled, left, right, indices,
+            dimension_numbers=(((), ()), ((), ())),
+        )
+    # Preserve original activity when an event narrows to zero in ct.dtype.
+    return (jax.lax.cond(
+        jnp.all(jnp.isfinite(ct)), sampled_product,
+        lambda: select_active(
+            event_active(events.at[unit].get(mode='fill', fill_value=0)),
+            (events.at[unit].get(mode='fill', fill_value=0).astype(ct.dtype)
+             * ct.at[out].get(mode='fill', fill_value=0))
+            if weighted else ct.at[out].get(mode='fill', fill_value=0),
+        ),
+    ),)
 
 
 def _cuda_kernel(*, transpose: bool, weighted: bool, config: HybridConfig,
@@ -150,63 +123,54 @@ def _cuda_kernel(*, transpose: bool, weighted: bool, config: HybridConfig,
     from brainevent._csr.binary.hybrid_config import hybrid_capacity_bound
     capacity = hybrid_capacity_bound(nnz, rows, config=config)
     module = _load_hybrid(weighted, config)
-    value_suffix = _VALUE_SUFFIXES[jnp.dtype(ct_info.dtype)]
+    value_dtype, offset_dtype = jnp.dtype(ct_info.dtype), jnp.dtype(indptr_info.dtype)
+    infos = [
+        jax.ShapeDtypeStruct((nnz,), value_dtype),  # dW
+        jax.ShapeDtypeStruct((capacity,), offset_dtype),
+        jax.ShapeDtypeStruct((capacity,), offset_dtype),
+    ]
+    if weighted:
+        infos.append(jax.ShapeDtypeStruct((capacity,), value_dtype))
+    infos.append(jax.ShapeDtypeStruct((2,), jnp.int32))
 
     def kernel(events, ct, indices, indptr):
-        def hybrid(events, ct, indices, indptr):
-            if weighted:
-                vector = events.astype(ct.dtype)
-                target = f'{module}.hybrid_sddmv_weighted_{value_suffix}'
-            else:
-                vector = events
-                pair = (jnp.dtype(ct.dtype), jnp.dtype(vector.dtype))
-                if pair not in _BINARY_TARGET_SUFFIXES:
-                    vector = event_active(vector)
-                suffix = _BINARY_TARGET_SUFFIXES[(jnp.dtype(ct.dtype), jnp.dtype(vector.dtype))]
-                target = f'{module}.hybrid_sddmv_binary_{suffix}'
-            infos = (
-                jax.ShapeDtypeStruct((nnz,), ct.dtype),
-                jax.ShapeDtypeStruct((capacity,), indptr.dtype),
-                jax.ShapeDtypeStruct((capacity,), indptr.dtype),
-                jax.ShapeDtypeStruct((2,), jnp.int32),
-            )
-            # Only private, per-call output/scratch operands are aliased.
-            zeroed = jnp.zeros((nnz,), ct.dtype)
-            begin = jnp.empty((capacity,), indptr.dtype)
-            end = jnp.empty((capacity,), indptr.dtype)
-            status = jnp.empty((2,), jnp.int32)
-            out = jax.ffi.ffi_call(
-                target, infos, input_output_aliases={4: 0, 5: 1, 6: 2, 7: 3},
-                vmap_method='sequential',
-            )(ct, indices, indptr, vector, zeroed, begin, end, status,
-              task_capacity=capacity)[0]
-            return match_varying_axes(out, events, ct, indices, indptr)
-
-        if weighted and events.dtype != ct.dtype and jnp.issubdtype(events.dtype, jnp.floating):
-            # A tiny active event can round to zero in ct.dtype. The native
-            # gate then differs from the original mask for NaN/Inf ct only.
-            out = jax.lax.cond(
-                jnp.all(jnp.isfinite(ct)), hybrid,
-                lambda e, c, i, p: _exact(e, c, i, p, transpose=True, weighted=True),
-                events, ct, indices, indptr,
-            )
+        if weighted:
+            vector = events.astype(value_dtype)
+            target = f'{module}.hybrid_sddmv_weighted_{VALUE_SUFFIXES[value_dtype]}'
         else:
-            out = hybrid(events, ct, indices, indptr)
-        return (out,)
+            vector = events
+            if (value_dtype, jnp.dtype(vector.dtype)) not in BINARY_TARGET_SUFFIXES:
+                vector = event_active(vector)
+            target = f'{module}.hybrid_sddmv_binary_{BINARY_TARGET_SUFFIXES[(value_dtype, jnp.dtype(vector.dtype))]}'
+        # Kernels write only active slots, so dW must arrive zeroed.
+        # Operand 4 is aliased to output 0.
+        dweight = jnp.zeros((nnz,), value_dtype)
+        # Task/status scratch is private per call; the kernel resets status.
+        scratch = [jnp.empty(info.shape, info.dtype) for info in infos[1:]]
+        out = jax.ffi.ffi_call(
+            target, infos, input_output_aliases={4 + k: k for k in range(len(infos))},
+            vmap_method='sequential',
+        )(ct, indices, indptr, vector, dweight, *scratch,
+          task_capacity=capacity)[0]
+        return (match_varying_axes(out, events, ct, indices, indptr),)
     return kernel
 
 
-def _auto_gpu_kernel(*, transpose: bool, **kwargs: Any):
-    factory = _cuda_kernel if transpose else _jax_kernel
-    return factory(transpose=transpose, **kwargs)
+def _auto_gpu_kernel(*, transpose: bool, csr_primitive=None, **kwargs: Any):
+    native = csr_primitive is None or csr_primitive._resolve_backend('gpu') == 'cuda_raw'
+    if transpose and native:
+        return _cuda_kernel(transpose=transpose, **kwargs)
+    return partial(_jax_kernel, transpose=transpose, **kwargs)
 
 
 def _csr_call(events, ct, indices, indptr, *, transpose, weighted, backend):
     """Bind normalized CSR events; validation belongs to the dispatcher."""
+    source = backend.primitive if isinstance(backend, _CSRBackend) else None
     return csr_sddmv_p(
         events, ct, indices, indptr,
         outs=[jax.ShapeDtypeStruct(indices.shape, ct.dtype)],
-        transpose=transpose, weighted=weighted, backend=backend,
+        transpose=transpose, weighted=weighted, backend='auto' if source is not None else backend,
+        csr_primitive=source,
         ct_info=jax.ShapeDtypeStruct(ct.shape, ct.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
@@ -215,7 +179,7 @@ def _csr_call(events, ct, indices, indptr, *, transpose, weighted, backend):
 
 
 def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | None,
-            *, mode: Mode, transpose: bool, backend: str | None) -> jax.Array:
+            *, mode: Mode, transpose: bool, backend: str | None | _CSRBackend) -> jax.Array:
     """Execute a normalized rank-one sampled product.
 
     Parameters
@@ -237,7 +201,8 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
         One value per physical sparse slot.
     """
     check_jax_backend(backend)
-    if mode != 'float' and indptr is not None:
+    # Explicit JAX calls stay differentiable without binding the event primitive.
+    if mode != 'float' and indptr is not None and backend != 'jax_raw':
         if backend == 'cuda_raw' and not transpose:
             raise ValueError('cuda_raw SDDMV requires transpose=True; use jax_raw or auto')
         events, ct = (A, B) if transpose else (B, A)
@@ -245,17 +210,26 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
                          weighted=mode == 'weighted', backend=backend)
     if backend == 'cuda_raw':
         raise NotImplementedError('MV CUDA supports transposed CSR event products; use backend="jax_raw"')
-    rows, cols = coordinates(indices, indptr)
-    if mode == 'float':
-        return _sampled_jax(A, B, rows, cols)
-    return _event_jax(A, B, rows, cols, transpose=transpose, mode=mode)
+    if mode != 'float':
+        events, ct = (A, B) if transpose else (B, A)
+        return _jax_kernel(events, ct, indices, indptr,
+                           transpose=transpose, weighted=mode == 'weighted')[0]
+    if indptr is not None:
+        rows, cols = _csr_to_coo(indices, indptr)
+        indices = jnp.stack([rows, cols], axis=1)
+    if varying_axes_of(A, B, indices):
+        return (A.at[indices[:, 0]].get(mode='fill', fill_value=0)
+                * B.at[indices[:, 1]].get(mode='fill', fill_value=0))
+    return sparse.bcoo_dot_general_sampled(
+        A, B, indices, dimension_numbers=(((), ()), ((), ())),
+    )
 
 
 csr_sddmv_p = XLACustomKernel('csr_sddmv')
 csr_sddmv_p.def_cuda_raw_kernel(_cuda_kernel)
 csr_sddmv_p.def_kernel('auto', 'gpu', _auto_gpu_kernel, asdefault=True)
 for _platform in ('cpu', 'gpu', 'tpu'):
-    csr_sddmv_p.def_kernel('jax_raw', _platform, _jax_kernel)
+    csr_sddmv_p.def_kernel('jax_raw', _platform, lambda **kwargs: partial(_jax_kernel, **kwargs))
 for _platform in ('cpu', 'tpu'):
-    csr_sddmv_p.def_kernel('auto', _platform, _jax_kernel)
+    csr_sddmv_p.def_kernel('auto', _platform, lambda **kwargs: partial(_jax_kernel, **kwargs))
 csr_sddmv_p.def_tags('csr', 'sddmv')

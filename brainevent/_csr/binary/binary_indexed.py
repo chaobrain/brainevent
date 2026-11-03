@@ -39,10 +39,10 @@ from jax.interpreters import ad
 from brainevent._misc import (
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
-    _csr_to_coo,
     namescope,
 )
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, load_cuda_file
+from brainevent._sddmm import dispatch as _sddmm_dispatch
 from .hybrid_config import (
     get_hybrid_config,
     compile_flags_for_config,
@@ -52,8 +52,6 @@ from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from .binary import (
     _EVENT_FASTMATH,
-    _csrmm_entry_weight_ct,
-    _entry_weight_ct,
     _event_contrib,
     _numba_event_mask,
     _numba_weighted_events,
@@ -614,29 +612,17 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, *, shape, tr
             ct_w = ad.Zero(weights.aval)
         else:
             weighted = kw.get('weighted', False)
-            # (row, col) of the traversed structure at slot k; weight at slot k is
-            # weights[perm[k]]. Inactive slots get exactly 0 (select), even for a
-            # NaN/Inf cotangent.
-            row, col = _csr_to_coo(indices, indptr)
+            # Slot k uses weights[perm[k]]. Inactive slots get exactly 0,
+            # even for a NaN/Inf cotangent.
+            left, right = (events, ct) if transpose else (ct, events)
+            per_slot = _sddmm_dispatch.sddmm(
+                left, right, indices, indptr,
+                mode='weighted' if weighted else 'binary', transpose=transpose,
+                backend=_sddmm_dispatch._CSRBackend(binary_csrmv_indexed_p, kw['backend']),
+            )
             if weights.aval.shape[0] == 1:
-
-                def unit_product(ct):
-                    base = binary_csrmv_indexed_p_call(
-                        jnp.ones(1, dtype=weights.aval.dtype), indices, indptr, perm, events,
-                        shape=shape, transpose=transpose, backend=kw['backend'],
-                        weighted=weighted, max_row_nnz=kw.get('max_row_nnz'),
-                    )[0]
-                    return jnp.inner(ct, base)
-
-                def select_sum(ct):
-                    return jnp.sum(_entry_weight_ct(events, ct, row, col, transpose=transpose, weighted=weighted))
-
-                # ``ct * 0`` is exact for a finite cotangent only.
-                ct_w = jax.lax.cond(
-                    jnp.all(jnp.isfinite(ct)), unit_product, select_sum, ct,
-                ).astype(weights.aval.dtype).reshape(*weights.aval.shape)
+                ct_w = jnp.sum(per_slot).astype(weights.aval.dtype).reshape(*weights.aval.shape)
             else:
-                per_slot = _entry_weight_ct(events, ct, row, col, transpose=transpose, weighted=weighted)
                 ct_w = jnp.zeros(weights.aval.shape, weights.aval.dtype).at[perm].add(per_slot)
         return ct_w, indices, indptr, perm, events
 
@@ -1229,9 +1215,12 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, *, shape, tran
         else:
             # weight at slot k is weights[perm[k]]; scatter the per-slot cotangent
             # back via perm. Inactive (slot, column) pairs contribute exactly 0.
-            row, col = _csr_to_coo(indices, indptr)
-            d_data = _csrmm_entry_weight_ct(
-                B, ct, row, col, transpose=transpose, weighted=kw.get('weighted', False),
+            left, right = (B, ct.T) if transpose else (ct, B.T)
+            d_data = _sddmm_dispatch.sddmm(
+                left, right, indices, indptr,
+                mode='weighted' if kw.get('weighted', False) else 'binary',
+                transpose=transpose,
+                backend=_sddmm_dispatch._CSRBackend(binary_csrmm_indexed_p, kw['backend']),
             )
             if data.aval.shape[0] == 1:
                 ct_w = jnp.sum(d_data).astype(data.aval.dtype).reshape(*data.aval.shape)

@@ -3,38 +3,47 @@
 
 """Unified dispatch for sampled dense products and CSR event weight gradients.
 
-Public wrappers in ``brainevent._sddmm`` enter this dispatcher, then the chosen
+CSR adapters in ``brainevent._sddmm`` enter this dispatcher, then the chosen
 leaf selects its backend. Operands are ``A(rows, batch)`` and ``B(batch, cols)``:
 batch one uses ``_mv``, all other sizes use ``_mm``. Vectors form a batch-one
 outer product; batch zero yields zero per slot. An outer ``vmap`` axis is
 independent of this contraction dimension.
 
 Patterns are COO coordinates or CSR columns/offsets, retaining slot order and
-duplicates. ``sddmm`` returns slot values; legacy ``sddmm_indices``,
-``sddmm_coo_indices`` and ``sddmm_bcoo`` wrappers retain BCOO returns.
+duplicates. ``sddmm`` returns an array of slot values.
 ``float`` means ordinary multiplication; ``binary`` selects active cotangents;
 ``weighted`` multiplies active event amplitudes by cotangents. Event leaves
 handle NaN/Inf cotangents without contributions from inactive events.
+Weighted CUDA tests activity after casting events to the cotangent dtype;
+JAX and binary products use the original event activity.
 
-JAX supports both leaves on CPU/GPU/TPU. MV additionally uses hybrid CUDA for
-transposed CSR events on GPU. MM currently defaults to JAX; its unregistered
-CUDA placeholder raises ``NotImplementedError`` on explicit requests.
+JAX supports both leaves on CPU/GPU/TPU. GPU auto uses hybrid CUDA for
+transposed CSR events in both leaves, with JAX for the other direction.
+MM batches larger than 65535 or column counts above INT32_MAX also use JAX
+under auto; explicit CUDA requests reject these unsupported dimensions.
 Ordinary JAX products retain differentiation and ``shard_map`` support; CSR
 event primitives supply other operators' gradients and have no AD rules.
-Existing CSR MV gradient rules and TCSR-specific adapters remain separate.
+Explicit ``jax_raw`` calls execute JAX directly and retain differentiation for
+CSR and COO inputs. CSR event gradient consumers pass their CSR structure and
+forward backend selection. Their private adapter retains differentiable JAX
+tangents while the primal uses the forward backend's available sampled path;
+automatic GPU selection resolves the source CSR primitive at lowering time.
+TCSR-specific adapters remain separate.
 """
+
+from functools import partial
 
 import jax
 import jax.numpy as jnp
 
-from ._common import Mode, VALUE_DTYPES
+from ._common import Mode, VALUE_DTYPES, _CSRBackend
 from ._mv import sddmv as mv_backend
 from ._mm import sddmm as mm_backend
 
 
 def sddmm(
     A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | None = None,
-    *, mode: Mode = 'float', transpose: bool = True, backend: str | None = None,
+    *, mode: Mode = 'float', transpose: bool = True, backend: str | None | _CSRBackend = None,
 ) -> jax.Array:
     """Sample a dense product through one MV/MM dispatcher.
 
@@ -53,16 +62,19 @@ def sddmm(
         are required. No sorting or coalescing is performed.
     mode : {'float', 'binary', 'weighted'}, optional
         Ordinary sampled multiplication, binary-event selection, or
-        value-weighted event selection. Event modes preserve original activity
-        before converting amplitudes to the cotangent dtype.
+        value-weighted event selection. Weighted CUDA tests activity after
+        converting amplitudes to the cotangent dtype. JAX and binary products
+        preserve original event activity.
     transpose : bool, optional
         In event modes, ``True`` identifies ``A`` as events and ``B.T`` as
         output cotangents; ``False`` identifies ``B.T`` as events and ``A`` as
         cotangents. It does not transpose the ordinary product ``A @ B``.
     backend : str or None, optional
-        Forwarded to the selected leaf. ``jax_raw`` supports both leaves.
-        MV can use hybrid CUDA for transposed CSR event products. MM currently
-        uses JAX; an explicit ``cuda_raw`` request raises NotImplementedError.
+        Forwarded to the selected leaf. ``jax_raw`` executes differentiable
+        JAX directly for both CSR and COO inputs in either leaf.
+        GPU auto uses hybrid CUDA for supported transposed CSR event products
+        in both leaves. Explicit ``cuda_raw`` requires this direction and CSR
+        event mode; other cases use ``jax_raw`` or ``auto``.
 
     Returns
     -------
@@ -73,8 +85,9 @@ def sddmm(
     Notes
     -----
     Batch one dispatches to ``_mv``; other sizes, including zero, to ``_mm``.
-    Ordinary JAX products remain differentiable. CSR event primitives supply
-    gradients to other operations and do not have derivative rules themselves.
+    Ordinary products and explicit ``jax_raw`` event calls remain
+    differentiable. CSR event calls using ``auto`` or ``cuda_raw`` bind
+    primitives without derivative rules.
     """
     if mode not in ('float', 'binary', 'weighted'):
         raise ValueError('mode must be float, binary or weighted')
@@ -117,8 +130,47 @@ def sddmm(
         if not (jnp.issubdtype(events.dtype, jnp.bool_) or jnp.issubdtype(events.dtype, jnp.integer)
                 or jnp.issubdtype(events.dtype, jnp.floating)):
             raise TypeError('events must be boolean, integer or floating')
+    if isinstance(backend, _CSRBackend):
+        return _csr_sampled(A, B, indices, indptr, mode, transpose, backend)
+    return _sampled(A, B, indices, indptr, mode, transpose, backend)
+
+
+def _sampled(A, B, indices, indptr, mode, transpose, backend):
+    """Choose the leaf after the dispatcher has normalized the operands."""
     if A.shape[1] == 1:
         return mv_backend.sampled(A[:, 0], B[0, :], indices, indptr,
                                    mode=mode, transpose=transpose, backend=backend)
     return mm_backend.sampled(A, B, indices, indptr,
                                mode=mode, transpose=transpose, backend=backend)
+
+
+@partial(jax.custom_jvp, nondiff_argnums=(4, 5, 6))
+def _csr_sampled(A, B, indices, indptr, mode, transpose, source):
+    """Keep CSR derivatives while its primal follows the forward backend.
+
+    Only a CUDA forward selects the native event gradient. Other explicit
+    backends use JAX; an automatic request is resolved by the source CSR
+    primitive on the actual lowering platform. Public sampled-event calls
+    retain their existing primitive/AD contract.
+    """
+    native = (mode != 'float' and transpose and
+              (A.shape[1] == 1 or (A.shape[1] <= 65535 and B.shape[1] <= 2**31 - 1)))
+    if not native or source.requested not in (None, 'cuda_raw'):
+        backend = 'jax_raw'
+    else:
+        backend = 'cuda_raw' if source.requested == 'cuda_raw' else source
+    return _sampled(A, B, indices, indptr, mode, transpose, backend)
+
+
+@_csr_sampled.defjvp
+def _csr_sampled_jvp(mode, transpose, source, primals, tangents):
+    A, B, indices, indptr = primals
+    A_dot, B_dot, _, _ = tangents
+    primal = _csr_sampled(A, B, indices, indptr, mode, transpose, source)
+    # Preserve the CSR consumers' existing differentiable JAX rules. This
+    # runs only under further differentiation, not in a first-order VJP.
+    _, tangent = jax.jvp(
+        lambda a, b: _sampled(a, b, indices, indptr, mode, transpose, 'jax_raw'),
+        (A, B), (A_dot, B_dot),
+    )
+    return primal, tangent

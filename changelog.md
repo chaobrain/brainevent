@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Redundant `brainevent._sddmm` wrappers: `sddmm_indices`,
+  `sddmm_coo_indices`, `sddmm_bcoo`, `csr_sddmv_dweight_binary`, and
+  `csr_sddmv_dweight_weighted`. Use `sddmm(A, B, coordinates)` for an array
+  of sampled values; stack separate row/column coordinates or pass a BCOO
+  pattern's `.indices`. Construct `BCOO((values, coordinates), shape=...)`
+  explicitly when needed. Use `csr_sddmv_dweight(..., weighted=False/True)`
+  for binary/weighted vector gradients. The generic CSR adapters and both
+  primitive `.call()` registrations remain available.
+
 ## [0.4.1] - 2026-11-03
 
 A patch release with one fix. The CPU delay kernel now shares one native

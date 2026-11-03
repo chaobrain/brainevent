@@ -72,12 +72,12 @@ def test_nonfinite_cotangents(value_dtype, transpose, weighted):
 
 
 @pytest.mark.parametrize('transpose', [False, True])
-def test_activity_is_checked_before_narrowing(transpose):
+def test_jax_activity_is_checked_before_narrowing(transpose):
     e = jnp.array([1e-200, 0, -1e-200], dtype=jnp.float64)
     c = jnp.full(3, jnp.inf, dtype=jnp.float32)
     i = jnp.arange(3, dtype=jnp.int32)
     p = jnp.arange(4, dtype=jnp.int32)
-    _, result = check_result((e, c, i, p), transpose=transpose, weighted=True)
+    _, result = check_result((e, c, i, p), transpose=transpose, weighted=True, backend='jax_raw')
     assert jnp.isnan(result[0]) and result[1] == 0 and jnp.isnan(result[2])
 
 
