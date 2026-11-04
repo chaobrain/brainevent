@@ -13,7 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-import warnings
 from contextlib import contextmanager
 
 import jax
@@ -34,10 +33,11 @@ from brainevent._csr.binary.binary_indexed import (
     binary_csrmm_indexed_p_call,
 )
 import brainevent._csr.binary.binary_indexed as binary_indexed_mod
-from brainevent._csr.binary.hybrid_config import get_hybrid_config, hybrid_task_capacity
+from brainevent._csr.config import CSRConfig, CSRDeviceInfo
+from brainevent._csr.binary import _hybrid_mm
 from brainevent._csr._test_util import (
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend,
-    shape_of, strip_hybrid_suffix,
+    shape_of, strip_hybrid_suffix, prepared_config,
 )
 from brainevent._test_util import jax_x64_enabled, with_jax_x64
 from brainevent import BinaryArray, CSC, CSR, FixedNumPerPre
@@ -67,6 +67,15 @@ def _structure(rng, m, k, nse):
     return jnp.asarray(indices), jnp.asarray(indptr), jnp.asarray(perm)
 
 
+def _mock_mm_loader(load_calls=None):
+    def load(*, weighted=False, permuted=False):
+        name = 'test_hybrid_mm_' + ('col_' if permuted else 'row_') + ('weighted' if weighted else 'binary')
+        if load_calls is not None:
+            load_calls.append((None, name, {}))
+        return name
+    return load
+
+
 def test_indexed_mv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
     with _jax_x64_enabled():
         weights = jnp.array([10.0, 20.0, 30.0, 40.0], dtype=jnp.float32)
@@ -76,48 +85,15 @@ def test_indexed_mv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
         events = jnp.array([True, False, True])
 
         got = binary_csrmv_indexed(
-            weights, indices, indptr, perm, events, shape=(2, 3), backend='jax_raw'
-        )
+            weights, indices, indptr, perm, events, shape=(2, 3), backend='jax_raw',
+            config=prepared_config(indices, indptr, (2, 3)))
 
         assert jnp.allclose(got, jnp.array([40.0, 20.0], dtype=jnp.float32))
 
 
-def _assert_workspace_deprecated(call, expected):
-    """Passing ``workspace`` warns at the caller on every call and changes nothing."""
-    expected = np.asarray(expected)
-    for _ in range(2):  # the second call hits the jit cache and must still warn
-        with pytest.warns(DeprecationWarning, match='workspace') as record:
-            got = call(object())
-        assert any(
-            w.filename == __file__ for w in record if issubclass(w.category, DeprecationWarning)
-        ), 'the DeprecationWarning must point at the caller'
-        assert got.dtype == expected.dtype
-        np.testing.assert_allclose(np.asarray(got), expected)
-    # The default (``None``) is silent.
-    with warnings.catch_warnings(record=True) as record:
-        warnings.simplefilter('always')
-        np.testing.assert_allclose(np.asarray(call(None)), expected)
-    assert not [w for w in record if 'workspace' in str(w.message)]
-
-
-def test_binary_csrmv_indexed_workspace_is_deprecated_and_ignored():
-    weights = jnp.array([10.0, 20.0], dtype=jnp.float32)
-    indices = jnp.array([0, 1], dtype=jnp.int32)
-    indptr = jnp.array([0, 2], dtype=jnp.int32)
-    perm = jnp.array([1, 0], dtype=jnp.int32)
-    vector = jnp.array([True, False])
-
-    _assert_workspace_deprecated(
-        lambda deprecated: binary_csrmv_indexed(
-            weights, indices, indptr, perm, vector, shape=(1, 2), backend="jax_raw", workspace=deprecated,
-        ),
-        np.array([20.0], dtype=np.float32),
-    )
-
-
 def _heavy_row_structure():
     """2-row CSR whose first row is longer than ``tpr_threshold``, with a reversing ``perm``."""
-    heavy = get_hybrid_config().tpr_threshold + 1
+    heavy = CSRConfig().tpr_threshold + 1
     indices = jnp.concatenate([jnp.arange(heavy, dtype=jnp.int32), jnp.zeros(1, jnp.int32)])
     indptr = jnp.array([0, heavy, heavy + 1], dtype=jnp.int32)
     perm = jnp.arange(heavy + 1, dtype=jnp.int32)[::-1]
@@ -137,7 +113,7 @@ def _assert_task_capacity_param(eqn, indptr, max_row_nnz):
     assert not {'task_begin_info', 'task_end_info', 'status_info'} & params.keys()
     assert params['max_row_nnz'] == max_row_nnz
     assert type(params['task_capacity']) is int
-    assert params['task_capacity'] >= hybrid_task_capacity(indptr) > 0
+    assert params['task_capacity'] >= CSRConfig().mv_capacity(int(indptr[-1]), len(indptr) - 1, int(np.diff(indptr).max(initial=0))) > 0
 
 
 @pytest.mark.parametrize('hint', [False, True])
@@ -154,11 +130,11 @@ def test_binary_csrmv_indexed_p_call_returns_one_output_and_static_task_capacity
     out = call(weights, vector)
     assert len(out) == 1
     ref = binary_csrmv(weights[perm], indices, indptr, vector, shape=(2, heavy), transpose=True,
-                       backend="jax_raw")
+                       backend="jax_raw", config=prepared_config(indices, indptr, (2, heavy)))
     np.testing.assert_allclose(np.asarray(out[0]), np.asarray(ref))
 
     eqn = _kernel_eqn(binary_csrmv_indexed_p, call, weights, vector)
-    assert (len(eqn.invars), len(eqn.outvars)) == (5, 1)
+    assert (len(eqn.invars), len(eqn.outvars)) == (6, 1)
     _assert_task_capacity_param(eqn, indptr, max_row_nnz)
 
 
@@ -168,10 +144,12 @@ def test_binary_csrmv_indexed_batching_folds_vectors_into_matmat():
     indptr = jnp.array([0, 2], dtype=jnp.int32)
     perm = jnp.array([1, 0], dtype=jnp.int32)
     vectors = jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
+    spec, mask = CSRConfig().kernel_args()
 
     out, out_dims = _idx_batching(
-        (weights, indices, indptr, perm, vectors),
-        (None, None, None, None, 0),
+        (weights, indices, indptr, perm, vectors, mask),
+        (None, None, None, None, 0, None),
+        config_spec=spec,
         outs=[jax.ShapeDtypeStruct((1,), weights.dtype)],
         shape=(1, 2),
         transpose=False,
@@ -209,6 +187,7 @@ def test_binary_csrmv_indexed_vmap_matches_materialized_weights():
             shape=(1, 2),
             transpose=False,
             backend="jax_raw",
+            config=prepared_config(indices, indptr, (1, 2)),
         )
     )(vectors)
     ref = jax.vmap(
@@ -220,6 +199,7 @@ def test_binary_csrmv_indexed_vmap_matches_materialized_weights():
             shape=(1, 2),
             transpose=False,
             backend="jax_raw",
+            config=prepared_config(indices, indptr, (1, 2)),
         )
     )(vectors)
 
@@ -227,41 +207,25 @@ def test_binary_csrmv_indexed_vmap_matches_materialized_weights():
     assert jnp.allclose(got, ref)
 
 
-def test_binary_csrmm_indexed_workspace_is_deprecated_and_ignored():
-    weights = jnp.array([10.0, 20.0], dtype=jnp.float32)
-    indices = jnp.array([0, 1], dtype=jnp.int32)
-    indptr = jnp.array([0, 2], dtype=jnp.int32)
-    perm = jnp.array([1, 0], dtype=jnp.int32)
-    matrix = jnp.array([[True, False], [False, True]])
-
-    _assert_workspace_deprecated(
-        lambda deprecated: binary_csrmm_indexed(
-            weights, indices, indptr, perm, matrix, shape=(1, 2), backend="jax_raw", workspace=deprecated,
-        ),
-        np.array([[20.0, 10.0]], dtype=np.float32),
-    )
-
-
-@pytest.mark.parametrize('hint', [False, True])
-def test_binary_csrmm_indexed_p_call_returns_one_output_and_static_task_capacity(hint):
+def test_binary_csrmm_indexed_p_call_returns_one_output_without_mv_workspace():
     indices, indptr, perm, heavy = _heavy_row_structure()
-    max_row_nnz = heavy if hint else None
     weights = jnp.arange(1, heavy + 2, dtype=jnp.float32)
     matrix = jnp.array([[True, False, True], [True, True, False]])
 
     def call(w, b):
         return binary_csrmm_indexed_p_call(w, indices, indptr, perm, b, shape=(2, heavy), transpose=True,
-                                           backend="jax_raw", max_row_nnz=max_row_nnz)
+                                           backend="jax_raw")
 
     out = call(weights, matrix)
     assert len(out) == 1
     ref = binary_csrmm(weights[perm], indices, indptr, matrix, shape=(2, heavy), transpose=True,
-                       backend="jax_raw")
+                       backend="jax_raw", config=prepared_config(indices, indptr, (2, heavy)))
     np.testing.assert_allclose(np.asarray(out[0]), np.asarray(ref))
 
     eqn = _kernel_eqn(binary_csrmm_indexed_p, call, weights, matrix)
-    assert (len(eqn.invars), len(eqn.outvars)) == (5, 1)
-    _assert_task_capacity_param(eqn, indptr, max_row_nnz)
+    assert (len(eqn.invars), len(eqn.outvars)) == (6, 1)
+    assert not {'task_capacity', 'max_row_nnz'} & eqn.params.keys()
+    assert eqn.params['call_plan'] is None
 
 
 @pytest.mark.parametrize(
@@ -283,10 +247,12 @@ def test_binary_csrmm_indexed_batching_folds_batch_into_columns(
     indptr = jnp.array([0, 2], dtype=jnp.int32)
     perm = jnp.array([1, 0], dtype=jnp.int32)
     matrices = jnp.arange(np.prod(input_shape)).reshape(input_shape) % 2 == 0
+    spec, mask = CSRConfig().kernel_args()
 
     out, out_dims = _csrmm_idx_batching(
-        (weights, indices, indptr, perm, matrices),
-        (None, None, None, None, batch_axis),
+        (weights, indices, indptr, perm, matrices, mask),
+        (None, None, None, None, batch_axis, None),
+        config_spec=spec,
         outs=[jax.ShapeDtypeStruct((1, 2), weights.dtype)],
         shape=(1, 2),
         transpose=False,
@@ -296,8 +262,6 @@ def test_binary_csrmm_indexed_batching_folds_batch_into_columns(
         perm_info=jax.ShapeDtypeStruct(perm.shape, perm.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(matrices.shape[1:], matrices.dtype),
-        max_row_nnz=None,
-        task_capacity=binary_indexed_mod._task_capacity(indices, indptr, None),
     )
 
     assert len(out) == 1
@@ -306,7 +270,7 @@ def test_binary_csrmm_indexed_batching_folds_batch_into_columns(
     # Every batch slice equals the unbatched product.
     for b in range(input_shape[batch_axis]):
         ref = binary_csrmm(weights[perm], indices, indptr, jnp.take(matrices, b, axis=batch_axis),
-                           shape=(1, 2), backend="jax_raw")
+                           shape=(1, 2), backend="jax_raw", config=prepared_config(indices, indptr, (1, 2)))
         np.testing.assert_allclose(np.asarray(jnp.take(out[0], b, axis=output_axis)), np.asarray(ref))
 
 
@@ -333,6 +297,7 @@ def test_binary_csrmm_indexed_vmap_matches_materialized_weights():
             shape=(1, 2),
             transpose=False,
             backend="jax_raw",
+            config=prepared_config(indices, indptr, (1, 2)),
         )
     )(matrices)
     ref = jax.vmap(
@@ -344,6 +309,7 @@ def test_binary_csrmm_indexed_vmap_matches_materialized_weights():
             shape=(1, 2),
             transpose=False,
             backend="jax_raw",
+            config=prepared_config(indices, indptr, (1, 2)),
         )
     )(matrices)
 
@@ -480,9 +446,8 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
     def fail_direct(*args, **kwargs):
         raise AssertionError("cuda_raw unfavorable BinaryArray route must use indexed primitive")
 
-    # No ``workspace`` parameter: the routes must not pass the deprecated argument.
     def fake_mv_indexed(data, indices, indptr, perm, vector, *, shape, transpose, backend=None, weighted=False,
-                        max_row_nnz=None):
+                        config=None):
         calls.append({
             "kind": "mv",
             "shape": shape,
@@ -490,12 +455,13 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
             "backend": backend,
             "indptr": indptr,
             "perm": perm,
+            "config": config,
         })
         out_size = shape[1] if transpose else shape[0]
         return jnp.zeros((out_size,), dtype=data.dtype)
 
     def fake_mm_indexed(data, indices, indptr, perm, matrix, *, shape, transpose, backend=None, weighted=False,
-                        max_row_nnz=None):
+                        config=None):
         calls.append({
             "kind": "mm",
             "shape": shape,
@@ -503,6 +469,7 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
             "backend": backend,
             "indptr": indptr,
             "perm": perm,
+            "config": config,
         })
         out_size = shape[1] if transpose else shape[0]
         return jnp.zeros((out_size, matrix.shape[1]), dtype=data.dtype)
@@ -545,12 +512,11 @@ def _spy_on(monkeypatch, module, name):
 
 
 def _assert_fcn_indexed_calls(calls, conn, n_calls):
-    # Every call reads the cached CSC mirror and passes no ``workspace``.
+    # Every call reads the cached CSC mirror.
     csc_indptr, csc_indices, perm = conn.buffers["csc"]
     assert len(calls) == n_calls
-    for args, kwargs in calls:
+    for args, _ in calls:
         assert args[1] is csc_indices and args[2] is csc_indptr and args[3] is perm
-        assert "workspace" not in kwargs
 
 
 def test_fcn_unfavorable_binary_matvec_uses_indexed_route(monkeypatch):
@@ -599,8 +565,8 @@ def test_indexed_mv_rejects_int64_indices_with_int32_indptr():
 
         with pytest.raises(AssertionError, match="Indices must be int32"):
             binary_csrmv_indexed(
-                weights, indices, indptr, perm, events, shape=(1, 2), backend='jax_raw'
-            )
+                weights, indices, indptr, perm, events, shape=(1, 2), backend='jax_raw',
+                config=prepared_config(indices, indptr, (1, 2)))
 
 
 def test_indexed_mm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
@@ -612,8 +578,8 @@ def test_indexed_mm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
         events = jnp.array([[True, False], [False, True], [True, True]])
 
         got = binary_csrmm_indexed(
-            weights, indices, indptr, perm, events, shape=(2, 3), backend='jax_raw'
-        )
+            weights, indices, indptr, perm, events, shape=(2, 3), backend='jax_raw',
+            config=prepared_config(indices, indptr, (2, 3)))
         expected = jnp.array([[40.0, 10.0], [20.0, 60.0]], dtype=jnp.float32)
 
         assert jnp.allclose(got, expected)
@@ -643,10 +609,10 @@ def test_indexed_matches_materialized(transpose, homo, ev):
     vlen = m if transpose else k
     v = jnp.asarray(rng.random(vlen) > 0.5, dtype=ev)
     got = binary_csrmv_indexed(
-        weights, indices, indptr, perm, v, shape=(m, k), transpose=transpose
-    )
+        weights, indices, indptr, perm, v, shape=(m, k), transpose=transpose,
+        config=prepared_config(indices, indptr, (m, k)))
     ref_w = weights if homo else weights[perm]
-    ref = binary_csrmv(ref_w, indices, indptr, v, shape=(m, k), transpose=transpose)
+    ref = binary_csrmv(ref_w, indices, indptr, v, shape=(m, k), transpose=transpose, config=prepared_config(indices, indptr, (m, k)))
     assert jnp.allclose(got, ref, atol=1e-5), (transpose, homo, ev)
 
 
@@ -656,9 +622,9 @@ def test_indexed_jit():
     indices, indptr, perm = _structure(rng, m, k, nse)
     weights = jnp.asarray(rng.random(nse), jnp.float32)
     v = jnp.asarray(rng.random(k) > 0.5, dtype=jnp.bool_)
-    f = jax.jit(lambda w: binary_csrmv_indexed(w, indices, indptr, perm, v, shape=(m, k)))
+    f = jax.jit(lambda w: binary_csrmv_indexed(w, indices, indptr, perm, v, shape=(m, k), config=prepared_config(indices, indptr, (m, k))))
     got = f(weights)
-    ref = binary_csrmv(weights[perm], indices, indptr, v, shape=(m, k))
+    ref = binary_csrmv(weights[perm], indices, indptr, v, shape=(m, k), config=prepared_config(indices, indptr, (m, k)))
     assert jnp.allclose(got, ref, atol=1e-5)
 
 
@@ -669,12 +635,12 @@ def test_indexed_grad_weights():
     weights = jnp.asarray(rng.random(nse), jnp.float32)
     v = jnp.asarray(rng.random(k) > 0.5, dtype=jnp.float32)
     f = lambda w: binary_csrmv_indexed(
-        w, indices, indptr, perm, v, shape=(m, k), transpose=False
-    ).sum()
+        w, indices, indptr, perm, v, shape=(m, k), transpose=False,
+        config=prepared_config(indices, indptr, (m, k))).sum()
     g = jax.grad(f)(weights)
     fref = lambda w: binary_csrmv(
-        w[perm], indices, indptr, v, shape=(m, k), transpose=False
-    ).sum()
+        w[perm], indices, indptr, v, shape=(m, k), transpose=False,
+        config=prepared_config(indices, indptr, (m, k))).sum()
     gref = jax.grad(fref)(weights)
     assert jnp.allclose(g, gref, atol=1e-5)
 
@@ -686,12 +652,12 @@ def test_indexed_grad_weights_transpose():
     weights = jnp.asarray(rng.random(nse), jnp.float32)
     v = jnp.asarray(rng.random(m) > 0.5, dtype=jnp.float32)
     f = lambda w: binary_csrmv_indexed(
-        w, indices, indptr, perm, v, shape=(m, k), transpose=True
-    ).sum()
+        w, indices, indptr, perm, v, shape=(m, k), transpose=True,
+        config=prepared_config(indices, indptr, (m, k))).sum()
     g = jax.grad(f)(weights)
     fref = lambda w: binary_csrmv(
-        w[perm], indices, indptr, v, shape=(m, k), transpose=True
-    ).sum()
+        w[perm], indices, indptr, v, shape=(m, k), transpose=True,
+        config=prepared_config(indices, indptr, (m, k))).sum()
     gref = jax.grad(fref)(weights)
     assert jnp.allclose(g, gref, atol=1e-5)
 
@@ -709,7 +675,7 @@ def test_indexed_check_grads_weights():
         indices, indptr, perm = _structure(rng, m, k, nse)
         weights = jnp.asarray(rng.random(nse), jnp.float64)
         v = jnp.asarray(rng.random(k) > 0.5, dtype=jnp.bool_)
-        f = lambda w: binary_csrmv_indexed(w, indices, indptr, perm, v, shape=(m, k)).sum()
+        f = lambda w: binary_csrmv_indexed(w, indices, indptr, perm, v, shape=(m, k), config=prepared_config(indices, indptr, (m, k))).sum()
         check_grads(f, (weights,), order=2, modes=['rev'])
     finally:
         jax.config.update("jax_enable_x64", False)
@@ -732,10 +698,10 @@ def test_indexed_mm_matches_materialized(transpose, homo, ev, n):
     rows = m if transpose else k
     B = jnp.asarray(rng.random((rows, n)) > 0.5, dtype=ev)
     got = binary_csrmm_indexed(
-        weights, indices, indptr, perm, B, shape=(m, k), transpose=transpose
-    )
+        weights, indices, indptr, perm, B, shape=(m, k), transpose=transpose,
+        config=prepared_config(indices, indptr, (m, k)))
     ref_w = weights if homo else weights[perm]
-    ref = binary_csrmm(ref_w, indices, indptr, B, shape=(m, k), transpose=transpose)
+    ref = binary_csrmm(ref_w, indices, indptr, B, shape=(m, k), transpose=transpose, config=prepared_config(indices, indptr, (m, k)))
     assert jnp.allclose(got, ref, atol=1e-5), (transpose, homo, ev, n)
 
 
@@ -746,11 +712,11 @@ def test_indexed_mm_single_column_equals_mv():
     weights = jnp.asarray(rng.random(nse), jnp.float32)
     v = jnp.asarray(rng.random(k) > 0.5, dtype=jnp.bool_)
     got = binary_csrmm_indexed(
-        weights, indices, indptr, perm, v[:, None], shape=(m, k), transpose=False
-    )
+        weights, indices, indptr, perm, v[:, None], shape=(m, k), transpose=False,
+        config=prepared_config(indices, indptr, (m, k)))
     ref = binary_csrmv_indexed(
-        weights, indices, indptr, perm, v, shape=(m, k), transpose=False
-    )
+        weights, indices, indptr, perm, v, shape=(m, k), transpose=False,
+        config=prepared_config(indices, indptr, (m, k)))
     assert jnp.allclose(got[:, 0], ref, atol=1e-5)
 
 
@@ -763,12 +729,12 @@ def test_indexed_mm_grad_weights(transpose):
     rows = m if transpose else k
     B = jnp.asarray(rng.random((rows, n)) > 0.5, dtype=jnp.float32)
     f = lambda w: binary_csrmm_indexed(
-        w, indices, indptr, perm, B, shape=(m, k), transpose=transpose
-    ).sum()
+        w, indices, indptr, perm, B, shape=(m, k), transpose=transpose,
+        config=prepared_config(indices, indptr, (m, k))).sum()
     g = jax.grad(f)(weights)
     fref = lambda w: binary_csrmm(
-        w[perm], indices, indptr, B, shape=(m, k), transpose=transpose
-    ).sum()
+        w[perm], indices, indptr, B, shape=(m, k), transpose=transpose,
+        config=prepared_config(indices, indptr, (m, k))).sum()
     gref = jax.grad(fref)(weights)
     assert jnp.allclose(g, gref, atol=1e-5), transpose
 
@@ -780,12 +746,12 @@ def test_indexed_mm_grad_weights_homo():
     weights = jnp.asarray([0.7], jnp.float32)
     B = jnp.asarray(rng.random((k, n)) > 0.5, dtype=jnp.float32)
     f = lambda w: binary_csrmm_indexed(
-        w, indices, indptr, perm, B, shape=(m, k), transpose=False
-    ).sum()
+        w, indices, indptr, perm, B, shape=(m, k), transpose=False,
+        config=prepared_config(indices, indptr, (m, k))).sum()
     g = jax.grad(f)(weights)
     fref = lambda w: binary_csrmm(
-        w, indices, indptr, B, shape=(m, k), transpose=False
-    ).sum()
+        w, indices, indptr, B, shape=(m, k), transpose=False,
+        config=prepared_config(indices, indptr, (m, k))).sum()
     gref = jax.grad(fref)(weights)
     assert jnp.allclose(g, gref, atol=1e-5)
 
@@ -796,9 +762,9 @@ def test_indexed_mm_jit():
     indices, indptr, perm = _structure(rng, m, k, nse)
     weights = jnp.asarray(rng.random(nse), jnp.float32)
     B = jnp.asarray(rng.random((k, n)) > 0.5, dtype=jnp.bool_)
-    f = jax.jit(lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k)))
+    f = jax.jit(lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k), config=prepared_config(indices, indptr, (m, k))))
     got = f(weights)
-    ref = binary_csrmm(weights[perm], indices, indptr, B, shape=(m, k))
+    ref = binary_csrmm(weights[perm], indices, indptr, B, shape=(m, k), config=prepared_config(indices, indptr, (m, k)))
     assert jnp.allclose(got, ref, atol=1e-5)
 
 
@@ -811,21 +777,14 @@ def test_indexed_mm_check_grads_weights():
         indices, indptr, perm = _structure(rng, m, k, nse)
         weights = jnp.asarray(rng.random(nse), jnp.float64)
         B = jnp.asarray(rng.random((k, n)) > 0.5, dtype=jnp.bool_)
-        f = lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k)).sum()
+        f = lambda w: binary_csrmm_indexed(w, indices, indptr, perm, B, shape=(m, k), config=prepared_config(indices, indptr, (m, k))).sum()
         check_grads(f, (weights,), order=2, modes=['rev'])
     finally:
         jax.config.update("jax_enable_x64", False)
 
 
-def test_indexed_mm_cuda_kernel_selects_perm_names():
-    import inspect
+def test_indexed_mm_nontransposed_source_retains_only_perm_gather_exports():
     import brainevent._csr.binary.binary_indexed as mod
-    src = inspect.getsource(mod._binary_csrmm_indexed_cuda_kernel)
-    # Transpose routes use hybrid kernels; non-transpose keeps the old nt_auto path.
-    assert "binary_indexed_csrmm_sraw_hybrid_hetero" in src
-    assert "binary_csrmm_sraw_hybrid_homo" in src
-    assert "binary_csrmm_nt_auto_perm_hetero" in src
-    assert "binary_csrmm_nt_auto_homo" in src
 
     from pathlib import Path
     cu = Path(mod.__file__).with_name("binary_indexed_csrmm.cu").read_text()
@@ -919,14 +878,24 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
 
     monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
     monkeypatch.setattr(binary_indexed_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
+    monkeypatch.setattr(_hybrid_mm, 'load_module', _mock_mm_loader(load_calls))
 
     outs = []
     with jax_x64_enabled():
         indices = jnp.array([0, 1], dtype=jnp.int32)
         indptr = jnp.array([0, 2], dtype=jnp.int64)
         perm = jnp.array([1, 0], dtype=jnp.int32)
+        config = CSRConfig().prepare_structure(
+            indices, indptr, shape=(1, 2),
+            device_info=CSRDeviceInfo('gpu', 'TEST_GPU', 4 * 1024 * 1024, 16),
+        )
+        spec, mask = config.kernel_args()
         task_capacity = binary_indexed_mod._task_capacity(indices, indptr, None)
-        common = {**cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64), 'task_capacity': task_capacity}
+        common = {
+            **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
+            'task_capacity': task_capacity, 'config_spec': spec,
+            'call_plan': config.mm_plan(1, jnp.float32),
+        }
         mv_outs = [shape_of(jnp.float32)]
         mm_nt_outs = [shape_of(jnp.float32, (1, 1))]
         mm_t_outs = [shape_of(jnp.float32, (2, 1))]
@@ -968,7 +937,7 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
             **{**common, 'outs': mm_nt_outs, 'perm_info': shape_of(jnp.int32, (2,))},
         )
         outs.append(mm_nt_kernel(
-            jnp.array([2.0, 3.0], dtype=jnp.float32), indices, indptr, perm, jnp.array([[True], [False]]),
+            jnp.array([2.0, 3.0], dtype=jnp.float32), indices, indptr, perm, jnp.array([[True], [False]]), mask,
         ))
 
         mm_t_kernel = binary_indexed_mod._binary_csrmm_indexed_cuda_kernel(
@@ -978,7 +947,7 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
             **{**common, 'outs': mm_t_outs, 'perm_info': shape_of(jnp.int64, (2,))},
         )
         outs.append(mm_t_kernel(
-            jnp.array([2.0, 3.0], dtype=jnp.float32), indices, indptr, perm.astype(jnp.int64), jnp.array([[True]]),
+            jnp.array([2.0, 3.0], dtype=jnp.float32), indices, indptr, perm.astype(jnp.int64), jnp.array([[True]]), mask,
         ))
 
         mm_t_homo_kernel = binary_indexed_mod._binary_csrmm_indexed_cuda_kernel(
@@ -988,24 +957,24 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
             **{**common, 'outs': mm_t_outs, 'perm_info': shape_of(jnp.int64, (2,))},
         )
         outs.append(mm_t_homo_kernel(
-            jnp.array([2.0], dtype=jnp.float32), indices, indptr, perm.astype(jnp.int64), jnp.array([[True]]),
+            jnp.array([2.0], dtype=jnp.float32), indices, indptr, perm.astype(jnp.int64), jnp.array([[True]]), mask,
         ))
 
     assert [strip_hybrid_suffix(name) for _, name, _ in load_calls] == [
         'csr_binary_indexed_csrmv',
-        'csr_binary_indexed_csrmv_hybrid',
-        'csr_binary_csrmv_hybrid',
+        'csr_hybrid_spmv_col_major_binary',
+        'csr_hybrid_spmv_binary',
         'csr_binary_indexed_csrmm',
-        'csr_binary_indexed_csrmm_hybrid',
-        'csr_binary_csrmm_hybrid',
+        'test_hybrid_mm_col_binary',
+        'test_hybrid_mm_row_binary',
     ]
     assert [strip_hybrid_suffix(call[0]) for call in ffi_calls] == [
         'csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero_f32_bool',
-        'csr_binary_indexed_csrmv_hybrid.binary_indexed_csrmv_wat_hybrid_hetero_f32_bool',
-        'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid_homo_f32_bool',
+        'csr_hybrid_spmv_col_major_binary.hybrid_spmv_col_major_binary_hetero_f32_bool',
+        'csr_hybrid_spmv_binary.binary_csrmv_wat_hybrid_homo_f32_bool',
         'csr_binary_indexed_csrmm.binary_csrmm_nt_auto_perm_hetero_f32_bool',
-        'csr_binary_indexed_csrmm_hybrid.binary_indexed_csrmm_sraw_hybrid_hetero_f32_bool',
-        'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid_homo_f32_bool',
+        'test_hybrid_mm_col_binary.batched_spmm_v3_col_major_binary_hetero_f32_bool',
+        'test_hybrid_mm_row_binary.batched_spmm_v3_homo_f32_bool',
     ]
     # Kernels return only the math output, in the logical layout.
     assert [len(out) for out in outs] == [1] * 6
@@ -1013,8 +982,17 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
     # The direct perm kernels take five math operands. Hybrid kernels append
     # their own scratch; the homogeneous ones drop ``perm`` (four operands).
     assert len(ffi_calls[0][3]) == 5 and len(ffi_calls[3][3]) == 5
-    for i, n_math in ((1, 5), (2, 4), (4, 5), (5, 4)):
+    for i, n_math in ((1, 5), (2, 4)):
         _assert_hybrid_scratch_call(ffi_calls[i], n_math, task_capacity, jnp.int64)
+    for i, mask_index in ((4, 4), (5, 3)):
+        _, out_info, _, args, attributes = ffi_calls[i]
+        assert args[2].dtype == jnp.int64
+        assert args[mask_index] is mask
+        assert args[-1].shape == (1, 1)
+        assert out_info[0].shape == (1, 2)  # native BN; wrapper returns NB
+        assert out_info[1].dtype == jnp.uint32
+        assert out_info[2].dtype == jnp.int32
+        assert attributes['long_tasks'] == config.primary.long_tasks
 
 
 @requires_gpu_backend
@@ -1027,9 +1005,9 @@ def test_binary_indexed_cuda_accepts_int64_indptr(transpose):
     vector = jnp.array([True, False], dtype=jnp.bool_) if transpose else jnp.array([True, False, True])
 
     got = binary_csrmv_indexed(weights, indices, indptr64, perm, vector, shape=(2, 3),
-                               transpose=transpose, backend='cuda_raw')
+                               transpose=transpose, backend='cuda_raw', config=prepared_config(indices, indptr64, (2, 3)))
     expected = binary_csrmv_indexed(weights, indices, indptr32, perm, vector, shape=(2, 3),
-                                    transpose=transpose, backend='jax_raw')
+                                    transpose=transpose, backend='jax_raw', config=prepared_config(indices, indptr32, (2, 3)))
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -1048,9 +1026,9 @@ def test_binary_indexed_csrmm_cuda_accepts_int64_indptr(transpose):
     )
 
     got = binary_csrmm_indexed(weights, indices, indptr64, perm, matrix, shape=(2, 3),
-                               transpose=transpose, backend='cuda_raw')
+                               transpose=transpose, backend='cuda_raw', config=prepared_config(indices, indptr64, (2, 3)))
     expected = binary_csrmm_indexed(weights, indices, indptr32, perm, matrix, shape=(2, 3),
-                                    transpose=transpose, backend='jax_raw')
+                                    transpose=transpose, backend='jax_raw', config=prepared_config(indices, indptr32, (2, 3)))
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -1109,6 +1087,7 @@ def test_indexed_mv_event_is_active_iff_nonzero(backend, dtype_name, homo, trans
         got = binary_csrmv_indexed(
             weights, indices, indptr, perm, x, shape=(_ACT_M, _ACT_K), transpose=transpose,
             backend=backend,
+            config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)),
         )
         mask = event_mask(x)
         expected = mask @ dense if transpose else dense @ mask
@@ -1128,6 +1107,7 @@ def test_indexed_mm_event_is_active_iff_nonzero(backend, dtype_name, homo, trans
         got = binary_csrmm_indexed(
             weights, indices, indptr, perm, B, shape=(_ACT_M, _ACT_K), transpose=transpose,
             backend=backend,
+            config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)),
         )
         mask = event_mask(B)
         expected = dense.T @ mask if transpose else dense @ mask
@@ -1145,7 +1125,7 @@ def test_indexed_mv_gradients_use_event_mask(backend, homo, transpose):
 
     def op(w, v):
         return binary_csrmv_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
-                                    transpose=transpose, backend=backend)
+                                    transpose=transpose, backend=backend, config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
 
     def dense_op(w, z):
         D = _indexed_dense(w, indices, perm, rows)
@@ -1165,7 +1145,7 @@ def test_indexed_mm_gradients_use_event_mask(backend, homo, transpose):
 
     def op(w, v):
         return binary_csrmm_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
-                                    transpose=transpose, backend=backend)
+                                    transpose=transpose, backend=backend, config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
 
     def dense_op(w, z):
         D = _indexed_dense(w, indices, perm, rows)
@@ -1238,7 +1218,7 @@ def test_indexed_mv_weighted_matches_dense_and_grads(backend, dtype_name, homo, 
         def op(w, v):
             return binary_csrmv_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
                                         transpose=transpose, backend=backend,
-                                        weighted=True)
+                                        weighted=True, config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
 
         def dense_op(w, z):
             D = _indexed_dense(w, indices, perm, rows)
@@ -1262,7 +1242,7 @@ def test_indexed_mm_weighted_matches_dense_and_grads(backend, dtype_name, homo, 
         def op(w, v):
             return binary_csrmm_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
                                         transpose=transpose, backend=backend,
-                                        weighted=True)
+                                        weighted=True, config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
 
         def dense_op(w, z):
             D = _indexed_dense(w, indices, perm, rows)
@@ -1293,7 +1273,7 @@ def test_indexed_mv_weighted_heavy_rows_use_row_value(backend, homo):
     weights, indices, indptr, perm, dense = _heavy_indexed(7, 6, 9000, 8500, homo)
     x = jnp.array([2.0, 0.0, -1.0, 0.5, 3.0, 0.0], dtype=jnp.float32)
     got = binary_csrmv_indexed(weights, indices, indptr, perm, x, shape=dense.shape, transpose=True,
-                               backend=backend, weighted=True)
+                               backend=backend, weighted=True, config=prepared_config(indices, indptr, dense.shape))
     np.testing.assert_allclose(np.asarray(got, np.float64), np.asarray(x, np.float64) @ dense,
                                rtol=1e-4, atol=1e-3)
 
@@ -1305,17 +1285,18 @@ def test_indexed_mm_weighted_heavy_rows_use_row_value(backend, homo):
     weights, indices, indptr, perm, dense = _heavy_indexed(8, 5, 9000, 8500, homo)
     B = jnp.array([[2.0, 0.0], [0.0, -1.0], [-1.0, 0.5], [0.5, 0.0], [0.0, 3.0]], dtype=jnp.float32)
     got = binary_csrmm_indexed(weights, indices, indptr, perm, B, shape=dense.shape, transpose=True,
-                               backend=backend, weighted=True)
+                               backend=backend, weighted=True, config=prepared_config(indices, indptr, dense.shape))
     np.testing.assert_allclose(np.asarray(got, np.float64), dense.T @ np.asarray(B, np.float64),
                                rtol=1e-4, atol=1e-3)
 
 
 @pytest.mark.parametrize('homo', [True, False])
 def test_indexed_cuda_generators_select_weighted_abi(monkeypatch, homo):
-    """Indexed CUDA kernels use the ``_wv`` symbols with events cast to the weight dtype."""
+    """Indexed CUDA kernels select weighted exports and cast events to the weight dtype."""
     ffi_calls = []
     monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name, **kwargs: None)
     monkeypatch.setattr(binary_indexed_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
+    monkeypatch.setattr(_hybrid_mm, 'load_module', _mock_mm_loader())
 
     indices = jnp.array([0, 1], dtype=jnp.int32)
     indptr = jnp.array([0, 2], dtype=jnp.int32)
@@ -1323,19 +1304,24 @@ def test_indexed_cuda_generators_select_weighted_abi(monkeypatch, homo):
     task_capacity = binary_indexed_mod._task_capacity(indices, indptr, None)
     n_w = 1 if homo else 2
     weights = jnp.ones(n_w, dtype=jnp.float32)
+    config = CSRConfig().prepare_structure(
+        indices, indptr, shape=(1, 2),
+        device_info=CSRDeviceInfo('gpu', 'TEST_GPU', 4 * 1024 * 1024, 16),
+    )
+    spec, mask = config.kernel_args()
     if homo:
         names = [
             'csr_binary_csrmv.binary_csrmv_nt_auto_homo_f32_wv',
-            'csr_binary_csrmv_hybrid.binary_csrmv_wat_hybrid_homo_f32_wv',
+            'csr_hybrid_spmv_weighted.binary_csrmv_wat_hybrid_homo_f32_wv',
             'csr_binary_csrmm.binary_csrmm_nt_auto_homo_f32_wv',
-            'csr_binary_csrmm_hybrid.binary_csrmm_sraw_hybrid_homo_f32_wv',
+            'test_hybrid_mm_row_weighted.batched_spmm_v3_weighted_homo_f32',
         ]
     else:
         names = [
             'csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero_f32_wv',
-            'csr_binary_indexed_csrmv_hybrid.binary_indexed_csrmv_wat_hybrid_hetero_f32_wv',
+            'csr_hybrid_spmv_col_major_weighted.hybrid_spmv_col_major_weighted_hetero_f32',
             'csr_binary_indexed_csrmm.binary_csrmm_nt_auto_perm_hetero_f32_wv',
-            'csr_binary_indexed_csrmm_hybrid.binary_indexed_csrmm_sraw_hybrid_hetero_f32_wv',
+            'test_hybrid_mm_col_weighted.batched_spmm_v3_col_major_weighted_hetero_f32',
         ]
     cases = [
         (binary_indexed_mod._binary_csrmv_indexed_cuda_kernel, (2,), False, (1,)),
@@ -1349,16 +1335,22 @@ def test_indexed_cuda_generators_select_weighted_abi(monkeypatch, homo):
         kernel = factory(
             shape_of(jnp.float32, (n_w,)), shape_of(jnp.uint8, ev_shape), transpose,
             **{**cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int32),
-               'outs': [shape_of(jnp.float32, out_shape)], 'weighted': True, 'task_capacity': task_capacity},
+               'outs': [shape_of(jnp.float32, out_shape)], 'weighted': True, 'task_capacity': task_capacity,
+               'config_spec': spec, 'call_plan': config.mm_plan(3, jnp.float32, weighted=True)},
         )
-        kernel(weights, indices, indptr, perm, events)
+        if len(ev_shape) == 2:
+            kernel(weights, indices, indptr, perm, events, mask)
+        else:
+            kernel(weights, indices, indptr, perm, events)
         assert len(ffi_calls) == 1
         name, _, _, args, _ = ffi_calls[0]
         assert strip_hybrid_suffix(name) == expected
         # Homogeneous weights reuse the plain kernels, which take no ``perm``.
-        event_arg = args[3] if homo else args[4]
+        hybrid_mm = len(ev_shape) == 2 and transpose
+        event_arg = args[-1] if hybrid_mm else args[3] if homo else args[4]
         assert event_arg.dtype == jnp.float32
-        np.testing.assert_array_equal(np.asarray(event_arg), np.full(ev_shape, 4.0))
+        expected_shape = ev_shape[::-1] if hybrid_mm else ev_shape
+        np.testing.assert_array_equal(np.asarray(event_arg), np.full(expected_shape, 4.0))
 
 
 # ---------------------------------------------------------------------------
@@ -1391,6 +1383,7 @@ def _indexed_call(case, shape, transpose, backend, mm, data=None):
         data, jnp.asarray(case.indices), indptr, perm, case.events, shape=shape,
         transpose=transpose,
         backend=backend, weighted=case.weighted,
+        config=prepared_config(case.indices, case.indptr, shape),
     )
 
 

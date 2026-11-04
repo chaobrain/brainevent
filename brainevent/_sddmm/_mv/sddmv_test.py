@@ -1,6 +1,7 @@
 """Exercise CSR sampled gradients, including CUDA/JAX direction dispatch."""
 
 import importlib
+from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
@@ -39,9 +40,9 @@ def reference(events, ct, indices, indptr, *, transpose, weighted):
     return jnp.where(x != 0, value, jnp.zeros_like(value))
 
 
-def check_result(args, *, transpose, weighted, backend=None):
+def check_result(args, *, transpose, weighted, backend=None, config=None):
     fn = jax.jit(lambda e, c, i, p: csr_sddmv_dweight(
-        e, c, i, p, transpose=transpose, weighted=weighted, backend=backend))
+        e, c, i, p, transpose=transpose, weighted=weighted, backend=backend, config=config))
     actual = fn(*args)
     expected = reference(*args, transpose=transpose, weighted=weighted)
     assert actual.dtype == expected.dtype
@@ -173,15 +174,47 @@ def test_shard_map_keeps_results_per_shard(transpose):
         np.testing.assert_allclose(result, expected, equal_nan=True)
 
 
-def test_scheduler_config_is_shared_by_capacity_and_compilation(monkeypatch):
-    from brainevent._csr.binary.hybrid_config import HybridConfig
-    config = HybridConfig(block_size=128, fixed_scatter_blocks=32, tpr_threshold=16, task_nnz=64)
-    monkeypatch.setattr(sddmv, 'get_hybrid_config', lambda: config)
+def test_scheduler_config_is_shared_by_capacity_and_compilation():
+    from brainevent._csr.config import CSRConfig
+    config = CSRConfig(block_size=128, fixed_scatter_blocks=32, tpr_threshold=16, task_nnz=64)
     e = jnp.array([2., -3.], dtype=jnp.float32)
     c = jnp.arange(31, dtype=jnp.float32)
     i = jnp.arange(279, dtype=jnp.int32) % 31
     p = jnp.array([0, 129, 279], dtype=jnp.int32)
-    check_result((e, c, i, p), transpose=True, weighted=True)
+    check_result((e, c, i, p), transpose=True, weighted=True, config=config)
+
+
+def test_explicit_scheduler_snapshot_survives_primitive_binding():
+    from brainevent._csr.config import CSRConfig
+    config = CSRConfig(block_size=128, fixed_scatter_blocks=32, tpr_threshold=16, task_nnz=64)
+    args = inputs(jnp.float32, jnp.float32, True)
+    closed = jax.make_jaxpr(lambda e, c, i, p: csr_sddmv_dweight(
+        e, c, i, p, transpose=True, weighted=True, config=config))(*args)
+    equation = next(eqn for eqn in closed.jaxpr.eqns if eqn.primitive is csr_sddmv_p.primitive)
+    spec = equation.params['config_spec']
+    assert spec == config.kernel_args()[0]
+    assert spec.mv_capacity(279, 2) > CSRConfig().mv_capacity(279, 2)
+
+
+def test_module_cache_ignores_matrix_geometry_and_device(monkeypatch, request):
+    from brainevent._csr.config import CSRConfig, CSRDeviceInfo
+    config = CSRConfig(tpr_threshold=16, task_nnz=64).prepare_structure(
+        jnp.array([0, 1], jnp.int32), jnp.array([0, 2], jnp.int32), shape=(1, 2))
+    spec = config.kernel_args()[0]
+    calls = []
+    monkeypatch.setattr(sddmv, 'load_cuda_file', lambda *args, **kwargs: calls.append(kwargs))
+    sddmv._load_hybrid_cached.cache_clear()
+    request.addfinalizer(sddmv._load_hybrid_cached.cache_clear)
+    first = sddmv._load_hybrid(False, spec)
+    for size in range(1, 10):
+        other = replace(spec, structure=replace(spec.structure, cols=100 + size),
+                        device_info=CSRDeviceInfo('gpu', str(size), 1024 * size, size))
+        assert sddmv._load_hybrid(False, other) == first
+    assert len(calls) == 1
+    assert sddmv._load_hybrid_cached.cache_info().currsize == 1
+    assert sddmv._load_hybrid(False, replace(spec, task_nnz=128)) != first
+    assert len(calls) == 2
+    assert sddmv._load_hybrid_cached.cache_parameters()['maxsize'] == 128
 
 
 def test_zero_sized_matrix_axes():

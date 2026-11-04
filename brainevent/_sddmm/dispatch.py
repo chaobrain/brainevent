@@ -32,6 +32,7 @@ TCSR-specific adapters remain separate.
 """
 
 from functools import partial
+from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
@@ -44,6 +45,7 @@ from ._mm import sddmm as mm_backend
 def sddmm(
     A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | None = None,
     *, mode: Mode = 'float', transpose: bool = True, backend: str | None | _CSRBackend = None,
+    config=None,
 ) -> jax.Array:
     """Sample a dense product through one MV/MM dispatcher.
 
@@ -75,6 +77,10 @@ def sddmm(
         GPU auto uses hybrid CUDA for supported transposed CSR event products
         in both leaves. Explicit ``cuda_raw`` requires this direction and CSR
         event mode; other cases use ``jax_raw`` or ``auto``.
+    config : CSRConfig or None, optional
+        Explicit CSR scheduler snapshot for the vector leaf. ``None`` uses
+        default constants without reading persisted configuration. Matrix
+        sampled products retain their independent plan.
 
     Returns
     -------
@@ -130,16 +136,20 @@ def sddmm(
         if not (jnp.issubdtype(events.dtype, jnp.bool_) or jnp.issubdtype(events.dtype, jnp.integer)
                 or jnp.issubdtype(events.dtype, jnp.floating)):
             raise TypeError('events must be boolean, integer or floating')
+    config_spec = None if config is None else config.kernel_args()[0]
     if isinstance(backend, _CSRBackend):
+        if config_spec is not None:
+            backend = replace(backend, config_spec=config_spec)
         return _csr_sampled(A, B, indices, indptr, mode, transpose, backend)
-    return _sampled(A, B, indices, indptr, mode, transpose, backend)
+    return _sampled(A, B, indices, indptr, mode, transpose, backend, config_spec=config_spec)
 
 
-def _sampled(A, B, indices, indptr, mode, transpose, backend):
+def _sampled(A, B, indices, indptr, mode, transpose, backend, *, config_spec=None):
     """Choose the leaf after the dispatcher has normalized the operands."""
     if A.shape[1] == 1:
         return mv_backend.sampled(A[:, 0], B[0, :], indices, indptr,
-                                   mode=mode, transpose=transpose, backend=backend)
+                                   mode=mode, transpose=transpose, backend=backend,
+                                   config_spec=config_spec)
     return mm_backend.sampled(A, B, indices, indptr,
                                mode=mode, transpose=transpose, backend=backend)
 
@@ -159,7 +169,7 @@ def _csr_sampled(A, B, indices, indptr, mode, transpose, source):
         backend = 'jax_raw'
     else:
         backend = 'cuda_raw' if source.requested == 'cuda_raw' else source
-    return _sampled(A, B, indices, indptr, mode, transpose, backend)
+    return _sampled(A, B, indices, indptr, mode, transpose, backend, config_spec=source.config_spec)
 
 
 @_csr_sampled.defjvp
@@ -170,7 +180,8 @@ def _csr_sampled_jvp(mode, transpose, source, primals, tangents):
     # Preserve the CSR consumers' existing differentiable JAX rules. This
     # runs only under further differentiation, not in a first-order VJP.
     _, tangent = jax.jvp(
-        lambda a, b: _sampled(a, b, indices, indptr, mode, transpose, 'jax_raw'),
+        lambda a, b: _sampled(a, b, indices, indptr, mode, transpose, 'jax_raw',
+                             config_spec=source.config_spec),
         (A, B), (A_dot, B_dot),
     )
     return primal, tangent

@@ -20,7 +20,7 @@ __all__ = [
 
 def csr_sddmm_dweight(
     events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array,
-    *, transpose: bool, weighted: bool = False, backend: str | None = None,
+    *, transpose: bool, weighted: bool = False, backend: str | None = None, config=None,
 ) -> jax.Array:
     """Compute CSR event weight gradients through batch-based dispatch.
 
@@ -42,6 +42,8 @@ def csr_sddmm_dweight(
         Forwarded to the chosen MV/MM implementation. GPU auto uses CUDA for
         supported transposed CSR events and JAX otherwise. ``jax_raw`` forces
         differentiable JAX in both directions without binding an event primitive.
+    config : CSRConfig or None, optional
+        Explicit scheduler snapshot. Defaults do not read persisted settings.
 
     Returns
     -------
@@ -60,12 +62,12 @@ def csr_sddmm_dweight(
     else:
         A, B = (events, ct.T) if transpose else (ct, events.T)
     return _dispatch.sddmm(A, B, indices, indptr, mode='weighted' if weighted else 'binary',
-                           transpose=transpose, backend=backend)
+                           transpose=transpose, backend=backend, config=config)
 
 
 def csr_sddmv_dweight(
     events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array,
-    *, transpose: bool, weighted: bool = False, backend: str | None = None,
+    *, transpose: bool, weighted: bool = False, backend: str | None = None, config=None,
 ) -> jax.Array:
     """Vector entry into the unified CSR sampled dispatcher.
 
@@ -81,6 +83,8 @@ def csr_sddmv_dweight(
         Use event amplitudes rather than binary selection.
     backend : str or None, optional
         Leaf backend override, as in :func:`csr_sddmm_dweight`.
+    config : CSRConfig or None, optional
+        Explicit scheduler snapshot, as in :func:`csr_sddmm_dweight`.
 
     Returns
     -------
@@ -90,7 +94,7 @@ def csr_sddmv_dweight(
     if jnp.ndim(events) != 1 or jnp.ndim(ct) != 1:
         raise ValueError('events and ct must be rank 1')
     return csr_sddmm_dweight(events, ct, indices, indptr, transpose=transpose,
-                             weighted=weighted, backend=backend)
+                             weighted=weighted, backend=backend, config=config)
 
 
 # Registry calls also enter the facade, never bypassing batch dispatch.

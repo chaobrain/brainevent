@@ -17,6 +17,27 @@ mv = importlib.import_module('brainevent._sddmm._mv.sddmv')
 mm = importlib.import_module('brainevent._sddmm._mm.sddmm')
 
 
+@pytest.mark.parametrize('requested', [None, 'cuda_raw'])
+def test_csr_gradient_dispatch_preserves_forward_config(monkeypatch, requested):
+    """Explicit CUDA must retain the snapshot when backend metadata is unwrapped."""
+    from brainevent._csr.config import CSRConfig
+    from brainevent._sddmm._common import _CSRBackend
+    config_spec = CSRConfig(tpr_threshold=16, task_nnz=64).kernel_args()[0]
+    captured = []
+
+    def sampled(a, b, indices, indptr, **kwargs):
+        captured.append(kwargs['config_spec'])
+        return jnp.zeros(indices.shape, jnp.float32)
+
+    monkeypatch.setattr(mv, 'sampled', sampled)
+    source = _CSRBackend(object(), requested, config_spec)
+    indices, indptr = jnp.array([0], jnp.int32), jnp.array([0, 1], jnp.int32)
+    fn = jax.jit(lambda a, b: dispatch.sddmm(
+        a, b, indices, indptr, mode='weighted', backend=source))
+    np.testing.assert_array_equal(fn(jnp.ones(1), jnp.ones(1)), jnp.zeros(1))
+    assert captured == [config_spec]
+
+
 @pytest.mark.parametrize('batch', [0, 1, 3])
 def test_dispatch_selects_leaf_by_contraction_size(monkeypatch, batch):
     calls = []

@@ -96,8 +96,9 @@ def update_csr_on_binary_pre(
     shape : tuple of int
         Full matrix shape as ``(n_pre, n_post)``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
-        ``None`` for automatic selection.
+        Compute backend: ``'numba'`` (CPU), ``'cuda_raw'`` (GPU),
+        ``'pallas'`` (TPU), or ``'jax_raw'`` (all platforms).
+        ``None`` selects the platform default.
 
     Returns
     -------
@@ -321,7 +322,7 @@ def _csr_on_pre_cuda_kernel(
     """CUDA Raw kernel for CSR pre-synaptic plasticity update.
 
     Dispatches to ``update_csr_on_pre{wt_sfx}{spk_sfx}`` compiled from
-    ``plasticity_binary.cu``.  The auto-variant selects among
+    ``plasticity_binary_on_pre.cu``.  The auto-variant selects among
     thread-per-row, warp-per-row, and block-per-row sub-kernels at runtime
     based on avg_nnz = nse / n_pre.
 
@@ -376,8 +377,9 @@ def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shap
     shape : tuple of int
         Full matrix shape as ``(n_pre, n_post)``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
-        ``None`` for automatic selection.
+        Compute backend: ``'numba'`` (CPU), ``'cuda_raw'`` (GPU),
+        ``'pallas'`` (TPU), or ``'jax_raw'`` (all platforms).
+        ``None`` selects the platform default.
 
     Returns
     -------
@@ -522,7 +524,7 @@ update_csr_on_binary_pre_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``update_csr_on_binary_pre``.
 
 This ``XLACustomKernel`` instance dispatches the CSR weight update for pre-synaptic binary plasticity
-operation to registered backends (``numba``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``, ``cuda_raw``, ``jax_raw``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 For each presynaptic neuron that fires, updates all outgoing synaptic weights
@@ -613,8 +615,9 @@ def update_csr_on_binary_post(
     shape : tuple of int
         Full matrix shape as ``(n_pre, n_post)``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
-        ``None`` for automatic selection.
+        Compute backend: ``'numba'`` (CPU), ``'cuda_raw'`` (GPU),
+        ``'pallas'`` (TPU), or ``'jax_raw'`` (all platforms).
+        ``None`` selects the platform default.
 
     Returns
     -------
@@ -852,7 +855,7 @@ def _csr2csc_on_post_cuda_kernel(
     """CUDA Raw kernel for CSR post-synaptic plasticity update.
 
     Dispatches to ``update_csr_on_post{wt_sfx}{spk_sfx}`` compiled from
-    ``plasticity_binary.cu``.  The auto-variant selects among
+    ``plasticity_binary_on_post.cu``.  The auto-variant selects among
     thread-per-column, warp-per-column, and block-per-column sub-kernels at
     runtime based on avg_nnz = nse / n_post.
 
@@ -920,8 +923,9 @@ def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace
     shape : tuple of int
         Full matrix shape as ``(n_pre, n_post)``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
-        ``None`` for automatic selection.
+        Compute backend: ``'numba'`` (CPU), ``'cuda_raw'`` (GPU),
+        ``'pallas'`` (TPU), or ``'jax_raw'`` (all platforms).
+        ``None`` selects the platform default.
 
     Returns
     -------
@@ -1045,7 +1049,7 @@ update_csr_on_binary_post_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``update_csr_on_binary_post``.
 
 This ``XLACustomKernel`` instance dispatches the CSR weight update for post-synaptic binary plasticity (CSR to CSC conversion)
-operation to registered backends (``numba``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``, ``cuda_raw``, ``jax_raw``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 For each postsynaptic neuron that fires, updates all incoming synaptic weights

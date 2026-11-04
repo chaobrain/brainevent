@@ -2153,7 +2153,6 @@ def test_task_capacity_covers_heavy_rows_in_every_orientation(cls, monkeypatch):
     # Regression: ``.T`` re-keyed only one direction of the cached workspace, so
     # ``events @ csr.T`` after ``events @ csr`` on cuda_raw ran with a task
     # queue sized for the other orientation and silently dropped work.
-    from brainevent._csr.binary.hybrid_config import hybrid_task_capacity
     calls = _record_task_capacities(monkeypatch)
     rng = np.random.default_rng(0)
     shape = (4096, 3)
@@ -2165,7 +2164,10 @@ def test_task_capacity_covers_heavy_rows_in_every_orientation(cls, monkeypatch):
             BinaryArray(jnp.ones(V.shape[0], bool)) @ V
     assert len(calls) == 10
     for name, capacity, indptr in calls:
-        assert capacity >= hybrid_task_capacity(indptr), (name, capacity)
+        lengths = np.diff(np.asarray(indptr, dtype=np.int64))
+        heavy = lengths[lengths > M.config.tpr_threshold]
+        exact = np.sum((heavy + M.config.task_nnz - 1) // M.config.task_nnz)
+        assert capacity >= exact, (name, capacity)
 
 
 @pytest.mark.skipif(platform != 'gpu', reason='cuda_raw parity needs a GPU')
@@ -2235,55 +2237,43 @@ def test_gradients_through_data_and_allow_int(cls):
 @pytest.mark.parametrize('backend', _PYTREE_BACKENDS)
 @pytest.mark.parametrize('transpose', [False, True])
 def test_public_binary_functions_need_no_workspace(backend, transpose):
-    # Regression: the public ``binary_csrmv``/``binary_csrmm`` required a
-    # private ``workspace=`` built from a concrete ``indptr``.
+    # Callers pass math arrays and config; lowering allocates scratch.
     M, dense = _pytree_matrix(CSR, backend)
     D = dense.T if transpose else dense
     x = _spike_vector(D.shape[1])
     X = jnp.asarray(np.random.default_rng(5).random((D.shape[1], 3)) < 0.5)
     mv = jax.jit(lambda d, i, p, s: brainevent.binary_csrmv(
-        d, i, p, s, shape=M.shape, transpose=transpose, backend=backend))
+        d, i, p, s, shape=M.shape, transpose=transpose, backend=backend, config=M.config))
     mm = jax.jit(lambda d, i, p, s: brainevent.binary_csrmm(
-        d, i, p, s, shape=M.shape, transpose=transpose, backend=backend))
+        d, i, p, s, shape=M.shape, transpose=transpose, backend=backend, config=M.config))
     np.testing.assert_allclose(mv(M.data, M.indices, M.indptr, x), D @ np.asarray(x, np.float32), rtol=1e-5)
     np.testing.assert_allclose(mm(M.data, M.indices, M.indptr, X), D @ np.asarray(X, np.float32), rtol=1e-5)
 
 
-def test_passing_a_workspace_is_deprecated():
-    M, dense = _pytree_matrix(CSR, 'jax_raw')
-    x = _spike_vector(M.shape[1])
-    with pytest.warns(DeprecationWarning, match='workspace'):
-        out = brainevent.binary_csrmv(M.data, M.indices, M.indptr, x, shape=M.shape, workspace=object())
-    np.testing.assert_allclose(out, dense @ np.asarray(x, np.float32), rtol=1e-5)
-
-
 @pytest.mark.parametrize('indexed', [False, True])
-def test_understated_max_row_nnz_is_rejected_for_concrete_indptr(indexed):
+def test_understated_max_row_nnz_is_rejected_against_prepared_config(indexed):
     # An understated hint shrinks the cuda_raw task queue and silently drops
-    # work, so it is rejected whenever ``indptr`` is concrete.
+    # work, so it is checked against the prepared structural statistics.
     M, dense = _pytree_matrix(CSR, 'jax_raw')
     longest = int(np.diff(np.asarray(M.indptr)).max())
     x = _spike_vector(M.shape[1])
     if indexed:
         perm = jnp.arange(M.nse)
         call = lambda hint: brainevent.binary_csrmv_indexed(
-            M.data, M.indices, M.indptr, perm, x, shape=M.shape, max_row_nnz=hint)
+            M.data, M.indices, M.indptr, perm, x, shape=M.shape, max_row_nnz=hint, config=M.config)
     else:
-        call = lambda hint: brainevent.binary_csrmv(M.data, M.indices, M.indptr, x, shape=M.shape, max_row_nnz=hint)
+        call = lambda hint: brainevent.binary_csrmv(
+            M.data, M.indices, M.indptr, x, shape=M.shape, max_row_nnz=hint, config=M.config)
     with pytest.raises(ValueError, match='max_row_nnz'):
         call(longest - 1)
     np.testing.assert_allclose(call(longest), dense @ np.asarray(x, np.float32), rtol=1e-5)
 
 
 @pytest.mark.parametrize('cls', [CSR, CSC])
-def test_nnz_hint_is_a_power_of_two_upper_bound(cls):
-    # The hint lives in the pytree metadata; rounding keeps re-drawn matrices
-    # of one family on the same compilation.
+def test_config_carries_prepared_longest_rows_for_both_layouts(cls):
     M, _ = _pytree_matrix(cls, 'jax_raw')
     longest = int(np.diff(np.asarray(M.indptr)).max())
-    hint = jax.tree_util.tree_flatten(M)[1].node_data()[1][4]
-    assert hint >= longest and hint & (hint - 1) == 0
+    assert M.config.primary.max_row_nnz == longest
     M2 = M.build_weight_indices()
     mirror_longest = int(np.diff(np.asarray(M2.buffers[M2._mirror_key][0])).max())
-    mirror_hint = jax.tree_util.tree_flatten(M2)[1].node_data()[1][5]
-    assert mirror_hint >= mirror_longest and mirror_hint & (mirror_hint - 1) == 0
+    assert M2.config.mirror.max_row_nnz == mirror_longest

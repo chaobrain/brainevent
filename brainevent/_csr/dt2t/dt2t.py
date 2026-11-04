@@ -102,7 +102,7 @@ def csrmv_dt2t(
     Notes
     -----
     This operation is differentiable with respect to both ``y`` and ``w``
-    via custom JVP rules.  The transpose rule is not yet implemented.
+    in forward and reverse mode via custom JVP and transpose rules.
 
     Mathematically, for each structural non-zero entry ``j`` of the CSR
     matrix at position ``(row, col)``, the output is computed as:
@@ -646,7 +646,7 @@ def csrmm_dt2t(
     Notes
     -----
     This operation is differentiable with respect to both ``y`` and ``w``
-    via custom JVP rules.  The transpose rule is not yet implemented.
+    in forward and reverse mode via custom JVP and transpose rules.
 
     Mathematically, for each batch element ``b`` and structural non-zero
     entry ``j`` of the CSR matrix at position ``(row, col)``, the output

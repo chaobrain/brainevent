@@ -152,11 +152,12 @@ def test_fixed_post_num_conn_tree_flatten_structure_leaves():
     children, aux = conn.tree_flatten()
 
     # ``data`` and ``indices`` are leaves (0.4.0); aux holds only hashable
-    # metadata ``(shape, backend, has_mirror, mirror_hint)``.
-    assert len(children) == 2
+    # metadata ``(shape, backend, has_mirror)``.
+    assert len(children) == 3
     assert children[0] is conn.data
     assert children[1] is conn.indices
-    assert aux == ((2, 3), None, False, None)
+    assert children[2] is conn.config
+    assert aux == ((2, 3), None, False)
     hash(aux)
 
 
@@ -947,7 +948,7 @@ def test_fcn_pytree_roundtrip_carries_mirror_leaves():
     dat = jnp.asarray(rng.random((6, 3)) + 0.5, dtype=jnp.float32)
     m = brainevent.FixedNumPerPre(dat, idx, shape=(6, 5), precompute_weight_indices=True)
     leaves, treedef = jax.tree_util.tree_flatten(m)
-    assert len(leaves) == 5  # data, indices and the three mirror arrays
+    assert len(leaves) == 7  # data, indices, two plan masks and three mirror arrays
     m2 = jax.tree_util.tree_unflatten(treedef, leaves)
     assert jnp.allclose(m2.data, m.data)
     assert jnp.array_equal(m2.indices, m.indices)

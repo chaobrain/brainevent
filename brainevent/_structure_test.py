@@ -18,10 +18,9 @@ import warnings
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 from brainevent._error import PerformanceWarning
-from brainevent._structure import StructureCache, is_concrete, nnz_hint, warn_mirror_fallback
+from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
 
 
 def test_is_concrete_flags_tracers_only():
@@ -31,31 +30,15 @@ def test_is_concrete_flags_tracers_only():
     assert seen == [False]
 
 
-@pytest.mark.parametrize('indptr, hint', [
-    ([0], 0),                 # no rows
-    ([0, 0, 0], 0),           # only empty rows
-    ([0, 1], 1),
-    ([0, 3, 3, 5], 4),        # longest row 3 -> 4
-    ([0, 4], 4),              # powers of two stay put
-    ([0, 5, 10], 8),
-    ([0, 129], 256),
-])
-def test_nnz_hint_is_the_power_of_two_ceiling_of_the_longest_line(indptr, hint):
-    assert nnz_hint(np.asarray(indptr)) == hint
+def test_structure_cache_set_mirror_does_not_read_array_values():
+    class NoHostRead:
+        def __array__(self, *args, **kwargs):
+            raise AssertionError('storing a mirror must not scan its values')
 
-
-def test_nnz_hint_is_unknown_for_a_traced_indptr():
-    seen = []
-    jax.jit(lambda p: seen.append(nnz_hint(p)) or p)(jnp.asarray([0, 2, 3]))
-    assert seen == [None]
-
-
-def test_structure_cache_set_mirror_records_its_hint():
-    cache = StructureCache(primary_hint=2)
-    mirror = cache.set_mirror([np.asarray([0, 3, 4]), np.arange(4), np.arange(4)])
+    cache = StructureCache()
+    mirror = cache.set_mirror([NoHostRead(), NoHostRead(), NoHostRead()])
     assert isinstance(mirror, tuple) and cache.mirror is mirror
-    assert cache.mirror_hint == 4
-    assert cache.primary_hint == 2 and cache.diag_plan is None
+    assert cache.diag_plan is None
 
 
 def test_warn_mirror_fallback_warns_once_per_owner_and_operation():

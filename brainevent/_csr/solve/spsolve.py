@@ -44,7 +44,7 @@ def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
     indptr : jax.Array
         Row pointer array of the CSR matrix.
     b : jax.Array or brainunit.Quantity
-        Right-hand side vector.
+        Right-hand side vector of shape ``(n,)``, where ``n = len(indptr) - 1``.
     tol : float, optional
         Tolerance to decide if the matrix is singular.  Default is ``1e-6``.
     reorder : int, optional
@@ -61,8 +61,8 @@ def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
     Raises
     ------
     ValueError
-        If the matrix stores no entries (``nse == 0``) and ``b`` is not
-        empty: the system is singular.
+        If ``b`` is not a vector of shape ``(n,)``. Also raised for a
+        non-empty system with no stored entries (``nse == 0``), which is singular.
 
     Notes
     -----
@@ -94,6 +94,8 @@ def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
     if data.size == 1 and indices.size != 1:
         data = jnp.broadcast_to(data.reshape(()), indices.shape)
     n = indptr.shape[0] - 1
+    if b.shape != (n,):
+        raise ValueError(f'csr_solve requires b to be a vector with shape ({n},); got {b.shape}.')
     if n == 0:
         return u.maybe_decimal(b * b_unit / data_unit)  # the empty system
     if indices.shape[0] == 0:

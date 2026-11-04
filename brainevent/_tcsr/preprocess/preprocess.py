@@ -127,6 +127,7 @@ def sort_csr(csr: PlainCSR) -> PlainCSR:
         csr.indptr,
         shape=csr.shape,
         backend=csr.backend,
+        config=csr.config,
     )
 
 

@@ -59,7 +59,7 @@ def csr_diag_position(indptr, indices, *, shape: MatrixShape):
         dtype. Must not be a JAX tracer. (Row indices for a CSC matrix.)
     shape : tuple of int
         Shape of the sparse matrix as ``(n_rows, n_cols)``. Both dimensions must
-        be positive integers.
+        be non-negative integers.
 
     Returns
     -------
@@ -81,7 +81,7 @@ def csr_diag_position(indptr, indices, *, shape: MatrixShape):
     Raises
     ------
     AssertionError
-        If ``shape`` is not a length-2 tuple/list of positive integers, or if
+        If ``shape`` is not a length-2 tuple/list of non-negative integers, or if
         ``indptr`` is not 1-D, or if ``indices`` is not 1-D.
     ValueError
         If ``indptr`` or ``indices`` is a JAX tracer, since this function
@@ -129,7 +129,7 @@ def csr_diag_position(indptr, indices, *, shape: MatrixShape):
     assert indptr.ndim == 1, "indptr must be a 1D array"
     assert indices.ndim == 1, "indices must be a 1D array"
     assert len(shape) == 2, "shape must be a tuple or list of length 2"
-    assert all(isinstance(s, int) and s > 0 for s in shape), "shape must be a tuple or list of non-negative integers"
+    assert all(isinstance(s, int) and s >= 0 for s in shape), "shape must be a tuple or list of non-negative integers"
     if _is_tracer(indptr):
         raise ValueError('Cannot trace indptr when finding diagonal position')
     if _is_tracer(indices):

@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import operator
+from dataclasses import replace
 from typing import Optional, TYPE_CHECKING, Union, cast
 
 import brainunit as u
@@ -27,10 +28,11 @@ if TYPE_CHECKING:
     from brainevent._csr.main import CSR
 
 from brainevent._csr.binary.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
+from brainevent._csr.config import CSRConfig
 from brainevent._csr.plasticity.plasticity_binary import update_csr_on_binary_post, _update_csr_on_binary_post_masked
 from brainevent._csr.slice.slice import csr_slice_rows
 from brainevent._data import DataRepresentation
-from brainevent._structure import StructureCache, is_concrete, nnz_hint, warn_mirror_fallback
+from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
 from brainevent._event.dispatch import as_event_operand
 from brainevent._misc import (
     _coo_todense, COOInfo, fixed_conn_num_csc_structure,
@@ -70,11 +72,11 @@ def _validate_fixed_conn_indices(
         raise ValueError(f'{kind} indices must be integer type, got {indices.dtype}.')
 
 
-def _contains_invalid_indices(indices: Index, *, upper_bound: int) -> None:
+def _contains_invalid_indices(indices: Index, *, upper_bound: int, host_indices=None) -> None:
     if not is_concrete(indices):
         return  # value checks need concrete indices; shapes/dtypes are checked statically
     with jax.ensure_compile_time_eval():
-        indices_np = np.asarray(indices)
+        indices_np = np.asarray(indices) if host_indices is None else host_indices
         if bool(np.any(indices_np < 0) or np.any(indices_np >= upper_bound)):
             raise ValueError(
                 f'Found invalid indices in the connection matrix. '
@@ -138,6 +140,20 @@ def _ell_from_rows(mantissa: np.ndarray, num_conn: Optional[int], *, kind: str):
     return data, indices
 
 
+def _ell_csr_parts(indices):
+    """Return flattened ELL indices and a host-computable uniform row pointer."""
+    rows, width = indices.shape
+    return indices.reshape(-1), np.arange(rows + 1, dtype=np.int64) * width
+
+
+def _config_for_new_ell(config, indices, *, shape):
+    """Bind inherited CSR scheduler parameters to a replacement ELL structure."""
+    from brainevent._csr.main import _config_for_new_structure
+
+    flat_indices, indptr = _ell_csr_parts(indices)
+    return _config_for_new_structure(config, flat_indices, indptr, shape=shape)
+
+
 class FixedNumConn(DataRepresentation):
     """
     Unified, layout-aware sparse matrix with a fixed number of connections.
@@ -165,8 +181,9 @@ class FixedNumConn(DataRepresentation):
     ``data[perm[j]]`` so only active columns are touched.  The CSC view (the
     *mirror*) is built lazily on first need from concrete indices and shared by
     every matrix with the same structure, including the transpose.  The matrix
-    is a JAX pytree with leaves ``data``, ``indices`` and, once built, the three
-    mirror arrays, so it can be constructed and transformed inside ``jax.jit``.
+    is a JAX pytree with leaves ``data``, ``indices``, prepared scheduler masks
+    and, once built, the three mirror arrays, so it can be constructed and
+    transformed inside ``jax.jit``.
     A matrix whose indices are traced and that carries no mirror computes the
     unfavorable product with a gather instead, and warns once with
     :class:`brainevent.PerformanceWarning`; call :meth:`build_weight_indices`
@@ -181,6 +198,11 @@ class FixedNumConn(DataRepresentation):
         Integer index array that describes the connectivity pattern.
     shape : tuple[int, int]
         Logical ``(num_pre, num_post)`` dense-matrix shape.
+    config : CSRConfig or None, optional
+        Scheduler snapshot for indexed CSR products. ``None`` resolves
+        persisted parameters once during construction.
+    device : jax.Device or None, optional
+        Target GPU for preparing indexed CSR plans.
 
     See Also
     --------
@@ -193,14 +215,34 @@ class FixedNumConn(DataRepresentation):
     backend: Optional[str]
 
     def __init__(self, *args, shape: MatrixShape, backend: Optional[str] = None,
-                 buffers: Optional[dict] = None):
+                 buffers: Optional[dict] = None, config=None, device=None, host_indices=None):
         self.backend = backend
         super().__init__(*args, shape=shape)
         self._cache = StructureCache()
+        from brainevent._csr.main import _prepare_csr_config, _config_for_new_structure, _structure_device
+
+        flat_indices, indptr = _ell_csr_parts(self.indices)
+        if host_indices is None and is_concrete(self.indices):
+            host_indices = np.asarray(jax.device_get(self.indices))
+        _contains_invalid_indices(self.indices, upper_bound=self._a_shape[1], host_indices=host_indices)
+        if host_indices is not None:
+            host_indices = host_indices.astype(np.int32, copy=False)
+        self.config = _prepare_csr_config(
+            flat_indices, indptr, shape=self._a_shape,
+            backend=backend, config=config, device=device,
+            host_structure=None if host_indices is None else (host_indices.reshape(-1), indptr),
+        )
         self._ingest_buffers(buffers)
+        if self._cache.mirror is not None:
+            mirror_indptr, mirror_indices, _ = self._cache.mirror
+            mirror_config = _config_for_new_structure(
+                self.config, mirror_indices, mirror_indptr, shape=self._a_shape[::-1],
+                device=_structure_device(self.indices, device),
+            )
+            self.config = replace(self.config, mirror=mirror_config.primary)
 
     @classmethod
-    def _from_parts(cls, data, indices, *, shape, backend=None, cache=None):
+    def _from_parts(cls, data, indices, *, shape, backend=None, cache=None, config=None):
         """Assemble a matrix from trusted parts, without conversion or validation."""
         obj = object.__new__(cls)
         obj.data = data
@@ -209,11 +251,15 @@ class FixedNumConn(DataRepresentation):
         obj.backend = backend
         obj._buffer_registry = set()
         obj._cache = StructureCache() if cache is None else cache
+        obj.config = CSRConfig() if config is None else config
         return obj
 
     def _same_structure(self, data):
         """A matrix of the same class and structure (shared caches) holding ``data``."""
-        return type(self)._from_parts(data, self.indices, shape=self.shape, backend=self.backend, cache=self._cache)
+        return type(self)._from_parts(
+            data, self.indices, shape=self.shape, backend=self.backend,
+            cache=self._cache, config=self.config,
+        )
 
     def _ingest_buffers(self, buffers) -> None:
         """Store the legacy ``'csc'`` mirror buffer."""
@@ -225,7 +271,8 @@ class FixedNumConn(DataRepresentation):
                     f"{type(self).__name__} does not support buffer {name!r}; the only "
                     f"known buffer is 'csc'."
                 )
-            self._cache.set_mirror(value)
+            self._cache = StructureCache(mirror=tuple(value))
+            self.config = replace(self.config, mirror=None)
 
     def register_buffer(self, name, value=None):
         """Store the mirror under its legacy name ``'csc'`` (see :attr:`buffers`)."""
@@ -332,7 +379,51 @@ class FixedNumConn(DataRepresentation):
         else:
             cache = StructureCache()
             cache.set_mirror(self._weight_indices())
-        return type(self)._from_parts(self.data, self.indices, shape=self.shape, backend=self.backend, cache=cache)
+        return type(self)._from_parts(
+            self.data, self.indices, shape=self.shape, backend=self.backend,
+            cache=cache, config=self.config,
+        )
+
+    def prepare_config(self, *, device=None):
+        """Prepare the CSR scheduler used by the indexed mirror route.
+
+        Parameters
+        ----------
+        device : jax.Device or None, optional
+            Target GPU, inferred from the structure when omitted.
+
+        Returns
+        -------
+        FixedNumConn
+            A matrix sharing its structure with prepared scheduler plans.
+
+        Raises
+        ------
+        ValueError
+            If the structure is traced.
+        """
+        if not is_concrete(self.indices):
+            raise ValueError('prepare_config requires concrete structure outside jax.jit.')
+        from brainevent._csr.main import _prepare_csr_config, _config_for_new_structure, _structure_device
+
+        flat_indices, indptr = _ell_csr_parts(self.indices)
+        config = _prepare_csr_config(
+            flat_indices, indptr, shape=self._a_shape, backend=self.backend,
+            config=self.config, device=device,
+        )
+        if self._cache.mirror is not None:
+            mirror_indptr, mirror_indices, _ = self._cache.mirror
+            if not is_concrete(mirror_indices, mirror_indptr):
+                raise ValueError('prepare_config requires a concrete mirror outside jax.jit.')
+            mirror_config = _config_for_new_structure(
+                config, mirror_indices, mirror_indptr, shape=self._a_shape[::-1],
+                device=_structure_device(self.indices, device),
+            )
+            config = replace(config, mirror=mirror_config.primary)
+        return type(self)._from_parts(
+            self.data, self.indices, shape=self.shape, backend=self.backend,
+            cache=self._cache, config=config,
+        )
 
     def _gather_backend(self):
         """Backend for the mirror-free gather (``cuda_raw`` has no FCN gather kernel)."""
@@ -363,7 +454,7 @@ class FixedNumConn(DataRepresentation):
         return binary_csrmv_indexed(
             self.data.reshape(-1), csc_indices, csc_indptr, perm, s,
             shape=a_shape[::-1], transpose=True, backend=self.backend,
-            weighted=weighted, max_row_nnz=self._cache.mirror_hint,
+            weighted=weighted, config=self.config.swap_layouts(),
         )
 
     def _binary_matmat(self, matrix, transpose_W: bool, weighted: bool = False):
@@ -388,7 +479,7 @@ class FixedNumConn(DataRepresentation):
         return binary_csrmm_indexed(
             self.data.reshape(-1), csc_indices, csc_indptr, perm, matrix,
             shape=a_shape[::-1], transpose=True, backend=self.backend,
-            weighted=weighted, max_row_nnz=self._cache.mirror_hint,
+            weighted=weighted, config=self.config.swap_layouts(),
         )
 
     def _float_matvec(self, vector, transpose_W: bool, data):
@@ -612,7 +703,8 @@ class FixedNumConn(DataRepresentation):
             data = self.data.reshape(-1)
         else:
             data = self.data.reshape(-1)[order]
-        return CSR._from_parts(data, indices, indptr, shape=self.shape, backend=self.backend)
+        config = self.config.swap_layouts() if self._ell_transpose(False) else self.config
+        return CSR._from_parts(data, indices, indptr, shape=self.shape, backend=self.backend, config=config)
 
     def tocsc(self):
         """Convert to a :class:`brainevent.CSC` matrix of the logical matrix ``W``.
@@ -714,21 +806,23 @@ class FixedNumConn(DataRepresentation):
     # ------------------------------------------------------------------ #
 
     def tree_flatten(self):
-        """Flatten into leaves ``(data, indices, *mirror)`` and hashable metadata."""
+        """Flatten into children ``(data, indices, config, *mirror)``."""
         mirror = self._cache.mirror or ()
-        aux = (self.shape, self.backend, bool(mirror), self._cache.mirror_hint)
-        return (self.data, self.indices, *mirror), aux
+        aux = (self.shape, self.backend, bool(mirror))
+        return (self.data, self.indices, self.config, *mirror), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         """Reconstruct without validation (leaves may be tracers or placeholders)."""
-        shape, backend, has_mirror, mirror_hint = aux_data
-        expected = 2 + 3 * has_mirror
+        shape, backend, has_mirror = aux_data
+        expected = 3 + 3 * has_mirror
         if len(children) != expected:
             raise ValueError(f'{cls.__name__}.tree_unflatten expects {expected} leaves, got {len(children)}.')
-        mirror = tuple(children[2:]) if has_mirror else None
-        cache = StructureCache(mirror=mirror, mirror_hint=mirror_hint)
-        return cls._from_parts(children[0], children[1], shape=shape, backend=backend, cache=cache)
+        mirror = tuple(children[3:]) if has_mirror else None
+        cache = StructureCache(mirror=mirror)
+        return cls._from_parts(
+            children[0], children[1], shape=shape, backend=backend, cache=cache, config=children[2],
+        )
 
     # ------------------------------------------------------------------ #
     # Element-wise operators
@@ -859,11 +953,14 @@ class FixedNumPerPre(FixedNumConn):
         backend: Optional[str] = None,
         precompute_weight_indices: bool = False,
         buffers: Optional[dict] = None,
+        config: Optional[CSRConfig] = None,
+        device=None,
     ):
         if indices is None:
             args = data
         else:
             args = (data, indices)
+        host_indices = np.asarray(args[1]) if isinstance(args[1], (np.ndarray, list, tuple)) else None
         self.data, self.indices = map(u.math.asarray, args)
         _validate_fixed_conn_indices(self.indices, expected_rows=shape[0], kind='Post-synaptic')
         # Connection indices are secondary-axis coordinates (post ids) and are
@@ -877,8 +974,10 @@ class FixedNumPerPre(FixedNumConn):
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
-        super().__init__((self.data, self.indices), shape=shape, backend=backend, buffers=buffers)
-        _contains_invalid_indices(self.indices, upper_bound=self.shape[1])
+        super().__init__(
+            (self.data, self.indices), shape=shape, backend=backend,
+            buffers=buffers, config=config, device=device, host_indices=host_indices,
+        )
         if precompute_weight_indices and self._mirror() is None:
             # Traced indices: this fresh object is local to the trace.
             self._cache.set_mirror(self._weight_indices())
@@ -892,7 +991,7 @@ class FixedNumPerPre(FixedNumConn):
         return bool(transpose_W)
 
     @classmethod
-    def fromdense(cls, mat, *, num_conn=None, backend=None) -> 'FixedNumPerPre':
+    def fromdense(cls, mat, *, num_conn=None, backend=None, config=None, device=None) -> 'FixedNumPerPre':
         """Construct from a dense matrix with a fixed number of connections per pre.
 
         Each pre-synaptic row of ``mat`` is encoded with ``num_conn`` outgoing
@@ -910,6 +1009,10 @@ class FixedNumPerPre(FixedNumConn):
             and a row with more non-zeros than ``num_conn`` raises ``ValueError``.
         backend : str, optional
             Backend tag forwarded to the constructor.
+        config : CSRConfig or None, optional
+            Scheduler snapshot forwarded to the constructor.
+        device : jax.Device or None, optional
+            Target GPU for preparing indexed CSR plans.
 
         Returns
         -------
@@ -932,7 +1035,10 @@ class FixedNumPerPre(FixedNumConn):
             raise ValueError(f"FixedNumPerPre.fromdense expects a 2-D matrix; got {mantissa.ndim}-D.")
         data, indices = _ell_from_rows(mantissa, num_conn, kind=cls.__name__)
         data_q = u.maybe_decimal(u.Quantity(jnp.asarray(data), unit=u.get_unit(mat)))
-        return cls((data_q, jnp.asarray(indices)), shape=mantissa.shape, backend=backend)
+        return cls(
+            (data_q, jnp.asarray(indices)), shape=mantissa.shape, backend=backend,
+            config=config, device=device,
+        )
 
     def _to_coo(self):
         return fixed_post_num_to_coo(self)
@@ -1004,7 +1110,11 @@ class FixedNumPerPre(FixedNumConn):
         k = new_indices.shape[0]
         # A validated subset of rows: no re-validation. The structure changed,
         # so the mirror is not carried over; it rebuilds lazily on first need.
-        return FixedNumPerPre._from_parts(new_data, new_indices, shape=(k, self.shape[1]), backend=self.backend)
+        shape = (k, self.shape[1])
+        return FixedNumPerPre._from_parts(
+            new_data, new_indices, shape=shape, backend=self.backend,
+            config=_config_for_new_ell(self.config, new_indices, shape=shape),
+        )
 
     def todense(self):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""
@@ -1020,6 +1130,7 @@ class FixedNumPerPre(FixedNumConn):
         assert axes is None, "transpose does not support axes argument."
         return FixedNumPerPost._from_parts(
             self.data, self.indices, shape=self.shape[::-1], backend=self.backend, cache=self._cache,
+            config=self.config,
         )
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):
@@ -1128,11 +1239,14 @@ class FixedNumPerPost(FixedNumConn):
         backend: Optional[str] = None,
         precompute_weight_indices: bool = False,
         buffers: Optional[dict] = None,
+        config: Optional[CSRConfig] = None,
+        device=None,
     ):
         if indices is None:
             args = data
         else:
             args = (data, indices)
+        host_indices = np.asarray(args[1]) if isinstance(args[1], (np.ndarray, list, tuple)) else None
         self.data, self.indices = map(u.math.asarray, args)
         _validate_fixed_conn_indices(self.indices, expected_rows=shape[1], kind='Pre-synaptic')
         # Connection indices are secondary-axis coordinates (pre ids) and are
@@ -1146,8 +1260,10 @@ class FixedNumPerPost(FixedNumConn):
                 f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
                 f"But got {self.data.shape} != {self.indices.shape}"
             )
-        super().__init__((self.data, self.indices), shape=shape, backend=backend, buffers=buffers)
-        _contains_invalid_indices(self.indices, upper_bound=self.shape[0])
+        super().__init__(
+            (self.data, self.indices), shape=shape, backend=backend,
+            buffers=buffers, config=config, device=device, host_indices=host_indices,
+        )
         if precompute_weight_indices and self._mirror() is None:
             # Traced indices: this fresh object is local to the trace.
             self._cache.set_mirror(self._weight_indices())
@@ -1161,7 +1277,7 @@ class FixedNumPerPost(FixedNumConn):
         return not bool(transpose_W)
 
     @classmethod
-    def fromdense(cls, mat, *, num_conn=None, backend=None) -> 'FixedNumPerPost':
+    def fromdense(cls, mat, *, num_conn=None, backend=None, config=None, device=None) -> 'FixedNumPerPost':
         """Construct from a dense matrix with a fixed number of connections per post.
 
         Each post-synaptic column of ``mat`` is encoded with ``num_conn``
@@ -1180,6 +1296,10 @@ class FixedNumPerPost(FixedNumConn):
             ``ValueError``.
         backend : str, optional
             Backend tag forwarded to the constructor.
+        config : CSRConfig or None, optional
+            Scheduler snapshot forwarded to the constructor.
+        device : jax.Device or None, optional
+            Target GPU for preparing indexed CSR plans.
 
         Returns
         -------
@@ -1204,7 +1324,10 @@ class FixedNumPerPost(FixedNumConn):
         # Encode by post-synaptic column: each post row gathers its pre ids.
         data, indices = _ell_from_rows(mantissa.T, num_conn, kind=cls.__name__)
         data_q = u.maybe_decimal(u.Quantity(jnp.asarray(data), unit=u.get_unit(mat)))
-        return cls((data_q, jnp.asarray(indices)), shape=(num_pre, num_post), backend=backend)
+        return cls(
+            (data_q, jnp.asarray(indices)), shape=(num_pre, num_post), backend=backend,
+            config=config, device=device,
+        )
 
     def _to_coo(self):
         return fixed_pre_num_to_coo(self)
@@ -1280,7 +1403,10 @@ class FixedNumPerPost(FixedNumConn):
         new_data, new_indices, new_indptr, shape = build_sub_csr(
             weights, csc_indices, csc_indptr, rows, self.shape[1],
         )
-        return CSR((new_data, new_indices, new_indptr), shape=shape, backend=self.backend)
+        return CSR(
+            (new_data, new_indices, new_indptr), shape=shape, backend=self.backend,
+            config=self.config,
+        )
 
     def todense(self):
         """Convert to a dense matrix of shape ``(num_pre, num_post)``."""
@@ -1296,6 +1422,7 @@ class FixedNumPerPost(FixedNumConn):
         assert axes is None, "transpose does not support axes argument."
         return FixedNumPerPre._from_parts(
             self.data, self.indices, shape=self.shape[::-1], backend=self.backend, cache=self._cache,
+            config=self.config,
         )
 
     def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None):

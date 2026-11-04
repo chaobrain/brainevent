@@ -312,14 +312,13 @@ def strip_hybrid_suffix(name):
     Notes
     -----
     The hybrid ``.so`` module names embed the active
-    :func:`~brainevent._csr.binary.hybrid_config.get_hybrid_config` so different configs
+    :class:`~brainevent.CSRConfig` so different configs
     compile to distinct modules. These tests only care about the logical module
     identity, so the suffix is normalised away to stay config-agnostic.
     """
-    from brainevent._csr.binary.hybrid_config import get_hybrid_config, module_suffix_for_config
+    import re
 
-    suffix = module_suffix_for_config(get_hybrid_config())
-    return name.replace(suffix, '') if suffix else name
+    return re.sub(r"_b[0-9]+_s[0-9]+_t[0-9]+_n[0-9]+", "", name)
 
 
 def int64_structure(indptr_dtype):
@@ -768,3 +767,18 @@ def homo_ct_case(case, transpose):
     with np.errstate(invalid='ignore'):
         terms = np.where(case.active, f * ct2[out_idx], 0.0)
     return jnp.asarray(ct), terms.sum()
+
+
+def prepared_config(indices, indptr, shape):
+    """Explicitly prepare concrete test structure for raw hybrid operator calls."""
+    from brainevent._csr.config import CSRConfig
+    from brainevent._csr.binary._hybrid_mm import get_device_info
+
+    if isinstance(indices, jax.core.Tracer) or isinstance(indptr, jax.core.Tracer):
+        return CSRConfig()
+    with jax.ensure_compile_time_eval():
+        indices, indptr = jnp.asarray(indices), jnp.asarray(indptr)
+        return CSRConfig().prepare_structure(
+            indices, indptr, shape=shape,
+            device_info=get_device_info(indices, indptr),
+        )

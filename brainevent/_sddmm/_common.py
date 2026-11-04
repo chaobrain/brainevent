@@ -7,6 +7,7 @@ import jax.numpy as jnp
 
 if TYPE_CHECKING:
     from brainevent._op import XLACustomKernel
+    from brainevent._csr.config import CSRKernelSpec
 
 Mode = Literal['float', 'binary', 'weighted']
 VALUE_DTYPES = (jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64)
@@ -29,6 +30,7 @@ class _CSRBackend:
 
     primitive: 'XLACustomKernel'
     requested: str | None
+    config_spec: 'CSRKernelSpec | None' = None
 
 
 def check_jax_backend(backend: str | None | _CSRBackend) -> None:

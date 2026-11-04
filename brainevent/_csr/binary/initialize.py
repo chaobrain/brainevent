@@ -18,11 +18,11 @@
 
 The public entry point is :func:`init_csr_config`.  It is **not** called automatically and
 must never run inside a JIT closure.  A user runs it once on their GPU (e.g. before a long
-simulation); the winning :class:`~brainevent._csr.binary.hybrid_config.HybridConfig` is persisted
-per GPU model via :func:`~brainevent._csr.binary.hybrid_config.save_hybrid_config`, and every later
-process picks it up through :func:`~brainevent._csr.binary.hybrid_config.get_hybrid_config`.
+simulation); the winning :class:`~brainevent._csr.config.CSRConfig` is persisted
+per GPU model via :func:`~brainevent._csr.binary.hybrid_config.save_csr_config`, and every later
+process picks it up through :func:`~brainevent._csr.binary.hybrid_config.load_csr_config`.
 
-The benchmark compiles the **production** ``binary_csrmv_hybrid.cu`` (with per-config
+The benchmark compiles the **production** ``hybrid_mv/hybrid_spmv_binary.cu`` (with per-config
 ``-DBE_HYBRID_*`` flags) — so the timed kernel is exactly the one used at run time.
 """
 
@@ -35,17 +35,11 @@ from typing import Sequence
 
 import numpy as np
 
-from .hybrid_config import (
-    HybridConfig,
-    compile_flags_for_config,
-    current_device_kind,
-    module_suffix_for_config,
-    save_hybrid_config,
-    validate_config,
-)
+from ..config import CSRConfig
+from .hybrid_config import _current_device_kind, save_csr_config
 
-_CUDA_SOURCE = Path(__file__).parent / "binary_csrmv_hybrid.cu"
-_MODULE_BASE = "csr_binary_csrmv_hybrid_tune"
+_CUDA_SOURCE = Path(__file__).parent / "hybrid_mv" / "hybrid_spmv_binary.cu"
+_MODULE_BASE = "csr_hybrid_spmv_binary_tune"
 _TARGET_FUNCTION = "binary_csrmv_wat_hybrid_homo_f32_bool"
 _INT32_MAX = int(np.iinfo(np.int32).max)
 
@@ -55,23 +49,23 @@ _INT32_MAX = int(np.iinfo(np.int32).max)
 _N_BASE = 1000
 
 #: Candidate sweep (block, fixed_scatter_blocks, tpr_threshold, task_nnz).
-DEFAULT_CANDIDATES: tuple[HybridConfig, ...] = (
-    HybridConfig(128, 1024, 128, 2048),
-    HybridConfig(128, 2048, 128, 4096),
-    HybridConfig(256, 1024, 128, 4096),
-    HybridConfig(256, 2048, 128, 4096),
-    HybridConfig(256, 4096, 128, 4096),
-    HybridConfig(512, 2048, 128, 4096),
-    HybridConfig(512, 4096, 128, 4096),
-    HybridConfig(256, 2048, 256, 4096),
-    HybridConfig(128, 2048, 512, 2048),
-    HybridConfig(256, 1024, 512, 2048),
-    HybridConfig(256, 2048, 512, 2048),
-    HybridConfig(512, 2048, 512, 2048),
-    HybridConfig(256, 2048, 512, 4096),
-    HybridConfig(256, 2048, 1024, 4096),
-    HybridConfig(256, 4096, 128, 1024),
-    HybridConfig(256, 2048, 128, 8192),
+DEFAULT_CANDIDATES: tuple[CSRConfig, ...] = (
+    CSRConfig(128, 1024, 128, 2048),
+    CSRConfig(128, 2048, 128, 4096),
+    CSRConfig(256, 1024, 128, 4096),
+    CSRConfig(256, 2048, 128, 4096),
+    CSRConfig(256, 4096, 128, 4096),
+    CSRConfig(512, 2048, 128, 4096),
+    CSRConfig(512, 4096, 128, 4096),
+    CSRConfig(256, 2048, 256, 4096),
+    CSRConfig(128, 2048, 512, 2048),
+    CSRConfig(256, 1024, 512, 2048),
+    CSRConfig(256, 2048, 512, 2048),
+    CSRConfig(512, 2048, 512, 2048),
+    CSRConfig(256, 2048, 512, 4096),
+    CSRConfig(256, 2048, 1024, 4096),
+    CSRConfig(256, 4096, 128, 1024),
+    CSRConfig(256, 2048, 128, 8192),
 )
 
 
@@ -91,7 +85,7 @@ def _write_progress(completed: int, total: int) -> None:
     sys.stderr.flush()
 
 
-def _task_capacity_for_uniform_rows(*, n_rows: int, row_conn: int, config: HybridConfig) -> int:
+def _task_capacity_for_uniform_rows(*, n_rows: int, row_conn: int, config: CSRConfig) -> int:
     if row_conn <= config.tpr_threshold:
         return 0
     chunks_per_row = (row_conn + config.task_nnz - 1) // config.task_nnz
@@ -108,7 +102,7 @@ def _make_uniform_csr(*, n_pre: int, n_post: int, conn: int, seed: int):
     offset_dtype = np.int64 if nnz > _INT32_MAX else np.int32
     rng = np.random.default_rng(seed)
     indices_np = rng.integers(0, n_post, size=nnz, dtype=np.int32)
-    indptr_np = (np.arange(n_pre + 1, dtype=offset_dtype) * offset_dtype(conn)).astype(offset_dtype, copy=False)
+    indptr_np = (np.arange(n_pre + 1, dtype=np.int64) * conn).astype(offset_dtype, copy=False)
     return indices_np, indptr_np
 
 
@@ -126,7 +120,7 @@ def _make_spike_batch(*, batch_size: int, n_pre: int, spike_sparsity: float, see
 
 
 def _benchmark_config(
-    config: HybridConfig,
+    config: CSRConfig,
     *,
     weights,
     indices,
@@ -146,12 +140,12 @@ def _benchmark_config(
 
     from brainevent._op import load_cuda_file
 
-    validate_config(config)
-    module_name = _MODULE_BASE + module_suffix_for_config(config)
+    module_name = _MODULE_BASE + config.module_suffix()
     module = load_cuda_file(
         _CUDA_SOURCE,
         name=module_name,
-        extra_cuda_cflags=compile_flags_for_config(config),
+        extra_include_paths=[str(_CUDA_SOURCE.parent)],
+        extra_cuda_cflags=config.compile_flags(),
         force_rebuild=force_rebuild,
         verbose=verbose_compile,
         allow_cuda_graph=False,
@@ -235,13 +229,45 @@ def run_benchmark(
     spike_sparsity: float = 1.0 / 250.0,
     seed: int = 123,
     warmup: int = 50,
-    candidates: Sequence[HybridConfig] = DEFAULT_CANDIDATES,
+    candidates: Sequence[CSRConfig] = DEFAULT_CANDIDATES,
     force_rebuild: bool = False,
     verbose_compile: bool = False,
     show_progress: bool = True,
 ) -> list[dict]:
     """Time every candidate on a synthetic COBA-like CSR; return records sorted best-first.
 
+    Parameters
+    ----------
+    scale : float, optional
+        Matrix dimensions in units of 1000 neurons.
+    conn : int, optional
+        Connections per row.
+    n_pre, n_post : int or None, optional
+        Explicit dimensions overriding ``scale``.
+    batch_size : int, optional
+        Number of generated spike vectors reused during timing.
+    steps : int, optional
+        Number of timed kernel calls.
+    spike_sparsity : float, optional
+        Fraction of active neurons in each spike vector.
+    seed : int, optional
+        Seed for synthetic structure and events.
+    warmup : int, optional
+        Untimed calls before measurement.
+    candidates : sequence of CSRConfig, optional
+        Scheduling candidates to benchmark.
+    force_rebuild, verbose_compile : bool, optional
+        CUDA compiler controls.
+    show_progress : bool, optional
+        Write candidate-sweep progress to stderr.
+
+    Returns
+    -------
+    list of dict
+        Configuration, timing and task-capacity records sorted by elapsed time.
+
+    Notes
+    -----
     The default operating point mirrors a ``scale=500, conn=2000`` COBA EI network
     (``n_pre = n_post = _N_BASE * scale = 500_000`` neurons, 2000 connections/row,
     ~4 GB of int32 indices).  Pass ``n_pre``/``n_post`` to override the neuron counts
@@ -261,7 +287,7 @@ def run_benchmark(
     if steps <= 0:
         raise ValueError("steps must be positive")
 
-    candidates = tuple(validate_config(c) for c in candidates)
+    candidates = tuple(candidates)
     indices_np, indptr_np = _make_uniform_csr(n_pre=n_pre, n_post=n_post, conn=conn, seed=seed)
     spikes_np = _make_spike_batch(batch_size=batch_size, n_pre=n_pre, spike_sparsity=spike_sparsity, seed=seed + 1)
 
@@ -302,19 +328,37 @@ def init_csr_config(
     *,
     save: bool = True,
     device_kind: str | None = None,
-    candidates: Sequence[HybridConfig] = DEFAULT_CANDIDATES,
+    candidates: Sequence[CSRConfig] = DEFAULT_CANDIDATES,
     **benchmark_kwargs,
-) -> HybridConfig:
+) -> CSRConfig:
     """Initialize the per-GPU CSR config: benchmark candidates and (by default) persist the winner.
 
+    Parameters
+    ----------
+    save : bool, optional
+        Persist the winning scheduling parameters and all timing records.
+    device_kind : str or None, optional
+        Device-model key for persistence; defaults to the current device.
+    candidates : sequence of CSRConfig, optional
+        Candidate scheduling configurations.
+    **benchmark_kwargs
+        Additional arguments forwarded to :func:`run_benchmark`.
+
+    Returns
+    -------
+    CSRConfig
+        Winning parameter snapshot, without matrix-specific preparation.
+
+    Notes
+    -----
     Run this **once** manually before simulating; later processes read the saved config via
-    :func:`~brainevent._csr.binary.hybrid_config.get_hybrid_config`.  Returns the winning
-    :class:`~brainevent._csr.binary.hybrid_config.HybridConfig`.
+    :func:`~brainevent._csr.binary.hybrid_config.load_csr_config`.  Returns the winning
+    :class:`~brainevent._csr.config.CSRConfig`.
     """
     records = run_benchmark(candidates=candidates, **benchmark_kwargs)
     if not records:
         raise RuntimeError("no candidate configs were benchmarked")
     best = records[0]["config"]
     if save:
-        save_hybrid_config(best, device_kind or current_device_kind(), benchmark_records=records)
+        save_csr_config(best, device_kind or _current_device_kind(), benchmark_records=records)
     return best

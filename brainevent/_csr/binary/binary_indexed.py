@@ -43,11 +43,8 @@ from brainevent._misc import (
 )
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, load_cuda_file
 from brainevent._sddmm import dispatch as _sddmm_dispatch
-from .hybrid_config import (
-    get_hybrid_config,
-    compile_flags_for_config,
-    module_suffix_for_config,
-)
+from ..config import CSRConfig
+from . import _hybrid_mm
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from .binary import (
@@ -57,8 +54,11 @@ from .binary import (
     _numba_weighted_events,
     _hybrid_scratch,
     _task_capacity,
-    _warn_workspace_deprecated,
     _check_max_row_nnz,
+    _ignore_config_mask,
+    _config_from_params,
+    _config_for_call,
+    _batch_config_params,
 )
 from ..float.float import csrmv, csrmm
 from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
@@ -72,7 +72,7 @@ __all__ = [
 
 
 @namescope(name="brainevent.binary_csrmv_indexed", static_argnames=("shape", "transpose", "weighted", "max_row_nnz"))
-def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpose, backend, weighted, max_row_nnz):
+def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpose, backend, weighted, max_row_nnz, config):
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
     res = binary_csrmv_indexed_p_call(
@@ -85,7 +85,7 @@ def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpos
         transpose=transpose,
         backend=backend,
         weighted=weighted,
-        max_row_nnz=max_row_nnz,
+        max_row_nnz=max_row_nnz, config=config,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
 
@@ -102,7 +102,7 @@ def binary_csrmv_indexed(
     backend: Optional[str] = None,
     weighted: bool = False,
     max_row_nnz: Optional[int] = None,
-    workspace=None,
+    config: Optional[CSRConfig] = None,
 ) -> Data:
     """Event-driven CSR matrix-vector product with a fused weight gather index.
 
@@ -118,9 +118,10 @@ def binary_csrmv_indexed(
         for heterogeneous weights or ``(1,)`` for a homogeneous weight.
     indices : jax.Array or numpy.ndarray
         Secondary-axis indices of the (transposed) structure being traversed.
-        Shape ``(nse,)`` with integer dtype.
+        Shape ``(nse,)`` with dtype ``int32``.
     indptr : jax.Array or numpy.ndarray
-        Pointer array of the traversed structure.  Shape ``(shape[0] + 1,)``.
+        Pointer array of the traversed structure. Shape ``(shape[0] + 1,)``
+        with dtype ``int32`` or ``int64``.
     perm : jax.Array or numpy.ndarray
         Permutation mapping structural slot ``j`` to the canonical weight
         index ``perm[j]``. Shape ``(nse,)`` with the same dtype as
@@ -129,25 +130,27 @@ def binary_csrmv_indexed(
         Dense event vector.  Shape ``(shape[0],)`` when ``transpose=True`` or
         ``(shape[1],)`` when ``transpose=False``.  Boolean, integer or
         floating dtype; an entry is active iff it is ``True`` or non-zero (negative values and NaN are
-        active), and weights are never scaled by its value.
+        active). When ``weighted=True``, weights are scaled by the event value.
     shape : tuple of int
         Logical shape ``(m, k)`` of the traversed structure.
     transpose : bool, optional
         If ``True``, compute the transposed (scatter) product.  Default
         ``False``.
     backend : str or None, optional
-        Compute backend.  Default ``None`` (auto-select).
+        Compute backend: ``'numba'`` (CPU), ``'cuda_raw'`` (GPU),
+        ``'jax_raw'`` (CPU/GPU/TPU), or ``None`` (auto-select).
     weighted : bool, optional
         If ``True``, ``v`` holds value-weighted events
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value instead of by ``1``.  Default ``False``.
+    config : CSRConfig or None, optional
+        Explicit configuration prepared for this compressed structure. None uses
+        fixed default scheduling parameters without reading saved configuration.
+        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
     max_row_nnz : int or None, optional
-        Upper bound on the longest row of the traversed ``indptr``, used to
-        size the ``cuda_raw`` hybrid task queue (see
-        :func:`brainevent.binary_csrmv`); validated when ``indptr`` is
-        concrete.
-    workspace : optional
-        Deprecated and ignored; passing it emits a ``DeprecationWarning``.
+        Trusted row-length bound for the MV task queue when prepared config
+        statistics are absent. This argument never scans the structure; see
+        :func:`brainevent.binary_csrmv`.
 
     Returns
     -------
@@ -158,11 +161,10 @@ def binary_csrmv_indexed(
     --------
     brainevent._csr.binary.binary.binary_csrmv : The non-indexed event-driven product.
     """
-    _warn_workspace_deprecated(workspace)
-    _check_max_row_nnz(indptr, max_row_nnz)
+    _check_max_row_nnz(max_row_nnz, config)
     return _binary_csrmv_indexed_jit(
         data, indices, indptr, perm, v,
-        shape=shape, transpose=transpose, backend=backend, weighted=weighted, max_row_nnz=max_row_nnz,
+        shape=shape, transpose=transpose, backend=backend, weighted=weighted, max_row_nnz=max_row_nnz, config=config,
     )
 
 
@@ -405,12 +407,15 @@ def _binary_csrmv_indexed_cuda_kernel(
     wt_sfx = dtype_suffix(weight_info.dtype)
 
     if transpose and is_homo:
-        _cfg = get_hybrid_config()
-        _mod = 'csr_binary_csrmv_hybrid' + module_suffix_for_config(_cfg)
+        _cfg = _config_from_params(kwargs, None)
+        _mode = 'weighted' if kwargs.get('weighted', False) else 'binary'
+        _source_dir = Path(__file__).parent / 'hybrid_mv'
+        _mod = f'csr_hybrid_spmv_{_mode}' + _cfg.module_suffix()
         load_cuda_file(
-            Path(__file__).parent.joinpath('binary_csrmv_hybrid.cu'),
+            _source_dir / f'hybrid_spmv_{_mode}.cu',
             name=_mod,
-            extra_cuda_cflags=compile_flags_for_config(_cfg),
+            extra_include_paths=[str(_source_dir)],
+            extra_cuda_cflags=_cfg.compile_flags(),
             allow_cuda_graph=False,
         )
         kernel_name = f'{_mod}.binary_csrmv_wat_hybrid_homo{wt_sfx}{spk_suffix}'
@@ -433,15 +438,19 @@ def _binary_csrmv_indexed_cuda_kernel(
             return (math_out,)
 
     elif transpose:
-        _cfg = get_hybrid_config()
-        _mod = 'csr_binary_indexed_csrmv_hybrid' + module_suffix_for_config(_cfg)
+        _cfg = _config_from_params(kwargs, None)
+        _mode = 'weighted' if kwargs.get('weighted', False) else 'binary'
+        _source_dir = Path(__file__).parent / 'hybrid_mv'
+        _mod = f'csr_hybrid_spmv_col_major_{_mode}' + _cfg.module_suffix()
         load_cuda_file(
-            Path(__file__).parent.joinpath('binary_indexed_csrmv_hybrid.cu'),
+            _source_dir / f'hybrid_spmv_col_major_{_mode}.cu',
             name=_mod,
-            extra_cuda_cflags=compile_flags_for_config(_cfg),
+            extra_include_paths=[str(_source_dir)],
+            extra_cuda_cflags=_cfg.compile_flags(),
             allow_cuda_graph=False,
         )
-        kernel_name = f'{_mod}.binary_indexed_csrmv_wat_hybrid_hetero{wt_sfx}{spk_suffix}'
+        _event_suffix = '' if kwargs.get('weighted', False) else spk_suffix
+        kernel_name = f'{_mod}.hybrid_spmv_col_major_{_mode}_hetero{wt_sfx}{_event_suffix}'
 
         def kernel(weights, indices, indptr, perm, vector):
             vector = event_abi.prepare(vector)
@@ -500,6 +509,7 @@ def binary_csrmv_indexed_p_call(
     backend: Optional[str] = None,
     weighted: bool = False,
     max_row_nnz: Optional[int] = None,
+    config: Optional[CSRConfig] = None,
 ):
     """Low-level primitive call for fused indexed event-driven CSR mat-vec.
 
@@ -509,8 +519,8 @@ def binary_csrmv_indexed_p_call(
     Parameters
     ----------
     weights, indices, indptr, perm, vector : jax.Array
-        See :func:`binary_csrmv_indexed`.  ``perm`` shares ``indices``'
-        shape and integer dtype.
+        See :func:`binary_csrmv_indexed`. ``perm`` shares the shape of
+        ``indices`` and is normalized to the offset dtype of ``indptr``.
     shape : tuple of int
         Logical shape ``(m, k)`` of the traversed structure.
     transpose : bool
@@ -520,6 +530,10 @@ def binary_csrmv_indexed_p_call(
     weighted : bool, optional
         Multiply the weights by the event value instead of the activity
         mask.  Default ``False``.
+    config : CSRConfig or None, optional
+        Explicit configuration prepared for this compressed structure. None uses
+        fixed default scheduling parameters without reading saved configuration.
+        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
     max_row_nnz : int or None, optional
         Upper bound on the longest row of ``indptr`` (hybrid task queue size).
 
@@ -550,13 +564,17 @@ def binary_csrmv_indexed_p_call(
         if transpose else
         jax.ShapeDtypeStruct([shape[0]], weights.dtype)
     )
+    config = _config_for_call(config, indices, indptr, shape)
+    config_spec, long_mask = config.kernel_args()
     return binary_csrmv_indexed_p(
         weights,
         indices,
         indptr,
         perm,
         vector,
+        long_mask,
         outs=[out_info],
+        config_spec=config_spec,
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -567,20 +585,20 @@ def binary_csrmv_indexed_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
         max_row_nnz=max_row_nnz,
-        task_capacity=_task_capacity(indices, indptr, max_row_nnz),
+        task_capacity=_task_capacity(indices, indptr, max_row_nnz, config),
     )
 
 
 # --------------------------------------------------------------------------- #
-# autodiff rules (registered in Phase 3 / below)
+# autodiff rules
 # --------------------------------------------------------------------------- #
-def _idx_jvp_v(v_dot, weights, indices, indptr, perm, v, *, shape, transpose, **kw):
+def _idx_jvp_v(v_dot, weights, indices, indptr, perm, v, long_mask, *, shape, transpose, **kw):
     w = weights if weights.shape[0] == 1 else weights[perm]
     # v_dot is a dense/float tangent, so this intentionally uses float csrmv.
     return [csrmv(w, indices, indptr, v_dot.astype(w.dtype), shape=shape, transpose=transpose, backend=kw['backend'])]
 
 
-def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, *, shape, transpose, **kw):
+def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, long_mask, *, shape, transpose, **kw):
     return binary_csrmv_indexed_p_call(
         w_dot,
         indices,
@@ -592,10 +610,11 @@ def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, *, shape, transpo
         backend=kw['backend'],
         weighted=kw.get('weighted', False),
         max_row_nnz=kw.get('max_row_nnz'),
+        config=_config_from_params(kw, long_mask),
     )
 
 
-def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, *, shape, transpose, **kw):
+def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, long_mask, *, shape, transpose, **kw):
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr) or ad.is_undefined_primal(perm):
         raise ValueError("Cannot transpose with respect to sparse structure / perm.")
     ct = ct[0]
@@ -606,7 +625,7 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, *, shape, tr
             w = weights if weights.shape[0] == 1 else weights[perm]
             # ct_events is dense/float cotangent data, not binary events.
             ct_events = csrmv(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
-        return weights, indices, indptr, perm, ct_events
+        return weights, indices, indptr, perm, ct_events, None
     else:
         if type(ct) is ad.Zero:
             ct_w = ad.Zero(weights.aval)
@@ -618,18 +637,18 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, *, shape, tr
             per_slot = _sddmm_dispatch.sddmm(
                 left, right, indices, indptr,
                 mode='weighted' if weighted else 'binary', transpose=transpose,
-                backend=_sddmm_dispatch._CSRBackend(binary_csrmv_indexed_p, kw['backend']),
+                backend=_sddmm_dispatch._CSRBackend(binary_csrmv_indexed_p, kw['backend'], kw.get('config_spec')),
             )
             if weights.aval.shape[0] == 1:
                 ct_w = jnp.sum(per_slot).astype(weights.aval.dtype).reshape(*weights.aval.shape)
             else:
                 ct_w = jnp.zeros(weights.aval.shape, weights.aval.dtype).at[perm].add(per_slot)
-        return ct_w, indices, indptr, perm, events
+        return ct_w, indices, indptr, perm, events, None
 
 
 def _idx_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if axes in ((None, None, None, None, 0), (None, None, None, None, 1)):
+    if axes in ((None, None, None, None, 0, None), (None, None, None, None, 1, None)):
         assert args[4].ndim == 2, f'Batching axis {axes[4]} requires 2D input.'
         r = binary_csrmm_indexed_p_call(
             args[0],
@@ -641,10 +660,11 @@ def _idx_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            max_row_nnz=kwargs.get('max_row_nnz'),
+            config=_config_from_params(kwargs, args[-1]),
         )
         return r, [1]
 
+    kwargs = _batch_config_params(args, axes, kwargs)
     return general_batching_rule(binary_csrmv_indexed_p, args, axes, **kwargs)
 
 
@@ -660,12 +680,12 @@ backends: ``numba`` (CPU), ``jax_raw`` (CPU/GPU/TPU), and ``cuda_raw`` (CUDA
 warp kernels in ``binary_csrmv.cu`` / ``binary_indexed_csrmv.cu``).
 """,
 )
-binary_csrmv_indexed_p.def_numba_kernel(_csrmv_indexed_numba_kernel)
-binary_csrmv_indexed_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_indexed_jax_kernel)
-binary_csrmv_indexed_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_indexed_jax_kernel)
-binary_csrmv_indexed_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_indexed_jax_kernel)
-binary_csrmv_indexed_p.def_cuda_raw_kernel(_binary_csrmv_indexed_cuda_kernel, asdefault=True)
-binary_csrmv_indexed_p.def_jvp_rule2(_idx_jvp_weights, None, None, None, _idx_jvp_v)
+binary_csrmv_indexed_p.def_numba_kernel(_ignore_config_mask(_csrmv_indexed_numba_kernel))
+binary_csrmv_indexed_p.def_kernel('jax_raw', 'cpu', _ignore_config_mask(_binary_csrmv_indexed_jax_kernel))
+binary_csrmv_indexed_p.def_kernel('jax_raw', 'gpu', _ignore_config_mask(_binary_csrmv_indexed_jax_kernel))
+binary_csrmv_indexed_p.def_kernel('jax_raw', 'tpu', _ignore_config_mask(_binary_csrmv_indexed_jax_kernel))
+binary_csrmv_indexed_p.def_cuda_raw_kernel(_ignore_config_mask(_binary_csrmv_indexed_cuda_kernel), asdefault=True)
+binary_csrmv_indexed_p.def_jvp_rule2(_idx_jvp_weights, None, None, None, _idx_jvp_v, None)
 binary_csrmv_indexed_p.def_transpose_rule(_idx_transpose_rule)
 binary_csrmv_indexed_p.def_batching_rule(_idx_batching)
 binary_csrmv_indexed_p.def_call(binary_csrmv_indexed_p_call)
@@ -677,18 +697,7 @@ binary_csrmv_indexed_p.def_tags('csr', 'binary', 'indexed')
 # =========================================================================== #
 
 
-@namescope(name="brainevent.binary_csrmm_indexed", static_argnames=("shape", "transpose", "weighted", "max_row_nnz"))
-def _binary_csrmm_indexed_jit(data, indices, indptr, perm, B, *, shape, transpose, backend, weighted, max_row_nnz):
-    data, unitd = u.split_mantissa_unit(data)
-    B, unitb = u.split_mantissa_unit(B)
-    res = binary_csrmm_indexed_p_call(
-        data, indices, indptr, perm, B,
-        shape=shape, transpose=transpose, backend=backend, weighted=weighted,
-        max_row_nnz=max_row_nnz,
-    )[0]
-    return u.maybe_decimal(res * (unitd * unitb))
-
-
+@namescope(name="brainevent.binary_csrmm_indexed", static_argnames=("shape", "transpose", "weighted"))
 def binary_csrmm_indexed(
     data: Data,
     indices: Index,
@@ -700,8 +709,7 @@ def binary_csrmm_indexed(
     transpose: bool = False,
     backend: Optional[str] = None,
     weighted: bool = False,
-    max_row_nnz: Optional[int] = None,
-    workspace=None,
+    config: Optional[CSRConfig] = None,
 ) -> Data:
     """Event-driven CSR matrix-matrix product with a fused weight gather index.
 
@@ -717,9 +725,10 @@ def binary_csrmm_indexed(
         or ``(1,)`` (homogeneous).
     indices : jax.Array or numpy.ndarray
         Secondary-axis indices of the traversed (transposed) structure,
-        shape ``(nse,)``, integer dtype.
+        shape ``(nse,)``, dtype ``int32``.
     indptr : jax.Array or numpy.ndarray
-        Pointer array of the traversed structure, shape ``(shape[0] + 1,)``.
+        Pointer array of the traversed structure, shape ``(shape[0] + 1,)``
+        with dtype ``int32`` or ``int64``.
     perm : jax.Array or numpy.ndarray
         Permutation mapping structural slot ``j`` to canonical weight index
         ``perm[j]``, shape ``(nse,)``, same dtype as ``indptr`` (int32 or
@@ -728,24 +737,22 @@ def binary_csrmm_indexed(
         Dense event matrix.  Shape ``(shape[0], n)`` when ``transpose=True`` or
         ``(shape[1], n)`` when ``transpose=False``.  Boolean, integer or
         floating dtype; an entry is active iff it is ``True`` or non-zero (negative values and NaN are
-        active), and weights are never scaled by its value.
+        active). When ``weighted=True``, weights are scaled by the event value.
     shape : tuple of int
         Logical ``(m, k)`` of the traversed structure.
     transpose : bool, optional
         If ``True`` compute the transposed (scatter) product.  Default ``False``.
     backend : str or None, optional
-        Compute backend.  Default ``None`` (auto-select).
+        Compute backend: ``'numba'`` (CPU), ``'cuda_raw'`` (GPU),
+        ``'jax_raw'`` (CPU/GPU/TPU), or ``None`` (auto-select).
     weighted : bool, optional
         If ``True``, ``B`` holds value-weighted events
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value instead of by ``1``.  Default ``False``.
-    max_row_nnz : int or None, optional
-        Upper bound on the longest row of the traversed ``indptr``, used to
-        size the ``cuda_raw`` hybrid task queue (see
-        :func:`brainevent.binary_csrmv`); validated when ``indptr`` is
-        concrete.
-    workspace : optional
-        Deprecated and ignored; passing it emits a ``DeprecationWarning``.
+    config : CSRConfig or None, optional
+        Explicit configuration prepared for this compressed structure. None uses
+        fixed default scheduling parameters without reading saved configuration.
+        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
 
     Returns
     -------
@@ -758,12 +765,14 @@ def binary_csrmm_indexed(
     brainevent._csr.binary.binary.binary_csrmm : The non-indexed event-driven product.
     brainevent._csr.binary.binary_indexed.binary_csrmv_indexed : The matvec analog.
     """
-    _warn_workspace_deprecated(workspace)
-    _check_max_row_nnz(indptr, max_row_nnz)
-    return _binary_csrmm_indexed_jit(
+    data, unitd = u.split_mantissa_unit(data)
+    B, unitb = u.split_mantissa_unit(B)
+    res = binary_csrmm_indexed_p_call(
         data, indices, indptr, perm, B,
-        shape=shape, transpose=transpose, backend=backend, weighted=weighted, max_row_nnz=max_row_nnz,
-    )
+        shape=shape, transpose=transpose, backend=backend, weighted=weighted,
+        config=config,
+    )[0]
+    return u.maybe_decimal(res * (unitd * unitb))
 
 
 # --------------------------------------------------------------------------- #
@@ -1029,81 +1038,20 @@ def _binary_csrmm_indexed_cuda_kernel(
     spk_suffix = event_abi.suffix
     wt_sfx = dtype_suffix(weight_info.dtype)
 
-    if transpose and is_homo:
-        _cfg = get_hybrid_config()
-        _mod = 'csr_binary_csrmm_hybrid' + module_suffix_for_config(_cfg)
-        load_cuda_file(
-            Path(__file__).parent.joinpath('binary_csrmm_hybrid.cu'),
-            name=_mod,
-            extra_cuda_cflags=compile_flags_for_config(_cfg),
-            allow_cuda_graph=False,
+    if transpose:
+        return _hybrid_mm.make_kernel(
+            weight_info=weight_info, vector_info=vector_info,
+            permuted=True, **kwargs,
         )
-        logical_out_info = kwargs['outs'][0]
-        physical_out_info = jax.ShapeDtypeStruct(
-            (logical_out_info.shape[1], logical_out_info.shape[0]),
-            logical_out_info.dtype,
-        )
-        kernel_name = f'{_mod}.binary_csrmm_sraw_hybrid_homo{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, B):
-            B = event_abi.prepare(B)
-            scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
-            output = jax.ffi.ffi_call(
-                kernel_name,
-                (physical_out_info, *scratch_info),
-                input_output_aliases={4: 1, 5: 2, 6: 3},
-            )(
-                weights,
-                indices,
-                indptr,
-                B,
-                *scratch,
-                task_capacity=kwargs['task_capacity'],
-            )[0]
-            return (jnp.transpose(output),)
-
-    elif transpose:
-        _cfg = get_hybrid_config()
-        _mod = 'csr_binary_indexed_csrmm_hybrid' + module_suffix_for_config(_cfg)
-        load_cuda_file(
-            Path(__file__).parent.joinpath('binary_indexed_csrmm_hybrid.cu'),
-            name=_mod,
-            extra_cuda_cflags=compile_flags_for_config(_cfg),
-            allow_cuda_graph=False,
-        )
-        logical_out_info = kwargs['outs'][0]
-        physical_out_info = jax.ShapeDtypeStruct(
-            (logical_out_info.shape[1], logical_out_info.shape[0]),
-            logical_out_info.dtype,
-        )
-        kernel_name = f'{_mod}.binary_indexed_csrmm_sraw_hybrid_hetero{wt_sfx}{spk_suffix}'
-
-        def kernel(weights, indices, indptr, perm, B):
-            B = event_abi.prepare(B)
-            scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
-            output = jax.ffi.ffi_call(
-                kernel_name,
-                (physical_out_info, *scratch_info),
-                input_output_aliases={5: 1, 6: 2, 7: 3},
-            )(
-                weights,
-                indices,
-                indptr,
-                perm,
-                B,
-                *scratch,
-                task_capacity=kwargs['task_capacity'],
-            )[0]
-            return (jnp.transpose(output),)
-
-    elif is_homo:
+    if is_homo:
         load_cuda_file(
             Path(__file__).parent.joinpath('binary_csrmm.cu'),
             name='csr_binary_csrmm',
         )
         kernel_name = f'csr_binary_csrmm.binary_csrmm_nt_auto_homo{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, B):
+        def kernel(weights, indices, indptr, perm, B, long_mask):
             B = event_abi.prepare(B)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
             return (math_out,)
@@ -1115,7 +1063,7 @@ def _binary_csrmm_indexed_cuda_kernel(
         )
         kernel_name = f'csr_binary_indexed_csrmm.binary_csrmm_nt_auto_perm_hetero{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, B):
+        def kernel(weights, indices, indptr, perm, B, long_mask):
             B = event_abi.prepare(B)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, perm, B)
             return (math_out,)
@@ -1134,7 +1082,7 @@ def binary_csrmm_indexed_p_call(
     transpose: bool,
     backend: Optional[str] = None,
     weighted: bool = False,
-    max_row_nnz: Optional[int] = None,
+    config: Optional[CSRConfig] = None,
 ):
     """Low-level primitive call for fused indexed event-driven CSR matmat.
 
@@ -1164,9 +1112,15 @@ def binary_csrmm_indexed_p_call(
         if transpose else
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
     )
+    config = _config_for_call(config, indices, indptr, shape)
+    config_spec, long_mask = config.kernel_args()
+    call_plan = (config.mm_plan(batch=B.shape[1], value_dtype=weights.dtype, weighted=weighted)
+                 if transpose and backend in (None, 'cuda_raw') else None)
     return binary_csrmm_indexed_p(
-        weights, indices, indptr, perm, B,
+        weights, indices, indptr, perm, B, long_mask,
         outs=[out_info],
+        config_spec=config_spec,
+        call_plan=call_plan,
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -1176,29 +1130,28 @@ def binary_csrmm_indexed_p_call(
         perm_info=jax.ShapeDtypeStruct(perm.shape, perm.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
-        max_row_nnz=max_row_nnz,
-        task_capacity=_task_capacity(indices, indptr, max_row_nnz),
     )
 
 
 # --------------------------------------------------------------------------- #
 # autodiff rules
 # --------------------------------------------------------------------------- #
-def _csrmm_idx_jvp_data(data_dot, data, indices, indptr, perm, B, *, shape, transpose, **kw):
+def _csrmm_idx_jvp_data(data_dot, data, indices, indptr, perm, B, long_mask, *, shape, transpose, **kw):
     # Linear in weights (events fixed): re-enter the indexed primitive.
     return binary_csrmm_indexed_p_call(
         data_dot, indices, indptr, perm, B, shape=shape, transpose=transpose, backend=kw['backend'],
-        weighted=kw.get('weighted', False), max_row_nnz=kw.get('max_row_nnz'),
+        weighted=kw.get('weighted', False),
+        config=_config_from_params(kw, long_mask),
     )
 
 
-def _csrmm_idx_jvp_B(B_dot, data, indices, indptr, perm, B, *, shape, transpose, **kw):
+def _csrmm_idx_jvp_B(B_dot, data, indices, indptr, perm, B, long_mask, *, shape, transpose, **kw):
     # Event indicator is a step; surrogate tangent routes through float csrmm.
     w = data if data.shape[0] == 1 else data[perm]
     return [csrmm(w, indices, indptr, B_dot.astype(w.dtype), shape=shape, transpose=transpose, backend=kw['backend'])]
 
 
-def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, *, shape, transpose, **kw):
+def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, long_mask, *, shape, transpose, **kw):
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr) or ad.is_undefined_primal(perm):
         raise ValueError("Cannot transpose with respect to sparse structure / perm.")
     ct = ct[0]
@@ -1208,7 +1161,7 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, *, shape, tran
         else:
             w = data if data.shape[0] == 1 else data[perm]
             ct_B = csrmm(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
-        return data, indices, indptr, perm, ct_B
+        return data, indices, indptr, perm, ct_B, None
     else:
         if type(ct) is ad.Zero:
             ct_w = ad.Zero(data.aval)
@@ -1220,18 +1173,18 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, *, shape, tran
                 left, right, indices, indptr,
                 mode='weighted' if kw.get('weighted', False) else 'binary',
                 transpose=transpose,
-                backend=_sddmm_dispatch._CSRBackend(binary_csrmm_indexed_p, kw['backend']),
+                backend=_sddmm_dispatch._CSRBackend(binary_csrmm_indexed_p, kw['backend'], kw.get('config_spec')),
             )
             if data.aval.shape[0] == 1:
                 ct_w = jnp.sum(d_data).astype(data.aval.dtype).reshape(*data.aval.shape)
             else:
                 ct_w = jnp.zeros(data.aval.shape, data.aval.dtype).at[perm].add(d_data)
-        return ct_w, indices, indptr, perm, B
+        return ct_w, indices, indptr, perm, B, None
 
 
 def _csrmm_idx_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if axes[:4] == (None, None, None, None) and axes[4] in (0, 1, 2):
+    if axes[:4] == (None, None, None, None) and axes[4] in (0, 1, 2) and axes[-1] is None:
         assert args[4].ndim == 3, f'Batching axis {axes[4]} requires 3D input.'
         if axes[4] == 0:
             batch_size, m, n = args[4].shape
@@ -1252,12 +1205,13 @@ def _csrmm_idx_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            max_row_nnz=kwargs.get('max_row_nnz'),
+            config=_config_from_params(kwargs, args[-1]),
         )[0]
         if axes[4] == 2:
             return [jnp.reshape(r, [r.shape[0], n, batch_size])], [2]
         return [jnp.reshape(r, [r.shape[0], batch_size, n])], [1]
 
+    kwargs = _batch_config_params(args, axes, kwargs)
     return general_batching_rule(binary_csrmm_indexed_p, args, axes, **kwargs)
 
 
@@ -1271,12 +1225,12 @@ weights are read through a permutation ``perm`` (structural slot ``j`` uses
 ``weights[perm[j]]``).  Homogeneous weights ignore ``perm``.
 """,
 )
-binary_csrmm_indexed_p.def_numba_kernel(_csrmm_indexed_numba_kernel)
-binary_csrmm_indexed_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_indexed_jax_kernel)
-binary_csrmm_indexed_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_indexed_jax_kernel)
-binary_csrmm_indexed_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_indexed_jax_kernel)
+binary_csrmm_indexed_p.def_numba_kernel(_ignore_config_mask(_csrmm_indexed_numba_kernel))
+binary_csrmm_indexed_p.def_kernel('jax_raw', 'cpu', _ignore_config_mask(_binary_csrmm_indexed_jax_kernel))
+binary_csrmm_indexed_p.def_kernel('jax_raw', 'gpu', _ignore_config_mask(_binary_csrmm_indexed_jax_kernel))
+binary_csrmm_indexed_p.def_kernel('jax_raw', 'tpu', _ignore_config_mask(_binary_csrmm_indexed_jax_kernel))
 binary_csrmm_indexed_p.def_cuda_raw_kernel(_binary_csrmm_indexed_cuda_kernel, asdefault=True)
-binary_csrmm_indexed_p.def_jvp_rule2(_csrmm_idx_jvp_data, None, None, None, _csrmm_idx_jvp_B)
+binary_csrmm_indexed_p.def_jvp_rule2(_csrmm_idx_jvp_data, None, None, None, _csrmm_idx_jvp_B, None)
 binary_csrmm_indexed_p.def_transpose_rule(_csrmm_idx_transpose_rule)
 binary_csrmm_indexed_p.def_batching_rule(_csrmm_idx_batching)
 binary_csrmm_indexed_p.def_call(binary_csrmm_indexed_p_call)

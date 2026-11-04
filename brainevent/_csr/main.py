@@ -16,6 +16,7 @@
 
 import operator
 import contextlib
+from dataclasses import replace
 from typing import Optional, Union, Dict, cast
 
 import brainunit as u
@@ -29,10 +30,11 @@ from brainevent._misc import (
     _csr_to_coo, _csr_todense, csr_to_csc_index, csr_to_csc_index_traced, normalize_row_index, build_sub_csr,
     _as_int32_indices, _as_indptr, _check_compressed_structure,
 )
-from brainevent._structure import StructureCache, is_concrete, nnz_hint, warn_mirror_fallback
+from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
 from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
 from .binary.binary import binary_csrmv, binary_csrmm
 from .binary.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
+from .config import CSRConfig
 from .diag.diag_add import csr_diag_position, csr_diag_add
 from .float.float import csrmv, csrmm
 from .plasticity.plasticity_binary import (
@@ -51,6 +53,63 @@ __all__ = [
 
 def _use_cuda_indexed_binary_route(backend: Optional[str]) -> bool:
     return backend == "cuda_raw"
+
+
+def _structure_device(indices, device=None):
+    """Identify a concrete structure's placement without querying GPU properties."""
+    if device is not None:
+        return device
+    if hasattr(indices, 'devices') and not isinstance(indices, jax.core.Tracer):
+        placed = indices.devices()
+        if len(placed) == 1:
+            return next(iter(placed))
+    return None
+
+
+def _host_structure_array(original, converted):
+    """Reuse host input, or read one concrete device array once."""
+    if not is_concrete(converted):
+        return None
+    if isinstance(original, (np.ndarray, list, tuple)):
+        return np.asarray(original)
+    return np.asarray(jax.device_get(converted))
+
+
+def _prepare_csr_config(indices, indptr, *, shape, backend, config=None, device=None, host_structure=None):
+    """Resolve a parameter snapshot and prepare concrete structure outside tracing."""
+    from .binary.hybrid_config import load_csr_config
+
+    target = _structure_device(indices, device)
+    device_info = None
+    if (backend in (None, 'cuda_raw') or device is not None) and is_concrete(indices, indptr):
+        from .binary._hybrid_mm import get_device_info
+
+        with jax.ensure_compile_time_eval():
+            device_info = get_device_info(indices, indptr, device=device)
+    if config is None:
+        device_kind = (device_info.device_kind if device_info is not None
+                       else getattr(target, 'device_kind', None))
+        config = load_csr_config(device_kind=device_kind)
+    if not isinstance(config, CSRConfig):
+        raise TypeError('config must be a CSRConfig or None.')
+    snapshot = replace(config.parameter_snapshot(), device_info=device_info)
+    if not is_concrete(indices, indptr):
+        return snapshot
+    with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
+        source_indices, source_indptr = (indices, indptr) if host_structure is None else host_structure
+        return snapshot.prepare_structure(source_indices, source_indptr, shape=shape, device_info=device_info)
+
+
+def _config_for_new_structure(config, indices, indptr, *, shape, device=None):
+    """Preserve tuning while invalidating or preparing a replacement structure."""
+    snapshot = config.parameter_snapshot()
+    if not is_concrete(indices, indptr):
+        return snapshot
+    target = _structure_device(indices, device)
+    with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
+        return snapshot.prepare_structure(
+            indices, indptr, shape=shape, device_info=config.device_info,
+        )
 
 
 class CompressedSparseData(DataRepresentation):
@@ -86,6 +145,12 @@ class CompressedSparseData(DataRepresentation):
     precompute_weight_indices : bool, optional
         Build the mirror layout now (see :meth:`build_weight_indices`).
         Default ``False``.
+    config : CSRConfig or None, optional
+        Scheduler parameters to bind to this structure. Existing structure
+        plans are rebuilt. ``None`` reads the persisted parameters once.
+    device : jax.Device or None, optional
+        Target GPU for preparing device-dependent plans. CPU preparation
+        leaves GPU information unset.
 
     Attributes
     ----------
@@ -101,10 +166,10 @@ class CompressedSparseData(DataRepresentation):
     Notes
     -----
     The matrix is a JAX pytree whose leaves are ``data``, ``indices``,
-    ``indptr`` and, when cached, the three mirror arrays and the four
-    ``diag_add`` plan arrays. The structure is therefore traced like any
-    other input under ``jax.jit``: no index array is embedded in the compiled
-    program, and two matrices with equal shapes share one compilation.
+    ``indptr``, prepared configuration masks and, when cached, the three
+    mirror arrays and the four ``diag_add`` plan arrays. The structure is
+    traced like any other input under ``jax.jit``: no index array is embedded in the compiled
+    program. Equal shapes and scheduling metadata share one compilation.
     Differentiate with respect to ``M.data`` and rebuild with
     :meth:`with_data`; ``jax.grad(f, allow_int=True)(M)`` also works and
     returns ``float0`` cotangents for the index leaves.
@@ -138,6 +203,8 @@ class CompressedSparseData(DataRepresentation):
         indptr_dtype="auto",
         check_structure: bool = True,
         precompute_weight_indices: bool = False,
+        config: Optional[CSRConfig] = None,
+        device=None,
     ):
         if indices is None and indptr is None:
             # Tuple syntax: CSR((data, indices, indptr), shape=...)
@@ -155,15 +222,18 @@ class CompressedSparseData(DataRepresentation):
         context = f"{fmt.upper()} constructor"
 
         self.data = u.math.asarray(data_arr)
+        indices_input = u.math.asarray(indices_arg)
+        host_indices = _host_structure_array(indices_arg, indices_input)
         # ``indices`` are always int32; validate values only when a full
-        # structure check is requested (structure-preserving reconstructions
-        # pass check_structure=False to skip redundant host readback).
+        # structure check is requested; preparation reuses this host copy.
         self.indices = _as_int32_indices(
-            indices_arg, secondary_dim, context, check_values=check_structure
+            indices_input, secondary_dim, context, check_values=check_structure,
+            host_indices=host_indices,
         )
         # ``indptr`` auto-promotes to int64 only when nnz exceeds int32 range.
         nse = self.indices.shape[0]
         self.indptr = _as_indptr(indptr_arg, nse, indptr_dtype, context)
+        host_indptr = _host_structure_array(indptr_arg, self.indptr)
         if check_structure:
             data_shape = tuple(getattr(self.data, 'shape', ()))
             if data_shape not in ((), (1,), (nse,)):
@@ -172,20 +242,39 @@ class CompressedSparseData(DataRepresentation):
                     f"weight), or have shape (nse,) = ({nse},), got {data_shape}."
                 )
             _check_compressed_structure(
-                self.indices, self.indptr, shape, format=fmt, check_values=True
+                self.indices, self.indptr, shape, format=fmt, check_values=True,
+                host_indptr=host_indptr,
             )
 
         self.backend = backend
         super().__init__((self.data, self.indices, self.indptr), shape=shape)
-        self._cache = StructureCache(primary_hint=nnz_hint(self.indptr))
+        self._cache = StructureCache()
+        host_structure = None
+        if host_indices is not None and host_indptr is not None:
+            host_structure = (
+                host_indices.astype(np.int32, copy=False),
+                host_indptr.astype(np.dtype(self.indptr.dtype), copy=False),
+            )
+        self.config = _prepare_csr_config(
+            self.indices, self.indptr, shape=self._storage_shape,
+            backend=backend, config=config, device=device,
+            host_structure=host_structure,
+        )
         self._ingest_buffers(buffers)
+        if self._cache.mirror is not None:
+            mirror_indptr, mirror_indices, _ = self._cache.mirror
+            mirror_config = _config_for_new_structure(
+                self.config, mirror_indices, mirror_indptr, shape=self._storage_shape[::-1],
+                device=_structure_device(self.indices, device),
+            )
+            self.config = replace(self.config, mirror=mirror_config.primary)
         if precompute_weight_indices and self._mirror() is None:
             # Traced structure: this fresh object is local to the trace, so
             # its own cache may hold the traced mirror.
             self._cache.set_mirror(self._weight_indices())
 
     @classmethod
-    def _from_parts(cls, data, indices, indptr, *, shape, backend=None, buffers=None, cache=None):
+    def _from_parts(cls, data, indices, indptr, *, shape, backend=None, buffers=None, cache=None, config=None):
         """Assemble a matrix from trusted parts, without conversion or validation.
 
         Structure-preserving paths (``with_data``, ``transpose``, ``apply``,
@@ -202,7 +291,8 @@ class CompressedSparseData(DataRepresentation):
         obj.shape = tuple(int(s) for s in shape)
         obj.backend = backend
         obj._buffer_registry = set()
-        obj._cache = StructureCache(primary_hint=nnz_hint(indptr)) if cache is None else cache
+        obj._cache = StructureCache() if cache is None else cache
+        obj.config = CSRConfig() if config is None else config
         obj._ingest_buffers(buffers)
         return obj
 
@@ -212,7 +302,15 @@ class CompressedSparseData(DataRepresentation):
             if value is None:
                 continue
             if name == self._mirror_key:
-                self._cache.set_mirror(value)
+                # Replacing a shared cache in place would leave sibling
+                # matrices with a plan for the previous mirror.
+                cache = self._cache
+                self._cache = StructureCache(
+                    mirror=tuple(value),
+                    diag_plan=cache.diag_plan,
+                )
+                # A user-supplied mirror need not match the prepared layout.
+                self.config = replace(self.config, mirror=None)
             elif name == 'diag_positions':
                 self._cache.diag_plan = tuple(value)
             else:
@@ -320,16 +418,57 @@ class CompressedSparseData(DataRepresentation):
         if mirror is not None:
             cache = self._cache
         else:
-            cache = StructureCache(primary_hint=self._cache.primary_hint, diag_plan=self._cache.diag_plan)
+            cache = StructureCache(diag_plan=self._cache.diag_plan)
             cache.set_mirror(self._weight_indices())
         return type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape, backend=self.backend, cache=cache,
+            config=self.config,
         )
 
     def _same_structure(self, data):
         """A matrix of the same class and structure (shared caches) holding ``data``."""
         return type(self)._from_parts(
             data, self.indices, self.indptr, shape=self.shape, backend=self.backend, cache=self._cache,
+            config=self.config,
+        )
+
+    def prepare_config(self, *, device=None):
+        """Prepare scheduler plans for this concrete structure.
+
+        Parameters
+        ----------
+        device : jax.Device or None, optional
+            Target GPU. If omitted, use the device holding the structure.
+
+        Returns
+        -------
+        CSR or CSC
+            A matrix sharing the values and structure with freshly prepared
+            plans and the existing scheduler parameter snapshot.
+
+        Raises
+        ------
+        ValueError
+            If the structure is traced. Prepare before entering ``jax.jit``.
+        """
+        if not is_concrete(self.indices, self.indptr):
+            raise ValueError('prepare_config requires concrete structure outside jax.jit.')
+        config = _prepare_csr_config(
+            self.indices, self.indptr, shape=self._storage_shape,
+            backend=self.backend, config=self.config, device=device,
+        )
+        if self._cache.mirror is not None:
+            mirror_indptr, mirror_indices, _ = self._cache.mirror
+            if not is_concrete(mirror_indices, mirror_indptr):
+                raise ValueError('prepare_config requires a concrete mirror outside jax.jit.')
+            mirror_config = _config_for_new_structure(
+                config, mirror_indices, mirror_indptr, shape=self._storage_shape[::-1],
+                device=_structure_device(self.indices, device),
+            )
+            config = replace(config, mirror=mirror_config.primary)
+        return type(self)._from_parts(
+            self.data, self.indices, self.indptr, shape=self.shape, backend=self.backend,
+            cache=self._cache, config=config,
         )
 
     @property
@@ -406,14 +545,14 @@ class CompressedSparseData(DataRepresentation):
             return primary(
                 self.data, self.indices, self.indptr, x,
                 shape=shape, transpose=transpose, backend=self.backend, weighted=weighted,
-                max_row_nnz=self._cache.primary_hint,
+                config=self.config,
             )
         mirror_indptr, mirror_indices, perm = mirror
         indexed = binary_csrmm_indexed if matrix else binary_csrmv_indexed
         return indexed(
             self.data, mirror_indices, mirror_indptr, perm, x,
             shape=(shape[1], shape[0]), transpose=True, backend=self.backend, weighted=weighted,
-            max_row_nnz=self._cache.mirror_hint,
+            config=self.config.swap_layouts(),
         )
 
     def tree_flatten(self):
@@ -421,17 +560,17 @@ class CompressedSparseData(DataRepresentation):
         Flatten this sparse matrix into JAX pytree leaves and auxiliary data.
 
         This method is part of the JAX pytree protocol. ``data``, ``indices``
-        and ``indptr`` are leaves, followed by the cached mirror arrays and
-        ``diag_add`` plan when present. The auxiliary data holds only hashable
-        metadata, so structurally equal matrices share one jit cache entry.
+        and ``indptr`` are leaves, followed by the configuration pytree,
+        cached mirror arrays and ``diag_add`` plan when present. The auxiliary
+        data holds only hashable metadata, so structurally equal matrices
+        share one jit cache entry.
 
         Returns
         -------
         children : tuple
-            ``(data, indices, indptr, *mirror, *diag_plan)``.
+            ``(data, indices, indptr, config, *mirror, *diag_plan)``.
         aux_data : tuple
-            ``(shape, backend, has_mirror, has_diag_plan, primary_hint,
-            mirror_hint)``.
+            ``(shape, backend, has_mirror, has_diag_plan)``.
 
         See Also
         --------
@@ -440,8 +579,8 @@ class CompressedSparseData(DataRepresentation):
         cache = self._cache
         mirror = cache.mirror or ()
         plan = cache.diag_plan or ()
-        children = (self.data, self.indices, self.indptr, *mirror, *plan)
-        aux = (self.shape, self.backend, bool(mirror), bool(plan), cache.primary_hint, cache.mirror_hint)
+        children = (self.data, self.indices, self.indptr, self.config, *mirror, *plan)
+        aux = (self.shape, self.backend, bool(mirror), bool(plan))
         return children, aux
 
     @classmethod
@@ -472,15 +611,15 @@ class CompressedSparseData(DataRepresentation):
         --------
         tree_flatten : Flatten a sparse matrix for JAX pytree handling.
         """
-        shape, backend, has_mirror, has_plan, primary_hint, mirror_hint = aux_data
-        expected = 3 + 3 * has_mirror + 4 * has_plan
+        shape, backend, has_mirror, has_plan = aux_data
+        expected = 4 + 3 * has_mirror + 4 * has_plan
         if len(children) != expected:
             raise ValueError(f'{cls.__name__}.tree_unflatten expects {expected} leaves, got {len(children)}.')
-        data, indices, indptr = children[:3]
-        mirror = tuple(children[3:6]) if has_mirror else None
-        plan = tuple(children[3 + 3 * has_mirror:]) if has_plan else None
-        cache = StructureCache(primary_hint, mirror, mirror_hint, plan)
-        return cls._from_parts(data, indices, indptr, shape=shape, backend=backend, cache=cache)
+        data, indices, indptr, config = children[:4]
+        mirror = tuple(children[4:7]) if has_mirror else None
+        plan = tuple(children[4 + 3 * has_mirror:]) if has_plan else None
+        cache = StructureCache(mirror=mirror, diag_plan=plan)
+        return cls._from_parts(data, indices, indptr, shape=shape, backend=backend, cache=cache, config=config)
 
     def apply(self, fn):
         """
@@ -1020,7 +1159,6 @@ class CompressedSparseData(DataRepresentation):
         with jax.ensure_compile_time_eval() if is_concrete(new_indices) else contextlib.nullcontext():
             identity = jnp.arange(new_indices.shape[0], dtype=new_indices.dtype)
         cache = StructureCache(
-            primary_hint=nnz_hint(new_indptr),
             diag_plan=(new_indptr, new_indices, identity, diag_dest),
         )
         # The augmented structure is valid by construction (numba planner), so
@@ -1028,6 +1166,9 @@ class CompressedSparseData(DataRepresentation):
         # int64-offset case, so ``new_indptr`` fits int32 here.
         return type(self)._from_parts(
             new_data, new_indices, new_indptr, shape=self.shape, backend=self.backend, cache=cache,
+            config=_config_for_new_structure(
+                self.config, new_indices, new_indptr, shape=self._storage_shape,
+            ),
         )
 
     def _diag_plan(self):
@@ -1183,6 +1324,8 @@ class CSR(CompressedSparseData):
         indptr_dtype="auto",
         backend: Optional[str] = None,
         precompute_weight_indices: bool = False,
+        config: Optional[CSRConfig] = None,
+        device=None,
     ) -> 'CSR':
         """
         Create a CSR matrix from a dense matrix.
@@ -1206,6 +1349,10 @@ class CSR(CompressedSparseData):
             requires ``jax_enable_x64``).
         backend : str or None, optional
             Compute backend to attach to the matrix. Default ``None``.
+        config : CSRConfig or None, optional
+            Scheduler parameters to prepare for the resulting structure.
+        device : jax.Device or None, optional
+            Target GPU for device-dependent plans.
         precompute_weight_indices : bool, optional
             If ``True``, eagerly build and cache the column-major (CSC-like)
             weight indices used by the *unfavorable* ``CSR @ event`` direction
@@ -1244,6 +1391,7 @@ class CSR(CompressedSparseData):
         out = CSR(
             (csr.data, csr.indices, csr.indptr),
             shape=csr.shape, backend=backend, indptr_dtype=indptr_dtype,
+            config=config, device=device,
         )
         if precompute_weight_indices:
             out = out.build_weight_indices()
@@ -1343,7 +1491,10 @@ class CSR(CompressedSparseData):
         """
         csc_indptr, csc_indices, perm = self._weight_indices()
         csc_data = self.data if self.data.size == 1 else self.data[perm]
-        return CSC._from_parts(csc_data, csc_indices, csc_indptr, shape=self.shape, backend=self.backend)
+        return CSC._from_parts(
+            csc_data, csc_indices, csc_indptr, shape=self.shape, backend=self.backend,
+            config=self.config.swap_layouts(),
+        )
 
     def tocoo(self) -> u.sparse.COO:
         """Convert to coordinate (COO) format.
@@ -1403,6 +1554,7 @@ class CSR(CompressedSparseData):
         return CSC._from_parts(
             self.data, self.indices, self.indptr,
             shape=self.shape[::-1], backend=self.backend, cache=self._cache,
+            config=self.config,
         )
 
     def apply(self, fn) -> 'CSR':
@@ -1788,7 +1940,10 @@ class CSR(CompressedSparseData):
         new_data, new_indices, new_indptr, shape = build_sub_csr(
             self.data, self.indices, self.indptr, rows, self.shape[1],
         )
-        return CSR._from_parts(new_data, new_indices, new_indptr, shape=shape, backend=self.backend)
+        return CSR._from_parts(
+            new_data, new_indices, new_indptr, shape=shape, backend=self.backend,
+            config=_config_for_new_structure(self.config, new_indices, new_indptr, shape=shape),
+        )
 
     def _binary_op(self, other, op) -> 'CSR':
         if op in [operator.add, operator.sub]:
@@ -1995,12 +2150,12 @@ class CSR(CompressedSparseData):
         Solve the linear system ``A x = b`` where ``A`` is this CSR matrix.
 
         Uses a sparse direct solver via the underlying ``csr_solve`` routine.
+        The matrix must be square.
 
         Parameters
         ----------
         b : jax.Array or brainunit.Quantity
-            Right-hand side vector.  Its first dimension must equal
-            ``self.shape[0]``.
+            Right-hand side vector of shape ``(self.shape[0],)``.
         tol : float, optional
             Tolerance for singularity detection.  Defaults to ``1e-6``.
         reorder : int, optional
@@ -2015,8 +2170,9 @@ class CSR(CompressedSparseData):
 
         Raises
         ------
-        AssertionError
-            If ``b.shape[0] != self.shape[0]``.
+        ValueError
+            If the matrix is not square or ``b`` is not a vector of shape
+            ``(self.shape[0],)``.
 
         Examples
         --------
@@ -2024,8 +2180,8 @@ class CSR(CompressedSparseData):
 
             x = csr.solve(b)
         """
-        assert self.shape[0] == b.shape[0], ("The number of rows in the matrix must match "
-                                             "the size of the right-hand side vector b.")
+        if self.shape[0] != self.shape[1]:
+            raise ValueError(f'CSR.solve requires a square matrix; got shape {self.shape}.')
         return csr_solve(self.data, self.indices, self.indptr, b, tol=tol, reorder=reorder)
 
     def dt2t(
@@ -2176,6 +2332,8 @@ class CSC(CompressedSparseData):
         indptr_dtype="auto",
         backend: Optional[str] = None,
         precompute_weight_indices: bool = False,
+        config: Optional[CSRConfig] = None,
+        device=None,
     ) -> 'CSC':
         """
         Create a CSC (Compressed Sparse Column) matrix from a dense matrix.
@@ -2200,6 +2358,10 @@ class CSC(CompressedSparseData):
             requires ``jax_enable_x64``).
         backend : str or None, optional
             Compute backend to attach to the matrix. Default ``None``.
+        config : CSRConfig or None, optional
+            Scheduler parameters to prepare for the resulting structure.
+        device : jax.Device or None, optional
+            Target GPU for device-dependent plans.
         precompute_weight_indices : bool, optional
             If ``True``, eagerly build and cache the row-major (CSR-like) weight
             indices used by the *unfavorable* ``event @ CSC`` direction (see
@@ -2238,6 +2400,7 @@ class CSC(CompressedSparseData):
         out = CSC(
             (csc.data, csc.indices, csc.indptr),
             shape=csc.shape, backend=backend, indptr_dtype=indptr_dtype,
+            config=config, device=device,
         )
         if precompute_weight_indices:
             out = out.build_weight_indices()
@@ -2337,7 +2500,10 @@ class CSC(CompressedSparseData):
         """
         csr_indptr, csr_indices, perm = self._weight_indices()
         csr_data = self.data if self.data.size == 1 else self.data[perm]
-        return CSR._from_parts(csr_data, csr_indices, csr_indptr, shape=self.shape, backend=self.backend)
+        return CSR._from_parts(
+            csr_data, csr_indices, csr_indptr, shape=self.shape, backend=self.backend,
+            config=self.config.swap_layouts(),
+        )
 
     def tocoo(self) -> u.sparse.COO:
         """Convert to coordinate (COO) format.
@@ -2395,6 +2561,7 @@ class CSC(CompressedSparseData):
         return CSR._from_parts(
             self.data, self.indices, self.indptr,
             shape=self.shape[::-1], backend=self.backend, cache=self._cache,
+            config=self.config,
         )
 
     def apply(self, fn) -> 'CSC':
@@ -2566,7 +2733,10 @@ class CSC(CompressedSparseData):
                 sub_indptr, sub_indices, shape=shape,
             )
         csc_data = sub_data if sub_data.size == 1 else sub_data[cperm]
-        return CSC._from_parts(csc_data, csc_indices, csc_indptr, shape=shape, backend=self.backend)
+        return CSC._from_parts(
+            csc_data, csc_indices, csc_indptr, shape=shape, backend=self.backend,
+            config=_config_for_new_structure(self.config, csc_indices, csc_indptr, shape=shape[::-1]),
+        )
 
     def _binary_op(self, other, op) -> 'CSC':
         if op in [operator.add, operator.sub]:
@@ -2764,12 +2934,12 @@ class CSC(CompressedSparseData):
         Solve the linear system ``A x = b`` where ``A`` is this CSC matrix.
 
         Delegates to the CSR solver on :meth:`tocsr`, the same logical matrix.
+        The matrix must be square.
 
         Parameters
         ----------
         b : jax.Array or brainunit.Quantity
-            Right-hand side vector.  Its first dimension must equal
-            ``self.shape[0]``.
+            Right-hand side vector of shape ``(self.shape[0],)``.
         tol : float, optional
             Tolerance for singularity detection.  Defaults to ``1e-6``.
         reorder : int, optional
@@ -2784,8 +2954,9 @@ class CSC(CompressedSparseData):
 
         Raises
         ------
-        AssertionError
-            If ``b.shape[0] != self.shape[0]``.
+        ValueError
+            If the matrix is not square or ``b`` is not a vector of shape
+            ``(self.shape[0],)``.
 
         Examples
         --------
@@ -2793,8 +2964,8 @@ class CSC(CompressedSparseData):
 
             x = csc.solve(b)
         """
-        assert self.shape[0] == b.shape[0], ("The number of rows in the matrix must match "
-                                             "the size of the right-hand side vector b.")
+        if self.shape[0] != self.shape[1]:
+            raise ValueError(f'CSC.solve requires a square matrix; got shape {self.shape}.')
         return self.tocsr().solve(b, tol=tol, reorder=reorder)
 
     def dt2t(

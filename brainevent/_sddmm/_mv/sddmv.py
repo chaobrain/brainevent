@@ -22,7 +22,7 @@ otherwise, preserving activity before narrowing. Weighted CUDA tests activity
 after casting events to the cotangent dtype and skips values cast to zero. Each
 ``.cu`` owns its kernels and FFI bindings. The output dW is created and zeroed
 in JAX before each FFI call (the kernels write only active rows), and private
-scratch capacity uses the same captured ``HybridConfig`` as compilation.
+scratch capacity uses the same captured CSR scheduler snapshot as compilation.
 
 The CSR event primitive has no AD rule. Consumers handle shared-weight sums
 and indexed scatter-add into canonical weight order. Summing selected slot
@@ -50,27 +50,31 @@ from brainevent._op.util import event_active, select_active
 from .._common import BINARY_TARGET_SUFFIXES, VALUE_SUFFIXES, Mode, _CSRBackend, check_jax_backend
 
 if TYPE_CHECKING:
-    from brainevent._csr.binary.hybrid_config import HybridConfig
-
-
-def get_hybrid_config() -> HybridConfig:
-    """Resolve CSR tuning lazily, avoiding the CSR/package import cycle."""
-    from brainevent._csr.binary.hybrid_config import get_hybrid_config as resolve
-    return resolve()
+    from brainevent._csr.config import CSRKernelSpec
 
 
 _DIRECTORY = Path(__file__).parent
 
 
-@lru_cache(maxsize=None)
-def _load_hybrid(weighted: bool, config: HybridConfig) -> str:
-    from brainevent._csr.binary.hybrid_config import compile_flags_for_config, module_suffix_for_config
+def _load_hybrid(weighted: bool, config_spec: CSRKernelSpec) -> str:
+    """Share compiled modules across structures with the same scheduler."""
+    return _load_hybrid_cached(
+        bool(weighted), config_spec.block_size, config_spec.fixed_scatter_blocks,
+        config_spec.tpr_threshold, config_spec.task_nnz,
+    )
+
+
+@lru_cache(maxsize=128)
+def _load_hybrid_cached(weighted: bool, block_size: int, fixed_scatter_blocks: int,
+                        tpr_threshold: int, task_nnz: int) -> str:
+    from brainevent._csr.config import CSRKernelSpec
+    config_spec = CSRKernelSpec(block_size, fixed_scatter_blocks, tpr_threshold, task_nnz)
     kind = 'weighted' if weighted else 'binary'
     source = f'hybrid_sddmv_{kind}.cu'
-    name = f'csr_sddmv_hybrid_{kind}' + module_suffix_for_config(config)
+    name = f'csr_sddmv_hybrid_{kind}' + config_spec.module_suffix()
     load_cuda_file(
         _DIRECTORY / source, name=name,
-        extra_cuda_cflags=compile_flags_for_config(config),
+        extra_cuda_cflags=config_spec.compile_flags(),
         extra_include_paths=[str(_DIRECTORY), str(_DIRECTORY.parent / '_common')],
         allow_cuda_graph=False,
     )
@@ -112,7 +116,7 @@ def _jax_kernel(events: jax.Array, ct: jax.Array, indices: jax.Array,
     ),)
 
 
-def _cuda_kernel(*, transpose: bool, weighted: bool, config: HybridConfig,
+def _cuda_kernel(*, transpose: bool, weighted: bool, config_spec: CSRKernelSpec,
                  ct_info: jax.ShapeDtypeStruct, indices_info: jax.ShapeDtypeStruct,
                  indptr_info: jax.ShapeDtypeStruct, **kwargs: Any):
     if not transpose:
@@ -120,9 +124,8 @@ def _cuda_kernel(*, transpose: bool, weighted: bool, config: HybridConfig,
     nnz, rows = indices_info.size, indptr_info.size - 1
     if not nnz:
         return lambda events, ct, indices, indptr: (jnp.zeros((0,), ct.dtype),)
-    from brainevent._csr.binary.hybrid_config import hybrid_capacity_bound
-    capacity = hybrid_capacity_bound(nnz, rows, config=config)
-    module = _load_hybrid(weighted, config)
+    capacity = config_spec.mv_capacity(nnz, rows)
+    module = _load_hybrid(weighted, config_spec)
     value_dtype, offset_dtype = jnp.dtype(ct_info.dtype), jnp.dtype(indptr_info.dtype)
     infos = [
         jax.ShapeDtypeStruct((nnz,), value_dtype),  # dW
@@ -163,9 +166,14 @@ def _auto_gpu_kernel(*, transpose: bool, csr_primitive=None, **kwargs: Any):
     return partial(_jax_kernel, transpose=transpose, **kwargs)
 
 
-def _csr_call(events, ct, indices, indptr, *, transpose, weighted, backend):
+def _csr_call(events, ct, indices, indptr, *, transpose, weighted, backend, config_spec=None):
     """Bind normalized CSR events; validation belongs to the dispatcher."""
     source = backend.primitive if isinstance(backend, _CSRBackend) else None
+    if config_spec is None and isinstance(backend, _CSRBackend):
+        config_spec = backend.config_spec
+    if config_spec is None:
+        from brainevent._csr.config import CSRConfig
+        config_spec = CSRConfig().kernel_args()[0]
     return csr_sddmv_p(
         events, ct, indices, indptr,
         outs=[jax.ShapeDtypeStruct(indices.shape, ct.dtype)],
@@ -174,12 +182,13 @@ def _csr_call(events, ct, indices, indptr, *, transpose, weighted, backend):
         ct_info=jax.ShapeDtypeStruct(ct.shape, ct.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
-        config=get_hybrid_config(),
+        config_spec=config_spec,
     )[0]
 
 
 def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | None,
-            *, mode: Mode, transpose: bool, backend: str | None | _CSRBackend) -> jax.Array:
+            *, mode: Mode, transpose: bool, backend: str | None | _CSRBackend,
+            config_spec=None) -> jax.Array:
     """Execute a normalized rank-one sampled product.
 
     Parameters
@@ -194,6 +203,8 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
         Events are on the left when true, on the right otherwise.
     backend : str or None
         JAX supports all forms; CUDA supports transposed CSR events.
+    config_spec : CSRKernelSpec or None, optional
+        Explicit scheduler metadata. Defaults never read persisted settings.
 
     Returns
     -------
@@ -207,7 +218,7 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
             raise ValueError('cuda_raw SDDMV requires transpose=True; use jax_raw or auto')
         events, ct = (A, B) if transpose else (B, A)
         return _csr_call(events, ct, indices, indptr, transpose=transpose,
-                         weighted=mode == 'weighted', backend=backend)
+                         weighted=mode == 'weighted', backend=backend, config_spec=config_spec)
     if backend == 'cuda_raw':
         raise NotImplementedError('MV CUDA supports transposed CSR event products; use backend="jax_raw"')
     if mode != 'float':

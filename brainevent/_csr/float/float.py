@@ -77,10 +77,10 @@ def csrmv(
         shared across all connections.
     indices : jax.Array or numpy.ndarray
         Column indices of the non-zero elements.  Shape ``(nse,)`` with
-        integer dtype (``int32``, ``int64``, ``uint32``, or ``uint64``).
+        dtype ``int32``.
     indptr : jax.Array or numpy.ndarray
-        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
-        as ``indices``.
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with dtype
+        ``int32`` or ``int64``.
     v : jax.Array, numpy.ndarray, or brainunit.Quantity
         Dense vector.  Shape ``(shape[0],)`` when ``transpose=True`` or
         ``(shape[1],)`` when ``transpose=False``.
@@ -91,8 +91,8 @@ def csrmv(
         If ``True``, the sparse matrix is transposed before multiplication,
         i.e. compute ``A.T @ v``.  Default is ``False``.
     backend : str or None, optional
-        Compute backend to use.  One of ``'numba'``,
-        ``'pallas'``, or ``None`` (auto-select).  Default is ``None``.
+        Compute backend: ``'numba'`` (CPU), ``'cuda_raw'`` (GPU),
+        ``'jax_raw'`` (CPU/GPU/TPU), or ``None`` (auto-select).
 
     Returns
     -------
@@ -412,10 +412,10 @@ def csrmv_p_call(
         scalar (automatically promoted to shape ``(1,)``).
     indices : jax.Array
         Column indices of non-zero elements.  Shape ``(nse,)`` with dtype
-        ``int32``, ``int64``, ``uint32``, or ``uint64``.
+        ``int32``.
     indptr : jax.Array
-        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
-        as ``indices``.
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with dtype
+        ``int32`` or ``int64``.
     vector : jax.Array
         Dense vector.  Shape ``(shape[0],)`` when ``transpose=True`` or
         ``(shape[1],)`` when ``transpose=False``.
@@ -437,10 +437,8 @@ def csrmv_p_call(
     Raises
     ------
     AssertionError
-        If ``indices`` or ``indptr`` have a dtype other than ``int32``,
-        ``int64``, ``uint32``, or ``uint64``.
-    AssertionError
-        If ``indices`` and ``indptr`` do not share the same dtype.
+        If ``indices`` is not ``int32`` or ``indptr`` is neither
+        ``int32`` nor ``int64``.
     AssertionError
         If ``indptr`` or ``indices`` is not 1-D.
     AssertionError
@@ -523,7 +521,7 @@ csrmv_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``csrmv``.
 
 This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-vector multiplication with floating-point weights
-operation to registered backends (``numba``, ``pallas``),
+operation to registered backends (``numba``, ``cuda_raw``, ``jax_raw``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 All elements of the input vector contribute to the result, regardless of sign or magnitude,
@@ -581,10 +579,10 @@ def csrmm(
         heterogeneous weights or ``(1,)`` for a single homogeneous weight.
     indices : jax.Array or numpy.ndarray
         Column indices of the non-zero elements.  Shape ``(nse,)`` with
-        integer dtype.
+        dtype ``int32``.
     indptr : jax.Array or numpy.ndarray
-        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
-        as ``indices``.
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with dtype
+        ``int32`` or ``int64``.
     B : jax.Array, numpy.ndarray, or brainunit.Quantity
         Dense matrix.  Shape ``(shape[0], cols)`` when ``transpose=True``
         or ``(shape[1], cols)`` when ``transpose=False``.
@@ -595,8 +593,8 @@ def csrmm(
         If ``True``, transpose ``A`` before multiplication.  Default is
         ``False``.
     backend : str or None, optional
-        Compute backend.  One of ``'numba'``, ``'pallas'``, or
-        ``None`` (auto-select).  Default is ``None``.
+        Compute backend: ``'numba'`` (CPU), ``'cuda_raw'`` (GPU),
+        ``'jax_raw'`` (CPU/GPU/TPU), or ``None`` (auto-select).
 
     Returns
     -------
@@ -960,10 +958,10 @@ def csrmm_p_call(
         scalar (automatically promoted to shape ``(1,)``).
     indices : jax.Array
         Column indices of non-zero elements.  Shape ``(nse,)`` with dtype
-        ``int32``, ``int64``, ``uint32``, or ``uint64``.
+        ``int32``.
     indptr : jax.Array
-        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
-        as ``indices``.
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with dtype
+        ``int32`` or ``int64``.
     B : jax.Array
         Dense matrix.  Shape ``(shape[0], cols)`` when
         ``transpose=True`` or ``(shape[1], cols)`` when
@@ -986,10 +984,8 @@ def csrmm_p_call(
     Raises
     ------
     AssertionError
-        If ``indices`` or ``indptr`` have a dtype other than ``int32``,
-        ``int64``, ``uint32``, or ``uint64``.
-    AssertionError
-        If ``indices`` and ``indptr`` do not share the same dtype.
+        If ``indices`` is not ``int32`` or ``indptr`` is neither
+        ``int32`` nor ``int64``.
     AssertionError
         If ``indptr`` or ``indices`` is not 1-D.
     AssertionError
@@ -1074,7 +1070,7 @@ csrmm_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``csrmm``.
 
 This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-matrix multiplication with floating-point weights
-operation to registered backends (``numba``, ``pallas``),
+operation to registered backends (``numba``, ``cuda_raw``, ``jax_raw``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 All elements of the input matrix contribute to the result, performing standard

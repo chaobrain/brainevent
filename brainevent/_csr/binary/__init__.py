@@ -27,18 +27,8 @@ from .binary_indexed import (
     binary_csrmm_indexed,
     binary_csrmm_indexed_p,
 )
-from .hybrid_config import (
-    HybridConfig,
-    HybridBenchmarkRecord,
-    DEFAULT_HYBRID_CONFIG,
-    validate_config,
-    compile_flags_for_config,
-    module_suffix_for_config,
-    get_hybrid_config,
-    save_hybrid_config,
-    hybrid_task_capacity,
-    current_device_kind,
-)
+from ..config import CSRConfig
+from .hybrid_config import load_csr_config, save_csr_config
 from .initialize import (
     init_csr_config,
 )
@@ -52,15 +42,8 @@ __all__ = [
     'binary_csrmv_indexed_p',
     'binary_csrmm_indexed',
     'binary_csrmm_indexed_p',
-    'HybridConfig',
-    'HybridBenchmarkRecord',
-    'DEFAULT_HYBRID_CONFIG',
-    'validate_config',
-    'compile_flags_for_config',
-    'module_suffix_for_config',
-    'get_hybrid_config',
-    'save_hybrid_config',
-    'hybrid_task_capacity',
-    'current_device_kind',
+    'CSRConfig',
+    'load_csr_config',
+    'save_csr_config',
     'init_csr_config',
 ]

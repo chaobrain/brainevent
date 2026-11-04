@@ -258,7 +258,7 @@ csr_slice_rows_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``csr_slice_rows``.
 
 This ``XLACustomKernel`` instance dispatches the CSR row slicing operation
-to registered backends (``numba``, ``pallas``),
+to registered backends (``numba`` on CPU, ``cuda_raw`` on GPU),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 Extracts selected rows from a CSR sparse matrix and returns a dense
@@ -485,7 +485,7 @@ csr_slice_rows_grad_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for the gradient of ``csr_slice_rows``.
 
 This ``XLACustomKernel`` instance dispatches the backward pass of the CSR
-row slicing operation to registered backends (``numba``, ``pallas``),
+row slicing operation to registered backends (``numba`` on CPU, ``cuda_raw`` on GPU),
 using runtime shape/dtype metadata provided by the calling transpose rule.
 
 Given a cotangent matrix ``ct`` of shape ``(num_selected, n_cols)`` (the

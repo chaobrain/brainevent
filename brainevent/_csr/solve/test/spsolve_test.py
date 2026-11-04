@@ -25,6 +25,36 @@ from brainevent._test_util import jax_x64_enabled
 _DENSE = np.array([[4., 1., 0.], [1., 3., 0.], [0., 0., 2.]])
 
 
+@pytest.mark.parametrize('cls_name', ['CSR', 'CSC'])
+@pytest.mark.parametrize('shape', [(2, 3), (3, 2), (0, 3), (3, 0)])
+@pytest.mark.parametrize('compiled', [False, True])
+def test_matrix_solve_rejects_rectangular_shape(cls_name, shape, compiled):
+    """The direct solver must reject rectangular matrices before treating them as square."""
+    mat = getattr(brainevent, cls_name).fromdense(jnp.eye(*shape))
+    solve = jax.jit(mat.solve) if compiled else mat.solve
+    with pytest.raises(ValueError, match='square matrix'):
+        solve(jnp.ones(shape[0]))
+
+
+@pytest.mark.parametrize('cls_name', ['CSR', 'CSC'])
+@pytest.mark.parametrize('rhs_shape', [(), (2,), (3, 1)])
+@pytest.mark.parametrize('compiled', [False, True])
+def test_matrix_solve_requires_rhs_vector(cls_name, rhs_shape, compiled):
+    mat = getattr(brainevent, cls_name).fromdense(jnp.asarray(_DENSE, jnp.float32))
+    solve = jax.jit(mat.solve) if compiled else mat.solve
+    with pytest.raises(ValueError, match=r'b.*vector.*shape.*\(3,\)'):
+        solve(jnp.ones(rhs_shape))
+
+
+@pytest.mark.parametrize('size, rhs_shape', [(0, (1,)), (0, (0, 1)), (3, ()), (3, (2,)), (3, (3, 1))])
+@pytest.mark.parametrize('compiled', [False, True])
+def test_csr_solve_requires_rhs_vector_before_empty_return(size, rhs_shape, compiled):
+    mat = brainevent.CSR.fromdense(jnp.eye(size))
+    solve = jax.jit(csr_solve) if compiled else csr_solve
+    with pytest.raises(ValueError, match=rf'b.*vector.*shape.*\({size},\)'):
+        solve(mat.data, mat.indices, mat.indptr, jnp.ones(rhs_shape))
+
+
 @pytest.mark.parametrize('data_dtype, b_dtype', [(jnp.float32, jnp.float64), (jnp.float64, jnp.float32)])
 def test_csr_solve_promotes_mixed_dtypes(data_dtype, b_dtype):
     """``spsolve`` needs one dtype; mixed float32/float64 operands are promoted first."""

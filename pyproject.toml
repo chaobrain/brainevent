@@ -29,6 +29,8 @@ build-backend = "setuptools.build_meta"
 "brainevent" = ["include/brainevent/*.h", "py.typed"]
 # Tile MM loads both local CUDA headers at runtime.
 "brainevent._tcsr.binary.tile_mm" = ["*.cu", "*.cuh"]
+"brainevent._csr.binary.hybrid_mv" = ["*.cu", "*.cuh"]
+"brainevent._csr.binary.hybrid_mm" = ["*.cu", "*.cuh", "_common/*.cuh"]
 "brainevent._sddmm" = ["_common/*.cuh"]
 "brainevent._sddmm._mv" = ["*.cu", "*.cuh"]
 "brainevent._sddmm._mm" = ["*.cu", "*.cuh"]

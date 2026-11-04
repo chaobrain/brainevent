@@ -16,47 +16,34 @@ def _has_gpu() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _has_gpu(),
-    reason="CSR hybrid tuning tests require a GPU backend",
-)
-
 import brainevent
 from brainevent._csr.binary import hybrid_config as hc
 from brainevent._csr.binary import initialize
+from brainevent._csr.config import CSRConfig
 
 
 @pytest.fixture(autouse=True)
 def _restore_cache_dir():
     cache_dir = brainevent.get_cache_dir()
-    hc.get_hybrid_config.cache_clear()
     try:
         yield
     finally:
         brainevent.set_cache_dir(cache_dir)
-        hc.get_hybrid_config.cache_clear()
 
 
 def test_default_config_matches_cu_defaults():
-    assert hc.DEFAULT_HYBRID_CONFIG == hc.HybridConfig(256, 2048, 128, 4096)
+    assert CSRConfig().kernel_args()[0] == CSRConfig(256, 2048, 128, 4096).kernel_args()[0]
 
 
 def test_validate_config_rejects_invalid_scheduler_values():
-    valid = hc.HybridConfig(256, 2048, 128, 4096)
-    assert hc.validate_config(valid) == valid
-    for bad in (
-        hc.HybridConfig(250, 2048, 128, 4096),   # not a multiple of 32
-        hc.HybridConfig(1056, 2048, 128, 4096),  # > 1024
-        hc.HybridConfig(256, 0, 128, 4096),      # scatter <= 0
-        hc.HybridConfig(256, 2048, -1, 4096),    # threshold < 0
-        hc.HybridConfig(256, 2048, 128, 0),      # task_nnz <= 0
-    ):
+    for values in ((250, 2048, 128, 4096), (1056, 2048, 128, 4096),
+                   (256, 0, 128, 4096), (256, 2048, -1, 4096), (256, 2048, 128, 0)):
         with pytest.raises(ValueError):
-            hc.validate_config(bad)
+            CSRConfig(*values)
 
 
 def test_compile_flags_map_config_to_cuda_defines():
-    flags = hc.compile_flags_for_config(hc.HybridConfig(512, 4096, 256, 8192))
+    flags = CSRConfig(512, 4096, 256, 8192).compile_flags()
     assert flags == [
         "-DBE_HYBRID_BLOCK_SIZE=512",
         "-DBE_HYBRID_FIXED_SCATTER_BLOCKS=4096",
@@ -66,8 +53,8 @@ def test_compile_flags_map_config_to_cuda_defines():
 
 
 def test_module_suffix_is_config_specific():
-    a = hc.module_suffix_for_config(hc.HybridConfig(256, 2048, 128, 4096))
-    b = hc.module_suffix_for_config(hc.HybridConfig(512, 2048, 128, 4096))
+    a = CSRConfig(256, 2048, 128, 4096).module_suffix()
+    b = CSRConfig(512, 2048, 128, 4096).module_suffix()
     assert a == "_b256_s2048_t128_n4096"
     assert a != b
 
@@ -78,12 +65,11 @@ def test_hybrid_task_capacity_matches_cuda_chunking(monkeypatch):
         hc._ENV_OVERRIDE,
         '{"block_size":256,"fixed_scatter_blocks":2048,"tpr_threshold":128,"task_nnz":4096}',
     )
-    hc.get_hybrid_config.cache_clear()
     # cumulative indptr for row lengths [0, 128, 129, 4096, 4097, 8192]
     lengths = [0, 128, 129, 4096, 4097, 8192]
     indptr = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64)
-    assert hc.hybrid_task_capacity(indptr) == 0 + 0 + 1 + 1 + 2 + 2
-    hc.get_hybrid_config.cache_clear()
+    cfg = hc.load_csr_config()
+    assert cfg.mv_capacity(int(indptr[-1]), len(lengths), max(lengths)) >= 0 + 0 + 1 + 1 + 2 + 2
 
 
 def test_env_override_and_task_constants_stay_in_lockstep(monkeypatch):
@@ -91,14 +77,13 @@ def test_env_override_and_task_constants_stay_in_lockstep(monkeypatch):
         hc._ENV_OVERRIDE,
         '{"block_size":256,"fixed_scatter_blocks":2048,"tpr_threshold":256,"task_nnz":512}',
     )
-    hc.get_hybrid_config.cache_clear()
-    cfg = hc.get_hybrid_config()
+    cfg = hc.load_csr_config()
     assert (cfg.tpr_threshold, cfg.task_nnz) == (256, 512)
     # row lengths [256, 257, 1024, 1025] with threshold 256, nnz 512
     lengths = [256, 257, 1024, 1025]
     indptr = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64)
-    assert hc.hybrid_task_capacity(indptr) == 0 + 1 + 2 + 3
-    hc.get_hybrid_config.cache_clear()
+    assert cfg.mv_capacity(int(indptr[-1]), len(lengths), max(lengths)) >= 0 + 1 + 2 + 3
+    assert "-DBE_HYBRID_TASK_NNZ=512" in cfg.compile_flags()
 
 
 def test_save_and_reload_round_trip(monkeypatch, tmp_path):
@@ -106,20 +91,16 @@ def test_save_and_reload_round_trip(monkeypatch, tmp_path):
     monkeypatch.delenv(hc._ENV_OVERRIDE, raising=False)
     # Point the shared cache instance at tmp_path so get_cache_dir() follows.
     brainevent.set_cache_dir(str(tmp_path))
-    hc.get_hybrid_config.cache_clear()
 
-    cfg = hc.HybridConfig(512, 4096, 256, 8192)
-    hc.save_hybrid_config(cfg, device_kind="TEST_GPU")
+    cfg = CSRConfig(512, 4096, 256, 8192)
+    hc.save_csr_config(cfg, device_kind="TEST_GPU")
 
-    monkeypatch.setattr(hc, "current_device_kind", lambda: "TEST_GPU")
-    hc.get_hybrid_config.cache_clear()
-    assert hc.get_hybrid_config() == cfg
+    monkeypatch.setattr(hc, "_current_device_kind", lambda: "TEST_GPU")
+    assert hc.load_csr_config().kernel_args()[0] == cfg.kernel_args()[0]
 
     # A different device falls back to defaults.
-    monkeypatch.setattr(hc, "current_device_kind", lambda: "OTHER_GPU")
-    hc.get_hybrid_config.cache_clear()
-    assert hc.get_hybrid_config() == hc.DEFAULT_HYBRID_CONFIG
-    hc.get_hybrid_config.cache_clear()
+    monkeypatch.setattr(hc, "_current_device_kind", lambda: "OTHER_GPU")
+    assert hc.load_csr_config().kernel_args()[0] == CSRConfig().kernel_args()[0]
 
 
 def test_init_csr_config_is_exported():
@@ -166,16 +147,16 @@ def test_run_benchmark_shows_progress_without_candidate_details(monkeypatch, cap
     )
 
     candidates = (
-        hc.HybridConfig(128, 1024, 128, 2048),
-        hc.HybridConfig(256, 2048, 512, 2048),
+        CSRConfig(128, 1024, 128, 2048),
+        CSRConfig(256, 2048, 512, 2048),
     )
     timings = {
-        candidates[0]: (12.345, 123.450),
-        candidates[1]: (67.890, 678.900),
+        candidates[0].module_suffix(): (12.345, 123.450),
+        candidates[1].module_suffix(): (67.890, 678.900),
     }
 
     def fake_benchmark_config(config, **kwargs):
-        elapsed_ms, per_call_us = timings[config]
+        elapsed_ms, per_call_us = timings[config.module_suffix()]
         return {
             "config": config,
             "elapsed_ms": elapsed_ms,
@@ -249,7 +230,7 @@ def test_run_benchmark_defaults_to_200_steps_and_50_warmup_while_reusing_spike_b
         n_pre=1,
         n_post=1,
         conn=1,
-        candidates=(hc.HybridConfig(256, 2048, 512, 2048),),
+        candidates=(CSRConfig(256, 2048, 512, 2048),),
         show_progress=False,
     )
 
@@ -301,7 +282,7 @@ def test_benchmark_config_cycles_spike_batch_for_timed_steps(monkeypatch):
     monkeypatch.setattr(initialize.time, "perf_counter", lambda: next(counter))
 
     result = initialize._benchmark_config(
-        hc.HybridConfig(256, 2048, 512, 2048),
+        CSRConfig(256, 2048, 512, 2048),
         weights=np.array([1.0], dtype=np.float32),
         indices=np.array([0], dtype=np.int32),
         indptr=np.array([0, 1], dtype=np.int32),
@@ -335,7 +316,7 @@ def test_benchmark_config_cycles_spike_batch_for_timed_steps(monkeypatch):
 
 
 def test_init_csr_config_does_not_print_benchmark_details(monkeypatch, capsys):
-    cfg = hc.HybridConfig(256, 2048, 512, 2048)
+    cfg = CSRConfig(256, 2048, 512, 2048)
     monkeypatch.setattr(
         initialize,
         "run_benchmark",
@@ -355,15 +336,14 @@ def test_init_csr_config_does_not_print_benchmark_details(monkeypatch, capsys):
     assert captured.out == ""
 
 
-def test_init_csr_config_saves_records_for_get_hybrid_config_print(monkeypatch, tmp_path, capsys):
+def test_init_csr_config_saves_records_for_load_csr_config_print(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("BRAINEVENT_CACHE_DIR", str(tmp_path))
     brainevent.set_cache_dir(str(tmp_path))
-    monkeypatch.setattr(hc, "current_device_kind", lambda: "TEST_GPU")
-    monkeypatch.setattr(initialize, "current_device_kind", lambda: "TEST_GPU")
-    hc.get_hybrid_config.cache_clear()
+    monkeypatch.setattr(hc, "_current_device_kind", lambda: "TEST_GPU")
+    monkeypatch.setattr(initialize, "_current_device_kind", lambda: "TEST_GPU")
 
-    best = hc.HybridConfig(256, 2048, 512, 2048)
-    other = hc.HybridConfig(128, 1024, 128, 2048)
+    best = CSRConfig(256, 2048, 512, 2048)
+    other = CSRConfig(128, 1024, 128, 2048)
     monkeypatch.setattr(
         initialize,
         "run_benchmark",
@@ -386,7 +366,7 @@ def test_init_csr_config_saves_records_for_get_hybrid_config_print(monkeypatch, 
     assert initialize.init_csr_config() == best
     assert capsys.readouterr().out == ""
 
-    output = str(hc.get_hybrid_config())
+    output = str(hc.load_csr_config())
     assert output.startswith(str(best))
     assert str(best) in output
     assert "12.345 ms" in output
@@ -395,14 +375,14 @@ def test_init_csr_config_saves_records_for_get_hybrid_config_print(monkeypatch, 
     assert "67.890 ms" in output
     assert "678.900 us/call" in output
 
-    hc.get_hybrid_config.cache_clear()
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(not _has_gpu(), reason="CSR tuning smoke requires a GPU")
 def test_gpu_smoke_runs_two_small_configs_when_gpu_is_available():
     candidates = (
-        hc.HybridConfig(128, 1024, 128, 2048),
-        hc.HybridConfig(256, 2048, 128, 4096),
+        CSRConfig(128, 1024, 128, 2048),
+        CSRConfig(256, 2048, 128, 4096),
     )
     try:
         results = initialize.run_benchmark(

@@ -18,12 +18,10 @@
  * ===============================================================================
  *
  * CUDA backing kernels for ``binary_csrmv_indexed`` (see
- * ``brainevent/_csr/binary_indexed.py``).  These are the *permuted*
- * heterogeneous kernels used in the *unfavorable* direction
- * (``CSR @ event`` / ``event @ CSC``).  The structure (indices/indptr) is the
- * transposed (CSC-like) view, while the weight for structural slot ``j`` lives
- * at the canonical position ``perm[j]``; the gather ``weights[perm[j]]`` is
- * fused into the scatter so only active rows/columns are read.
+ * ``brainevent/_csr/binary/binary_indexed.py``). These are the permuted
+ * heterogeneous kernels for the non-transposed gather path. Each compressed
+ * row accumulates its active input events, reading the weight for structural
+ * slot ``j`` from the canonical position ``weights[perm[j]]``.
  *
  * Homogeneous weights need no perm variant (every slot reads ``weights[0]``);
  * the Python dispatcher reuses the plain homogeneous kernels in

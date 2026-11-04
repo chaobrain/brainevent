@@ -14,7 +14,7 @@
 // ==============================================================================
 
 /*
- * binary_csrmv_wat_hybrid.cu -- Hybrid CSR scatter
+ * hybrid_spmv_impl.cuh -- Shared binary/weighted hybrid CSR scatter implementation
  * =============================================================================
  *
  * Experimental CUDA backend for event-driven CSR transposed
@@ -29,7 +29,7 @@
  *      one thread per row.
  *   2. Heavy active rows reserve contiguous block tasks once with atomicAdd.
  *      Each task stores begin/end offsets for up to 4096 nonzeros.
- *   3. Launch a fixed number of 128-thread scatter blocks. Each block reads
+ *   3. Launch a fixed number of BE_HYBRID_BLOCK_SIZE-thread scatter blocks. Each block reads
  *      the active task count on device and processes tasks with a grid-stride
  *      loop, avoiding D2H status reads and host synchronization.
  *
@@ -41,7 +41,7 @@
  *     weights        : floating[nnz] for hetero, floating[1] for homo
  *     indices        : s32/s64[nnz]
  *     indptr         : s32/s64[m + 1]
- *     vector         : s8[m], nonzero means active row
+ *     vector         : bool/float32[m] for binary; weight dtype[m] for weighted
  *     task_begin/end : same dtype as indptr, scratch/output task ranges
  *     status         : s32[2] scratch/output {active_task_count, overflow_flag}
  *
@@ -67,6 +67,9 @@
  *   from indptr and re-reads the row value.
  */
 
+#ifndef DEVING_HYBRID_SPMV_IMPL_CUH
+#define DEVING_HYBRID_SPMV_IMPL_CUH
+
 #include "cuda_common.h"
 #include "brainevent/common.h"
 #include "brainevent/dtypes.h"
@@ -84,9 +87,9 @@ namespace ffi = xla::ffi;
 // Host-side check: throws BE::CheckError, which the generated FFI wrapper
 // converts into an xla::ffi::Error (a Python exception) instead of terminating the process.
 #define BE_CSRMV_WAT_HYBRID_CHECK(condition, message) \
-    do                                                      \
-    {                                                       \
-        BE_CHECK(condition) << (message);                   \
+    do                                                \
+    {                                                 \
+        BE_CHECK(condition) << (message);             \
     } while (0)
 #endif
 
@@ -604,11 +607,6 @@ namespace
         {
             return InternalCudaError("cudaMemsetAsync(output) failed", status_code);
         }
-        if (m <= 0 || nnz == 0)
-        {
-            return ffi::Error::Success();
-        }
-
         size_t status_bytes = static_cast<size_t>(2) * sizeof(int32_t);
         if (device_status == nullptr)
         {
@@ -626,11 +624,17 @@ namespace
                                      status_code);
         }
 
+        // Status is an output of every call, including empty structures.
+        if (m <= 0 || nnz == 0)
+        {
+            return ffi::Error::Success();
+        }
+
         int extract_blocks = (m + kBlockSize - 1) / kBlockSize;
         BinaryCsrmvWatHybridExtractKernel<WeightT, EventT, IndexT, OffsetT, Weighted>
             <<<extract_blocks, kBlockSize, 0, stream>>>(
-            weights, indices, indptr, vector, output,
-            task_begin, task_end, device_status, m, task_capacity);
+                weights, indices, indptr, vector, output,
+                task_begin, task_end, device_status, m, task_capacity);
         status_code = cudaGetLastError();
         if (status_code != cudaSuccess)
         {
@@ -646,8 +650,8 @@ namespace
                                      : kFixedScatterBlocks;
             BinaryCsrmvWatHybridBlockKernel<WeightT, EventT, IndexT, OffsetT, Weighted>
                 <<<scatter_blocks, kBlockSize, 0, stream>>>(
-                weights, indices, task_begin, task_end, device_status,
-                task_capacity, output, indptr, vector);
+                    weights, indices, task_begin, task_end, device_status,
+                    task_capacity, output, indptr, vector);
             status_code = cudaGetLastError();
             if (status_code != cudaSuccess)
             {
@@ -688,11 +692,6 @@ namespace
         {
             return InternalCudaError("cudaMemsetAsync(output) failed", status_code);
         }
-        if (m <= 0 || nnz == 0)
-        {
-            return ffi::Error::Success();
-        }
-
         size_t status_bytes = static_cast<size_t>(2) * sizeof(int32_t);
         if (device_status == nullptr)
         {
@@ -710,11 +709,17 @@ namespace
                                      status_code);
         }
 
+        // Status is an output of every call, including empty structures.
+        if (m <= 0 || nnz == 0)
+        {
+            return ffi::Error::Success();
+        }
+
         int extract_blocks = (m + kBlockSize - 1) / kBlockSize;
         BinaryCsrmvWatHybridHomoExtractKernel<WeightT, EventT, IndexT, OffsetT, Weighted>
             <<<extract_blocks, kBlockSize, 0, stream>>>(
-            weights, indices, indptr, vector, output,
-            task_begin, task_end, device_status, m, task_capacity);
+                weights, indices, indptr, vector, output,
+                task_begin, task_end, device_status, m, task_capacity);
         status_code = cudaGetLastError();
         if (status_code != cudaSuccess)
         {
@@ -730,8 +735,8 @@ namespace
                                      : kFixedScatterBlocks;
             BinaryCsrmvWatHybridHomoBlockKernel<WeightT, EventT, IndexT, OffsetT, Weighted>
                 <<<scatter_blocks, kBlockSize, 0, stream>>>(
-                weights, indices, task_begin, task_end, device_status,
-                task_capacity, output, indptr, vector);
+                    weights, indices, task_begin, task_end, device_status,
+                    task_capacity, output, indptr, vector);
             status_code = cudaGetLastError();
             if (status_code != cudaSuccess)
             {
@@ -743,233 +748,185 @@ namespace
         return ffi::Error::Success();
     }
 
+    template <typename WeightT, typename EventT, bool Weighted>
+    void HybridSpmvHetero(
+        const char *name,
+        const BE::Tensor weights,
+        const BE::Tensor indices,
+        const BE::Tensor indptr,
+        const BE::Tensor vector,
+        const BE::Tensor task_begin_scratch,
+        const BE::Tensor task_end_scratch,
+        const BE::Tensor status_scratch,
+        BE::Tensor output,
+        BE::Tensor task_begin_output,
+        BE::Tensor task_end_output,
+        BE::Tensor status_output,
+        int64_t task_capacity,
+        int64_t stream)
+    {
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            weights.dtype() == HybridWeightTraits<WeightT>::dtype,
+            (std::string(name) + " expects matching weights dtype").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            IsSignedIndexDType(indices.dtype()),
+            (std::string(name) + " expects indices=s32/s64").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            IsSignedIndexDType(indptr.dtype()),
+            (std::string(name) + " expects indptr=s32/s64").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            (vector.dtype() == HybridEventDType<WeightT, EventT, Weighted>::value),
+            (std::string(name) + " expects matching vector dtype").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            task_begin_scratch.dtype() == indptr.dtype() &&
+                task_end_scratch.dtype() == indptr.dtype() &&
+                status_scratch.dtype() == BE::DType::Int32 &&
+                task_begin_output.dtype() == indptr.dtype() &&
+                task_end_output.dtype() == indptr.dtype() &&
+                status_output.dtype() == BE::DType::Int32,
+            (std::string(name) + " expects status=s32 and task scratch dtype to match indptr").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            output.dtype() == HybridWeightTraits<WeightT>::dtype,
+            (std::string(name) + " expects matching output dtype").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            weights.ndim() == 1 && indices.ndim() == 1 &&
+                indptr.ndim() == 1 && vector.ndim() == 1 &&
+                task_begin_scratch.ndim() == 1 && task_end_scratch.ndim() == 1 &&
+                status_scratch.ndim() == 1 && output.ndim() == 1 &&
+                task_begin_output.ndim() == 1 && task_end_output.ndim() == 1 &&
+                status_output.ndim() == 1,
+            (std::string(name) + " expects rank-1 buffers").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            weights.numel() == indices.numel(),
+            (std::string(name) + " expects weights and indices lengths to match").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            indptr.numel() == vector.numel() + 1,
+            (std::string(name) + " expects indptr length to be vector length plus one").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            task_capacity >= 0,
+            (std::string(name) + " expects non-negative task_capacity").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            task_begin_scratch.numel() == static_cast<size_t>(task_capacity) &&
+                task_end_scratch.numel() == static_cast<size_t>(task_capacity) &&
+                task_begin_output.numel() == static_cast<size_t>(task_capacity) &&
+                task_end_output.numel() == static_cast<size_t>(task_capacity),
+            (std::string(name) + " expects task scratch lengths to match task_capacity").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            status_scratch.numel() == 2 && status_output.numel() == 2,
+            (std::string(name) + " expects status scratch length 2").c_str());
+        cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+        bool ok = true;
+        std::string launch_error;
+        BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, {
+            ffi::Error error = LaunchBinaryCsrmvWatHybrid<WeightT, EventT, IndexT, OffsetT, Weighted>(
+                weights.data_ptr<const WeightT>(),
+                indices.data_ptr<const IndexT>(),
+                indptr.data_ptr<const OffsetT>(),
+                vector.data_ptr<const EventT>(),
+                output.data_ptr<WeightT>(),
+                task_begin_output.data_ptr<OffsetT>(),
+                task_end_output.data_ptr<OffsetT>(),
+                status_output.data_ptr<int32_t>(),
+                static_cast<int>(indptr.numel()) - 1,
+                static_cast<int>(output.numel()),
+                static_cast<int64_t>(indices.numel()),
+                task_capacity,
+                cuda_stream);
+            ok = error.success();
+            if (!ok)
+                launch_error = std::string(error.message());
+        });
+        BE_CSRMV_WAT_HYBRID_CHECK(ok, (std::string(name) + " launch failed: " + launch_error).c_str());
+    }
+
+    template <typename WeightT, typename EventT, bool Weighted>
+    void HybridSpmvHomo(
+        const char *name,
+        const BE::Tensor weights,
+        const BE::Tensor indices,
+        const BE::Tensor indptr,
+        const BE::Tensor vector,
+        const BE::Tensor task_begin_scratch,
+        const BE::Tensor task_end_scratch,
+        const BE::Tensor status_scratch,
+        BE::Tensor output,
+        BE::Tensor task_begin_output,
+        BE::Tensor task_end_output,
+        BE::Tensor status_output,
+        int64_t task_capacity,
+        int64_t stream)
+    {
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            weights.dtype() == HybridWeightTraits<WeightT>::dtype && weights.numel() == 1,
+            (std::string(name) + " expects matching weights dtype and length 1").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            IsSignedIndexDType(indices.dtype()),
+            (std::string(name) + " expects indices=s32/s64").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            IsSignedIndexDType(indptr.dtype()),
+            (std::string(name) + " expects indptr=s32/s64").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            (vector.dtype() == HybridEventDType<WeightT, EventT, Weighted>::value),
+            (std::string(name) + " expects matching vector dtype").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            task_begin_scratch.dtype() == indptr.dtype() &&
+                task_end_scratch.dtype() == indptr.dtype() &&
+                status_scratch.dtype() == BE::DType::Int32 &&
+                task_begin_output.dtype() == indptr.dtype() &&
+                task_end_output.dtype() == indptr.dtype() &&
+                status_output.dtype() == BE::DType::Int32,
+            (std::string(name) + " expects status=s32 and task scratch dtype to match indptr").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            output.dtype() == HybridWeightTraits<WeightT>::dtype,
+            (std::string(name) + " expects matching output dtype").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            weights.ndim() == 1 && indices.ndim() == 1 &&
+                indptr.ndim() == 1 && vector.ndim() == 1 &&
+                task_begin_scratch.ndim() == 1 && task_end_scratch.ndim() == 1 &&
+                status_scratch.ndim() == 1 && output.ndim() == 1 &&
+                task_begin_output.ndim() == 1 && task_end_output.ndim() == 1 &&
+                status_output.ndim() == 1,
+            (std::string(name) + " expects rank-1 buffers").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            indptr.numel() == vector.numel() + 1,
+            (std::string(name) + " expects indptr length to be vector length plus one").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            task_capacity >= 0,
+            (std::string(name) + " expects non-negative task_capacity").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            task_begin_scratch.numel() == static_cast<size_t>(task_capacity) &&
+                task_end_scratch.numel() == static_cast<size_t>(task_capacity) &&
+                task_begin_output.numel() == static_cast<size_t>(task_capacity) &&
+                task_end_output.numel() == static_cast<size_t>(task_capacity),
+            (std::string(name) + " expects task scratch lengths to match task_capacity").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            status_scratch.numel() == 2 && status_output.numel() == 2,
+            (std::string(name) + " expects status scratch length 2").c_str());
+        cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+        bool ok = true;
+        std::string launch_error;
+        BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, {
+            ffi::Error error = LaunchBinaryCsrmvWatHybridHomo<WeightT, EventT, IndexT, OffsetT, Weighted>(
+                weights.data_ptr<const WeightT>(),
+                indices.data_ptr<const IndexT>(),
+                indptr.data_ptr<const OffsetT>(),
+                vector.data_ptr<const EventT>(),
+                output.data_ptr<WeightT>(),
+                task_begin_output.data_ptr<OffsetT>(),
+                task_end_output.data_ptr<OffsetT>(),
+                status_output.data_ptr<int32_t>(),
+                static_cast<int>(indptr.numel()) - 1,
+                static_cast<int>(output.numel()),
+                static_cast<int64_t>(indices.numel()),
+                task_capacity,
+                cuda_stream);
+            ok = error.success();
+            if (!ok)
+                launch_error = std::string(error.message());
+        });
+        BE_CSRMV_WAT_HYBRID_CHECK(ok, (std::string(name) + " launch failed: " + launch_error).c_str());
+    }
+
 } // namespace
 
-#define DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(SUFFIX, WEIGHT_T, EVENT_T, WEIGHTED) \
-void binary_csrmv_wat_hybrid_hetero##SUFFIX(                             \
-    const BE::Tensor weights,                                             \
-    const BE::Tensor indices,                                             \
-    const BE::Tensor indptr,                                              \
-    const BE::Tensor vector,                                              \
-    const BE::Tensor task_begin_scratch,                                  \
-    const BE::Tensor task_end_scratch,                                    \
-    const BE::Tensor status_scratch,                                      \
-    BE::Tensor output,                                                    \
-    BE::Tensor task_begin_output,                                         \
-    BE::Tensor task_end_output,                                           \
-    BE::Tensor status_output,                                             \
-    int64_t task_capacity,                                                \
-    int64_t stream)                                                       \
-{                                                                         \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        weights.dtype() == HybridWeightTraits<WEIGHT_T>::dtype,           \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects matching weights dtype"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        IsSignedIndexDType(indices.dtype()),                              \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects indices=s32/s64"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        IsSignedIndexDType(indptr.dtype()),                               \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects indptr=s32/s64"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        (vector.dtype() == HybridEventDType<WEIGHT_T, EVENT_T, WEIGHTED>::value),              \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects matching vector dtype"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        task_begin_scratch.dtype() == indptr.dtype() &&                   \
-            task_end_scratch.dtype() == indptr.dtype() &&                 \
-            status_scratch.dtype() == BE::DType::Int32 &&                 \
-            task_begin_output.dtype() == indptr.dtype() &&                \
-            task_end_output.dtype() == indptr.dtype() &&                  \
-            status_output.dtype() == BE::DType::Int32,                    \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects status=s32 and task scratch dtype to match indptr"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        output.dtype() == HybridWeightTraits<WEIGHT_T>::dtype,            \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects matching output dtype"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        weights.ndim() == 1 && indices.ndim() == 1 &&                     \
-            indptr.ndim() == 1 && vector.ndim() == 1 &&                   \
-            task_begin_scratch.ndim() == 1 && task_end_scratch.ndim() == 1 && \
-            status_scratch.ndim() == 1 && output.ndim() == 1 &&           \
-            task_begin_output.ndim() == 1 && task_end_output.ndim() == 1 && \
-            status_output.ndim() == 1,                                    \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects rank-1 buffers"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        weights.numel() == indices.numel(),                               \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects weights and indices lengths to match"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        indptr.numel() == vector.numel() + 1,                              \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects indptr length to be vector length plus one"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        task_capacity >= 0,                                                \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects non-negative task_capacity"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        task_begin_scratch.numel() == static_cast<size_t>(task_capacity) && \
-            task_end_scratch.numel() == static_cast<size_t>(task_capacity) && \
-            task_begin_output.numel() == static_cast<size_t>(task_capacity) && \
-            task_end_output.numel() == static_cast<size_t>(task_capacity), \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects task scratch lengths to match task_capacity"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        status_scratch.numel() == 2 && status_output.numel() == 2,         \
-        "binary_csrmv_wat_hybrid_hetero" #SUFFIX " expects status scratch length 2"); \
-    cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);     \
-    bool ok = true;                                                        \
-    std::string launch_error;                                              \
-    BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, { \
-        ffi::Error error = LaunchBinaryCsrmvWatHybrid<WEIGHT_T, EVENT_T, IndexT, OffsetT, WEIGHTED>( \
-            weights.data_ptr<const WEIGHT_T>(),                            \
-            indices.data_ptr<const IndexT>(),                              \
-            indptr.data_ptr<const OffsetT>(),                              \
-            vector.data_ptr<const EVENT_T>(),                              \
-            output.data_ptr<WEIGHT_T>(),                                   \
-            task_begin_output.data_ptr<OffsetT>(),                         \
-            task_end_output.data_ptr<OffsetT>(),                           \
-            status_output.data_ptr<int32_t>(),                             \
-            static_cast<int>(indptr.numel()) - 1,                          \
-            static_cast<int>(output.numel()),                              \
-            static_cast<int64_t>(indices.numel()),                         \
-            task_capacity,                                                 \
-            cuda_stream);                                                  \
-        ok = error.success();                                              \
-        if (!ok) launch_error = std::string(error.message());              \
-    });                                                                    \
-    BE_CSRMV_WAT_HYBRID_CHECK(ok, std::string("binary_csrmv_wat_hybrid_hetero" #SUFFIX " launch failed: " + launch_error).c_str()); \
-}
-
-#define DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(SUFFIX, WEIGHT_T, EVENT_T, WEIGHTED)   \
-void binary_csrmv_wat_hybrid_homo##SUFFIX(                               \
-    const BE::Tensor weights,                                             \
-    const BE::Tensor indices,                                             \
-    const BE::Tensor indptr,                                              \
-    const BE::Tensor vector,                                              \
-    const BE::Tensor task_begin_scratch,                                  \
-    const BE::Tensor task_end_scratch,                                    \
-    const BE::Tensor status_scratch,                                      \
-    BE::Tensor output,                                                    \
-    BE::Tensor task_begin_output,                                         \
-    BE::Tensor task_end_output,                                           \
-    BE::Tensor status_output,                                             \
-    int64_t task_capacity,                                                \
-    int64_t stream)                                                       \
-{                                                                         \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        weights.dtype() == HybridWeightTraits<WEIGHT_T>::dtype && weights.numel() == 1, \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects matching weights dtype and length 1"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        IsSignedIndexDType(indices.dtype()),                              \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects indices=s32/s64"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        IsSignedIndexDType(indptr.dtype()),                               \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects indptr=s32/s64"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        (vector.dtype() == HybridEventDType<WEIGHT_T, EVENT_T, WEIGHTED>::value),              \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects matching vector dtype"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        task_begin_scratch.dtype() == indptr.dtype() &&                   \
-            task_end_scratch.dtype() == indptr.dtype() &&                 \
-            status_scratch.dtype() == BE::DType::Int32 &&                 \
-            task_begin_output.dtype() == indptr.dtype() &&                \
-            task_end_output.dtype() == indptr.dtype() &&                  \
-            status_output.dtype() == BE::DType::Int32,                    \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects status=s32 and task scratch dtype to match indptr"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        output.dtype() == HybridWeightTraits<WEIGHT_T>::dtype,            \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects matching output dtype"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        weights.ndim() == 1 && indices.ndim() == 1 &&                     \
-            indptr.ndim() == 1 && vector.ndim() == 1 &&                   \
-            task_begin_scratch.ndim() == 1 && task_end_scratch.ndim() == 1 && \
-            status_scratch.ndim() == 1 && output.ndim() == 1 &&           \
-            task_begin_output.ndim() == 1 && task_end_output.ndim() == 1 && \
-            status_output.ndim() == 1,                                    \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects rank-1 buffers"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        indptr.numel() == vector.numel() + 1,                              \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects indptr length to be vector length plus one"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        task_capacity >= 0,                                                \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects non-negative task_capacity"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        task_begin_scratch.numel() == static_cast<size_t>(task_capacity) && \
-            task_end_scratch.numel() == static_cast<size_t>(task_capacity) && \
-            task_begin_output.numel() == static_cast<size_t>(task_capacity) && \
-            task_end_output.numel() == static_cast<size_t>(task_capacity), \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects task scratch lengths to match task_capacity"); \
-    BE_CSRMV_WAT_HYBRID_CHECK(                                            \
-        status_scratch.numel() == 2 && status_output.numel() == 2,         \
-        "binary_csrmv_wat_hybrid_homo" #SUFFIX " expects status scratch length 2"); \
-    cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);     \
-    bool ok = true;                                                        \
-    std::string launch_error;                                              \
-    BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, { \
-        ffi::Error error = LaunchBinaryCsrmvWatHybridHomo<WEIGHT_T, EVENT_T, IndexT, OffsetT, WEIGHTED>( \
-            weights.data_ptr<const WEIGHT_T>(),                            \
-            indices.data_ptr<const IndexT>(),                              \
-            indptr.data_ptr<const OffsetT>(),                              \
-            vector.data_ptr<const EVENT_T>(),                              \
-            output.data_ptr<WEIGHT_T>(),                                   \
-            task_begin_output.data_ptr<OffsetT>(),                         \
-            task_end_output.data_ptr<OffsetT>(),                           \
-            status_output.data_ptr<int32_t>(),                             \
-            static_cast<int>(indptr.numel()) - 1,                          \
-            static_cast<int>(output.numel()),                              \
-            static_cast<int64_t>(indices.numel()),                         \
-            task_capacity,                                                 \
-            cuda_stream);                                                  \
-        ok = error.success();                                              \
-        if (!ok) launch_error = std::string(error.message());              \
-    });                                                                    \
-    BE_CSRMV_WAT_HYBRID_CHECK(ok, std::string("binary_csrmv_wat_hybrid_homo" #SUFFIX " launch failed: " + launch_error).c_str()); \
-}
-
-// @BE binary_csrmv_wat_hybrid_hetero_f32_bool
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_f32_bool, float, int8_t, false)
-// @BE binary_csrmv_wat_hybrid_hetero_f32_float
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_f32_float, float, float, false)
-// @BE binary_csrmv_wat_hybrid_hetero_f64_bool
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_f64_bool, double, int8_t, false)
-// @BE binary_csrmv_wat_hybrid_hetero_f64_float
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_f64_float, double, float, false)
-// @BE binary_csrmv_wat_hybrid_hetero_f16_bool
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_f16_bool, __half, int8_t, false)
-// @BE binary_csrmv_wat_hybrid_hetero_f16_float
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_f16_float, __half, float, false)
-// @BE binary_csrmv_wat_hybrid_hetero_bf16_bool
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_bf16_bool, __nv_bfloat16, int8_t, false)
-// @BE binary_csrmv_wat_hybrid_hetero_bf16_float
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_bf16_float, __nv_bfloat16, float, false)
-
-// @BE binary_csrmv_wat_hybrid_homo_f32_bool
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_f32_bool, float, int8_t, false)
-// @BE binary_csrmv_wat_hybrid_homo_f32_float
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_f32_float, float, float, false)
-// @BE binary_csrmv_wat_hybrid_homo_f64_bool
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_f64_bool, double, int8_t, false)
-// @BE binary_csrmv_wat_hybrid_homo_f64_float
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_f64_float, double, float, false)
-// @BE binary_csrmv_wat_hybrid_homo_f16_bool
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_f16_bool, __half, int8_t, false)
-// @BE binary_csrmv_wat_hybrid_homo_f16_float
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_f16_float, __half, float, false)
-// @BE binary_csrmv_wat_hybrid_homo_bf16_bool
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_bf16_bool, __nv_bfloat16, int8_t, false)
-// @BE binary_csrmv_wat_hybrid_homo_bf16_float
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_bf16_float, __nv_bfloat16, float, false)
-
-// Weighted (``_wv``) entry points: the event buffer has the weight dtype and
-// active rows scatter ``w * x``. Instantiated with WEIGHTED=true; the binary
-// entry points above compile exactly as before (WEIGHTED=false).
-// @BE binary_csrmv_wat_hybrid_hetero_f32_wv
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_f32_wv, float, float, true)
-// @BE binary_csrmv_wat_hybrid_hetero_f64_wv
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_f64_wv, double, double, true)
-// @BE binary_csrmv_wat_hybrid_hetero_f16_wv
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_f16_wv, __half, __half, true)
-// @BE binary_csrmv_wat_hybrid_hetero_bf16_wv
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HETERO(_bf16_wv, __nv_bfloat16, __nv_bfloat16, true)
-// @BE binary_csrmv_wat_hybrid_homo_f32_wv
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_f32_wv, float, float, true)
-// @BE binary_csrmv_wat_hybrid_homo_f64_wv
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_f64_wv, double, double, true)
-// @BE binary_csrmv_wat_hybrid_homo_f16_wv
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_f16_wv, __half, __half, true)
-// @BE binary_csrmv_wat_hybrid_homo_bf16_wv
-DEFINE_BINARY_CSRMV_WAT_HYBRID_HOMO(_bf16_wv, __nv_bfloat16, __nv_bfloat16, true)
+#endif // DEVING_HYBRID_SPMV_IMPL_CUH

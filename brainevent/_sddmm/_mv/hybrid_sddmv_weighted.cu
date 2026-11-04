@@ -25,7 +25,7 @@
  *     for j in indptr[row]:indptr[row + 1]
  *   dweight[j] = 0 for every slot of an inactive row
  *
- * Strategy (default tuning values; configurable through HybridConfig):
+ * Strategy (default tuning values; configurable through CSRConfig):
  *   0. Clear status only; dweight arrives zeroed (aliased dweight_in).
  *   1. Extract active rows. Each thread reads its event value once. Rows with
  *      nnz <= 128 are gathered immediately by that thread, scaled by the value.
@@ -53,7 +53,7 @@
  *     dweight        : ct dtype [nnz] output
  *
  *   task_capacity bounds the tasks required by all heavy rows. The Python
- *   caller computes this bound from shapes and the captured HybridConfig.
+ *   caller computes this bound from shapes and the captured CSRConfig.
  */
 
 #include "hybrid_sddmv.cuh"

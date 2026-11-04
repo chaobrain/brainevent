@@ -19,7 +19,8 @@ from .binary.binary_indexed import (
     binary_csrmv_indexed, binary_csrmv_indexed_p,
     binary_csrmm_indexed, binary_csrmm_indexed_p,
 )
-from .binary.hybrid_config import HybridConfig, get_hybrid_config
+from .config import CSRConfig
+from .binary.hybrid_config import load_csr_config, save_csr_config
 from .binary.initialize import init_csr_config
 from .delay.delay import csr_delay_deliver, csr_delay_deliver_p
 from .delay.delay_layout import CSRDelayLayout, csr_delay_deliver_layout, csr_delay_deliver_layout_p
@@ -56,5 +57,5 @@ __all__ = [
     'csr_slice_rows', 'csr_slice_rows_p',
     'csr_delay_deliver', 'csr_delay_deliver_p',
     'CSRDelayLayout', 'csr_delay_deliver_layout', 'csr_delay_deliver_layout_p',
-    'HybridConfig', 'get_hybrid_config', 'init_csr_config',
+    'CSRConfig', 'load_csr_config', 'save_csr_config', 'init_csr_config',
 ]
