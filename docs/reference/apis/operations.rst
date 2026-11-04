@@ -67,14 +67,18 @@ Row slicing.
    csr_slice_rows
    csr_slice_rows_p
 
-Per-edge-delay spike delivery into an arrival ring.
+Prepared per-edge-delay spike delivery into an arrival ring.
+
+Build a ``delaycsr`` once, either directly or with ``CSR.delay_layout``.
+``csr_delay_deliver_layout`` adds to an explicit ring without clearing slots
+or mutating the object's owned state. Weight replacements via ``with_data``
+must follow the initialized ``delaycsr.data`` order. The layout inherits the
+parent CSR backend; explicit backends are ``cuda_raw`` and ``jax_raw``.
 
 .. autosummary::
    :toctree: generated/
 
-   csr_delay_deliver
-   csr_delay_deliver_p
-   CSRDelayLayout
+   delaycsr
    csr_delay_deliver_layout
    csr_delay_deliver_layout_p
 

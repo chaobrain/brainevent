@@ -1795,88 +1795,41 @@ class CSR(CompressedSparseData):
             pre_vals=pre_vals, post_vals=post_vals, params=params, shape=self.shape,
         )
 
-    def delay_deliver(self, ring, events, delays, t, *, weighted: Optional[bool] = None, backend: Optional[str] = None):
-        """Deliver presynaptic events into an arrival ring with per-edge delays.
-
-        Convenience wrapper around :func:`brainevent.csr_delay_deliver` using
-        this matrix as the ``(n_pre, n_post)`` connectivity::
-
-            ring_new[(t + delays[e]) % L, indices[e]] += data[e] * f(events)[row(e)]
-
-        Parameters
-        ----------
-        ring : jax.Array or Quantity
-            Arrival buffer of shape ``(L, shape[1])``.
-        events : jax.Array, BinaryArray or WeightedArray
-            Presynaptic events of shape ``(shape[0],)``. A
-            :class:`WeightedArray` selects weighted delivery.
-        delays : jax.Array or int
-            Integer per-edge delays in steps, shape ``(nse,)`` aligned with
-            ``self.indices``, or a scalar.
-        t : int or jax.Array
-            Current integer time step (may be traced).
-        weighted : bool or None, optional
-            Binary (``False``) or event-value-weighted (``True``) delivery.
-            ``None`` (default) infers it from the event type.
-        backend : str or None, optional
-            Backend override; defaults to ``self.backend``.
-
-        Returns
-        -------
-        jax.Array or Quantity
-            The updated ring.
-
-        See Also
-        --------
-        brainevent.csr_delay_deliver : Underlying function.
-
-        Examples
-        --------
-        .. code-block:: python
-
-            >>> import jax.numpy as jnp
-            >>> import brainevent
-            >>> csr = brainevent.CSR.fromdense(jnp.array([[1., 0.], [0., 2.]]))
-            >>> ring = jnp.zeros((3, 2))
-            >>> csr.delay_deliver(ring, jnp.array([True, True]), jnp.array([1, 2]), 0,
-            ...                   backend='jax_raw')
-            Array([[0., 0.],
-                   [1., 0.],
-                   [0., 2.]], dtype=float32)
-        """
-        from .delay.delay import csr_delay_deliver  # pylint: disable=import-outside-toplevel
-
-        return csr_delay_deliver(
-            ring, events, self.data, self.indices, self.indptr, delays, t,
-            shape=self.shape, weighted=weighted,
-            backend=self.backend if backend is None else backend,
-        )
-
     def delay_layout(self, delays, n_slots: int):
-        """Build a :class:`brainevent.CSRDelayLayout` of this matrix.
+        """Initialize a :class:`brainevent.delaycsr` from this matrix.
 
-        The layout reorders the edges of every row by delay so that
-        :func:`brainevent.csr_delay_deliver_layout` can deliver spikes delay
-        by delay, which is much faster on the GPU than :meth:`delay_deliver`
-        when the ring does not fit in the L2 cache.
+        Each row is sorted by (delay, column), with its weights following the
+        same permutation. Construct the layout once outside JIT, then use
+        :func:`brainevent.csr_delay_deliver_layout` to add events to an explicit
+        ring. The original CSR is unchanged.
 
         Parameters
         ----------
-        delays : array_like or int
+        delays : array_like
             Concrete integer delays in steps, shape ``(nse,)`` aligned with
-            ``self.indices``, or a scalar; each in ``[1, n_slots)``.
+            this CSR's current edge order. Each delay must lie in
+            ``[0, n_slots)``.
         n_slots : int
-            Ring length ``L``.
+            Positive ring length ``L``, fitting int32.
 
         Returns
         -------
-        brainevent.CSRDelayLayout
-            The reordered connectivity, holding ``self.data`` in layout order.
+        brainevent.delaycsr
+            Prepared CSR with delay metadata, an initially zero ring and
+            workspace. Its backend is inherited from this CSR: ``cuda_raw``,
+            ``jax_raw``, or ``None`` for the platform default.
+
+        Notes
+        -----
+        ``layout.with_data(weights)`` accepts a weight array in the new
+        ``layout.data`` order, with the same shape, dtype and unit. It does
+        not reorder weights from this source CSR. Replacing prepared weights
+        supports JIT and automatic differentiation.
 
         See Also
         --------
-        brainevent.CSRDelayLayout.build : Underlying constructor.
-        delay_deliver : Delivery without precomputation.
+        brainevent.delaycsr : Constructor with additional initialization options.
+        brainevent.csr_delay_deliver_layout : Pure additive delivery.
 
         Examples
         --------
@@ -1884,18 +1837,20 @@ class CSR(CompressedSparseData):
 
             >>> import jax.numpy as jnp
             >>> import brainevent
-            >>> csr = brainevent.CSR.fromdense(jnp.array([[1., 0.], [0., 2.]]))
+            >>> csr = brainevent.CSR.fromdense(
+            ...     jnp.array([[1., 0.], [0., 2.]], dtype=jnp.float32),
+            ...     backend='jax_raw')
             >>> layout = csr.delay_layout(jnp.array([1, 2]), n_slots=3)
-            >>> layout.deliver(jnp.zeros((3, 2)), jnp.array([True, True]), 0, backend='jax_raw')
+            >>> brainevent.csr_delay_deliver_layout(
+            ...     jnp.zeros((3, 2), dtype=jnp.float32),
+            ...     jnp.array([True, True]), layout, 0)
             Array([[0., 0.],
                    [1., 0.],
                    [0., 2.]], dtype=float32)
         """
-        from .delay.delay_layout import CSRDelayLayout  # pylint: disable=import-outside-toplevel
+        from .delay.region_delay import delaycsr  # pylint: disable=import-outside-toplevel
 
-        return CSRDelayLayout.build(
-            self.data, self.indices, self.indptr, delays, n_slots=n_slots, shape=self.shape,
-        )
+        return delaycsr(self, edge_delays=delays, buffer_slots=n_slots)
 
     def __getitem__(self, index):
         """Extract rows of the matrix ``W`` as a dense array.
