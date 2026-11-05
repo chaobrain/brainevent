@@ -137,8 +137,17 @@ def test_invalid_delay_value_sets(values: Any) -> None:
 
 def test_byte_size_and_task_counter_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(module, "_I64_MAX", 31)
-    with pytest.raises(ValueError, match="byte size"):
-        _case()
+    zeros = jnp.zeros
+
+    def guarded_zeros(shape, *args, **kwargs):
+        if shape == (3, 4):
+            raise AssertionError("oversized ring must be rejected before allocation")
+        return zeros(shape, *args, **kwargs)
+
+    with monkeypatch.context() as guard:
+        guard.setattr(module.jnp, "zeros", guarded_zeros)
+        with pytest.raises(ValueError, match="byte size"):
+            _case()
     monkeypatch.setattr(module, "_I64_MAX", 2**63 - 1)
     monkeypatch.setattr(module, "_I32_MAX", 4)
     monkeypatch.setattr(module, "TPR_THRESHOLD", 0)
@@ -161,24 +170,24 @@ def test_sorted_input_skips_sorting_and_keeps_weight_order(monkeypatch):
     def unexpected_sort(*args):
         raise AssertionError("sorted input must not be sorted again")
 
-    monkeypatch.setattr(delaycsr, "sort_by_delay", unexpected_sort)
+    monkeypatch.setattr(delaycsr, "_sort_by_delay", unexpected_sort)
     w = _case(weights=np.array([3, 5, 7, 2], np.float32), indices=np.array([0, 2, 2, 3], np.int32),
               edge_delays=np.array([0, 2, 2, 2]), sorted_by_delay=True)
     np.testing.assert_array_equal(w.data, [3, 5, 7, 2])
     np.testing.assert_array_equal(w.delay_count, [[1, 0, 3], [0, 0, 0]])
 
 
-def test_unsorted_input_calls_member_sort_once(monkeypatch):
+def test_unsorted_input_sorts_each_row_once(monkeypatch):
     calls = []
-    original = delaycsr.sort_by_delay
+    original = np.lexsort
 
-    def record(self, delays):
-        calls.append(self)
-        return original(self, delays)
+    def record(keys):
+        calls.append(len(keys[0]))
+        return original(keys)
 
-    monkeypatch.setattr(delaycsr, "sort_by_delay", record)
+    monkeypatch.setattr(module.np, "lexsort", record)
     w = _case(sorted_by_delay=False)
-    assert calls == [w]
+    assert calls == [4, 0]
     np.testing.assert_array_equal(w.data, [3, 5, 7, 2])
 
 
@@ -380,3 +389,93 @@ def test_pytree_and_with_data_keep_backend(backend):
     assert restored.delay_steps == updated.delay_steps == state.delay_steps
     assert updated.ring is state.ring
     assert updated.workspace is state.workspace
+
+
+def _aligned_host_array(values, dtype):
+    values = np.asarray(values, dtype)
+    storage = np.empty(values.nbytes + 64, np.uint8)
+    start = (-storage.ctypes.data) % 64
+    result = storage[start:start + values.nbytes].view(dtype).reshape(values.shape)
+    result[...] = values
+    return result
+
+
+@pytest.mark.parametrize("source_kind", ["arrays", "csr"])
+@pytest.mark.parametrize("sorted_by_delay", [False, True])
+def test_constructor_owns_host_arrays(source_kind, sorted_by_delay):
+    weights = _aligned_host_array([2., 3.], np.float32)
+    columns = _aligned_host_array([0, 1], np.int32)
+    pointers = _aligned_host_array([0, 2], np.int32)
+    delays = _aligned_host_array([1, 2], np.int32)
+    arrays = (weights, columns, pointers)
+    source = CSR(arrays, shape=(1, 2), backend="jax_raw") if source_kind == "csr" else arrays
+    prepared = delaycsr(source, shape=(1, 2), edge_delays=delays,
+                        sorted_by_delay=sorted_by_delay, backend="jax_raw")
+    weights[:] = 9
+    columns[:] = 9
+    pointers[:] = 7
+    delays[:] = 0
+    np.testing.assert_array_equal(prepared.data, [2, 3])
+    np.testing.assert_array_equal(prepared.indices, [0, 1])
+    np.testing.assert_array_equal(prepared.indptr, [0, 2])
+    np.testing.assert_array_equal(prepared.delay_count, [[1, 1]])
+
+
+def test_with_data_owns_numpy_replacement():
+    matrix = _matrix()
+    weights = _aligned_host_array([10., 20., 30., 40.], np.float32)
+    updated = matrix.with_data(weights)
+    weights[:] = -1
+    np.testing.assert_array_equal(updated.data, [10, 20, 30, 40])
+    _assert_same_structure_and_state(matrix, updated)
+
+
+def test_constructor_prepares_weighted_workspace_in_explicit_ring_dtype():
+    ring = np.full((3, 1), 5., np.float64)
+    matrix = delaycsr(
+        (np.array([2.], np.float32), np.zeros(129, np.int32), np.array([0, 129], np.int32)),
+        shape=(1, 1), edge_delays=np.ones(129, np.int32), buffer_slots=3,
+        ring=ring, weighted=True, backend="jax_raw",
+    )
+    ring[:] = -1
+    assert matrix.data.dtype == jnp.float32
+    assert matrix.ring.dtype == matrix.workspace.task_value.dtype == jnp.float64
+    np.testing.assert_array_equal(matrix.ring, np.full((3, 1), 5.))
+    assert matrix.capacity > 0
+
+
+def test_quantity_sorting_weight_replacement_and_owned_ring():
+    matrix = delaycsr(
+        (jnp.array([2., 3.], jnp.float32) * u.mV, np.array([0, 1], np.int32),
+         np.array([0, 2], np.int32)), shape=(1, 2), edge_delays=np.array([2, 1], np.int32),
+        backend="jax_raw",
+    )
+    assert u.get_unit(matrix.data) == u.mV
+    assert u.get_unit(matrix.ring) == u.mV
+    np.testing.assert_array_equal(u.get_mantissa(matrix.data), [3, 2])
+    updated = matrix.with_data(jnp.array([5., 7.], jnp.float32) * u.mV)
+    assert u.get_unit(updated.data) == u.mV
+    _assert_same_structure_and_state(matrix, updated)
+    output = updated.forward(jnp.array([True]), 0)
+    assert u.get_unit(output) == u.mV
+    np.testing.assert_array_equal(u.get_mantissa(output), [0, 5])
+
+
+def test_explicit_float64_ring_requires_x64_before_device_transfer():
+    with jax.enable_x64(False):
+        with pytest.raises(RuntimeError, match="jax_enable_x64.*ring"):
+            delaycsr((np.array([2.], np.float32), np.array([0], np.int32),
+                      np.array([0, 1], np.int32)), shape=(1, 1),
+                     edge_delays=np.array([1], np.int32), ring=np.zeros((2, 1), np.float64))
+
+
+def test_list_ring_uses_jax_default_precision_when_x64_is_disabled():
+    with jax.enable_x64(False):
+        matrix = delaycsr(
+            (np.array([2.], np.float32), np.array([0], np.int32),
+             np.array([0, 1], np.int32)), shape=(1, 1),
+            edge_delays=np.array([1], np.int32), ring=[[1.], [2.]],
+            backend="jax_raw",
+        )
+        assert matrix.ring.dtype == jnp.float32
+        np.testing.assert_array_equal(matrix.forward(jnp.array([True]), 0), [4.])

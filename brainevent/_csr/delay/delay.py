@@ -14,10 +14,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._compatible_import import init_zero
+from brainevent._compatible_import import init_zero, match_varying_axes
 from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_file
+from brainevent._op.util import cuda_event_abi
 
-from ._util import _checked_result, _check_projection, _raise_if_bad_head
+from ._util import _checked_result, _head_out_of_bounds
 
 
 __all__ = [
@@ -36,7 +37,6 @@ TRAITS = PACKAGE / "_common" / "op_traits.cuh"
 HEADER = PACKAGE / "hybrid" / "hybrid_delay_spmv.cuh"
 VALUE_SUFFIX = {jnp.dtype(jnp.float16): "f16", jnp.dtype(jnp.bfloat16): "bf16",
                 jnp.dtype(jnp.float32): "f32", jnp.dtype(jnp.float64): "f64"}
-EVENT_SUFFIX = {jnp.dtype(jnp.bool_): "bool", jnp.dtype(jnp.float32): "float"}
 
 
 class HybridWorkspace(NamedTuple):
@@ -82,73 +82,102 @@ class WeightedHybridWorkspace(NamedTuple):
 @lru_cache(maxsize=None)
 def _load(stem: str) -> str:
     source = HEADER.parent / (stem + ".cu")
-    dependencies = [source, TRAITS, TRAITS.with_name("cuda_traits.cuh"), HEADER]
+    dependencies = [source, TRAITS, TRAITS.with_name("cuda_traits.cuh"), HEADER,
+                    HEADER.with_name("hybrid_delay_validation.cuh")]
     name = stem + "_" + hashlib.sha256(b"".join(path.read_bytes() for path in dependencies)).hexdigest()[:16]
     load_cuda_file(source, name=name, allow_cuda_graph=False,
                    extra_include_paths=[str(source.parent), str(PACKAGE)])
     return name
 
 
-# Backend generators keep delivery FFI calls inside the shared primitive. JAX transforms
-# operate on the rules below, never directly on an ffi_call.
-def _cuda_kernel(*, weighted, check_status, outs, **kwargs):
+def _input_error_code(ring, events, data, indices, indptr, counts, offsets, head, tasks, *workspace):
+    """Validate prepared values once, before either delivery implementation."""
+    lengths = jnp.diff(indptr)
+    # Checking only a sum (or the sign of diff(indptr)) can accept int32
+    # wraparound. Each nonnegative segment prefix must stay inside its row.
+    segment_ends = jnp.cumsum(counts, axis=1)
+    expected_tasks = jnp.sum(counts // TASK_NNZ + (counts % TASK_NNZ != 0), axis=1)
+    expected_tasks = jnp.where(lengths > TPR_THRESHOLD, expected_tasks, 0)
+    invalid_metadata = (
+        (indptr[0] != 0) | (indptr[-1] != indices.size)
+        | jnp.any(indptr < 0) | jnp.any(indptr > indices.size)
+        | jnp.any(indptr[1:] < indptr[:-1])
+        | jnp.any(counts < 0) | jnp.any(segment_ends < 0)
+        | jnp.any(segment_ends > lengths[:, None])
+        | jnp.any(segment_ends[:, -1] != lengths)
+        | jnp.any(tasks != expected_tasks)
+        | jnp.any(indices < 0) | jnp.any(indices >= ring.shape[1]))
+    if ring.shape[1]:
+        invalid_metadata |= jnp.any(
+            (offsets < 0) | (offsets >= ring.size) | (offsets % ring.shape[1] != 0))
+    else:
+        invalid_metadata |= jnp.any(offsets != 0)
+    active_tasks = jnp.sum(jnp.where(events != 0, tasks, 0))
+    code = jnp.where(active_tasks > workspace[0].size, jnp.int32(1), jnp.int32(0))
+    code = jnp.where(invalid_metadata, jnp.int32(3), code)
+    return jnp.where(_head_out_of_bounds(head[0], ring.shape[0]), jnp.int32(2), code)
+
+
+def _validated_kernel(kernel_generator):
+    """Give all primitive bindings the same input gate, including raw binds."""
+    def generate(*, check_status, **params):
+        kernel = kernel_generator(**params)
+
+        def checked(*args):
+            code = _input_error_code(*args)
+
+            def align(values):
+                # Match the primitive's abstract outputs, including raw binds
+                # whose operands carry different manual shard axes.
+                return tuple(match_varying_axes(value, *args) for value in values)
+
+            def reject(_):
+                # No backend executes on invalid input, even when the caller
+                # requests an error code instead of an exception.
+                return align((args[0], *(jnp.zeros_like(x) for x in args[9:-1]),
+                              jnp.stack((jnp.int32(0), code))))
+
+            result = jax.lax.cond(code == 0, lambda _: align(kernel(*args)), reject, operand=None)
+            # One reporter covers input errors and native execution status.
+            # Its callback owns every leaf, so consuming only status or a
+            # nonempty queue retains the check even when the ring is unused.
+            return _checked_result(result, result[-1][1], head_only=not check_status)
+
+        return checked
+
+    return generate
+
+
+# Backend generators only deliver already-validated operands. JAX transforms
+# operate on the shared primitive's rules, never directly on an ffi_call.
+def _cuda_kernel(*, weighted, outs, **kwargs):
     def kernel(ring, events, data, indices, indptr, counts, offsets, head, tasks, *workspace):
-        _check_projection(ring, events, data, indices, indptr, head, workspace,
-                          weighted=weighted)
         stem = "hybrid_delay_spmv_weighted" if weighted else "hybrid_delay_spmv_binary"
-        event = "wv" if weighted else EVENT_SUFFIX[jnp.dtype(events.dtype)]
+        abi = cuda_event_abi(events.dtype, weighted=weighted, value_dtype=ring.dtype)
         value = VALUE_SUFFIX[jnp.dtype(ring.dtype)]
-        result = jax.ffi.ffi_call(
-            _load(stem) + f".region_delay_{value}_{event}", outs,
+        return jax.ffi.ffi_call(
+            _load(stem) + f".region_delay_{value}" + abi.suffix, outs,
             input_output_aliases={8 + i: i for i in range(len(outs))},
-        )(data, indices, indptr, events, counts, offsets, tasks, head, ring, *workspace)
-        return (_checked_result(result[0], result[-1][1], head_only=not check_status), *result[1:])
+        )(data, indices, indptr, abi.prepare(events), counts, offsets, tasks, head, ring, *workspace)
 
     return kernel
 
 
-def _jax_kernel(*, weighted, check_status, **kwargs):
+def _jax_kernel(*, weighted, **kwargs):
     """Implement the hybrid prepared ABI with JAX gathers and scatter-add."""
     def kernel(ring, events, data, indices, indptr, counts, offsets, head, tasks, *workspace):
-        _check_projection(ring, events, data, indices, indptr, head, workspace,
-                          weighted=weighted)
-        lengths = jnp.diff(indptr)
-        expected_tasks = jnp.sum(counts // TASK_NNZ + (counts % TASK_NNZ != 0), axis=1)
-        expected_tasks = jnp.where(lengths > TPR_THRESHOLD, expected_tasks, 0)
-        invalid_metadata = (
-            (indptr[0] != 0) | (indptr[-1] != indices.size) | jnp.any(lengths < 0)
-            | jnp.any(counts < 0) | jnp.any(jnp.sum(counts, axis=1) != lengths)
-            | jnp.any(tasks != expected_tasks)
-            | jnp.any(indices < 0) | jnp.any(indices >= ring.shape[1]))
-        if ring.shape[1]:
-            invalid_metadata |= jnp.any(
-                (offsets < 0) | (offsets >= ring.size) | (offsets % ring.shape[1] != 0))
-        else:
-            invalid_metadata |= jnp.any(offsets != 0)
-        active_tasks = jnp.sum(jnp.where(events != 0, tasks, 0))
-        code = jnp.where(active_tasks > workspace[0].size, jnp.int32(1), jnp.int32(0))
-        code = jnp.where(invalid_metadata, jnp.int32(3), code)
-        code = jnp.where((head[0] < 0) | (head[0] >= ring.shape[0]), jnp.int32(2), code)
-
-        def project(_):
-            if indices.size == 0 or ring.shape[1] == 0:
-                return ring
+        result = ring
+        if indices.size and ring.shape[1]:
             _, row_ids, slots, _ = _edge_locations(
                 (ring, events, data, indices, indptr, counts, offsets, head))
             x = events[row_ids]
             weights = jnp.broadcast_to(data, indices.shape)
-            values = weights * x if weighted else weights
+            values = weights * x.astype(ring.dtype) if weighted else weights
             # Inactive rows must not introduce NaN/Inf through zero products.
             values = jnp.where(x != 0, values, jnp.zeros_like(values))
-            return ring.at[slots, indices].add(values)
-
-        result = jax.lax.cond(code == 0, project, lambda _: ring, operand=None)
-        result = _checked_result(result, code, head_only=not check_status)
-        # JAX needs no task queue. Keep the existing auxiliary-output ABI and
-        # surface errors through status even when the result ring is empty.
-        status = _checked_result(jnp.stack((jnp.int32(0), code)), code,
-                                 head_only=not check_status)
-        return (result, *(jnp.zeros_like(value) for value in workspace[:-1]), status)
+            result = ring.at[slots, indices].add(values)
+        # JAX needs no task queue; retain the prepared auxiliary-output ABI.
+        return (result, *(jnp.zeros_like(value) for value in workspace))
 
     return kernel
 
@@ -195,8 +224,7 @@ def _project_tangent(args, *, backend, events=None, data=None, weighted):
     workspace = args[9:]
     if weighted:
         # Binary event tangents use weighted delivery, including task_value.
-        workspace = (*workspace[:3], jnp.zeros(workspace[0].shape, operands[2].dtype), workspace[-1])
-        operands[1] = operands[1].astype(operands[2].dtype)
+        workspace = (*workspace[:3], jnp.zeros(workspace[0].shape, operands[0].dtype), workspace[-1])
         operands[9:] = workspace
     outputs = tuple(jax.ShapeDtypeStruct(a.shape, a.dtype) for a in (operands[0], *workspace))
     return csr_delay_deliver_layout_p(
@@ -262,6 +290,84 @@ def _batching_rule(args, axes, **kwargs):
     return general_batching_rule(csr_delay_deliver_layout_p, args, axes, **kwargs)
 
 
+def _normalize_flags(weighted, check_status):
+    """Share the flag contract across the call and abstract-evaluation boundaries."""
+    if not isinstance(weighted, (bool, np.bool_)) or not isinstance(check_status, (bool, np.bool_)):
+        raise TypeError("weighted and check_status must be bool")
+    return bool(weighted), bool(check_status)
+
+
+def _projection_abstract_eval(*operands, outs, weighted, check_status, backend=None, **kwargs):
+    """Check every binding path once, including class calls and AD re-entry."""
+    if backend not in (None, "cuda_raw", "jax_raw"):
+        raise ValueError("backend must be 'cuda_raw', 'jax_raw' or None")
+    weighted, check_status = _normalize_flags(weighted, check_status)
+    if len(operands) != (14 if weighted else 13):
+        raise ValueError("CUDA/JAX requires row_task_count followed by the hybrid workspace arrays")
+    ring, events, data, indices, indptr, segments, offsets, head, *workspace = operands
+    if indptr.ndim != 1 or indptr.size < 1:
+        raise ValueError("indptr must be 1-D with at least one row pointer")
+    if indices.ndim != 1:
+        raise ValueError("indices must have shape (nnz,)")
+    if data.ndim != 1 or data.size not in (1, indices.size):
+        raise ValueError("data must have shape (1,) or (nnz,)")
+    for name, value in (("indices", indices), ("indptr", indptr), ("offsets", offsets)):
+        if value.dtype not in (jnp.int32, jnp.int64):
+            raise TypeError(f"{name} must use int32 or int64")
+    if offsets.ndim != 1 or offsets.size == 0:
+        raise ValueError("offsets must have shape (positive K,)")
+    rows, n_segments = indptr.size - 1, offsets.size
+    if segments.dtype != indptr.dtype:
+        raise TypeError("segments must have the indptr dtype")
+    if segments.shape != (rows, n_segments):
+        raise ValueError(f"segments must have shape ({rows}, {n_segments})")
+    tasks, *mutable = workspace
+    if tasks.shape != (rows,):
+        raise ValueError(f"row_task_count must have shape ({rows},)")
+    if tasks.dtype != jnp.int32:
+        raise TypeError("row_task_count must be int32")
+
+    if ring.ndim != 2 or ring.shape[0] == 0:
+        raise ValueError("buffer must have shape (positive L, N)")
+    if head.shape != (1,) or head.dtype != jnp.int32:
+        raise TypeError("head must be int32[1], with 0 <= head < L")
+    if events.shape != (rows,):
+        raise ValueError(f"events must have shape ({rows},)")
+    if ring.dtype not in VALUE_SUFFIX or data.dtype != ring.dtype:
+        raise TypeError("require float16/bfloat16/float32/float64 weights and ring of one dtype")
+    # Reuse the public event ABI's dtype contract; conversion belongs in the
+    # CUDA lowering so the original values survive JAX and differentiation.
+    cuda_event_abi(events.dtype, weighted=weighted, value_dtype=ring.dtype)
+    if indptr.dtype == jnp.int32 and indices.size > _I32_MAX:
+        raise ValueError("int32 indptr cannot address more than INT32_MAX edges; use int64")
+    if max(rows, n_segments, *ring.shape) > _I32_MAX:
+        raise ValueError("row count, segment count and ring dimensions must fit int32")
+    if ring.size > np.iinfo(np.int64).max // ring.dtype.itemsize:
+        raise ValueError("ring buffer byte size overflows int64")
+    if offsets.dtype == jnp.int32 and ring.size > _I32_MAX:
+        raise ValueError("use int64 offsets for a ring larger than INT32_MAX elements")
+    capacity = mutable[0].size
+    if capacity > _I32_MAX:
+        raise ValueError("task capacity must fit int32")
+    dtypes: tuple[np.dtype, ...] = (indptr.dtype, indptr.dtype, offsets.dtype)
+    if weighted:
+        dtypes += (ring.dtype,)
+    for name, value, dtype in zip(
+            ("task_begin", "task_end", "task_out_off", "task_value"), mutable[:-1], dtypes):
+        if value.shape != (capacity,):
+            raise ValueError(f"{name} must have shape ({capacity},)")
+        if value.dtype != dtype:
+            raise TypeError(f"{name} must have dtype {dtype}")
+    if mutable[-1].shape != (2,) or mutable[-1].dtype != jnp.int32:
+        raise TypeError("status must be int32[2]")
+    expected = (ring, *mutable)
+    if len(outs) != len(expected) or any(
+            out.shape != value.shape or out.dtype != value.dtype
+            for out, value in zip(outs, expected)):
+        raise ValueError("outs must match the ring and mutable workspace shapes and dtypes")
+    return csr_delay_deliver_layout_p._abstract_eval(*operands, outs=outs, **kwargs)
+
+
 def csr_delay_deliver_layout_p_call(
     ring,
     events,
@@ -284,8 +390,9 @@ def csr_delay_deliver_layout_p_call(
         Arrival buffer of shape ``(L, N)``, with positive ``L``. Values use
         float16, bfloat16, float32 or float64.
     events : array_like
-        Events of shape ``(M,)``. Binary delivery accepts bool or float32;
-        weighted delivery requires the ring dtype.
+        Events of shape ``(M,)``, with a boolean, integer or floating dtype.
+        Binary delivery uses nonzero activity. Weighted values are converted
+        to the ring dtype inside the execution backend.
     data : array_like
         Weights with the ring dtype: a scalar, ``(1,)`` or ``(nnz,)``.
     indices : array_like
@@ -310,8 +417,11 @@ def csr_delay_deliver_layout_p_call(
     weighted : bool, optional
         Multiply weights by event values instead of the nonzero activity mask.
     check_status : bool, optional
-        Report task/metadata errors, default True. Invalid heads are
-        always reported.
+        Raise on task/metadata errors, default True. With False, invalid inputs
+        return an unchanged ring, zero task arrays and status ``[0, error_code]``;
+        native execution failures also remain visible in status.
+        Invalid heads are always reported, including when only status or a
+        nonempty task array is consumed.
     backend : str or None, optional
         ``'cuda_raw'`` or ``'jax_raw'``. None uses the primitive's default
         for the execution platform: CUDA on GPU, JAX on CPU/TPU. JAX also
@@ -329,14 +439,20 @@ def csr_delay_deliver_layout_p_call(
     TypeError
         If operand dtypes or static flags are incompatible with the backend.
     ValueError
-        If the backend, shapes, workspace capacity or a concrete head is invalid.
+        If the backend, shapes or static workspace capacity is invalid.
+    RuntimeError
+        If execution rejects a head or checked metadata/capacity, or reports a
+        native execution error. Eager calls and JIT use the same input gate;
+        an asynchronous error can surface when the result is synchronized.
 
     Notes
     -----
     This unitless entry point infers ``outs`` and performs shape/dtype checks
     without copying connectivity to the host. Connectivity and segment contents
-    must already be prepared consistently, as by ``delaycsr``. Dynamic head and
-    checked metadata errors are reported during execution. JIT, JVP,
+    must already be prepared consistently, as by ``delaycsr``. Both backends
+    share a JAX input gate for head, metadata and active-task capacity. Under
+    JIT these values are checked before delivery at execution time, including
+    metadata for inactive rows. JIT, JVP,
     transpose and batching use the existing primitive rules.
 
     Examples
@@ -357,66 +473,16 @@ def csr_delay_deliver_layout_p_call(
         Array([[0.],
                [2.]], dtype=float32)
     """
-    if backend not in (None, "cuda_raw", "jax_raw"):
-        raise ValueError("backend must be 'cuda_raw', 'jax_raw' or None")
-    if not isinstance(weighted, (bool, np.bool_)) or not isinstance(check_status, (bool, np.bool_)):
-        raise TypeError("weighted and check_status must be bool")
-    weighted, check_status = bool(weighted), bool(check_status)
+    # Python's 0/False and 1/True share cache keys, so reject numeric flags
+    # before JAX can reuse an abstract evaluation from a valid boolean call.
+    weighted, check_status = _normalize_flags(weighted, check_status)
     ring, events, data, indices, indptr, segments, offsets, head = map(
         jnp.asarray, (ring, events, data, indices, indptr, segments, offsets, head))
     workspace = tuple(jnp.asarray(value) for value in workspace)
     if data.ndim == 0:
         data = data.reshape(1)
 
-    if indptr.ndim != 1 or indptr.size < 1:
-        raise ValueError("indptr must be 1-D with at least one row pointer")
-    if indices.ndim != 1:
-        raise ValueError("indices must have shape (nnz,)")
-    if data.ndim != 1 or data.size not in (1, indices.size):
-        raise ValueError("data must have shape (1,) or (nnz,)")
-    for name, value in (("indices", indices), ("indptr", indptr), ("offsets", offsets)):
-        if value.dtype not in (jnp.int32, jnp.int64):
-            raise TypeError(f"{name} must use int32 or int64")
-    if offsets.ndim != 1 or offsets.size == 0:
-        raise ValueError("offsets must have shape (positive K,)")
-    rows, n_segments = indptr.size - 1, offsets.size
-    if segments.dtype != indptr.dtype:
-        raise TypeError("segments must have the indptr dtype")
-    if segments.shape != (rows, n_segments):
-        raise ValueError(f"segments must have shape ({rows}, {n_segments})")
-    if len(workspace) != (6 if weighted else 5):
-        raise ValueError("CUDA/JAX requires row_task_count followed by the hybrid workspace arrays")
-    tasks, *mutable = workspace
-    if tasks.shape != (rows,):
-        raise ValueError(f"row_task_count must have shape ({rows},)")
-    if tasks.dtype != jnp.int32:
-        raise TypeError("row_task_count must be int32")
-
-    _check_projection(ring, events, data, indices, indptr, head, mutable,
-                      weighted=weighted)
-    if max(rows, n_segments, *ring.shape) > _I32_MAX:
-        raise ValueError("row count, segment count and ring dimensions must fit int32")
-    if ring.size > np.iinfo(np.int64).max // ring.dtype.itemsize:
-        raise ValueError("ring buffer byte size overflows int64")
-    if offsets.dtype == jnp.int32 and ring.size > _I32_MAX:
-        raise ValueError("use int64 offsets for a ring larger than INT32_MAX elements")
-    capacity = mutable[0].size
-    if capacity > _I32_MAX:
-        raise ValueError("task capacity must fit int32")
-    dtypes: tuple[np.dtype, ...] = (indptr.dtype, indptr.dtype, offsets.dtype)
-    if weighted:
-        dtypes += (ring.dtype,)
-    for name, value, dtype in zip(
-            ("task_begin", "task_end", "task_out_off", "task_value"), mutable[:-1], dtypes):
-        if value.shape != (capacity,):
-            raise ValueError(f"{name} must have shape ({capacity},)")
-        if value.dtype != dtype:
-            raise TypeError(f"{name} must have dtype {dtype}")
-    if mutable[-1].shape != (2,) or mutable[-1].dtype != jnp.int32:
-        raise TypeError("status must be int32[2]")
-    if not isinstance(head, jax.core.Tracer):
-        _raise_if_bad_head(np.asarray(head)[0], ring.shape[0])
-    outputs = tuple(jax.ShapeDtypeStruct(value.shape, value.dtype) for value in (ring, *mutable))
+    outputs = tuple(jax.ShapeDtypeStruct(value.shape, value.dtype) for value in (ring, *workspace[1:]))
     return csr_delay_deliver_layout_p(
         ring, events, data, indices, indptr, segments, offsets, head, *workspace,
         outs=outputs, backend=backend, weighted=weighted, check_status=check_status)
@@ -441,9 +507,10 @@ csr_delay_deliver_layout_p = XLACustomKernel(
     invalid heads and checked device errors surface during execution.
     """,
 )
-csr_delay_deliver_layout_p.def_kernel("cuda_raw", "gpu", _cuda_kernel, asdefault=True)
+csr_delay_deliver_layout_p.primitive.def_abstract_eval(_projection_abstract_eval)
+csr_delay_deliver_layout_p.def_kernel("cuda_raw", "gpu", _validated_kernel(_cuda_kernel), asdefault=True)
 for _platform in ("cpu", "gpu", "tpu"):
-    csr_delay_deliver_layout_p.def_kernel("jax_raw", _platform, _jax_kernel)
+    csr_delay_deliver_layout_p.def_kernel("jax_raw", _platform, _validated_kernel(_jax_kernel))
 csr_delay_deliver_layout_p.def_jvp_rule(_projection_jvp)
 csr_delay_deliver_layout_p.def_transpose_rule(_projection_transpose)
 csr_delay_deliver_layout_p.def_batching_rule(_batching_rule)

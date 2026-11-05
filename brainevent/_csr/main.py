@@ -32,6 +32,7 @@ from brainevent._misc import (
 )
 from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
 from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
+from brainevent.config import get_backend
 from .binary.binary import binary_csrmv, binary_csrmm
 from .binary.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from .config import CSRConfig
@@ -52,6 +53,9 @@ __all__ = [
 
 
 def _use_cuda_indexed_binary_route(backend: Optional[str]) -> bool:
+    """Prefer the object's backend, then the global GPU choice, for mirror routing."""
+    if backend is None:
+        backend = get_backend('gpu')
     return backend == "cuda_raw"
 
 

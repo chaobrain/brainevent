@@ -8,7 +8,6 @@ import numpy as np
 from numpy.typing import NDArray
 import pytest
 
-from brainevent import KernelCompilationError
 from brainevent._csr.delay.region_delay import HybridWorkspace, WeightedHybridWorkspace, delaycsr
 from brainevent._csr.delay.test._helpers import GPU, cuda_step
 from brainevent._csr.delay.test._reference import (
@@ -262,8 +261,8 @@ def test_hybrid_concurrent_rows_have_complete_task_coverage() -> None:
 
 
 @GPU
-@pytest.mark.parametrize("field,error", [("row_task_count", 1), ("delay_count", 3)])
-def test_hybrid_bad_metadata_is_reported_and_next_call_resets_status(field: str, error: int) -> None:
+@pytest.mark.parametrize("field", ["row_task_count", "delay_count"])
+def test_hybrid_bad_metadata_is_reported_and_next_call_resets_status(field: str) -> None:
     """Reject unwritten long-row tasks and reset the error on the next step."""
     data = delaycsr(
         (np.ones(1, np.float32), np.arange(129, dtype=np.int32), np.array([0, 129], np.int32)),
@@ -275,9 +274,10 @@ def test_hybrid_bad_metadata_is_reported_and_next_call_resets_status(field: str,
     project = jax.jit(cuda_step)
     ring, work = project(**arrays, events=jnp.ones(1, bool), head=jnp.zeros(1, jnp.int32),
                          buffer=jnp.ones((1, 129), jnp.float32), workspace=_workspace(data))
-    assert int(work.status[1]) == error
+    assert int(work.status[1]) == 3
     np.testing.assert_array_equal(ring, 1)
-    _, work = project(**arrays, events=jnp.zeros(1, bool), head=jnp.zeros(1, jnp.int32), buffer=ring, workspace=work)
+    _, work = project(**_arrays(data), events=jnp.zeros(1, bool), head=jnp.zeros(1, jnp.int32),
+                      buffer=ring, workspace=work)
     np.testing.assert_array_equal(work.status, [0, 0])
 
 
@@ -373,11 +373,11 @@ def test_dtype_validation() -> None:
     arrays = _arrays(data)
     head = jnp.array([0], jnp.int32)
     events = jnp.ones(data.shape[0], jnp.bool_)
-    with pytest.raises(KernelCompilationError, match="weights and ring of one dtype"):
+    with pytest.raises(TypeError, match="weights and ring of one dtype"):
         cuda_step(**arrays, events=events, head=head, buffer=jnp.zeros((SLOTS, COLUMNS), jnp.float64),
                   workspace=_workspace(data))
-    with pytest.raises(KernelCompilationError, match="binary events must be bool or float32"):
-        cuda_step(**arrays, events=events.astype(jnp.int32), head=head,
+    with pytest.raises(TypeError, match="Binary CUDA events"):
+        cuda_step(**arrays, events=events.astype(jnp.complex64), head=head,
                   buffer=jnp.zeros((SLOTS, COLUMNS), jnp.float32), workspace=_workspace(data))
 
 
@@ -401,7 +401,7 @@ def _weighted_problem(dtype, index_dtype=np.int32, edge_dtype=np.int32, homo=Fal
     )
     if wide:
         data.delay_off = data.delay_off.astype(jnp.int64)
-        data._allocate_workspace()
+        data.workspace = data._make_workspace(data.ring.dtype, data.weighted)
     return data, (weights, indices, ptr, delays), events
 
 
@@ -533,20 +533,20 @@ def test_weighted_validation_and_preparation():
     arrays = _arrays(data)
     events, head = jnp.asarray(event_columns[:, 0]), jnp.array([0], jnp.int32)
     ring, work = jnp.zeros((6, data.shape[1]), jnp.float32), data.workspace
-    with pytest.raises(KernelCompilationError, match="events"):
-        cuda_step(**arrays, events=events.astype(jnp.bool_), head=head,
+    with pytest.raises(TypeError, match="events"):
+        cuda_step(**arrays, events=events.astype(jnp.complex64), head=head,
                   buffer=ring, workspace=work, weighted=True)
-    with pytest.raises(KernelCompilationError, match="WeightedHybridWorkspace"):
+    with pytest.raises(ValueError, match="workspace"):
         cuda_step(**arrays, events=events, head=head, buffer=ring,
                   workspace=HybridWorkspace(work.task_begin, work.task_end, work.task_out_off, work.status),
                   weighted=True)
     for task_value in (jnp.zeros(data.capacity, jnp.float64), jnp.zeros(data.capacity + 1, jnp.float32)):
-        with pytest.raises(KernelCompilationError, match="task_value"):
+        with pytest.raises((TypeError, ValueError), match="task_value"):
             cuda_step(**arrays, events=events, head=head, buffer=ring,
                       workspace=work._replace(task_value=task_value), weighted=True)
 
 
-def test_weighted_preparation_rejects_binary_events():
+def test_weighted_preparation_rejects_complex_events():
     data, _, event_columns = _weighted_problem(jnp.float32)
     with pytest.raises(TypeError, match="events"):
-        data.forward(jnp.asarray(event_columns[:, 0], jnp.bool_), 0)
+        data.forward(jnp.asarray(event_columns[:, 0], jnp.complex64), 0)

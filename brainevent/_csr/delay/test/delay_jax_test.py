@@ -129,7 +129,7 @@ def test_jvp_vjp_and_nonleading_vmap(weighted, homogeneous):
 def test_inactive_nonfinite_weights_and_data_cotangents(weighted):
     args = _operands(weighted)
     args[1] = args[1].at[2].set(0)
-    args[2] = args[2].at[3:].set(jnp.array([jnp.nan, jnp.inf, -jnp.inf]))
+    args[2] = args[2].at[3:].set(jnp.array([jnp.nan, jnp.inf, -jnp.inf], args[2].dtype))
 
     def project(data):
         return _project((args[0], args[1], data, *args[3:]), weighted=weighted)[0]
@@ -139,6 +139,25 @@ def test_inactive_nonfinite_weights_and_data_cotangents(weighted):
     cotangent = jnp.ones_like(args[0]).at[4, 1].set(jnp.nan).at[0, 0].set(jnp.inf).at[2, 2].set(-jnp.inf)
     gradient = pullback(cotangent)[0]
     np.testing.assert_array_equal(gradient[3:], 0)
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+def test_mixed_event_jvp_keeps_activity_before_value_conversion(weighted):
+    args = _operands(weighted)
+    args[1] = jnp.zeros(3, jnp.float64)
+    args[2] = args[2].at[0].set(jnp.inf)
+
+    def project(events):
+        return _project((args[0], events, *args[2:]), weighted=weighted)[0]
+
+    primal, tangent = jax.jit(lambda x: jax.jvp(
+        project, (x,), (jnp.array([1e-300, 0., 0.], jnp.float64),)))(args[1])
+    np.testing.assert_array_equal(primal, args[0])
+    # main's JAX delay path tests the original tangent before casting its
+    # value to float32: the active Inf * 0 contribution remains NaN.
+    assert tangent.dtype == jnp.float32
+    assert np.isnan(np.asarray(tangent)[4, 0])
+    np.testing.assert_array_equal(np.asarray(tangent)[[0, 1, 2, 3]], 0)
 
 
 @pytest.mark.parametrize("weighted", [False, True])

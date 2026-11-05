@@ -94,6 +94,48 @@ void exercise() {
     assert(status.get()[1] == 1);
     assert(ring.get() == expected);
 
+    // Validate every active row before even the valid short row can write.
+    // Both long rows need two tasks, so capacity three fits either row alone
+    // but cannot accommodate their combined active set.
+    auto reject_without_partial_writes = [&](auto launch) {
+        for (int fault = 0; fault < 3; ++fault) {
+            ring.set(expected);
+            auto bad_counts = counts;
+            std::vector<int32_t> row_tasks{0, 2, 2};
+            if (fault == 0) ++bad_counts[4];
+            if (fault == 1) row_tasks[2] = 1;
+            count.set(bad_counts);
+            tasks.set(row_tasks);
+            check(launch(fault == 2 ? capacity - 1 : capacity));
+            check(cudaStreamSynchronize(stream));
+            assert(status.get()[1] == (fault == 2 ? 1 : 3));
+            assert(ring.get() == expected);
+        }
+        count.set(counts);
+        tasks.set(std::vector<int32_t>{0, 2, 2});
+        check(launch(capacity));
+        check(cudaStreamSynchronize(stream));
+        assert(status.get()[1] == 0);
+        assert(ring.get() != expected);
+        ring.set(expected);
+    };
+    x.set(events);
+    reject_without_partial_writes([&](int available) {
+        return region_delay::launch_weighted<Homo>(
+            w.ptr, idx.ptr, ptr.ptr, x.ptr, count.ptr, offset.ptr, tasks.ptr, head.ptr,
+            ring.ptr, begin.ptr, end.ptr, out_off.ptr, value.ptr, status.ptr,
+            rows, segments, cols, slots, available, stream);
+    });
+#ifndef REGION_DELAY_TEST_WEIGHTED_ONLY
+    Device<float> active_rows(std::vector<float>(rows, 1));
+    reject_without_partial_writes([&](int available) {
+        return region_delay::launch_binary<Homo>(
+            w.ptr, idx.ptr, ptr.ptr, active_rows.ptr, count.ptr, offset.ptr, tasks.ptr, head.ptr,
+            ring.ptr, begin.ptr, end.ptr, out_off.ptr, status.ptr,
+            rows, segments, cols, slots, available, stream);
+    });
+#endif
+
     auto invalid = region_delay::launch_weighted<Homo, V, I, E, R>(
         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
         nullptr, nullptr, nullptr, nullptr, nullptr, status.ptr, -1, 1, 0, 1, 0, stream);

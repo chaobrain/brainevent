@@ -8,8 +8,8 @@
 
 // Binary region-delay hybrid: nonzero events gate delayed weight delivery.
 #include "hybrid_delay_spmv.cuh"
+#include "hybrid_delay_validation.cuh"
 #include "../_common/cuda_traits.cuh"
-#include <limits>
 
 #ifndef BE_DELAY_TPR_THRESHOLD
 #define BE_DELAY_TPR_THRESHOLD 128
@@ -70,43 +70,26 @@ namespace
         EdgeT *__restrict__ task_end,
         RingT *__restrict__ task_out_off,
         int32_t *__restrict__ status,
-        int64_t rows, int64_t segments, int64_t cols, int64_t slots, int capacity)
+        int64_t rows, int64_t segments, int64_t cols, int64_t slots)
     {
-        const int64_t row = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-        const int32_t current_head = __ldg(head);
-        if (current_head < 0 || current_head >= slots)
-        {
-            atomicExch(status + 1, 2);
+        // The native entry may reject its preflight. FFI reaches this core
+        // only with validated inputs; this gate consumes status, not inputs.
+        if (__ldg(status + 1) != 0)
             return;
-        }
+        const int64_t row = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
         if (row >= rows)
             return;
         if (!EventTraits<EventT>::active(events[row]))
             return;
+        const int32_t current_head = __ldg(head);
         int64_t edge = __ldg(indptr + row);
         const int64_t row_end = __ldg(indptr + row + 1);
         if (edge == row_end)
             return;
         const bool short_row = row_end - edge <= kThreshold;
         int64_t task = 0;
-        int64_t task_limit = 0;
         if (!short_row)
-        {
-            const int32_t count = __ldg(row_tasks + row);
-            if (count <= 0)
-            {
-                atomicExch(status + 1, 1);
-                return;
-            }
-            const int32_t first = atomicAdd(status, count);
-            if (first < 0 || first > capacity || count > capacity - first)
-            {
-                atomicExch(status + 1, 1);
-                return;
-            }
-            task = first;
-            task_limit = task + count;
-        }
+            task = atomicAdd(status, __ldg(row_tasks + row));
         using Traits = ValueTraits<ValueT>;
         typename Traits::AccT shared_weight = 0;
         if constexpr (Homo)
@@ -121,11 +104,6 @@ namespace
             const int64_t count = __ldg(delay_count + row * segments + segment);
             if (count == 0)
                 continue;
-            if (count < 0 || count > row_end - edge)
-            {
-                atomicExch(status + 1, 3);
-                return;
-            }
             const int64_t segment_end = edge + count;
             int64_t out_off = head_base + static_cast<int64_t>(__ldg(delay_off + segment));
             if (out_off >= ring_size)
@@ -143,11 +121,6 @@ namespace
             {
                 while (edge < segment_end)
                 {
-                    if (task >= task_limit)
-                    {
-                        atomicExch(status + 1, 3);
-                        return;
-                    }
                     const int64_t remaining = segment_end - edge;
                     const int64_t end = edge + (remaining < kTaskNnz ? remaining : kTaskNnz);
                     task_begin[task] = static_cast<EdgeT>(edge);
@@ -158,8 +131,6 @@ namespace
                 }
             }
         }
-        if (edge != row_end || (!short_row && task != task_limit))
-            atomicExch(status + 1, 3);
     }
 
     template <bool Homo, typename ValueT, typename IndexT, typename EdgeT, typename RingT>
@@ -167,15 +138,11 @@ namespace
         const ValueT *__restrict__ weights, const IndexT *__restrict__ indices,
         const EdgeT *__restrict__ task_begin, const EdgeT *__restrict__ task_end,
         const RingT *__restrict__ task_out_off, const int32_t *__restrict__ status,
-        int capacity, ValueT *__restrict__ buffer)
+        ValueT *__restrict__ buffer)
     {
-        // Extract has completed on this stream. Never read unwritten descriptors
-        // after an overflow or inconsistent reservation.
-        if (__ldg(status + 1) != 0)
-            return;
+        // Extract completed on this stream. A rejected preflight leaves the
+        // count at zero; otherwise every counted descriptor was written.
         const int active = __ldg(status);
-        if (active < 0 || active > capacity)
-            return;
         for (int64_t task = blockIdx.x; task < active; task += gridDim.x)
         {
             const int64_t begin = __ldg(task_begin + task);
@@ -190,6 +157,33 @@ namespace
 namespace region_delay
 {
     template <bool Homo, typename ValueT, typename EventT, typename IndexT, typename EdgeT, typename RingT>
+    static cudaError_t LaunchPrepared(
+        const ValueT *weights, const IndexT *indices, const EdgeT *indptr,
+        const EventT *events, const EdgeT *counts, const RingT *offsets,
+        const int32_t *row_tasks, const int32_t *head,
+        ValueT *output, EdgeT *begin, EdgeT *end, RingT *out_off, int32_t *status,
+        int64_t rows, int64_t segments, int64_t cols, int64_t slots,
+        int64_t task_capacity, cudaStream_t stream)
+    {
+        const int capacity = static_cast<int>(task_capacity);
+        const int blocks = rows == 0 ? 1 : static_cast<int>((rows + kBlockSize - 1) / kBlockSize);
+        Extract<Homo, ValueT, EventT, IndexT, EdgeT, RingT><<<blocks, kBlockSize, 0, stream>>>(
+            weights, indices, indptr, events, counts, offsets, row_tasks, head,
+            output, begin, end, out_off, status, rows, segments, cols, slots);
+        cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess)
+            return error;
+        if (capacity > 0)
+        {
+            const int scatter_blocks = capacity < kScatterBlocks ? capacity : kScatterBlocks;
+            BlockScatter<Homo, ValueT, IndexT, EdgeT, RingT><<<scatter_blocks, kBlockSize, 0, stream>>>(
+                weights, indices, begin, end, out_off, status, output);
+            error = cudaGetLastError();
+        }
+        return error;
+    }
+
+    template <bool Homo, typename ValueT, typename EventT, typename IndexT, typename EdgeT, typename RingT>
     cudaError_t launch_binary(
         const ValueT *weights, const IndexT *indices, const EdgeT *indptr,
         const EventT *events, const EdgeT *counts, const RingT *offsets,
@@ -198,39 +192,19 @@ namespace region_delay
         int64_t rows, int64_t segments, int64_t cols, int64_t slots,
         int64_t task_capacity, cudaStream_t stream)
     {
-        constexpr int64_t max32 = std::numeric_limits<int32_t>::max();
-        if (rows < 0 || rows > max32 || segments <= 0 || segments > max32 ||
-            cols < 0 || cols > max32 || slots <= 0 || slots > max32 ||
-            task_capacity < 0 || task_capacity > max32 || status == nullptr || head == nullptr ||
-            (cols > 0 && output == nullptr))
-            return cudaErrorInvalidValue;
-        const int64_t ring_size = slots * cols;
-        if (ring_size > std::numeric_limits<int64_t>::max() / sizeof(ValueT) ||
-            ring_size > std::numeric_limits<RingT>::max() ||
-            (task_capacity > 0 && (begin == nullptr || end == nullptr || out_off == nullptr)) ||
-            (rows > 0 && (indptr == nullptr || events == nullptr || counts == nullptr ||
-                          offsets == nullptr || row_tasks == nullptr)))
-            return cudaErrorInvalidValue;
-        const int capacity = static_cast<int>(task_capacity);
-        cudaError_t error = cudaMemsetAsync(status, 0, 2 * sizeof(int32_t), stream);
+        cudaError_t error = detail::ValidateLaunchArguments<ValueT, RingT>(
+            rows, segments, cols, slots, task_capacity, head, output, status,
+            {begin, end, out_off}, {indptr, events, counts, offsets, row_tasks});
         if (error != cudaSuccess)
             return error;
-        // An empty graph still checks the device head; no ring slot is cleared.
-        const int blocks = rows == 0 ? 1 : static_cast<int>((rows + kBlockSize - 1) / kBlockSize);
-        Extract<Homo, ValueT, EventT, IndexT, EdgeT, RingT><<<blocks, kBlockSize, 0, stream>>>(
+        error = detail::PrepareNative<EventT, EdgeT, kThreshold, kTaskNnz, kBlockSize>(
+            indptr, events, counts, row_tasks, head, status,
+            rows, segments, slots, static_cast<int>(task_capacity), stream);
+        if (error != cudaSuccess)
+            return error;
+        return LaunchPrepared<Homo, ValueT, EventT, IndexT, EdgeT, RingT>(
             weights, indices, indptr, events, counts, offsets, row_tasks, head,
-            output, begin, end, out_off, status, rows, segments, cols, slots, capacity);
-        error = cudaGetLastError();
-        if (error != cudaSuccess)
-            return error;
-        if (capacity > 0)
-        {
-            const int scatter_blocks = capacity < kScatterBlocks ? capacity : kScatterBlocks;
-            BlockScatter<Homo, ValueT, IndexT, EdgeT, RingT><<<scatter_blocks, kBlockSize, 0, stream>>>(
-                weights, indices, begin, end, out_off, status, capacity, output);
-            error = cudaGetLastError();
-        }
-        return error;
+            output, begin, end, out_off, status, rows, segments, cols, slots, task_capacity, stream);
     }
 
 #define INSTANTIATE_ONE(H, V, X, I, E, R)                                 \
@@ -282,7 +256,8 @@ namespace region_delay
         BE::Tensor output, BE::Tensor begin, BE::Tensor end, BE::Tensor out_off,
         BE::Tensor status, cudaStream_t stream)
     {
-        BE_CUDA_CHECK((launch_binary<Homo, ValueT, EventT, IndexT, EdgeT, RingT>(
+        BE_CUDA_CHECK(cudaMemsetAsync(status.data_ptr<int32_t>(), 0, 2 * sizeof(int32_t), stream));
+        BE_CUDA_CHECK((LaunchPrepared<Homo, ValueT, EventT, IndexT, EdgeT, RingT>(
             weights.data_ptr<const ValueT>(), indices.data_ptr<const IndexT>(),
             indptr.data_ptr<const EdgeT>(), events.data_ptr<const EventT>(),
             counts.data_ptr<const EdgeT>(), offsets.data_ptr<const RingT>(),
@@ -295,7 +270,6 @@ namespace region_delay
 
     template <typename ValueT, typename EventT>
     void DeliverImpl(
-        const char *name,
         const BE::Tensor &weights, const BE::Tensor &indices, const BE::Tensor &indptr,
         const BE::Tensor &events, const BE::Tensor &counts, const BE::Tensor &offsets,
         const BE::Tensor &row_tasks, const BE::Tensor &head, const BE::Tensor &buffer,
@@ -304,39 +278,12 @@ namespace region_delay
         BE::Tensor &output, BE::Tensor &begin, BE::Tensor &end, BE::Tensor &out_off,
         BE::Tensor &status, int64_t stream)
     {
-        constexpr BE::DType value_dtype = ValueTraits<ValueT>::dtype;
-        BE_CHECK(weights.ndim() == 1 && weights.dtype() == value_dtype) << name << ": weights dtype";
-        BE_CHECK(indices.ndim() == 1 && op_traits::is_signed_index(indices.dtype())) << name << ": indices";
-        BE_CHECK(indptr.ndim() == 1 && op_traits::is_signed_index(indptr.dtype())) << name << ": indptr";
-        BE_CHECK(events.ndim() == 1 && events.dtype() == EventTraits<EventT>::dtype) << name << ": events dtype";
-        const int64_t rows = events.numel();
-        BE_CHECK(rows <= std::numeric_limits<int32_t>::max() && indptr.numel() == rows + 1);
-        BE_CHECK(weights.numel() == 1 || weights.numel() == indices.numel());
-        BE_CHECK(counts.ndim() == 2 && counts.shape(0) == rows && counts.dtype() == indptr.dtype());
-        BE_CHECK(offsets.ndim() == 1 && offsets.numel() > 0 && op_traits::is_signed_index(offsets.dtype()));
-        BE_CHECK(counts.shape(1) == offsets.numel());
-        BE_CHECK(row_tasks.ndim() == 1 && row_tasks.numel() == rows && row_tasks.dtype() == BE::DType::Int32);
-        BE_CHECK(head.ndim() == 1 && head.numel() == 1 && head.dtype() == BE::DType::Int32);
-        BE_CHECK(buffer.ndim() == 2 && buffer.dtype() == value_dtype) << name << ": ring dtype";
-        BE_CHECK(output.ndim() == 2 && output.dtype() == buffer.dtype());
-        BE_CHECK(output.shape(0) == buffer.shape(0) && output.shape(1) == buffer.shape(1));
-        BE_CHECK(output.shape(0) > 0 && output.shape(0) <= std::numeric_limits<int32_t>::max());
-        BE_CHECK(output.shape(1) <= std::numeric_limits<int32_t>::max());
-        BE_CHECK(output.numel() <= std::numeric_limits<int64_t>::max() / sizeof(ValueT));
-        BE_CHECK(offsets.dtype() == BE::DType::Int64 || output.numel() <= std::numeric_limits<int32_t>::max());
+        // The shared JAX primitive validates operands; FFI checks runtime aliasing.
         BE_CHECK(buffer.data_ptr() == output.data_ptr()) << "ring requires input/output aliasing";
-        const int64_t capacity = begin.numel();
-        BE_CHECK(capacity <= std::numeric_limits<int32_t>::max());
         const BE::Tensor scratch[4] = {begin_scratch, end_scratch, off_scratch, status_scratch};
         const BE::Tensor result[4] = {begin, end, out_off, status};
         for (int i = 0; i < 4; ++i)
         {
-            const int64_t size = i == 3 ? 2 : capacity;
-            const BE::DType dtype = i < 2 ? indptr.dtype() : i == 2 ? offsets.dtype()
-                                                                    : BE::DType::Int32;
-            BE_CHECK(scratch[i].ndim() == 1 && result[i].ndim() == 1);
-            BE_CHECK(scratch[i].numel() == size && result[i].numel() == size);
-            BE_CHECK(scratch[i].dtype() == dtype && result[i].dtype() == dtype);
             BE_CHECK(scratch[i].data_ptr() == result[i].data_ptr()) << "workspace requires aliasing";
         }
         const cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);
@@ -365,7 +312,7 @@ namespace region_delay
         BE::Tensor status, int64_t stream)                                                        \
     {                                                                                             \
         region_delay::DeliverImpl<VALUE_T, EVENT_T>(                                              \
-            "region_delay" #SUFFIX, weights, indices, indptr, events, counts, offsets, row_tasks, \
+            weights, indices, indptr, events, counts, offsets, row_tasks,                        \
             head, buffer, begin_scratch, end_scratch, off_scratch, status_scratch, output, begin, \
             end, out_off, status, stream);                                                        \
     }

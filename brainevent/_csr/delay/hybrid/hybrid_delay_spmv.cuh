@@ -34,14 +34,18 @@ namespace region_delay
     // each delay segment into <=4096-edge tasks. With the default build:
     //   row_task_count[r] = row_nnz[r] <= 128 ? 0 :
     //                       sum_k ceil(delay_count[r,k] / 4096)
-    //   task_capacity >= sum_r row_task_count[r], regardless of activity.
+    //   task_capacity >= sum of row_task_count[r] over active rows.
+    // Allocating the sum over every row supports any subsequent activity set.
     // Match these counts to BE_DELAY_TPR_THRESHOLD/BE_DELAY_TASK_NNZ if overridden.
     // begin/end/out_off each hold task_capacity entries. Tasks never cross a
     // segment. status is int32[2] {task_count, error_code}, reset on every call,
     // including rows=0. Error codes: 1=reservation/capacity, 2=head, 3=metadata.
-    // Read status only after stream completion; any error invalidates the result
-    // (short rows may already have written). Task arrays need no clearing and
-    // may be null when capacity=0. Empty rows do not dereference weights/indices.
+    // The native entry checks head, active nonempty row metadata and active task
+    // capacity before delivery. Read status only after stream completion; a
+    // detected input error leaves the ring unchanged and task_count zero.
+    // Task arrays need no clearing and may be null when capacity=0. Empty rows
+    // do not dereference weights/indices. This preflight does not replace the
+    // caller's CSR/column/offset/allocation bounds obligations above.
     // Returns cudaErrorInvalidValue for invalid scalar arguments/missing required
     // buffers, otherwise CUDA memset/launch status. Execution errors are async.
 

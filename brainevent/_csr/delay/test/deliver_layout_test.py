@@ -3,6 +3,7 @@
 from copy import copy
 import importlib
 
+import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,10 +15,10 @@ from brainevent._csr.delay import csr_delay_deliver_layout, delaycsr
 from brainevent._csr.delay.test._helpers import BACKENDS, GPU
 
 
-def make(backend=None, weighted=False):
+def make(backend=None, weighted=False, delay=1):
     return delaycsr((np.array([3.], np.float32), np.array([0], np.int32),
                      np.array([0, 1], np.int32)),
-                    shape=(1, 1), edge_delays=np.array([1], np.int32),
+                    shape=(1, 1), edge_delays=np.array([delay], np.int32),
                     buffer_slots=2, backend=backend, weighted=weighted,
                     ring=jnp.array([[10.], [20.]], jnp.float32))
 
@@ -46,14 +47,22 @@ def test_public_delay_exports_share_one_prepared_implementation():
 
 @pytest.mark.parametrize('backend', BACKENDS)
 @pytest.mark.parametrize('weighted', [False, True])
-def test_deliver_preserves_head_accumulates_and_keeps_owned_state(backend, weighted):
-    state = make(backend)
+@pytest.mark.parametrize('delay', [0, 1])
+def test_deliver_preserves_head_accumulates_and_keeps_owned_state(backend, weighted, delay):
+    state = make(backend, delay=delay)
     leaves = jax.tree.leaves(state)
     events = jnp.array([2.], jnp.float32)
     result = csr_delay_deliver_layout(state.ring, events, state, 0, weighted=weighted)
     again = state.csr_delay_deliver_layout(result, events, 0, weighted=weighted)
-    np.testing.assert_array_equal(result, [[10], [26 if weighted else 23]])
-    np.testing.assert_array_equal(again, [[10], [32 if weighted else 26]])
+    contribution = 6 if weighted else 3
+    expected = np.array([[10], [20]])
+    expected[delay, 0] += contribution
+    np.testing.assert_array_equal(result, expected)
+    expected[delay, 0] += contribution
+    np.testing.assert_array_equal(again, expected)
+    inactive = csr_delay_deliver_layout(state.ring, jnp.zeros_like(events), state, 0,
+                                        weighted=weighted)
+    np.testing.assert_array_equal(inactive, [[10], [20]])
     assert all(old is new for old, new in zip(leaves, jax.tree.leaves(state)))
     np.testing.assert_array_equal(state.ring, [[10], [20]])
     assert int(state.head) == 0
@@ -95,15 +104,18 @@ def test_delivery_gradients_and_stateful_step_follow_selected_backend(backend):
 
 
 def test_clear_head_is_a_jax_member_with_local_gradient():
-    state = make()
+    state = make('jax_raw')
 
     def cleared(ring):
         local = copy(state)
         local.ring = ring
         return local.clear_head()
 
-    np.testing.assert_array_equal(jax.jit(cleared)(state.ring), [[0], [20]])
-    np.testing.assert_array_equal(jax.grad(lambda r: cleared(r).sum())(state.ring), [[0], [1]])
+    for operation in (cleared, jax.jit(cleared)):
+        value, tangent = jax.jvp(operation, (state.ring,), (jnp.ones_like(state.ring),))
+        np.testing.assert_array_equal(value, [[0], [20]])
+        np.testing.assert_array_equal(tangent, [[0], [1]])
+        np.testing.assert_array_equal(jax.grad(lambda r: operation(r).sum())(state.ring), [[0], [1]])
     np.testing.assert_array_equal(state.ring, [[10], [20]])
     state.head = 1
     assert state.clear_head() is state.ring
@@ -111,13 +123,27 @@ def test_clear_head_is_a_jax_member_with_local_gradient():
     assert int(state.head) == 1
 
 
-def test_clear_head_rejects_hidden_bound_method_jit_without_corrupting_state():
-    state = make()
-    before = state.ring
-    with pytest.raises(RuntimeError, match='JIT/scan'):
-        jax.jit(state.clear_head)()
-    assert state.ring is before
-    assert not isinstance(state.ring, jax.core.Tracer)
+def test_clear_head_unbatched_state_vmap_without_jit():
+    state = make('jax_raw')
+    leaves = jax.tree.leaves(state)
+
+    def clear(matrix, head):
+        matrix.head = head
+        result = matrix.clear_head()
+        return matrix, result
+
+    heads = jnp.array([0, 1], jnp.int32)
+    mapped = jax.vmap(clear, in_axes=(None, 0))
+    compiled_state, compiled_rings = jax.jit(mapped)(state, heads)
+    batched_state, rings = mapped(state, heads)
+    expected = [[[0], [20]], [[10], [0]]]
+    for result in (rings, compiled_rings, batched_state.ring, compiled_state.ring):
+        np.testing.assert_array_equal(result, expected)
+    for result in (batched_state.head, compiled_state.head):
+        np.testing.assert_array_equal(result, heads)
+    assert all(old is new for old, new in zip(leaves, jax.tree.leaves(state)))
+    np.testing.assert_array_equal(state.ring, [[10], [20]])
+    np.testing.assert_array_equal(state.head, 0)
 
 
 @pytest.mark.parametrize('backend', BACKENDS)
@@ -254,3 +280,213 @@ def test_sharded_delivery_keeps_runtime_validation_and_distinct_rings(backend, c
     np.testing.assert_array_equal(deliver(rings, heads, counts), expected)
     jax.jit(lambda: jax.debug.callback(lambda: None, ordered=False))()
     jax.effects_barrier()
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("event_dtype", [jnp.bool_, jnp.int8, jnp.int32, jnp.float16,
+                                         jnp.bfloat16, jnp.float32, jnp.float64])
+def test_public_delivery_accepts_main_event_dtypes(backend, weighted, event_dtype):
+    layout = make(backend)
+    before = jax.tree.leaves(layout)
+    events = jnp.array([True] if event_dtype == jnp.bool_ else [-2], event_dtype)
+    result = jax.jit(lambda x: csr_delay_deliver_layout(
+        layout.ring, x, layout, 0, weighted=weighted))(events)
+    contribution = -6 if weighted and event_dtype != jnp.bool_ else 3
+    np.testing.assert_array_equal(result, [[10], [20 + contribution]])
+    assert result.dtype == jnp.float32
+    assert all(old is new for old, new in zip(before, jax.tree.leaves(layout)))
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("weight_dtype,ring_dtype", [(jnp.float16, jnp.float32),
+                                                     (jnp.float64, jnp.float32),
+                                                     (jnp.float32, jnp.float64)])
+def test_public_ring_dtype_controls_delivery_and_gradient(backend, weight_dtype, ring_dtype):
+    source = brainevent.CSR((jnp.array([3.], weight_dtype), jnp.array([0], jnp.int32),
+                            jnp.array([0, 1], jnp.int32)), shape=(1, 1), backend=backend)
+    layout = source.delay_layout(np.array([1], np.int32), 3)
+    before = jax.tree.leaves(layout)
+    ring = jnp.array([[1], [2], [3]], ring_dtype)
+    events = jnp.array([-2.], jnp.float64)
+
+    def project(weights, event):
+        return csr_delay_deliver_layout(ring, event, layout.with_data(weights), 0, weighted=True)
+
+    result = jax.jit(project)(layout.data, events)
+    np.testing.assert_array_equal(result, [[1], [-4], [3]])
+    assert result.dtype == ring_dtype
+    dw, dx = jax.jit(jax.grad(lambda w, x: project(w, x).sum(), argnums=(0, 1)))(layout.data, events)
+    np.testing.assert_array_equal(dw, [-2])
+    np.testing.assert_array_equal(dx, [3])
+    assert dw.dtype == weight_dtype and dx.dtype == events.dtype
+    assert all(old is new for old, new in zip(before, jax.tree.leaves(layout)))
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("event_unit", [u.UNITLESS, u.mV])
+def test_public_quantity_delivery_normalizes_and_restores_units(backend, event_unit):
+    source = brainevent.CSR((jnp.array([2.], jnp.float16) * u.mS,
+                            jnp.array([0], jnp.int32), jnp.array([0, 1], jnp.int32)),
+                           shape=(1, 1), backend=backend)
+    layout = source.delay_layout(np.array([1], np.int32), 3)
+    unit = u.mS * event_unit
+    ring = jnp.ones((3, 1), jnp.float32) * unit
+    events = jnp.array([-2.], jnp.float64) * event_unit
+    result = jax.jit(lambda r, x: csr_delay_deliver_layout(r, x, layout, 0, weighted=True))(ring, events)
+    assert u.get_unit(result) == unit
+    assert result.dtype == jnp.float32
+    np.testing.assert_array_equal(u.get_mantissa(result), [[1], [-3], [1]])
+    assert u.get_unit(layout.data) == u.mS
+    np.testing.assert_array_equal(u.get_mantissa(layout.ring), np.zeros((3, 1)))
+
+
+def test_csr_delay_layout_isolated_from_reused_source_host_pointer():
+    storage = np.empty(72, np.uint8)
+    offset = (-storage.ctypes.data) % 64
+    pointer = storage[offset:offset + 8].view(np.int32)
+    pointer[:] = [0, 3]
+    source = brainevent.CSR((np.array([2.], np.float32), np.array([1, 0, 2], np.int32), pointer),
+                           shape=(1, 3), backend="jax_raw")
+    layout = source.delay_layout(np.ones(3, np.int32), 2)
+    pointer[:] = 7
+    np.testing.assert_array_equal(layout.indptr, [0, 3])
+    result = csr_delay_deliver_layout(jnp.zeros((2, 3), jnp.float32), jnp.array([True]), layout, 0)
+    np.testing.assert_array_equal(result, [[0, 0, 0], [2, 2, 2]])
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_public_quantity_delivery_preserves_ring_scale_and_rejects_incompatible_units(backend):
+    source = brainevent.CSR((jnp.array([2.], jnp.float32) * u.mV,
+                            jnp.array([0], jnp.int32), jnp.array([0, 1], jnp.int32)),
+                           shape=(1, 1), backend=backend)
+    layout = source.delay_layout(np.array([1], np.int32), 3)
+    events = jnp.array([2.], jnp.float32)
+    result = csr_delay_deliver_layout(jnp.full((3, 1), .001, jnp.float32) * u.volt,
+                                     events, layout, 0, weighted=True)
+    assert u.get_unit(result) == u.volt
+    assert result.dtype == jnp.float32
+    np.testing.assert_allclose(u.get_mantissa(result), [[.001], [.005], [.001]], rtol=1e-6)
+    with pytest.raises(u.UnitMismatchError):
+        csr_delay_deliver_layout(jnp.zeros((3, 1), jnp.float32) * u.ms,
+                                 events, layout, 0, weighted=True)
+
+
+@pytest.mark.parametrize('backend', BACKENDS[1:])
+@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('weight_unit,event_unit,ring_unit', [
+    pytest.param(u.mV, u.UNITLESS, u.volt, id='voltage'),
+    pytest.param(u.mS, u.mV, u.mA, id='compound'),
+])
+def test_quantity_delivery_ring_scale_gradients(backend, weighted, weight_unit, event_unit, ring_unit):
+    layout = delaycsr(
+        (np.array([2], np.float64) * weight_unit, np.array([0], np.int32),
+         np.array([0, 1], np.int32)),
+        shape=(1, 1), edge_delays=np.ones(1, np.int32), buffer_slots=3, backend=backend,
+    )
+    leaves = jax.tree.leaves(layout)
+    weights = u.get_mantissa(layout.data)
+    ring = jnp.full((3, 1), .1, jnp.float32)
+    events = jnp.array([2], jnp.float32)
+
+    def deliver(w, r, x):
+        return layout.with_data(w * weight_unit).csr_delay_deliver_layout(
+            r * ring_unit, x * event_unit, 0, weighted=weighted)
+
+    def values(w, r, x):
+        return u.get_mantissa(deliver(w, r, x))
+
+    _, (dw, dr, dx) = jax.jit(jax.value_and_grad(
+        lambda w, r, x: values(w, r, x).sum(), argnums=(0, 1, 2)))(weights, ring, events)
+    np.testing.assert_allclose(dw, [.002 if weighted else .001], rtol=1e-6)
+    np.testing.assert_array_equal(dr, jnp.ones_like(ring))
+    np.testing.assert_allclose(dx, [.002], rtol=1e-6)
+    assert dw.dtype == weights.dtype and dx.dtype == events.dtype
+    result, tangent = jax.jvp(values, (weights, ring, events),
+                              (jnp.ones_like(weights), jnp.ones_like(ring), jnp.ones_like(events)))
+    np.testing.assert_allclose(result, [[.1], [.104 if weighted else .102], [.1]], rtol=1e-6)
+    np.testing.assert_allclose(tangent, [[1], [1.004 if weighted else 1.003], [1]], rtol=1e-6)
+    quantity = deliver(weights, ring, events)
+    assert u.get_unit(quantity) == ring_unit
+    assert quantity.dtype == ring.dtype
+    assert all(old is new for old, new in zip(leaves, jax.tree.leaves(layout)))
+    np.testing.assert_array_equal(ring, jnp.full((3, 1), .1, jnp.float32))
+
+
+@pytest.mark.parametrize('backend', BACKENDS[1:])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_quantity_delivery_ring_scale_keeps_inactive_half_ring_finite(backend, weighted):
+    layout = delaycsr(
+        (np.array([2], np.float16) * u.mV, np.array([0], np.int32),
+         np.array([0, 1], np.int32)),
+        shape=(1, 1), edge_delays=np.ones(1, np.int32), backend=backend,
+    )
+    ring = jnp.full((2, 1), 100, jnp.float16) * u.volt
+    result = jax.jit(lambda r: layout.csr_delay_deliver_layout(
+        r, jnp.zeros(1, jnp.float16), 0, weighted=weighted))(ring)
+    # Converting the whole buffer to mV would overflow float16 before delivery.
+    np.testing.assert_array_equal(u.get_mantissa(result), [[100], [100]])
+    assert u.get_unit(result) == u.volt
+    assert result.dtype == jnp.float16
+
+
+@pytest.mark.parametrize('backend', BACKENDS[1:])
+def test_quantity_delivery_ring_scale_keeps_binary_event_activity(backend):
+    layout = delaycsr(
+        (np.array([2], np.float16) * u.mV, np.array([0], np.int32),
+         np.array([0, 1], np.int32)),
+        shape=(1, 1), edge_delays=np.ones(1, np.int32), backend=backend,
+    )
+    tiny = jnp.array([1e-5], jnp.float16)
+    assert bool(tiny[0] != 0)
+    np.testing.assert_array_equal(tiny * jnp.float16(.001), 0)
+    result = jax.jit(lambda events: layout.csr_delay_deliver_layout(
+        jnp.zeros((2, 1), jnp.float16) * u.volt, events, 0))(tiny)
+    assert u.get_unit(result) == u.volt
+    np.testing.assert_allclose(u.get_mantissa(result), [[0], [.002]], rtol=1e-3)
+
+
+@pytest.mark.parametrize('backend', BACKENDS[1:])
+@pytest.mark.parametrize('ring_unit', [u.mV / u.volt, u.UNITLESS], ids=['scaled', 'unitless'])
+def test_scaled_dimensionless_quantity_ring_keeps_pytree_for_delivery_and_clear(backend, ring_unit):
+    layout = make(backend)
+    leaves = jax.tree.leaves(layout)
+    ring = u.Quantity(jnp.ones((2, 1), jnp.float32), unit=ring_unit)
+    result = jax.jit(lambda r: layout.csr_delay_deliver_layout(
+        r, jnp.array([True]), 0))(ring)
+    assert jax.tree.structure(result) == jax.tree.structure(ring)
+    assert u.get_unit(result) == ring.unit
+    contribution = float(u.Quantity(3, unit=u.UNITLESS).to_decimal(ring_unit))
+    np.testing.assert_allclose(u.get_mantissa(result), [[1], [1 + contribution]], rtol=1e-6)
+
+    def clear(r):
+        local = copy(layout)
+        local.ring = r
+        return local.clear_head()
+
+    cleared = jax.jit(clear)(ring)
+    assert jax.tree.structure(cleared) == jax.tree.structure(ring)
+    assert u.get_unit(cleared) == ring.unit
+    np.testing.assert_array_equal(u.get_mantissa(cleared), [[0], [1]])
+    assert all(old is new for old, new in zip(leaves, jax.tree.leaves(layout)))
+    np.testing.assert_array_equal(u.get_mantissa(ring), 1)
+
+
+@pytest.mark.parametrize('backend', BACKENDS[1:])
+@pytest.mark.parametrize('weight,weight_unit,factor', [
+    pytest.param(1e-5, u.mV, .001, id='tiny-mV-to-V'),
+    pytest.param(.001, u.Mvolt, 1e6, id='small-MV-to-V'),
+])
+def test_quantity_ring_scale_converts_half_weights_at_ring_precision(backend, weight, weight_unit, factor):
+    layout = delaycsr(
+        (np.array([weight], np.float16) * weight_unit, np.array([0], np.int32),
+         np.array([0, 1], np.int32)),
+        shape=(1, 1), edge_delays=np.ones(1, np.int32), backend=backend,
+    )
+    ring = jnp.zeros((2, 1), jnp.float32) * u.volt
+    result = jax.jit(lambda r: layout.csr_delay_deliver_layout(
+        r, jnp.array([True]), 0))(ring)
+    expected = float(np.float16(weight)) * factor
+    np.testing.assert_allclose(u.get_mantissa(result), [[0], [expected]], rtol=1e-6)
+    assert u.get_unit(result) == u.volt
+    assert result.dtype == jnp.float32

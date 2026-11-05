@@ -160,13 +160,13 @@ def test_call_does_not_wrap_head(backend):
     assert len(graph.eqns) == 1
 
 
-@pytest.mark.parametrize("backend", ["cuda_raw", "jax_raw"])
+@pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("head", [-1, 3])
-def test_concrete_invalid_head_is_rejected_before_binding(backend, head):
+def test_concrete_invalid_head_is_reported_on_execution(backend, head):
     args = _args()
     args[7] = jnp.array([head], jnp.int32)
-    with pytest.raises(ValueError, match="head"):
-        delay.csr_delay_deliver_layout_p.call(*args, backend=backend)
+    with pytest.raises(Exception, match="head"):
+        jax.block_until_ready(delay.csr_delay_deliver_layout_p.call(*args, backend=backend))
 
 
 @pytest.mark.parametrize("field", ["indices", "indptr", "offsets"])
@@ -198,8 +198,13 @@ def test_unknown_backend_is_rejected_before_lowering(backend):
 @pytest.mark.parametrize("parameter", ["weighted", "check_status"])
 @pytest.mark.parametrize("value", [0, 1, None, "False"])
 def test_static_flags_require_booleans(parameter, value):
+    # A valid bool and its numeric lookalike share Python's cache key. The
+    # public entry must still reject 0/1 after a valid call has been traced.
+    valid_flag = bool(value) if isinstance(value, int) else False
+    args = _args(weighted=parameter == 'weighted' and valid_flag)
+    _trace(args, **{parameter: valid_flag})
     with pytest.raises(TypeError, match=parameter):
-        _trace(_args(), **{parameter: value})
+        _trace(args, **{parameter: value})
 
 
 @pytest.mark.parametrize("backend", ["cuda_raw", "jax_raw"])
@@ -210,7 +215,7 @@ def test_static_flags_require_booleans(parameter, value):
         pytest.param(0, (0, 2), jnp.float32, id="ring-no-slots"),
         pytest.param(0, (3, 2), jnp.int32, id="ring-dtype"),
         pytest.param(1, (3,), jnp.float32, id="event-count"),
-        pytest.param(1, (2,), jnp.int32, id="binary-event-dtype"),
+        pytest.param(1, (2,), jnp.complex64, id="binary-event-dtype"),
         pytest.param(2, (3,), jnp.float32, id="weight-count"),
         pytest.param(2, (2, 2), jnp.float32, id="weight-rank"),
         pytest.param(2, (4,), jnp.float64, id="weight-dtype"),
@@ -256,7 +261,7 @@ def test_workspace_arity_is_checked(backend, weighted, extra):
 
 
 @pytest.mark.parametrize("position,shape,dtype", [
-    (1, (2,), jnp.float64),
+    (1, (2,), jnp.complex64),
     (12, (1,), jnp.float32),
     (12, (0,), jnp.float64),
 ])
@@ -266,6 +271,76 @@ def test_weighted_event_and_task_value_contract(position, shape, dtype, backend)
     args[position] = jnp.zeros(shape, dtype)
     with pytest.raises((TypeError, ValueError)):
         _trace(args, weighted=True, backend=backend)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("event_dtype", [
+    jnp.bool_, jnp.int8, jnp.uint8, jnp.int16, jnp.uint16, jnp.int32,
+    jnp.uint32, jnp.int64, jnp.uint64, jnp.float16, jnp.bfloat16,
+    jnp.float32, jnp.float64,
+])
+def test_numeric_events_keep_the_main_library_dtype_contract(backend, weighted, event_dtype):
+    args = _args(weighted)
+    args[1] = jnp.array([0, 3], event_dtype)
+    actual = jax.jit(lambda *xs: delay.csr_delay_deliver_layout_p.call(
+        *xs, backend=backend, weighted=weighted))(*args)[0]
+    expected = np.asarray(args[0]).copy()
+    factor = float(args[1][1]) if weighted else 1.
+    expected[1, 1] += 3 * factor
+    expected[0, 0] += 4 * factor
+    assert actual.dtype == args[0].dtype
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("invalid", ["event", "task_value", "out_shape", "out_dtype", "out_count"])
+def test_raw_primitive_checks_the_same_abstract_contract(invalid):
+    args = _args(weighted=True)
+    if invalid == "event":
+        args[1] = args[1].astype(jnp.complex64)
+    elif invalid == "task_value":
+        args[12] = args[12].astype(jnp.float64)
+    outputs = [jax.ShapeDtypeStruct(a.shape, a.dtype) for a in (args[0], *args[9:])]
+    if invalid == "out_shape":
+        outputs[0] = jax.ShapeDtypeStruct((2, 3), jnp.float32)
+    elif invalid == "out_dtype":
+        outputs[0] = jax.ShapeDtypeStruct(args[0].shape, jnp.float64)
+    elif invalid == "out_count":
+        outputs.pop()
+    with pytest.raises((TypeError, ValueError)):
+        jax.make_jaxpr(lambda *xs: delay.csr_delay_deliver_layout_p(
+            *xs, outs=tuple(outputs), backend="jax_raw", weighted=True,
+            check_status=True))(*args)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_binary_activity_is_determined_before_lossy_event_conversion(backend):
+    args = _args()
+    args[1] = jnp.array([1e-300, 0], jnp.float64)
+    args[2] = args[2].at[2:].set(jnp.array([jnp.nan, jnp.inf], jnp.float32))
+    actual = jax.jit(lambda *xs: delay.csr_delay_deliver_layout_p.call(
+        *xs, backend=backend))(*args)[0]
+    np.testing.assert_array_equal(actual, [[0, 0], [4, 3], [4, 5]])
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("weighted", [False, True])
+def test_mixed_event_dtype_jvp_and_vjp_preserve_operand_dtypes(backend, weighted):
+    args = _args(weighted)
+    events = args[1].astype(jnp.float64)
+
+    def project(x, data):
+        return delay.csr_delay_deliver_layout_p.call(
+            args[0], x, data, *args[3:], backend=backend, weighted=weighted)[0]
+
+    _, tangent = jax.jit(lambda x: jax.jvp(
+        lambda y: project(y, args[2]), (x,),
+        (jnp.array([.25, -.5], jnp.float64),)))(events)
+    np.testing.assert_array_equal(tangent, [[-2, -.25], [.5, -1.5], [0, 0]])
+    dx, dw = jax.jit(jax.grad(lambda x, w: project(x, w).sum(), argnums=(0, 1)))(events, args[2])
+    assert dx.dtype == jnp.float64 and dw.dtype == jnp.float32
+    np.testing.assert_array_equal(dx, [1, 7])
+    np.testing.assert_array_equal(dw, [-2, -2, .5, .5] if weighted else [1, 1, 1, 1])
 
 
 @pytest.mark.parametrize("backend", ["cuda_raw", "jax_raw"])

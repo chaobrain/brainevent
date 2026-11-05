@@ -1590,7 +1590,7 @@ def test_csc_matmat_golden():
 @pytest.mark.slow
 def test_csr_matmat_unfavorable_jax_raw_route_skips_weight_indices():
     # jax_raw BinaryArray routing uses the direct CSR structure.
-    # Only explicit cuda_raw uses the mirror indexed route that builds 'csc'.
+    # Explicit jax_raw overrides any global CUDA choice and does not build 'csc'.
     rng = np.random.default_rng(2)
     csr = next(_csr_cases())
     csr = CSR((csr.data, csr.indices, csr.indptr), shape=csr.shape, backend="jax_raw")
@@ -1604,7 +1604,7 @@ def test_csr_matmat_unfavorable_jax_raw_route_skips_weight_indices():
 @pytest.mark.slow
 def test_csc_matmat_unfavorable_jax_raw_route_skips_weight_indices():
     # jax_raw BinaryArray routing uses the direct CSC structure.
-    # Only explicit cuda_raw uses the mirror indexed route that builds 'csr'.
+    # Explicit jax_raw overrides any global CUDA choice and does not build 'csr'.
     rng = np.random.default_rng(3)
     csc = next(_csr_cases()).T
     csc = CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape, backend="jax_raw")
