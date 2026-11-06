@@ -40,6 +40,7 @@ from .numba_ffi import (
     get_device_ordinal,
     _normalize_shapes_and_dtypes,
     _warn_if_untested_jax,
+    _register_exit_guard,
 )
 from .util import OutType, abstract_arguments
 
@@ -448,6 +449,8 @@ class NumbaCudaFfiHandler:
 
         # Create the ctypes callback - must be stored as an attribute to prevent GC
         self._callback = _CUDA_FFI_CALLBACK_TYPE(self._ffi_callback)
+        # The target calls into Python: wait for in-flight executions at exit.
+        _register_exit_guard()
 
         # Register as an FFI target for CUDA platform
         _warn_if_untested_jax()
