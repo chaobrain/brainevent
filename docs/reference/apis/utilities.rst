@@ -107,6 +107,7 @@ trusted row-length bound for raw calls without prepared statistics.
    :template: classtemplate.rst
 
    CSRConfig
+   MVSchedule
 
 .. autosummary::
    :toctree: generated/

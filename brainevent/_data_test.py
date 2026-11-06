@@ -427,8 +427,10 @@ class TestCSRBuffers:
     def test_csr_pytree_roundtrip_carries_mirror_as_leaves(self, csr_mat):
         built = csr_mat.build_weight_indices()
         children, aux = built.tree_flatten()
-        assert len(children) == 6
+        assert len(children) == 7
+        assert children[3] is built.config
         restored = brainevent.CSR.tree_unflatten(aux, children)
+        assert restored.config is built.config
         for got, expected in zip(restored.buffers['csc'], built.buffers['csc']):
             np.testing.assert_array_equal(got, expected)
 

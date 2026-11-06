@@ -22,7 +22,22 @@ import pytest
 
 from brainevent._csr.main import CSR as PlainCSR
 from brainevent._tcsr import preprocess
-from brainevent._tcsr.preprocess.preprocess_config import hybrid_task_capacity
+from brainevent._tcsr.preprocess.preprocess_config import (
+    DEFAULT_CANDIDATES, DEFAULT_HYBRID_CONFIG, HybridConfig,
+    compile_flags_for_config, hybrid_task_capacity,
+)
+
+
+def test_hybrid_defaults_match_benchmark_configuration() -> None:
+    expected = HybridConfig(512, 1024, 128, 512)
+    assert DEFAULT_HYBRID_CONFIG == expected
+    assert expected in DEFAULT_CANDIDATES
+    assert compile_flags_for_config(expected) == [
+        '-DBE_HYBRID_BLOCK_SIZE=512',
+        '-DBE_HYBRID_FIXED_SCATTER_BLOCKS=1024',
+        '-DBE_HYBRID_TPR_THRESHOLD=128',
+        '-DBE_HYBRID_TASK_NNZ=512',
+    ]
 
 
 def test_sort_csr_stably_aligns_data_and_indices() -> None:

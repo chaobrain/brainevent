@@ -16,7 +16,6 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from dataclasses import replace
 from typing import Optional, TYPE_CHECKING, Union, cast
 
 import brainunit as u
@@ -219,7 +218,7 @@ class FixedNumConn(DataRepresentation):
         self.backend = backend
         super().__init__(*args, shape=shape)
         self._cache = StructureCache()
-        from brainevent._csr.config import _prepare_csr_config, _config_for_new_structure, _structure_device
+        from brainevent._csr.config import _prepare_csr_config
 
         flat_indices, indptr = _ell_csr_parts(self.indices)
         if host_indices is None and is_concrete(self.indices):
@@ -232,15 +231,7 @@ class FixedNumConn(DataRepresentation):
             backend=backend, config=config, device=device,
             host_structure=None if host_indices is None else (host_indices.reshape(-1), indptr),
         )
-        self._ingest_buffers(buffers)
-        if self._cache.mirror is not None:
-            mirror_indptr, mirror_indices, _ = self._cache.mirror
-            mirror_config = _config_for_new_structure(
-                self.config, mirror_indices, mirror_indptr, shape=self._a_shape[::-1],
-                device=_structure_device(self.indices, device),
-            )
-            self.config = replace(self.config, mirror=mirror_config.primary,
-                                  mirror_max_row_nnz=mirror_config.primary_max_row_nnz)
+        self._ingest_buffers(buffers, device=device)
 
     @classmethod
     def _from_parts(cls, data, indices, *, shape, backend=None, cache=None, config=None):
@@ -262,8 +253,10 @@ class FixedNumConn(DataRepresentation):
             cache=self._cache, config=self.config,
         )
 
-    def _ingest_buffers(self, buffers) -> None:
-        """Store the legacy ``'csc'`` mirror buffer."""
+    def _ingest_buffers(self, buffers, *, device=None) -> None:
+        """Store the legacy ``'csc'`` mirror and bind its scheduler plan."""
+        from brainevent._csr.config import _config_with_mirror, _structure_device
+
         for name, value in (buffers or {}).items():
             if value is None:
                 continue
@@ -272,8 +265,13 @@ class FixedNumConn(DataRepresentation):
                     f"{type(self).__name__} does not support buffer {name!r}; the only "
                     f"known buffer is 'csc'."
                 )
-            self._cache = StructureCache(mirror=tuple(value))
-            self.config = replace(self.config, mirror=None, mirror_max_row_nnz=None)
+            mirror = tuple(value)
+            config = _config_with_mirror(
+                self.config, mirror, shape=self._a_shape[::-1],
+                device=_structure_device(self.indices, device),
+            )
+            self._cache = StructureCache(mirror=mirror)
+            self.config = config
 
     def register_buffer(self, name, value=None):
         """Store the mirror under its legacy name ``'csc'`` (see :attr:`buffers`)."""
@@ -405,7 +403,7 @@ class FixedNumConn(DataRepresentation):
         """
         if not is_concrete(self.indices):
             raise ValueError('prepare_config requires concrete structure outside jax.jit.')
-        from brainevent._csr.config import _prepare_csr_config, _config_for_new_structure, _structure_device
+        from brainevent._csr.config import _prepare_csr_config, _config_with_mirror, _structure_device
 
         flat_indices, indptr = _ell_csr_parts(self.indices)
         config = _prepare_csr_config(
@@ -416,12 +414,10 @@ class FixedNumConn(DataRepresentation):
             mirror_indptr, mirror_indices, _ = self._cache.mirror
             if not is_concrete(mirror_indices, mirror_indptr):
                 raise ValueError('prepare_config requires a concrete mirror outside jax.jit.')
-            mirror_config = _config_for_new_structure(
-                config, mirror_indices, mirror_indptr, shape=self._a_shape[::-1],
+            config = _config_with_mirror(
+                config, self._cache.mirror, shape=self._a_shape[::-1],
                 device=_structure_device(self.indices, device),
             )
-            config = replace(config, mirror=mirror_config.primary,
-                             mirror_max_row_nnz=mirror_config.primary_max_row_nnz)
         return type(self)._from_parts(
             self.data, self.indices, shape=self.shape, backend=self.backend,
             cache=self._cache, config=config,

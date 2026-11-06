@@ -1,12 +1,17 @@
 """Scheduler snapshots follow CSR/CSC structure through JAX reconstruction."""
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from brainevent import CSR, CSC, FixedNumPerPre, FixedNumPerPost, BinaryArray
-from brainevent._csr.config import CSRConfig
+from brainevent._csr.config import CSRConfig, get_device_info
 
 
 def _matrix(cls=CSR, **kwargs):
@@ -98,7 +103,7 @@ def test_structure_changes_rebind_eagerly_and_invalidate_traced_plans():
     assert prepared.config.tpr_threshold == 5
 
 
-def test_replacing_a_mirror_detaches_shared_cache_and_invalidates_only_that_plan():
+def test_replacing_a_mirror_detaches_shared_cache_and_rebuilds_its_plan():
     matrix = _matrix(config=CSRConfig()).build_weight_indices()
     sibling = matrix.with_data(matrix.data * 2)
     original_cache = sibling._cache
@@ -106,9 +111,92 @@ def test_replacing_a_mirror_detaches_shared_cache_and_invalidates_only_that_plan
     assert matrix._cache is not original_cache
     assert sibling._cache is original_cache
     assert matrix.config.primary is sibling.config.primary
-    assert matrix.config.mirror is None
+    assert matrix.config.mirror is not None
     assert sibling.config.mirror is not None
-    assert matrix.prepare_config().config.mirror is not None
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC, FixedNumPerPre, FixedNumPerPost])
+@pytest.mark.parametrize('setter', ['register_buffer', 'set_buffer'])
+@pytest.mark.parametrize('reordered', [False, True], ids=['same', 'reordered'])
+def test_setting_valid_mirror_keeps_indexed_mm_plan(cls, setter, reordered):
+    if cls in (CSR, CSC):
+        matrix = cls(
+            jnp.array([1., 2., 3., 4.]), jnp.array([0, 2, 1, 2], jnp.int32),
+            jnp.array([0, 2, 4], jnp.int32),
+            shape=(2, 3) if cls is CSR else (3, 2),
+            backend='jax_raw', config=CSRConfig(),
+        ).build_weight_indices()
+        key = 'csc' if cls is CSR else 'csr'
+    else:
+        matrix = cls(
+            jnp.array([[1., 2.], [3., 4.]]), jnp.array([[0, 2], [1, 2]], jnp.int32),
+            shape=(2, 3) if cls is FixedNumPerPre else (3, 2),
+            backend='jax_raw', config=CSRConfig(),
+        ).build_weight_indices()
+        key = 'csc'
+    mirror = matrix.buffers[key]
+    if reordered:
+        order = jnp.array([0, 1, 3, 2])
+        mirror = (mirror[0], mirror[1][order], mirror[2][order])
+    sibling = matrix.with_data(matrix.data * 2)
+    original_primary = matrix.config.primary
+    getattr(matrix, setter)(key, mirror)
+    assert sibling._cache is not matrix._cache
+    assert sibling.config.mirror is not None
+    assert matrix.config.primary is original_primary
+    assert matrix.config.mirror is not None
+    assert matrix.config.mirror_max_row_nnz == 2
+    if cls in (CSR, FixedNumPerPre):
+        events = BinaryArray(jnp.array([[True, False], [False, True], [True, True]]))
+        actual = matrix @ events
+        expected = matrix.todense() @ events.value
+    else:
+        events = BinaryArray(jnp.array([[True, False, True], [False, True, True]]))
+        actual = events @ matrix
+        expected = events.value @ matrix.todense()
+    np.testing.assert_allclose(actual, expected)
+
+
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='CUDA hybrid MM requires a GPU')
+@pytest.mark.parametrize('setter', ['register_buffer', 'set_buffer'])
+@pytest.mark.parametrize('reordered', [False, True], ids=['same', 'reordered'])
+def test_fixednum_mirror_update_keeps_cuda_mm_usable(setter, reordered):
+    matrix = FixedNumPerPre(
+        jnp.array([[1., 2.], [3., 4.]], jnp.float32),
+        jnp.array([[0, 2], [1, 2]], jnp.int32),
+        shape=(2, 3), backend='cuda_raw', config=CSRConfig(),
+    ).build_weight_indices()
+    events = BinaryArray(jnp.array([[True, False], [False, True], [True, True]]))
+    expected = jnp.array([[3., 2.], [4., 7.]])
+    np.testing.assert_allclose(matrix @ events, expected)
+    mirror = matrix.buffers['csc']
+    if reordered:
+        order = jnp.array([0, 1, 3, 2])
+        mirror = (mirror[0], mirror[1][order], mirror[2][order])
+    getattr(matrix, setter)('csc', mirror)
+    np.testing.assert_allclose(matrix @ events, expected)
+
+
+@pytest.mark.parametrize('cls', [CSR, FixedNumPerPre])
+def test_invalid_mirror_update_keeps_previous_cache_and_plan(cls):
+    if cls is CSR:
+        matrix = cls(
+            jnp.ones(2), jnp.array([0, 1], jnp.int32),
+            jnp.array([0, 1, 2], jnp.int32), shape=(2, 2),
+            backend='jax_raw', config=CSRConfig(),
+        ).build_weight_indices()
+    else:
+        matrix = cls(
+            jnp.ones((2, 1)), jnp.array([[0], [1]], jnp.int32),
+            shape=(2, 2), backend='jax_raw', config=CSRConfig(),
+        ).build_weight_indices()
+    cache, config = matrix._cache, matrix.config
+    _, indices, perm = matrix.buffers['csc']
+    bad_mirror = (jnp.zeros((3,), jnp.int32), indices, perm)
+    with pytest.raises(ValueError, match='indptr'):
+        matrix.set_buffer('csc', bad_mirror)
+    assert matrix._cache is cache
+    assert matrix.config is config
 
 
 @pytest.mark.parametrize('cls', [CSR, CSC, FixedNumPerPre, FixedNumPerPost])
@@ -193,6 +281,149 @@ def test_numpy_structure_is_prepared_without_device_readback(monkeypatch):
         shape=(2, 3), backend='jax_raw', config=CSRConfig(),
     )
     assert matrix.config.nnz == 3
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC, FixedNumPerPre, FixedNumPerPost])
+@pytest.mark.parametrize('backend,global_backend,expected_queries', [
+    (None, 'jax_raw', 0),
+    (None, 'cuda_raw', 1),
+    (None, 'cusparse', 1),
+    (None, 'numba', 1),
+    ('jax_raw', 'cuda_raw', 0),
+    ('cuda_raw', 'jax_raw', 1),
+    ('cusparse', 'cuda_raw', 0),
+])
+def test_auto_preparation_uses_object_then_global_backend(
+    monkeypatch, cls, backend, global_backend, expected_queries,
+):
+    import brainevent.config as runtime_config
+    import brainevent._csr.config as csr_config
+
+    monkeypatch.setitem(runtime_config._global_backends, 'gpu', global_backend)
+    queries = []
+    monkeypatch.setattr(csr_config, 'get_device_info',
+                        lambda *args, **kwargs: queries.append((args, kwargs)) or None)
+    if cls in (CSR, CSC):
+        matrix = cls(
+            np.ones(2), np.array([0, 1], np.int32), np.array([0, 1, 2], np.int32),
+            shape=(2, 2), backend=backend, config=CSRConfig(),
+        )
+    else:
+        matrix = cls(
+            np.ones((2, 1)), np.array([[0], [1]], np.int32),
+            shape=(2, 2), backend=backend, config=CSRConfig(),
+        )
+    assert matrix.backend == backend
+    assert len(queries) == expected_queries
+    prepared = matrix.prepare_config()
+    assert prepared.backend == backend
+    assert len(queries) == 2 * expected_queries
+
+
+def test_gpu_info_probe_accepts_cpu_shards_without_explicit_device():
+    class CPUDevice:
+        platform = 'cpu'
+
+    cpu0 = CPUDevice()
+    cpu1 = CPUDevice()
+
+    class PlacedArray:
+        def __init__(self, devices):
+            self._devices = devices
+
+        def devices(self):
+            return self._devices
+
+    assert get_device_info(PlacedArray((cpu0, cpu1))) is None
+
+    class GPUDevice:
+        platform = 'gpu'
+
+    with pytest.raises(ValueError, match='single device'):
+        get_device_info(PlacedArray((GPUDevice(), GPUDevice())))
+
+
+def test_cpu_sharded_structure_replicates_prepared_masks():
+    # JAX must see the extra CPU devices before this process imports it.
+    script = '''
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from brainevent import CSR, CSC, FixedNumPerPre, FixedNumPerPost, BinaryArray, config
+from brainevent._csr.config import CSRConfig
+
+devices = jax.devices('cpu')
+assert len(devices) == 2
+mesh = Mesh(np.asarray(devices), ('cpu_shard',))
+config.set_backend('cpu', 'jax_raw')
+def placed(value, spec):
+    return jax.device_put(jnp.asarray(value), NamedSharding(mesh, spec))
+def verify(config):
+    for plan in (config.primary, config.mirror):
+        mask = plan.long_mask
+        assert isinstance(mask.sharding, NamedSharding), mask.sharding
+        assert mask.sharding.spec == P(), mask.sharding
+        assert mask.devices() == set(devices), mask.devices()
+
+for cls in (CSR, CSC, FixedNumPerPre, FixedNumPerPost):
+    if cls in (CSR, CSC):
+        args = (
+            placed(np.ones(4, np.float32), P('cpu_shard')),
+            placed(np.array([0, 1, 0, 1], np.int32), P('cpu_shard')),
+            placed(np.array([0, 2, 4], np.int32), P()),
+        )
+    else:
+        args = (
+            placed(np.ones((2, 2), np.float32), P('cpu_shard')),
+            placed(np.array([[0, 1], [0, 1]], np.int32), P('cpu_shard')),
+        )
+    direct_indices = args[1].reshape(-1) if cls in (FixedNumPerPre, FixedNumPerPost) else args[1]
+    direct_indptr = (np.array([0, 2, 4], np.int32)
+                     if cls in (FixedNumPerPre, FixedNumPerPost) else args[2])
+    verify(CSRConfig().prepare_structure(direct_indices, direct_indptr, shape=(2, 2)))
+    matrix = cls(*args, shape=(2, 2), config=CSRConfig())
+    verify(matrix.config)
+    verify(matrix.prepare_config().config)
+    explicit = matrix.prepare_config(device=devices[0])
+    assert explicit.config.primary.long_mask.devices() == {devices[0]}
+    assert explicit.config.mirror.long_mask.devices() == {devices[0]}
+    result = jax.jit(lambda m, x: m @ BinaryArray(x))(
+        matrix, placed(np.ones(2, np.float32), P()))
+    np.testing.assert_array_equal(np.asarray(result), [2, 2])
+    mirror = matrix.build_weight_indices()
+    rebuilt = cls(*args, shape=(2, 2),
+                  buffers=mirror.buffers, config=CSRConfig())
+    verify(rebuilt.config)
+'''
+    env = dict(os.environ, JAX_PLATFORM_NAME='cpu',
+               XLA_FLAGS='--xla_force_host_platform_device_count=2')
+    result = subprocess.run(
+        [sys.executable, '-c', script], cwd=Path(__file__).parents[3],
+        env=env, text=True, capture_output=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='GPU placement requires CUDA')
+def test_global_jax_backend_skips_native_probe_on_gpu(monkeypatch):
+    import brainevent.config as runtime_config
+    import brainevent._csr.config as csr_config
+
+    monkeypatch.setitem(runtime_config._global_backends, 'gpu', 'jax_raw')
+
+    def no_native_probe(*args, **kwargs):
+        raise AssertionError('global jax_raw must not query CUDA device information')
+
+    monkeypatch.setattr(csr_config, '_query_cuda_device_info', no_native_probe)
+    with jax.default_device(jax.devices('gpu')[0]):
+        matrix = CSR(
+            jnp.ones(2), jnp.array([0, 1], jnp.int32),
+            jnp.array([0, 1, 2], jnp.int32),
+            shape=(2, 2), config=CSRConfig(),
+        )
+    assert matrix.config.device_info is None
+    assert matrix.config.primary is not None
 
 
 @pytest.mark.skipif(jax.default_backend() != 'gpu', reason='GPU placement requires CUDA')

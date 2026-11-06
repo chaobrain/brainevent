@@ -28,7 +28,7 @@
  *   1. Extract active rows. Rows with nnz <= 128 are scattered immediately by
  *      one thread per row.
  *   2. Heavy active rows reserve contiguous block tasks once with atomicAdd.
- *      Each task stores begin/end offsets for up to 4096 nonzeros.
+ *      Each task stores begin/end offsets for up to BE_HYBRID_TASK_NNZ nonzeros.
  *   3. Launch a fixed number of 128-thread scatter blocks. Each block reads
  *      the active task count on device and processes tasks with a grid-stride
  *      loop, avoiding D2H status reads and host synchronization.
@@ -50,7 +50,8 @@
  *
  * Required preprocessing before launch:
  *   Compute task_capacity as the worst-case sum across all static CSR rows:
- *     sum(row_nnz > 128 ? ceil(row_nnz / 4096) : 0)
+ *     sum(row_nnz > BE_HYBRID_TPR_THRESHOLD ?
+ *         ceil(row_nnz / BE_HYBRID_TASK_NNZ) : 0)
  *
  *   Then allocate task_begin/task_end with task_capacity entries each using the
  *   same dtype as indptr and status with two int32 entries. task_capacity is a
@@ -85,11 +86,11 @@ namespace ffi = xla::ffi;
 #endif
 
 #ifndef BE_HYBRID_BLOCK_SIZE
-#define BE_HYBRID_BLOCK_SIZE 256
+#define BE_HYBRID_BLOCK_SIZE 512
 #endif
 
 #ifndef BE_HYBRID_FIXED_SCATTER_BLOCKS
-#define BE_HYBRID_FIXED_SCATTER_BLOCKS 2048
+#define BE_HYBRID_FIXED_SCATTER_BLOCKS 1024
 #endif
 
 #ifndef BE_HYBRID_TPR_THRESHOLD
@@ -97,7 +98,7 @@ namespace ffi = xla::ffi;
 #endif
 
 #ifndef BE_HYBRID_TASK_NNZ
-#define BE_HYBRID_TASK_NNZ 4096
+#define BE_HYBRID_TASK_NNZ 512
 #endif
 
 namespace

@@ -16,7 +16,6 @@
 
 import operator
 import contextlib
-from dataclasses import replace
 from typing import Optional, Union, Dict, cast
 
 import brainunit as u
@@ -32,12 +31,12 @@ from brainevent._misc import (
 )
 from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
 from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
-from brainevent.config import get_backend
+from brainevent.config import _backend_preference
 from .binary.binary import binary_csrmv, binary_csrmm
 from .binary.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from .config import (
     CSRConfig, _structure_device, _host_structure_array,
-    _prepare_csr_config, _config_for_new_structure,
+    _prepare_csr_config, _config_for_new_structure, _config_with_mirror,
 )
 from .diag.diag_add import csr_diag_position, csr_diag_add
 from .float.float import csrmv, csrmm
@@ -57,9 +56,7 @@ __all__ = [
 
 def _use_cuda_indexed_binary_route(backend: Optional[str]) -> bool:
     """Prefer the object's backend, then the global GPU choice, for mirror routing."""
-    if backend is None:
-        backend = get_backend('gpu')
-    return backend == "cuda_raw"
+    return _backend_preference('gpu', backend) == 'cuda_raw'
 
 
 class CompressedSparseData(DataRepresentation):
@@ -210,22 +207,14 @@ class CompressedSparseData(DataRepresentation):
             backend=backend, config=config, device=device,
             host_structure=host_structure,
         )
-        self._ingest_buffers(buffers)
-        if self._cache.mirror is not None:
-            mirror_indptr, mirror_indices, _ = self._cache.mirror
-            mirror_config = _config_for_new_structure(
-                self.config, mirror_indices, mirror_indptr, shape=self._storage_shape[::-1],
-                device=_structure_device(self.indices, device),
-            )
-            self.config = replace(self.config, mirror=mirror_config.primary,
-                                  mirror_max_row_nnz=mirror_config.primary_max_row_nnz)
+        self._ingest_buffers(buffers, device=device)
         if precompute_weight_indices and self._mirror() is None:
             # Traced structure: this fresh object is local to the trace, so
             # its own cache may hold the traced mirror.
             self._cache.set_mirror(self._weight_indices())
 
     @classmethod
-    def _from_parts(cls, data, indices, indptr, *, shape, backend=None, buffers=None, cache=None, config=None):
+    def _from_parts(cls, data, indices, indptr, *, shape, backend=None, cache=None, config=None):
         """Assemble a matrix from trusted parts, without conversion or validation.
 
         Structure-preserving paths (``with_data``, ``transpose``, ``apply``,
@@ -244,24 +233,27 @@ class CompressedSparseData(DataRepresentation):
         obj._buffer_registry = set()
         obj._cache = StructureCache() if cache is None else cache
         obj.config = CSRConfig() if config is None else config
-        obj._ingest_buffers(buffers)
         return obj
 
-    def _ingest_buffers(self, buffers) -> None:
-        """Store legacy-named structure caches (mirror, ``diag_positions``)."""
+    def _ingest_buffers(self, buffers, *, device=None) -> None:
+        """Store legacy-named caches and bind plans for replacement mirrors."""
         for name, value in (buffers or {}).items():
             if value is None:
                 continue
             if name == self._mirror_key:
+                mirror = tuple(value)
+                config = _config_with_mirror(
+                    self.config, mirror, shape=self._storage_shape[::-1],
+                    device=_structure_device(self.indices, device),
+                )
                 # Replacing a shared cache in place would leave sibling
                 # matrices with a plan for the previous mirror.
                 cache = self._cache
                 self._cache = StructureCache(
-                    mirror=tuple(value),
+                    mirror=mirror,
                     diag_plan=cache.diag_plan,
                 )
-                # A user-supplied mirror need not match the prepared layout.
-                self.config = replace(self.config, mirror=None, mirror_max_row_nnz=None)
+                self.config = config
             elif name == 'diag_positions':
                 self._cache.diag_plan = tuple(value)
             else:
@@ -412,12 +404,10 @@ class CompressedSparseData(DataRepresentation):
             mirror_indptr, mirror_indices, _ = self._cache.mirror
             if not is_concrete(mirror_indices, mirror_indptr):
                 raise ValueError('prepare_config requires a concrete mirror outside jax.jit.')
-            mirror_config = _config_for_new_structure(
-                config, mirror_indices, mirror_indptr, shape=self._storage_shape[::-1],
+            config = _config_with_mirror(
+                config, self._cache.mirror, shape=self._storage_shape[::-1],
                 device=_structure_device(self.indices, device),
             )
-            config = replace(config, mirror=mirror_config.primary,
-                             mirror_max_row_nnz=mirror_config.primary_max_row_nnz)
         return type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape, backend=self.backend,
             cache=self._cache, config=config,

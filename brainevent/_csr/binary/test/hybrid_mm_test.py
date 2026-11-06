@@ -62,7 +62,7 @@ def test_adapter_preserves_layout_dtype_and_plan(monkeypatch, weighted, permuted
     layout = 'col_major' if permuted and not homo else 'row'
     assert source.name == f'hybrid_batchedv3_spmm_{"col_major_" if layout == "col_major" else ""}{mode}.cu'
     assert re.fullmatch(rf'csr_hybrid_mm_{layout}_{mode}_[0-9a-f]{{12}}', module)
-    assert load_kwargs == dict(extra_include_paths=[str(source.parent)], allow_cuda_graph=False)
+    assert load_kwargs == dict(extra_include_paths=[str(source.parent)], allow_cuda_graph=True)
     assert target.startswith(module + '.')
     assert len(operands) == (6 if permuted and not homo else 5)
     assert ('_homo' in target) == homo

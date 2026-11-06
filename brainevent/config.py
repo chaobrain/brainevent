@@ -343,6 +343,14 @@ def get_backend(platform: str) -> Optional[str]:
     return _global_backends.get(platform)
 
 
+def _backend_preference(platform: str, requested: Optional[str] = None) -> Optional[str]:
+    """Choose an explicit backend before the platform's global preference.
+
+    Primitive defaults and backend availability remain the caller's decision.
+    """
+    return requested if requested is not None else get_backend(platform)
+
+
 def clear_backends():
     """Clear all global backend defaults.
 

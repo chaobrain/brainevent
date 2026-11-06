@@ -158,5 +158,6 @@ Caching Behaviour
 Changing them for the same source triggers a recompilation and stores a
 separate cached binary — no need for ``force_rebuild=True``.
 
-``allow_cuda_graph`` is a registration-only flag and does **not** affect
-the cache key or trigger a rebuild.
+``allow_cuda_graph`` changes the generated FFI handler trait. It is included
+in the compilation cache key, so changing it builds a separate module artifact.
+The flag makes capture possible; XLA decides whether to capture a call.

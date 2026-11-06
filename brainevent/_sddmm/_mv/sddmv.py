@@ -76,7 +76,7 @@ def _load_hybrid_cached(weighted: bool, block_size: int, fixed_scatter_blocks: i
         _DIRECTORY / source, name=name,
         extra_cuda_cflags=config_spec.compile_flags(),
         extra_include_paths=[str(_DIRECTORY), str(_DIRECTORY.parent / '_common')],
-        allow_cuda_graph=False,
+        allow_cuda_graph=True,
     )
     return name
 

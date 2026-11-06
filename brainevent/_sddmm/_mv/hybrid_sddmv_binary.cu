@@ -29,7 +29,7 @@
  *   1. Extract active rows. Rows with nnz <= 128 are gathered immediately by
  *      one thread per row.
  *   2. Heavy active rows reserve contiguous block tasks once with atomicAdd.
- *      Each task stores begin/end offsets for up to 4096 slots.
+ *      Each task stores begin/end offsets for up to BE_HYBRID_TASK_NNZ slots.
  *   3. Launch a fixed number of 256-thread blocks. Each block reads the
  *      active task count on device and processes tasks with a grid-stride
  *      loop, avoiding D2H status reads and host synchronization.
@@ -59,11 +59,11 @@
 #include <limits>
 
 #ifndef BE_HYBRID_BLOCK_SIZE
-#define BE_HYBRID_BLOCK_SIZE 256
+#define BE_HYBRID_BLOCK_SIZE 512
 #endif
 
 #ifndef BE_HYBRID_FIXED_SCATTER_BLOCKS
-#define BE_HYBRID_FIXED_SCATTER_BLOCKS 2048
+#define BE_HYBRID_FIXED_SCATTER_BLOCKS 1024
 #endif
 
 #ifndef BE_HYBRID_TPR_THRESHOLD
@@ -71,7 +71,7 @@
 #endif
 
 #ifndef BE_HYBRID_TASK_NNZ
-#define BE_HYBRID_TASK_NNZ 4096
+#define BE_HYBRID_TASK_NNZ 512
 #endif
 
 namespace

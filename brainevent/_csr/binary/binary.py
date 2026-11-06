@@ -836,7 +836,7 @@ def _binary_csrmv_cuda_kernel(
             name=_mod,
             extra_include_paths=[str(_source_dir)],
             extra_cuda_cflags=_cfg.compile_flags(),
-            allow_cuda_graph=False,
+            allow_cuda_graph=True,
         )
         kernel_name = f'{_mod}.binary_csrmv_wat_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
 
@@ -1560,7 +1560,7 @@ def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
     dependencies = (source, *sorted(root.rglob('*.cuh')))
     digest = hashlib.sha256(b''.join(path.read_bytes() for path in dependencies)).hexdigest()[:12]
     module = f'csr_hybrid_mm_{layout}_{mode}_{digest}'
-    load_cuda_file(source, name=module, extra_include_paths=[str(root)], allow_cuda_graph=False)
+    load_cuda_file(source, name=module, extra_include_paths=[str(root)], allow_cuda_graph=True)
     abi = cuda_event_abi(vector_info.dtype, weighted=weighted, value_dtype=weight_info.dtype)
     if native_permuted:
         symbol = 'batched_spmm_v3_col_major_' + ('weighted' if weighted else 'binary') + '_hetero'

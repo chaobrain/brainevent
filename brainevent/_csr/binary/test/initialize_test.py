@@ -31,7 +31,10 @@ def _restore_cache_dir():
 
 
 def test_default_config_matches_cu_defaults():
-    assert CSRConfig().kernel_args()[0] == CSRConfig(256, 2048, 128, 4096).kernel_args()[0]
+    default_spec = CSRConfig().kernel_args()[0]
+    assert default_spec == CSRConfig(512, 1024, 128, 512).kernel_args()[0]
+    assert any(candidate.kernel_args()[0] == default_spec
+               for candidate in initialize.DEFAULT_CANDIDATES)
 
 
 def test_validate_config_rejects_invalid_scheduler_values():

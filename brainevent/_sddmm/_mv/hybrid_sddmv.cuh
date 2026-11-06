@@ -34,8 +34,9 @@ namespace hybrid_sddmv
     // task_begin/task_end have task_capacity entries, with the same type as indptr.
     // status has two int32 entries {active_task_count, overflow_flag}; it is cleared
     // on every call, including empty inputs. Task buffers may be null if capacity=0.
-    // For the default build, capacity must cover every row (including inactive ones):
-    //   sum(row_nnz > 128 ? ceil(row_nnz / 4096) : 0).
+    // Capacity must cover every row (including inactive ones):
+    //   sum(row_nnz > BE_HYBRID_TPR_THRESHOLD ?
+    //       ceil(row_nnz / BE_HYBRID_TASK_NNZ) : 0).
     // If BE_HYBRID_TPR_THRESHOLD / BE_HYBRID_TASK_NNZ are overridden when compiling
     // the .cu, compute capacity with the same values. Read status after stream
     // completion; an overflow flag means capacity was insufficient, output incomplete.

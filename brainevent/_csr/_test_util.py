@@ -544,7 +544,7 @@ def heavy_row_csr_numpy(rng, m, k, row_nnz, weight_dtype=np.float32):
 
     The hybrid CUDA scatter kernels split rows with more than
     ``BE_HYBRID_TPR_THRESHOLD`` (128) stored entries into chunks of
-    ``BE_HYBRID_TASK_NNZ`` (4096) entries; ``row_nnz > 4096`` therefore
+    ``BE_HYBRID_TASK_NNZ`` (512 by default) entries; ``row_nnz > 512`` therefore
     exercises multi-chunk rows.
 
     Parameters

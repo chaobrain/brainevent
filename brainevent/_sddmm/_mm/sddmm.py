@@ -39,7 +39,7 @@ def _load_hybrid(weighted: bool) -> str:
     load_cuda_file(
         _DIRECTORY / f'hybrid_sddmm_{kind}.cu', name=name,
         extra_include_paths=[str(_DIRECTORY), str(_DIRECTORY.parent / '_common')],
-        allow_cuda_graph=False,
+        allow_cuda_graph=True,
     )
     return name
 

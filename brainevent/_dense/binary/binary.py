@@ -64,6 +64,7 @@ def _load_dense_cublas_file():
         Path(__file__).parent.joinpath('binary_dense_cublas.cu'),
         name='dense_binary_cublas',
         extra_ldflags=[str(libcublas), f'-rpath={libcublas.parent}'],
+        # This cuBLAS path allocates and frees a temporary event buffer per call.
         allow_cuda_graph=False,
     )
 

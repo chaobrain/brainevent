@@ -85,7 +85,7 @@ def _load(stem: str) -> str:
     dependencies = [source, TRAITS, TRAITS.with_name("cuda_traits.cuh"), HEADER,
                     HEADER.with_name("hybrid_delay_validation.cuh")]
     name = stem + "_" + hashlib.sha256(b"".join(path.read_bytes() for path in dependencies)).hexdigest()[:16]
-    load_cuda_file(source, name=name, allow_cuda_graph=False,
+    load_cuda_file(source, name=name, allow_cuda_graph=True,
                    extra_include_paths=[str(source.parent), str(PACKAGE)])
     return name
 

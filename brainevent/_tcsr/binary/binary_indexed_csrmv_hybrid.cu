@@ -46,11 +46,11 @@ namespace ffi = xla::ffi;
 #endif
 
 #ifndef BE_HYBRID_BLOCK_SIZE
-#define BE_HYBRID_BLOCK_SIZE 256
+#define BE_HYBRID_BLOCK_SIZE 512
 #endif
 
 #ifndef BE_HYBRID_FIXED_SCATTER_BLOCKS
-#define BE_HYBRID_FIXED_SCATTER_BLOCKS 2048
+#define BE_HYBRID_FIXED_SCATTER_BLOCKS 1024
 #endif
 
 #ifndef BE_HYBRID_TPR_THRESHOLD
@@ -58,7 +58,7 @@ namespace ffi = xla::ffi;
 #endif
 
 #ifndef BE_HYBRID_TASK_NNZ
-#define BE_HYBRID_TASK_NNZ 4096
+#define BE_HYBRID_TASK_NNZ 512
 #endif
 
 namespace

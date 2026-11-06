@@ -97,10 +97,10 @@ class HybridConfig:
         Persisted timing records associated with this selected configuration.
     """
 
-    block_size: int = 256
-    fixed_scatter_blocks: int = 2048
+    block_size: int = 512
+    fixed_scatter_blocks: int = 1024
     tpr_threshold: int = 128
-    task_nnz: int = 4096
+    task_nnz: int = 512
     benchmark_records: tuple["HybridBenchmarkRecord", ...] = field(
         default_factory=tuple,
         compare=False,
@@ -467,6 +467,7 @@ _N_BASE = 1000
 
 
 DEFAULT_CANDIDATES: tuple[HybridConfig, ...] = (
+    HybridConfig(512, 1024, 128, 512),
     HybridConfig(128, 1024, 128, 2048),
     HybridConfig(128, 2048, 128, 4096),
     HybridConfig(256, 1024, 128, 4096),
@@ -581,7 +582,7 @@ def _benchmark_config(
         extra_cuda_cflags=compile_flags_for_config(config),
         force_rebuild=force_rebuild,
         verbose=verbose_compile,
-        allow_cuda_graph=False,
+        allow_cuda_graph=True,
     )
     if _TARGET_FUNCTION not in module.function_names:
         raise RuntimeError(

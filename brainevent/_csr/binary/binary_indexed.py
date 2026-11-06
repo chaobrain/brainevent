@@ -416,7 +416,7 @@ def _binary_csrmv_indexed_cuda_kernel(
             name=_mod,
             extra_include_paths=[str(_source_dir)],
             extra_cuda_cflags=_cfg.compile_flags(),
-            allow_cuda_graph=False,
+            allow_cuda_graph=True,
         )
         kernel_name = f'{_mod}.binary_csrmv_wat_hybrid_homo{wt_sfx}{spk_suffix}'
 
@@ -447,7 +447,7 @@ def _binary_csrmv_indexed_cuda_kernel(
             name=_mod,
             extra_include_paths=[str(_source_dir)],
             extra_cuda_cflags=_cfg.compile_flags(),
-            allow_cuda_graph=False,
+            allow_cuda_graph=True,
         )
         _event_suffix = '' if kwargs.get('weighted', False) else spk_suffix
         kernel_name = f'{_mod}.hybrid_spmv_col_major_{_mode}_hetero{wt_sfx}{_event_suffix}'

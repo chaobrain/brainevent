@@ -268,7 +268,7 @@ def _csrmv_cuda_kernel(
         load_cuda_file(
             Path(__file__).parent.joinpath('float_csrmv.cu'),
             name='tcsr_float_csrmv',
-            allow_cuda_graph=False,
+            allow_cuda_graph=True,
         )
         out_info = kwargs['outs']
         wt_sfx = dtype_suffix(weight_info.dtype)
@@ -921,7 +921,7 @@ def _csrmm_cuda_kernel(
         load_cuda_file(
             Path(__file__).parent.joinpath('float_csrmm.cu'),
             name='tcsr_float_csrmm',
-            allow_cuda_graph=False,
+            allow_cuda_graph=True,
         )
         out_info = kwargs['outs']
         wt_sfx = dtype_suffix(weight_info.dtype)

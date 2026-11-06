@@ -625,7 +625,7 @@ def _binary_csrmv_cuda_kernel(
         ),
         name=module,
         extra_cuda_cflags=compile_flags_for_config(config),
-        allow_cuda_graph=False,
+        allow_cuda_graph=True,
     )
     kernel_name = (
         f'{module}.binary_indexed_csrmv_wat_hybrid_hetero{wt_sfx}{spk_suffix}'
@@ -1566,7 +1566,7 @@ def _binary_csrmm_indexed_cuda_kernel(
             tile_mm_dir.joinpath("binary_csrmm_tile.cu"),
             name="tcsr_binary_csrmm_tile",
             extra_include_paths=[str(tile_mm_dir)],
-            allow_cuda_graph=False,
+            allow_cuda_graph=True,
         )
         ffi_outs = (
             jax.ShapeDtypeStruct((batch, cols), weight_info.dtype),
@@ -1616,7 +1616,7 @@ def _binary_csrmm_indexed_cuda_kernel(
         Path(__file__).parent.joinpath('binary_indexed_csrmm_hybrid.cu'),
         name=module,
         extra_cuda_cflags=compile_flags_for_config(config),
-        allow_cuda_graph=False,
+        allow_cuda_graph=True,
     )
     kernel_name = (
         f'{module}.binary_indexed_csrmm_sraw_hybrid_hetero'
@@ -1699,7 +1699,7 @@ def _binary_csrmm_weighted_cuda_kernel(
         Path(__file__).parent.joinpath('binary_indexed_csrmm_hybrid.cu'),
         name=module,
         extra_cuda_cflags=compile_flags_for_config(config),
-        allow_cuda_graph=False,
+        allow_cuda_graph=True,
     )
     if weight_info.size == 1:
         entry = 'binary_csrmm_sraw_hybrid_homo'
@@ -1809,7 +1809,7 @@ def _binary_csrmm_tile_cuda_kernel(
         tile_mm_dir.joinpath("binary_csrmm_tile.cu"),
         name="tcsr_binary_csrmm_tile",
         extra_include_paths=[str(tile_mm_dir)],
-        allow_cuda_graph=False,
+        allow_cuda_graph=True,
     )
     ffi_outs = (
         jax.ShapeDtypeStruct((batch, cols), weight_info.dtype),

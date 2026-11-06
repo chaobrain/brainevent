@@ -56,6 +56,7 @@ _N_BASE = 1000
 
 #: Candidate sweep (block, fixed_scatter_blocks, tpr_threshold, task_nnz).
 DEFAULT_CANDIDATES: tuple[CSRConfig, ...] = (
+    CSRConfig(mv=MVSchedule(512, 1024, 128, 512)),
     CSRConfig(mv=MVSchedule(128, 1024, 128, 2048)),
     CSRConfig(mv=MVSchedule(128, 2048, 128, 4096)),
     CSRConfig(mv=MVSchedule(256, 1024, 128, 4096)),
@@ -295,7 +296,7 @@ def _benchmark_config(
         extra_cuda_cflags=config.mv.compile_flags(),
         force_rebuild=force_rebuild,
         verbose=verbose_compile,
-        allow_cuda_graph=False,
+        allow_cuda_graph=True,
     )
     if _TARGET_FUNCTION not in module.function_names:
         raise RuntimeError(f"{_TARGET_FUNCTION} was not registered by {module.path}")

@@ -20,6 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._structure import is_concrete
+from brainevent.config import _backend_preference
 
 __all__ = [
     'CSRConfig', 'CSRDeviceInfo', 'MVSchedule', 'CSRKernelSpec',
@@ -88,6 +89,7 @@ def _query_cuda_device_info(device):
     dependencies = (source, *sorted(include_root.rglob('*.h')))
     digest = hashlib.sha256(b''.join(path.read_bytes() for path in dependencies)).hexdigest()[:12]
     module = f'csr_device_info_{digest}'
+    # The device probe synchronizes its stream before returning host-backed data.
     load_cuda_file(source, name=module, allow_cuda_graph=False)
     dummy = jax.device_put(np.zeros((1,), np.uint8), device)
     info = jax.ffi.ffi_call(
@@ -109,8 +111,8 @@ def get_device_info(*arrays, device=None):
     *arrays : array_like
         Concrete arrays whose placement identifies the preparation device.
     device : jax.Device or None, optional
-        Explicit preparation device. Otherwise use the arrays' single device,
-        leaving host arrays and tracers without device preparation.
+        Explicit preparation device. Otherwise use the arrays' device when
+        unambiguous. CPU shards, host arrays, and tracers need no CUDA probe.
 
     Returns
     -------
@@ -121,7 +123,7 @@ def get_device_info(*arrays, device=None):
     Raises
     ------
     ValueError
-        The arrays span multiple devices and no explicit device was supplied.
+        The arrays include multiple GPU placements and no explicit device was supplied.
     """
     if device is None:
         devices = set()
@@ -130,6 +132,8 @@ def get_device_info(*arrays, device=None):
                 continue
             if hasattr(array, 'devices'):
                 devices.update(array.devices())
+        if devices and all(d.platform != 'gpu' for d in devices):
+            return None
         if len(devices) > 1:
             raise ValueError('CSR preparation requires a single device; pass device explicitly.')
         if not devices:
@@ -279,10 +283,10 @@ class MVSchedule:
         CUDA block width, scatter grid cap, heavy-row threshold, and task size.
     """
 
-    block_size: int = 256
-    fixed_scatter_blocks: int = 2048
+    block_size: int = 512
+    fixed_scatter_blocks: int = 1024
     tpr_threshold: int = 128
-    task_nnz: int = 4096
+    task_nnz: int = 512
 
     def __post_init__(self) -> None:
         _validate_scheduler(self)
@@ -509,10 +513,10 @@ class CSRConfig:
     ) -> None:
         if mv is None:
             mv = MVSchedule(
-                256 if block_size is None else block_size,
-                2048 if fixed_scatter_blocks is None else fixed_scatter_blocks,
+                512 if block_size is None else block_size,
+                1024 if fixed_scatter_blocks is None else fixed_scatter_blocks,
                 128 if tpr_threshold is None else tpr_threshold,
-                4096 if task_nnz is None else task_nnz,
+                512 if task_nnz is None else task_nnz,
             )
         elif any(value is not None for value in
                  (block_size, fixed_scatter_blocks, tpr_threshold, task_nnz)):
@@ -719,6 +723,8 @@ class CSRConfig:
                           device_info: CSRDeviceInfo | None = None) -> CSRConfig:
         """Prepare primary and mirror row statistics from concrete structure.
 
+        Masks for a CPU-sharded structure are replicated across its mesh.
+
         Parameters
         ----------
         indices, indptr : array_like
@@ -754,11 +760,12 @@ class CSRConfig:
         if idx.size and (idx.min() < 0 or idx.max() >= cols):
             raise ValueError('indices are outside the matrix shape')
         mirror_lengths = np.bincount(idx.astype(np.int64), minlength=cols).astype(np.int64)
-        return replace(base, shape=(rows, cols), nnz=int(idx.size),
-                       primary_max_row_nnz=int(lengths.max(initial=0)),
-                       mirror_max_row_nnz=int(mirror_lengths.max(initial=0)),
-                       primary=_structure_plan(lengths),
-                       mirror=_structure_plan(mirror_lengths))
+        prepared = replace(base, shape=(rows, cols), nnz=int(idx.size),
+                           primary_max_row_nnz=int(lengths.max(initial=0)),
+                           mirror_max_row_nnz=int(mirror_lengths.max(initial=0)),
+                           primary=_structure_plan(lengths),
+                           mirror=_structure_plan(mirror_lengths))
+        return _place_prepared_masks(prepared, _replicated_cpu_sharding(indices, indptr))
 
     def swap_layouts(self) -> CSRConfig:
         """Return a snapshot whose compressed traversal layouts are exchanged.
@@ -957,6 +964,30 @@ def _structure_device(indices: Any, device: Any = None) -> Any:
     return None
 
 
+def _replicated_cpu_sharding(*arrays: Any) -> Any:
+    """Return a replicated placement for a concrete multi-CPU structure."""
+    for array in arrays:
+        if isinstance(array, jax.core.Tracer):
+            continue
+        sharding = getattr(array, 'sharding', None)
+        if isinstance(sharding, jax.sharding.NamedSharding):
+            devices = sharding.device_set
+            if len(devices) > 1 and all(getattr(device, 'platform', None) == 'cpu' for device in devices):
+                return jax.sharding.NamedSharding(sharding.mesh, jax.sharding.PartitionSpec())
+    return None
+
+
+def _place_prepared_masks(config: CSRConfig, sharding: Any) -> CSRConfig:
+    """Place whole-structure masks on the CPU mesh or an explicit device."""
+    if sharding is None:
+        return config
+    primary = (None if config.primary is None else
+               replace(config.primary, long_mask=jax.device_put(config.primary.long_mask, sharding)))
+    mirror = (None if config.mirror is None else
+              replace(config.mirror, long_mask=jax.device_put(config.mirror.long_mask, sharding)))
+    return replace(config, primary=primary, mirror=mirror)
+
+
 def _host_structure_array(original: Any, converted: Any) -> np.ndarray[Any, Any] | None:
     """Reuse host input, or read one concrete device array once."""
     if not is_concrete(converted):
@@ -973,9 +1004,16 @@ def _prepare_csr_config(indices: Any, indptr: Any, *, shape: Sequence[int],
     """Resolve a parameter snapshot and prepare concrete structure outside tracing."""
     from .binary.initialize import load_csr_config
 
+    cpu_sharding = _replicated_cpu_sharding(indices, indptr) if device is None else None
     target = _structure_device(indices, device)
+    if target is None and cpu_sharding is not None:
+        target = min(cpu_sharding.device_set, key=lambda item: item.id)
     device_info = None
-    if (backend in (None, 'cuda_raw') or device is not None) and is_concrete(indices, indptr):
+    preferred = _backend_preference('gpu', backend)
+    # A global choice other than jax_raw may be unsupported by an indexed
+    # primitive, which then falls back to its CUDA default. Keep its plan ready.
+    needs_cuda_info = preferred == 'cuda_raw' or (backend is None and preferred != 'jax_raw')
+    if (needs_cuda_info or device is not None) and is_concrete(indices, indptr):
         with jax.ensure_compile_time_eval():
             device_info = get_device_info(indices, indptr, device=device)
     if config is None:
@@ -989,7 +1027,8 @@ def _prepare_csr_config(indices: Any, indptr: Any, *, shape: Sequence[int],
         return snapshot
     with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
         source_indices, source_indptr = (indices, indptr) if host_structure is None else host_structure
-        return snapshot.prepare_structure(source_indices, source_indptr, shape=shape, device_info=device_info)
+        prepared = snapshot.prepare_structure(source_indices, source_indptr, shape=shape, device_info=device_info)
+        return _place_prepared_masks(prepared, device if device is not None else cpu_sharding)
 
 
 def _config_for_new_structure(config: CSRConfig, indices: Any, indptr: Any, *,
@@ -999,7 +1038,26 @@ def _config_for_new_structure(config: CSRConfig, indices: Any, indptr: Any, *,
     if not is_concrete(indices, indptr):
         return snapshot
     target = _structure_device(indices, device)
+    cpu_sharding = _replicated_cpu_sharding(indices, indptr) if device is None else None
+    if cpu_sharding is None and device is None and (target is None or target.platform == 'cpu'):
+        masks = (None if config.primary is None else config.primary.long_mask,
+                 None if config.mirror is None else config.mirror.long_mask)
+        cpu_sharding = _replicated_cpu_sharding(*masks)
+    if target is None and cpu_sharding is not None:
+        target = min(cpu_sharding.device_set, key=lambda item: item.id)
     with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
-        return snapshot.prepare_structure(
+        prepared = snapshot.prepare_structure(
             indices, indptr, shape=shape, device_info=config.device_info,
         )
+        return _place_prepared_masks(prepared, device if device is not None else cpu_sharding)
+
+
+def _config_with_mirror(config: CSRConfig, mirror: Sequence[Any], *,
+                        shape: Sequence[int], device: Any = None) -> CSRConfig:
+    """Bind a replacement mirror plan while preserving the primary plan."""
+    mirror_indptr, mirror_indices, _ = mirror
+    prepared = _config_for_new_structure(
+        config, mirror_indices, mirror_indptr, shape=shape, device=device,
+    )
+    return replace(config, mirror=prepared.primary,
+                   mirror_max_row_nnz=prepared.primary_max_row_nnz)
