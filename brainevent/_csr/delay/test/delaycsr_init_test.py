@@ -74,6 +74,41 @@ def test_homogeneous_weights_and_empty_segments() -> None:
     assert prepared.capacity == 0
 
 
+@pytest.mark.parametrize("scalar", [2, np.array(2, np.int32), np.array([2], np.int32),
+                                     jnp.array(2, jnp.int32)])
+def test_scalar_delay_matches_per_edge_delays(scalar: Any) -> None:
+    scalar_layout = _case(edge_delays=scalar, delay_steps=None, backend="jax_raw")
+    per_edge_layout = _case(edge_delays=np.full(4, 2, np.int32), delay_steps=None,
+                            backend="jax_raw")
+    assert scalar_layout.delay_steps == per_edge_layout.delay_steps == (2,)
+    assert scalar_layout.L == per_edge_layout.L == 3
+    for name in ("data", "indices", "delay_count", "delay_off"):
+        np.testing.assert_array_equal(getattr(scalar_layout, name),
+                                      getattr(per_edge_layout, name))
+    events = jnp.array([True, False])
+    actual = scalar_layout.csr_delay_deliver_layout(scalar_layout.ring, events, 0)
+    expected = per_edge_layout.csr_delay_deliver_layout(per_edge_layout.ring, events, 0)
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(actual[2], [3, 0, 12, 2])
+
+
+def test_csr_delay_layout_accepts_scalar_delay() -> None:
+    source = _source("jax_raw")
+    scalar = source.delay_layout(1, n_slots=3)
+    per_edge = source.delay_layout(np.ones(source.nse, np.int32), n_slots=3)
+    np.testing.assert_array_equal(scalar.delay_count, per_edge.delay_count)
+    np.testing.assert_array_equal(scalar.data, per_edge.data)
+    np.testing.assert_array_equal(scalar.indices, per_edge.indices)
+
+
+def test_zero_scalar_delay_delivers_into_current_slot() -> None:
+    prepared = _case(edge_delays=0, delay_steps=None, backend="jax_raw")
+    assert prepared.delay_steps == (0,)
+    assert prepared.L == 1
+    ring = prepared.csr_delay_deliver_layout(prepared.ring, jnp.array([True, False]), 0)
+    np.testing.assert_array_equal(ring, [[3, 0, 12, 2]])
+
+
 def test_whole_row_classification_and_segment_chunk_boundaries() -> None:
     lengths = [128, 129, 8293]
     ptr = np.r_[0, np.cumsum(lengths)].astype(np.int32)
@@ -92,6 +127,16 @@ def test_empty_inputs_keep_explicit_shapes(rows: int, columns: int) -> None:
     assert prepared.delay_steps == (0,)
     assert prepared.delay_count.shape == (rows, 1)
     assert prepared.capacity == 0
+
+
+def test_scalar_delay_on_empty_graph_keeps_empty_default_metadata() -> None:
+    prepared = delaycsr(
+        (np.array([], np.float32), np.array([], np.int32), np.array([0, 0], np.int32)),
+        edge_delays=2, shape=(1, 1), backend="jax_raw",
+    )
+    assert prepared.delay_steps == (0,)
+    assert prepared.L == 1
+    np.testing.assert_array_equal(prepared.delay_count, [[0]])
 
 
 def test_large_ring_offsets_are_independent_of_column_dtype(monkeypatch) -> None:
@@ -117,6 +162,10 @@ def test_large_ring_offsets_are_independent_of_column_dtype(monkeypatch) -> None
     ({"indices": np.array([0, 1, -1, 2], np.int32)}, ValueError),
     ({"indices": np.array([0, 1, 4, 2], np.int32)}, ValueError),
     ({"edge_delays": np.zeros(3, np.int32)}, ValueError),
+    ({"edge_delays": -1}, ValueError),
+    ({"edge_delays": 1.0}, ValueError),
+    ({"edge_delays": True}, ValueError),
+    ({"edge_delays": 2**31}, ValueError),
     ({"edge_delays": np.array([0, -1, 2, 2])}, ValueError),
     ({"edge_delays": np.zeros(4, np.float32)}, ValueError),
     ({"edge_delays": np.full(4, 2**31, np.uint64)}, ValueError),
@@ -205,6 +254,14 @@ def test_member_sort_overwrites_csr_and_invalidates_old_structure_cache():
     np.testing.assert_array_equal(w.delay_count, [[1, 0, 3], [0, 0, 0]])
     assert w._cache.mirror is None
     assert w.ring is ring and w.head is head
+
+
+def test_member_sort_accepts_scalar_delay() -> None:
+    prepared = _case()
+    prepared.sort_by_delay(2)
+    np.testing.assert_array_equal(prepared.indices, [0, 2, 2, 3])
+    np.testing.assert_array_equal(prepared.data, [3, 5, 7, 2])
+    np.testing.assert_array_equal(prepared.delay_count, [[0, 0, 4], [0, 0, 0]])
 
 
 def test_constructor_has_no_event_input_or_event_state():

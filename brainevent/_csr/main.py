@@ -1757,9 +1757,10 @@ class CSR(CompressedSparseData):
 
         Parameters
         ----------
-        delays : array_like
-            Concrete integer delays in steps, shape ``(nse,)`` aligned with
-            this CSR's current edge order. Each delay must lie in
+        delays : int or array_like
+            Concrete integer delay in steps shared by all edges, or shape
+            ``(nse,)`` aligned with this CSR's current edge order. A
+            one-element array also broadcasts. Each delay must lie in
             ``[0, n_slots)``.
         n_slots : int
             Positive ring length ``L``, fitting int32.

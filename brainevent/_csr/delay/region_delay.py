@@ -83,9 +83,10 @@ class delaycsr(CSR):
     indices, indptr : array_like or None, optional
         Int32 or int64 column indices and row pointers. Omit these when
         supplying a CSR or a three-array tuple.
-    edge_delays : array_like
-        Concrete nonnegative integer delays, one per edge in the input CSR
-        order. Initialization sorts each row by (delay, column).
+    edge_delays : int or array_like
+        Concrete nonnegative integer delay shared by all edges, or one delay
+        per edge in the input CSR order. A one-element array also broadcasts.
+        Initialization sorts each row by (delay, column).
     shape : tuple of int or None, optional
         ``(n_pre, n_post)``, required unless data is a CSR object.
     delay_steps : array_like or None, optional
@@ -122,6 +123,21 @@ class delaycsr(CSR):
     bound method with hidden Python state; these methods do not detect that
     unsupported usage. Operators support JVP, reverse-mode AD and vmap;
     binary events use the main library's straight-through rule.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import numpy as np
+        >>> from brainevent import delaycsr
+        >>> matrix = delaycsr(
+        ...     (np.array([1., 2.], np.float32), np.array([0, 1], np.int32),
+        ...      np.array([0, 2], np.int32)),
+        ...     shape=(1, 2), edge_delays=2, backend='jax_raw')
+        >>> matrix.delay_steps
+        (2,)
+        >>> matrix.L
+        3
     """
 
     data: jax.Array | u.Quantity
@@ -227,9 +243,13 @@ class delaycsr(CSR):
 
     def _validate_edge_delays(self, edge_delays: Any) -> np.ndarray:
         delays = np.array(edge_delays, copy=True)
-        if (delays.shape != self.indices.shape or delays.dtype.kind not in "iu"
-                or np.any(delays < 0) or np.any(delays >= _I32_MAX)):
-            raise ValueError("edge_delays must contain one nonnegative integer per edge")
+        if (delays.dtype.kind not in "iu" or np.any(delays < 0)
+                or np.any(delays >= _I32_MAX)):
+            raise ValueError("edge_delays must be nonnegative integers below INT32_MAX")
+        if delays.size == 1 and delays.shape != self.indices.shape:
+            delays = np.full(self.indices.shape, delays.item(), dtype=delays.dtype)
+        if delays.shape != self.indices.shape:
+            raise ValueError("edge_delays must be a scalar or contain one integer per edge")
         return delays
 
     def _check_delay_order(self, delays: np.ndarray) -> None:
@@ -249,8 +269,9 @@ class delaycsr(CSR):
 
         Parameters
         ----------
-        edge_delays : array_like
-            Concrete integer delays aligned with the current CSR edge order.
+        edge_delays : int or array_like
+            Concrete integer delay shared by all edges, or delays aligned
+            with the current CSR edge order. A one-element array broadcasts.
             Each delay must be present in ``self.delay_steps``.
 
         Notes
