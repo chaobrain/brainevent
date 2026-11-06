@@ -17,7 +17,6 @@ def _has_gpu() -> bool:
 
 
 import brainevent
-from brainevent._csr.binary import hybrid_config as hc
 from brainevent._csr.binary import initialize
 from brainevent._csr.config import CSRConfig
 
@@ -62,22 +61,22 @@ def test_module_suffix_is_config_specific():
 def test_hybrid_task_capacity_matches_cuda_chunking(monkeypatch):
     # threshold 128, nnz 4096 -> ceil(len/4096) for rows longer than 128, else 0.
     monkeypatch.setenv(
-        hc._ENV_OVERRIDE,
+        initialize._ENV_OVERRIDE,
         '{"block_size":256,"fixed_scatter_blocks":2048,"tpr_threshold":128,"task_nnz":4096}',
     )
     # cumulative indptr for row lengths [0, 128, 129, 4096, 4097, 8192]
     lengths = [0, 128, 129, 4096, 4097, 8192]
     indptr = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64)
-    cfg = hc.load_csr_config()
+    cfg = initialize.load_csr_config()
     assert cfg.mv_capacity(int(indptr[-1]), len(lengths), max(lengths)) >= 0 + 0 + 1 + 1 + 2 + 2
 
 
 def test_env_override_and_task_constants_stay_in_lockstep(monkeypatch):
     monkeypatch.setenv(
-        hc._ENV_OVERRIDE,
+        initialize._ENV_OVERRIDE,
         '{"block_size":256,"fixed_scatter_blocks":2048,"tpr_threshold":256,"task_nnz":512}',
     )
-    cfg = hc.load_csr_config()
+    cfg = initialize.load_csr_config()
     assert (cfg.tpr_threshold, cfg.task_nnz) == (256, 512)
     # row lengths [256, 257, 1024, 1025] with threshold 256, nnz 512
     lengths = [256, 257, 1024, 1025]
@@ -88,19 +87,19 @@ def test_env_override_and_task_constants_stay_in_lockstep(monkeypatch):
 
 def test_save_and_reload_round_trip(monkeypatch, tmp_path):
     monkeypatch.setenv("BRAINEVENT_CACHE_DIR", str(tmp_path))
-    monkeypatch.delenv(hc._ENV_OVERRIDE, raising=False)
+    monkeypatch.delenv(initialize._ENV_OVERRIDE, raising=False)
     # Point the shared cache instance at tmp_path so get_cache_dir() follows.
     brainevent.set_cache_dir(str(tmp_path))
 
     cfg = CSRConfig(512, 4096, 256, 8192)
-    hc.save_csr_config(cfg, device_kind="TEST_GPU")
+    initialize.save_csr_config(cfg, device_kind="TEST_GPU")
 
-    monkeypatch.setattr(hc, "_current_device_kind", lambda: "TEST_GPU")
-    assert hc.load_csr_config().kernel_args()[0] == cfg.kernel_args()[0]
+    monkeypatch.setattr(initialize, "_current_device_kind", lambda: "TEST_GPU")
+    assert initialize.load_csr_config().kernel_args()[0] == cfg.kernel_args()[0]
 
     # A different device falls back to defaults.
-    monkeypatch.setattr(hc, "_current_device_kind", lambda: "OTHER_GPU")
-    assert hc.load_csr_config().kernel_args()[0] == CSRConfig().kernel_args()[0]
+    monkeypatch.setattr(initialize, "_current_device_kind", lambda: "OTHER_GPU")
+    assert initialize.load_csr_config().kernel_args()[0] == CSRConfig().kernel_args()[0]
 
 
 def test_init_csr_config_is_exported():
@@ -339,7 +338,6 @@ def test_init_csr_config_does_not_print_benchmark_details(monkeypatch, capsys):
 def test_init_csr_config_saves_records_for_load_csr_config_print(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("BRAINEVENT_CACHE_DIR", str(tmp_path))
     brainevent.set_cache_dir(str(tmp_path))
-    monkeypatch.setattr(hc, "_current_device_kind", lambda: "TEST_GPU")
     monkeypatch.setattr(initialize, "_current_device_kind", lambda: "TEST_GPU")
 
     best = CSRConfig(256, 2048, 512, 2048)
@@ -366,7 +364,7 @@ def test_init_csr_config_saves_records_for_load_csr_config_print(monkeypatch, tm
     assert initialize.init_csr_config() == best
     assert capsys.readouterr().out == ""
 
-    output = str(hc.load_csr_config())
+    output = str(initialize.load_csr_config())
     assert output.startswith(str(best))
     assert str(best) in output
     assert "12.345 ms" in output

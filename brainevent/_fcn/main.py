@@ -148,7 +148,7 @@ def _ell_csr_parts(indices):
 
 def _config_for_new_ell(config, indices, *, shape):
     """Bind inherited CSR scheduler parameters to a replacement ELL structure."""
-    from brainevent._csr.main import _config_for_new_structure
+    from brainevent._csr.config import _config_for_new_structure
 
     flat_indices, indptr = _ell_csr_parts(indices)
     return _config_for_new_structure(config, flat_indices, indptr, shape=shape)
@@ -219,7 +219,7 @@ class FixedNumConn(DataRepresentation):
         self.backend = backend
         super().__init__(*args, shape=shape)
         self._cache = StructureCache()
-        from brainevent._csr.main import _prepare_csr_config, _config_for_new_structure, _structure_device
+        from brainevent._csr.config import _prepare_csr_config, _config_for_new_structure, _structure_device
 
         flat_indices, indptr = _ell_csr_parts(self.indices)
         if host_indices is None and is_concrete(self.indices):
@@ -239,7 +239,8 @@ class FixedNumConn(DataRepresentation):
                 self.config, mirror_indices, mirror_indptr, shape=self._a_shape[::-1],
                 device=_structure_device(self.indices, device),
             )
-            self.config = replace(self.config, mirror=mirror_config.primary)
+            self.config = replace(self.config, mirror=mirror_config.primary,
+                                  mirror_max_row_nnz=mirror_config.primary_max_row_nnz)
 
     @classmethod
     def _from_parts(cls, data, indices, *, shape, backend=None, cache=None, config=None):
@@ -272,7 +273,7 @@ class FixedNumConn(DataRepresentation):
                     f"known buffer is 'csc'."
                 )
             self._cache = StructureCache(mirror=tuple(value))
-            self.config = replace(self.config, mirror=None)
+            self.config = replace(self.config, mirror=None, mirror_max_row_nnz=None)
 
     def register_buffer(self, name, value=None):
         """Store the mirror under its legacy name ``'csc'`` (see :attr:`buffers`)."""
@@ -404,7 +405,7 @@ class FixedNumConn(DataRepresentation):
         """
         if not is_concrete(self.indices):
             raise ValueError('prepare_config requires concrete structure outside jax.jit.')
-        from brainevent._csr.main import _prepare_csr_config, _config_for_new_structure, _structure_device
+        from brainevent._csr.config import _prepare_csr_config, _config_for_new_structure, _structure_device
 
         flat_indices, indptr = _ell_csr_parts(self.indices)
         config = _prepare_csr_config(
@@ -419,7 +420,8 @@ class FixedNumConn(DataRepresentation):
                 config, mirror_indices, mirror_indptr, shape=self._a_shape[::-1],
                 device=_structure_device(self.indices, device),
             )
-            config = replace(config, mirror=mirror_config.primary)
+            config = replace(config, mirror=mirror_config.primary,
+                             mirror_max_row_nnz=mirror_config.primary_max_row_nnz)
         return type(self)._from_parts(
             self.data, self.indices, shape=self.shape, backend=self.backend,
             cache=self._cache, config=config,

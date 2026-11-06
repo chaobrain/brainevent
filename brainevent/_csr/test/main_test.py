@@ -2273,7 +2273,7 @@ def test_understated_max_row_nnz_is_rejected_against_prepared_config(indexed):
 def test_config_carries_prepared_longest_rows_for_both_layouts(cls):
     M, _ = _pytree_matrix(cls, 'jax_raw')
     longest = int(np.diff(np.asarray(M.indptr)).max())
-    assert M.config.primary.max_row_nnz == longest
+    assert M.config.primary_max_row_nnz == longest
     M2 = M.build_weight_indices()
     mirror_longest = int(np.diff(np.asarray(M2.buffers[M2._mirror_key][0])).max())
-    assert M2.config.mirror.max_row_nnz == mirror_longest
+    assert M2.config.mirror_max_row_nnz == mirror_longest

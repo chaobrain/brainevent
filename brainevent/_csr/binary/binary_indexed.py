@@ -44,7 +44,6 @@ from brainevent._misc import (
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, load_cuda_file
 from brainevent._sddmm import dispatch as _sddmm_dispatch
 from ..config import CSRConfig
-from . import _hybrid_mm
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from .binary import (
@@ -59,6 +58,7 @@ from .binary import (
     _config_from_params,
     _config_for_call,
     _batch_config_params,
+    _make_hybrid_mm_kernel,
 )
 from ..float.float import csrmv, csrmm
 from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
@@ -1039,7 +1039,7 @@ def _binary_csrmm_indexed_cuda_kernel(
     wt_sfx = dtype_suffix(weight_info.dtype)
 
     if transpose:
-        return _hybrid_mm.make_kernel(
+        return _make_hybrid_mm_kernel(
             weight_info=weight_info, vector_info=vector_info,
             permuted=True, **kwargs,
         )

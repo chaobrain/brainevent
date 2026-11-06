@@ -35,7 +35,10 @@ from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
 from brainevent.config import get_backend
 from .binary.binary import binary_csrmv, binary_csrmm
 from .binary.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
-from .config import CSRConfig
+from .config import (
+    CSRConfig, _structure_device, _host_structure_array,
+    _prepare_csr_config, _config_for_new_structure,
+)
 from .diag.diag_add import csr_diag_position, csr_diag_add
 from .float.float import csrmv, csrmm
 from .plasticity.plasticity_binary import (
@@ -57,63 +60,6 @@ def _use_cuda_indexed_binary_route(backend: Optional[str]) -> bool:
     if backend is None:
         backend = get_backend('gpu')
     return backend == "cuda_raw"
-
-
-def _structure_device(indices, device=None):
-    """Identify a concrete structure's placement without querying GPU properties."""
-    if device is not None:
-        return device
-    if hasattr(indices, 'devices') and not isinstance(indices, jax.core.Tracer):
-        placed = indices.devices()
-        if len(placed) == 1:
-            return next(iter(placed))
-    return None
-
-
-def _host_structure_array(original, converted):
-    """Reuse host input, or read one concrete device array once."""
-    if not is_concrete(converted):
-        return None
-    if isinstance(original, (np.ndarray, list, tuple)):
-        return np.asarray(original)
-    return np.asarray(jax.device_get(converted))
-
-
-def _prepare_csr_config(indices, indptr, *, shape, backend, config=None, device=None, host_structure=None):
-    """Resolve a parameter snapshot and prepare concrete structure outside tracing."""
-    from .binary.hybrid_config import load_csr_config
-
-    target = _structure_device(indices, device)
-    device_info = None
-    if (backend in (None, 'cuda_raw') or device is not None) and is_concrete(indices, indptr):
-        from .binary._hybrid_mm import get_device_info
-
-        with jax.ensure_compile_time_eval():
-            device_info = get_device_info(indices, indptr, device=device)
-    if config is None:
-        device_kind = (device_info.device_kind if device_info is not None
-                       else getattr(target, 'device_kind', None))
-        config = load_csr_config(device_kind=device_kind)
-    if not isinstance(config, CSRConfig):
-        raise TypeError('config must be a CSRConfig or None.')
-    snapshot = replace(config.parameter_snapshot(), device_info=device_info)
-    if not is_concrete(indices, indptr):
-        return snapshot
-    with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
-        source_indices, source_indptr = (indices, indptr) if host_structure is None else host_structure
-        return snapshot.prepare_structure(source_indices, source_indptr, shape=shape, device_info=device_info)
-
-
-def _config_for_new_structure(config, indices, indptr, *, shape, device=None):
-    """Preserve tuning while invalidating or preparing a replacement structure."""
-    snapshot = config.parameter_snapshot()
-    if not is_concrete(indices, indptr):
-        return snapshot
-    target = _structure_device(indices, device)
-    with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
-        return snapshot.prepare_structure(
-            indices, indptr, shape=shape, device_info=config.device_info,
-        )
 
 
 class CompressedSparseData(DataRepresentation):
@@ -271,7 +217,8 @@ class CompressedSparseData(DataRepresentation):
                 self.config, mirror_indices, mirror_indptr, shape=self._storage_shape[::-1],
                 device=_structure_device(self.indices, device),
             )
-            self.config = replace(self.config, mirror=mirror_config.primary)
+            self.config = replace(self.config, mirror=mirror_config.primary,
+                                  mirror_max_row_nnz=mirror_config.primary_max_row_nnz)
         if precompute_weight_indices and self._mirror() is None:
             # Traced structure: this fresh object is local to the trace, so
             # its own cache may hold the traced mirror.
@@ -314,7 +261,7 @@ class CompressedSparseData(DataRepresentation):
                     diag_plan=cache.diag_plan,
                 )
                 # A user-supplied mirror need not match the prepared layout.
-                self.config = replace(self.config, mirror=None)
+                self.config = replace(self.config, mirror=None, mirror_max_row_nnz=None)
             elif name == 'diag_positions':
                 self._cache.diag_plan = tuple(value)
             else:
@@ -469,7 +416,8 @@ class CompressedSparseData(DataRepresentation):
                 config, mirror_indices, mirror_indptr, shape=self._storage_shape[::-1],
                 device=_structure_device(self.indices, device),
             )
-            config = replace(config, mirror=mirror_config.primary)
+            config = replace(config, mirror=mirror_config.primary,
+                             mirror_max_row_nnz=mirror_config.primary_max_row_nnz)
         return type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape, backend=self.backend,
             cache=self._cache, config=config,

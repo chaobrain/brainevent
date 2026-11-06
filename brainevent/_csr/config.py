@@ -1,24 +1,29 @@
-"""Immutable CSR scheduling snapshots and structure-bound MM preparation.
+"""CSR scheduling snapshots and structure-bound preparation.
 
-This module performs no persistence, device discovery, or kernel loading.
-Prepared masks are pytree leaves; kernel specifications contain only hashable
-metadata so tracing and differentiation can retain a configuration snapshot.
+Configuration helpers resolve persisted MV tuning and capture device properties
+outside tracing. Prepared MM masks are pytree leaves; kernel specifications
+contain only hashable metadata for JAX tracing and differentiation.
 """
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import operator
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-import operator
+from pathlib import Path
 from typing import Any, ClassVar, Sequence
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from brainevent._structure import is_concrete
+
 __all__ = [
-    'CSRConfig', 'CSRDeviceInfo', 'CSRKernelSpec',
-    'MMStructureSpec', 'MMStructurePlan', 'MMCallPlan',
+    'CSRConfig', 'CSRDeviceInfo', 'MVSchedule', 'CSRKernelSpec',
+    'MMStructureSpec', 'MMStructurePlan', 'MMCallPlan', 'get_device_info',
 ]
 
 _INT32_MAX = int(np.iinfo(np.int32).max)
@@ -71,6 +76,71 @@ class CSRDeviceInfo:
         _integer(self.sms, 'sms')
         if self.device_id is not None:
             _integer(self.device_id, 'device_id')
+
+
+@lru_cache(maxsize=None)
+def _query_cuda_device_info(device):
+    """Read CUDA launch properties once per device through a small native probe."""
+    from brainevent._op import load_cuda_file
+
+    source = Path(__file__).parent / 'device_info.cu'
+    include_root = Path(__file__).parents[1] / 'include'
+    dependencies = (source, *sorted(include_root.rglob('*.h')))
+    digest = hashlib.sha256(b''.join(path.read_bytes() for path in dependencies)).hexdigest()[:12]
+    module = f'csr_device_info_{digest}'
+    load_cuda_file(source, name=module, allow_cuda_graph=False)
+    dummy = jax.device_put(np.zeros((1,), np.uint8), device)
+    info = jax.ffi.ffi_call(
+        module + '.csr_device_info',
+        jax.ShapeDtypeStruct((2,), jnp.int32),
+    )(dummy)
+    sms, l2_bytes = map(int, np.asarray(jax.device_get(info)))
+    return CSRDeviceInfo(
+        platform='gpu', device_kind=str(device.device_kind),
+        l2_bytes=l2_bytes, sms=sms, device_id=device.id,
+    )
+
+
+def get_device_info(*arrays, device=None):
+    """Read and cache the preparation device's CUDA launch properties.
+
+    Parameters
+    ----------
+    *arrays : array_like
+        Concrete arrays whose placement identifies the preparation device.
+    device : jax.Device or None, optional
+        Explicit preparation device. Otherwise use the arrays' single device,
+        leaving host arrays and tracers without device preparation.
+
+    Returns
+    -------
+    CSRDeviceInfo or None
+        The selected CUDA device's SM count and L2 size, or ``None`` without
+        an unambiguous concrete GPU placement.
+
+    Raises
+    ------
+    ValueError
+        The arrays span multiple devices and no explicit device was supplied.
+    """
+    if device is None:
+        devices = set()
+        for array in arrays:
+            if isinstance(array, jax.core.Tracer):
+                continue
+            if hasattr(array, 'devices'):
+                devices.update(array.devices())
+        if len(devices) > 1:
+            raise ValueError('CSR preparation requires a single device; pass device explicitly.')
+        if not devices:
+            return None
+        device = next(iter(devices))
+    if device.platform != 'gpu':
+        return None
+    platform_version = str(getattr(getattr(device, 'client', None), 'platform_version', '')).lower()
+    if 'cuda' not in platform_version:
+        return None
+    return _query_cuda_device_info(device)
 
 
 @dataclass(frozen=True)
@@ -129,28 +199,37 @@ class MMStructureSpec:
 
 
 @dataclass(frozen=True)
-class MMStructurePlan(MMStructureSpec):
-    """A traversal specification with its prepared long-row mask.
+class MMStructurePlan:
+    """MM-specific scheduling geometry and its prepared long-row mask.
 
     Parameters
     ----------
-    rows, cols, nnz, max_row_nnz, group, long_threshold, long_tasks : int
-        See :class:`MMStructureSpec`.
+    group, long_threshold, long_tasks : int
+        Lane group, long-row threshold, and all-active task count per batch.
     long_mask : array_like
         ``uint32[ceil(rows / 32)]`` bitmask carried as a pytree array leaf.
     """
 
+    group: int
+    long_threshold: int
+    long_tasks: int
     long_mask: Any = field(compare=False, hash=False, repr=False)
+    geometry_version: int = field(default=_MM_GEOMETRY_VERSION, kw_only=True)
 
-    def specification(self) -> MMStructureSpec:
+    def specification(self, rows: int, cols: int, nnz: int, max_row_nnz: int) -> MMStructureSpec:
         """Return the array-free traversal metadata.
+
+        Parameters
+        ----------
+        rows, cols, nnz, max_row_nnz : int
+            Shared dimensions and row statistic for the selected traversal.
 
         Returns
         -------
         MMStructureSpec
             Metadata suitable for a primitive parameter.
         """
-        return MMStructureSpec(self.rows, self.cols, self.nnz, self.max_row_nnz,
+        return MMStructureSpec(rows, cols, nnz, max_row_nnz,
                                self.group, self.long_threshold, self.long_tasks,
                                geometry_version=self.geometry_version)
 
@@ -190,11 +269,23 @@ class MMCallPlan:
     weighted: bool
 
 
-class _Scheduler:
-    block_size: int
-    fixed_scatter_blocks: int
-    tpr_threshold: int
-    task_nnz: int
+@dataclass(frozen=True)
+class MVSchedule:
+    """Frozen hybrid MV/SDDMV scheduler constants.
+
+    Parameters
+    ----------
+    block_size, fixed_scatter_blocks, tpr_threshold, task_nnz : int, optional
+        CUDA block width, scatter grid cap, heavy-row threshold, and task size.
+    """
+
+    block_size: int = 256
+    fixed_scatter_blocks: int = 2048
+    tpr_threshold: int = 128
+    task_nnz: int = 4096
+
+    def __post_init__(self) -> None:
+        _validate_scheduler(self)
 
     def compile_flags(self) -> list[str]:
         """Return the MV/SDDMV scheduler compiler definitions.
@@ -251,7 +342,7 @@ class _Scheduler:
         return bound
 
 
-def _validate_scheduler(config: _Scheduler) -> None:
+def _validate_scheduler(config: MVSchedule) -> None:
     block = _integer(config.block_size, 'block_size', 1)
     if block % 32 or block > 1024:
         raise ValueError('block_size must be a multiple of 32 and must not exceed 1024')
@@ -260,13 +351,13 @@ def _validate_scheduler(config: _Scheduler) -> None:
     _integer(config.task_nnz, 'task_nnz', 1)
 
 
-def _format_parameters(config: _Scheduler) -> str:
+def _format_parameters(config: MVSchedule | CSRConfig) -> str:
     return (f'CSRConfig(block_size={config.block_size}, fixed_scatter_blocks={config.fixed_scatter_blocks}, '
             f'tpr_threshold={config.tpr_threshold}, task_nnz={config.task_nnz})')
 
 
 @dataclass(frozen=True)
-class CSRKernelSpec(_Scheduler):
+class CSRKernelSpec(MVSchedule):
     """Hashable configuration selected for one primitive traversal.
 
     Parameters
@@ -279,15 +370,20 @@ class CSRKernelSpec(_Scheduler):
         Previously captured target device properties.
     """
 
-    block_size: int = 256
-    fixed_scatter_blocks: int = 2048
-    tpr_threshold: int = 128
-    task_nnz: int = 4096
     structure: MMStructureSpec | None = None
     device_info: CSRDeviceInfo | None = None
 
-    def __post_init__(self) -> None:
-        _validate_scheduler(self)
+    @property
+    def mv(self) -> MVSchedule:
+        """Return the MV scheduler portion of this static specification.
+
+        Returns
+        -------
+        MVSchedule
+            The four MV/SDDMV scheduler constants.
+        """
+        return MVSchedule(self.block_size, self.fixed_scatter_blocks,
+                          self.tpr_threshold, self.task_nnz)
 
 
 @dataclass(frozen=True)
@@ -310,7 +406,7 @@ class _BenchmarkRecord:
     task_capacity: int | None = None
 
 
-def _structure_plan(lengths: np.ndarray[Any, Any], cols: int) -> MMStructurePlan:
+def _structure_plan(lengths: np.ndarray[Any, Any]) -> MMStructurePlan:
     rows = len(lengths)
     eligible = lengths[(lengths > 0) & (lengths <= _MM_TASK_EDGES)]
     quarter = (int(eligible.sum()) // len(eligible) + 3) // 4 if eligible.size else 128
@@ -321,8 +417,7 @@ def _structure_plan(lengths: np.ndarray[Any, Any], cols: int) -> MMStructurePlan
     mask = np.zeros((rows + 31) // 32, dtype=np.uint32)
     positions = np.flatnonzero(long_rows)
     np.bitwise_or.at(mask, positions // 32, np.left_shift(np.uint32(1), (positions % 32).astype(np.uint32)))
-    return MMStructurePlan(rows, cols, int(lengths.sum()), int(lengths.max(initial=0)),
-                           group, threshold, long_tasks, jnp.asarray(mask))
+    return MMStructurePlan(group, threshold, long_tasks, jnp.asarray(mask))
 
 
 @lru_cache(maxsize=256)
@@ -350,24 +445,33 @@ def _call_plan(structure: MMStructureSpec, device: CSRDeviceInfo, batch: int,
 class _ConfigAux:
     primary: CSRKernelSpec
     mirror: MMStructureSpec | None
+    shape: tuple[int, int] | None
+    nnz: int | None
+    primary_max_row_nnz: int | None
+    mirror_max_row_nnz: int | None
     records: tuple[_BenchmarkRecord, ...] = field(compare=False, hash=False)
 
 
 @jax.tree_util.register_pytree_node_class
-@dataclass(frozen=True, eq=False)
-class CSRConfig(_Scheduler):
-    """A CSR scheduling snapshot with optional prepared traversal plans.
+@dataclass(frozen=True, eq=False, init=False)
+class CSRConfig:
+    """A CSR scheduling snapshot with MV tuning and optional MM preparation.
 
     Parameters
     ----------
     block_size, fixed_scatter_blocks, tpr_threshold, task_nnz : int, optional
-        The four persisted MV/SDDMV scheduler constants.
+        Legacy flat spelling of the four persisted MV/SDDMV constants.
+    mv : MVSchedule or None, optional
+        Explicit grouped MV scheduler; cannot be combined with flat constants.
     benchmark_records : tuple of _BenchmarkRecord, optional
         Diagnostic tuning results, excluded from kernel identity.
     device_info : CSRDeviceInfo or None, optional
         Eagerly captured device metadata; this class never queries a device.
+    shape, nnz, primary_max_row_nnz, mirror_max_row_nnz : optional
+        Shared structure identity and row statistics in compressed traversal
+        order. These values are cleared when the structure is replaced.
     primary, mirror : MMStructurePlan or None, optional
-        Prepared plans for the original and mirrored compressed layouts.
+        MM-specific plans for the original and mirrored compressed layouts.
 
     Notes
     -----
@@ -375,18 +479,140 @@ class CSRConfig(_Scheduler):
     :meth:`kernel_args` to separate a static specification from its array leaf.
     """
 
-    block_size: int = 256
-    fixed_scatter_blocks: int = 2048
-    tpr_threshold: int = 128
-    task_nnz: int = 4096
+    mv: MVSchedule = field(default_factory=MVSchedule)
     benchmark_records: tuple[_BenchmarkRecord, ...] = field(default=(), compare=False, repr=False)
     device_info: CSRDeviceInfo | None = None
+    shape: tuple[int, int] | None = None
+    nnz: int | None = None
+    primary_max_row_nnz: int | None = None
+    mirror_max_row_nnz: int | None = None
     primary: MMStructurePlan | None = field(default=None, compare=False, repr=False)
     mirror: MMStructurePlan | None = field(default=None, compare=False, repr=False)
     __hash__: ClassVar[Any] = None
 
+    def __init__(
+        self,
+        block_size: int | None = None,
+        fixed_scatter_blocks: int | None = None,
+        tpr_threshold: int | None = None,
+        task_nnz: int | None = None,
+        benchmark_records: tuple[_BenchmarkRecord, ...] = (),
+        device_info: CSRDeviceInfo | None = None,
+        primary: MMStructurePlan | None = None,
+        mirror: MMStructurePlan | None = None,
+        *,
+        mv: MVSchedule | None = None,
+        shape: Sequence[int] | None = None,
+        nnz: int | None = None,
+        primary_max_row_nnz: int | None = None,
+        mirror_max_row_nnz: int | None = None,
+    ) -> None:
+        if mv is None:
+            mv = MVSchedule(
+                256 if block_size is None else block_size,
+                2048 if fixed_scatter_blocks is None else fixed_scatter_blocks,
+                128 if tpr_threshold is None else tpr_threshold,
+                4096 if task_nnz is None else task_nnz,
+            )
+        elif any(value is not None for value in
+                 (block_size, fixed_scatter_blocks, tpr_threshold, task_nnz)):
+            raise ValueError('mv cannot be combined with flat MV scheduler parameters')
+        if not isinstance(mv, MVSchedule):
+            raise TypeError('mv must be an MVSchedule')
+        object.__setattr__(self, 'mv', mv)
+        object.__setattr__(self, 'benchmark_records', tuple(benchmark_records))
+        object.__setattr__(self, 'device_info', device_info)
+        object.__setattr__(self, 'shape', None if shape is None else tuple(shape))
+        object.__setattr__(self, 'nnz', nnz)
+        object.__setattr__(self, 'primary_max_row_nnz', primary_max_row_nnz)
+        object.__setattr__(self, 'mirror_max_row_nnz', mirror_max_row_nnz)
+        object.__setattr__(self, 'primary', primary)
+        object.__setattr__(self, 'mirror', mirror)
+        self.__post_init__()
+
     def __post_init__(self) -> None:
-        _validate_scheduler(self)
+        _validate_scheduler(self.mv)
+
+    @property
+    def block_size(self) -> int:
+        """Return the MV CUDA block width.
+
+        Returns
+        -------
+        int
+            Threads per hybrid MV block.
+        """
+        return self.mv.block_size
+
+    @property
+    def fixed_scatter_blocks(self) -> int:
+        """Return the MV scatter grid cap.
+
+        Returns
+        -------
+        int
+            Maximum fixed scatter blocks.
+        """
+        return self.mv.fixed_scatter_blocks
+
+    @property
+    def tpr_threshold(self) -> int:
+        """Return the MV heavy-row threshold.
+
+        Returns
+        -------
+        int
+            Row length at which hybrid MV schedules extra tasks.
+        """
+        return self.mv.tpr_threshold
+
+    @property
+    def task_nnz(self) -> int:
+        """Return the MV edges per task.
+
+        Returns
+        -------
+        int
+            Number of stored edges assigned to a heavy-row task.
+        """
+        return self.mv.task_nnz
+
+    def compile_flags(self) -> list[str]:
+        """Return the grouped MV scheduler's CUDA compiler definitions.
+
+        Returns
+        -------
+        list of str
+            Four ``-DBE_HYBRID_*`` flags.
+        """
+        return self.mv.compile_flags()
+
+    def module_suffix(self) -> str:
+        """Return the grouped MV scheduler's module-name suffix.
+
+        Returns
+        -------
+        str
+            Suffix encoding the four MV scheduler constants.
+        """
+        return self.mv.module_suffix()
+
+    def mv_capacity(self, nse: int, n_rows: int, max_row_nnz: int | None = None) -> int:
+        """Return the grouped MV scheduler's task-queue capacity bound.
+
+        Parameters
+        ----------
+        nse, n_rows : int
+            Stored edge and compressed row counts.
+        max_row_nnz : int or None, optional
+            Optional longest-row bound.
+
+        Returns
+        -------
+        int
+            Capacity covering compatible structures.
+        """
+        return self.mv.mv_capacity(nse, n_rows, max_row_nnz)
 
     @property
     def mm_iterations(self) -> int:
@@ -439,19 +665,31 @@ class CSRConfig(_Scheduler):
         This checks array shape and dtype only; it never copies mask contents
         to the host and is safe with tracer masks.
         """
-        _validate_scheduler(self)
-        for plan in (self.primary, self.mirror):
+        _validate_scheduler(self.mv)
+        if self.shape is not None:
+            if len(self.shape) != 2:
+                raise ValueError('prepared CSRConfig shape must contain two dimensions')
+            for dimension in self.shape:
+                if _integer(dimension, 'shape dimension') > _INT32_MAX:
+                    raise ValueError('MM dimensions exceed int32 range')
+        if self.nnz is not None:
+            _integer(self.nnz, 'nnz')
+        for name in ('primary_max_row_nnz', 'mirror_max_row_nnz'):
+            maximum = getattr(self, name)
+            if maximum is not None:
+                _integer(maximum, name)
+                if self.nnz is None or maximum > self.nnz:
+                    raise ValueError(f'{name} requires nnz and must not exceed it')
+        for layout, plan in (('primary', self.primary), ('mirror', self.mirror)):
             if plan is None:
                 continue
-            plan.validate()
-            if getattr(plan.long_mask, 'shape', None) != ((plan.rows + 31) // 32,):
+            structure = self._structure_spec(layout)
+            if structure is None:
+                raise ValueError('prepared CSRConfig requires structure metadata')
+            if getattr(plan.long_mask, 'shape', None) != ((structure.rows + 31) // 32,):
                 raise ValueError('prepared CSRConfig long-row mask has the wrong shape')
             if getattr(plan.long_mask, 'dtype', None) != np.dtype(np.uint32):
                 raise ValueError('prepared CSRConfig long-row mask must have uint32 dtype')
-        if self.primary is not None and self.mirror is not None:
-            if ((self.primary.rows, self.primary.cols, self.primary.nnz)
-                    != (self.mirror.cols, self.mirror.rows, self.mirror.nnz)):
-                raise ValueError('primary and mirror plan dimensions disagree')
         return self
 
     def __str__(self) -> str:
@@ -470,9 +708,12 @@ class CSRConfig(_Scheduler):
         Returns
         -------
         CSRConfig
-            Tuning, diagnostics and device metadata without primary/mirror plans.
+            Tuning, diagnostics and device metadata without structure metadata
+            or primary/mirror plans.
         """
-        return replace(self, primary=None, mirror=None)
+        return replace(self, shape=None, nnz=None,
+                       primary_max_row_nnz=None, mirror_max_row_nnz=None,
+                       primary=None, mirror=None)
 
     def prepare_structure(self, indices: Any, indptr: Any, *, shape: Sequence[int],
                           device_info: CSRDeviceInfo | None = None) -> CSRConfig:
@@ -513,8 +754,11 @@ class CSRConfig(_Scheduler):
         if idx.size and (idx.min() < 0 or idx.max() >= cols):
             raise ValueError('indices are outside the matrix shape')
         mirror_lengths = np.bincount(idx.astype(np.int64), minlength=cols).astype(np.int64)
-        return replace(base, primary=_structure_plan(lengths, cols),
-                       mirror=_structure_plan(mirror_lengths, rows))
+        return replace(base, shape=(rows, cols), nnz=int(idx.size),
+                       primary_max_row_nnz=int(lengths.max(initial=0)),
+                       mirror_max_row_nnz=int(mirror_lengths.max(initial=0)),
+                       primary=_structure_plan(lengths),
+                       mirror=_structure_plan(mirror_lengths))
 
     def swap_layouts(self) -> CSRConfig:
         """Return a snapshot whose compressed traversal layouts are exchanged.
@@ -524,7 +768,20 @@ class CSRConfig(_Scheduler):
         CSRConfig
             A new object sharing the prepared mask arrays.
         """
-        return replace(self, primary=self.mirror, mirror=self.primary)
+        return replace(self, shape=None if self.shape is None else self.shape[::-1],
+                       primary_max_row_nnz=self.mirror_max_row_nnz,
+                       mirror_max_row_nnz=self.primary_max_row_nnz,
+                       primary=self.mirror, mirror=self.primary)
+
+    def _structure_spec(self, layout: str) -> MMStructureSpec | None:
+        plan = self.primary if layout == 'primary' else self.mirror
+        if plan is None:
+            return None
+        maximum = self.primary_max_row_nnz if layout == 'primary' else self.mirror_max_row_nnz
+        if self.shape is None or self.nnz is None or maximum is None:
+            raise ValueError('prepared CSRConfig requires shape, nnz, and row statistics')
+        rows, cols = self.shape if layout == 'primary' else self.shape[::-1]
+        return plan.specification(rows, cols, self.nnz, maximum)
 
     def kernel_args(self, layout: str = 'primary') -> tuple[CSRKernelSpec, Any]:
         """Separate selected static configuration from the dynamic mask operand.
@@ -545,7 +802,7 @@ class CSRConfig(_Scheduler):
             raise ValueError("layout must be 'primary' or 'mirror'")
         plan = self.primary if layout == 'primary' else self.mirror
         spec = CSRKernelSpec(self.block_size, self.fixed_scatter_blocks, self.tpr_threshold,
-                             self.task_nnz, None if plan is None else plan.specification(), self.device_info)
+                             self.task_nnz, self._structure_spec(layout), self.device_info)
         return spec, jnp.empty((0,), dtype=jnp.uint32) if plan is None else plan.long_mask
 
     @classmethod
@@ -566,11 +823,13 @@ class CSRConfig(_Scheduler):
         """
         structure = spec.structure
         plan = None if structure is None else MMStructurePlan(
-            structure.rows, structure.cols, structure.nnz, structure.max_row_nnz,
             structure.group, structure.long_threshold, structure.long_tasks, mask,
             geometry_version=structure.geometry_version)
-        return cls(spec.block_size, spec.fixed_scatter_blocks, spec.tpr_threshold, spec.task_nnz,
-                   device_info=spec.device_info, primary=plan)
+        return cls(mv=spec.mv, device_info=spec.device_info,
+                   shape=None if structure is None else (structure.rows, structure.cols),
+                   nnz=None if structure is None else structure.nnz,
+                   primary_max_row_nnz=None if structure is None else structure.max_row_nnz,
+                   primary=plan)
 
     def require_prepared(self, *, rows: int | None = None, cols: int | None = None,
                          nnz: int | None = None) -> MMStructurePlan:
@@ -595,8 +854,10 @@ class CSRConfig(_Scheduler):
         if plan is None or device is None or device.platform != 'gpu' or device.l2_bytes <= 0 or device.sms <= 0:
             raise ValueError('hybrid MM requires a prepared CSRConfig with GPU device information; '
                              'prepare the CSR/config outside jax.jit before calling this kernel')
+        structure = self._structure_spec('primary')
+        assert structure is not None
         for name, expected in (('rows', rows), ('cols', cols), ('nnz', nnz)):
-            if expected is not None and getattr(plan, name) != expected:
+            if expected is not None and getattr(structure, name) != expected:
                 raise ValueError(f'prepared CSRConfig {name} does not match the selected structure')
         self.validate()
         return plan
@@ -629,10 +890,13 @@ class CSRConfig(_Scheduler):
             # Numba, or gather invocation. The native adapter rejects an
             # unsupported dtype only when it actually selects hybrid MM.
             return None
-        device, structure = self.device_info, self.primary
-        if structure is None or device is None or device.platform != 'gpu' or device.l2_bytes <= 0 or device.sms <= 0:
+        device = self.device_info
+        if (self.primary is None or device is None or device.platform != 'gpu'
+                or device.l2_bytes <= 0 or device.sms <= 0):
             return None
-        return _call_plan(structure.specification(), device, batch, dtype, bool(weighted))
+        structure = self._structure_spec('primary')
+        assert structure is not None
+        return _call_plan(structure, device, batch, dtype, bool(weighted))
 
     def tree_flatten(self) -> tuple[tuple[Any, ...], _ConfigAux]:
         """Split prepared masks from hashable scheduling metadata.
@@ -645,13 +909,13 @@ class CSRConfig(_Scheduler):
             Static metadata with diagnostic records excluded from equality.
         """
         spec = CSRKernelSpec(self.block_size, self.fixed_scatter_blocks, self.tpr_threshold,
-                             self.task_nnz, None if self.primary is None else self.primary.specification(),
-                             self.device_info)
+                             self.task_nnz, self._structure_spec('primary'), self.device_info)
         masks = (() if self.primary is None else (self.primary.long_mask,))
         if self.mirror is not None:
             masks += (self.mirror.long_mask,)
-        return masks, _ConfigAux(spec, None if self.mirror is None else self.mirror.specification(),
-                                 self.benchmark_records)
+        return masks, _ConfigAux(spec, self._structure_spec('mirror'),
+                                 self.shape, self.nnz, self.primary_max_row_nnz,
+                                 self.mirror_max_row_nnz, self.benchmark_records)
 
     @classmethod
     def tree_unflatten(cls, auxiliary: _ConfigAux, children: Sequence[Any]) -> CSRConfig:
@@ -674,7 +938,68 @@ class CSRConfig(_Scheduler):
         mirror = auxiliary.mirror
         if mirror is not None:
             result = replace(result, mirror=MMStructurePlan(
-                mirror.rows, mirror.cols, mirror.nnz, mirror.max_row_nnz, mirror.group,
-                mirror.long_threshold, mirror.long_tasks, children[int(has_primary)],
+                mirror.group, mirror.long_threshold, mirror.long_tasks, children[int(has_primary)],
                 geometry_version=mirror.geometry_version))
-        return replace(result, benchmark_records=auxiliary.records)
+        return replace(result, shape=auxiliary.shape, nnz=auxiliary.nnz,
+                       primary_max_row_nnz=auxiliary.primary_max_row_nnz,
+                       mirror_max_row_nnz=auxiliary.mirror_max_row_nnz,
+                       benchmark_records=auxiliary.records)
+
+
+def _structure_device(indices: Any, device: Any = None) -> Any:
+    """Identify a concrete structure's placement without querying GPU properties."""
+    if device is not None:
+        return device
+    if hasattr(indices, 'devices') and not isinstance(indices, jax.core.Tracer):
+        placed = indices.devices()
+        if len(placed) == 1:
+            return next(iter(placed))
+    return None
+
+
+def _host_structure_array(original: Any, converted: Any) -> np.ndarray[Any, Any] | None:
+    """Reuse host input, or read one concrete device array once."""
+    if not is_concrete(converted):
+        return None
+    if isinstance(original, (np.ndarray, list, tuple)):
+        return np.asarray(original)
+    return np.asarray(jax.device_get(converted))
+
+
+def _prepare_csr_config(indices: Any, indptr: Any, *, shape: Sequence[int],
+                        backend: str | None, config: CSRConfig | None = None,
+                        device: Any = None,
+                        host_structure: tuple[Any, Any] | None = None) -> CSRConfig:
+    """Resolve a parameter snapshot and prepare concrete structure outside tracing."""
+    from .binary.initialize import load_csr_config
+
+    target = _structure_device(indices, device)
+    device_info = None
+    if (backend in (None, 'cuda_raw') or device is not None) and is_concrete(indices, indptr):
+        with jax.ensure_compile_time_eval():
+            device_info = get_device_info(indices, indptr, device=device)
+    if config is None:
+        device_kind = (device_info.device_kind if device_info is not None
+                       else getattr(target, 'device_kind', None))
+        config = load_csr_config(device_kind=device_kind)
+    if not isinstance(config, CSRConfig):
+        raise TypeError('config must be a CSRConfig or None.')
+    snapshot = replace(config.parameter_snapshot(), device_info=device_info)
+    if not is_concrete(indices, indptr):
+        return snapshot
+    with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
+        source_indices, source_indptr = (indices, indptr) if host_structure is None else host_structure
+        return snapshot.prepare_structure(source_indices, source_indptr, shape=shape, device_info=device_info)
+
+
+def _config_for_new_structure(config: CSRConfig, indices: Any, indptr: Any, *,
+                              shape: Sequence[int], device: Any = None) -> CSRConfig:
+    """Preserve MV tuning while preparing or invalidating a replacement structure."""
+    snapshot = config.parameter_snapshot()
+    if not is_concrete(indices, indptr):
+        return snapshot
+    target = _structure_device(indices, device)
+    with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
+        return snapshot.prepare_structure(
+            indices, indptr, shape=shape, device_info=config.device_info,
+        )

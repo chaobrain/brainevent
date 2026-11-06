@@ -33,8 +33,8 @@ from brainevent._csr.binary.binary_indexed import (
     binary_csrmm_indexed_p_call,
 )
 import brainevent._csr.binary.binary_indexed as binary_indexed_mod
+import brainevent._csr.binary.binary as binary_mod
 from brainevent._csr.config import CSRConfig, CSRDeviceInfo
-from brainevent._csr.binary import _hybrid_mm
 from brainevent._csr._test_util import (
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend,
     shape_of, strip_hybrid_suffix, prepared_config,
@@ -65,15 +65,6 @@ def _structure(rng, m, k, nse):
     indptr = np.concatenate([[0], np.cumsum(rows)]).astype(np.int32)
     perm = rng.permutation(nse).astype(np.int32)
     return jnp.asarray(indices), jnp.asarray(indptr), jnp.asarray(perm)
-
-
-def _mock_mm_loader(load_calls=None):
-    def load(*, weighted=False, permuted=False):
-        name = 'test_hybrid_mm_' + ('col_' if permuted else 'row_') + ('weighted' if weighted else 'binary')
-        if load_calls is not None:
-            load_calls.append((None, name, {}))
-        return name
-    return load
 
 
 def test_indexed_mv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
@@ -878,7 +869,7 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
 
     monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
     monkeypatch.setattr(binary_indexed_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
-    monkeypatch.setattr(_hybrid_mm, 'load_module', _mock_mm_loader(load_calls))
+    monkeypatch.setattr(binary_mod, 'load_cuda_file', lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
 
     outs = []
     with jax_x64_enabled():
@@ -965,16 +956,16 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
         'csr_hybrid_spmv_col_major_binary',
         'csr_hybrid_spmv_binary',
         'csr_binary_indexed_csrmm',
-        'test_hybrid_mm_col_binary',
-        'test_hybrid_mm_row_binary',
+        'csr_hybrid_mm_col_major_binary',
+        'csr_hybrid_mm_row_binary',
     ]
     assert [strip_hybrid_suffix(call[0]) for call in ffi_calls] == [
         'csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero_f32_bool',
         'csr_hybrid_spmv_col_major_binary.hybrid_spmv_col_major_binary_hetero_f32_bool',
         'csr_hybrid_spmv_binary.binary_csrmv_wat_hybrid_homo_f32_bool',
         'csr_binary_indexed_csrmm.binary_csrmm_nt_auto_perm_hetero_f32_bool',
-        'test_hybrid_mm_col_binary.batched_spmm_v3_col_major_binary_hetero_f32_bool',
-        'test_hybrid_mm_row_binary.batched_spmm_v3_homo_f32_bool',
+        'csr_hybrid_mm_col_major_binary.batched_spmm_v3_col_major_binary_hetero_f32_bool',
+        'csr_hybrid_mm_row_binary.batched_spmm_v3_homo_f32_bool',
     ]
     # Kernels return only the math output, in the logical layout.
     assert [len(out) for out in outs] == [1] * 6
@@ -1296,7 +1287,7 @@ def test_indexed_cuda_generators_select_weighted_abi(monkeypatch, homo):
     ffi_calls = []
     monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name, **kwargs: None)
     monkeypatch.setattr(binary_indexed_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
-    monkeypatch.setattr(_hybrid_mm, 'load_module', _mock_mm_loader())
+    monkeypatch.setattr(binary_mod, 'load_cuda_file', lambda path, name, **kwargs: None)
 
     indices = jnp.array([0, 1], dtype=jnp.int32)
     indptr = jnp.array([0, 2], dtype=jnp.int32)
@@ -1314,14 +1305,14 @@ def test_indexed_cuda_generators_select_weighted_abi(monkeypatch, homo):
             'csr_binary_csrmv.binary_csrmv_nt_auto_homo_f32_wv',
             'csr_hybrid_spmv_weighted.binary_csrmv_wat_hybrid_homo_f32_wv',
             'csr_binary_csrmm.binary_csrmm_nt_auto_homo_f32_wv',
-            'test_hybrid_mm_row_weighted.batched_spmm_v3_weighted_homo_f32',
+            'csr_hybrid_mm_row_weighted.batched_spmm_v3_weighted_homo_f32',
         ]
     else:
         names = [
             'csr_binary_indexed_csrmv.binary_csrmv_nt_auto_perm_hetero_f32_wv',
             'csr_hybrid_spmv_col_major_weighted.hybrid_spmv_col_major_weighted_hetero_f32',
             'csr_binary_indexed_csrmm.binary_csrmm_nt_auto_perm_hetero_f32_wv',
-            'test_hybrid_mm_col_weighted.batched_spmm_v3_col_major_weighted_hetero_f32',
+            'csr_hybrid_mm_col_major_weighted.batched_spmm_v3_col_major_weighted_hetero_f32',
         ]
     cases = [
         (binary_indexed_mod._binary_csrmv_indexed_cuda_kernel, (2,), False, (1,)),

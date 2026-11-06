@@ -13,9 +13,9 @@ import pytest
 
 import brainevent
 from brainevent._csr.config import (
-    _BenchmarkRecord, CSRConfig, CSRDeviceInfo, MMStructurePlan, MMStructureSpec, _call_plan,
+    _BenchmarkRecord, CSRConfig, CSRDeviceInfo, MMStructurePlan, MMStructureSpec, MVSchedule, _call_plan,
 )
-from brainevent._csr.binary.hybrid_config import load_csr_config, save_csr_config
+from brainevent._csr.binary.initialize import load_csr_config, save_csr_config
 
 
 DEVICE = CSRDeviceInfo('gpu', 'TEST_GPU', l2_bytes=4096, sms=16)
@@ -32,13 +32,14 @@ def _prepared(lengths=(16, 17, 0, 513, 1025), cols=128, **kwargs):
 def test_structure_plan_uses_integer_group_rule_and_exact_long_mask():
     config, indices, indptr = _prepared()
     primary = config.primary
-    assert (primary.rows, primary.cols, primary.nnz, primary.max_row_nnz) == (5, 128, 1571, 1025)
+    assert (config.shape, config.nnz, config.primary_max_row_nnz) == ((5, 128), 1571, 1025)
     assert (primary.group, primary.long_threshold, primary.long_tasks) == (4, 64, 5)
     np.testing.assert_array_equal(primary.long_mask, np.array([0b11000], dtype=np.uint32))
     mirror = config.mirror
     lengths = np.bincount(indices, minlength=128)
-    assert (mirror.rows, mirror.cols, mirror.nnz) == (128, 5, len(indices))
-    assert mirror.max_row_nnz == int(lengths.max())
+    assert config.shape[::-1] == (128, 5)
+    assert config.nnz == len(indices)
+    assert config.mirror_max_row_nnz == int(lengths.max())
     assert mirror.long_tasks == 0
     np.testing.assert_array_equal(indptr, [0, 16, 33, 33, 546, 1571])
 
@@ -46,7 +47,7 @@ def test_structure_plan_uses_integer_group_rule_and_exact_long_mask():
 def test_same_shape_and_nnz_different_rows_produce_different_plans():
     first, _, _ = _prepared((513, 512), cols=2)
     second, _, _ = _prepared((1025, 0), cols=2)
-    assert first.primary.nnz == second.primary.nnz
+    assert first.nnz == second.nnz
     assert first.primary.long_tasks == 2
     assert second.primary.long_tasks == 3
     assert first.kernel_args()[0] != second.kernel_args()[0]
@@ -83,13 +84,24 @@ def test_mm_geometry_is_independent_of_persisted_mv_tuning():
     default, indices, indptr = _prepared()
     alternate = CSRConfig(128, 1024, 0, 1, device_info=DEVICE).prepare_structure(
         indices, indptr, shape=(5, 128))
-    assert default.primary.specification() == alternate.primary.specification()
+    assert default.kernel_args()[0].structure == alternate.kernel_args()[0].structure
     assert default.mm_plan(10, np.float32) == alternate.mm_plan(10, np.float32)
     assert default.compile_flags() != alternate.compile_flags()
     assert (default.mm_iterations, default.mm_task_edges, default.geometry_version) == (16, 512, 1)
     for name in ('mm_iterations', 'mm_task_edges', 'geometry_version'):
         with pytest.raises(AttributeError):
             setattr(default, name, 123)
+
+
+def test_nested_mv_schedule_preserves_legacy_accessors():
+    mv = MVSchedule(512, 1024, 256, 8192)
+    config = CSRConfig(mv=mv)
+    assert brainevent.MVSchedule is MVSchedule
+    assert config.mv is mv
+    assert (config.block_size, config.fixed_scatter_blocks,
+            config.tpr_threshold, config.task_nnz) == (512, 1024, 256, 8192)
+    assert config.compile_flags() == mv.compile_flags()
+    assert config.mv_capacity(8193, 2) == mv.mv_capacity(8193, 2)
 
 
 def test_call_plan_keeps_weighted_identity_even_without_long_tasks():
@@ -102,7 +114,7 @@ def test_call_plan_keeps_weighted_identity_even_without_long_tasks():
         assert not binary.weighted and weighted.weighted
         assert binary != weighted
 
-    from brainevent._csr.binary._hybrid_mm import make_kernel
+    from brainevent._csr.binary.binary import _make_hybrid_mm_kernel as make_kernel
     with pytest.raises(ValueError, match='call plan does not match'):
         make_kernel(config_spec=config.kernel_args()[0], call_plan=binary, weighted=True,
                     weight_info=jax.ShapeDtypeStruct((1,), jnp.float32),
@@ -116,7 +128,7 @@ def test_selected_kernel_roundtrip_and_layout_swap_share_masks():
     config, _, _ = _prepared()
     spec, mask = config.kernel_args('mirror')
     restored = CSRConfig.from_kernel_args(spec, mask)
-    assert restored.primary.specification() == config.mirror.specification()
+    assert restored.kernel_args()[0].structure == spec.structure
     assert restored.primary.long_mask is config.mirror.long_mask
     assert restored.device_info is config.device_info
     assert restored.mirror is None
@@ -149,7 +161,7 @@ def test_config_pytree_uses_mask_leaves_and_survives_jit_scan():
 
     result, values = run(config)
     np.testing.assert_array_equal(values, [24, 24, 24])
-    assert result.primary.specification() == config.primary.specification()
+    assert result.kernel_args()[0].structure == config.kernel_args()[0].structure
 
 
 def test_traced_structure_is_not_scanned_or_implicitly_prepared():
@@ -180,7 +192,7 @@ def test_empty_structure_has_valid_empty_or_zero_masks(lengths, cols):
     ptr = np.zeros(len(lengths) + 1, dtype=np.int32)
     config = CSRConfig(device_info=DEVICE).prepare_structure(
         np.empty(0, dtype=np.int32), ptr, shape=(len(lengths), cols))
-    assert config.primary.nnz == config.primary.long_tasks == 0
+    assert config.nnz == config.primary.long_tasks == 0
     assert config.mirror.long_tasks == 0
     assert config.mm_plan(0, np.float32).task_capacity == 0
 
@@ -269,21 +281,21 @@ def test_invalid_static_metadata_and_oversized_queue_rejected():
     with pytest.raises(ValueError, match='int32'):
         MMStructureSpec(2**31, 1, 0, 0, 4, 64, 0)
     nnz = 2**63 - 1
-    plan = MMStructurePlan(1, 1, nnz, nnz, 32, 512, (nnz + 511) // 512,
+    plan = MMStructurePlan(32, 512, (nnz + 511) // 512,
                            jnp.array([1], dtype=jnp.uint32))
-    cfg = CSRConfig(device_info=replace(DEVICE, l2_bytes=2**63), primary=plan)
+    cfg = CSRConfig(device_info=replace(DEVICE, l2_bytes=2**63), shape=(1, 1),
+                    nnz=nnz, primary_max_row_nnz=nnz, primary=plan)
     with pytest.raises(ValueError, match='int64'):
         cfg.mm_plan(65535, np.float32)
 
 
-def test_explicit_validation_checks_paired_layouts_without_reading_masks():
+def test_explicit_validation_checks_mirror_stats_without_reading_masks():
     config, _, _ = _prepared()
     assert config.validate() is config
     assert CSRConfig().validate().primary is None
     assert config.primary.geometry_version == 1
-    bad_mirror = replace(config.mirror, cols=config.mirror.cols + 1)
-    with pytest.raises(ValueError, match='mirror'):
-        replace(config, mirror=bad_mirror).validate()
+    with pytest.raises(ValueError, match='nnz'):
+        replace(config, mirror_max_row_nnz=config.nnz + 1).validate()
 
     @jax.jit
     def validate_mask(mask):
@@ -373,7 +385,7 @@ def test_nonhybrid_mm_keeps_jax_supported_float8_dtype(prepared):
 
 
 def test_hybrid_mm_unsupported_dtype_error_precedes_missing_preparation():
-    from brainevent._csr.binary._hybrid_mm import make_kernel
+    from brainevent._csr.binary.binary import _make_hybrid_mm_kernel as make_kernel
 
     with pytest.raises(ValueError, match='supports only float16'):
         make_kernel(config_spec=None, call_plan=None,

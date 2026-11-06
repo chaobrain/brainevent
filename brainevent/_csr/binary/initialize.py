@@ -19,8 +19,8 @@
 The public entry point is :func:`init_csr_config`.  It is **not** called automatically and
 must never run inside a JIT closure.  A user runs it once on their GPU (e.g. before a long
 simulation); the winning :class:`~brainevent._csr.config.CSRConfig` is persisted
-per GPU model via :func:`~brainevent._csr.binary.hybrid_config.save_csr_config`, and every later
-process picks it up through :func:`~brainevent._csr.binary.hybrid_config.load_csr_config`.
+per GPU model via :func:`save_csr_config`, and every later process picks it up
+through :func:`load_csr_config`.
 
 The benchmark compiles the **production** ``hybrid_mv/hybrid_spmv_binary.cu`` (with per-config
 ``-DBE_HYBRID_*`` flags) — so the timed kernel is exactly the one used at run time.
@@ -28,15 +28,21 @@ The benchmark compiles the **production** ``hybrid_mv/hybrid_spmv_binary.cu`` (w
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from ..config import CSRConfig
-from .hybrid_config import _current_device_kind, save_csr_config
+from brainevent._op import get_cache_dir
+from ..config import _BenchmarkRecord, CSRConfig, MVSchedule
+
+CONFIG_FILENAME = 'csr_hybrid_config.json'
+_ENV_OVERRIDE = 'BRAINEVENT_CSR_HYBRID_CONFIG'
+_CONFIG_FIELDS = ('block_size', 'fixed_scatter_blocks', 'tpr_threshold', 'task_nnz')
 
 _CUDA_SOURCE = Path(__file__).parent / "hybrid_mv" / "hybrid_spmv_binary.cu"
 _MODULE_BASE = "csr_hybrid_spmv_binary_tune"
@@ -50,23 +56,164 @@ _N_BASE = 1000
 
 #: Candidate sweep (block, fixed_scatter_blocks, tpr_threshold, task_nnz).
 DEFAULT_CANDIDATES: tuple[CSRConfig, ...] = (
-    CSRConfig(128, 1024, 128, 2048),
-    CSRConfig(128, 2048, 128, 4096),
-    CSRConfig(256, 1024, 128, 4096),
-    CSRConfig(256, 2048, 128, 4096),
-    CSRConfig(256, 4096, 128, 4096),
-    CSRConfig(512, 2048, 128, 4096),
-    CSRConfig(512, 4096, 128, 4096),
-    CSRConfig(256, 2048, 256, 4096),
-    CSRConfig(128, 2048, 512, 2048),
-    CSRConfig(256, 1024, 512, 2048),
-    CSRConfig(256, 2048, 512, 2048),
-    CSRConfig(512, 2048, 512, 2048),
-    CSRConfig(256, 2048, 512, 4096),
-    CSRConfig(256, 2048, 1024, 4096),
-    CSRConfig(256, 4096, 128, 1024),
-    CSRConfig(256, 2048, 128, 8192),
+    CSRConfig(mv=MVSchedule(128, 1024, 128, 2048)),
+    CSRConfig(mv=MVSchedule(128, 2048, 128, 4096)),
+    CSRConfig(mv=MVSchedule(256, 1024, 128, 4096)),
+    CSRConfig(mv=MVSchedule(256, 2048, 128, 4096)),
+    CSRConfig(mv=MVSchedule(256, 4096, 128, 4096)),
+    CSRConfig(mv=MVSchedule(512, 2048, 128, 4096)),
+    CSRConfig(mv=MVSchedule(512, 4096, 128, 4096)),
+    CSRConfig(mv=MVSchedule(256, 2048, 256, 4096)),
+    CSRConfig(mv=MVSchedule(128, 2048, 512, 2048)),
+    CSRConfig(mv=MVSchedule(256, 1024, 512, 2048)),
+    CSRConfig(mv=MVSchedule(256, 2048, 512, 2048)),
+    CSRConfig(mv=MVSchedule(512, 2048, 512, 2048)),
+    CSRConfig(mv=MVSchedule(256, 2048, 512, 4096)),
+    CSRConfig(mv=MVSchedule(256, 2048, 1024, 4096)),
+    CSRConfig(mv=MVSchedule(256, 4096, 128, 1024)),
+    CSRConfig(mv=MVSchedule(256, 2048, 128, 8192)),
 )
+
+
+def _current_device_kind() -> str:
+    try:
+        import jax
+        return str(jax.devices()[0].device_kind)
+    except Exception:
+        return ''
+
+
+def _mv_from_mapping(data: Mapping[str, Any]) -> MVSchedule:
+    return MVSchedule(
+        block_size=int(data['block_size']),
+        fixed_scatter_blocks=int(data['fixed_scatter_blocks']),
+        tpr_threshold=int(data['tpr_threshold']),
+        task_nnz=int(data['task_nnz']),
+    )
+
+
+def _mv_to_mapping(schedule: MVSchedule) -> dict[str, int]:
+    return {key: int(getattr(schedule, key)) for key in _CONFIG_FIELDS}
+
+
+def load_csr_config(device_kind: str | None = None) -> CSRConfig:
+    """Read a fresh tuning snapshot for a selected device.
+
+    Parameters
+    ----------
+    device_kind : str or None, optional
+        Device model. When omitted, use the first JAX device's model.
+
+    Returns
+    -------
+    CSRConfig
+        The environment override, saved device entry, or default parameters,
+        in that order. Loading never benchmarks or prepares a matrix.
+
+    Notes
+    -----
+    ``BRAINEVENT_CSR_HYBRID_CONFIG`` and ``csr_hybrid_config.json`` retain their
+    original formats. Existing CSR objects retain their own snapshots when a
+    later load or save changes the persisted configuration.
+    """
+    raw = os.environ.get(_ENV_OVERRIDE)
+    if raw:
+        entry = json.loads(raw)
+    else:
+        path = Path(get_cache_dir()) / CONFIG_FILENAME
+        if not path.exists():
+            return CSRConfig()
+        try:
+            store = json.loads(path.read_text(encoding='utf-8'))
+            entry = store.get(_current_device_kind() if device_kind is None else device_kind)
+            if entry is None:
+                return CSRConfig()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return CSRConfig()
+
+    try:
+        records = []
+        for record in entry.get('benchmark_records', ()):
+            candidate = record['config']
+            records.append(_BenchmarkRecord(
+                config=CSRConfig(mv=_mv_from_mapping(candidate)),
+                elapsed_ms=float(record['elapsed_ms']),
+                per_call_us=float(record['per_call_us']),
+                task_capacity=(None if record.get('task_capacity') is None
+                               else int(record['task_capacity'])),
+            ))
+        return CSRConfig(
+            mv=_mv_from_mapping(entry),
+            benchmark_records=tuple(records),
+        )
+    except (ValueError, KeyError, TypeError, AttributeError):
+        if raw:
+            raise
+        return CSRConfig()
+
+
+def save_csr_config(
+    config: CSRConfig,
+    device_kind: str | None = None,
+    benchmark_records: Sequence[_BenchmarkRecord | Mapping[str, Any]] | None = None,
+) -> Path:
+    """Persist tuning parameters and diagnostic records for one device.
+
+    Parameters
+    ----------
+    config : CSRConfig
+        Snapshot whose four scheduling constants are saved.
+    device_kind : str or None, optional
+        Target device model; defaults to the first JAX device's model.
+    benchmark_records : sequence or None, optional
+        Tuning records. Defaults to records carried by ``config``.
+
+    Returns
+    -------
+    pathlib.Path
+        Updated configuration file. Other device entries are retained.
+
+    Notes
+    -----
+    Device properties, primary/mirror masks, and MM plans are never persisted.
+    """
+    if device_kind is None:
+        device_kind = _current_device_kind()
+    if not device_kind:
+        raise RuntimeError('cannot determine device_kind; pass it explicitly')
+    path = Path(get_cache_dir()) / CONFIG_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    store: dict[str, Any] = {}
+    if path.exists():
+        try:
+            old = json.loads(path.read_text(encoding='utf-8'))
+            if isinstance(old, dict):
+                store = old
+        except ValueError:
+            pass
+    entry: dict[str, Any] = _mv_to_mapping(config.mv)
+    records = config.benchmark_records if benchmark_records is None else benchmark_records
+    if records:
+        saved_records = []
+        for record in records:
+            if isinstance(record, _BenchmarkRecord):
+                candidate, elapsed_ms, per_call_us, capacity = (
+                    record.config, record.elapsed_ms, record.per_call_us, record.task_capacity)
+            else:
+                candidate, elapsed_ms, per_call_us, capacity = (
+                    record['config'], record['elapsed_ms'], record['per_call_us'], record.get('task_capacity'))
+            saved_records.append({
+                'config': _mv_to_mapping(candidate.mv),
+                'elapsed_ms': float(elapsed_ms),
+                'per_call_us': float(per_call_us),
+                'task_capacity': None if capacity is None else int(capacity),
+            })
+        entry['benchmark_records'] = saved_records
+    store[device_kind] = entry
+    tmp = path.with_suffix(path.suffix + f'.{os.getpid()}.tmp')
+    tmp.write_text(json.dumps(store, indent=2, sort_keys=True), encoding='utf-8')
+    os.replace(tmp, path)
+    return path
 
 
 def _progress_bar(completed: int, total: int, *, width: int = 30) -> str:
@@ -86,9 +233,9 @@ def _write_progress(completed: int, total: int) -> None:
 
 
 def _task_capacity_for_uniform_rows(*, n_rows: int, row_conn: int, config: CSRConfig) -> int:
-    if row_conn <= config.tpr_threshold:
+    if row_conn <= config.mv.tpr_threshold:
         return 0
-    chunks_per_row = (row_conn + config.task_nnz - 1) // config.task_nnz
+    chunks_per_row = (row_conn + config.mv.task_nnz - 1) // config.mv.task_nnz
     capacity = int(n_rows) * int(chunks_per_row)
     if capacity > _INT32_MAX:
         raise ValueError("task_capacity exceeds int32 range")
@@ -140,12 +287,12 @@ def _benchmark_config(
 
     from brainevent._op import load_cuda_file
 
-    module_name = _MODULE_BASE + config.module_suffix()
+    module_name = _MODULE_BASE + config.mv.module_suffix()
     module = load_cuda_file(
         _CUDA_SOURCE,
         name=module_name,
         extra_include_paths=[str(_CUDA_SOURCE.parent)],
-        extra_cuda_cflags=config.compile_flags(),
+        extra_cuda_cflags=config.mv.compile_flags(),
         force_rebuild=force_rebuild,
         verbose=verbose_compile,
         allow_cuda_graph=False,
@@ -352,7 +499,7 @@ def init_csr_config(
     Notes
     -----
     Run this **once** manually before simulating; later processes read the saved config via
-    :func:`~brainevent._csr.binary.hybrid_config.load_csr_config`.  Returns the winning
+    :func:`load_csr_config`.  Returns the winning
     :class:`~brainevent._csr.config.CSRConfig`.
     """
     records = run_benchmark(candidates=candidates, **benchmark_kwargs)
@@ -360,5 +507,5 @@ def init_csr_config(
         raise RuntimeError("no candidate configs were benchmarked")
     best = records[0]["config"]
     if save:
-        save_csr_config(best, device_kind or _current_device_kind(), benchmark_records=records)
+        save_csr_config(best, device_kind or None, benchmark_records=records)
     return best

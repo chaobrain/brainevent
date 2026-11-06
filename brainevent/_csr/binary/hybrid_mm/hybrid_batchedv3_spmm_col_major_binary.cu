@@ -74,16 +74,4 @@ DEFINE_COL_MAJOR_BINARY(_f64_bool, double, int8_t)
 DEFINE_COL_MAJOR_BINARY(_f64_float, double, float)
 #undef DEFINE_COL_MAJOR_BINARY
 
-// @BE batched_spmm_v3_col_major_device_info
-void batched_spmm_v3_col_major_device_info(const BE::Tensor dummy, BE::Tensor info, int64_t stream)
-{
-  BE_CHECK(info.dtype() == BE::DType::Int32 && info.ndim() == 1 && info.numel() == 2) << "expects int32[2]";
-  hybrid::Device device;
-  BE_CUDA_CHECK(hybrid::device_info(&device));
-  const int32_t host[2] = {device.sms, device.l2_bytes};
-  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
-  BE_CUDA_CHECK(cudaMemcpyAsync(info.data_ptr<int32_t>(), host, sizeof(host), cudaMemcpyHostToDevice, cuda_stream));
-  // The source is a stack array, so finish this one-time planning copy before returning.
-  BE_CUDA_CHECK(cudaStreamSynchronize(cuda_stream));
-}
 #endif

@@ -86,7 +86,6 @@ namespace hybrid
 // JAX FFI entry points for the hybrid v3_gz binary SpMM (BN events -> BN output, overwritten).
 // batched_spmm_v3_{f16,bf16,f32,f64}_{bool,float}: the value suffix names the values/output dtype,
 // the event suffix the events dtype. Index dtypes (int32/int64) are dispatched at run time.
-// batched_spmm_v3_device_info: SM count and L2 bytes of the current device, for host-side planning.
 #include <cstdint>
 #include <limits>
 
@@ -205,18 +204,5 @@ DEFINE_BATCHED_SPMM_V3(_homo_f64_bool, double, int8_t, true)
 DEFINE_BATCHED_SPMM_V3(_homo_f64_float, double, float, true)
 
 #undef DEFINE_BATCHED_SPMM_V3
-
-// @BE batched_spmm_v3_device_info
-void batched_spmm_v3_device_info(const BE::Tensor dummy, BE::Tensor info, int64_t stream)
-{
-  BE_CHECK(info.dtype() == BE::DType::Int32 && info.ndim() == 1 && info.numel() == 2) << "expects int32[2]";
-  hybrid::Device device;
-  BE_CUDA_CHECK(hybrid::device_info(&device));
-  const int32_t host[2] = {device.sms, device.l2_bytes};
-  const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
-  BE_CUDA_CHECK(cudaMemcpyAsync(info.data_ptr<int32_t>(), host, sizeof(host), cudaMemcpyHostToDevice, cuda_stream));
-  // host is a stack array: finish the copy before returning.
-  BE_CUDA_CHECK(cudaStreamSynchronize(cuda_stream));
-}
 
 #endif

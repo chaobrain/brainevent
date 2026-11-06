@@ -20,27 +20,27 @@ def _matrix(cls=CSR, **kwargs):
 
 @pytest.mark.parametrize('cls', [CSR, CSC])
 def test_config_snapshot_is_loaded_once_and_survives_reconstruction(monkeypatch, cls):
-    from brainevent._csr.binary import hybrid_config
+    from brainevent._csr.binary import initialize
 
     calls = []
     snapshot = CSRConfig(block_size=128, tpr_threshold=7)
-    monkeypatch.setattr(hybrid_config, 'load_csr_config', lambda **kw: calls.append(kw) or snapshot)
+    monkeypatch.setattr(initialize, 'load_csr_config', lambda **kw: calls.append(kw) or snapshot)
     matrix = _matrix(cls)
     assert len(calls) == 1
-    assert matrix.config.primary.rows == 2
-    assert matrix.config.mirror.rows == 3
+    assert matrix.config.shape == (2, 3)
+    assert matrix.config.nnz == 3
     assert matrix.config.tpr_threshold == 7
 
     def no_load(**kwargs):
         raise AssertionError('reconstruction must not load persisted configuration')
 
-    monkeypatch.setattr(hybrid_config, 'load_csr_config', no_load)
+    monkeypatch.setattr(initialize, 'load_csr_config', no_load)
     assert matrix.with_data(matrix.data * 2).config is matrix.config
     assert matrix.T.config is matrix.config
     transformed = jax.jit(lambda value: value.with_data(value.data * 2))(matrix)
     np.testing.assert_array_equal(transformed.data, matrix.data * 2)
     assert transformed.config.tpr_threshold == 7
-    assert transformed.config.primary.rows == 2
+    assert transformed.config.shape == (2, 3)
     leaves = jax.tree.leaves(matrix)
     assert any(value is matrix.config.primary.long_mask for value in leaves)
     assert any(value is matrix.config.mirror.long_mask for value in leaves)
@@ -71,26 +71,30 @@ def test_format_conversion_swaps_prepared_layouts_without_reloading(monkeypatch,
     converted = matrix.tocsc() if cls is CSR else matrix.tocsr()
     assert converted.config.primary is matrix.config.mirror
     assert converted.config.mirror is matrix.config.primary
+    assert converted.config.shape == matrix.config.shape[::-1]
+    assert converted.config.nnz == matrix.config.nnz
+    assert converted.config.primary_max_row_nnz == matrix.config.mirror_max_row_nnz
+    assert converted.config.mirror_max_row_nnz == matrix.config.primary_max_row_nnz
     np.testing.assert_allclose(converted.todense(), matrix.todense())
 
 
 def test_structure_changes_rebind_eagerly_and_invalidate_traced_plans():
     matrix = _matrix(config=CSRConfig(tpr_threshold=5))
     sliced = matrix.slice_rows([0])
-    assert sliced.config.primary.rows == 1
-    assert sliced.config.primary.nnz == 2
+    assert sliced.config.shape == (1, 3)
+    assert sliced.config.nnz == 2
     assert sliced.config.tpr_threshold == 5
 
     dense = jnp.array([[0., 1.], [2., 0.]])
     matrix = CSR.fromdense(dense, backend='jax_raw', config=CSRConfig(tpr_threshold=5))
     eager = matrix.diag_add(jnp.ones(2))
-    assert eager.config.primary.nnz == 4
+    assert eager.config.nnz == 4
     traced = jax.jit(lambda value: value.diag_add(jnp.ones(2)))(matrix.prepare_diag_add())
     assert traced.config.primary is None
     assert traced.config.mirror is None
     assert traced.config.tpr_threshold == 5
     prepared = traced.prepare_config()
-    assert prepared.config.primary.nnz == 4
+    assert prepared.config.nnz == 4
     assert prepared.config.tpr_threshold == 5
 
 
@@ -109,7 +113,7 @@ def test_replacing_a_mirror_detaches_shared_cache_and_invalidates_only_that_plan
 
 @pytest.mark.parametrize('cls', [CSR, CSC, FixedNumPerPre, FixedNumPerPost])
 def test_constructor_prepares_supplied_mirror_without_reloading(monkeypatch, cls):
-    from brainevent._csr.binary import hybrid_config
+    from brainevent._csr.binary import initialize
 
     if cls in (CSR, CSC):
         source = _matrix(cls, config=CSRConfig()).build_weight_indices()
@@ -122,7 +126,7 @@ def test_constructor_prepares_supplied_mirror_without_reloading(monkeypatch, cls
         ).build_weight_indices()
         args = (source.data, source.indices)
     loads = []
-    monkeypatch.setattr(hybrid_config, 'load_csr_config', lambda **kw: loads.append(kw) or CSRConfig())
+    monkeypatch.setattr(initialize, 'load_csr_config', lambda **kw: loads.append(kw) or CSRConfig())
     matrix = cls(
         *args, shape=source.shape, buffers=source.buffers,
         backend='cuda_raw' if jax.default_backend() == 'gpu' else 'jax_raw',
@@ -188,7 +192,7 @@ def test_numpy_structure_is_prepared_without_device_readback(monkeypatch):
         np.ones(3), np.array([0, 2, 1], np.int32), np.array([0, 2, 3], np.int32),
         shape=(2, 3), backend='jax_raw', config=CSRConfig(),
     )
-    assert matrix.config.primary.nnz == 3
+    assert matrix.config.nnz == 3
 
 
 @pytest.mark.skipif(jax.default_backend() != 'gpu', reason='GPU placement requires CUDA')
@@ -206,11 +210,11 @@ def test_explicit_gpu_preparation_moves_both_masks_and_queries_on_jax_backend():
 
 @pytest.mark.skipif(jax.default_backend() != 'gpu', reason='GPU device query requires CUDA')
 def test_closed_concrete_structure_can_prepare_with_cold_device_cache_under_trace():
-    from brainevent._csr.binary import _hybrid_mm
+    from brainevent._csr.config import _query_cuda_device_info
 
     indices = jnp.array([0, 1], jnp.int32)
     indptr = jnp.array([0, 1, 2], jnp.int32)
-    _hybrid_mm._query_device.cache_clear()
+    _query_cuda_device_info.cache_clear()
     make = lambda data: CSR(
         data, indices, indptr, shape=(2, 2), backend='cuda_raw', config=CSRConfig(),
     )

@@ -19,9 +19,8 @@ from .binary.binary_indexed import (
     binary_csrmv_indexed, binary_csrmv_indexed_p,
     binary_csrmm_indexed, binary_csrmm_indexed_p,
 )
-from .config import CSRConfig
-from .binary.hybrid_config import load_csr_config, save_csr_config
-from .binary.initialize import init_csr_config
+from .config import CSRConfig, MVSchedule
+from .binary.initialize import init_csr_config, load_csr_config, save_csr_config
 from .dt2t.dt2t import (
     csrmv_dt2t, cscmv_dt2t, csrmv_dt2t_p,
     csrmm_dt2t, cscmm_dt2t, csrmm_dt2t_p,
@@ -55,5 +54,5 @@ __all__ = [
     'csr_apply_on_pre', 'csr_apply_on_post',
     'csr_slice_rows', 'csr_slice_rows_p',
     'delaycsr', 'csr_delay_deliver_layout', 'csr_delay_deliver_layout_p',
-    'CSRConfig', 'load_csr_config', 'save_csr_config', 'init_csr_config',
+    'CSRConfig', 'MVSchedule', 'load_csr_config', 'save_csr_config', 'init_csr_config',
 ]

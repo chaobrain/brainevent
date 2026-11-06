@@ -297,7 +297,7 @@ requires_gpu_backend = pytest.mark.skipif(
 
 
 def strip_hybrid_suffix(name):
-    """Remove the config-dependent hybrid module suffix (e.g. ``_b256_s2048_t128_n4096``).
+    """Remove hybrid MV config and MM source-digest module suffixes.
 
     Parameters
     ----------
@@ -307,18 +307,21 @@ def strip_hybrid_suffix(name):
     Returns
     -------
     str
-        ``name`` with the active hybrid-config suffix removed.
+        ``name`` with the hybrid module suffix removed.
 
     Notes
     -----
-    The hybrid ``.so`` module names embed the active
-    :class:`~brainevent.CSRConfig` so different configs
-    compile to distinct modules. These tests only care about the logical module
-    identity, so the suffix is normalised away to stay config-agnostic.
+    Hybrid MV modules embed the active :class:`~brainevent.CSRConfig`; hybrid
+    MM modules embed a digest of their CUDA sources. These tests only care
+    about the logical module identity.
     """
     import re
 
-    return re.sub(r"_b[0-9]+_s[0-9]+_t[0-9]+_n[0-9]+", "", name)
+    name = re.sub(r"_b[0-9]+_s[0-9]+_t[0-9]+_n[0-9]+", "", name)
+    return re.sub(
+        r"(csr_hybrid_mm_(?:row|col_major)_(?:binary|weighted))_[0-9a-f]{12}(?=\.|$)",
+        r"\1", name,
+    )
 
 
 def int64_structure(indptr_dtype):
@@ -772,7 +775,7 @@ def homo_ct_case(case, transpose):
 def prepared_config(indices, indptr, shape):
     """Explicitly prepare concrete test structure for raw hybrid operator calls."""
     from brainevent._csr.config import CSRConfig
-    from brainevent._csr.binary._hybrid_mm import get_device_info
+    from brainevent._csr.config import get_device_info
 
     if isinstance(indices, jax.core.Tracer) or isinstance(indptr, jax.core.Tracer):
         return CSRConfig()

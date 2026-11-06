@@ -27,10 +27,11 @@ from .binary_indexed import (
     binary_csrmm_indexed,
     binary_csrmm_indexed_p,
 )
-from ..config import CSRConfig
-from .hybrid_config import load_csr_config, save_csr_config
+from ..config import CSRConfig, MVSchedule
 from .initialize import (
     init_csr_config,
+    load_csr_config,
+    save_csr_config,
 )
 
 __all__ = [
@@ -43,6 +44,7 @@ __all__ = [
     'binary_csrmm_indexed',
     'binary_csrmm_indexed_p',
     'CSRConfig',
+    'MVSchedule',
     'load_csr_config',
     'save_csr_config',
     'init_csr_config',

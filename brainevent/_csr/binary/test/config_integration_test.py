@@ -9,8 +9,9 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent._csr.config import CSRConfig, CSRDeviceInfo
-from brainevent._csr.binary import _hybrid_mm, hybrid_config
+from brainevent._csr.config import CSRConfig, CSRDeviceInfo, get_device_info
+from brainevent._csr.binary import initialize
+import brainevent._csr.binary.binary as binary_mod
 from brainevent._csr.binary.binary import binary_csrmv_p_call, binary_csrmm_p_call, binary_csrmm_p
 from brainevent._csr.binary.binary_indexed import binary_csrmv_indexed_p_call, binary_csrmm_indexed_p_call
 from brainevent._test_util import jax_x64_enabled
@@ -31,7 +32,7 @@ def _case(dtype=jnp.float32, *, homo=False):
     ptr = np.r_[0, np.cumsum(lengths)].astype(np.int32)
     idx = (np.arange(int(ptr[-1]), dtype=np.int32) * 7) % 9
     indices, indptr = jnp.asarray(idx), jnp.asarray(ptr)
-    device = _hybrid_mm.get_device_info(indices, indptr)
+    device = get_device_info(indices, indptr)
     # CPU tests inspect the pure launch plan without lowering a CUDA kernel.
     device = device or CSRDeviceInfo('gpu', 'PLAN_TEST', l2_bytes=4096, sms=8)
     config = CSRConfig(tpr_threshold=16, task_nnz=64, device_info=device).prepare_structure(
@@ -235,7 +236,7 @@ def test_raw_calls_do_not_load_or_prepare_implicit_config(monkeypatch):
     case = _case()
     def forbidden(*args, **kwargs):
         raise AssertionError('raw operators must not load persistence or prepare structure')
-    monkeypatch.setattr(hybrid_config, 'load_csr_config', forbidden)
+    monkeypatch.setattr(initialize, 'load_csr_config', forbidden)
     monkeypatch.setattr(CSRConfig, 'prepare_structure', forbidden)
     # Native MV uses constant defaults. Portable MM needs no prepared plan.
     mv = jax.jit(lambda x: _call(case, case.weights, x, config=None))(case.events[:, 0])
@@ -372,6 +373,6 @@ def test_empty_mm_bypasses_preparation_and_cuda_loader(monkeypatch, empty):
         case.events = case.events[:, :0]
     def forbidden(*args, **kwargs):
         raise AssertionError('empty hybrid MM must not load CUDA sources')
-    monkeypatch.setattr(_hybrid_mm, 'load_module', forbidden)
+    monkeypatch.setattr(binary_mod, 'load_cuda_file', forbidden)
     actual = jax.jit(lambda x: _call(case, case.weights, x, config=None))(case.events)
     np.testing.assert_array_equal(actual, np.zeros((case.shape[1], case.events.shape[1])))

@@ -1,5 +1,6 @@
 """Regression coverage for the relocated hybrid CUDA sources and their ABI."""
 
+import hashlib
 from pathlib import Path
 import re
 
@@ -8,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent._csr.binary import _hybrid_mm
+from brainevent._op import load_cuda_file
 from brainevent._test_util import jax_x64_enabled
 
 
@@ -62,7 +63,13 @@ def test_hybrid_mm_ffi_short_long_rows_and_repeated_calls(permuted, homo, weight
             jax.ShapeDtypeStruct(((workspace_bytes + 3) // 4,), jnp.uint32),
             jax.ShapeDtypeStruct((batch * rows,), jnp.int32),
         )
-        name = _hybrid_mm.load_module(permuted=permuted, weighted=weighted)
+        mode = 'weighted' if weighted else 'binary'
+        layout = 'col_major' if permuted else 'row'
+        source = _MM / f'hybrid_batchedv3_spmm_{"col_major_" if permuted else ""}{mode}.cu'
+        dependencies = (source, *sorted(_MM.rglob('*.cuh')))
+        digest = hashlib.sha256(b''.join(path.read_bytes() for path in dependencies)).hexdigest()[:12]
+        name = f'csr_hybrid_mm_source_test_{layout}_{mode}_{digest}'
+        load_cuda_file(source, name=name, extra_include_paths=[str(_MM)], allow_cuda_graph=False)
         if permuted:
             symbol = f'batched_spmm_v3_col_major_{"weighted" if weighted else "binary"}_hetero_{suffix}'
         else:

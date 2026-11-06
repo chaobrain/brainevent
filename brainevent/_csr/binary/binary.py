@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._compatible_import import match_varying_axes
 from brainevent._misc import (
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
@@ -31,8 +33,7 @@ from brainevent._misc import (
 )
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
-from ..config import CSRConfig
-from . import _hybrid_mm
+from ..config import CSRConfig, get_device_info as _get_csr_device_info
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import dispatch as _sddmm_dispatch
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -53,8 +54,8 @@ __all__ = [
 def _task_capacity(indices, indptr, max_row_nnz, config=None) -> int:
     """Hybrid task-queue capacity bound from static shapes and a row-length hint."""
     config = CSRConfig() if config is None else config
-    if config.primary is not None:
-        max_row_nnz = config.primary.max_row_nnz
+    if config.primary_max_row_nnz is not None:
+        max_row_nnz = config.primary_max_row_nnz
     return config.mv_capacity(indices.shape[0], indptr.shape[0] - 1, max_row_nnz)
 
 
@@ -77,10 +78,9 @@ def _config_for_call(config, indices, indptr, shape):
     config = CSRConfig() if config is None else config
     if not isinstance(config, CSRConfig):
         raise TypeError('config must be a CSRConfig or None')
-    structure = config.primary
-    if structure is not None and (
-        (structure.rows, structure.cols) != tuple(shape)
-        or structure.nnz != indices.size or structure.rows + 1 != indptr.size
+    if config.primary is not None and (
+        config.shape != tuple(shape)
+        or config.nnz != indices.size or config.shape[0] + 1 != indptr.size
     ):
         raise ValueError('CSRConfig does not match the current CSR dimensions; prepare the config for this structure.')
     return config
@@ -122,7 +122,8 @@ def _check_max_row_nnz(max_row_nnz, config=None) -> None:
         return
     if isinstance(max_row_nnz, (bool, np.bool_)) or not isinstance(max_row_nnz, (int, np.integer)) or max_row_nnz < 0:
         raise ValueError('max_row_nnz must be a nonnegative integer')
-    if config is not None and config.primary is not None and max_row_nnz < config.primary.max_row_nnz:
+    if (config is not None and config.primary_max_row_nnz is not None
+            and max_row_nnz < config.primary_max_row_nnz):
         raise ValueError('max_row_nnz is below the longest row in the prepared CSRConfig')
 
 
@@ -1491,6 +1492,113 @@ def _binary_csrmm_cusparse_kernel(
     return kernel
 
 
+# Shared hybrid MM CUDA path for ordinary and indexed CSR calls.
+def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
+                           indices_info, indptr_info, outs=None, out_info=None,
+                           weighted=False, permuted=False, perm_info=None, **kwargs):
+    """Lower a prepared hybrid SpMM call to its native BN layout.
+
+    Parameters
+    ----------
+    config_spec : CSRKernelSpec
+        Immutable scheduler, structure and preparation-device metadata.
+    call_plan : MMCallPlan or None
+        Purely derived launch and workspace dimensions for this invocation.
+    weight_info, vector_info, indices_info, indptr_info : jax.ShapeDtypeStruct
+        Mathematical operand shapes and dtypes.
+    outs : sequence of jax.ShapeDtypeStruct or None, optional
+        Primitive output metadata, used when ``out_info`` is omitted.
+    out_info : jax.ShapeDtypeStruct or None, optional
+        Logical NB output shape and dtype.
+    weighted : bool, optional
+        Multiply weights by active event amplitudes.
+    permuted : bool, optional
+        The returned callable receives an additional weight permutation.
+    perm_info : jax.ShapeDtypeStruct or None, optional
+        Permutation operand metadata for indexed callers.
+    **kwargs
+        Additional primitive metadata ignored by this adapter.
+
+    Returns
+    -------
+    callable
+        A kernel receiving math operands and a final prepared long-row mask.
+
+    Raises
+    ------
+    ValueError
+        A nonempty hybrid call lacks matching structure or device preparation.
+    """
+    out_info = out_info if out_info is not None else outs[0]
+    batch, rows, cols = vector_info.shape[1], indptr_info.size - 1, out_info.shape[0]
+    nnz = indices_info.size
+    if not batch or not rows or not cols or not nnz:
+        return lambda *args: (match_varying_axes(jnp.zeros(out_info.shape, out_info.dtype), *args),)
+    if np.dtype(weight_info.dtype).name not in ('float16', 'bfloat16', 'float32', 'float64'):
+        raise ValueError('Hybrid CSR MM supports only float16, bfloat16, float32, or float64 values.')
+    device = None if config_spec is None else config_spec.device_info
+    if (call_plan is None or device is None or device.platform != 'gpu'
+            or device.sms <= 0 or device.l2_bytes <= 0):
+        raise ValueError(
+            'Hybrid CSR MM requires a complete prepared CSRConfig with structure and GPU device '
+            'information. Prepare the config before jax.jit and pass it explicitly.'
+        )
+    if (call_plan.rows, call_plan.cols, call_plan.nnz, call_plan.batch) != (rows, cols, nnz, batch):
+        raise ValueError('Hybrid CSR MM plan does not match the operand structure and batch shape.')
+    if np.dtype(call_plan.dtype) != np.dtype(weight_info.dtype):
+        raise ValueError('Hybrid CSR MM plan does not match the value dtype.')
+    config = CSRConfig.from_kernel_args(config_spec, None)
+    expected_plan = config.mm_plan(batch, weight_info.dtype, weighted)
+    if call_plan != expected_plan:
+        raise ValueError('Hybrid CSR MM call plan does not match the prepared config and invocation.')
+    native_permuted = permuted and weight_info.size != 1
+    root = Path(__file__).parent / 'hybrid_mm'
+    mode = 'weighted' if weighted else 'binary'
+    layout = 'col_major' if native_permuted else 'row'
+    source = root / f'hybrid_batchedv3_spmm_{"col_major_" if native_permuted else ""}{mode}.cu'
+    # Header changes must give the registered FFI target a fresh name.
+    dependencies = (source, *sorted(root.rglob('*.cuh')))
+    digest = hashlib.sha256(b''.join(path.read_bytes() for path in dependencies)).hexdigest()[:12]
+    module = f'csr_hybrid_mm_{layout}_{mode}_{digest}'
+    load_cuda_file(source, name=module, extra_include_paths=[str(root)], allow_cuda_graph=False)
+    abi = cuda_event_abi(vector_info.dtype, weighted=weighted, value_dtype=weight_info.dtype)
+    if native_permuted:
+        symbol = 'batched_spmm_v3_col_major_' + ('weighted' if weighted else 'binary') + '_hetero'
+    else:
+        symbol = 'batched_spmm_v3' + ('_weighted' if weighted else '')
+        symbol += '_homo' if weight_info.size == 1 else ''
+    symbol += dtype_suffix(weight_info.dtype)
+    if not weighted:
+        symbol += abi.suffix
+    infos = (
+        jax.ShapeDtypeStruct((batch, cols), out_info.dtype),
+        jax.ShapeDtypeStruct((call_plan.workspace_words,), jnp.uint32),
+        jax.ShapeDtypeStruct((call_plan.short_rows_size,), jnp.int32),
+    )
+    attrs = dict(
+        group=call_plan.group, long_threshold=call_plan.long_threshold,
+        chunk=call_plan.chunk, long_tasks=call_plan.long_tasks,
+        task_capacity=call_plan.task_capacity,
+        expected_sms=device.sms, expected_l2_bytes=device.l2_bytes,
+    )
+    ffi = jax.ffi.ffi_call(module + '.' + symbol, infos, vmap_method='sequential')
+
+    def kernel(*args):
+        if permuted:
+            weights, indices, indptr, perm, events, long_mask = args
+        else:
+            weights, indices, indptr, events, long_mask = args
+            perm = None
+        CSRConfig.from_kernel_args(config_spec, long_mask).require_prepared(rows=rows, cols=cols, nnz=nnz)
+        operands = (weights, indices, indptr)
+        if native_permuted:
+            operands += (perm,)
+        output = ffi(*operands, long_mask, abi.prepare(events).T, **attrs)[0]
+        return (match_varying_axes(output.T, *args),)
+
+    return kernel
+
+
 def _binary_csrmm_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -1512,7 +1620,7 @@ def _binary_csrmm_cuda_kernel(
     homo_suffix = '_homo' if is_homo else '_hetero'
 
     if transpose:
-        return _hybrid_mm.make_kernel(
+        return _make_hybrid_mm_kernel(
             weight_info=weight_info, vector_info=vector_info,
             permuted=False, **kwargs,
         )
@@ -1635,7 +1743,7 @@ def _binary_csrmm_benchmark_data(*, platform):
                 indices = jnp.asarray(indices)
                 config = CSRConfig().prepare_structure(
                     indices, indptr, shape=(n_pre, n_post),
-                    device_info=_hybrid_mm.get_device_info(indices, indptr) if platform == 'gpu' else None,
+                    device_info=_get_csr_device_info(indices, indptr) if platform == 'gpu' else None,
                 )
                 configs.append(
                     BenchmarkConfig(

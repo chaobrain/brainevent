@@ -26,7 +26,6 @@ FORBIDDEN_TARGETS = (
 _LOAD_MODULES = (
     "brainevent._csr.binary.binary",
     "brainevent._csr.binary.binary_indexed",
-    "brainevent._csr.binary._hybrid_mm",
     "brainevent._csr.float.float",
     "brainevent._sddmm._mv.sddmv",
     "brainevent._sddmm._mm.sddmm",

@@ -1158,7 +1158,6 @@ def _assert_hybrid_scratch_call(call, n_math, task_capacity, indptr_dtype):
 def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatch):
     ffi_calls = []
     load_calls = []
-    monkeypatch.setattr(binary_mod._hybrid_mm, "load_module", lambda **kw: "prepared_mm")
 
     monkeypatch.setattr(binary_mod, "load_cuda_file", lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
     monkeypatch.setattr(binary_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
@@ -1210,12 +1209,13 @@ def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatc
         'csr_binary_csrmv',
         'csr_hybrid_spmv_binary',
         'csr_binary_csrmm',
+        'csr_hybrid_mm_row_binary',
     ]
     assert [strip_hybrid_suffix(call[0]) for call in ffi_calls] == [
         'csr_binary_csrmv.binary_csrmv_nt_auto_homo_f32_bool',
         'csr_hybrid_spmv_binary.binary_csrmv_wat_hybrid_homo_f32_bool',
         'csr_binary_csrmm.binary_csrmm_nt_auto_hetero_f32_bool',
-        'prepared_mm.batched_spmm_v3_f32_float',
+        'csr_hybrid_mm_row_binary.batched_spmm_v3_f32_float',
     ]
     # Kernels return only the math output, in the logical layout (the hybrid
     # mat-mat transposes its physical ``(n, k)`` result back).
@@ -1784,7 +1784,6 @@ def test_binary_csrmm_weighted_heavy_rows_use_row_value(backend, homo):
 @pytest.mark.parametrize('homo', [True, False])
 def test_binary_cuda_generators_select_weighted_abi(monkeypatch, weight_dtype, homo):
     """``weighted=True`` picks the ``_wv`` symbols and casts events to the weight dtype in the lowering."""
-    monkeypatch.setattr(binary_mod._hybrid_mm, "load_module", lambda **kw: "prepared_mm")
     ffi_calls = []
     monkeypatch.setattr(binary_mod, "load_cuda_file", lambda path, name, **kwargs: None)
     monkeypatch.setattr(binary_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
@@ -1804,7 +1803,7 @@ def test_binary_cuda_generators_select_weighted_abi(monkeypatch, weight_dtype, h
         (binary_mod._binary_csrmm_cuda_kernel, (2, 3), False, (1, 3),
          f'csr_binary_csrmm.binary_csrmm_nt_auto{hs}{sfx}_wv'),
         (binary_mod._binary_csrmm_cuda_kernel, (1, 3), True, (2, 3),
-         f'prepared_mm.batched_spmm_v3_weighted{"_homo" if homo else ""}{sfx}'),
+         f'csr_hybrid_mm_row_weighted.batched_spmm_v3_weighted{"_homo" if homo else ""}{sfx}'),
     ]
     cfg = CSRConfig().prepare_structure(indices, indptr, shape=(1, 2),
         device_info=CSRDeviceInfo('gpu', 'test', 4 * 1024**2, 8))

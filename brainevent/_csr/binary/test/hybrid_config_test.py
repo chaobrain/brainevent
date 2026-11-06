@@ -44,7 +44,7 @@ def test_binary_hybrid_cuda_exports_use_csr_abi_names():
         'hybrid_mm/hybrid_batchedv3_spmm_binary.cu': {
             f'batched_spmm_v3{mode}_{value}_{event}'
             for mode in ('', '_homo') for value in value_types for event in event_types
-        } | {'batched_spmm_v3_device_info'},
+        },
         'hybrid_mm/hybrid_batchedv3_spmm_weighted.cu': {
             f'batched_spmm_v3_weighted{mode}_{value}'
             for mode in ('', '_homo') for value in value_types
@@ -52,7 +52,7 @@ def test_binary_hybrid_cuda_exports_use_csr_abi_names():
         'hybrid_mm/hybrid_batchedv3_spmm_col_major_binary.cu': {
             f'batched_spmm_v3_col_major_binary_hetero_{value}_{event}'
             for value in value_types for event in event_types
-        } | {'batched_spmm_v3_col_major_device_info'},
+        },
         'hybrid_mm/hybrid_batchedv3_spmm_col_major_weighted.cu': {
             f'batched_spmm_v3_col_major_weighted_hetero_{value}' for value in value_types
         },
@@ -108,5 +108,5 @@ def test_prepared_row_hint_matches_concrete_structure():
     indptr = np.array([0, 129, 129 + 4096, 129 + 4096 + 4097], dtype=np.int64)
     indices = np.zeros(int(indptr[-1]), dtype=np.int32)
     config = CSRConfig().prepare_structure(indices, indptr, shape=(3, 1))
-    assert config.primary.max_row_nnz == 4097
-    assert config.mv_capacity(len(indices), 3, config.primary.max_row_nnz) >= _capacity(indptr, config)
+    assert config.primary_max_row_nnz == 4097
+    assert config.mv_capacity(len(indices), 3, config.primary_max_row_nnz) >= _capacity(indptr, config)
