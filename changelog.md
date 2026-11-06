@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A process no longer hangs at interpreter exit when an XLA execution that
+  calls a Numba FFI target (CPU or CUDA) is still in flight (#256). The target
+  is a `ctypes` trampoline into Python; a worker entering it after
+  finalization began blocked for good taking the GIL, and the main thread
+  deadlocked joining XLA's worker pool. The first Numba FFI handler now
+  registers an `atexit` handler that waits for every live JAX array before
+  finalization, as JAX does for its own host callbacks. An execution whose
+  outputs were all dropped has nothing to wait on and is not covered.
+
 ## [0.4.1] - 2026-11-03
 
 A patch release with one fix. The CPU delay kernel now shares one native

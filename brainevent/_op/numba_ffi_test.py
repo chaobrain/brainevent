@@ -21,6 +21,9 @@ import gc
 import importlib.util
 import os
 import re
+import subprocess
+import sys
+import textwrap
 import unittest
 import warnings
 from unittest import mock
@@ -1705,3 +1708,72 @@ class TestUnreportableFfiError:
         assert 'boom' in captured.err
         assert 'FATAL' in captured.err
         assert 'NOT be reported to XLA' in captured.err or 'could NOT be reported' in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Interpreter exit with an execution still calling the FFI target (issue #256)
+# ---------------------------------------------------------------------------
+
+_EXIT_HANG_SCRIPT = textwrap.dedent('''
+    import os, sys, time
+    import numpy as np, jax, jax.numpy as jnp
+    from brainevent._op import numba_ffi
+    if sys.argv[1] == 'unguarded':
+        numba_ffi._register_exit_guard = lambda: None
+    calls = []
+    def kern(x, out):
+        time.sleep(0.005); out[...] = x; calls.append(1)
+    numba_ffi.NumbaCpuFfiHandler('exit_guard_probe', kern, (np.dtype('float32'),), (np.dtype('float32'),))
+    call = jax.ffi.ffi_call('exit_guard_probe', jax.ShapeDtypeStruct((100,), jnp.float32))
+    f = jax.jit(lambda c: jax.lax.scan(lambda c, _: (jnp.sin(call(c)) + 1.0, None), c, None, length=200)[0])
+    heavy = jax.jit(lambda a: jax.lax.fori_loop(0, 10, lambda i, a: jnp.tanh(a @ a), a)[0, :100])
+    a = jnp.ones((1500, 1500), jnp.float32) * 1e-3
+    heavy(a).block_until_ready()
+    y = f(heavy(a))  # inputs not ready: XLA queues the execution on its async work runner
+    print('IN_FLIGHT', not y.is_ready(), flush=True)
+''')
+
+
+def _run_exit_script(mode, timeout):
+    env = dict(os.environ, JAX_PLATFORMS='cpu')
+    return subprocess.run([sys.executable, '-c', _EXIT_HANG_SCRIPT, mode], env=env, timeout=timeout,
+                          capture_output=True, text=True)
+
+
+class TestExitGuard:
+    def test_exit_with_inflight_execution_does_not_hang(self):
+        # Without the guard the process deadlocks in finalization: an XLA worker
+        # blocks taking the GIL in the ctypes trampoline while the main thread
+        # joins the worker pool. With it, the interpreter waits for the execution.
+        proc = _run_exit_script('guarded', timeout=120)
+        assert proc.returncode == 0, proc.stderr
+        assert 'IN_FLIGHT True' in proc.stdout  # the execution was still running at exit
+
+    def test_register_exit_guard_is_idempotent(self):
+        with mock.patch.object(numba_ffi, '_EXIT_GUARD_REGISTERED', False), \
+                mock.patch.object(numba_ffi.atexit, 'register') as register:
+            numba_ffi._register_exit_guard()
+            numba_ffi._register_exit_guard()
+        register.assert_called_once_with(numba_ffi._wait_for_inflight_executions)
+
+    def test_handler_registers_exit_guard(self):
+        with mock.patch.object(numba_ffi, '_register_exit_guard') as guard:
+            numba_ffi.NumbaCpuFfiHandler('exit_guard_registers', lambda x, out: None,
+                                         (np.dtype('float32'),), (np.dtype('float32'),))
+        guard.assert_called_once_with()
+
+    def test_wait_blocks_live_arrays_and_skips_deleted_and_failed(self):
+        ready = mock.Mock(**{'is_deleted.return_value': False})
+        deleted = mock.Mock(**{'is_deleted.return_value': True})
+        failed = mock.Mock(**{'is_deleted.return_value': False,
+                              'block_until_ready.side_effect': RuntimeError('boom')})
+        later = mock.Mock(**{'is_deleted.return_value': False})
+        with mock.patch.object(numba_ffi.jax, 'live_arrays', return_value=[ready, deleted, failed, later]):
+            numba_ffi._wait_for_inflight_executions()
+        ready.block_until_ready.assert_called_once_with()
+        deleted.block_until_ready.assert_not_called()
+        later.block_until_ready.assert_called_once_with()  # a failed array does not stop the wait
+
+    def test_wait_survives_live_arrays_failure(self):
+        with mock.patch.object(numba_ffi.jax, 'live_arrays', side_effect=RuntimeError('no backend')):
+            numba_ffi._wait_for_inflight_executions()  # must not raise during interpreter exit

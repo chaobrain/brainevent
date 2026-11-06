@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import atexit
 import ctypes
 import enum
 import importlib.util
@@ -61,6 +62,48 @@ _NUMBA_CPU_FFI_KERNEL_PINS: Dict[int, object] = {}
 _FFI_CALLBACK_COUNTER = 0
 # Serializes target registration (trace/lowering time, distinct from execution).
 _REGISTRATION_LOCK = threading.Lock()
+
+# Whether :func:`_wait_for_inflight_executions` is registered with ``atexit``.
+_EXIT_GUARD_REGISTERED = False
+_EXIT_GUARD_LOCK = threading.Lock()
+
+
+def _wait_for_inflight_executions() -> None:
+    """Block on every live JAX array; run by ``atexit`` before interpreter finalization.
+
+    A Numba FFI target is a ``ctypes`` trampoline into Python, so each call takes
+    the GIL. An XLA worker that enters it after ``Py_FinalizeEx`` has begun blocks
+    forever (Python 3.13 hangs threads that take the GIL during finalization), and
+    the main thread then deadlocks joining XLA's worker pool when the client is
+    collected. JAX guards its own host callbacks with runtime tokens awaited at
+    exit; an FFI target that calls Python is invisible to that, so this handler
+    waits for the executions instead: every in-flight execution has a live
+    output array unless all its outputs were dropped. Errors of a failed
+    computation are not this handler's to report and are swallowed.
+    """
+    try:
+        arrays = jax.live_arrays()
+    except Exception:  # noqa: BLE001 - never fail interpreter exit
+        return
+    for array in arrays:
+        try:
+            if not array.is_deleted():
+                array.block_until_ready()
+        except Exception:  # noqa: BLE001 - a failed computation is not ours to report here
+            pass
+
+
+def _register_exit_guard() -> None:
+    """Register :func:`_wait_for_inflight_executions` with ``atexit`` once per process.
+
+    Called by every FFI handler whose target calls into Python (the Numba CPU and
+    CUDA handlers), before the target is registered with XLA.
+    """
+    global _EXIT_GUARD_REGISTERED
+    with _EXIT_GUARD_LOCK:
+        if not _EXIT_GUARD_REGISTERED:
+            atexit.register(_wait_for_inflight_executions)
+            _EXIT_GUARD_REGISTERED = True
 
 def _detect_xla_ffi_api_version() -> Tuple[int, int]:
     """Return the ``(major, minor)`` XLA FFI API version the installed jaxlib implements.
@@ -795,6 +838,8 @@ class NumbaCpuFfiHandler:
 
         # Create the ctypes callback - must be stored as an attribute to prevent GC
         self._callback = _FFI_CALLBACK_TYPE(self._ffi_callback)
+        # The target calls into Python: wait for in-flight executions at exit.
+        _register_exit_guard()
 
         # Register as an FFI target (typed FFI api_version=1 is the default in JAX 0.9+)
         _warn_if_untested_jax()
