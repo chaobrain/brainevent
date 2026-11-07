@@ -1730,7 +1730,11 @@ _EXIT_HANG_SCRIPT = textwrap.dedent('''
     a = jnp.ones((1500, 1500), jnp.float32) * 1e-3
     heavy(a).block_until_ready()
     y = f(heavy(a))  # inputs not ready: XLA queues the execution on its async work runner
+    while sys.argv[1] == 'running' and not calls:  # dropped while the callback runs, as in a teardown
+        time.sleep(0.001)
     print('IN_FLIGHT', not y.is_ready(), flush=True)
+    if sys.argv[1] != 'guarded':
+        del y, a  # every output dropped: the live-array wait has nothing to block on (#259)
 ''')
 
 
@@ -1754,13 +1758,62 @@ class TestExitGuard:
                 mock.patch.object(numba_ffi.atexit, 'register') as register:
             numba_ffi._register_exit_guard()
             numba_ffi._register_exit_guard()
-        register.assert_called_once_with(numba_ffi._wait_for_inflight_executions)
+        register.assert_called_once_with(numba_ffi._exit_guard)
 
     def test_handler_registers_exit_guard(self):
-        with mock.patch.object(numba_ffi, '_register_exit_guard') as guard:
+        with mock.patch.object(numba_ffi, '_register_exit_guard') as guard, \
+                mock.patch.object(numba_ffi, '_hold_cpu_client') as hold:
             numba_ffi.NumbaCpuFfiHandler('exit_guard_registers', lambda x, out: None,
                                          (np.dtype('float32'),), (np.dtype('float32'),))
         guard.assert_called_once_with()
+        hold.assert_called_once_with()
+
+    @pytest.mark.parametrize('mode', ['queued', 'running'])
+    def test_exit_with_dropped_inflight_outputs_does_not_hang(self, mode):
+        # #259: every output dropped, so the live-array wait has nothing to block on;
+        # the held CPU client keeps finalization from joining the worker in the trampoline.
+        proc = _run_exit_script(mode, timeout=20)
+        assert proc.returncode == 0, proc.stderr
+        assert 'IN_FLIGHT True' in proc.stdout
+
+    def test_hold_keeps_one_cpu_client_and_releases_a_replaced_one(self):
+        class Client:
+            pass
+        a, b = Client(), Client()
+        on_a, on_b = [mock.NonCallableMock(client=a)], [mock.NonCallableMock(client=b)]
+
+        def extra():  # references beyond the locals a and b (plain ints: no assert temporaries)
+            return sys.getrefcount(a) - 2, sys.getrefcount(b) - 2
+
+        with mock.patch.object(numba_ffi, '_HELD_CPU_CLIENT', None), \
+                mock.patch.object(numba_ffi, '_CPU_HOLD_WANTED', False), \
+                mock.patch.object(numba_ffi.jax, 'devices', return_value=on_a):
+            base = extra()
+            numba_ffi._hold_cpu_client()
+            numba_ffi._hold_cpu_client()
+            held_a = extra()
+            numba_ffi.jax.devices.return_value = on_b  # jax.clear_backends() made a new client
+            numba_ffi._hold_cpu_client()
+            held_b = extra()
+            jax.config.update('jax_debug_leaked_clients_on_clear_backends', True)
+            try:
+                numba_ffi._hold_cpu_client()
+            finally:
+                jax.config.update('jax_debug_leaked_clients_on_clear_backends', False)
+            released = extra()
+            assert numba_ffi._HELD_CPU_CLIENT is None and numba_ffi._CPU_HOLD_WANTED
+        assert held_a == (base[0] + 2, base[1])  # the module global and one raw hold, taken once
+        assert held_b == (base[0], base[1] + 2)  # a released, b held
+        assert released == base  # nothing held under the debug flag
+
+    @pytest.mark.parametrize('wanted', [False, True])
+    def test_exit_guard_waits_then_refreshes_the_hold_once_wanted(self, wanted):
+        with mock.patch.object(numba_ffi, '_CPU_HOLD_WANTED', wanted), \
+                mock.patch.object(numba_ffi, '_wait_for_inflight_executions') as wait, \
+                mock.patch.object(numba_ffi, '_hold_cpu_client') as hold:
+            numba_ffi._exit_guard()
+        wait.assert_called_once_with()
+        assert hold.called is wanted
 
     def test_wait_blocks_live_arrays_and_skips_deleted_and_failed(self):
         ready = mock.Mock(**{'is_deleted.return_value': False})
