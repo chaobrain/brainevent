@@ -10,6 +10,9 @@ from shapes, and its packed row mask is computed from the runtime CSR pointers,
 so a compiled call supports changing sparsity patterns without host transfers.
 Native batch contributions use atomic additions; rounding order can vary.
 Weighted CUDA tests event activity after casting events to the cotangent dtype.
+Explicit ``cusparse`` uses a shared cuSPARSE SDDMM FFI for CSR products in both
+directions and all modes. Half types compute in float32; nonfinite event
+cotangents use exact selection, with activity tested after casting.
 """
 
 from functools import lru_cache, partial
@@ -24,7 +27,10 @@ from brainevent._compatible_import import match_varying_axes, varying_axes_of
 from brainevent._misc import _csr_to_coo
 from brainevent._op import XLACustomKernel, load_cuda_file
 from brainevent._op.util import event_active, select_active
-from .._common import BINARY_TARGET_SUFFIXES, VALUE_SUFFIXES, Mode, _CSRBackend, check_jax_backend
+from .._common import (
+    BINARY_TARGET_SUFFIXES, VALUE_SUFFIXES, Mode, _CSRBackend, check_jax_backend,
+    _cusparse_event_kernel, _cusparse_sampled,
+)
 
 
 _DIRECTORY = Path(__file__).parent
@@ -179,6 +185,11 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
     backend : str or None
         GPU auto uses CUDA for supported transposed CSR events; other cases
         use JAX. ``jax_raw`` forces JAX in both directions.
+        ``cusparse`` supports CSR products on GPU in both directions and all
+        modes, with float32 computation for half types. COO and patterns with
+        more slots than rows times columns are unsupported. Nonfinite event
+        cotangents use exact JAX selection. Explicit native backends have no AD
+        rules; use ``jax_raw`` for differentiation.
 
     Returns
     -------
@@ -186,6 +197,11 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
         One result per physical sparse slot.
     """
     check_jax_backend(backend)
+    if backend == 'cusparse':
+        if indptr is None:
+            raise NotImplementedError('cusparse sampled products require CSR indices and indptr')
+        if mode == 'float':
+            return _cusparse_sampled(A, B, indices, indptr, mode=mode, transpose=transpose)
     # Explicit JAX calls stay differentiable without binding the event primitive.
     if mode != 'float' and indptr is not None and backend != 'jax_raw':
         if backend == 'cuda_raw' and not transpose:
@@ -226,6 +242,7 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
 
 csr_sddmm_p = XLACustomKernel('csr_sddmm')
 csr_sddmm_p.def_cuda_raw_kernel(_cuda_kernel)
+csr_sddmm_p.def_kernel('cusparse', 'gpu', _cusparse_event_kernel)
 csr_sddmm_p.def_kernel('auto', 'gpu', _auto_gpu_kernel, asdefault=True)
 for _platform in ('cpu', 'gpu', 'tpu'):
     csr_sddmm_p.def_kernel('jax_raw', _platform, lambda **kwargs: partial(_jax_kernel, **kwargs))

@@ -83,8 +83,7 @@ def test_jax_activity_is_checked_before_narrowing(transpose):
 
 
 def test_registration_and_direction_lowering():
-    assert {'cuda_raw', 'jax_raw'} <= set(csr_sddmv_p.available_backends('gpu'))
-    assert 'cusparse' not in csr_sddmv_p.available_backends('gpu')
+    assert {'cuda_raw', 'jax_raw', 'cusparse'} <= set(csr_sddmv_p.available_backends('gpu'))
     if jax.default_backend() != 'gpu':
         pytest.skip('inspect CUDA custom calls on a GPU')
     for transpose in [True, False]:

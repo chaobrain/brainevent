@@ -116,7 +116,7 @@ def test_coo_empty_and_out_of_bounds_slots(batch, mode):
 
 def test_registry_call_and_no_event_derivative_rule():
     e, c, i, p = operands(jnp.float32, jnp.float32, True)
-    assert set(csr_sddmm_p.available_backends('gpu')) == {'auto', 'cuda_raw', 'jax_raw'}
+    assert set(csr_sddmm_p.available_backends('gpu')) == {'auto', 'cuda_raw', 'cusparse', 'jax_raw'}
     np.testing.assert_allclose(csr_sddmm_p.call(e, c, i, p, transpose=True, weighted=True),
                                reference(e, c, i, transpose=True, weighted=True))
     with pytest.raises(NotImplementedError, match='Differentiation rule'):

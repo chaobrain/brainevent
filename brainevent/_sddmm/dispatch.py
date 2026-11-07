@@ -21,6 +21,8 @@ JAX supports both leaves on CPU/GPU/TPU. GPU auto uses hybrid CUDA for
 transposed CSR events in both leaves, with JAX for the other direction.
 MM batches larger than 65535 or column counts above INT32_MAX also use JAX
 under auto; explicit CUDA requests reject these unsupported dimensions.
+Explicit ``cusparse`` uses a shared cuSPARSE SDDMM FFI for CSR products on GPU
+in both directions and all modes; automatic backend selection is unchanged.
 Ordinary JAX products retain differentiation and ``shard_map`` support; CSR
 event primitives supply other operators' gradients and have no AD rules.
 Explicit ``jax_raw`` calls execute JAX directly and retain differentiation for
@@ -77,6 +79,11 @@ def sddmm(
         GPU auto uses hybrid CUDA for supported transposed CSR event products
         in both leaves. Explicit ``cuda_raw`` requires this direction and CSR
         event mode; other cases use ``jax_raw`` or ``auto``.
+        Explicit ``cusparse`` supports CSR products on GPU in either direction
+        and all modes. Half types compute in float32. COO and patterns with
+        more slots than rows times columns are unsupported. Nonfinite event
+        cotangents use exact JAX selection; weighted activity is tested after
+        casting to the cotangent dtype. This backend has no derivative rules.
     config : CSRConfig or None, optional
         Explicit CSR scheduler snapshot for the vector leaf. ``None`` uses
         default constants without reading persisted configuration. Matrix
@@ -91,9 +98,9 @@ def sddmm(
     Notes
     -----
     Batch one dispatches to ``_mv``; other sizes, including zero, to ``_mm``.
-    Ordinary products and explicit ``jax_raw`` event calls remain
-    differentiable. CSR event calls using ``auto`` or ``cuda_raw`` bind
-    primitives without derivative rules.
+    Ordinary JAX products and explicit ``jax_raw`` event calls remain
+    differentiable. CSR event calls using ``auto`` or ``cuda_raw`` and all
+    explicit ``cusparse`` calls have no derivative rules.
     """
     if mode not in ('float', 'binary', 'weighted'):
         raise ValueError('mode must be float, binary or weighted')

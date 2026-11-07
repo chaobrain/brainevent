@@ -42,6 +42,9 @@ def csr_sddmm_dweight(
         Forwarded to the chosen MV/MM implementation. GPU auto uses CUDA for
         supported transposed CSR events and JAX otherwise. ``jax_raw`` forces
         differentiable JAX in both directions without binding an event primitive.
+        Explicit ``cusparse`` uses cuSPARSE SDDMM on GPU in either direction,
+        with exact selection for nonfinite cotangents and no derivative rules.
+        Half types compute in float32; weighted activity is tested after casting.
     config : CSRConfig or None, optional
         Explicit scheduler snapshot. Defaults do not read persisted settings.
 
