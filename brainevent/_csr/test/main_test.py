@@ -2100,7 +2100,6 @@ def test_jit_reuses_one_entry_for_structurally_equal_matrices(cls, binary):
 @pytest.mark.parametrize('cls', [CSR, CSC])
 @pytest.mark.parametrize('mirror', [False, True])
 @pytest.mark.parametrize('backend', _PYTREE_BACKENDS)
-@pytest.mark.filterwarnings('ignore:.*runs without the cached mirror layout.*:brainevent.PerformanceWarning')
 def test_scan_carry_with_binary_matmul_and_plasticity(cls, mirror, backend):
     # Regression: a lazily registered workspace changed the pytree structure of
     # a ``lax.scan`` carry. Without a mirror, the unfavorable direction must

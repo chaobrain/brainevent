@@ -55,7 +55,6 @@ def _matrices():
 
 @pytest.mark.parametrize('M', _matrices(), ids=lambda m: type(m).__name__)
 @pytest.mark.parametrize('batch', [None, 3])
-@pytest.mark.filterwarnings('ignore:.*is not event-driven;.*:brainevent.PerformanceWarning')
 def test_compact_binary_matmul_matches_binary_array(M, batch):
     # Regression: ``CompactBinary`` was exported and documented as an event
     # type, but no matrix product recognised it.
