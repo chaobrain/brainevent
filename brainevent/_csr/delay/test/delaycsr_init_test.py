@@ -11,7 +11,7 @@ import pytest
 from brainevent import CSR
 from brainevent._csr.delay import csr_delay_deliver_layout_p, region_delay as module
 from brainevent._csr.delay.region_delay import delaycsr
-from brainevent._csr.delay.test._helpers import GPU
+from brainevent._csr.delay.test._helpers import BACKENDS, GPU
 
 
 def _case(**changes: Any) -> Any:
@@ -28,12 +28,13 @@ def _case(**changes: Any) -> Any:
     return delaycsr((weights, indices, indptr), shape=(len(indptr) - 1, columns), **values)
 
 
-def _matrix(*, homogeneous=False):
+def _matrix(*, homogeneous=False, weighted=False, backend=None):
     return delaycsr(
         (np.array([2] if homogeneous else [2, 3, 5, 7], np.float32),
          np.array([2, 0, 1, 0], np.int32), np.array([0, 3, 4], np.int32)),
         edge_delays=np.array([2, 1, 1, 2], np.int32), shape=(2, 3),
         buffer_slots=4, ring=jnp.arange(12, dtype=jnp.float32).reshape(4, 3), head=3,
+        weighted=weighted, backend=backend,
     )
 
 
@@ -72,6 +73,391 @@ def test_homogeneous_weights_and_empty_segments() -> None:
     assert prepared.weights.shape == (1,)
     assert prepared.delay_steps == (0, 1, 2)
     assert prepared.capacity == 0
+
+
+def _prepared_arguments(matrix: delaycsr) -> dict[str, Any]:
+    return dict(
+        data=(matrix.data, matrix.indices, matrix.indptr), shape=matrix.shape,
+        delay_steps=matrix.delay_steps, delay_count=matrix.delay_count,
+        delay_off=matrix.delay_off, row_task_count=matrix.row_task_count,
+        capacity=matrix.capacity, buffer_slots=matrix.L, weighted=matrix.weighted,
+        ring=matrix.ring, head=matrix.head, workspace=matrix.workspace,
+        backend=matrix.backend,
+    )
+
+
+def test_from_prepared_bypasses_initialization_and_reuses_device_layout(monkeypatch) -> None:
+    original = _matrix()
+    arguments = _prepared_arguments(original)
+
+    def unexpected_preprocessing(*args, **kwargs):
+        raise AssertionError("prepared input must not run initialization or preprocessing")
+
+    for owner, name in ((CSR, "__init__"), (delaycsr, "__init__"),
+                        (delaycsr, "_sort_by_delay"), (delaycsr, "_build_delay_metadata")):
+        monkeypatch.setattr(owner, name, unexpected_preprocessing)
+    updated = delaycsr.from_prepared(**arguments)
+    _assert_same_structure_and_state(original, updated)
+    assert updated.data is original.data
+    assert updated.config is not None
+    assert updated._cache.mirror is None
+
+
+def test_from_prepared_static_does_not_read_device_layout(monkeypatch) -> None:
+    original = _matrix()
+    arguments = _prepared_arguments(original)
+    asarray = np.asarray
+
+    def guarded_asarray(value, *args, **kwargs):
+        if isinstance(value, jax.Array):
+            raise AssertionError("static construction must not copy device layout to the host")
+        return asarray(value, *args, **kwargs)
+
+    with monkeypatch.context() as guard:
+        guard.setattr(module.np, "asarray", guarded_asarray)
+        updated = delaycsr.from_prepared(**arguments)
+    _assert_same_structure_and_state(original, updated)
+
+
+@pytest.mark.parametrize("source_form", ["csr", "tuple", "separate", "scalar"])
+def test_from_prepared_source_forms_and_default_state(source_form) -> None:
+    original = _matrix(homogeneous=True, backend="jax_raw")
+    arguments = _prepared_arguments(original)
+    for name in ("ring", "head", "workspace", "buffer_slots", "backend"):
+        arguments.pop(name)
+    if source_form == "csr":
+        arguments["data"] = original
+        arguments.pop("shape")
+    elif source_form == "separate":
+        arguments["data"], arguments["indices"], arguments["indptr"] = arguments["data"]
+    elif source_form == "scalar":
+        arguments["data"] = (np.float32(2), original.indices, original.indptr)
+    updated = delaycsr.from_prepared(**arguments, validate="full")
+    assert updated.shape == original.shape
+    assert updated.L == 3 and int(updated.head) == 0
+    assert updated.data.shape == (1,)
+    assert updated.workspace.task_begin.shape == (0,)
+    assert updated.backend == ("jax_raw" if source_form == "csr" else None)
+    np.testing.assert_array_equal(updated.ring, np.zeros((3, 3), np.float32))
+
+
+@pytest.mark.parametrize("rows,columns", [(0, 0), (0, 3), (4, 0), (4, 3)])
+def test_from_prepared_empty_layout(rows, columns) -> None:
+    original = delaycsr(
+        (np.array([], np.float32), np.array([], np.int64), np.zeros(rows + 1, np.int64)),
+        edge_delays=np.array([], np.int64), shape=(rows, columns), backend="jax_raw",
+    )
+    updated = delaycsr.from_prepared(**_prepared_arguments(original), validate="full")
+    actual = updated.csr_delay_deliver_layout(updated.ring, jnp.zeros(rows, jnp.bool_), 0)
+    assert actual.shape == (1, columns)
+    assert updated.capacity == 0
+    assert updated.indices.dtype == jnp.int64
+    assert updated.indptr.dtype == jnp.int64
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_from_prepared_long_rows_and_overallocated_workspace(weighted, backend) -> None:
+    lengths = [128, 129, 8293]
+    pointers = np.r_[0, np.cumsum(lengths)].astype(np.int32)
+    delays = np.r_[np.zeros(128 + 129 + 4096), np.full(4097, 2), np.full(100, 5)].astype(np.int32)
+    original = delaycsr(
+        (np.ones(pointers[-1], np.float32), np.zeros(pointers[-1], np.int32), pointers),
+        edge_delays=delays, shape=(3, 1), weighted=weighted, backend=backend,
+    )
+    arguments = _prepared_arguments(original)
+    arguments.update(capacity=7, workspace=None)
+    updated = delaycsr.from_prepared(**arguments, validate="full")
+    np.testing.assert_array_equal(updated.row_task_count, [0, 1, 4])
+    assert updated.workspace.task_begin.shape == (7,)
+    if weighted:
+        assert updated.workspace.task_value.dtype == updated.ring.dtype
+    events = jnp.array([1, 0, -2], jnp.float32)
+    expected = original.csr_delay_deliver_layout(original.ring, events, 5, weighted=weighted)
+    actual = updated.csr_delay_deliver_layout(updated.ring, events, 5, weighted=weighted)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("name,value,exception", [
+    ("shape", None, ValueError),
+    ("shape", (True, 3), ValueError),
+    ("backend", "numba", ValueError),
+    ("weighted", 1, TypeError),
+    ("validate", "none", ValueError),
+    ("capacity", -1, ValueError),
+    ("capacity", True, ValueError),
+    ("capacity", 2**31, ValueError),
+    ("buffer_slots", 2, ValueError),
+    ("buffer_slots", 4.0, ValueError),
+    ("delay_steps", (), ValueError),
+    ("delay_steps", (1, 1), ValueError),
+    ("weights", np.ones(2, np.float32), ValueError),
+    ("weights", np.ones(4, np.int32), TypeError),
+    ("indices", np.zeros((2, 2), np.int32), ValueError),
+    ("indices", np.zeros(4, np.uint32), TypeError),
+    ("indptr", np.zeros(4, np.int32), ValueError),
+    ("indptr", np.array([0, 3, 4], np.uint32), TypeError),
+    ("delay_count", np.zeros((2, 1), np.int32), ValueError),
+    ("delay_count", np.zeros((2, 2), np.int64), TypeError),
+    ("delay_off", np.zeros(1, np.int32), ValueError),
+    ("delay_off", np.zeros(2, np.float32), TypeError),
+    ("row_task_count", np.zeros(3, np.int32), ValueError),
+    ("row_task_count", np.zeros(2, np.int64), TypeError),
+    ("ring", np.zeros((3, 3), np.float32), ValueError),
+    ("ring", np.zeros((4, 3), np.int32), TypeError),
+    ("workspace", (), TypeError),
+])
+def test_from_prepared_rejects_invalid_static_contract(name, value, exception) -> None:
+    arguments = _prepared_arguments(_matrix())
+    if name in ("weights", "indices", "indptr"):
+        position = ("weights", "indices", "indptr").index(name)
+        parts = list(arguments["data"])
+        parts[position] = value
+        arguments["data"] = tuple(parts)
+    else:
+        arguments[name] = value
+    with pytest.raises(exception):
+        delaycsr.from_prepared(**arguments)
+
+
+@pytest.mark.parametrize("name,value,match", [
+    ("indices", [1, 0, 2, 0], "sorted"),
+    ("indices", [-1, 1, 2, 0], "bounds"),
+    ("indices", [0, 1, 3, 0], "bounds"),
+    ("indptr", [1, 3, 4], "indptr"),
+    ("indptr", [0, 3, 3], "indptr"),
+    ("indptr", [0, 5, 4], "indptr"),
+    ("indptr", [0, -1, 4], "indptr"),
+    ("delay_count", [[-1, 4], [0, 1]], "delay_count"),
+    ("delay_count", [[3, 1], [0, 1]], "delay_count"),
+    ("delay_count", [[1, 1], [0, 1]], "delay_count"),
+    ("delay_off", [0, 6], "delay_off"),
+    ("row_task_count", [1, 0], "row_task_count"),
+    ("row_task_count", [-1, 0], "row_task_count"),
+])
+def test_from_prepared_full_checks_layout_values(name, value, match) -> None:
+    arguments = _prepared_arguments(_matrix())
+    value = np.array(value, np.int32)
+    if name in ("indices", "indptr"):
+        parts = list(arguments["data"])
+        parts[("weights", "indices", "indptr").index(name)] = value
+        arguments["data"] = tuple(parts)
+    else:
+        arguments[name] = value
+    with pytest.raises(ValueError, match=match):
+        delaycsr.from_prepared(**arguments, validate="full")
+
+
+def test_from_prepared_full_rejects_insufficient_worst_case_capacity() -> None:
+    original = delaycsr(
+        (np.ones(129, np.float32), np.zeros(129, np.int32), np.array([0, 129], np.int32)),
+        shape=(1, 1), edge_delays=np.r_[np.zeros(64, np.int32), np.ones(65, np.int32)],
+    )
+    arguments = _prepared_arguments(original)
+    arguments.update(capacity=1, workspace=None)
+    with pytest.raises(ValueError, match="capacity"):
+        delaycsr.from_prepared(**arguments, validate="full")
+
+
+def test_from_prepared_static_retains_runtime_metadata_checks() -> None:
+    arguments = _prepared_arguments(_matrix(backend="jax_raw"))
+    arguments["delay_count"] = jnp.zeros((2, 2), jnp.int32)
+    updated = delaycsr.from_prepared(**arguments)
+    with pytest.raises((ValueError, RuntimeError), match="inconsistent delay/task metadata"):
+        jax.block_until_ready(
+            updated.csr_delay_deliver_layout(updated.ring, jnp.zeros(2, jnp.bool_), 0))
+
+
+@pytest.mark.parametrize("field,value,exception", [
+    ("task_begin", np.zeros(1, np.int32), ValueError),
+    ("task_end", np.zeros(0, np.int64), TypeError),
+    ("task_out_off", np.zeros(0, np.int64), TypeError),
+    ("status", np.zeros(1, np.int32), ValueError),
+    ("status", np.zeros(2, np.int64), TypeError),
+])
+def test_from_prepared_checks_workspace_shape_and_dtype(field, value, exception) -> None:
+    arguments = _prepared_arguments(_matrix())
+    arguments["workspace"] = arguments["workspace"]._replace(**{field: value})
+    with pytest.raises(exception, match="workspace"):
+        delaycsr.from_prepared(**arguments)
+
+
+def test_from_prepared_owns_numpy_layout_ring_and_workspace() -> None:
+    original = _matrix()
+    arguments = _prepared_arguments(original)
+    arguments["data"] = tuple(np.array(value, copy=True) for value in arguments["data"])
+    for name in ("delay_count", "delay_off", "row_task_count", "ring"):
+        arguments[name] = np.array(arguments[name], copy=True)
+    arguments["workspace"] = type(original.workspace)(
+        *(np.array(value, copy=True) for value in original.workspace))
+    updated = delaycsr.from_prepared(**arguments, validate="full")
+    arrays = (*arguments["data"], *(arguments[name] for name in (
+        "delay_count", "delay_off", "row_task_count", "ring")), *arguments["workspace"])
+    for value in arrays:
+        value.fill(99)
+    for name in ("data", "indices", "indptr", "delay_count", "delay_off", "row_task_count", "ring"):
+        np.testing.assert_array_equal(getattr(updated, name), getattr(original, name))
+    for actual, expected in zip(updated.workspace, original.workspace):
+        np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+def test_from_prepared_preserves_units_and_independent_ring_precision(weighted) -> None:
+    original = delaycsr(
+        (np.array([2, 3, 5, 7], np.float32) * u.mV,
+         np.array([2, 0, 1, 0], np.int32), np.array([0, 3, 4], np.int32)),
+        shape=(2, 3), edge_delays=np.array([2, 1, 1, 2], np.int32),
+        buffer_slots=4, ring=np.arange(12, dtype=np.float16).reshape(4, 3) * u.mV,
+        weighted=weighted, backend="jax_raw",
+    )
+    updated = delaycsr.from_prepared(**_prepared_arguments(original), validate="full")
+    assert updated.data.dtype == jnp.float32
+    assert updated.ring.dtype == jnp.float16
+    assert u.get_unit(updated.data) == u.mV
+    assert u.get_unit(updated.ring) == u.mV
+    if weighted:
+        assert updated.workspace.task_value.dtype == jnp.float16
+    events = jnp.array([1, -2], jnp.float32)
+    expected = original.csr_delay_deliver_layout(original.ring, events, 2, weighted=weighted)
+    actual = updated.csr_delay_deliver_layout(updated.ring, events, 2, weighted=weighted)
+    assert u.get_unit(actual) == u.mV
+    np.testing.assert_array_equal(u.get_mantissa(actual), u.get_mantissa(expected))
+
+
+def test_from_prepared_checks_weighted_task_value_precision() -> None:
+    arguments = _prepared_arguments(_matrix(weighted=True))
+    arguments["ring"] = arguments["ring"].astype(jnp.float16)
+    with pytest.raises(TypeError, match="workspace dtypes"):
+        delaycsr.from_prepared(**arguments)
+    arguments["workspace"] = None
+    updated = delaycsr.from_prepared(**arguments)
+    assert updated.workspace.task_value.dtype == jnp.float16
+    assert updated.data.dtype == jnp.float32
+
+
+@pytest.mark.parametrize("name", ["weights", "indices", "indptr", "delay_count", "delay_off", "ring"])
+def test_from_prepared_requires_x64_for_explicit_wide_inputs(name) -> None:
+    arguments = _prepared_arguments(_matrix())
+    dtype = np.float64 if name in ("weights", "ring") else np.int64
+    if name in ("weights", "indices", "indptr"):
+        parts = list(arguments["data"])
+        position = ("weights", "indices", "indptr").index(name)
+        parts[position] = np.asarray(parts[position]).astype(dtype)
+        arguments["data"] = tuple(parts)
+    else:
+        arguments[name] = np.asarray(arguments[name]).astype(dtype)
+    previous = jax.config.jax_enable_x64
+    try:
+        jax.config.update("jax_enable_x64", False)
+        with pytest.raises(RuntimeError, match="jax_enable_x64"):
+            delaycsr.from_prepared(**arguments)
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+def test_from_prepared_large_ring_requires_wide_offsets(monkeypatch) -> None:
+    arguments = _prepared_arguments(_matrix())
+    arguments.update(buffer_slots=8, ring=None, workspace=None)
+    monkeypatch.setattr(module, "_I32_MAX", 15)
+    with pytest.raises(ValueError, match="int64 delay_off"):
+        delaycsr.from_prepared(**arguments)
+    arguments["delay_off"] = arguments["delay_off"].astype(jnp.int64)
+    updated = delaycsr.from_prepared(**arguments, validate="full")
+    assert updated.indices.dtype == jnp.int32
+    assert updated.delay_off.dtype == jnp.int64
+    assert updated.workspace.task_out_off.dtype == jnp.int64
+    assert updated.ring.shape == (8, 3)
+
+
+def test_from_prepared_checks_byte_size_before_allocating_ring(monkeypatch) -> None:
+    arguments = _prepared_arguments(_matrix())
+    arguments.update(ring=None, workspace=None)
+    monkeypatch.setattr(module, "_I64_MAX", 31)
+
+    def unexpected_allocation(*args, **kwargs):
+        raise AssertionError("invalid ring byte size must be rejected before allocation")
+
+    monkeypatch.setattr(module.jnp, "zeros", unexpected_allocation)
+    with pytest.raises(ValueError, match="byte size"):
+        delaycsr.from_prepared(**arguments)
+
+
+@pytest.mark.parametrize("changes,exception,match", [
+    ({"indices": np.array([0, 1, 2, 0], np.int32)}, ValueError, "already supplies"),
+    ({"shape": (2, 4)}, ValueError, "shape disagrees"),
+    ({"data": []}, TypeError, "supply CSR"),
+])
+def test_from_prepared_rejects_inconsistent_source(changes, exception, match) -> None:
+    original = _matrix()
+    arguments = _prepared_arguments(original)
+    arguments["data"] = original
+    arguments.update(changes)
+    with pytest.raises(exception, match=match):
+        delaycsr.from_prepared(**arguments)
+
+
+def test_from_prepared_requires_static_delay_steps() -> None:
+    arguments = _prepared_arguments(_matrix())
+    arguments["delay_steps"] = jnp.array([1, 2], jnp.int32)
+    with pytest.raises(TypeError, match="static host integers"):
+        delaycsr.from_prepared(**arguments)
+
+
+def test_from_prepared_full_requires_concrete_layout_under_jit() -> None:
+    original = _matrix()
+
+    @jax.jit
+    def reconstruct(matrix):
+        return delaycsr.from_prepared(**_prepared_arguments(matrix), validate="full")
+
+    with pytest.raises(ValueError, match="requires concrete layout"):
+        reconstruct(original)
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("homogeneous", [False, True])
+def test_from_prepared_jit_scan_and_differentiation(weighted, homogeneous) -> None:
+    original = _matrix(homogeneous=homogeneous, weighted=weighted, backend="jax_raw")
+    events = jnp.array([[1, 0], [0, -2], [.5, 1]], jnp.float32)
+    times = jnp.array([3, 4, 5], jnp.int32)
+
+    def scan(matrix, xs):
+        def step(carry, xt):
+            spike = carry.forward(*xt)
+            return carry, spike
+        return jax.lax.scan(step, matrix, (xs, times))
+
+    def run(matrix, weights, xs):
+        arguments = _prepared_arguments(matrix)
+        arguments["data"] = (weights, matrix.indices, matrix.indptr)
+        return scan(delaycsr.from_prepared(**arguments), xs)
+
+    def reference(matrix, weights, xs):
+        return scan(matrix.with_data(weights), xs)
+
+    actual, actual_spikes = jax.jit(run)(original, original.data, events)
+    expected, expected_spikes = jax.jit(reference)(original, original.data, events)
+    np.testing.assert_array_equal(actual.ring, expected.ring)
+    np.testing.assert_array_equal(actual_spikes, expected_spikes)
+    np.testing.assert_array_equal(actual.head, expected.head)
+
+    def loss(fn, matrix, weights, xs):
+        state, spikes = fn(matrix, weights, xs)
+        return (state.ring ** 2).sum() + (spikes ** 2).sum()
+
+    for fn in (run, reference):
+        gradients = jax.jit(jax.grad(lambda matrix, weights, xs: loss(fn, matrix, weights, xs),
+                                     argnums=(1, 2)))(original, original.data, events)
+        if fn is run:
+            actual_gradients = gradients
+        else:
+            for actual_gradient, expected_gradient in zip(actual_gradients, gradients):
+                np.testing.assert_allclose(actual_gradient, expected_gradient, rtol=1e-6, atol=1e-6)
+    actual_jvp = jax.jvp(lambda weights: loss(run, original, weights, events),
+                         (original.data,), (jnp.ones_like(original.data),))
+    expected_jvp = jax.jvp(lambda weights: loss(reference, original, weights, events),
+                           (original.data,), (jnp.ones_like(original.data),))
+    np.testing.assert_allclose(actual_jvp, expected_jvp, rtol=1e-6, atol=1e-6)
 
 
 @pytest.mark.parametrize("scalar", [2, np.array(2, np.int32), np.array([2], np.int32),

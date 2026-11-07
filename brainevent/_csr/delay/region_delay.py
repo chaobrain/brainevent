@@ -8,6 +8,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+from jax.core import Tracer
 import numpy as np
 import brainunit as u
 
@@ -47,6 +48,14 @@ def _owned_data(value: Any, *, concrete: bool = False) -> Any:
     else:
         mantissa = jnp.asarray(mantissa)
     return u.maybe_decimal(mantissa * unit)
+
+
+def _prepared_operand(value: Any, name: str) -> Any:
+    """Preserve device operands and reject implicit narrowing of typed inputs."""
+    if not jax.config.x64_enabled and getattr(value, "dtype", None) in (
+            np.dtype("int64"), np.dtype("float64")):
+        raise RuntimeError(f"enable jax_enable_x64 before supplying int64/float64 {name}")
+    return _owned_data(value)
 
 
 def _resolve_events(events: Any, weighted: bool | None) -> tuple[Any, bool]:
@@ -117,6 +126,10 @@ class delaycsr(CSR):
     its slot: the following stateful step uses the same JAX clearing operation
     as :meth:`clear_head`.
     :meth:`csr_delay_deliver_layout` only delivers into an explicit ring.
+
+    Use :meth:`from_prepared` when the CSR is already sorted and its delay
+    counts, offsets and hybrid task schedule are supplied by the caller.
+    That entry skips sorting and metadata preparation entirely.
 
     This is a mutable Python object. For JIT/scan, pass it as a pytree argument
     and return the updated object as part of the result/carry. Do not jit a
@@ -232,6 +245,246 @@ class delaycsr(CSR):
             self._sort_by_delay(delays)
         self.head = head
 
+    @classmethod
+    def from_prepared(
+        cls, data: Any, indices: Any = None, indptr: Any = None, *,
+        shape: tuple[int, int] | None = None, delay_steps: Any,
+        delay_count: Any, delay_off: Any, row_task_count: Any, capacity: int,
+        buffer_slots: int | None = None, weighted: bool = False,
+        ring: Any = None, head: Any = 0,
+        workspace: HybridWorkspace | WeightedHybridWorkspace | None = None,
+        backend: str | None = None, validate: str = "static",
+    ) -> 'delaycsr':
+        """Assemble an already sorted CSR and its caller-prepared delay layout.
+
+        Parameters
+        ----------
+        data : CSR, tuple of arrays or array_like
+            Sorted source CSR, ``(weights, indices, indptr)``, or weights with
+            separate indices and row pointers. Each row contains consecutive
+            delay segments in ``delay_steps`` order, with ascending columns
+            within each segment. Weights already follow this edge order and
+            have shape ``(1,)`` or ``(nnz,)``; a scalar is normalized to ``(1,)``.
+        indices, indptr : array_like or None, optional
+            Int32/int64 column indices and row pointers, as in the constructor.
+        shape : tuple of int or None, optional
+            ``(M, N)``, required unless data is a CSR object.
+        delay_steps : tuple of int
+            Static, increasing nonnegative delays, with positive length ``K``.
+            Supply host integers, not a JAX array or tracer.
+        delay_count : array_like
+            Nonnegative counts of shape ``(M, K)``, with the indptr dtype.
+            Each row must sum to its CSR row length.
+        delay_off : array_like
+            Int32/int64 element offsets of shape ``(K,)`` equal to
+            ``delay_steps[k] * N``. Int64 is required when ``L * N`` exceeds
+            INT32_MAX, independently of the column-index dtype.
+        row_task_count : array_like
+            Int32 counts of shape ``(M,)``. Rows with at most 128 edges use
+            zero tasks. Longer rows sum ``ceil(count / 4096)`` over their
+            delay segments, including empty segments as zero.
+        capacity : int
+            Static workspace capacity, at least the sum of all row task
+            counts and no larger than INT32_MAX. Zero is supported.
+        buffer_slots : int or None, optional
+            Positive ring length ``L``, exceeding every delay. Defaults to
+            ``delay_steps[-1] + 1``.
+        weighted : bool, optional
+            Multiply by event values rather than nonzero activity.
+        ring : array_like or brainunit.Quantity or None, optional
+            Initial ``(L, N)`` ring. Its floating dtype determines execution
+            precision and its unit is preserved. Defaults to zeros in the
+            weights' dtype and unit, for dimensionless events.
+        head : int or jax.Array, optional
+            Initial scalar slot in ``[0, L)``, default zero. The existing
+            slot-range check is retained, including for traced heads.
+        workspace : HybridWorkspace or WeightedHybridWorkspace or None, optional
+            Optional task storage with arrays of length ``capacity``. Begin
+            and end arrays use the indptr dtype, output offsets use the
+            delay_off dtype, weighted values use the ring dtype, and status
+            is int32 with shape ``(2,)``. Omit to allocate fresh storage.
+        backend : str or None, optional
+            ``'cuda_raw'`` or ``'jax_raw'``. None inherits a source CSR backend
+            or uses the execution platform's default.
+        validate : {'static', 'full'}, optional
+            Static checks inspect shapes, dtypes and host parameters without
+            reading connectivity or metadata values. Full checks additionally
+            copy concrete layout arrays to the host to verify consistency,
+            including segment column order and worst-case task capacity.
+
+        Returns
+        -------
+        delaycsr
+            A complete stateful CSR using the supplied prepared layout.
+
+        Notes
+        -----
+        No sorting, segment counting, task-count preparation or ordinary CSR
+        initialization is performed. JAX operands are reused; NumPy operands
+        receive owned snapshots. No per-edge delays are needed or stored, so
+        even full validation cannot verify the original edge-delay labels.
+        The delivery primitive retains its runtime safety checks. Static
+        construction supports traced operands under JIT and differentiation;
+        full validation requires concrete layout arrays.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> from brainevent import delaycsr
+            >>> matrix = delaycsr.from_prepared(
+            ...     (jnp.array([2.], jnp.float32), jnp.array([1], jnp.int32),
+            ...      jnp.array([0, 1], jnp.int32)), shape=(1, 2),
+            ...     delay_steps=(1,), delay_count=jnp.array([[1]], jnp.int32),
+            ...     delay_off=jnp.array([2], jnp.int32),
+            ...     row_task_count=jnp.array([0], jnp.int32), capacity=0,
+            ...     backend='jax_raw')
+            >>> matrix.L
+            2
+        """
+        if isinstance(data, CSR):
+            if indices is not None or indptr is not None:
+                raise ValueError("a CSR source already supplies indices and indptr")
+            if shape is not None and tuple(shape) != data.shape:
+                raise ValueError("shape disagrees with the CSR source")
+            shape = data.shape
+            if backend is None:
+                backend = data.backend
+            data, indices, indptr = data.data, data.indices, data.indptr
+        elif indices is None and indptr is None:
+            if not isinstance(data, (tuple, list)) or len(data) != 3:
+                raise TypeError("supply CSR or (weights, indices, indptr)")
+            data, indices, indptr = data
+        if backend not in (None, "cuda_raw", "jax_raw"):
+            raise ValueError("delaycsr backend must be 'cuda_raw', 'jax_raw' or None")
+        if (shape is None or len(shape) != 2 or any(
+                isinstance(n, (bool, np.bool_)) or not isinstance(n, (int, np.integer))
+                or not 0 <= n <= _I32_MAX for n in shape)):
+            raise ValueError("shape must contain two nonnegative int32 dimensions")
+        if not isinstance(weighted, (bool, np.bool_)):
+            raise TypeError("weighted must be bool")
+        if validate not in ("static", "full"):
+            raise ValueError("validate must be 'static' or 'full'")
+        if isinstance(delay_steps, (jax.Array, Tracer)):
+            raise TypeError("delay_steps must contain static host integers")
+        steps = cls._validate_delay_steps(delay_steps)
+        slots = steps[-1] + 1 if buffer_slots is None else buffer_slots
+        if type(slots) is not int or not steps[-1] < slots <= _I32_MAX:
+            raise ValueError("buffer_slots must exceed every delay and fit int32")
+        if type(capacity) is not int or not 0 <= capacity <= _I32_MAX:
+            raise ValueError("capacity must be a nonnegative Python int fitting int32")
+
+        weights = _prepared_operand(data, "weights")
+        if weights.ndim == 0:
+            weights = weights.reshape(1)
+        columns = jnp.asarray(_prepared_operand(indices, "indices"))
+        pointers = jnp.asarray(_prepared_operand(indptr, "indptr"))
+        counts = jnp.asarray(_prepared_operand(delay_count, "delay_count"))
+        offsets = jnp.asarray(_prepared_operand(delay_off, "delay_off"))
+        tasks = jnp.asarray(_prepared_operand(row_task_count, "row_task_count"))
+        if columns.ndim != 1 or pointers.shape != (shape[0] + 1,):
+            raise ValueError("indices must have shape (nnz,) and indptr shape (M + 1,)")
+        if weights.shape not in ((1,), columns.shape):
+            raise ValueError("weights must have shape (1,) or (nnz,)")
+        if weights.dtype not in VALUE_SUFFIX:
+            raise TypeError("weights must be float16/bfloat16/float32/float64")
+        for name, array in (("indices", columns), ("indptr", pointers), ("delay_off", offsets)):
+            if array.dtype not in (jnp.int32, jnp.int64):
+                raise TypeError(f"{name} must be int32/int64")
+        if pointers.dtype == jnp.int32 and columns.size > _I32_MAX:
+            raise ValueError("int32 indptr cannot address more than INT32_MAX edges")
+        if counts.shape != (shape[0], len(steps)) or offsets.shape != (len(steps),):
+            raise ValueError("delay_count must have shape (M, K) and delay_off shape (K,)")
+        if counts.dtype != pointers.dtype:
+            raise TypeError("delay_count must have the indptr dtype")
+        if tasks.shape != (shape[0],):
+            raise ValueError("row_task_count must have shape (M,)")
+        if tasks.dtype != jnp.int32:
+            raise TypeError("row_task_count must be int32")
+
+        ring = None if ring is None else _prepared_operand(ring, "ring")
+        ring_dtype = weights.dtype if ring is None else ring.dtype
+        if ring is not None and ring.shape != (slots, shape[1]):
+            raise ValueError("ring must have shape (L, N)")
+        if ring_dtype not in VALUE_SUFFIX:
+            raise TypeError("ring must use float16/bfloat16/float32/float64")
+        if slots * shape[1] > _I64_MAX // ring_dtype.itemsize:
+            raise ValueError("ring buffer byte size overflows int64")
+        if not jax.config.x64_enabled and slots * shape[1] > _I32_MAX:
+            raise RuntimeError("enable jax_enable_x64 for int64 ring offsets")
+        if offsets.dtype == jnp.int32 and slots * shape[1] > _I32_MAX:
+            raise ValueError("use int64 delay_off for a ring larger than INT32_MAX elements")
+
+        result = object.__new__(cls)
+        result.__dict__.update(CSR._from_parts(
+            weights, columns, pointers, shape=shape, backend=backend).__dict__)
+        result.delay_steps, result.L, result.capacity = steps, slots, capacity
+        result.delay_count, result.delay_off, result.row_task_count = counts, offsets, tasks
+        result.weighted = bool(weighted)
+        result.head = head
+        if validate == "full":
+            result._check_prepared_values()
+        workspace_type = WeightedHybridWorkspace if weighted else HybridWorkspace
+        if workspace is not None:
+            if not isinstance(workspace, workspace_type):
+                raise TypeError(f"workspace must be {workspace_type.__name__}")
+            arrays = tuple(jnp.asarray(_prepared_operand(value, "workspace")) for value in workspace)
+            dtypes: tuple[np.dtype, ...] = (pointers.dtype, pointers.dtype, offsets.dtype)
+            if weighted:
+                dtypes += (ring_dtype,)
+            shapes = ((capacity,),) * len(dtypes) + ((2,),)
+            for value, dtype, expected_shape in zip(arrays, (*dtypes, jnp.dtype(jnp.int32)), shapes):
+                if value.shape != expected_shape:
+                    raise ValueError("workspace arrays must match capacity and status shape (2,)")
+                if value.dtype != dtype:
+                    raise TypeError("workspace dtypes must match indptr, delay_off and ring")
+            if any(value is not original for value, original in zip(arrays, workspace)):
+                workspace = workspace_type(*arrays)
+        result.ring = (u.maybe_decimal(jnp.zeros((slots, shape[1]), ring_dtype) * u.get_unit(weights))
+                       if ring is None else ring)
+        result.workspace = (result._make_workspace(ring_dtype, result.weighted)
+                            if workspace is None else workspace)
+        return result
+
+    def _check_prepared_values(self) -> None:
+        """Validate concrete layout contents without replacing prepared arrays."""
+        arrays = (self.indices, self.indptr, self.delay_count, self.delay_off, self.row_task_count)
+        if any(isinstance(value, Tracer) for value in arrays):
+            raise ValueError("validate='full' requires concrete layout arrays; use 'static' under JIT")
+        columns, pointers, counts, offsets, tasks = (np.asarray(value) for value in arrays)
+        if (pointers[0] != 0 or pointers[-1] != columns.size
+                or np.any(pointers < 0) or np.any(pointers > columns.size)
+                or np.any(pointers[1:] < pointers[:-1])):
+            raise ValueError("inconsistent prepared CSR indptr")
+        if np.any(columns < 0) or np.any(columns >= self.shape[1]):
+            raise ValueError("prepared indices must be within the column bounds")
+        if tuple(int(value) for value in offsets) != tuple(
+                step * self.shape[1] for step in self.delay_steps):
+            raise ValueError("delay_off must equal delay_steps * N")
+        total_tasks = 0
+        for row in range(self.shape[0]):
+            first, last = int(pointers[row]), int(pointers[row + 1])
+            start, expected_tasks = first, 0
+            for value in counts[row]:
+                count = int(value)
+                end = start + count
+                if count < 0 or end > last:
+                    raise ValueError("delay_count must be nonnegative and stay within each CSR row")
+                if count > 1 and np.any(columns[start + 1:end] < columns[start:end - 1]):
+                    raise ValueError("prepared columns must be sorted within each delay segment")
+                expected_tasks += count // TASK_NNZ + (count % TASK_NNZ != 0)
+                start = end
+            if start != last:
+                raise ValueError("delay_count must sum to each CSR row length")
+            if last - first <= TPR_THRESHOLD:
+                expected_tasks = 0
+            if int(tasks[row]) != expected_tasks:
+                raise ValueError("row_task_count disagrees with the hybrid task layout")
+            total_tasks += expected_tasks
+        if total_tasks > self.capacity:
+            raise ValueError("capacity must cover the sum of all row_task_count values")
+
     @staticmethod
     def _validate_delay_steps(values: Any) -> tuple[int, ...]:
         steps = np.asarray(values)
@@ -345,7 +598,7 @@ class delaycsr(CSR):
         if not (isinstance(value, int) and not isinstance(value, bool)):
             # Keep host integers wide even when JAX x64 is disabled. JAX
             # arrays and tracers likewise retain their dtype until checked.
-            if not isinstance(value, (jax.Array, jax.core.Tracer)):
+            if not isinstance(value, (jax.Array, Tracer)):
                 value = np.asarray(value)
             if value.ndim != 0 or value.dtype.kind not in "iu":
                 raise TypeError("head must be an integer scalar slot")

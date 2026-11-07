@@ -75,6 +75,43 @@ or mutating the object's owned ring, head, workspace or canonical weights.
 The layout inherits the parent CSR backend; explicit backends are
 ``cuda_raw`` and ``jax_raw``.
 
+For an externally sorted matrix and existing metadata, use
+``delaycsr.from_prepared(...)`` instead of the ordinary constructor. Unlike
+``sorted_by_delay=True``, this entry skips both sorting and metadata
+preparation. Supply the CSR arrays (or a source CSR) and these layout fields:
+
+* ``shape=(M, N)``, unless supplied by a source CSR.
+* ``delay_steps``: a static, increasing tuple of nonnegative delays of length
+   ``K >= 1``. A JAX array is not a static delay tuple.
+* ``delay_count``: shape ``(M, K)``, with the ``indptr`` dtype. Counts are
+   nonnegative and sum to each CSR row's edge count.
+* ``delay_off``: int32/int64 array of shape ``(K,)`` containing element offsets
+   ``delay_steps[k] * N``, not byte offsets. Use int64 if ``L * N`` exceeds
+   INT32_MAX.
+* ``row_task_count``: int32 array of shape ``(M,)``. Rows with at most 128
+   edges require zero tasks. For longer rows, round each delay segment's edge
+   count up in chunks of 4096 and sum the resulting task counts.
+* ``capacity``: a static Python integer covering the sum of all row task
+   counts, including the case where every row fires. Zero is valid.
+
+Edges must be consecutive in ``delay_steps`` order within each row, with
+ascending columns inside each segment; weights already follow that order.
+No ``edge_delays`` array is needed or retained. The scheduling counts target
+the current hybrid thresholds and must be regenerated if those change.
+``buffer_slots`` defaults to the maximum delay plus one. Optional ``ring``,
+``head`` and mode-appropriate ``workspace`` restore an existing execution
+state; omitted buffers are freshly allocated. JAX operands are reused and
+NumPy operands receive owned snapshots.
+
+The default ``validate='static'`` checks shapes, dtypes and host parameters
+without reading connectivity or metadata contents. The existing head range
+check still applies. ``validate='full'`` additionally reads concrete layout
+arrays on the host to check CSR bounds, segment counts and column ordering,
+delay offsets, row tasks and worst-case capacity. It does not rebuild or sort
+anything, and cannot verify original edge-delay labels without per-edge
+delays. Static construction supports JIT and differentiation; full validation
+requires concrete layout arrays. Both modes retain primitive runtime checks.
+
 Both backends share input validation at the primitive entry. Shapes and dtypes
 are checked during tracing; dynamic head, CSR/delay metadata and active-task
 capacity are checked with JAX before delivery. Metadata is checked even for
