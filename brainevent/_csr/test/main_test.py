@@ -13,8 +13,11 @@
 # limitations under the License.
 # ==============================================================================
 
-# -*- coding: utf-8 -*-
+"""Tests for ``brainevent/_csr/main.py``, grouped by behavior."""
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import brainstate
@@ -22,26 +25,43 @@ import braintools
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import jax.numpy as _jnp
 import numpy as np
+import numpy as _np
 import pytest
 
 import brainevent
-from brainevent import CSR, CSC, BinaryArray
+import brainevent as _be
+import brainevent as be
+import brainevent._csr.main as csr_main
+from brainevent import CSC, CSR, BinaryArray, FixedNumPerPost, FixedNumPerPre, WeightedArray
 from brainevent._csr._test_util import (
-    get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix, small_csr,
+    WEIGHTED_EVENT_DTYPE_NAMES,
+    csr_matrix,
+    csr_vector,
+    event_dtype_context,
+    event_mask,
+    event_values,
+    get_csr,
+    matrix_csr,
+    small_csr,
+    vector_csr,
 )
-from brainevent._test_util import jax_x64_enabled
+from brainevent._csr.binary.binary import binary_csrmv_p
+from brainevent._csr.config import CSRConfig
+from brainevent._misc import csc_to_csr_index, csr_to_csc_index
+from brainevent._test_util import check_event_op_grads, jax_x64_enabled
 
-# The operator tests below dispatch to the native ``numba`` backend (the default backend),
-# which compiles per test and dominates wall-clock, so each carries ``@pytest.mark.slow`` and
-# the default ``pytest`` run skips it; CI runs them via ``pytest -m ""``. Kernel correctness on
-# the cheap ``jax_raw`` backend is still covered by ``float_test.py`` in the default run. The
-# marker is per-test rather than module-wide so the pure-Python structural tests further down
-# (pytree contract, dtype policy) stay in the default run.
+
+# Sparse objects, conversions, arithmetic and JAX transformations
+# ---------------------------------------------------------------
 
 platform = jax.default_backend()
+
+
 BINARY_CSRMV_IMPLEMENTATIONS = tuple(brainevent.binary_csrmv_p.available_backends(platform))
-FLOAT_CSRMV_IMPLEMENTATIONS = tuple(brainevent.csrmv_p.available_backends(platform))
+
+
 FLOAT_CSRMM_IMPLEMENTATIONS = tuple(brainevent.csrmm_p.available_backends(platform))
 
 
@@ -69,6 +89,93 @@ def _make_float_data(homo_w, shape):
     if homo_w:
         return jnp.asarray(1.5, dtype=jnp.float32)
     return braintools.init.Normal(0.0, 1.0)(shape)
+
+
+def _rand_dense(rng, m, n, p=0.4):
+    return _jnp.asarray((rng.random((m, n)) < p) * rng.random((m, n)), _jnp.float32)
+
+
+def _csr_cases():
+    rng = np.random.default_rng(0)
+    m, k = 6, 5
+    for homo in (True, False):
+        dense = (rng.random((m, k)) + 0.5) * (rng.random((m, k)) > 0.5)
+        dense = jnp.asarray(dense, dtype=jnp.float32)
+        csr = CSR.fromdense(dense)
+        if homo:
+            csr = CSR((jnp.asarray([1.5], jnp.float32), csr.indices, csr.indptr), shape=csr.shape)
+        yield csr
+
+
+def _mask(x, dtype):
+    x = jnp.asarray(x)
+    return jnp.asarray(x > 0, dtype=dtype) if x.dtype != jnp.bool_ else jnp.asarray(x, dtype=dtype)
+
+
+_W_M, _W_N, _W_B = 12, 9, 3
+
+
+def _weighted_matrix_factory(cls, homo, backend, seed=0):
+    """Return ``(make, data)`` where ``make(d)`` builds a ``cls`` matrix with values ``d``."""
+    rng = np.random.default_rng(seed)
+    dense = (rng.random((_W_M, _W_N)) < 0.4) * rng.standard_normal((_W_M, _W_N))
+    base = cls.fromdense(jnp.asarray(dense, dtype=jnp.float32))
+    data = jnp.array([1.5], dtype=jnp.float32) if homo else base.data
+
+    def make(d):
+        return cls((d, base.indices, base.indptr), shape=base.shape, backend=backend)
+
+    return make, data
+
+
+def _weighted_tol(dtype_name):
+    if dtype_name in ('float16', 'bfloat16'):
+        return dict(rtol=2e-2, atol=2e-2)
+    return dict(rtol=1e-4, atol=1e-4)
+
+
+_CLASS_BACKENDS = (None,) + tuple(binary_csrmv_p.available_backends(jax.default_backend()))
+
+
+_PYTREE_BACKENDS = ('jax_raw', 'numba') if platform == 'cpu' else ('jax_raw', 'cuda_raw')
+
+
+def _compressed_parts(dense, cls):
+    # CSC of ``W`` is, array for array, the CSR of ``W.T``.
+    mat = np.asarray(dense if cls is CSR else dense.T)
+    rows, cols = np.nonzero(mat)
+    indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=mat.shape[0]))])
+    return (
+        jnp.asarray(mat[rows, cols], jnp.float32),
+        jnp.asarray(cols, jnp.int32),
+        jnp.asarray(indptr, jnp.int32),
+    )
+
+
+def _pytree_matrix(cls, backend=None, shape=(12, 9), seed=0, prob=0.35):
+    rng = np.random.default_rng(seed)
+    dense = ((rng.random(shape) < prob) * rng.uniform(0.5, 1.5, shape)).astype(np.float32)
+    return cls(_compressed_parts(dense, cls), shape=shape, backend=backend), dense
+
+
+def _spike_vector(n, seed=1):
+    return jnp.asarray(np.random.default_rng(seed).random(n) < 0.5)
+
+
+def _record_task_capacities(monkeypatch):
+    """Spy on primitive calls: record ``(name, task_capacity, indptr)`` and skip execution."""
+    from brainevent._op.main import XLACustomKernel
+    calls = []
+    real = XLACustomKernel.__call__
+
+    def spy(self, *ins, outs, **kwargs):
+        if 'task_capacity' in kwargs:
+            calls.append((self.name, int(kwargs['task_capacity']), np.asarray(ins[2])))
+            return jax.tree.map(lambda o: jnp.zeros(o.shape, o.dtype), outs)
+        return real(self, *ins, outs=outs, **kwargs)
+
+    monkeypatch.setattr(XLACustomKernel, '__call__', spy)
+    return calls
 
 
 @pytest.mark.slow
@@ -1018,259 +1125,6 @@ class Test_CSC:
         jax.block_until_ready((dense,))
 
 
-@pytest.mark.slow
-class Test_diag_add:
-    # ``diag_add`` computes ``A + diag(d)`` *exactly*: diagonal entries absent
-    # from the sparsity pattern must be inserted, which changes ``indices`` /
-    # ``indptr``. The expected dense result is therefore ``dense + diag(d)`` with
-    # NO re-masking -- re-applying the sparsity mask (as a previous version of
-    # these tests did) would have hidden the dropped-insertion bug.
-    @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
-    def test_csr(self, shape):
-        dense = brainstate.random.rand(*shape)
-        mask = (dense < 0.1) & (dense != 0.)
-        dense = jnp.where(mask, dense, 0.)
-        csr = brainevent.CSR.fromdense(dense)
-        diag = brainstate.random.rand(min(shape)).astype(dense.dtype)
-        new_csr = csr.diag_add(diag)
-
-        new_dense = new_csr.todense()
-        expected = dense.at[jnp.diag_indices(min(shape))].add(diag)
-
-        assert jnp.allclose(new_dense, expected)
-        # Missing diagonals were inserted, so the structure grew.
-        assert new_csr.nse >= csr.nse
-
-        jax.block_until_ready((expected, diag, new_dense))
-
-    @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
-    def test_csc(self, shape):
-        dense = brainstate.random.rand(*shape)
-        mask = (dense < 0.1) & (dense != 0.)
-        dense = jnp.where(mask, dense, 0.)
-        csc = brainevent.CSC.fromdense(dense)
-        diag = brainstate.random.rand(min(shape)).astype(dense.dtype)
-        new_csc = csc.diag_add(diag)
-
-        new_dense = new_csc.todense()
-        expected = dense.at[jnp.diag_indices(min(shape))].add(diag)
-
-        assert jnp.allclose(new_dense, expected)
-        assert new_csc.nse >= csc.nse
-
-        jax.block_until_ready((expected, diag, new_dense))
-
-    @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
-    def test_csr_and_csc(self, shape):
-        dense = brainstate.random.rand(*shape)
-        mask = (dense < 0.1) & (dense != 0.)
-        dense = jnp.where(mask, dense, 0.)
-        csr = brainevent.CSR.fromdense(dense)
-        csc = csr.T
-        diag = brainstate.random.rand(min(shape)).astype(dense.dtype)
-        new_csc = csc.diag_add(diag)
-
-        new_dense = new_csc.todense().T
-        expected = dense.at[jnp.diag_indices(min(shape))].add(diag)
-
-        assert jnp.allclose(new_dense, expected)
-
-        jax.block_until_ready((expected, diag, new_dense))
-
-    # ------------------------------------------------------------------
-    # Exactness and structural behaviour on small, explicit matrices.
-    # ------------------------------------------------------------------
-    def test_inserts_missing_diagonal_exact(self):
-        # Diagonals (0, 0) and (1, 1) are missing; (2, 2) is present.
-        dense = jnp.array([[0., 7., 0.],
-                           [4., 0., 0.],
-                           [0., 0., 5.]], dtype=jnp.float32)
-        csr = brainevent.CSR.fromdense(dense)
-        diag = jnp.array([1., 2., 3.], dtype=jnp.float32)
-        new_csr = csr.diag_add(diag)
-
-        expected = jnp.array([[1., 7., 0.],
-                              [4., 2., 0.],
-                              [0., 0., 8.]], dtype=jnp.float32)
-        assert jnp.allclose(new_csr.todense(), expected)
-        # Two missing diagonals were inserted.
-        assert int(new_csr.nse) == int(csr.nse) + 2
-        # The full diagonal is now structurally present.
-        assert int(new_csr.nse) == 5
-
-    def test_inserted_indices_stay_sorted_within_row(self):
-        # Row 0 has columns [2]; inserting the diagonal at column 0 must keep
-        # the row's column indices ascending -> [0, 2].
-        dense = jnp.array([[0., 0., 9.],
-                           [0., 0., 0.],
-                           [0., 0., 0.]], dtype=jnp.float32)
-        csr = brainevent.CSR.fromdense(dense)
-        new_csr = csr.diag_add(jnp.array([1., 1., 1.], dtype=jnp.float32))
-
-        indptr = np.asarray(new_csr.indptr)
-        indices = np.asarray(new_csr.indices)
-        for r in range(dense.shape[0]):
-            row_cols = indices[indptr[r]:indptr[r + 1]]
-            assert list(row_cols) == sorted(row_cols)
-        assert jnp.allclose(new_csr.todense(),
-                            jnp.array([[1., 0., 9.],
-                                       [0., 1., 0.],
-                                       [0., 0., 1.]], dtype=jnp.float32))
-
-    def test_empty_rows_get_diagonal(self):
-        # An entirely empty matrix becomes a pure diagonal matrix.
-        n = 5
-        csr = brainevent.CSR.fromdense(jnp.zeros((n, n), dtype=jnp.float32))
-        diag = jnp.arange(1, n + 1, dtype=jnp.float32)
-        new_csr = csr.diag_add(diag)
-        assert int(new_csr.nse) == n
-        assert jnp.allclose(new_csr.todense(), jnp.diag(diag))
-
-    def test_full_diagonal_present_keeps_structure(self):
-        # When every diagonal already exists, no insertion happens: the indices
-        # and indptr are unchanged and only the values move.
-        dense = jnp.array([[2., 1., 0.],
-                           [0., 3., 1.],
-                           [1., 0., 4.]], dtype=jnp.float32)
-        csr = brainevent.CSR.fromdense(dense)
-        diag = jnp.array([0.5, 0.5, 0.5], dtype=jnp.float32)
-        new_csr = csr.diag_add(diag)
-        assert int(new_csr.nse) == int(csr.nse)
-        np.testing.assert_array_equal(np.asarray(new_csr.indices),
-                                      np.asarray(csr.indices))
-        np.testing.assert_array_equal(np.asarray(new_csr.indptr),
-                                      np.asarray(csr.indptr))
-        assert jnp.allclose(new_csr.todense(),
-                            dense.at[jnp.diag_indices(3)].add(diag))
-
-    def test_zero_diag_value_still_materialises_full_diagonal(self):
-        # Adding a zero diagonal does not change the dense values but still
-        # materialises the (explicit-zero) diagonal entries -> structure grows.
-        dense = jnp.array([[0., 2.],
-                           [3., 0.]], dtype=jnp.float32)
-        csr = brainevent.CSR.fromdense(dense)
-        new_csr = csr.diag_add(jnp.zeros(2, dtype=jnp.float32))
-        assert int(new_csr.nse) == 4
-        assert jnp.allclose(new_csr.todense(), dense)
-
-    @pytest.mark.parametrize('shape', [(7, 7), (10, 4), (4, 10)])
-    def test_csc_matches_csr(self, shape):
-        dense = brainstate.random.rand(*shape)
-        dense = jnp.where(dense < 0.3, dense, 0.).astype(jnp.float32)
-        diag = brainstate.random.rand(min(shape)).astype(jnp.float32)
-        csr_res = brainevent.CSR.fromdense(dense).diag_add(diag).todense()
-        csc_res = brainevent.CSC.fromdense(dense).diag_add(diag).todense()
-        assert jnp.allclose(csr_res, csc_res)
-        assert jnp.allclose(csr_res, dense.at[jnp.diag_indices(min(shape))].add(diag))
-
-    def test_diag_add_under_jit(self):
-        dense = jnp.array([[0., 1., 0.],
-                           [0., 0., 2.],
-                           [3., 0., 0.]], dtype=jnp.float32)
-        csr = brainevent.CSR.fromdense(dense)
-        diag = jnp.array([1., 1., 1.], dtype=jnp.float32)
-
-        @jax.jit
-        def run(mat, d):
-            return mat.diag_add(d)
-
-        # A jit argument has a traced structure, so the host-side plan must be
-        # prepared beforehand.
-        with pytest.raises(ValueError, match='prepare_diag_add'):
-            run(csr, diag)
-        new_csr = run(csr.prepare_diag_add(), diag)
-        assert not isinstance(new_csr.indices, jax.core.Tracer)
-        assert jnp.allclose(new_csr.todense(),
-                            dense.at[jnp.diag_indices(3)].add(diag))
-        # The result carries its own plan, so a second jitted diag_add works.
-        again = run(new_csr, diag)
-        assert jnp.allclose(again.todense(),
-                            dense.at[jnp.diag_indices(3)].add(2 * diag))
-        # A closed-over (concrete) matrix needs no preparation.
-        closed = jax.jit(lambda d: csr.diag_add(d).todense())(diag)
-        assert jnp.allclose(closed, dense.at[jnp.diag_indices(3)].add(diag))
-
-    def test_repeated_diag_add_accumulates(self):
-        dense = jnp.array([[0., 1.],
-                           [2., 0.]], dtype=jnp.float32)
-        csr = brainevent.CSR.fromdense(dense)
-        d = jnp.array([1., 1.], dtype=jnp.float32)
-        r1 = csr.diag_add(d)
-        r2 = r1.diag_add(d)
-        # The second add operates on the already-augmented (full-diagonal)
-        # structure, so the pattern is stable and values accumulate.
-        np.testing.assert_array_equal(np.asarray(r1.indices), np.asarray(r2.indices))
-        np.testing.assert_array_equal(np.asarray(r1.indptr), np.asarray(r2.indptr))
-        assert jnp.allclose(r2.todense(), dense.at[jnp.diag_indices(2)].add(d * 2))
-
-    def test_diag_add_preserves_units(self):
-        dense = jnp.array([[0., 2.],
-                           [3., 0.]], dtype=jnp.float32) * u.mV
-        csr = brainevent.CSR.fromdense(dense)
-        diag = jnp.array([1., 1.], dtype=jnp.float32) * u.mV
-        new_csr = csr.diag_add(diag)
-        expected = dense + u.math.diag(diag)
-        assert u.get_unit(new_csr.todense()) == u.mV
-        assert u.math.allclose(new_csr.todense(), expected, atol=1e-6 * u.mV)
-
-
-@pytest.mark.slow
-class Test_solve:
-    @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
-    def test_csr(self, shape: brainstate.typing.Shape):
-        dense = brainstate.random.rand(*shape)
-        mask = dense < 0.1
-        dense = jnp.where(mask, dense, 0.)
-        csr = brainevent.CSR.fromdense(dense)
-        b = brainstate.random.randn(shape[0])
-
-        x = csr.solve(b)
-        assert jnp.allclose(csr @ x, b, atol=1e0, rtol=1e0)
-
-        x2 = jnp.linalg.solve(dense, b)
-        assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
-
-        jax.block_until_ready((dense, b, x, x2))
-
-    @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
-    def test_csc(self, shape: brainstate.typing.Shape):
-        dense = brainstate.random.rand(*shape)
-        mask = dense < 0.1
-        dense = jnp.where(mask, dense, 0.)
-        csc = brainevent.CSR.fromdense(dense)
-        b = brainstate.random.randn(shape[0])
-
-        x = csc.solve(b)
-        assert jnp.allclose(csc @ x, b, atol=1e0, rtol=1e0)
-
-        x2 = jnp.linalg.solve(dense, b)
-        assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
-
-        jax.block_until_ready((dense, b, x, x2))
-
-    @pytest.mark.parametrize('cls', [CSR, CSC])
-    def test_solve_nonsymmetric_matches_dense(self, cls):
-        # A non-symmetric, well-conditioned matrix: a solver that silently
-        # solves ``W.T x = b`` gives a large residual here.
-        dense = np.array([[4., 1., 0.], [0., 3., 2.], [1., 0., 5.]], dtype=np.float32)
-        b = np.array([1., 2., 3.], dtype=np.float32)
-        x = cls.fromdense(jnp.asarray(dense)).solve(jnp.asarray(b))
-        np.testing.assert_allclose(dense @ np.asarray(x), b, atol=1e-5)
-        np.testing.assert_allclose(np.asarray(x), np.linalg.solve(dense, b), atol=1e-5)
-
-    def test_csr_solve_forwards_tol_and_reorder(self, monkeypatch):
-        seen = {}
-
-        def fake_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
-            seen.update(tol=tol, reorder=reorder)
-            return b
-
-        monkeypatch.setattr(brainevent._csr.main, 'csr_solve', fake_solve)
-        csr = CSR.fromdense(jnp.eye(3))
-        csr.solve(jnp.ones(3), tol=1e-3, reorder=0)
-        assert seen == {'tol': 1e-3, 'reorder': 0}
-
-
 class Test_compressed_elementwise_ops:
     dense = np.array([[1., 0., 2.], [0., 3., 0.]], dtype=np.float32)
 
@@ -1327,12 +1181,6 @@ class Test_compressed_elementwise_ops:
         assert jnp.array_equal(scalar.todense(), homo.todense())
 
 
-# ---- weight-indices lifecycle (Phase 4) ----
-import numpy as _np
-import jax.numpy as _jnp
-import brainevent as _be
-
-
 @pytest.mark.slow
 def test_csr_build_weight_indices_and_cache():
     rng = _np.random.default_rng(0)
@@ -1362,12 +1210,6 @@ def test_csr_eager_precompute():
     dense = _jnp.asarray((_np.random.default_rng(1).random((3, 4)) > 0.5) * 1.0, _jnp.float32)
     csr = _be.CSR.fromdense(dense, precompute_weight_indices=True)
     assert csr.buffers.get('csc') is not None
-
-
-# ---- event-driven dispatch via weight-indices (Phase 5) ----
-
-def _rand_dense(rng, m, n, p=0.4):
-    return _jnp.asarray((rng.random((m, n)) < p) * rng.random((m, n)), _jnp.float32)
 
 
 @pytest.mark.slow
@@ -1436,8 +1278,6 @@ def test_csr_at_event_jit_matches_dense():
     assert _jnp.allclose(got, ref, atol=1e-5)
 
 
-# ---- transpose cache hand-off (Phase 6) ----
-
 @pytest.mark.slow
 def test_csr_transpose_hands_off_weight_indices():
     # The CSC-like view of W equals the CSR-like view of W.T, so the cached
@@ -1474,78 +1314,6 @@ def test_csc_eager_precompute():
     rng = _np.random.default_rng(12)
     csc = _be.CSC.fromdense(_rand_dense(rng, 4, 5), precompute_weight_indices=True)
     assert csc.buffers.get('csr') is not None
-
-
-# ---- OO plasticity method parity (Phase 8) ----
-
-@pytest.mark.slow
-def test_csr_update_on_pre_method_parity():
-    rng = _np.random.default_rng(20)
-    csr = _be.CSR.fromdense(_rand_dense(rng, 4, 5))
-    pre_spike = _jnp.asarray(rng.random(4) > 0.5)
-    post_trace = _jnp.asarray(rng.random(5), _jnp.float32)
-    got = csr.update_on_pre(pre_spike, post_trace, 0.0, 1.5).data
-    ref = _be.update_csr_on_binary_pre(
-        csr.data, csr.indices, csr.indptr, pre_spike, post_trace, 0.0, 1.5, shape=csr.shape)
-    assert _jnp.allclose(got, ref, atol=1e-6)
-
-
-@pytest.mark.slow
-def test_csr_update_on_post_method_parity():
-    rng = _np.random.default_rng(21)
-    csr = _be.CSR.fromdense(_rand_dense(rng, 4, 5))
-    pre_trace = _jnp.asarray(rng.random(4), _jnp.float32)
-    post_spike = _jnp.asarray(rng.random(5) > 0.5)
-    got = csr.update_on_post(pre_trace, post_spike, 0.0, 1.5).data
-    cscp, csci, perm = _be.csr_to_csc_index(csr.indptr, csr.indices, shape=csr.shape)
-    ref = _be.update_csr_on_binary_post(
-        csr.data, csci, cscp, perm, pre_trace, post_spike, 0.0, 1.5, shape=csr.shape)
-    assert _jnp.allclose(got, ref, atol=1e-6)
-
-
-@pytest.mark.slow
-def test_csc_update_on_pre_method_parity():
-    rng = _np.random.default_rng(22)
-    csc = _be.CSC.fromdense(_rand_dense(rng, 5, 3))
-    pre_spike = _jnp.asarray(rng.random(5) > 0.5)
-    post_trace = _jnp.asarray(rng.random(3), _jnp.float32)
-    got = csc.update_on_pre(pre_spike, post_trace, 0.0, 1.5).data
-    ref = _be.update_csc_on_binary_pre(
-        csc.data, csc.indices, csc.indptr, pre_spike, post_trace, 0.0, 1.5, shape=csc.shape)
-    assert _jnp.allclose(got, ref, atol=1e-6)
-
-
-@pytest.mark.slow
-def test_csc_update_on_post_method_parity():
-    rng = _np.random.default_rng(23)
-    csc = _be.CSC.fromdense(_rand_dense(rng, 5, 3))
-    pre_trace = _jnp.asarray(rng.random(5), _jnp.float32)
-    post_spike = _jnp.asarray(rng.random(3) > 0.5)
-    got = csc.update_on_post(pre_trace, post_spike, 0.0, 1.5).data
-    ref = _be.update_csc_on_binary_post(
-        csc.data, csc.indices, csc.indptr, pre_trace, post_spike, 0.0, 1.5, shape=csc.shape)
-    assert _jnp.allclose(got, ref, atol=1e-6)
-
-
-# --- merged from brainevent/_csr/mm_golden_parity_test.py ---
-# Golden parity for binary CSR/CSC matrix-matrix dispatch against ``M.todense()``.
-
-
-def _csr_cases():
-    rng = np.random.default_rng(0)
-    m, k = 6, 5
-    for homo in (True, False):
-        dense = (rng.random((m, k)) + 0.5) * (rng.random((m, k)) > 0.5)
-        dense = jnp.asarray(dense, dtype=jnp.float32)
-        csr = CSR.fromdense(dense)
-        if homo:
-            csr = CSR((jnp.asarray([1.5], jnp.float32), csr.indices, csr.indptr), shape=csr.shape)
-        yield csr
-
-
-def _mask(x, dtype):
-    x = jnp.asarray(x)
-    return jnp.asarray(x > 0, dtype=dtype) if x.dtype != jnp.bool_ else jnp.asarray(x, dtype=dtype)
 
 
 @pytest.mark.slow
@@ -1632,14 +1400,6 @@ def test_csr_matmat_units_and_jit():
     assert jnp.allclose(got_jit, ref, atol=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Constructor dtype contract: ``indices`` always int32, ``indptr`` int32 unless
-# nnz forces int64. The helper-level policy tests live in ``_misc_test.py``;
-# these exercise it end-to-end through the public CSR/CSC constructors.
-# Pure structural checks -- no kernel compilation, so not marked ``slow``.
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("cls,shape", [(CSR, (2, 3)), (CSC, (3, 2))])
 def test_constructor_indices_int32_indptr_int32(cls, shape):
     data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
@@ -1700,8 +1460,6 @@ def test_structure_rebuild_preserves_explicit_int64_indptr(cls, shape):
             assert result.indptr.dtype == jnp.int64
 
 
-# -- Constructor structural validation --------------------------------------
-
 def test_constructor_rejects_non_monotonic_indptr():
     data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
     indices = jnp.array([0, 2, 1], dtype=jnp.int32)
@@ -1733,8 +1491,6 @@ def test_constructor_rejects_nonzero_indptr_head():
     with pytest.raises(ValueError, match=r"indptr\[0\] must be 0"):
         CSR((data, indices, indptr), shape=(2, 3))
 
-
-# -- Structure-preserving paths keep the contract and do not host-readback ---
 
 def test_with_data_preserves_structure_dtype():
     m = small_csr()
@@ -1836,40 +1592,6 @@ def test_compressed_homogeneous_sum_preserves_units():
     assert u.math.allclose(matrix.sum(), 8.0 * u.mV)
 
 
-# ---------------------------------------------------------------------------
-# WeightedArray dispatch (#201): ``CSR``/``CSC`` ``@`` a value-weighted event
-# operand is the exact product, on every backend and route (including the
-# explicit ``cuda_raw`` indexed route for the unfavourable direction).
-# ---------------------------------------------------------------------------
-
-from brainevent import WeightedArray  # noqa: E402
-from brainevent._csr._test_util import (  # noqa: E402
-    WEIGHTED_EVENT_DTYPE_NAMES, event_dtype_context, event_mask, event_values,
-)
-from brainevent._test_util import check_event_op_grads  # noqa: E402
-
-_W_M, _W_N, _W_B = 12, 9, 3
-
-
-def _weighted_matrix_factory(cls, homo, backend, seed=0):
-    """Return ``(make, data)`` where ``make(d)`` builds a ``cls`` matrix with values ``d``."""
-    rng = np.random.default_rng(seed)
-    dense = (rng.random((_W_M, _W_N)) < 0.4) * rng.standard_normal((_W_M, _W_N))
-    base = cls.fromdense(jnp.asarray(dense, dtype=jnp.float32))
-    data = jnp.array([1.5], dtype=jnp.float32) if homo else base.data
-
-    def make(d):
-        return cls((d, base.indices, base.indptr), shape=base.shape, backend=backend)
-
-    return make, data
-
-
-def _weighted_tol(dtype_name):
-    if dtype_name in ('float16', 'bfloat16'):
-        return dict(rtol=2e-2, atol=2e-2)
-    return dict(rtol=1e-4, atol=1e-4)
-
-
 @pytest.mark.slow
 @pytest.mark.parametrize('backend', BINARY_CSRMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('dtype_name', WEIGHTED_EVENT_DTYPE_NAMES)
@@ -1965,16 +1687,6 @@ def test_bitpacked_binary_matmul_csr_is_binary():
                                rtol=1e-5, atol=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Inactive events contribute exactly zero, whatever the weight (NaN/Inf).
-# docs/specs/2026-10-24-inactive-row-nan-isolation.md
-# ---------------------------------------------------------------------------
-
-from brainevent._csr.binary.binary import binary_csrmv_p  # noqa: E402
-
-_CLASS_BACKENDS = (None,) + tuple(binary_csrmv_p.available_backends(jax.default_backend()))
-
-
 @pytest.mark.slow
 @pytest.mark.parametrize('backend', _CLASS_BACKENDS)
 @pytest.mark.parametrize('fmt', ['csr', 'csc'])
@@ -2028,37 +1740,6 @@ def test_compressed_mul_by_size_one_operand_keeps_data_shape(cls, scalar_shape):
     for out in (m * jnp.full(scalar_shape, 2.), jnp.full(scalar_shape, 2.) * m):
         assert out.data.shape == m.data.shape
         np.testing.assert_allclose(np.asarray(out.todense()), dense * 2)
-
-
-# ---------------------------------------------------------------------------
-# Pytree / workspace contract (0.4.0): ``indices``/``indptr`` (and cached
-# mirrors) are dynamic pytree leaves, and no lazily built buffer may mutate a
-# matrix under a trace. Gradients go through ``M.data`` + ``with_data``.
-# ---------------------------------------------------------------------------
-
-_PYTREE_BACKENDS = ('jax_raw', 'numba') if platform == 'cpu' else ('jax_raw', 'cuda_raw')
-
-
-def _compressed_parts(dense, cls):
-    # CSC of ``W`` is, array for array, the CSR of ``W.T``.
-    mat = np.asarray(dense if cls is CSR else dense.T)
-    rows, cols = np.nonzero(mat)
-    indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=mat.shape[0]))])
-    return (
-        jnp.asarray(mat[rows, cols], jnp.float32),
-        jnp.asarray(cols, jnp.int32),
-        jnp.asarray(indptr, jnp.int32),
-    )
-
-
-def _pytree_matrix(cls, backend=None, shape=(12, 9), seed=0, prob=0.35):
-    rng = np.random.default_rng(seed)
-    dense = ((rng.random(shape) < prob) * rng.uniform(0.5, 1.5, shape)).astype(np.float32)
-    return cls(_compressed_parts(dense, cls), shape=shape, backend=backend), dense
-
-
-def _spike_vector(n, seed=1):
-    return jnp.asarray(np.random.default_rng(seed).random(n) < 0.5)
 
 
 @pytest.mark.parametrize('cls', [CSR, CSC])
@@ -2130,22 +1811,6 @@ def test_scan_carry_with_binary_matmul_and_plasticity(cls, mirror, backend):
         np.testing.assert_allclose(outs_l[t], l, rtol=1e-5, atol=1e-6)
     np.testing.assert_allclose(final.todense(), W.todense(), rtol=1e-5, atol=1e-6)
     assert type(final) is cls
-
-
-def _record_task_capacities(monkeypatch):
-    """Spy on primitive calls: record ``(name, task_capacity, indptr)`` and skip execution."""
-    from brainevent._op.main import XLACustomKernel
-    calls = []
-    real = XLACustomKernel.__call__
-
-    def spy(self, *ins, outs, **kwargs):
-        if 'task_capacity' in kwargs:
-            calls.append((self.name, int(kwargs['task_capacity']), np.asarray(ins[2])))
-            return jax.tree.map(lambda o: jnp.zeros(o.shape, o.dtype), outs)
-        return real(self, *ins, outs=outs, **kwargs)
-
-    monkeypatch.setattr(XLACustomKernel, '__call__', spy)
-    return calls
 
 
 @pytest.mark.parametrize('cls', [CSR, CSC])
@@ -2277,3 +1942,916 @@ def test_config_carries_prepared_longest_rows_for_both_layouts(cls):
     M2 = M.build_weight_indices()
     mirror_longest = int(np.diff(np.asarray(M2.buffers[M2._mirror_key][0])).max())
     assert M2.config.mirror_max_row_nnz == mirror_longest
+
+
+# Object and global backend selection
+# -----------------------------------
+
+@pytest.fixture(autouse=False)
+def _backend_restore_global_backends():
+    previous = {platform: be.config.get_backend(platform) for platform in ('cpu', 'gpu', 'tpu')}
+    be.config.clear_backends()
+    try:
+        yield
+    finally:
+        be.config.clear_backends()
+        for platform, backend in previous.items():
+            if backend is not None:
+                be.config.set_backend(platform, backend)
+
+
+def _backend_product(matrix, values, weighted):
+    events = be.WeightedArray(values) if weighted else be.BinaryArray(values)
+    return matrix @ events if isinstance(matrix, be.CSR) else events @ matrix
+
+
+def _backend_spy_products(monkeypatch):
+    calls = []
+
+    def fake(indexed):
+        def product(*args, shape, transpose, backend, weighted, **kwargs):
+            calls.append((indexed, transpose, backend, weighted))
+            rows = shape[1] if transpose else shape[0]
+            return jnp.zeros((rows,) + args[-1].shape[1:], dtype=args[0].dtype)
+        return product
+
+    for name in ('binary_csrmv', 'binary_csrmm'):
+        monkeypatch.setattr(csr_main, name, fake(False))
+        monkeypatch.setattr(csr_main, name + '_indexed', fake(True))
+    return calls
+
+
+@pytest.mark.usefixtures('_backend_restore_global_backends')
+@pytest.mark.parametrize('cls', [be.CSR, be.CSC])
+@pytest.mark.parametrize('ndim', [1, 2], ids=['mv', 'mm'])
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('backend,global_backend,prebuilt,indexed', [
+    (None, 'cuda_raw', False, True),
+    (None, 'cuda_raw', True, True),
+    (None, None, False, False),
+    (None, 'jax_raw', False, False),
+    ('jax_raw', 'cuda_raw', False, False),
+    ('cuda_raw', 'jax_raw', False, True),
+], ids=['global_cuda_lazy', 'global_cuda_prebuilt', 'unset', 'global_jax',
+        'object_jax', 'object_cuda'])
+def test_event_backend_precedence(monkeypatch, cls, ndim, weighted, backend,
+                                  global_backend, prebuilt, indexed):
+    matrix = cls.fromdense(jnp.array([[1., 0., 2.], [0., 3., 4.]]), backend=backend,
+                           precompute_weight_indices=prebuilt)
+    be.config.set_backend('gpu', global_backend)
+    calls = _backend_spy_products(monkeypatch)
+    size = matrix.shape[1] if cls is be.CSR else matrix.shape[0]
+    shape = (size,) if ndim == 1 else ((size, 4) if cls is be.CSR else (4, size))
+
+    _backend_product(matrix, jnp.ones(shape), weighted)
+
+    assert calls == [(indexed, indexed, backend, weighted)]
+    assert matrix.backend == backend  # Do not turn the GPU default into an explicit CPU request.
+    assert (matrix._cache.mirror is not None) == (prebuilt or indexed)
+
+
+@pytest.mark.usefixtures('_backend_restore_global_backends')
+def test_global_changes_retrace_existing_jit_route(monkeypatch):
+    matrix = be.CSR.fromdense(jnp.array([[1., 0., 2.], [0., 3., 4.]]))
+    calls = _backend_spy_products(monkeypatch)
+    product = jax.jit(lambda values: matrix @ be.BinaryArray(values))
+    values = jnp.ones(3)
+    for backend in ('jax_raw', 'cuda_raw', None):
+        be.config.set_backend('gpu', backend)
+        product(values).block_until_ready()
+    assert [call[0] for call in calls] == [False, True, False]
+    assert all(call[2] is None for call in calls)
+
+
+@pytest.mark.usefixtures('_backend_restore_global_backends')
+def test_gpu_global_backend_keeps_cpu_execution_on_cpu(monkeypatch):
+    device = jax.devices('cpu')[0]
+    with jax.default_device(device):
+        dense = jnp.array([[1., 0., 2.], [0., 3., 4.]])
+        matrix = be.CSR.fromdense(dense)
+        values = jnp.array([1., 0., -2.])
+        be.config.set_backend('cpu', 'jax_raw')
+        be.config.set_backend('gpu', 'cuda_raw')
+        calls = []
+        original = csr_main.binary_csrmv_indexed
+
+        def indexed(*args, **kwargs):
+            calls.append(kwargs['backend'])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(csr_main, 'binary_csrmv_indexed', indexed)
+        np.testing.assert_allclose(matrix @ be.WeightedArray(values), dense @ values)
+        assert calls == [None]
+
+
+@pytest.mark.usefixtures('_backend_restore_global_backends')
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='CUDA hybrid lowering needs a GPU')
+@pytest.mark.parametrize('cls', [be.CSR, be.CSC])
+@pytest.mark.parametrize('ndim', [1, 2], ids=['mv', 'mm'])
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+def test_global_cuda_uses_hybrid_forward_and_weight_gradient(cls, ndim, weighted):
+    dense = jnp.array([[1., 0., 2.], [0., 3., 4.]])
+    matrix = cls.fromdense(dense, precompute_weight_indices=True)
+    be.config.set_backend('gpu', 'cuda_raw')
+    size = matrix.shape[1] if cls is be.CSR else matrix.shape[0]
+    shape = (size,) if ndim == 1 else ((size, 4) if cls is be.CSR else (4, size))
+    values = (jnp.arange(np.prod(shape), dtype=jnp.float32).reshape(shape) % 3) - 1
+    factors = values if weighted else (values != 0).astype(values.dtype)
+    expected = dense @ factors if cls is be.CSR else factors @ dense
+    product = jax.jit(lambda mat, x: _backend_product(mat, x, weighted))
+    lowered = product.lower(matrix, values)
+    symbol = 'hybrid_spmv_col_major_' if ndim == 1 else 'batched_spmm_v3_col_major_'
+    assert symbol in lowered.as_text()
+    np.testing.assert_allclose(lowered.compile()(matrix, values), expected, rtol=1e-5, atol=1e-6)
+
+    gradient = jax.jit(jax.grad(lambda data: _backend_product(matrix.with_data(data), values, weighted).sum()))
+    lowered_gradient = gradient.lower(matrix.data)
+    symbol = 'hybrid_sddmv_' if ndim == 1 else 'batched_v3_sddmm'
+    assert symbol in lowered_gradient.as_text()
+    coo = matrix.tocoo()
+    per_input = factors if ndim == 1 else factors.sum(axis=1 if cls is be.CSR else 0)
+    expected_gradient = per_input[coo.col if cls is be.CSR else coo.row]
+    np.testing.assert_allclose(lowered_gradient.compile()(matrix.data), expected_gradient,
+                               rtol=1e-5, atol=1e-6)
+
+
+# Configuration lifecycle on sparse objects
+# -----------------------------------------
+
+def _lifecycle_matrix(cls=CSR, **kwargs):
+    shape = (2, 3) if cls is CSR else (3, 2)
+    return cls(
+        (jnp.array([1., 2., 3.]), jnp.array([0, 2, 1], jnp.int32),
+         jnp.array([0, 2, 3], jnp.int32)),
+        shape=shape, backend='jax_raw', **kwargs,
+    )
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_config_snapshot_is_loaded_once_and_survives_reconstruction(monkeypatch, cls):
+    from brainevent._csr.binary import initialize
+
+    calls = []
+    snapshot = CSRConfig(block_size=128, tpr_threshold=7)
+    monkeypatch.setattr(initialize, 'load_csr_config', lambda **kw: calls.append(kw) or snapshot)
+    matrix = _lifecycle_matrix(cls)
+    assert len(calls) == 1
+    assert matrix.config.shape == (2, 3)
+    assert matrix.config.nnz == 3
+    assert matrix.config.tpr_threshold == 7
+
+    def no_load(**kwargs):
+        raise AssertionError('reconstruction must not load persisted configuration')
+
+    monkeypatch.setattr(initialize, 'load_csr_config', no_load)
+    assert matrix.with_data(matrix.data * 2).config is matrix.config
+    assert matrix.T.config is matrix.config
+    transformed = jax.jit(lambda value: value.with_data(value.data * 2))(matrix)
+    np.testing.assert_array_equal(transformed.data, matrix.data * 2)
+    assert transformed.config.tpr_threshold == 7
+    assert transformed.config.shape == (2, 3)
+    leaves = jax.tree.leaves(matrix)
+    assert any(value is matrix.config.primary.long_mask for value in leaves)
+    assert any(value is matrix.config.mirror.long_mask for value in leaves)
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_from_parts_and_unflatten_do_not_prepare(monkeypatch, cls):
+    matrix = _lifecycle_matrix(cls, config=CSRConfig())
+
+    def no_prepare(*args, **kwargs):
+        raise AssertionError('trusted reconstruction must not scan structure')
+
+    monkeypatch.setattr(CSRConfig, 'prepare_structure', no_prepare)
+    reconstructed = cls._from_parts(
+        None, None, None, shape=matrix.shape, config=matrix.config,
+    )
+    assert reconstructed.config is matrix.config
+    assert cls._from_parts(None, None, None, shape=matrix.shape).config.primary is None
+    mapped = jax.tree.map(lambda _: None, matrix)
+    assert mapped.indices is None
+    assert mapped.config.primary.long_mask is None
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_format_conversion_swaps_prepared_layouts_without_reloading(monkeypatch, cls):
+    matrix = _lifecycle_matrix(cls, config=CSRConfig(tpr_threshold=5))
+    matrix.build_weight_indices()
+    converted = matrix.tocsc() if cls is CSR else matrix.tocsr()
+    assert converted.config.primary is matrix.config.mirror
+    assert converted.config.mirror is matrix.config.primary
+    assert converted.config.shape == matrix.config.shape[::-1]
+    assert converted.config.nnz == matrix.config.nnz
+    assert converted.config.primary_max_row_nnz == matrix.config.mirror_max_row_nnz
+    assert converted.config.mirror_max_row_nnz == matrix.config.primary_max_row_nnz
+    np.testing.assert_allclose(converted.todense(), matrix.todense())
+
+
+def test_structure_changes_rebind_eagerly_and_invalidate_traced_plans():
+    matrix = _lifecycle_matrix(config=CSRConfig(tpr_threshold=5))
+    sliced = matrix.slice_rows([0])
+    assert sliced.config.shape == (1, 3)
+    assert sliced.config.nnz == 2
+    assert sliced.config.tpr_threshold == 5
+
+    dense = jnp.array([[0., 1.], [2., 0.]])
+    matrix = CSR.fromdense(dense, backend='jax_raw', config=CSRConfig(tpr_threshold=5))
+    eager = matrix.diag_add(jnp.ones(2))
+    assert eager.config.nnz == 4
+    traced = jax.jit(lambda value: value.diag_add(jnp.ones(2)))(matrix.prepare_diag_add())
+    assert traced.config.primary is None
+    assert traced.config.mirror is None
+    assert traced.config.tpr_threshold == 5
+    prepared = traced.prepare_config()
+    assert prepared.config.nnz == 4
+    assert prepared.config.tpr_threshold == 5
+
+
+def test_replacing_a_mirror_detaches_shared_cache_and_rebuilds_its_plan():
+    matrix = _lifecycle_matrix(config=CSRConfig()).build_weight_indices()
+    sibling = matrix.with_data(matrix.data * 2)
+    original_cache = sibling._cache
+    matrix.set_buffer('csc', tuple(jnp.array(value) for value in matrix.buffers['csc']))
+    assert matrix._cache is not original_cache
+    assert sibling._cache is original_cache
+    assert matrix.config.primary is sibling.config.primary
+    assert matrix.config.mirror is not None
+    assert sibling.config.mirror is not None
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC, FixedNumPerPre, FixedNumPerPost])
+@pytest.mark.parametrize('setter', ['register_buffer', 'set_buffer'])
+@pytest.mark.parametrize('reordered', [False, True], ids=['same', 'reordered'])
+def test_setting_valid_mirror_keeps_indexed_mm_plan(cls, setter, reordered):
+    if cls in (CSR, CSC):
+        matrix = cls(
+            jnp.array([1., 2., 3., 4.]), jnp.array([0, 2, 1, 2], jnp.int32),
+            jnp.array([0, 2, 4], jnp.int32),
+            shape=(2, 3) if cls is CSR else (3, 2),
+            backend='jax_raw', config=CSRConfig(),
+        ).build_weight_indices()
+        key = 'csc' if cls is CSR else 'csr'
+    else:
+        matrix = cls(
+            jnp.array([[1., 2.], [3., 4.]]), jnp.array([[0, 2], [1, 2]], jnp.int32),
+            shape=(2, 3) if cls is FixedNumPerPre else (3, 2),
+            backend='jax_raw', config=CSRConfig(),
+        ).build_weight_indices()
+        key = 'csc'
+    mirror = matrix.buffers[key]
+    if reordered:
+        order = jnp.array([0, 1, 3, 2])
+        mirror = (mirror[0], mirror[1][order], mirror[2][order])
+    sibling = matrix.with_data(matrix.data * 2)
+    original_primary = matrix.config.primary
+    getattr(matrix, setter)(key, mirror)
+    assert sibling._cache is not matrix._cache
+    assert sibling.config.mirror is not None
+    assert matrix.config.primary is original_primary
+    assert matrix.config.mirror is not None
+    assert matrix.config.mirror_max_row_nnz == 2
+    if cls in (CSR, FixedNumPerPre):
+        events = BinaryArray(jnp.array([[True, False], [False, True], [True, True]]))
+        actual = matrix @ events
+        expected = matrix.todense() @ events.value
+    else:
+        events = BinaryArray(jnp.array([[True, False, True], [False, True, True]]))
+        actual = events @ matrix
+        expected = events.value @ matrix.todense()
+    np.testing.assert_allclose(actual, expected)
+
+
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='CUDA hybrid MM requires a GPU')
+@pytest.mark.parametrize('setter', ['register_buffer', 'set_buffer'])
+@pytest.mark.parametrize('reordered', [False, True], ids=['same', 'reordered'])
+def test_fixednum_mirror_update_keeps_cuda_mm_usable(setter, reordered):
+    matrix = FixedNumPerPre(
+        jnp.array([[1., 2.], [3., 4.]], jnp.float32),
+        jnp.array([[0, 2], [1, 2]], jnp.int32),
+        shape=(2, 3), backend='cuda_raw', config=CSRConfig(),
+    ).build_weight_indices()
+    events = BinaryArray(jnp.array([[True, False], [False, True], [True, True]]))
+    expected = jnp.array([[3., 2.], [4., 7.]])
+    np.testing.assert_allclose(matrix @ events, expected)
+    mirror = matrix.buffers['csc']
+    if reordered:
+        order = jnp.array([0, 1, 3, 2])
+        mirror = (mirror[0], mirror[1][order], mirror[2][order])
+    getattr(matrix, setter)('csc', mirror)
+    np.testing.assert_allclose(matrix @ events, expected)
+
+
+@pytest.mark.parametrize('cls', [CSR, FixedNumPerPre])
+def test_invalid_mirror_update_keeps_previous_cache_and_plan(cls):
+    if cls is CSR:
+        matrix = cls(
+            jnp.ones(2), jnp.array([0, 1], jnp.int32),
+            jnp.array([0, 1, 2], jnp.int32), shape=(2, 2),
+            backend='jax_raw', config=CSRConfig(),
+        ).build_weight_indices()
+    else:
+        matrix = cls(
+            jnp.ones((2, 1)), jnp.array([[0], [1]], jnp.int32),
+            shape=(2, 2), backend='jax_raw', config=CSRConfig(),
+        ).build_weight_indices()
+    cache, config = matrix._cache, matrix.config
+    _, indices, perm = matrix.buffers['csc']
+    bad_mirror = (jnp.zeros((3,), jnp.int32), indices, perm)
+    with pytest.raises(ValueError, match='indptr'):
+        matrix.set_buffer('csc', bad_mirror)
+    assert matrix._cache is cache
+    assert matrix.config is config
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC, FixedNumPerPre, FixedNumPerPost])
+def test_constructor_prepares_supplied_mirror_without_reloading(monkeypatch, cls):
+    from brainevent._csr.binary import initialize
+
+    if cls in (CSR, CSC):
+        source = _lifecycle_matrix(cls, config=CSRConfig()).build_weight_indices()
+        args = (source.data, source.indices, source.indptr)
+    else:
+        source = cls(
+            jnp.ones((2, 2)), jnp.array([[0, 2], [1, 2]], jnp.int32),
+            shape=(2, 3) if cls is FixedNumPerPre else (3, 2),
+            backend='jax_raw', config=CSRConfig(),
+        ).build_weight_indices()
+        args = (source.data, source.indices)
+    loads = []
+    monkeypatch.setattr(initialize, 'load_csr_config', lambda **kw: loads.append(kw) or CSRConfig())
+    matrix = cls(
+        *args, shape=source.shape, buffers=source.buffers,
+        backend='cuda_raw' if jax.default_backend() == 'gpu' else 'jax_raw',
+    )
+    assert len(loads) == 1
+    assert matrix.config.mirror is not None
+    assert matrix.config.mirror.long_mask.devices() == matrix.config.primary.long_mask.devices()
+    dense = matrix.todense()
+    right = jnp.ones((matrix.shape[1], 4), bool)
+    left = jnp.ones((4, matrix.shape[0]), bool)
+    np.testing.assert_allclose(matrix @ BinaryArray(right), dense @ right)
+    np.testing.assert_allclose(BinaryArray(left) @ matrix, left @ dense)
+
+
+def test_prepare_config_rejects_traced_structure():
+    matrix = _lifecycle_matrix(config=CSRConfig())
+    with pytest.raises(ValueError, match='concrete structure'):
+        jax.jit(lambda value: value.prepare_config())(matrix)
+
+
+def test_constructor_reuses_validation_host_copies_for_plan_preparation(monkeypatch):
+    from brainevent._csr import main
+
+    reads = []
+    validated = {}
+    device_get = jax.device_get
+    as_indices = main._as_int32_indices
+    check_structure = main._check_compressed_structure
+    prepare = CSRConfig.prepare_structure
+
+    def record_get(value):
+        reads.append(value)
+        return device_get(value)
+
+    def record_indices(*args, **kwargs):
+        validated['indices'] = kwargs['host_indices']
+        return as_indices(*args, **kwargs)
+
+    def record_indptr(*args, **kwargs):
+        validated['indptr'] = kwargs['host_indptr']
+        return check_structure(*args, **kwargs)
+
+    def record_prepare(config, indices, indptr, **kwargs):
+        assert indices is validated['indices']
+        assert indptr is validated['indptr']
+        return prepare(config, indices, indptr, **kwargs)
+
+    monkeypatch.setattr(jax, 'device_get', record_get)
+    monkeypatch.setattr(main, '_as_int32_indices', record_indices)
+    monkeypatch.setattr(main, '_check_compressed_structure', record_indptr)
+    monkeypatch.setattr(CSRConfig, 'prepare_structure', record_prepare)
+    matrix = _lifecycle_matrix(config=CSRConfig())
+    assert sum(value is matrix.indices for value in reads) == 1
+    assert sum(value is matrix.indptr for value in reads) == 1
+
+
+def test_numpy_structure_is_prepared_without_device_readback(monkeypatch):
+    def no_readback(*args, **kwargs):
+        raise AssertionError('host structure is already available')
+
+    monkeypatch.setattr(jax, 'device_get', no_readback)
+    matrix = CSR(
+        np.ones(3), np.array([0, 2, 1], np.int32), np.array([0, 2, 3], np.int32),
+        shape=(2, 3), backend='jax_raw', config=CSRConfig(),
+    )
+    assert matrix.config.nnz == 3
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC, FixedNumPerPre, FixedNumPerPost])
+@pytest.mark.parametrize('backend,global_backend,expected_queries', [
+    (None, 'jax_raw', 0),
+    (None, 'cuda_raw', 1),
+    (None, 'cusparse', 1),
+    (None, 'numba', 1),
+    ('jax_raw', 'cuda_raw', 0),
+    ('cuda_raw', 'jax_raw', 1),
+    ('cusparse', 'cuda_raw', 0),
+])
+def test_auto_preparation_uses_object_then_global_backend(
+    monkeypatch, cls, backend, global_backend, expected_queries,
+):
+    import brainevent.config as runtime_config
+    import brainevent._csr.config as csr_config
+
+    monkeypatch.setitem(runtime_config._global_backends, 'gpu', global_backend)
+    queries = []
+    monkeypatch.setattr(csr_config, 'get_device_info',
+                        lambda *args, **kwargs: queries.append((args, kwargs)) or None)
+    if cls in (CSR, CSC):
+        matrix = cls(
+            np.ones(2), np.array([0, 1], np.int32), np.array([0, 1, 2], np.int32),
+            shape=(2, 2), backend=backend, config=CSRConfig(),
+        )
+    else:
+        matrix = cls(
+            np.ones((2, 1)), np.array([[0], [1]], np.int32),
+            shape=(2, 2), backend=backend, config=CSRConfig(),
+        )
+    assert matrix.backend == backend
+    assert len(queries) == expected_queries
+    prepared = matrix.prepare_config()
+    assert prepared.backend == backend
+    assert len(queries) == 2 * expected_queries
+
+
+def test_cpu_sharded_structure_replicates_prepared_masks():
+    # JAX must see the extra CPU devices before this process imports it.
+    script = '''
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from brainevent import CSR, CSC, FixedNumPerPre, FixedNumPerPost, BinaryArray, config
+from brainevent._csr.config import CSRConfig
+
+devices = jax.devices('cpu')
+assert len(devices) == 2
+mesh = Mesh(np.asarray(devices), ('cpu_shard',))
+config.set_backend('cpu', 'jax_raw')
+def placed(value, spec):
+    return jax.device_put(jnp.asarray(value), NamedSharding(mesh, spec))
+def verify(config):
+    for plan in (config.primary, config.mirror):
+        mask = plan.long_mask
+        assert isinstance(mask.sharding, NamedSharding), mask.sharding
+        assert mask.sharding.spec == P(), mask.sharding
+        assert mask.devices() == set(devices), mask.devices()
+
+for cls in (CSR, CSC, FixedNumPerPre, FixedNumPerPost):
+    if cls in (CSR, CSC):
+        args = (
+            placed(np.ones(4, np.float32), P('cpu_shard')),
+            placed(np.array([0, 1, 0, 1], np.int32), P('cpu_shard')),
+            placed(np.array([0, 2, 4], np.int32), P()),
+        )
+    else:
+        args = (
+            placed(np.ones((2, 2), np.float32), P('cpu_shard')),
+            placed(np.array([[0, 1], [0, 1]], np.int32), P('cpu_shard')),
+        )
+    direct_indices = args[1].reshape(-1) if cls in (FixedNumPerPre, FixedNumPerPost) else args[1]
+    direct_indptr = (np.array([0, 2, 4], np.int32)
+                     if cls in (FixedNumPerPre, FixedNumPerPost) else args[2])
+    verify(CSRConfig().prepare_structure(direct_indices, direct_indptr, shape=(2, 2)))
+    matrix = cls(*args, shape=(2, 2), config=CSRConfig())
+    verify(matrix.config)
+    verify(matrix.prepare_config().config)
+    explicit = matrix.prepare_config(device=devices[0])
+    assert explicit.config.primary.long_mask.devices() == {devices[0]}
+    assert explicit.config.mirror.long_mask.devices() == {devices[0]}
+    result = jax.jit(lambda m, x: m @ BinaryArray(x))(
+        matrix, placed(np.ones(2, np.float32), P()))
+    np.testing.assert_array_equal(np.asarray(result), [2, 2])
+    mirror = matrix.build_weight_indices()
+    rebuilt = cls(*args, shape=(2, 2),
+                  buffers=mirror.buffers, config=CSRConfig())
+    verify(rebuilt.config)
+'''
+    env = dict(os.environ, JAX_PLATFORM_NAME='cpu',
+               XLA_FLAGS='--xla_force_host_platform_device_count=2')
+    result = subprocess.run(
+        [sys.executable, '-c', script], cwd=Path(__file__).parents[3],
+        env=env, text=True, capture_output=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='GPU placement requires CUDA')
+def test_global_jax_backend_skips_native_probe_on_gpu(monkeypatch):
+    import brainevent.config as runtime_config
+    import brainevent._csr.config as csr_config
+
+    monkeypatch.setitem(runtime_config._global_backends, 'gpu', 'jax_raw')
+
+    def no_native_probe(*args, **kwargs):
+        raise AssertionError('global jax_raw must not query CUDA device information')
+
+    monkeypatch.setattr(csr_config, '_query_cuda_device_info', no_native_probe)
+    with jax.default_device(jax.devices('gpu')[0]):
+        matrix = CSR(
+            jnp.ones(2), jnp.array([0, 1], jnp.int32),
+            jnp.array([0, 1, 2], jnp.int32),
+            shape=(2, 2), config=CSRConfig(),
+        )
+    assert matrix.config.device_info is None
+    assert matrix.config.primary is not None
+
+
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='GPU placement requires CUDA')
+def test_explicit_gpu_preparation_moves_both_masks_and_queries_on_jax_backend():
+    cpu, gpu = jax.devices('cpu')[0], jax.devices('gpu')[0]
+    with jax.default_device(cpu):
+        matrix = _lifecycle_matrix(config=CSRConfig()).build_weight_indices()
+    assert matrix.config.device_info is None
+    prepared = matrix.prepare_config(device=gpu)
+    assert prepared.backend == 'jax_raw'
+    assert prepared.config.device_info.device_kind == gpu.device_kind
+    assert prepared.config.primary.long_mask.devices() == {gpu}
+    assert prepared.config.mirror.long_mask.devices() == {gpu}
+
+
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='GPU device query requires CUDA')
+def test_closed_concrete_structure_can_prepare_with_cold_device_cache_under_trace():
+    from brainevent._csr.config import _query_cuda_device_info
+
+    indices = jnp.array([0, 1], jnp.int32)
+    indptr = jnp.array([0, 1, 2], jnp.int32)
+    _query_cuda_device_info.cache_clear()
+    make = lambda data: CSR(
+        data, indices, indptr, shape=(2, 2), backend='cuda_raw', config=CSRConfig(),
+    )
+    closed = jax.make_jaxpr(lambda data: make(data).data)(jnp.ones(2))
+    assert not closed.jaxpr.eqns
+    matrix = jax.jit(make)(jnp.ones(2))
+    assert matrix.config.device_info.platform == 'gpu'
+    assert matrix.config.primary is not None
+
+
+# Empty structures and sparse object operations
+# ---------------------------------------------
+
+_empty_EMPTY_SHAPES = [(0, 0), (0, 3), (3, 0)]
+
+
+def _empty_empty_csr(shape, *, backend='jax_raw', homogeneous=False):
+    return CSR(
+        jnp.ones((1 if homogeneous else 0,), jnp.float32),
+        jnp.empty((0,), jnp.int32),
+        jnp.zeros((shape[0] + 1,), jnp.int32),
+        shape=shape, backend=backend, config=CSRConfig(),
+    )
+
+
+@pytest.mark.parametrize('shape', _empty_EMPTY_SHAPES)
+@pytest.mark.parametrize('method', ['coo', 'numpy', 'gpu_column_block'])
+@pytest.mark.parametrize('array_module', [np, jnp])
+@pytest.mark.parametrize('include_perm', [False, True])
+def test_empty_mirror_helpers(shape, method, array_module, include_perm):
+    indptr = array_module.zeros((shape[0] + 1,), dtype=np.int32)
+    indices = array_module.empty((0,), dtype=np.int32)
+    csc_indptr, csc_indices, perm = csr_to_csc_index(
+        indptr, indices, shape=shape, method=method, include_perm=include_perm,
+    )
+    np.testing.assert_array_equal(csc_indptr, np.zeros(shape[1] + 1, np.int32))
+    assert csc_indices.shape == (0,) and csc_indices.dtype == np.int32
+    assert csc_indptr.dtype == np.int32
+    if include_perm:
+        assert perm.shape == (0,) and perm.dtype == np.int32
+    else:
+        assert perm is None
+    restored_indptr, restored_indices, restored_perm = csc_to_csr_index(
+        csc_indptr, csc_indices, shape=shape, include_perm=include_perm,
+    )
+    np.testing.assert_array_equal(restored_indptr, indptr)
+    np.testing.assert_array_equal(restored_indices, indices)
+    assert (restored_perm is None) == (not include_perm)
+
+
+@pytest.mark.parametrize('shape', _empty_EMPTY_SHAPES)
+def test_empty_csr_builds_mirror_eagerly_and_under_jit(shape):
+    matrix = _empty_empty_csr(shape)
+    # Exercise the traced helper before the eager call can populate the cache.
+    traced = jax.jit(lambda value: value.build_weight_indices())(matrix)
+    eager = matrix.build_weight_indices()
+    for prepared in (eager, traced):
+        indptr, indices, perm = prepared.buffers['csc']
+        np.testing.assert_array_equal(indptr, np.zeros(shape[1] + 1, np.int32))
+        assert indices.shape == perm.shape == (0,)
+        np.testing.assert_array_equal(prepared.tocsc().tocsr().todense(), np.zeros(shape))
+
+
+@pytest.mark.parametrize('shape', _empty_EMPTY_SHAPES)
+def test_empty_csr_diagonal_addition_eagerly_and_under_jit(shape):
+    matrix = _empty_empty_csr(shape)
+    diagonal = jnp.empty((0,), jnp.float32)
+    eager = matrix.diag_add(diagonal)
+    prepared = matrix.prepare_diag_add()
+    traced = jax.jit(lambda value, diag: value.diag_add(diag))(prepared, diagonal)
+    for result in (eager, traced):
+        assert result.shape == shape and result.nse == 0
+        np.testing.assert_array_equal(result.indptr, np.zeros(shape[0] + 1, np.int32))
+        np.testing.assert_array_equal(result.todense(), np.zeros(shape))
+
+
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='native CUDA dispatch requires a GPU')
+@pytest.mark.parametrize('shape', _empty_EMPTY_SHAPES)
+@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('homogeneous', [False, True])
+def test_empty_csr_cuda_event_products(shape, weighted, homogeneous):
+    matrix = _empty_empty_csr(shape, backend='cuda_raw', homogeneous=homogeneous)
+    event_type = WeightedArray if weighted else BinaryArray
+    dtype = jnp.float32 if weighted else jnp.bool_
+    for batch in (None, 2):
+        right_shape = (shape[1],) if batch is None else (shape[1], batch)
+        left_shape = (shape[0],) if batch is None else (batch, shape[0])
+        right = event_type(jnp.ones(right_shape, dtype))
+        left = event_type(jnp.ones(left_shape, dtype))
+        right_result_shape = (shape[0],) if batch is None else (shape[0], batch)
+        left_result_shape = (shape[1],) if batch is None else (batch, shape[1])
+        # The eager unfavorable product must build the empty mirror itself.
+        np.testing.assert_array_equal(matrix @ right, np.zeros(right_result_shape))
+        np.testing.assert_array_equal(left @ matrix, np.zeros(left_result_shape))
+        np.testing.assert_array_equal(
+            jax.jit(lambda value, events: value @ events)(matrix, right),
+            np.zeros(right_result_shape),
+        )
+        np.testing.assert_array_equal(
+            jax.jit(lambda value, events: events @ value)(matrix, left),
+            np.zeros(left_result_shape),
+        )
+
+
+# Sparse object pp-prop gradient routing
+# --------------------------------------
+
+_pp_prop_ROWS = np.array([0, 0, 1, 1])
+
+
+_pp_prop_COLS = np.array([0, 2, 1, 2])
+
+
+_pp_prop_DENSE = np.array([[1., 0., 2.], [0., 3., 4.]], dtype=np.float32)
+
+
+def _pp_prop_matrix(algorithm, homogeneous):
+    data = jnp.array([1.] if homogeneous else [1., 2., 3., 4.], dtype=jnp.float32)
+    return CSR(
+        data,
+        jnp.array(_pp_prop_COLS, dtype=jnp.int32),
+        jnp.array([0, 2, 4], dtype=jnp.int32),
+        shape=(2, 3), backend="jax_raw", backward_algorithm=algorithm,
+    )
+
+
+@pytest.mark.parametrize("algorithm", ["bptt", "pp_prop"])
+@pytest.mark.parametrize("homogeneous", [False, True])
+@pytest.mark.parametrize("op", ["right_mv", "left_mv", "right_mm", "left_mm"])
+def test_binary_forward_and_weight_cotangent(algorithm, homogeneous, op):
+    matrix = _pp_prop_matrix(algorithm, homogeneous)
+    if op == "right_mv":
+        x = jnp.array([2., 0., -1.], dtype=jnp.float32)
+        ct = jnp.array([5., 7.], dtype=jnp.float32)
+        product = lambda m: m @ BinaryArray(x)
+        factor = np.asarray(x)[_pp_prop_COLS]
+        expected = _pp_prop_DENSE @ (np.asarray(x) != 0).astype(np.float32)
+    elif op == "left_mv":
+        x = jnp.array([2., -1.], dtype=jnp.float32)
+        ct = jnp.array([5., 6., 7.], dtype=jnp.float32)
+        product = lambda m: BinaryArray(x) @ m
+        factor = np.asarray(x)[_pp_prop_ROWS]
+        expected = (np.asarray(x) != 0).astype(np.float32) @ _pp_prop_DENSE
+    elif op == "right_mm":
+        x = jnp.array([[2., 0.], [0., 3.], [-1., 2.]], dtype=jnp.float32)
+        ct = jnp.array([[5., 6.], [7., 8.]], dtype=jnp.float32)
+        product = lambda m: m @ BinaryArray(x)
+        factor = np.asarray(x)[_pp_prop_COLS]
+        expected = _pp_prop_DENSE @ (np.asarray(x) != 0).astype(np.float32)
+    else:
+        x = jnp.array([[2., -1.], [0., 3.]], dtype=jnp.float32)
+        ct = jnp.array([[5., 6., 7.], [8., 9., 10.]], dtype=jnp.float32)
+        product = lambda m: BinaryArray(x) @ m
+        factor = np.asarray(x)[:, _pp_prop_ROWS]
+        expected = (np.asarray(x) != 0).astype(np.float32) @ _pp_prop_DENSE
+    if homogeneous:
+        dense = np.zeros_like(_pp_prop_DENSE)
+        dense[_pp_prop_ROWS, _pp_prop_COLS] = 1
+        expected = ((np.asarray(x) != 0).astype(np.float32) @ dense
+                    if op.startswith("left") else dense @ (np.asarray(x) != 0).astype(np.float32))
+    np.testing.assert_allclose(product(matrix), expected)
+    if algorithm == "bptt":
+        factor = (factor != 0).astype(np.float32)
+    if op == "right_mv":
+        slots = factor * np.asarray(ct)[_pp_prop_ROWS]
+    elif op == "left_mv":
+        slots = factor * np.asarray(ct)[_pp_prop_COLS]
+    elif op == "right_mm":
+        slots = np.sum(factor * np.asarray(ct)[_pp_prop_ROWS], axis=1)
+    else:
+        slots = np.sum(factor * np.asarray(ct)[:, _pp_prop_COLS], axis=0)
+    expected_grad = np.array([np.sum(slots)], dtype=np.float32) if homogeneous else slots
+    actual_grad = jax.grad(lambda data: jnp.vdot(product(matrix.with_data(data)), ct))(matrix.data)
+    np.testing.assert_allclose(actual_grad, expected_grad)
+
+
+@pytest.mark.parametrize("op", ["mv", "mm"])
+def test_pp_prop_indexed_mirror_keeps_weighted_cotangent(monkeypatch, op):
+    monkeypatch.setattr(csr_main, "_use_cuda_indexed_binary_route", lambda backend: True)
+    matrix = _pp_prop_matrix("pp_prop", False).build_weight_indices()
+    x = jnp.array([2., 0., -1.], dtype=jnp.float32)
+    if op == "mm":
+        x = jnp.stack([x, 2 * x], axis=1)
+        ct = jnp.array([[5., 6.], [7., 8.]], dtype=jnp.float32)
+        slots = np.sum(np.asarray(x)[_pp_prop_COLS] * np.asarray(ct)[_pp_prop_ROWS], axis=1)
+    else:
+        ct = jnp.array([5., 7.], dtype=jnp.float32)
+        slots = np.asarray(x)[_pp_prop_COLS] * np.asarray(ct)[_pp_prop_ROWS]
+    product = lambda m: m @ BinaryArray(x)
+    np.testing.assert_allclose(product(matrix), _pp_prop_DENSE @ (np.asarray(x) != 0))
+    actual = jax.grad(lambda data: jnp.vdot(product(matrix.with_data(data)), ct))(matrix.data)
+    np.testing.assert_allclose(actual, slots)
+
+
+def test_backward_algorithm_lifecycle_and_weighted_override():
+    matrix = _pp_prop_matrix("pp_prop", False)
+    assert matrix.with_data(matrix.data).backward_algorithm == "pp_prop"
+    assert matrix.T.backward_algorithm == "pp_prop"
+    assert matrix.tocsc().backward_algorithm == "pp_prop"
+    assert jax.tree_util.tree_unflatten(*reversed(jax.tree_util.tree_flatten(matrix))).backward_algorithm == "pp_prop"
+    assert CSR.fromdense(jnp.eye(2, dtype=jnp.float32), backend="jax_raw", backward_algorithm="pp_prop").backward_algorithm == "pp_prop"
+    with pytest.raises(ValueError, match="backward algorithm"):
+        _pp_prop_matrix("unknown", False)
+
+    x = jnp.array([2., 0., -1.], dtype=jnp.float32)
+    ct = jnp.array([5., 7.], dtype=jnp.float32)
+    product = lambda m: m @ WeightedArray(x)
+    np.testing.assert_allclose(product(_pp_prop_matrix("bptt", False)), _pp_prop_DENSE @ np.asarray(x))
+    actual = jax.grad(lambda data: jnp.vdot(product(_pp_prop_matrix("bptt", False).with_data(data)), ct))(_pp_prop_matrix("bptt", False).data)
+    np.testing.assert_allclose(actual, np.asarray(x)[_pp_prop_COLS] * np.asarray(ct)[_pp_prop_ROWS])
+
+
+# Sparse object selection of direct and indexed primitives
+# --------------------------------------------------------
+
+def test_csr_unfavorable_binary_matvec_uses_direct_route_on_jax_raw():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    m = CSR.fromdense(dense, backend="jax_raw")
+    events = jnp.array([True, False])
+    buffer_keys = set(m.buffers)
+
+    got = m @ BinaryArray(events)
+    got_again = m @ BinaryArray(events)
+
+    assert got.shape == (2,)
+    assert jnp.allclose(got, dense @ events.astype(jnp.float32))
+    assert jnp.allclose(got_again, got)
+    assert m.buffers.get("csc") is None  # no mirror on jax_raw
+    assert set(m.buffers) == buffer_keys  # nothing is mounted on the matrix
+
+
+def test_csr_unfavorable_binary_matmat_uses_direct_route_on_jax_raw():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    m = CSR.fromdense(dense, backend="jax_raw")
+    events = jnp.array([[True, False], [False, True]])
+    buffer_keys = set(m.buffers)
+
+    got = m @ BinaryArray(events)
+    got_again = m @ BinaryArray(events)
+
+    assert got.shape == (2, 2)
+    assert jnp.allclose(got, dense @ events.astype(jnp.float32))
+    assert jnp.allclose(got_again, got)
+    assert m.buffers.get("csc") is None  # no mirror on jax_raw
+    assert set(m.buffers) == buffer_keys  # nothing is mounted on the matrix
+
+
+def test_csr_direct_binary_rmatmat_leaves_buffers_untouched():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    m = CSR.fromdense(dense, backend="jax_raw")
+    events = jnp.array([[True, False], [False, True]])
+    buffer_keys = set(m.buffers)
+
+    got = BinaryArray(events) @ m
+    got_again = BinaryArray(events) @ m
+
+    assert got.shape == (2, 2)
+    assert jnp.allclose(got, events.astype(jnp.float32) @ dense)
+    assert jnp.allclose(got_again, got)
+    assert set(m.buffers) == buffer_keys  # nothing is mounted on the matrix
+
+
+def test_csc_unfavorable_binary_rmatvec_uses_direct_route_on_jax_raw():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    m = CSC.fromdense(dense, backend="jax_raw")
+    events = jnp.array([True, False])
+    buffer_keys = set(m.buffers)
+
+    got = BinaryArray(events) @ m
+    got_again = BinaryArray(events) @ m
+
+    assert got.shape == (2,)
+    assert jnp.allclose(got, events.astype(jnp.float32) @ dense)
+    assert jnp.allclose(got_again, got)
+    assert m.buffers.get("csr") is None  # no mirror on jax_raw
+    assert set(m.buffers) == buffer_keys  # nothing is mounted on the matrix
+
+
+def test_csc_direct_binary_matmat_leaves_buffers_untouched():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    m = CSC.fromdense(dense, backend="jax_raw")
+    events = jnp.array([[True, False], [False, True]])
+    buffer_keys = set(m.buffers)
+
+    got = m @ BinaryArray(events)
+    got_again = m @ BinaryArray(events)
+
+    assert got.shape == (2, 2)
+    assert jnp.allclose(got, dense @ events.astype(jnp.float32))
+    assert jnp.allclose(got_again, got)
+    assert set(m.buffers) == buffer_keys  # nothing is mounted on the matrix
+
+
+def test_csc_unfavorable_binary_rmatmat_uses_direct_route_on_jax_raw():
+    dense = jnp.array([[0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+    m = CSC.fromdense(dense, backend="jax_raw")
+    events = jnp.array([[True, False], [False, True]])
+    buffer_keys = set(m.buffers)
+
+    got = BinaryArray(events) @ m
+    got_again = BinaryArray(events) @ m
+
+    assert got.shape == (2, 2)
+    assert jnp.allclose(got, events.astype(jnp.float32) @ dense)
+    assert jnp.allclose(got_again, got)
+    assert m.buffers.get("csr") is None  # no mirror on jax_raw
+    assert set(m.buffers) == buffer_keys  # nothing is mounted on the matrix
+
+
+def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
+    dense = jnp.array([[0.0, 2.0, 5.0], [3.0, 4.0, 0.0]], dtype=jnp.float32)
+    csr = CSR.fromdense(dense, backend="cuda_raw")
+    csc = CSC.fromdense(dense, backend="cuda_raw")
+    calls = []
+
+    def fail_direct(*args, **kwargs):
+        raise AssertionError("cuda_raw unfavorable BinaryArray route must use indexed primitive")
+
+    def fake_mv_indexed(data, indices, indptr, perm, vector, *, shape, transpose, backend=None, weighted=False,
+                        backward_algorithm="bptt", config=None):
+        calls.append({
+            "kind": "mv",
+            "shape": shape,
+            "transpose": transpose,
+            "backend": backend,
+            "indptr": indptr,
+            "perm": perm,
+            "config": config,
+        })
+        out_size = shape[1] if transpose else shape[0]
+        return jnp.zeros((out_size,), dtype=data.dtype)
+
+    def fake_mm_indexed(data, indices, indptr, perm, matrix, *, shape, transpose, backend=None, weighted=False,
+                        backward_algorithm="bptt", config=None):
+        calls.append({
+            "kind": "mm",
+            "shape": shape,
+            "transpose": transpose,
+            "backend": backend,
+            "indptr": indptr,
+            "perm": perm,
+            "config": config,
+        })
+        out_size = shape[1] if transpose else shape[0]
+        return jnp.zeros((out_size, matrix.shape[1]), dtype=data.dtype)
+
+    monkeypatch.setattr(csr_main, "binary_csrmv", fail_direct)
+    monkeypatch.setattr(csr_main, "binary_csrmm", fail_direct)
+    monkeypatch.setattr(csr_main, "binary_csrmv_indexed", fake_mv_indexed)
+    monkeypatch.setattr(csr_main, "binary_csrmm_indexed", fake_mm_indexed)
+
+    assert (csr @ BinaryArray(jnp.array([True, False, True]))).shape == (2,)
+    assert (csr @ BinaryArray(jnp.array([[True, False], [False, True], [True, True]]))).shape == (2, 2)
+    assert (BinaryArray(jnp.array([True, False])) @ csc).shape == (3,)
+    assert (BinaryArray(jnp.array([[True, False], [False, True]])) @ csc).shape == (2, 3)
+
+    assert [(call["kind"], call["shape"], call["transpose"], call["backend"]) for call in calls] == [
+        ("mv", (3, 2), True, "cuda_raw"),
+        ("mm", (3, 2), True, "cuda_raw"),
+        ("mv", (2, 3), True, "cuda_raw"),
+        ("mm", (2, 3), True, "cuda_raw"),
+    ]
+    # Each route traverses the matrix's cached mirror structure.
+    csr_mirror = csr._weight_indices()
+    csc_mirror = csc._weight_indices()
+    for call, mirror in zip(calls, (csr_mirror, csr_mirror, csc_mirror, csc_mirror)):
+        assert call["indptr"] is mirror[0]
+        assert call["perm"] is mirror[2]

@@ -1,10 +1,25 @@
-"""Configuration snapshots, MM preparation, and persistence contracts."""
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 
-from dataclasses import replace
+"""Tests for ``brainevent/_csr/config.py``, grouped by behavior."""
+
 import json
-from pathlib import Path
 import shutil
 import subprocess
+from dataclasses import replace
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -12,11 +27,23 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent._csr.config import (
-    _BenchmarkRecord, CSRConfig, CSRDeviceInfo, MMStructurePlan, MMStructureSpec, MVSchedule, _call_plan,
-)
+import brainevent._csr.binary.binary as binary_mod
+import brainevent._csr.config as config_mod
 from brainevent._csr.binary.initialize import load_csr_config, save_csr_config
+from brainevent._csr.config import (
+    CSRConfig,
+    CSRDeviceInfo,
+    MMStructurePlan,
+    MMStructureSpec,
+    MVSchedule,
+    _BenchmarkRecord,
+    _call_plan,
+    get_device_info,
+)
 
+
+# Structure plans, scheduling snapshots and validation
+# ----------------------------------------------------
 
 DEVICE = CSRDeviceInfo('gpu', 'TEST_GPU', l2_bytes=4096, sms=16)
 
@@ -305,62 +332,6 @@ def test_explicit_validation_checks_mirror_stats_without_reading_masks():
     np.testing.assert_array_equal(validate_mask(config.primary.long_mask), config.primary.long_mask)
 
 
-@pytest.fixture
-def isolated_store(monkeypatch, tmp_path):
-    old = brainevent.get_cache_dir()
-    monkeypatch.delenv('BRAINEVENT_CSR_HYBRID_CONFIG', raising=False)
-    brainevent.set_cache_dir(str(tmp_path))
-    try:
-        yield tmp_path
-    finally:
-        brainevent.set_cache_dir(old)
-
-
-def test_persistence_keeps_old_schema_and_excludes_runtime_plans(isolated_store):
-    config, _, _ = _prepared(block_size=128)
-    record = _BenchmarkRecord(config, 4.0, 20.0, 10)
-    path = save_csr_config(config, 'TEST_GPU', [record])
-    save_csr_config(CSRConfig(512), 'OTHER_GPU')
-    stored = json.loads(path.read_text())
-    assert set(stored) == {'TEST_GPU', 'OTHER_GPU'}
-    assert set(stored['TEST_GPU']) == {'block_size', 'fixed_scatter_blocks', 'tpr_threshold',
-                                       'task_nnz', 'benchmark_records'}
-    assert path.name == 'csr_hybrid_config.json'
-    loaded = load_csr_config('TEST_GPU')
-    assert loaded.block_size == 128
-    assert loaded.primary is loaded.mirror is loaded.device_info is None
-    assert loaded.benchmark_records[0].elapsed_ms == 4.0
-
-
-def test_load_returns_fresh_snapshots_and_respects_environment(isolated_store, monkeypatch):
-    first = CSRConfig(128)
-    path = save_csr_config(first, 'TEST_GPU')
-    snapshot = load_csr_config('TEST_GPU')
-    save_csr_config(CSRConfig(512), 'TEST_GPU')
-    assert snapshot.block_size == 128 and load_csr_config('TEST_GPU').block_size == 512
-    monkeypatch.setenv('BRAINEVENT_CSR_HYBRID_CONFIG', json.dumps(
-        dict(block_size=256, fixed_scatter_blocks=1024, tpr_threshold=256, task_nnz=512)))
-    assert load_csr_config('TEST_GPU').task_nnz == 512
-    monkeypatch.delenv('BRAINEVENT_CSR_HYBRID_CONFIG')
-    path.write_text('corrupt')
-    assert load_csr_config('TEST_GPU').kernel_args()[0] == CSRConfig().kernel_args()[0]
-    assert load_csr_config('MISSING').kernel_args()[0] == CSRConfig().kernel_args()[0]
-
-
-def test_persistence_recovers_invalid_store_but_rejects_invalid_override(isolated_store, monkeypatch):
-    path = isolated_store / 'csr_hybrid_config.json'
-    path.write_text('[]')
-    assert load_csr_config('TEST_GPU').kernel_args()[0] == CSRConfig().kernel_args()[0]
-    save_csr_config(CSRConfig(), 'TEST_GPU')
-    path.write_text('broken')
-    save_csr_config(CSRConfig(), 'TEST_GPU')
-    monkeypatch.setenv('BRAINEVENT_CSR_HYBRID_CONFIG', '{')
-    with pytest.raises(ValueError):
-        load_csr_config('TEST_GPU')
-    with pytest.raises(RuntimeError, match='device_kind'):
-        save_csr_config(CSRConfig(), '')
-
-
 def test_old_configuration_exports_are_removed():
     for name in ('HybridConfig', 'get_hybrid_config'):
         assert not hasattr(brainevent, name)
@@ -468,3 +439,149 @@ int main() {
         assert numbers[:6] == [plan.group, plan.long_threshold, plan.long_tasks,
                                plan.chunk, plan.task_capacity, plan.workspace_words]
         np.testing.assert_array_equal(numbers[6:], config.primary.long_mask)
+
+
+# Device information and shard validation
+# ---------------------------------------
+
+def test_gpu_info_probe_accepts_cpu_shards_without_explicit_device():
+    class CPUDevice:
+        platform = 'cpu'
+
+    cpu0 = CPUDevice()
+    cpu1 = CPUDevice()
+
+    class PlacedArray:
+        def __init__(self, devices):
+            self._devices = devices
+
+        def devices(self):
+            return self._devices
+
+    assert get_device_info(PlacedArray((cpu0, cpu1))) is None
+
+    class GPUDevice:
+        platform = 'gpu'
+
+    with pytest.raises(ValueError, match='single device'):
+        get_device_info(PlacedArray((GPUDevice(), GPUDevice())))
+
+
+# Scheduler validation, compile flags and module identity
+# -------------------------------------------------------
+
+@pytest.fixture(autouse=False)
+def _scheduler_restore_cache_dir():
+    cache_dir = brainevent.get_cache_dir()
+    try:
+        yield
+    finally:
+        brainevent.set_cache_dir(cache_dir)
+
+
+@pytest.mark.usefixtures('_scheduler_restore_cache_dir')
+def test_validate_config_rejects_invalid_scheduler_values():
+    for values in ((250, 2048, 128, 4096), (1056, 2048, 128, 4096),
+                   (256, 0, 128, 4096), (256, 2048, -1, 4096), (256, 2048, 128, 0)):
+        with pytest.raises(ValueError):
+            CSRConfig(*values)
+
+
+@pytest.mark.usefixtures('_scheduler_restore_cache_dir')
+def test_compile_flags_map_config_to_cuda_defines():
+    flags = CSRConfig(512, 4096, 256, 8192).compile_flags()
+    assert flags == [
+        "-DBE_HYBRID_BLOCK_SIZE=512",
+        "-DBE_HYBRID_FIXED_SCATTER_BLOCKS=4096",
+        "-DBE_HYBRID_TPR_THRESHOLD=256",
+        "-DBE_HYBRID_TASK_NNZ=8192",
+    ]
+
+
+@pytest.mark.usefixtures('_scheduler_restore_cache_dir')
+def test_module_suffix_is_config_specific():
+    a = CSRConfig(256, 2048, 128, 4096).module_suffix()
+    b = CSRConfig(512, 2048, 128, 4096).module_suffix()
+    assert a == "_b256_s2048_t128_n4096"
+    assert a != b
+
+
+# Task-capacity bounds and row-length hints
+# -----------------------------------------
+
+def _capacity_capacity(indptr, config):
+    lengths = np.diff(indptr)
+    heavy = lengths > config.tpr_threshold
+    return int(((lengths[heavy] + config.task_nnz - 1) // config.task_nnz).sum())
+
+
+@pytest.mark.parametrize('config', [CSRConfig(), CSRConfig(tpr_threshold=0, task_nnz=1),
+                                    CSRConfig(tpr_threshold=3, task_nnz=5)])
+def test_capacity_bound_is_never_below_the_exact_capacity(config):
+    # The bound sizes the hybrid task queue from static shapes; it must cover
+    # every structure with those shapes or the CUDA kernel drops work.
+    rng = np.random.default_rng(0)
+    for _ in range(300):
+        n_rows = int(rng.integers(1, 40))
+        lengths = rng.integers(0, int(rng.choice([4, 50, 9000])), n_rows)
+        if rng.random() < 0.3:
+            lengths[rng.integers(n_rows)] = int(rng.integers(0, 20000))
+        indptr = np.concatenate([[0], np.cumsum(lengths)])
+        nse = int(indptr[-1])
+        exact = _capacity_capacity(indptr, config)
+        assert config.mv_capacity(nse, n_rows) >= exact
+        assert config.mv_capacity(nse, n_rows, int(np.diff(indptr).max(initial=0))) >= exact
+
+
+def test_capacity_bound_uses_the_row_length_hint():
+    config = CSRConfig()
+    # No heavy row: the hint proves the queue is never used.
+    assert config.mv_capacity(10_000, 100, max_row_nnz=config.tpr_threshold) == 0
+    assert config.mv_capacity(10_000, 100) > 0
+    assert config.mv_capacity(0, 100) == 0
+    assert config.mv_capacity(10, 0) == 0
+    # A single 9000-long row needs ceil(9000 / task_nnz) chunks.
+    assert config.mv_capacity(9000, 1, max_row_nnz=9000) == (9000 + config.task_nnz - 1) // config.task_nnz
+
+
+def test_prepared_row_hint_matches_concrete_structure():
+    indptr = np.array([0, 129, 129 + 4096, 129 + 4096 + 4097], dtype=np.int64)
+    indices = np.zeros(int(indptr[-1]), dtype=np.int32)
+    config = CSRConfig().prepare_structure(indices, indptr, shape=(3, 1))
+    assert config.primary_max_row_nnz == 4097
+    assert config.mv_capacity(len(indices), 3, config.primary_max_row_nnz) >= _capacity_capacity(indptr, config)
+
+
+# Device preparation and native query isolation
+# ---------------------------------------------
+
+def test_cpu_preparation_does_not_load_cuda(monkeypatch):
+    monkeypatch.setattr(config_mod, '_query_cuda_device_info', lambda *args: pytest.fail('CPU preparation must not query CUDA'))
+    cpu = jax.devices('cpu')[0]
+    assert config_mod.get_device_info(device=cpu) is None
+    assert config_mod.get_device_info(np.arange(3)) is None
+    assert config_mod.get_device_info() is None
+
+
+def test_device_query_does_not_load_mm_module(monkeypatch):
+    if jax.default_backend() != 'gpu':
+        pytest.skip('CUDA device query requires a GPU')
+    gpu = jax.devices('gpu')[0]
+    config_mod._query_cuda_device_info.cache_clear()
+    monkeypatch.setattr(
+        binary_mod, 'load_cuda_file',
+        lambda *args, **kwargs: pytest.fail('device query must not load the MM module'),
+    )
+    info = config_mod.get_device_info(device=gpu)
+    assert info is not None
+    assert info.device_kind == str(gpu.device_kind)
+    assert info.device_id == gpu.id
+    assert info.sms > 0 and info.l2_bytes > 0
+
+
+@pytest.mark.parametrize('platform_version', ['ROCm 7.0', 'Metal', ''])
+def test_non_cuda_gpu_preparation_does_not_query_cuda(monkeypatch, platform_version):
+    from types import SimpleNamespace
+    device = SimpleNamespace(platform='gpu', client=SimpleNamespace(platform_version=platform_version))
+    monkeypatch.setattr(config_mod, '_query_cuda_device_info', lambda *args: pytest.fail('non-CUDA device query'))
+    assert config_mod.get_device_info(device=device) is None

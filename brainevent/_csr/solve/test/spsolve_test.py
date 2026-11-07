@@ -13,16 +13,62 @@
 # limitations under the License.
 # ==============================================================================
 
+"""Tests for ``brainevent/_csr/solve/spsolve.py``, grouped by behavior."""
+
+import brainstate
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import brainevent
+from brainevent import CSC, CSR
 from brainevent._csr.solve.spsolve import csr_solve
 from brainevent._test_util import jax_x64_enabled
 
+
+# Module tests
+# ------------
+
 _DENSE = np.array([[4., 1., 0.], [1., 3., 0.], [0., 0., 2.]])
+
+
+def _coo_csr(rows, cols, data, n):
+    """CSR arrays of COO entries in the given order within each row, and the dense sum."""
+    rows, cols, data = np.asarray(rows), np.asarray(cols), np.asarray(data, np.float64)
+    order = np.argsort(rows, kind='stable')
+    rows, cols, data = rows[order], cols[order], data[order]
+    dense = np.zeros((n, n))
+    np.add.at(dense, (rows, cols), data)
+    indptr = np.searchsorted(rows, np.arange(n + 1))
+    return (jnp.asarray(data, jnp.float32), jnp.asarray(cols, jnp.int32),
+            jnp.asarray(indptr, jnp.int32), dense)
+
+
+def _random_repeated(n, nse, seed, sort_cols):
+    """A diagonally dominant matrix whose entries repeat; columns sorted or shuffled per row."""
+    rng = np.random.default_rng(seed)
+    rows = np.concatenate([np.arange(n), rng.integers(0, n, nse - n)])
+    cols = np.concatenate([np.arange(n), rng.integers(0, n, nse - n)])
+    data = np.concatenate([np.full(n, 2.0 * nse / n), rng.uniform(-1.0, 1.0, nse - n)])
+    keys = (cols if sort_cols else rng.random(nse), rows)
+    order = np.lexsort(keys)
+    return _coo_csr(rows[order], cols[order], data[order], n)
+
+
+_NON_CANONICAL = {
+    # [[4, 1], [0, 3]]: (0, 0) stored twice, nse <= n * n.
+    'repeated': ([0, 0, 0, 1], [0, 0, 1, 1], [2.0, 2.0, 1.0, 3.0], 2),
+    # the first copy is 0: cuSOLVER would solve with 0 at (0, 0)
+    'repeated, zero first': ([0, 0, 0, 1, 1], [0, 0, 1, 0, 1], [0.0, 4.0, 1.0, 1.0, 3.0], 2),
+    # nse = 7 > n * n = 4
+    'more entries than elements': ([0, 0, 0, 0, 1, 1, 1], [0, 1, 0, 1, 0, 1, 1],
+                                   [3.0, 0.5, 1.0, 0.5, 1.0, 1.0, 2.0], 2),
+    # no repeats, columns descending within each row
+    'unsorted columns': ([0, 0, 1, 1, 2], [1, 0, 2, 1, 2], [1.0, 4.0, 1.0, 3.0, 2.0], 3),
+    # repeats that are not adjacent within the row
+    'repeated and unsorted': ([0, 0, 0, 1, 1, 1], [1, 0, 1, 1, 0, 1], [0.5, 4.0, 0.5, 1.0, 1.0, 2.0], 2),
+}
 
 
 @pytest.mark.parametrize('cls_name', ['CSR', 'CSC'])
@@ -85,50 +131,6 @@ def test_csr_solve_promotes_mixed_dtypes_and_divides_units():
         assert u.get_unit(x) == u.amp
         assert u.get_mantissa(x).dtype == jnp.float64
         np.testing.assert_allclose(u.get_mantissa(x), np.linalg.solve(_DENSE, [1., 2., 3.]), rtol=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Non-canonical CSR (#225): repeated (row, col) entries add, and columns need
-# not be sorted within a row. jax's ``spsolve`` assumes a canonical CSR (cuSOLVER
-# keeps one of the repeats; the SciPy callback sorts read-only buffers in place).
-# ---------------------------------------------------------------------------
-
-def _coo_csr(rows, cols, data, n):
-    """CSR arrays of COO entries in the given order within each row, and the dense sum."""
-    rows, cols, data = np.asarray(rows), np.asarray(cols), np.asarray(data, np.float64)
-    order = np.argsort(rows, kind='stable')
-    rows, cols, data = rows[order], cols[order], data[order]
-    dense = np.zeros((n, n))
-    np.add.at(dense, (rows, cols), data)
-    indptr = np.searchsorted(rows, np.arange(n + 1))
-    return (jnp.asarray(data, jnp.float32), jnp.asarray(cols, jnp.int32),
-            jnp.asarray(indptr, jnp.int32), dense)
-
-
-def _random_repeated(n, nse, seed, sort_cols):
-    """A diagonally dominant matrix whose entries repeat; columns sorted or shuffled per row."""
-    rng = np.random.default_rng(seed)
-    rows = np.concatenate([np.arange(n), rng.integers(0, n, nse - n)])
-    cols = np.concatenate([np.arange(n), rng.integers(0, n, nse - n)])
-    data = np.concatenate([np.full(n, 2.0 * nse / n), rng.uniform(-1.0, 1.0, nse - n)])
-    keys = (cols if sort_cols else rng.random(nse), rows)
-    order = np.lexsort(keys)
-    return _coo_csr(rows[order], cols[order], data[order], n)
-
-
-_NON_CANONICAL = {
-    # [[4, 1], [0, 3]]: (0, 0) stored twice, nse <= n * n.
-    'repeated': ([0, 0, 0, 1], [0, 0, 1, 1], [2.0, 2.0, 1.0, 3.0], 2),
-    # the first copy is 0: cuSOLVER would solve with 0 at (0, 0)
-    'repeated, zero first': ([0, 0, 0, 1, 1], [0, 0, 1, 0, 1], [0.0, 4.0, 1.0, 1.0, 3.0], 2),
-    # nse = 7 > n * n = 4
-    'more entries than elements': ([0, 0, 0, 0, 1, 1, 1], [0, 1, 0, 1, 0, 1, 1],
-                                   [3.0, 0.5, 1.0, 0.5, 1.0, 1.0, 2.0], 2),
-    # no repeats, columns descending within each row
-    'unsorted columns': ([0, 0, 1, 1, 2], [1, 0, 2, 1, 2], [1.0, 4.0, 1.0, 3.0, 2.0], 3),
-    # repeats that are not adjacent within the row
-    'repeated and unsorted': ([0, 0, 0, 1, 1, 1], [1, 0, 1, 1, 0, 1], [0.5, 4.0, 0.5, 1.0, 1.0, 2.0], 2),
-}
 
 
 @pytest.mark.parametrize('case', list(_NON_CANONICAL))
@@ -283,3 +285,63 @@ def test_canonical_csr_turns_negative_zero_positive():
     np.testing.assert_array_equal(np.asarray(d), [0.0, 2.0])
     np.testing.assert_array_equal(np.asarray(i), [0, 1])
     np.testing.assert_array_equal(np.asarray(p), [0, 1, 2])
+
+
+# Sparse object solve integration
+# -------------------------------
+
+@pytest.mark.slow
+class Test_solve:
+    @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
+    def test_csr(self, shape: brainstate.typing.Shape):
+        dense = brainstate.random.rand(*shape)
+        mask = dense < 0.1
+        dense = jnp.where(mask, dense, 0.)
+        csr = brainevent.CSR.fromdense(dense)
+        b = brainstate.random.randn(shape[0])
+
+        x = csr.solve(b)
+        assert jnp.allclose(csr @ x, b, atol=1e0, rtol=1e0)
+
+        x2 = jnp.linalg.solve(dense, b)
+        assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
+
+        jax.block_until_ready((dense, b, x, x2))
+
+    @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
+    def test_csc(self, shape: brainstate.typing.Shape):
+        dense = brainstate.random.rand(*shape)
+        mask = dense < 0.1
+        dense = jnp.where(mask, dense, 0.)
+        csc = brainevent.CSR.fromdense(dense)
+        b = brainstate.random.randn(shape[0])
+
+        x = csc.solve(b)
+        assert jnp.allclose(csc @ x, b, atol=1e0, rtol=1e0)
+
+        x2 = jnp.linalg.solve(dense, b)
+        assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
+
+        jax.block_until_ready((dense, b, x, x2))
+
+    @pytest.mark.parametrize('cls', [CSR, CSC])
+    def test_solve_nonsymmetric_matches_dense(self, cls):
+        # A non-symmetric, well-conditioned matrix: a solver that silently
+        # solves ``W.T x = b`` gives a large residual here.
+        dense = np.array([[4., 1., 0.], [0., 3., 2.], [1., 0., 5.]], dtype=np.float32)
+        b = np.array([1., 2., 3.], dtype=np.float32)
+        x = cls.fromdense(jnp.asarray(dense)).solve(jnp.asarray(b))
+        np.testing.assert_allclose(dense @ np.asarray(x), b, atol=1e-5)
+        np.testing.assert_allclose(np.asarray(x), np.linalg.solve(dense, b), atol=1e-5)
+
+    def test_csr_solve_forwards_tol_and_reorder(self, monkeypatch):
+        seen = {}
+
+        def fake_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
+            seen.update(tol=tol, reorder=reorder)
+            return b
+
+        monkeypatch.setattr(brainevent._csr.main, 'csr_solve', fake_solve)
+        csr = CSR.fromdense(jnp.eye(3))
+        csr.solve(jnp.ones(3), tol=1e-3, reorder=0)
+        assert seen == {'tol': 1e-3, 'reorder': 0}

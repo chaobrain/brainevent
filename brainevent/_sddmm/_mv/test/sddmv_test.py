@@ -1,4 +1,19 @@
-"""Exercise CSR sampled gradients, including CUDA/JAX direction dispatch."""
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""Tests for ``brainevent/_sddmm/_mv/sddmv.py``, grouped by behavior."""
 
 import importlib
 from dataclasses import replace
@@ -8,12 +23,17 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent._sddmm import csr_sddmv_dweight, csr_sddmv_p
+from brainevent._sddmm import csr_sddmm_dweight, csr_sddmm_p, csr_sddmv_dweight, csr_sddmv_p
+from brainevent._test_util import jax_x64_enabled
+
+
+# Vector sampled products and scheduler snapshots
+# -----------------------------------------------
 
 sddmv = importlib.import_module('brainevent._sddmm._mv.sddmv')
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=False)
 def enable_x64():
     previous = jax.config.jax_enable_x64
     jax.config.update('jax_enable_x64', True)
@@ -52,6 +72,7 @@ def check_result(args, *, transpose, weighted, backend=None, config=None):
     return fn, actual
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('weighted', [False, True])
 @pytest.mark.parametrize('value_dtype', [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64])
@@ -63,6 +84,7 @@ def test_value_event_types(value_dtype, event_dtype, transpose, weighted):
                  transpose=transpose, weighted=weighted)
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('weighted', [False, True])
 @pytest.mark.parametrize('value_dtype', [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64])
@@ -72,6 +94,7 @@ def test_nonfinite_cotangents(value_dtype, transpose, weighted):
     check_result((e, c, i, p), transpose=transpose, weighted=weighted)
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
 def test_jax_activity_is_checked_before_narrowing(transpose):
     e = jnp.array([1e-200, 0, -1e-200], dtype=jnp.float64)
@@ -82,6 +105,7 @@ def test_jax_activity_is_checked_before_narrowing(transpose):
     assert jnp.isnan(result[0]) and result[1] == 0 and jnp.isnan(result[2])
 
 
+@pytest.mark.usefixtures('enable_x64')
 def test_registration_and_direction_lowering():
     assert {'cuda_raw', 'jax_raw', 'cusparse'} <= set(csr_sddmv_p.available_backends('gpu'))
     if jax.default_backend() != 'gpu':
@@ -94,6 +118,7 @@ def test_registration_and_direction_lowering():
         assert 'csr_sddmv_cusparse' not in ir
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('weighted', [False, True])
 def test_explicit_jax_backend(transpose, weighted):
@@ -101,6 +126,7 @@ def test_explicit_jax_backend(transpose, weighted):
                  transpose=transpose, weighted=weighted, backend='jax_raw')
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
 def test_empty_and_repeated_slots(transpose):
     e = jnp.array([2.], dtype=jnp.float32)
@@ -111,6 +137,7 @@ def test_empty_and_repeated_slots(transpose):
         check_result((e, c, i, p), transpose=transpose, weighted=True)
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('weighted', [False, True])
 @pytest.mark.parametrize('value_dtype', [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64])
 def test_heavy_rows_and_repeated_calls(value_dtype, weighted):
@@ -122,6 +149,7 @@ def test_heavy_rows_and_repeated_calls(value_dtype, weighted):
     np.testing.assert_array_equal(fn(jnp.zeros_like(e), c, i, p), np.zeros(i.size))
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
 def test_vmap_and_portable_backend(transpose):
     e, c, i, p = inputs(jnp.float32, jnp.float32, transpose)
@@ -132,12 +160,14 @@ def test_vmap_and_portable_backend(transpose):
     check_result((e, c, i, p), transpose=transpose, weighted=True, backend='jax_raw')
 
 
+@pytest.mark.usefixtures('enable_x64')
 def test_sampled_operator_has_no_derivative_rule():
     e, c, i, p = inputs(jnp.float32, jnp.float32, True)
     with pytest.raises(NotImplementedError, match='Differentiation rule'):
         jax.jvp(lambda x: csr_sddmv_dweight(e, x, i, p, transpose=True), (c,), (c,))
 
 
+@pytest.mark.usefixtures('enable_x64')
 def test_validation():
     e, c, i, p = inputs(jnp.float32, jnp.float32, True)
     with pytest.raises(TypeError, match='events'):
@@ -148,6 +178,7 @@ def test_validation():
         csr_sddmv_dweight(e, c, i.astype(jnp.float32), p, transpose=True)
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('weighted', [False, True])
 def test_nonfinite_events_with_finite_ct(transpose, weighted):
@@ -158,6 +189,7 @@ def test_nonfinite_events_with_finite_ct(transpose, weighted):
     check_result((e, c, i, p), transpose=transpose, weighted=weighted)
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
 def test_shard_map_keeps_results_per_shard(transpose):
     from jax.sharding import Mesh, PartitionSpec as P
@@ -173,6 +205,7 @@ def test_shard_map_keeps_results_per_shard(transpose):
         np.testing.assert_allclose(result, expected, equal_nan=True)
 
 
+@pytest.mark.usefixtures('enable_x64')
 def test_scheduler_config_is_shared_by_capacity_and_compilation():
     from brainevent._csr.config import CSRConfig
     config = CSRConfig(block_size=128, fixed_scatter_blocks=32, tpr_threshold=16, task_nnz=64)
@@ -183,6 +216,7 @@ def test_scheduler_config_is_shared_by_capacity_and_compilation():
     check_result((e, c, i, p), transpose=True, weighted=True, config=config)
 
 
+@pytest.mark.usefixtures('enable_x64')
 def test_explicit_scheduler_snapshot_survives_primitive_binding():
     from brainevent._csr.config import CSRConfig
     config = CSRConfig(block_size=128, fixed_scatter_blocks=32, tpr_threshold=16, task_nnz=64)
@@ -195,6 +229,7 @@ def test_explicit_scheduler_snapshot_survives_primitive_binding():
     assert spec.mv_capacity(279, 2) > CSRConfig().mv_capacity(279, 2)
 
 
+@pytest.mark.usefixtures('enable_x64')
 def test_module_cache_ignores_matrix_geometry_and_device(monkeypatch, request):
     from brainevent._csr.config import CSRConfig, CSRDeviceInfo
     config = CSRConfig(tpr_threshold=16, task_nnz=64).prepare_structure(
@@ -216,6 +251,7 @@ def test_module_cache_ignores_matrix_geometry_and_device(monkeypatch, request):
     assert sddmv._load_hybrid_cached.cache_parameters()['maxsize'] == 128
 
 
+@pytest.mark.usefixtures('enable_x64')
 def test_zero_sized_matrix_axes():
     for transpose in [False, True]:
         for rows, cols in [(0, 3), (3, 0), (0, 0)]:
@@ -226,6 +262,7 @@ def test_zero_sized_matrix_axes():
             assert result.shape == (0,)
 
 
+@pytest.mark.usefixtures('enable_x64')
 def test_zero_ct_does_not_multiply_an_overflowed_event_sum():
     # Shared-weight consumers can sum these slots without first overflowing
     # a unit-weight forward reduction (four 1e38 events would sum to Inf).
@@ -237,6 +274,7 @@ def test_zero_ct_does_not_multiply_an_overflowed_event_sum():
     assert jnp.sum(result) == 0
 
 
+@pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('value_dtype', [jnp.float32, jnp.float64])
 def test_jax_product_precision(transpose, value_dtype):
@@ -248,6 +286,7 @@ def test_jax_product_precision(transpose, value_dtype):
     check_result((e, c, i, p), transpose=transpose, weighted=True, backend='jax_raw')
 
 
+@pytest.mark.usefixtures('enable_x64')
 def test_nontransposed_default_needs_no_cuda_loader(monkeypatch):
     def fail_load(*args, **kwargs):
         raise AssertionError('the nontransposed JAX path must not load a CUDA extension')
@@ -257,3 +296,72 @@ def test_nontransposed_default_needs_no_cuda_loader(monkeypatch):
     ir = str(fn.lower(*args).compiler_ir())
     assert 'csr_sddmv_cusparse' not in ir
     assert 'hybrid_sddmv' not in ir
+
+
+# Native registration, activity and portable execution
+# ----------------------------------------------------
+
+@pytest.mark.parametrize('batch', [1])
+@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('backend', [None, 'auto', 'cuda_raw'])
+def test_cuda_registration_and_lowering(batch, weighted, backend):
+    primitive = csr_sddmv_p if batch == 1 else csr_sddmm_p
+    assert {'auto', 'cuda_raw', 'jax_raw'} <= set(primitive.available_backends('gpu'))
+    if jax.default_backend() != 'gpu':
+        pytest.skip('CUDA execution requires a GPU')
+    e = jnp.asarray(np.resize([0., -2., 1.], (2, batch)), jnp.float32)
+    c = jnp.arange(3 * batch, dtype=jnp.float32).reshape(3, batch)
+    i, p = jnp.array([2, 0, 0], jnp.int32), jnp.array([0, 1, 3], jnp.int32)
+    fn = jax.jit(lambda e, c, i, p: csr_sddmm_dweight(
+        e, c, i, p, transpose=True, weighted=weighted, backend=backend))
+    expected = csr_sddmm_dweight(e, c, i, p, transpose=True, weighted=weighted, backend='jax_raw')
+    np.testing.assert_array_equal(fn(e, c, i, p), expected)
+    target = 'hybrid_sddmv_' if batch == 1 else 'batched_v3_sddmm_'
+    assert target in fn.lower(e, c, i, p).as_text()
+
+
+@pytest.mark.parametrize('batch', [1])
+@pytest.mark.parametrize('transpose,backend', [(True, 'jax_raw'), (False, 'jax_raw'), (False, 'auto')])
+def test_portable_routes_do_not_load_cuda(monkeypatch, batch, transpose, backend):
+    leaf = 'mv.sddmv' if batch == 1 else 'mm.sddmm'
+    module = importlib.import_module(f'brainevent._sddmm._{leaf}')
+    def fail_load(*args, **kwargs):
+        raise AssertionError('portable execution must not load CUDA')
+    monkeypatch.setattr(module, '_load_hybrid', fail_load)
+    e = jnp.ones((2 if transpose else 3, batch), jnp.float32)
+    c = jnp.full((3 if transpose else 2, batch), 2., jnp.float32)
+    i, p = jnp.array([2, 0], jnp.int32), jnp.array([0, 1, 2], jnp.int32)
+    fn = jax.jit(lambda e, c: csr_sddmm_dweight(
+        e, c, i, p, transpose=transpose, weighted=True, backend=backend))
+    np.testing.assert_array_equal(fn(e, c), [2 * batch, 2 * batch])
+    ir = fn.lower(e, c).as_text()
+    assert 'hybrid_sddmv_' not in ir and 'batched_v3_sddmm_' not in ir
+
+
+@pytest.mark.parametrize('batch', [1])
+@pytest.mark.parametrize('backend', ['auto', 'cuda_raw'])
+@pytest.mark.parametrize('event_dtype,value_dtype,tiny', [
+    (jnp.float64, jnp.float32, 1e-200),
+    (jnp.float32, jnp.float16, 1e-10),
+    (jnp.float64, jnp.bfloat16, 1e-200),
+])
+def test_weighted_cuda_checks_activity_after_cast(batch, backend, event_dtype, value_dtype, tiny):
+    if jax.default_backend() != 'gpu':
+        pytest.skip('CUDA execution requires a GPU')
+    with jax_x64_enabled():
+        e = jnp.zeros((3, batch), event_dtype).at[:, 0].set(
+            jnp.array([tiny, -tiny, 2.], event_dtype))
+        c = jnp.full((3, batch), -jnp.inf, value_dtype).at[:, 0].set(
+            jnp.array([jnp.inf, jnp.nan, 3.], value_dtype))
+        i, p = jnp.arange(3, dtype=jnp.int32), jnp.arange(4, dtype=jnp.int32)
+        fn = jax.jit(lambda e, c: csr_sddmm_dweight(
+            e, c, i, p, transpose=True, weighted=True, backend=backend))
+        result = fn(e, c)
+        assert result.dtype == c.dtype
+        # Narrowed events and exact zeros skip nonfinite cotangents; the
+        # active third row still contributes its weighted finite value.
+        np.testing.assert_array_equal(np.asarray(result, np.float64), [0., 0., 6.])
+        ir = fn.lower(e, c).as_text()
+        target = 'hybrid_sddmv_weighted_' if batch == 1 else 'batched_v3_sddmm_weighted_'
+        assert target in ir
+        assert 'stablehlo.is_finite' not in ir

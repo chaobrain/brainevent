@@ -1,4 +1,4 @@
-# Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,28 +13,44 @@
 # limitations under the License.
 # ==============================================================================
 
-import os
+"""Tests for ``brainevent/_csr/float/float.py``, grouped by behavior."""
 
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
-
+import importlib
 from contextlib import contextmanager
 
 import brainstate
 import braintools
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import brainevent._csr.float.float as float_mod
-from brainevent._csr.float.float import csrmv, csrmv_p, csrmm, csrmm_p
 from brainevent._csr._test_util import (
-    get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix,
-    cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
+    csr_matrix,
+    csr_vector,
+    cuda_kwargs,
+    get_csr,
+    int64_structure,
+    matrix_csr,
+    recording_ffi_call,
+    requires_gpu_backend,
+    shape_of,
+    vector_csr,
 )
+from brainevent._csr.float.float import csrmm, csrmm_p, csrmv, csrmv_p
 from brainevent._test_util import jax_x64_enabled, with_jax_x64
 
+
+# Floating-point CSR vector and matrix primitives
+# -----------------------------------------------
+
 platform = jax.default_backend()
+
+
 CSRMV_IMPLEMENTATIONS = tuple(csrmv_p.available_backends(platform))
+
+
 CSRMM_IMPLEMENTATIONS = tuple(csrmm_p.available_backends(platform))
 
 
@@ -102,10 +118,21 @@ def _csr_matrix_api(x, data, indices, indptr, shape, implementation):
     )
 
 
-def _row_ids_from_indptr(indptr):
-    indptr = jnp.asarray(indptr)
-    counts = jnp.diff(indptr)
-    return jnp.repeat(jnp.arange(counts.shape[0], dtype=indptr.dtype), counts)
+def _repeated_entry_csr(m, k, nse, homo, seed=0):
+    """Row-sorted CSR of ``nse`` entries drawn with replacement, and its dense sum."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    rows = np.sort(rng.integers(0, m, nse))
+    cols = rng.integers(0, k, nse)
+    w = np.full(nse, 1.5) if homo else rng.standard_normal(nse)
+    dense = np.zeros((m, k))
+    np.add.at(dense, (rows, cols), w)
+    data = jnp.asarray([1.5] if homo else w, jnp.float32)
+    indptr = jnp.asarray(np.searchsorted(rows, np.arange(m + 1)), jnp.int32)
+    return data, jnp.asarray(cols, jnp.int32), indptr, dense
+
+
+_REPEATED_CASES = [(2, 3, 8), (1, 1, 5), (7, 5, 105), (6, 5, 20)]
 
 
 def test_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
@@ -368,15 +395,6 @@ class TestFloatCSRMM:
         jax.block_until_ready((x, indptr, indices, w, o1, r1, o2, r2))
 
 
-# ---------------------------------------------------------------------------
-# int64 ``indptr`` policy on the CUDA path.
-#
-# ``indices`` stay int32 (the CUDA ABI is int32-only for coordinates) while
-# ``indptr`` may widen to int64. The generator tests run without a real GPU by
-# stubbing ``load_cuda_file``/``ffi_call``; the ``accepts`` tests need one.
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     'factory,args,kwargs',
     [
@@ -527,32 +545,6 @@ def test_csrmm_transpose_rule_symbolic_zero_cotangent(undefined):
     assert out[position].aval.shape == args[position].aval.shape
 
 
-# ---------------------------------------------------------------------------
-# Repeated (row, col) entries add, also when they outnumber the matrix
-# elements (#223). cuSPARSE rejects a CSR descriptor with ``nnz > rows * cols``,
-# so the heterogeneous ``cuda_raw`` kernels must not hand such a matrix to it.
-# ---------------------------------------------------------------------------
-
-def _repeated_entry_csr(m, k, nse, homo, seed=0):
-    """Row-sorted CSR of ``nse`` entries drawn with replacement, and its dense sum."""
-    import numpy as np
-    rng = np.random.default_rng(seed)
-    rows = np.sort(rng.integers(0, m, nse))
-    cols = rng.integers(0, k, nse)
-    w = np.full(nse, 1.5) if homo else rng.standard_normal(nse)
-    dense = np.zeros((m, k))
-    np.add.at(dense, (rows, cols), w)
-    data = jnp.asarray([1.5] if homo else w, jnp.float32)
-    indptr = jnp.asarray(np.searchsorted(rows, np.arange(m + 1)), jnp.int32)
-    return data, jnp.asarray(cols, jnp.int32), indptr, dense
-
-
-# (m, k, nse): 2 x 3 storing 8 (the issue's case), 1 x 1 storing 5, a random
-# matrix storing 3x its elements, and one whose 20 entries (15 distinct) fit
-# in its 30 elements, which cuSPARSE takes and adds.
-_REPEATED_CASES = [(2, 3, 8), (1, 1, 5), (7, 5, 105), (6, 5, 20)]
-
-
 @pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('homo', [False, True])
 @pytest.mark.parametrize('transpose', [False, True])
@@ -639,3 +631,191 @@ def test_cuda_hetero_kernel_skips_cusparse_beyond_matrix_size(
         assert bound == [{'shape': (2, 3), 'transpose': True}]
     else:
         assert kernel is sentinel
+
+
+# Sampled weight gradients and higher derivatives
+# -----------------------------------------------
+
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('batch', [None, 1, 3])
+def test_shared_weight_gradient_multiplies_before_reduction(transpose, batch):
+    indices = jnp.array([0, 0] if transpose else [0, 1], jnp.int32)
+    indptr = jnp.array([0, 1, 2] if transpose else [0, 2], jnp.int32)
+    shape = (2, 1) if transpose else (1, 2)
+    event_shape = (2,) + (() if batch is None else (batch,))
+    ct_shape = (1,) + (() if batch is None else (batch,))
+    events = jnp.full(event_shape, 60000, jnp.float16)
+    ct = jnp.full(ct_shape, 1e-4, jnp.float16)
+    weights = jnp.array([1e-4], jnp.float16)
+    operator = csrmv if batch is None else csrmm
+
+    def forward(w):
+        return operator(w, indices, indptr, events, shape=shape,
+                        transpose=transpose, backend='jax_raw')
+
+    actual = jax.jit(lambda w, c: jax.vjp(forward, w)[1](c)[0])(weights, ct)
+    expected = jnp.sum(events * ct).reshape(1)
+    assert np.isfinite(forward(weights)).all()
+    assert np.isfinite(expected).all()
+    np.testing.assert_allclose(actual, expected)
+
+
+@pytest.mark.parametrize('offset_dtype', [jnp.int32, jnp.int64])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('batch', [None, 1, 3])
+@pytest.mark.parametrize('shared', [False, True])
+def test_float_weight_gradient_preserves_structure_dtypes(offset_dtype, transpose, batch, shared):
+    with jax_x64_enabled():
+        indices = jnp.array([2, 0, 1, 1], jnp.int32)
+        indptr = jnp.array([0, 2, 2, 4], offset_dtype)
+        rows = jnp.array([0, 0, 2, 2], jnp.int32)
+        event_shape = (3 if transpose else 4,) + (() if batch is None else (batch,))
+        ct_shape = (4 if transpose else 3,) + (() if batch is None else (batch,))
+        events = jnp.arange(np.prod(event_shape), dtype=jnp.float32).reshape(event_shape) + 1
+        ct = jnp.arange(np.prod(ct_shape), dtype=jnp.float32).reshape(ct_shape) + 2
+        weights = jnp.ones(1 if shared else indices.size, jnp.float32)
+        operator = csrmv if batch is None else csrmm
+
+        def forward(w):
+            return operator(w, indices, indptr, events, shape=(3, 4),
+                            transpose=transpose, backend='jax_raw')
+
+        actual = jax.jit(lambda w, c: jax.vjp(forward, w)[1](c)[0])(weights, ct)
+        unit, out = (rows, indices) if transpose else (indices, rows)
+        expected = events[unit] * ct[out]
+        if batch is not None:
+            expected = jnp.sum(expected, axis=1)
+        if shared:
+            expected = jnp.sum(expected).reshape(1)
+        np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('batch', [None, 1, 3])
+def test_shared_float_weight_gradient_remains_twice_differentiable(transpose, batch):
+    indices = jnp.array([1, 0, 1], jnp.int32)
+    indptr = jnp.array([0, 1, 3], jnp.int32)
+    event_shape = (2,) + (() if batch is None else (batch,))
+    events = jnp.arange(np.prod(event_shape), dtype=jnp.float32).reshape(event_shape) + 1
+    weights = jnp.array([2.], jnp.float32)
+    direction = jnp.array([.5], jnp.float32)
+    operator = csrmv if batch is None else csrmm
+
+    def forward(w):
+        return operator(w, indices, indptr, events, shape=(2, 2),
+                        transpose=transpose, backend='jax_raw')
+
+    loss = lambda w: jnp.sum(forward(w) ** 2)
+    actual = jax.jit(lambda w: jax.jvp(jax.grad(loss), (w,), (direction,))[1])(weights)
+    expected = 2 * jnp.sum(forward(jnp.ones_like(weights)) ** 2) * direction
+    np.testing.assert_allclose(actual, expected)
+
+
+# Sampled gradient dispatch and backend derivatives
+# -------------------------------------------------
+
+_sampled_dispatch = importlib.import_module('brainevent._sddmm.dispatch')
+
+
+_sampled_float_csr = importlib.import_module('brainevent._csr.float.float')
+
+
+_sampled_binary_csr = importlib.import_module('brainevent._csr.binary.binary')
+
+
+_sampled_indexed_csr = importlib.import_module('brainevent._csr.binary.binary_indexed')
+
+
+_sampled_CASES = ['float', 'binary', 'weighted', 'indexed_binary', 'indexed_weighted']
+
+
+def _sampled_operands(case, transpose, batch, homo=False, backend='jax_raw'):
+    indices = jnp.array([2, 0, 1, 1], jnp.int32)
+    indptr = jnp.array([0, 2, 2, 4], jnp.int32)
+    rows = jnp.array([0, 0, 2, 2], jnp.int32)
+    # Two physical slots share one canonical weight.
+    perm = jnp.array([2, 0, 1, 1], jnp.int32)
+    weights = jnp.arange(1 if homo else 3 if case.startswith('indexed') else 4,
+                          dtype=jnp.float32) + 1
+    event_shape = (3 if transpose else 4,) + (() if batch is None else (batch,))
+    events = jnp.asarray(np.resize([0., -2., 1., 3.], event_shape))
+    if case == 'float':
+        op = _sampled_float_csr.csrmv if batch is None else _sampled_float_csr.csrmm
+        call = lambda w: op(w, indices, indptr, events, shape=(3, 4),
+                            transpose=transpose, backend=backend)
+    elif case.startswith('indexed'):
+        op = _sampled_indexed_csr.binary_csrmv_indexed if batch is None else _sampled_indexed_csr.binary_csrmm_indexed
+        call = lambda w: op(
+            w, indices, indptr, perm, events, shape=(3, 4), transpose=transpose,
+            weighted=case.endswith('weighted'), backend=backend)
+    else:
+        op = _sampled_binary_csr.binary_csrmv if batch is None else _sampled_binary_csr.binary_csrmm
+        call = lambda w: op(
+            w, indices, indptr, events, shape=(3, 4), transpose=transpose,
+            weighted=case == 'weighted', backend=backend)
+    return call, weights, events, rows, indices, perm
+
+
+def _sampled_check_second_order_gradients(call, w):
+    loss = lambda w: jnp.sum(call(w) ** 2)
+    direction = jnp.arange(w.size, dtype=w.dtype) + .5
+    got_fwd = jax.jit(lambda w: jax.jvp(jax.grad(loss), (w,), (direction,))[1])(w)
+    got_rev = jax.jit(jax.grad(lambda w: jnp.vdot(jax.grad(loss)(w), direction)))(w)
+    # The forward is linear in weights; its explicit basis matrix gives the
+    # Hessian 2*J.T@J independently of the SDDMM transpose implementation.
+    basis_outputs = jax.vmap(call)(jnp.eye(w.size, dtype=w.dtype)).reshape(w.size, -1)
+    expected = 2 * basis_outputs @ (basis_outputs.T @ direction)
+    np.testing.assert_allclose(got_fwd, expected, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(got_rev, expected, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize('case,batch', [('float', None), ('float', 0), ('float', 1), ('float', 3)])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('homo', [False, True])
+@pytest.mark.parametrize('nonfinite', [False, True])
+def test_csr_consumers_dispatch_slot_gradients(monkeypatch, case, transpose, batch, homo, nonfinite):
+    calls = []
+    original = _sampled_dispatch.sddmm
+    def record(a, b, indices, indptr=None, **kwargs):
+        backend = kwargs.get('backend')
+        calls.append((a.shape[1] if a.ndim == 2 else 1, indices.ndim,
+                      None if indptr is None else indptr.shape,
+                      kwargs.get('mode', 'float'), getattr(backend, 'requested', backend)))
+        return original(a, b, indices, indptr, **kwargs)
+    monkeypatch.setattr(_sampled_dispatch, 'sddmm', record)
+    jax.clear_caches()
+    call, w, events, rows, cols, perm = _sampled_operands(case, transpose, batch, homo)
+    ct_shape = (4 if transpose else 3,) + (() if batch is None else (batch,))
+    ct = jnp.asarray(np.resize([2., -.5, 3., 0.], ct_shape))
+    if nonfinite and batch != 0:
+        if batch is None:
+            ct = ct.at[0].set(jnp.inf).at[1].set(jnp.nan)
+        else:
+            ct = ct.at[0, 0].set(jnp.inf).at[1, 0].set(jnp.nan)
+    def pullback(w, ct):
+        return jax.vjp(call, w)[1](ct)[0]
+    actual = jax.jit(pullback)(w, ct)
+    unit, out = (rows, cols) if transpose else (cols, rows)
+    x, terms = events[unit], ct[out]
+    if case == 'float' or case.endswith('weighted'):
+        terms = x * terms
+    if case != 'float':
+        terms = jnp.where(x != 0, terms, 0.)
+    per_slot = terms if batch is None else jnp.sum(terms, axis=1)
+    if homo:
+        expected = jnp.sum(per_slot).reshape(1)
+    elif case.startswith('indexed'):
+        expected = jnp.zeros_like(w).at[perm].add(per_slot)
+    else:
+        expected = per_slot
+    np.testing.assert_allclose(actual, expected, equal_nan=True)
+    mode = 'float' if case == 'float' else 'weighted' if case.endswith('weighted') else 'binary'
+    backend = None if case == 'float' else 'jax_raw'
+    assert calls == [(1 if batch is None else batch, 1, (4,), mode, backend)]
+
+
+@pytest.mark.parametrize('case,batch', [('float', None), ('float', 1), ('float', 3)])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_migrated_consumers_preserve_second_order_gradients(case, transpose, batch):
+    call, w, _, _, _, _ = _sampled_operands(case, transpose, batch)
+    _sampled_check_second_order_gradients(call, w)

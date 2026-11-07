@@ -1,4 +1,4 @@
-# Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,38 +13,150 @@
 # limitations under the License.
 # ==============================================================================
 
+"""Tests for ``brainevent/_csr/plasticity/plasticity_binary.py``, grouped by behavior."""
 
 import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import jax.numpy as _jnp
 import numpy as np
+import numpy as _np
 import pytest
 import scipy.sparse as sp
 
 import brainevent
 import brainevent as be
+import brainevent as _be
 import brainevent._csr.plasticity.plasticity_binary as plasticity_mod
+from brainevent._csr._test_util import EVENT_DTYPE_NAMES, event_dtype_context, event_mask, event_values, int64_structure, random_csr_numpy, recording_ffi_call, requires_gpu_backend, shape_of
 from brainevent._csr.plasticity.plasticity_binary import (
-    update_csr_on_binary_pre,
     update_csr_on_binary_post,
-    update_csr_on_binary_pre_p,
     update_csr_on_binary_post_p,
+    update_csr_on_binary_pre,
+    update_csr_on_binary_pre_p,
 )
-from brainevent._csr._test_util import (
-    cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
-)
-from brainevent._test_util import jax_x64_enabled, with_jax_x64
+from brainevent._test_util import check_plasticity_grads, jax_x64_enabled, with_jax_x64
+
+
+# Module tests
+# ------------
 
 PLATFORM = jax.default_backend()
+
+
 PRE_BACKENDS = tuple(update_csr_on_binary_pre_p.available_backends(PLATFORM))
+
+
 POST_BACKENDS = tuple(update_csr_on_binary_post_p.available_backends(PLATFORM))
+
 
 shapes = [
     (20, 100),
     (100, 100),
     (100, 50),
 ]
+
+
+def _csr_to_csc_with_weight_indices(csr_data, csr_indices, csr_indptr, shape):
+    """Convert CSR format to CSC format and return weight indices mapping.
+
+    Returns:
+        csc_indices: Row indices in CSC format (presynaptic neuron indices)
+        csc_indptr: Column pointers in CSC format
+        weight_indices: Mapping from CSC positions to original CSR data positions
+    """
+    # Handle Quantity data by extracting mantissa
+    if hasattr(csr_data, 'mantissa'):
+        csr_data_np = np.asarray(csr_data.mantissa)
+    else:
+        csr_data_np = np.asarray(csr_data)
+
+    # Create scipy CSR matrix
+    scipy_csr = sp.csr_matrix(
+        (csr_data_np, np.asarray(csr_indices), np.asarray(csr_indptr)),
+        shape=shape
+    )
+    # Convert to CSC
+    scipy_csc = scipy_csr.tocsc()
+
+    # The weight_indices maps CSC position -> CSR position
+    # We can compute this by tracking where each element came from
+    # CSC data comes from reordering CSR data based on column sorting
+
+    # Create a CSR matrix with data = position indices
+    position_indices = np.arange(len(csr_data_np), dtype=np.int32)
+    scipy_csr_indices = sp.csr_matrix(
+        (position_indices, np.asarray(csr_indices), np.asarray(csr_indptr)),
+        shape=shape
+    )
+    scipy_csc_indices = scipy_csr_indices.tocsc()
+    weight_indices = scipy_csc_indices.data
+
+    return (
+        jnp.asarray(scipy_csc.indices, dtype=jnp.int32),
+        jnp.asarray(scipy_csc.indptr, dtype=jnp.int32),
+        jnp.asarray(weight_indices, dtype=jnp.int32)
+    )
+
+
+def _dense(rng, n_pre, n_post, p=0.5):
+    mask = rng.random((n_pre, n_post)) < p
+    vals = rng.random((n_pre, n_post)) + 0.5  # in [0.5, 1.5)
+    return jnp.asarray(mask * vals, dtype=jnp.float32)
+
+
+def _ref_pre(W, pre_spike, post_trace, w_min, w_max):
+    W = np.asarray(W)
+    mask = (W != 0.0)
+    active = (np.asarray(pre_spike) != 0).astype(W.dtype)        # (n_pre,)
+    delta = mask * active[:, None] * np.asarray(post_trace)[None, :]
+    return np.clip(W + delta, w_min, w_max)
+
+
+def _ref_post(W, pre_trace, post_spike, w_min, w_max):
+    W = np.asarray(W)
+    mask = (W != 0.0)
+    active = (np.asarray(post_spike) != 0).astype(W.dtype)       # (n_post,)
+    delta = mask * np.asarray(pre_trace)[:, None] * active[None, :]
+    return np.clip(W + delta, w_min, w_max)
+
+
+_PL_PRE, _PL_POST = 12, 9
+
+
+_AD_PRE, _AD_POST = 9, 7
+
+
+_W_LO, _W_HI = jnp.float32(0.2), jnp.float32(1.3)
+
+
+def _ad_spikes(n, seed):
+    """Spikes containing 2, -1 (both active) and 0."""
+    base = np.array([2., -1., 0., 0.5, 0., 1.], dtype=np.float32)
+    return jnp.asarray(np.resize(np.roll(base, seed), n))
+
+
+def _ad_problem(seed=0):
+    rng = np.random.default_rng(seed)
+    data, indices, indptr, _ = random_csr_numpy(rng, _AD_PRE, _AD_POST)
+    data = jnp.asarray(rng.uniform(0.3, 1.2, data.shape), dtype=jnp.float32)
+    rows = np.repeat(np.arange(_AD_PRE), np.diff(indptr))
+    return data, jnp.asarray(indices), jnp.asarray(indptr), rows, rng
+
+
+def _ref_edges(weight, active_e, trace_e, w_min, w_max):
+    return jnp.clip(weight + jnp.where(active_e, trace_e, 0.), w_min, w_max)
+
+
+def _nan_trace_problem(seed=31):
+    rng = np.random.default_rng(seed)
+    n_pre, n_post = 9, 7
+    dense = rng.uniform(0.1, 1.0, (n_pre, n_post)) * (rng.random((n_pre, n_post)) < 0.6)
+    csr = brainevent.CSR.fromdense(jnp.asarray(dense, jnp.float32))
+    rows = np.repeat(np.arange(n_pre), np.diff(np.asarray(csr.indptr)))
+    cols = np.asarray(csr.indices)
+    return csr, rows, cols, (n_pre, n_post)
 
 
 class Test_csr_on_pre:
@@ -129,48 +241,6 @@ class Test_csr_on_pre:
         assert jnp.allclose(csr.todense(), mat, atol=1e-1, rtol=1e-1)
 
         jax.block_until_ready((mat, pre_spike, post_trace))
-
-
-def _csr_to_csc_with_weight_indices(csr_data, csr_indices, csr_indptr, shape):
-    """Convert CSR format to CSC format and return weight indices mapping.
-
-    Returns:
-        csc_indices: Row indices in CSC format (presynaptic neuron indices)
-        csc_indptr: Column pointers in CSC format
-        weight_indices: Mapping from CSC positions to original CSR data positions
-    """
-    # Handle Quantity data by extracting mantissa
-    if hasattr(csr_data, 'mantissa'):
-        csr_data_np = np.asarray(csr_data.mantissa)
-    else:
-        csr_data_np = np.asarray(csr_data)
-
-    # Create scipy CSR matrix
-    scipy_csr = sp.csr_matrix(
-        (csr_data_np, np.asarray(csr_indices), np.asarray(csr_indptr)),
-        shape=shape
-    )
-    # Convert to CSC
-    scipy_csc = scipy_csr.tocsc()
-
-    # The weight_indices maps CSC position -> CSR position
-    # We can compute this by tracking where each element came from
-    # CSC data comes from reordering CSR data based on column sorting
-
-    # Create a CSR matrix with data = position indices
-    position_indices = np.arange(len(csr_data_np), dtype=np.int32)
-    scipy_csr_indices = sp.csr_matrix(
-        (position_indices, np.asarray(csr_indices), np.asarray(csr_indptr)),
-        shape=shape
-    )
-    scipy_csc_indices = scipy_csr_indices.tocsc()
-    weight_indices = scipy_csc_indices.data
-
-    return (
-        jnp.asarray(scipy_csc.indices, dtype=jnp.int32),
-        jnp.asarray(scipy_csc.indptr, dtype=jnp.int32),
-        jnp.asarray(weight_indices, dtype=jnp.int32)
-    )
 
 
 class Test_on_post:
@@ -283,34 +353,6 @@ def test_csr_homogeneous_weight_raises():
         update_csr_on_binary_pre(weight, indices, indptr, pre_spike, post_trace, shape=(2, 3))
 
 
-# ---------------------------------------------------------------------------
-# CSC-layout plasticity updates (``update_csc_on_binary_pre`` /
-# ``update_csc_on_binary_post``), validated against a dense reference.
-# ---------------------------------------------------------------------------
-
-
-def _dense(rng, n_pre, n_post, p=0.5):
-    mask = rng.random((n_pre, n_post)) < p
-    vals = rng.random((n_pre, n_post)) + 0.5  # in [0.5, 1.5)
-    return jnp.asarray(mask * vals, dtype=jnp.float32)
-
-
-def _ref_pre(W, pre_spike, post_trace, w_min, w_max):
-    W = np.asarray(W)
-    mask = (W != 0.0)
-    active = (np.asarray(pre_spike) != 0).astype(W.dtype)        # (n_pre,)
-    delta = mask * active[:, None] * np.asarray(post_trace)[None, :]
-    return np.clip(W + delta, w_min, w_max)
-
-
-def _ref_post(W, pre_trace, post_spike, w_min, w_max):
-    W = np.asarray(W)
-    mask = (W != 0.0)
-    active = (np.asarray(post_spike) != 0).astype(W.dtype)       # (n_post,)
-    delta = mask * np.asarray(pre_trace)[:, None] * active[None, :]
-    return np.clip(W + delta, w_min, w_max)
-
-
 @pytest.mark.parametrize("spike_dtype", [jnp.bool_, jnp.float32])
 def test_update_csc_on_binary_pre_matches_dense(spike_dtype):
     rng = np.random.default_rng(0)
@@ -361,16 +403,6 @@ def test_update_csc_on_binary_pre_no_clip():
     got = csc.with_data(new_w).todense()
     ref = _ref_pre(W, pre_spike, post_trace, None, None)
     assert jnp.allclose(got, jnp.asarray(ref), atol=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# int64 ``indptr`` policy on the CUDA path.
-#
-# ``indices`` and ``weight_indices`` stay int32 (the CUDA ABI is int32-only for
-# coordinates) while ``indptr`` may widen to int64. The generator tests run
-# without a real GPU by stubbing ``load_cuda_file``/``ffi_call``; the ``accepts``
-# tests need one.
-# ---------------------------------------------------------------------------
 
 
 def test_plasticity_pre_cuda_rejects_int64_indices_before_loading_cuda():
@@ -499,18 +531,6 @@ def test_plasticity_post_cuda_accepts_int64_indptr():
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Event activity contract: a spike is active iff ``spike != 0`` (negative and
-# fractional values included) on every backend, including CUDA.
-# ---------------------------------------------------------------------------
-
-from brainevent._csr._test_util import (  # noqa: E402
-    EVENT_DTYPE_NAMES, event_dtype_context, event_mask, event_values, random_csr_numpy,
-)
-
-_PL_PRE, _PL_POST = 12, 9
-
-
 @pytest.mark.slow
 @pytest.mark.parametrize('backend', PRE_BACKENDS)
 @pytest.mark.parametrize('dtype_name', EVENT_DTYPE_NAMES)
@@ -548,35 +568,6 @@ def test_csr_on_post_spike_is_active_iff_nonzero(backend, dtype_name):
         rows = np.repeat(np.arange(_PL_PRE), np.diff(indptr))
         expected = data + pre_trace[rows] * event_mask(post_spike)[indices]
         np.testing.assert_allclose(np.asarray(got, dtype=np.float64), expected, rtol=1e-5, atol=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Autodiff (#202): the updates are jointly linear in (weight, trace); clipping
-# happens in the wrapper, so w_min / w_max gradients come from JAX.
-# ---------------------------------------------------------------------------
-
-from brainevent._test_util import check_plasticity_grads  # noqa: E402
-
-_AD_PRE, _AD_POST = 9, 7
-_W_LO, _W_HI = jnp.float32(0.2), jnp.float32(1.3)
-
-
-def _ad_spikes(n, seed):
-    """Spikes containing 2, -1 (both active) and 0."""
-    base = np.array([2., -1., 0., 0.5, 0., 1.], dtype=np.float32)
-    return jnp.asarray(np.resize(np.roll(base, seed), n))
-
-
-def _ad_problem(seed=0):
-    rng = np.random.default_rng(seed)
-    data, indices, indptr, _ = random_csr_numpy(rng, _AD_PRE, _AD_POST)
-    data = jnp.asarray(rng.uniform(0.3, 1.2, data.shape), dtype=jnp.float32)
-    rows = np.repeat(np.arange(_AD_PRE), np.diff(indptr))
-    return data, jnp.asarray(indices), jnp.asarray(indptr), rows, rng
-
-
-def _ref_edges(weight, active_e, trace_e, w_min, w_max):
-    return jnp.clip(weight + jnp.where(active_e, trace_e, 0.), w_min, w_max)
 
 
 @pytest.mark.parametrize('backend', PRE_BACKENDS)
@@ -710,21 +701,6 @@ def test_csr_plasticity_transpose_rejects_structure_and_spikes(prim):
     assert type(out[0]) is ad.Zero and type(out[trace_pos]) is ad.Zero
 
 
-# ---------------------------------------------------------------------------
-# Inactive edges are returned bit-identical, whatever the trace (NaN/Inf).
-# docs/specs/2026-10-24-inactive-row-nan-isolation.md
-# ---------------------------------------------------------------------------
-
-def _nan_trace_problem(seed=31):
-    rng = np.random.default_rng(seed)
-    n_pre, n_post = 9, 7
-    dense = rng.uniform(0.1, 1.0, (n_pre, n_post)) * (rng.random((n_pre, n_post)) < 0.6)
-    csr = brainevent.CSR.fromdense(jnp.asarray(dense, jnp.float32))
-    rows = np.repeat(np.arange(n_pre), np.diff(np.asarray(csr.indptr)))
-    cols = np.asarray(csr.indices)
-    return csr, rows, cols, (n_pre, n_post)
-
-
 @pytest.mark.parametrize('backend', PRE_BACKENDS)
 @pytest.mark.parametrize('spike_dtype', ['bool', 'float32'])
 @pytest.mark.parametrize('bad', [np.nan, np.inf])
@@ -809,3 +785,59 @@ def test_csr_on_pre_trace_cotangent_ignores_inactive_edges(backend):
     _, vjp = jax.vjp(f, jnp.ones(shape[1], jnp.float32))
     (ct_trace,) = vjp(ct)
     assert np.isfinite(np.asarray(ct_trace)).all()
+
+
+# CSR and CSC plasticity method adapters
+# --------------------------------------
+
+def _object_rand_dense(rng, m, n, p=0.4):
+    return _jnp.asarray((rng.random((m, n)) < p) * rng.random((m, n)), _jnp.float32)
+
+
+@pytest.mark.slow
+def test_csr_update_on_pre_method_parity():
+    rng = _np.random.default_rng(20)
+    csr = _be.CSR.fromdense(_object_rand_dense(rng, 4, 5))
+    pre_spike = _jnp.asarray(rng.random(4) > 0.5)
+    post_trace = _jnp.asarray(rng.random(5), _jnp.float32)
+    got = csr.update_on_pre(pre_spike, post_trace, 0.0, 1.5).data
+    ref = _be.update_csr_on_binary_pre(
+        csr.data, csr.indices, csr.indptr, pre_spike, post_trace, 0.0, 1.5, shape=csr.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
+
+
+@pytest.mark.slow
+def test_csr_update_on_post_method_parity():
+    rng = _np.random.default_rng(21)
+    csr = _be.CSR.fromdense(_object_rand_dense(rng, 4, 5))
+    pre_trace = _jnp.asarray(rng.random(4), _jnp.float32)
+    post_spike = _jnp.asarray(rng.random(5) > 0.5)
+    got = csr.update_on_post(pre_trace, post_spike, 0.0, 1.5).data
+    cscp, csci, perm = _be.csr_to_csc_index(csr.indptr, csr.indices, shape=csr.shape)
+    ref = _be.update_csr_on_binary_post(
+        csr.data, csci, cscp, perm, pre_trace, post_spike, 0.0, 1.5, shape=csr.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
+
+
+@pytest.mark.slow
+def test_csc_update_on_pre_method_parity():
+    rng = _np.random.default_rng(22)
+    csc = _be.CSC.fromdense(_object_rand_dense(rng, 5, 3))
+    pre_spike = _jnp.asarray(rng.random(5) > 0.5)
+    post_trace = _jnp.asarray(rng.random(3), _jnp.float32)
+    got = csc.update_on_pre(pre_spike, post_trace, 0.0, 1.5).data
+    ref = _be.update_csc_on_binary_pre(
+        csc.data, csc.indices, csc.indptr, pre_spike, post_trace, 0.0, 1.5, shape=csc.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
+
+
+@pytest.mark.slow
+def test_csc_update_on_post_method_parity():
+    rng = _np.random.default_rng(23)
+    csc = _be.CSC.fromdense(_object_rand_dense(rng, 5, 3))
+    pre_trace = _jnp.asarray(rng.random(5), _jnp.float32)
+    post_spike = _jnp.asarray(rng.random(3) > 0.5)
+    got = csc.update_on_post(pre_trace, post_spike, 0.0, 1.5).data
+    ref = _be.update_csc_on_binary_post(
+        csc.data, csc.indices, csc.indptr, pre_trace, post_spike, 0.0, 1.5, shape=csc.shape)
+    assert _jnp.allclose(got, ref, atol=1e-6)
