@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- CSR delay delivery now uses the prepared `delaycsr(CSR)` implementation.
+  `CSR.delay_layout(delays, n_slots)` returns this object and inherits the
+  source CSR backend. Explicit delay backends are `cuda_raw` and `jax_raw`;
+  `None` selects the platform default. `csr_delay_deliver_layout` still adds
+  to an explicit ring without clearing it. Stateful `forward` and `x @ W`
+  clear the consumed slot through the JAX `clear_head` member.
+- Initialize delay layouts outside JIT with one integer delay per edge.
+  `layout.with_data(weights)` now requires weights in the initialized
+  `layout.data` order, with the same shape and dtype. The prepared interface
+  accepts plain arrays; weighted events and the ring share the weight dtype.
+  Scalar-delay broadcasting, Quantity inputs and mixed weighted dtypes from
+  the previous delay interface are no longer supported.
+
+### Removed
+
+- The old `CSRDelayLayout`, `CSR.delay_deliver`, `csr_delay_deliver` and
+  `csr_delay_deliver_p` interfaces, along with the old non-layout kernels.
+  Use `CSR.delay_layout` or `delaycsr`, followed by
+  `csr_delay_deliver_layout(ring, events, layout, t)`. Delay delivery has no
+  cuSPARSE or Numba backend.
+- Redundant `brainevent._sddmm` wrappers: `sddmm_indices`,
+  `sddmm_coo_indices`, `sddmm_bcoo`, `csr_sddmv_dweight_binary`, and
+  `csr_sddmv_dweight_weighted`. Use `sddmm(A, B, coordinates)` for an array
+  of sampled values; stack separate row/column coordinates or pass a BCOO
+  pattern's `.indices`. Construct `BCOO((values, coordinates), shape=...)`
+  explicitly when needed. Use `csr_sddmv_dweight(..., weighted=False/True)`
+  for binary/weighted vector gradients. The generic CSR adapters and both
+  primitive `.call()` registrations remain available.
+
 ### Fixed
 
 - A process no longer hangs at interpreter exit when an XLA execution that

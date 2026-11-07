@@ -67,14 +67,71 @@ Row slicing.
    csr_slice_rows
    csr_slice_rows_p
 
-Per-edge-delay spike delivery into an arrival ring.
+Prepared per-edge-delay spike delivery into an arrival ring.
+
+Build a ``delaycsr`` once, either directly or with ``CSR.delay_layout``.
+``csr_delay_deliver_layout`` adds to an explicit ring without clearing slots
+or mutating the object's owned ring, head, workspace or canonical weights.
+The layout inherits the parent CSR backend; explicit backends are
+``cuda_raw`` and ``jax_raw``.
+
+Both backends share input validation at the primitive entry. Shapes and dtypes
+are checked during tracing; dynamic head, CSR/delay metadata and active-task
+capacity are checked with JAX before delivery. Metadata is checked even for
+inactive rows. With the raw primitive's ``check_status=False``, invalid metadata
+or capacity is reported in status without delivering into the ring; invalid
+heads always raise. Consuming only status or a nonempty task array retains the
+check. Eager and JIT calls use the same execution-time checks; an asynchronous
+error can surface when the result is synchronized.
+
+The CUDA FFI invokes the prepared delivery core directly. Independent C++
+``launch_*`` calls use a shared native preflight before invoking that same core.
+The delivery kernels do not repeat head, metadata or capacity validation.
+Assigning ``delaycsr.head`` also supports clearing or reading without delivery,
+so assignment checks its scalar integer and range contract, using the same
+Python range predicate and checking wide integers before conversion to int32.
+
+``clear_head`` clears the current slot with JAX. ``forward`` and ``x @ W``
+use the same clearing operation before additive delivery and return the next
+slot. For JAX transformations, pass the state explicitly and return its updated
+pytree; use ``with_data`` for a local weight-replacement copy when taking
+gradients. JIT-compiling a bound method or mutating a closed-over state is
+unsupported and is not diagnosed by these methods.
+
+Events may use boolean, integer or floating dtypes. Binary delivery uses
+``event != 0``; weighted delivery also uses the event amplitude. The ring's
+mantissa dtype determines execution storage: ``float16``, ``bfloat16``,
+``float32`` or ``float64``. Weights are converted temporarily to that dtype
+for delivery, and the weighted task workspace uses the same dtype. An
+explicit ring may have a different dtype from the stored weights.
+
+Weights and events may carry units. The ring must have units compatible with
+their product. Delivery converts contributions to the ring's unit and preserves
+the ring's dtype and unit, so its pytree structure stays fixed across
+``scan`` and ``while_loop`` steps. Unit scaling uses at least float32 before
+conversion to the ring dtype; stored arrivals are not rescaled. Supply a
+compatible ring when using unitful events.
+Canonical weights retain their original dtype and unit. Construction and
+weight replacement copy caller-owned NumPy storage.
+
+Weight replacements via ``with_data`` must follow the initialized
+``delaycsr.data`` edge order and match its shape, dtype and unit exactly.
+Shared weights retain shape ``(1,)`` and per-edge weights retain shape
+``(nnz,)``. Changing the execution ring dtype does not relax these rules.
+
+Event activity and derivative conventions follow ``main@c099629``, including its
+weighted-event underflow difference. JAX checks activity on the original
+event, then casts its amplitude to the ring dtype. CUDA casts weighted
+events before its native activity check. Consequently, a nonzero event that
+rounds to zero can propagate NaN against an infinite weight on JAX while
+contributing zero on CUDA. Event JVPs retain this backend difference;
+weight VJPs use original event activity on both backends. Ordinary zero
+events still contribute exactly zero against NaN or infinite weights.
 
 .. autosummary::
    :toctree: generated/
 
-   csr_delay_deliver
-   csr_delay_deliver_p
-   CSRDelayLayout
+   delaycsr
    csr_delay_deliver_layout
    csr_delay_deliver_layout_p
 

@@ -297,7 +297,7 @@ requires_gpu_backend = pytest.mark.skipif(
 
 
 def strip_hybrid_suffix(name):
-    """Remove the config-dependent hybrid module suffix (e.g. ``_b256_s2048_t128_n4096``).
+    """Remove hybrid MV config and MM source-digest module suffixes.
 
     Parameters
     ----------
@@ -307,19 +307,21 @@ def strip_hybrid_suffix(name):
     Returns
     -------
     str
-        ``name`` with the active hybrid-config suffix removed.
+        ``name`` with the hybrid module suffix removed.
 
     Notes
     -----
-    The hybrid ``.so`` module names embed the active
-    :func:`~brainevent._csr.hybrid_config.get_hybrid_config` so different configs
-    compile to distinct modules. These tests only care about the logical module
-    identity, so the suffix is normalised away to stay config-agnostic.
+    Hybrid MV modules embed the active :class:`~brainevent.CSRConfig`; hybrid
+    MM modules embed a digest of their CUDA sources. These tests only care
+    about the logical module identity.
     """
-    from brainevent._csr.hybrid_config import get_hybrid_config, module_suffix_for_config
+    import re
 
-    suffix = module_suffix_for_config(get_hybrid_config())
-    return name.replace(suffix, '') if suffix else name
+    name = re.sub(r"_b[0-9]+_s[0-9]+_t[0-9]+_n[0-9]+", "", name)
+    return re.sub(
+        r"(csr_hybrid_mm_(?:row|col_major)_(?:binary|weighted))_[0-9a-f]{12}(?=\.|$)",
+        r"\1", name,
+    )
 
 
 def int64_structure(indptr_dtype):
@@ -542,7 +544,7 @@ def heavy_row_csr_numpy(rng, m, k, row_nnz, weight_dtype=np.float32):
 
     The hybrid CUDA scatter kernels split rows with more than
     ``BE_HYBRID_TPR_THRESHOLD`` (128) stored entries into chunks of
-    ``BE_HYBRID_TASK_NNZ`` (4096) entries; ``row_nnz > 4096`` therefore
+    ``BE_HYBRID_TASK_NNZ`` (512 by default) entries; ``row_nnz > 512`` therefore
     exercises multi-chunk rows.
 
     Parameters
@@ -768,3 +770,18 @@ def homo_ct_case(case, transpose):
     with np.errstate(invalid='ignore'):
         terms = np.where(case.active, f * ct2[out_idx], 0.0)
     return jnp.asarray(ct), terms.sum()
+
+
+def prepared_config(indices, indptr, shape):
+    """Explicitly prepare concrete test structure for raw hybrid operator calls."""
+    from brainevent._csr.config import CSRConfig
+    from brainevent._csr.config import get_device_info
+
+    if isinstance(indices, jax.core.Tracer) or isinstance(indptr, jax.core.Tracer):
+        return CSRConfig()
+    with jax.ensure_compile_time_eval():
+        indices, indptr = jnp.asarray(indices), jnp.asarray(indptr)
+        return CSRConfig().prepare_structure(
+            indices, indptr, shape=shape,
+            device_info=get_device_info(indices, indptr),
+        )

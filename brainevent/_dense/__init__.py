@@ -17,7 +17,7 @@ from .binary import (
     binary_densemv, binary_densemv_p, binary_densemv_p_call,
     binary_densemm, binary_densemm_p, binary_densemm_p_call,
 )
-from .plasticity_binary import (
+from .plasticity import (
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
 )

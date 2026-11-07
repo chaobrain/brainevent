@@ -27,7 +27,7 @@ import numpy as np
 
 from brainevent._csr.main import CSC as PlainCSC
 from brainevent._csr.main import CSR as PlainCSR
-from brainevent._csr.slice import csr_slice_rows
+from brainevent._csr.slice.slice import csr_slice_rows
 from brainevent._data import DataRepresentation
 from brainevent._event import as_event_operand
 from brainevent._misc import (
@@ -38,7 +38,7 @@ from brainevent._misc import (
 )
 from brainevent._typing import Data, MatrixShape
 
-from .binary import _validate_backward_algorithm
+from .binary.binary import _validate_backward_algorithm
 from .preprocess import (
     TCSBuffers,
     TCSCMirror,
@@ -959,6 +959,7 @@ class TiledCompressedSparseData(DataRepresentation):
             new_indptr,
             shape=shape,
             backend=self.backend,
+            backward_algorithm=self.backward_algorithm,
         )
         return type(self).from_sorted_csr(
             source,
@@ -1011,6 +1012,7 @@ class TiledCompressedSparseData(DataRepresentation):
             indptr,
             shape=self.shape,
             backend=self.backend,
+            backward_algorithm=self.backward_algorithm,
         )
 
     @classmethod
@@ -1522,7 +1524,7 @@ class TCSR(TiledCompressedSparseData):
         --------
         dt2t : Expand logical row values over sparse slots.
         """
-        from .dt2t import _csrmv_dt2t_prepared, csrmv_dt2t
+        from .dt2t.dt2t import _csrmv_dt2t_prepared, csrmv_dt2t
 
         if not self._transpose_state:
             result = csrmv_dt2t(
@@ -1656,6 +1658,7 @@ class TCSR(TiledCompressedSparseData):
             indptr,
             shape=self.shape,
             backend=self.backend,
+            backward_algorithm=self.backward_algorithm,
         )
 
     def transpose(self, axes: Any = None) -> TCSR:

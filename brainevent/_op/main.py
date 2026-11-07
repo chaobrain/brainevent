@@ -28,7 +28,7 @@ from brainevent._compatible_import import Primitive, apply_primitive, pvary, var
 from brainevent._error import KernelCompilationError, KernelFallbackExhaustedError
 from brainevent._registry import register_primitive
 from brainevent._typing import KernelGenerator
-from brainevent.config import get_backend
+from brainevent.config import _backend_preference
 from .benchmark import BenchmarkRecord, BenchmarkResult, benchmark_function
 from .util import (
     general_batching_rule, defjvp, OutType, ShapeDtype,
@@ -356,18 +356,19 @@ class XLACustomKernel:
             raise KernelFallbackExhaustedError(
                 f"No kernels registered for platform '{platform}' in primitive '{self.name}'."
             )
+        preferred = _backend_preference(platform, requested)
         if requested is not None:
-            if isinstance(requested, str) and requested == '':
+            if isinstance(preferred, str) and preferred == '':
                 raise ValueError(
                     f"backend cannot be an empty string in primitive '{self.name}'."
                 )
-            if requested not in kernels:
+            if preferred not in kernels:
                 raise KernelFallbackExhaustedError(
-                    f'{requested} not available for platform {platform} in primitive '
+                    f'{preferred} not available for platform {platform} in primitive '
                     f'{self.name}.'
                 )
-            return requested
-        global_be = get_backend(platform)
+            return preferred
+        global_be = preferred
         if global_be is not None and global_be in kernels:
             return global_be
         if global_be is not None:

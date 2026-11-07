@@ -50,9 +50,8 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 import brainevent
 from brainevent import KernelCompilationError, KernelFallbackExhaustedError
 from brainevent._compatible_import import apply_primitive, varying_axes
-from brainevent._csr.binary import binary_csrmm_p, binary_csrmv_p
-from brainevent._csr.binary_indexed import binary_csrmm_indexed_p
-from brainevent._csr.delay_layout import csr_delay_deliver_layout_p
+from brainevent._csr.binary import binary_csrmm_indexed_p, binary_csrmm_p, binary_csrmv_p
+from brainevent._csr.delay import csr_delay_deliver_layout_p
 from brainevent._csr.dt2t import csrmm_dt2t_p, csrmv_dt2t_p
 from brainevent._csr.float import csrmm_p, csrmv_p
 from brainevent._op.main import DETERMINISTIC_GPU_BACKEND, XLACustomKernel, xla_gpu_deterministic_ops
@@ -548,8 +547,9 @@ _N_SLOTS = 5
 @functools.cache
 def _layout():
     with jax.ensure_compile_time_eval():  # concrete arrays, even if first called while tracing
-        return brainevent.CSRDelayLayout.build(
-            np.ones(5, np.float32), _INDICES, _INDPTR, _DELAYS, n_slots=_N_SLOTS, shape=(4, 4))
+        return brainevent.delaycsr(
+            (np.ones(5, np.float32), _INDICES, _INDPTR), edge_delays=_DELAYS,
+            buffer_slots=_N_SLOTS, shape=(4, 4), backend='jax_raw')
 
 
 def _csrmv(w, x, backend=None):
@@ -574,6 +574,8 @@ def _binary_csrmv_ref(w, x):
 
 def _deliver(ring, x, w, t, backend=None, weighted=True):
     """The fused per-edge-delay delivery of ``x`` into ``ring``."""
+    # This fixture is already sorted by (delay, column) within each CSR row,
+    # so w is in the initialized delaycsr.data order required by with_data.
     return brainevent.csr_delay_deliver_layout(ring, x, _layout().with_data(w), t, weighted=weighted,
                                                backend=backend)
 
@@ -731,7 +733,7 @@ def test_245_sharded_delay_delivery_gradients_match_pure_jax(backend, w_spec):
 
 # Transpose rules that build a cotangent outside the primitive itself: the dt2t
 # ``y`` cotangent (``jax.linear_transpose`` of the pure-JAX kernel) and the CSR
-# mat-mat weight cotangent (``sddmm_indices``).
+# mat-mat weight cotangent (the sampled-product dispatcher).
 _B = np.asarray([[1., 2.], [0., 3.], [4., 0.], [5., 6.]], np.float32)  # (4, 2) events / dense block
 
 _GRAD_CASES = {

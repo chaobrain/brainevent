@@ -1,0 +1,1393 @@
+# Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+# -*- coding: utf-8 -*-
+
+import importlib.util
+from pathlib import Path
+from typing import Optional
+
+import brainunit as u
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax.interpreters import ad
+
+from brainevent._compatible_import import match_varying_axes
+from brainevent._misc import namescope
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
+from brainevent.config import get_numba_parallel
+from brainevent._op import load_cuda_file
+from brainevent._op.util import (
+    cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask, select_active,
+)
+
+__all__ = [
+    'binary_densemv', 'binary_densemv_p',
+    'binary_densemm', 'binary_densemm_p',
+]
+
+
+def _find_cublas_library() -> Path:
+    """Locate the cuBLAS shared library shipped by NVIDIA Python wheels."""
+    candidates: list[Path] = []
+    spec = importlib.util.find_spec("nvidia")
+    if spec is not None and spec.submodule_search_locations:
+        for root in spec.submodule_search_locations:
+            candidates.extend(Path(root).glob("cu*/lib/libcublas.so.13"))
+            candidates.extend(Path(root).glob("cu*/lib/libcublas.so.*"))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise RuntimeError(
+        "Unable to find libcublas.so.13 in the installed nvidia CUDA Python packages."
+    )
+
+
+def _load_dense_cublas_file():
+    """Compile and load the dense cuBLAS FFI module with its runtime library."""
+    libcublas = _find_cublas_library()
+    return load_cuda_file(
+        Path(__file__).parent.joinpath('binary_dense_cublas.cu'),
+        name='dense_binary_cublas',
+        extra_ldflags=[str(libcublas), f'-rpath={libcublas.parent}'],
+        # This cuBLAS path allocates and frees a temporary event buffer per call.
+        allow_cuda_graph=False,
+    )
+
+
+_EVENT_FASTMATH = NUMBA_EVENT_FASTMATH
+_numba_event_mask = numba_event_mask
+
+
+# ==============================================================================
+# Inactive-event isolation for library / dense-product backends
+# ==============================================================================
+#
+# Event-driven kernels (numba, cuda_raw) skip inactive events, so a NaN/Inf
+# weight that only meets inactive events never reaches the output. Backends
+# that evaluate a dense product (``jax_raw``, ``cublas``) would compute
+# ``w * 0 = NaN`` instead; they select before multiplying
+# (docs/specs/2026-10-24-inactive-row-nan-isolation.md).
+
+
+def _mask_inactive(weights, spikes, *, axis: int):
+    """Zero the weights that only meet inactive events (vector events).
+
+    Parameters
+    ----------
+    weights : jax.Array
+        Two-dimensional weight matrix.
+    spikes : jax.Array
+        One-dimensional event vector indexed by ``weights`` axis ``axis``.
+    axis : int
+        ``0`` if events index the rows of ``weights``, ``1`` for the columns.
+
+    Returns
+    -------
+    masked : jax.Array
+        ``where(active, weights, 0)`` broadcast along ``axis``.
+    """
+    active = event_active(spikes)
+    active = active[:, None] if axis == 0 else active[None, :]
+    return select_active(active, weights)
+
+
+def _nonfinite_isolated_matmul(a, factor, active):
+    """Compute ``a @ factor`` where inactive ``factor`` entries contribute ``0``.
+
+    ``a @ factor`` with a 0 factor gives ``NaN`` for ``a = NaN/±Inf``; this
+    path is exact for any ``a``. The finite part is one matrix product; the
+    non-finite entries of ``a`` are accounted for with indicator products, so a
+    non-finite weight reaches ``out[i, j]`` only through an active event:
+    ``NaN`` if any NaN weight meets an active event, ``±Inf`` (or ``NaN`` for
+    ``+Inf - Inf``) from infinite weights times the event sign.
+
+    Parameters
+    ----------
+    a : jax.Array
+        Weights, shape ``(m, k)``; may contain NaN/±Inf.
+    factor : jax.Array
+        Event factor (activity mask or event value), shape ``(k, n)``, in the
+        dtype of ``a``.
+    active : jax.Array
+        Boolean activity of the events, shape ``(k, n)``.
+
+    Returns
+    -------
+    out : jax.Array
+        Shape ``(m, n)``.
+    """
+    dtype = a.dtype
+    finite = jnp.isfinite(a)
+    out = select_active(finite, a) @ factor
+    act = active.astype(dtype)
+    pos = (active & (factor > 0)).astype(dtype)
+    neg = (active & (factor < 0)).astype(dtype)
+    is_pinf = (a == jnp.inf).astype(dtype)
+    is_ninf = (a == -jnp.inf).astype(dtype)
+    pinf_hit = (is_pinf @ pos + is_ninf @ neg) > 0
+    ninf_hit = (is_pinf @ neg + is_ninf @ pos) > 0
+    nan_hit = (jnp.isnan(a).astype(dtype) @ act) > 0
+    out = out + jnp.where(pinf_hit, jnp.inf, 0.).astype(dtype)
+    out = out + jnp.where(ninf_hit, -jnp.inf, 0.).astype(dtype)
+    return jnp.where(nan_hit, jnp.nan, out).astype(dtype)
+
+
+def _guard_nonfinite(out, exact, *operands):
+    """Return the fast dense product ``out``, or ``exact(*operands)`` if it is not finite.
+
+    In a dense product ``out[i, j] = sum_k a[i, k] * f[k, j]`` every weight
+    ``a[i, k]`` meets an event in every output column, and a non-finite weight
+    gives a non-finite term whether the event is active or not (``NaN * x``,
+    ``Inf * 0 = NaN``, ``Inf * x = ±Inf``), which stays non-finite in the sum.
+    A finite ``out`` therefore proves that every weight is finite, in which case
+    ``finite * 0 = 0`` makes the fast product exact. Otherwise the exact select
+    path is evaluated. The check reads only the output, so the common (finite)
+    case costs one reduction over ``out`` and a branch.
+
+    Parameters
+    ----------
+    out : jax.Array
+        Result of the fast product (plain matmul or library call).
+    exact : callable
+        ``exact(*operands)``: the select-based result, same shape and dtype.
+    *operands : jax.Array
+        Operands passed to ``exact``.
+
+    Returns
+    -------
+    result : jax.Array
+        ``out`` if it is finite, else ``exact(*operands)``.
+    """
+    # Branch order matters for speed: with the passthrough as the *true*
+    # branch, XLA GPU spends ~0.7 ms per call on a cuBLAS-FFI matvec result
+    # (measured on an RTX 3090); the passthrough as the false branch costs
+    # ~10 us.
+    return jax.lax.cond(jnp.any(~jnp.isfinite(out)), exact, lambda *_: out, *operands)
+
+
+def _exact_dense_mv(weights, spikes, *, transpose: bool, weighted: bool):
+    """Select-exact dense event matvec: mask the weights of inactive events.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        ``(m, k)`` if not ``transpose`` else ``(k, n)``.
+    spikes : jax.Array
+        Events, shape ``(k,)``.
+    transpose : bool
+        Compute ``spikes @ weights`` instead of ``weights @ spikes``.
+    weighted : bool
+        Multiply by the event value instead of the activity mask.
+
+    Returns
+    -------
+    out : jax.Array
+        Shape ``(n,)`` if ``transpose`` else ``(m,)``.
+    """
+    s = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
+    if transpose:
+        return s @ _mask_inactive(weights, spikes, axis=0)
+    return _mask_inactive(weights, spikes, axis=1) @ s
+
+
+def _exact_dense_mm(weights, spikes, *, transpose: bool, weighted: bool):
+    """Select-exact dense event matmul for weights that may be non-finite.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        ``(m, k)`` if not ``transpose`` else ``(k, m)``.
+    spikes : jax.Array
+        Events, shape ``(k, n)``.
+    transpose : bool
+        Contract ``weights`` axis 0 instead of axis 1.
+    weighted : bool
+        Multiply by the event value instead of the activity mask.
+
+    Returns
+    -------
+    out : jax.Array
+        Shape ``(m, n)``.
+    """
+    a = weights.T if transpose else weights
+    factor = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
+    return _nonfinite_isolated_matmul(a, factor, event_active(spikes))
+
+
+# ==============================================================================
+# Unified binary dense matrix-vector product (binary_densemv)
+# ==============================================================================
+#
+# transpose=False: weights[m,k] @ spikes[k] -> out[m]  (old dbmv)
+# transpose=True:  spikes[k] @ weights[k,n] -> out[n]  (old bdvm)
+#
+# Argument order is always (weights, spikes).
+
+
+@namescope(static_argnames=['transpose', 'weighted'])
+def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None, weighted: bool = False):
+    """
+    Perform event-driven dense matrix-vector multiplication with binary spikes.
+
+    When ``transpose=False``, computes ``weights[m, k] @ spikes[k] -> out[m]``
+    (dense matrix times binary vector).
+
+    When ``transpose=True``, computes ``spikes[k] @ weights[k, n] -> out[n]``
+    (binary vector times dense matrix).
+
+    Parameters
+    ----------
+    weights : array_like
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
+    spikes : array_like
+        The binary vector with shape ``(k,)``. Can be boolean or float.
+        Can be a ``brainunit`` quantity.
+    transpose : bool
+        If False, compute ``weights @ spikes``. If True, compute
+        ``spikes @ weights``.
+    backend : str, optional
+        Backend to use for the computation. On GPU production backends include
+        ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
+        (float32 weights only). ``None`` selects the platform
+        default.
+    weighted : bool, optional
+        If ``True``, multiply each weight by the event value instead of its
+        activity mask (:class:`~brainevent.WeightedArray` semantics); zero
+        events are still skipped and integer events are not binarised.
+        Defaults to ``False``.
+
+    Returns
+    -------
+    result : array_like
+        Result vector. Shape ``(m,)`` when ``transpose=False``,
+        or ``(n,)`` when ``transpose=True``. If inputs carry units, the
+        result carries the product of the weight and spike units.
+
+    Raises
+    ------
+    AssertionError
+        If the inner dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    binary_densemm : Matrix-matrix variant of binary dense multiplication.
+
+    Notes
+    -----
+    The computation is event-driven: only the columns (or rows) of
+    ``weights`` corresponding to active (nonzero or True) entries of
+    ``spikes`` are accumulated. This is mathematically equivalent to a
+    standard matrix-vector product but can be faster when spikes are sparse.
+
+    When ``transpose=False``, the operation computes:
+
+    ``out[i] = sum_{j} W[i, j] * s[j]``
+
+    where ``s[j]`` is ``1`` if ``spikes[j]`` is active and ``0`` otherwise.
+
+    When ``transpose=True``, the operation computes:
+
+    ``out[j] = sum_{i} W[i, j] * s[i]``
+
+    where ``s[i]`` is ``1`` if ``spikes[i]`` is active and ``0`` otherwise.
+
+    For boolean spikes, an entry is considered active when it is ``True``.
+    For numeric spikes, an entry is considered active when it is ``!= 0``
+    (negative values and NaN are active). Spike values are never multiplied
+    in; only their activity matters. With ``weighted=True`` the active terms
+    are ``W[i, j] * spikes[j]`` instead.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.binary import binary_densemv
+        >>> weights = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> spikes = jnp.array([True, False, True, False])
+        >>> binary_densemv(weights, spikes, transpose=False)
+        Array([2., 2., 2.], dtype=float32)
+        >>>
+        >>> counts = jnp.array([2, 0, -1, 0], dtype=jnp.int8)
+        >>> binary_densemv(weights, counts, transpose=False, weighted=True)
+        Array([1., 1., 1.], dtype=float32)
+    """
+    with jax.ensure_compile_time_eval():
+        weights = u.math.asarray(weights)
+        spikes = u.math.asarray(spikes)
+    weight_val, wunit = u.split_mantissa_unit(weights)
+    spk_val, spkunit = u.split_mantissa_unit(spikes)
+    # Binary integer events (uint8, int8, int32, ...) are cast to their activity
+    # mask (``x != 0``); bool and floating events are passed through unchanged.
+    # Weighted events keep their values: the kernels multiply by them.
+    if (not weighted and not jnp.issubdtype(spk_val.dtype, jnp.floating)
+            and spk_val.dtype != jnp.bool_):
+        spk_val = spk_val.astype(jnp.bool_)
+    r = binary_densemv_p_call(weight_val, spk_val, transpose=transpose, backend=backend, weighted=weighted)
+    return u.maybe_decimal(r[0] * wunit * spkunit)
+
+
+def _binary_densemv_numba_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    weighted: bool = False,
+    **kwargs
+):
+    import numba
+
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on
+    # their mask (binary) or are read as float32 (weighted).
+    mask_events = _numba_event_mask(spk_info.dtype)
+    bool_events = spk_info.dtype == jnp.bool_ or mask_events
+
+    if weighted:
+        # Value-weighted events: accumulate ``w * x`` over the non-zero entries.
+        if transpose:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    sp = spikes[i]
+                    if sp != 0:
+                        posts += weights[i] * sp
+        else:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    sp = spikes[i]
+                    if sp != 0:
+                        posts += weights[:, i] * sp
+
+        def run_weighted(weights, spikes):
+            if mask_events:
+                spikes = spikes.astype(jnp.float32)
+            return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
+
+        return run_weighted
+
+    if transpose:
+        # weights[k,n], spikes[k] -> out[n]
+        if bool_events:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    if spikes[i]:
+                        posts += weights[i]
+        else:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    if spikes[i] != 0:
+                        posts += weights[i]
+    else:
+        # weights[m,k], spikes[k] -> out[m]
+        if bool_events:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    if spikes[i]:
+                        posts += weights[:, i]
+        else:
+            @numba.njit(fastmath=_EVENT_FASTMATH)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    if spikes[i] != 0:
+                        posts += weights[:, i]
+
+    def run(weights, spikes):
+        if mask_events:
+            spikes = event_active(spikes)
+        return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
+
+    return run
+
+
+def _binary_densemv_jax_kernel(
+    transpose: bool,
+    weighted: bool = False,
+    **kwargs,
+):
+    def product(weights, spikes):
+        s = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
+        return s @ weights if transpose else weights @ s
+
+    def exact(weights, spikes):
+        # Select, never multiply by 0: a NaN/Inf weight meeting an inactive
+        # event must not reach the output.
+        return _exact_dense_mv(weights, spikes, transpose=transpose, weighted=weighted)
+
+    def kernel(weights, spikes):
+        return _guard_nonfinite(product(weights, spikes), exact, weights, spikes),
+
+    return kernel
+
+
+def _binary_densemv_cuda_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    weighted: bool = False,
+    **kwargs
+):
+    """Select the production WPR CUDA entry point for dense binary MV."""
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_densemv.cu'),
+        name='dense_binary_mv',
+    )
+
+    out_info = kwargs['outs']
+    weight_dtype = kwargs['weight_info'].dtype
+    abi = cuda_event_abi(spk_info.dtype, weighted=weighted, value_dtype=weight_dtype)
+    spk_suffix = abi.suffix
+
+    wt_sfx = dtype_suffix(weight_dtype)
+
+    if transpose:
+        kernel_name = f'dense_binary_mv.binary_densemv_transpose{wt_sfx}{spk_suffix}'
+    else:
+        kernel_name = f'dense_binary_mv.binary_densemv_no_transpose{wt_sfx}{spk_suffix}'
+
+    def kernel(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, abi.prepare(spikes))
+
+    return kernel
+
+
+def _binary_densemv_cublas_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    weighted: bool = False,
+    **kwargs
+):
+    """Select the cuBLAS dense MV backend for float32 weights (any event dtype)."""
+    if jnp.dtype(weight_info.dtype) != jnp.dtype('float32'):
+        raise NotImplementedError("cublas dense MV only supports float32 weights.")
+    if weighted:
+        # The cuBLAS entry points read bool events only; weighted events use the
+        # float product (dispatched by XLA to cuBLAS as well).
+        return _binary_densemv_jax_kernel(transpose=transpose, weighted=True)
+
+    _load_dense_cublas_file()
+
+    out_info = kwargs['outs']
+    suffix = 't' if transpose else 'nt'
+    kernel_name = f'dense_binary_cublas.binary_densemv_cublas_{suffix}_f32_bool'
+
+    def exact(weights, spikes):
+        return _exact_dense_mv(weights, spikes, transpose=transpose, weighted=False)
+
+    def product(weights, spikes):
+        out = jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))[0]
+        # Under shard_map ffi_call types its result as replicated; _guard_nonfinite's
+        # cond needs the operands' varying axes on both branches (#245).
+        return match_varying_axes(out, weights, spikes)
+
+    def kernel(weights, spikes):
+        # cuBLAS multiplies every weight by its 0/1 event. A non-finite result
+        # takes the masked jnp path (the dense product is again
+        # dispatched to cuBLAS by XLA).
+        return [_guard_nonfinite(product(weights, spikes), exact, weights, spikes)]
+
+    return kernel
+
+
+def _binary_densemv_jvp_weights(w_dot, weights, spikes, *, transpose, weighted=False, **kwargs):
+    return binary_densemv_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'], weighted=weighted)
+
+
+def _binary_densemv_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
+    # The output has the weight dtype; the event tangent may be wider (e.g. float64).
+    if transpose:
+        return [(spk_dot @ weights).astype(weights.dtype)]
+    else:
+        return [(weights @ spk_dot).astype(weights.dtype)]
+
+
+def _binary_densemv_transpose_rule(ct, weights, spikes, *, transpose, weighted=False, **kwargs):
+    ct = ct[0]
+    if ad.is_undefined_primal(spikes):
+        if type(ct) is ad.Zero:
+            return weights, ad.Zero(spikes)
+        if transpose:
+            ct_spikes = jnp.matmul(weights, ct)
+        else:
+            ct_spikes = jnp.matmul(ct, weights)
+        return weights, ct_spikes.astype(spikes.aval.dtype)
+    else:
+        if type(ct) is ad.Zero:
+            return ad.Zero(weights), spikes
+        s = event_factor(spikes, dtype=ct.dtype, weighted=weighted)
+        # Select: the cotangent of an inactive event's weights is exactly 0,
+        # even where ``ct`` is NaN/Inf.
+        if transpose:
+            ct_weights = _mask_inactive(jnp.outer(s, ct), spikes, axis=0)
+        else:
+            ct_weights = _mask_inactive(jnp.outer(ct, s), spikes, axis=1)
+        return ct_weights, spikes
+
+
+def _binary_densemv_batching(args, axes, *, transpose, **kwargs):
+    if transpose:
+        # weights[k,n], spikes[k] -> out[n]
+        # mm transpose=True: weights[k,m].T @ spikes[k,n] -> out[m,n]
+        # result shape from mm: [weights.shape[1], spikes.shape[1]]
+        if axes == (None, 0):
+            # spikes batched on axis 0: [batch, k] -> .T gives [k, batch]
+            # mm(weights[k,n], [k,batch], transpose=True) -> [n, batch]
+            r = binary_densemm(args[0], args[1].T, transpose=True, backend=kwargs['backend'],
+                                   weighted=kwargs.get('weighted', False))
+            return [r], [1]
+        if axes == (None, 1):
+            # spikes batched on axis 1: [k, batch]
+            # mm(weights[k,n], [k,batch], transpose=True) -> [n, batch]
+            r = binary_densemm(args[0], args[1], transpose=True, backend=kwargs['backend'],
+                                   weighted=kwargs.get('weighted', False))
+            return [r], [1]
+    else:
+        # weights[m,k], spikes[k] -> out[m]
+        if axes == (None, 0):
+            r = binary_densemm(args[0], args[1].T, transpose=False, backend=kwargs['backend'],
+                                   weighted=kwargs.get('weighted', False))
+            return [r], [1]
+        if axes == (None, 1):
+            r = binary_densemm(args[0], args[1], transpose=False, backend=kwargs['backend'],
+                                   weighted=kwargs.get('weighted', False))
+            return [r], [1]
+    return general_batching_rule(binary_densemv_p, args, axes, transpose=transpose, **kwargs)
+
+
+def _binary_densemv_benchmark_data(*, platform):
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        # transpose=False benchmark (dbmv style)
+        weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
+        if bool_event:
+            spikes = jnp.asarray(np.random.rand(n_post) > (1 - prob), dtype=jnp.bool_)
+        else:
+            spikes = jnp.asarray(np.random.rand(n_post), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append(BenchmarkConfig(name, (weights, spikes), {'transpose': False}))
+    return configs
+
+
+def binary_densemv_p_call(weights, spikes, *, transpose, backend: Optional[str] = None, weighted: bool = False):
+    """
+    Low-level primitive call for binary dense matrix-vector multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``binary_densemv_p`` JAX primitive. Unlike
+    :func:`binary_densemv`, this function operates on raw numerical arrays
+    without ``brainunit`` unit handling.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``.
+    spikes : jax.Array
+        The binary vector with shape ``(k,)``. Can be boolean or float.
+    transpose : bool
+        If False, compute ``weights @ spikes`` producing shape ``(m,)``.
+        If True, compute ``spikes @ weights`` producing shape ``(n,)``.
+    backend : str, optional
+        Backend to use for the computation. On GPU production backends include
+        ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
+        (float32 weights only). ``None`` selects the platform
+        default.
+    weighted : bool, optional
+        If ``True``, multiply each weight by the event value instead of its
+        activity mask (:class:`~brainevent.WeightedArray` semantics); zero
+        events are still skipped and integer events are not binarised.
+        Defaults to ``False``.
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result vector. Shape ``(m,)``
+        when ``transpose=False``, or ``(n,)`` when ``transpose=True``.
+
+    Raises
+    ------
+    AssertionError
+        If the inner dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    binary_densemv : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling. The
+    mathematical operation is identical to :func:`binary_densemv`:
+
+    When ``transpose=False``:
+
+    ``out[i] = sum_{j where s[j] active} weights[i, j]``
+
+    When ``transpose=True``:
+
+    ``out[j] = sum_{i where s[i] active} weights[i, j]``
+
+    The function returns a single-element list to conform to the JAX
+    primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.binary import binary_densemv_p_call
+        >>> weights = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> spikes = jnp.array([1., 0., 1., 0.], dtype=jnp.float32)
+        >>> binary_densemv_p_call(weights, spikes, transpose=False)
+    """
+    if transpose:
+        assert spikes.shape[0] == weights.shape[0], (
+            f"shapes {spikes.shape} and {weights.shape} not aligned: "
+            f"{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)"
+        )
+        out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
+    else:
+        assert spikes.shape[0] == weights.shape[1], (
+            f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
+        )
+        out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
+    return binary_densemv_p(
+        weights,
+        spikes,
+        outs=[out],
+        transpose=transpose,
+        weighted=weighted,
+        spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
+    )
+
+
+binary_densemv_p = XLACustomKernel(
+    'binary_densemv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_densemv``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) dense
+matrix-vector multiplication operation to registered backends. On GPU,
+``cuda_raw`` is the WPR event-driven CUDA backend and remains the default;
+``jax_raw`` provides a pure JAX reference path, and ``cublas`` provides an
+optional float32-weight cuBLAS path.
+
+The operation computes ``weights[m,k] @ spikes[k] -> out[m]`` when ``transpose=False``,
+or ``spikes[k] @ weights[k,n] -> out[n]`` when ``transpose=True``, where only active
+(nonzero) spike entries contribute to the output.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_densemv_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_densemv_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_densemv : High-level user-facing function wrapper.
+"""
+)
+binary_densemv_p.def_numba_kernel(_binary_densemv_numba_kernel)
+binary_densemv_p.def_cuda_raw_kernel(_binary_densemv_cuda_kernel, asdefault=True)
+binary_densemv_p.def_kernel('jax_raw', 'cpu', _binary_densemv_jax_kernel)
+binary_densemv_p.def_kernel('jax_raw', 'gpu', _binary_densemv_jax_kernel)
+binary_densemv_p.def_kernel('jax_raw', 'tpu', _binary_densemv_jax_kernel)
+binary_densemv_p.def_kernel('cublas', 'gpu', _binary_densemv_cublas_kernel)
+binary_densemv_p.def_jvp_rule2(_binary_densemv_jvp_weights, _binary_densemv_jvp_spikes)
+binary_densemv_p.def_transpose_rule(_binary_densemv_transpose_rule)
+binary_densemv_p.def_batching_rule(_binary_densemv_batching)
+binary_densemv_p.def_call(binary_densemv_p_call)
+binary_densemv_p.def_tags('dense', 'binary')
+binary_densemv_p.def_benchmark_data(_binary_densemv_benchmark_data)
+
+
+# ==============================================================================
+# Unified binary dense matrix-matrix product (binary_densemm)
+# ==============================================================================
+#
+# transpose=False: weights[m,k] @ spikes[k,n] -> out[m,n]  (old dbmm)
+# transpose=True:  weights[k,m].T @ spikes[k,n] -> out[m,n]  (old bdmm)
+#
+# Argument order is always (weights, spikes).
+
+
+@namescope(static_argnames=['transpose', 'weighted'])
+def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None, weighted: bool = False):
+    """
+    Perform event-driven dense matrix-matrix multiplication with binary spikes.
+
+    When ``transpose=False``, computes ``weights[m, k] @ spikes[k, n] -> out[m, n]``
+    (dense matrix times binary matrix).
+
+    When ``transpose=True``, computes ``weights[k, m].T @ spikes[k, n] -> out[m, n]``
+    (transposed dense matrix times binary matrix). Both weights and spikes share
+    their first dimension ``k``.
+
+    Parameters
+    ----------
+    weights : array_like
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, m)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
+    spikes : array_like
+        The binary matrix. Shape ``(k, n)`` in both modes. Can be boolean or
+        float. Can be a ``brainunit`` quantity.
+    transpose : bool
+        If False, compute ``weights @ spikes``. If True, compute
+        ``weights.T @ spikes``.
+    backend : str, optional
+        Backend to use for the computation. On GPU production backends include
+        ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
+        (float32 weights only). ``None`` selects the platform
+        default.
+    weighted : bool, optional
+        If ``True``, multiply each weight by the event value instead of its
+        activity mask (:class:`~brainevent.WeightedArray` semantics); zero
+        events are still skipped and integer events are not binarised.
+        Defaults to ``False``.
+
+    Returns
+    -------
+    result : array_like
+        Result matrix with shape ``(m, n)``. If inputs carry units, the
+        result carries the product of the weight and spike units.
+
+    Raises
+    ------
+    AssertionError
+        If the shared dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    binary_densemv : Matrix-vector variant of binary dense multiplication.
+
+    Notes
+    -----
+    When ``transpose=False``, the operation computes:
+
+    ``out[i, j] = sum_{k} W[i, k] * s[k, j]``
+
+    where ``s[k, j]`` is ``1`` if ``spikes[k, j]`` is active and ``0``
+    otherwise.
+
+    When ``transpose=True``, the operation computes:
+
+    ``out[i, j] = sum_{k} W[k, i] * s[k, j]``
+
+    where ``s[k, j]`` is ``1`` if ``spikes[k, j]`` is active and ``0``
+    otherwise.
+
+    Boolean spikes are passed to the primitive unchanged. Backends that need a
+    numeric event matrix, such as ``jax_raw``, perform the conversion inside
+    their own kernel wrapper. With ``weighted=True``, ``s[k, j]`` is the event
+    value ``spikes[k, j]`` (zero entries are skipped).
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.binary import binary_densemm
+        >>> weights = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> spikes = jnp.array([[True, False],
+        ...                     [False, True],
+        ...                     [True, True],
+        ...                     [False, False]])
+        >>> binary_densemm(weights, spikes, transpose=False)
+        Array([[2., 2.],
+               [2., 2.],
+               [2., 2.]], dtype=float32)
+    """
+    with jax.ensure_compile_time_eval():
+        weights = u.math.asarray(weights)
+        spikes = u.math.asarray(spikes)
+    weight_val, wunit = u.split_mantissa_unit(weights)
+    spk_val, spkunit = u.split_mantissa_unit(spikes)
+    # Binary integer events (uint8, int8, int32, ...) are cast to their activity
+    # mask (``x != 0``); bool and floating events are passed through unchanged.
+    # Weighted events keep their values: the kernels multiply by them.
+    if (not weighted and not jnp.issubdtype(spk_val.dtype, jnp.floating)
+            and spk_val.dtype != jnp.bool_):
+        spk_val = spk_val.astype(jnp.bool_)
+    r = binary_densemm_p_call(weight_val, spk_val, transpose=transpose, backend=backend, weighted=weighted)
+    return u.maybe_decimal(r[0] * wunit * spkunit)
+
+
+def _binary_densemm_numba_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    weighted: bool = False,
+    **kwargs
+):
+    import numba
+
+    # Numba cannot read float16/bfloat16; such events use the boolean kernel on
+    # their mask (binary) or are read as float32 (weighted).
+    mask_events = _numba_event_mask(spk_info.dtype)
+    bool_events = spk_info.dtype == jnp.bool_ or mask_events
+
+    if weighted:
+        # Value-weighted events: accumulate ``w * x`` over the non-zero entries.
+        if transpose:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def kernel(weights, spikes, posts):
+                for i_n in numba.prange(spikes.shape[1]):
+                    out = np.zeros(weights.shape[1], dtype=posts.dtype)
+                    for i_k in range(spikes.shape[0]):
+                        sp = spikes[i_k, i_n]
+                        if sp != 0:
+                            out += weights[i_k] * sp
+                    posts[:, i_n] = out
+        else:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def kernel(weights, spikes, posts):
+                for i_n in numba.prange(spikes.shape[1]):
+                    out = np.zeros(weights.shape[0], dtype=posts.dtype)
+                    for i_k in range(spikes.shape[0]):
+                        sp = spikes[i_k, i_n]
+                        if sp != 0:
+                            out += weights[:, i_k] * sp
+                    posts[:, i_n] = out
+
+        def run_weighted(weights, spikes):
+            if mask_events:
+                spikes = spikes.astype(jnp.float32)
+            return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
+
+        return run_weighted
+
+    if transpose:
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        # primitive args: (weights, spikes)
+        if bool_events:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def kernel(weights, spikes, posts):
+                for i_n in numba.prange(spikes.shape[1]):
+                    out = np.zeros(weights.shape[1], dtype=posts.dtype)
+                    for i_k in range(spikes.shape[0]):
+                        if spikes[i_k, i_n]:
+                            out += weights[i_k]
+                    posts[:, i_n] = out
+        else:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def kernel(weights, spikes, posts):
+                for i_n in numba.prange(spikes.shape[1]):
+                    out = np.zeros(weights.shape[1], dtype=posts.dtype)
+                    for i_k in range(spikes.shape[0]):
+                        if spikes[i_k, i_n] != 0:
+                            out += weights[i_k]
+                    posts[:, i_n] = out
+    else:
+        # weights[m,k] @ spikes[k,n] -> out[m,n]
+        if bool_events:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def kernel(weights, spikes, posts):
+                for i_n in numba.prange(spikes.shape[1]):
+                    out = np.zeros(weights.shape[0], dtype=weights.dtype)
+                    for i_k in range(spikes.shape[0]):
+                        if spikes[i_k, i_n]:
+                            out += weights[:, i_k]
+                    posts[:, i_n] = out
+        else:
+            @numba.njit(parallel=get_numba_parallel(), fastmath=_EVENT_FASTMATH, nogil=True)
+            def kernel(weights, spikes, posts):
+                for i_n in numba.prange(spikes.shape[1]):
+                    out = np.zeros(weights.shape[0], dtype=weights.dtype)
+                    for i_k in range(spikes.shape[0]):
+                        if spikes[i_k, i_n] != 0:
+                            out += weights[:, i_k]
+                    posts[:, i_n] = out
+
+    def run(weights, spikes):
+        if mask_events:
+            spikes = event_active(spikes)
+        return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
+
+    return run
+
+
+def _binary_densemm_jvp_weights(w_dot, weights, spikes, *, transpose, weighted=False, **kwargs):
+    return binary_densemm_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'], weighted=weighted)
+
+
+def _binary_densemm_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
+    # The output has the weight dtype; the event tangent may be wider (e.g. float64).
+    if transpose:
+        return [(weights.T @ spk_dot).astype(weights.dtype)]
+    else:
+        return [(weights @ spk_dot).astype(weights.dtype)]
+
+
+def _binary_densemm_transpose_rule(ct, weights, spikes, *, transpose, weighted=False, **kwargs):
+    ct = ct[0]
+    if transpose:
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        if ad.is_undefined_primal(spikes):
+            # ct_spikes: weights[k,m] @ ct[m,n] -> [k,n]
+            if type(ct) is ad.Zero:
+                return weights, ad.Zero(spikes)
+            ct_events = weights @ ct
+            return weights, ct_events.astype(spikes.aval.dtype)
+        else:
+            # ct_weights[k,m] = sum_n f(spikes)[k,n] ct[m,n] = (ct[m,n] @ f(spikes).T[n,k]).T,
+            # computed by the event operation itself so inactive events select 0.
+            if type(ct) is ad.Zero:
+                return ad.Zero(weights), spikes
+            ct_weights = binary_densemm(ct, spikes.T, transpose=False, backend=kwargs['backend'], weighted=weighted)
+            return ct_weights.T, spikes
+    else:
+        # weights[m,k] @ spikes[k,n] -> out[m,n]
+        if ad.is_undefined_primal(spikes):
+            if type(ct) is ad.Zero:
+                return weights, ad.Zero(spikes)
+            ct_events = weights.T @ ct
+            return weights, ct_events.astype(spikes.aval.dtype)
+        else:
+            # ct[m,n], spikes[k,n] -> ct_weights[m,k]
+            # ct[m,n] @ spikes.T[n,k] -> [m,k]
+            if type(ct) is ad.Zero:
+                return ad.Zero(weights), spikes
+            ct_weights = binary_densemm(ct, spikes.T, transpose=False, backend=kwargs['backend'], weighted=weighted)
+            return ct_weights, spikes
+
+
+def _binary_densemm_batching_spikes_fn(args, axes, *, transpose, **kwargs):
+    weights, spikes = args
+    if transpose:
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        # out shape: [weights.shape[1], spikes.shape[1]]
+        # spikes batched: [batch,k,n] or [k,batch,n] or [k,n,batch]
+        assert spikes.ndim == 3, 'requires 3D events.'
+        assert weights.ndim == 2, 'requires 2D weights.'
+        spk_axis = axes[1]
+        if spk_axis == 0:
+            # [batch,k,n] -> transpose(1,0,2) -> [k,batch,n] -> reshape [k, batch*n]
+            spikes = jnp.transpose(spikes, (1, 0, 2))
+            k, batch, n_val = spikes.shape
+            events = spikes.reshape(k, batch * n_val)
+            r = binary_densemm_p_call(weights, events, transpose=True, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            # result: [m, batch*n] -> reshape [m, batch, n]
+            r = jnp.reshape(r[0], [r[0].shape[0], batch, n_val])
+            return [r], [1]
+        elif spk_axis == 1:
+            # [k,batch,n] -> reshape [k, batch*n]
+            k, batch, n_val = spikes.shape
+            events = spikes.reshape(k, batch * n_val)
+            r = binary_densemm_p_call(weights, events, transpose=True, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            # result: [m, batch*n] -> reshape [m, batch, n]
+            r = jnp.reshape(r[0], [r[0].shape[0], batch, n_val])
+            return [r], [1]
+        elif spk_axis == 2:
+            # [k,n,batch] -> reshape [k, n*batch]
+            k, n_val, batch = spikes.shape
+            events = spikes.reshape(k, n_val * batch)
+            r = binary_densemm_p_call(weights, events, transpose=True, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            # result: [m, n*batch] -> reshape [m, n, batch]
+            r = jnp.reshape(r[0], [r[0].shape[0], n_val, batch])
+            return [r], [2]
+    else:
+        # weights[m,k] @ spikes[k,n] -> out[m,n]
+        # spikes batched
+        assert spikes.ndim == 3, 'requires 3D events.'
+        assert weights.ndim == 2, 'requires 2D weights.'
+        spk_axis = axes[1]
+        if spk_axis == 0:
+            spikes = jnp.transpose(spikes, (1, 0, 2))
+            k, maybe_batch1, maybe_batch2 = spikes.shape
+            events = spikes.reshape(k, maybe_batch1 * maybe_batch2)
+            r = binary_densemm_p_call(weights, events, transpose=False, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
+            return [r], [1]
+        elif spk_axis == 1:
+            k, maybe_batch1, maybe_batch2 = spikes.shape
+            events = spikes.reshape(k, maybe_batch1 * maybe_batch2)
+            r = binary_densemm_p_call(weights, events, transpose=False, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
+            return [r], [1]
+        elif spk_axis == 2:
+            k, maybe_batch1, maybe_batch2 = spikes.shape
+            events = spikes.reshape(k, maybe_batch1 * maybe_batch2)
+            r = binary_densemm_p_call(weights, events, transpose=False, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
+            return [r], [2]
+    return general_batching_rule(binary_densemm_p, args, axes, transpose=transpose, **kwargs)
+
+
+def _binary_densemm_batching_weights_fn(args, axes, *, transpose, **kwargs):
+    weights, spikes = args
+    if transpose:
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        # out shape: [weights.shape[1], spikes.shape[1]]
+        # weights batched: [batch,k,m] or [k,batch,m] or [k,m,batch]
+        assert weights.ndim == 3, 'requires 3D weights.'
+        assert spikes.ndim == 2, 'requires 2D events.'
+        w_axis = axes[0]
+        if w_axis == 0:
+            # [batch,k,m] -> transpose(1,0,2) -> [k,batch,m] -> reshape [k, batch*m]
+            weights = jnp.transpose(weights, (1, 0, 2))
+            k, batch, m_val = weights.shape
+            w = weights.reshape(k, batch * m_val)
+            r = binary_densemm_p_call(w, spikes, transpose=True, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            # result: [batch*m, n] -> reshape [batch, m, n]
+            r = jnp.reshape(r[0], [batch, m_val, r[0].shape[1]])
+            return [r], [0]
+        elif w_axis == 1:
+            # [k,batch,m] -> reshape [k, batch*m]
+            k, batch, m_val = weights.shape
+            w = weights.reshape(k, batch * m_val)
+            r = binary_densemm_p_call(w, spikes, transpose=True, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            # result: [batch*m, n] -> reshape [batch, m, n]
+            r = jnp.reshape(r[0], [batch, m_val, r[0].shape[1]])
+            return [r], [0]
+        elif w_axis == 2:
+            # [k,m,batch] -> reshape [k, m*batch]
+            k, m_val, batch = weights.shape
+            w = weights.reshape(k, m_val * batch)
+            r = binary_densemm_p_call(w, spikes, transpose=True, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            # result: [m*batch, n] -> reshape [m, batch, n]
+            r = jnp.reshape(r[0], [m_val, batch, r[0].shape[1]])
+            return [r], [1]
+    else:
+        # weights[m,k] @ spikes[k,n] -> out[m,n]
+        # weights batched
+        assert weights.ndim == 3, 'requires 3D weights.'
+        assert spikes.ndim == 2, 'requires 2D events.'
+        w_axis = axes[0]
+        if w_axis == 0:
+            maybe_batch1, maybe_batch2, k = weights.shape
+            w = weights.reshape(maybe_batch1 * maybe_batch2, k)
+            r = binary_densemm_p_call(w, spikes, transpose=False, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
+            return [r], [0]
+        elif w_axis == 1:
+            maybe_batch1, maybe_batch2, k = weights.shape
+            w = weights.reshape(maybe_batch1 * maybe_batch2, k)
+            r = binary_densemm_p_call(w, spikes, transpose=False, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
+            return [r], [1]
+        elif w_axis == 2:
+            weights = jnp.transpose(weights, (0, 2, 1))
+            maybe_batch1, maybe_batch2, k = weights.shape
+            w = weights.reshape(maybe_batch1 * maybe_batch2, k)
+            r = binary_densemm_p_call(w, spikes, transpose=False, backend=kwargs['backend'], weighted=kwargs.get('weighted', False))
+            r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
+            return [r], [1]
+    return general_batching_rule(binary_densemm_p, args, axes, transpose=transpose, **kwargs)
+
+
+def _binary_densemm_batching(args, axes, *, transpose, **kwargs):
+    w_axis, spk_axis = axes
+    if w_axis is None:
+        return _binary_densemm_batching_spikes_fn(args, axes, transpose=transpose, **kwargs)
+    elif spk_axis is None:
+        return _binary_densemm_batching_weights_fn(args, axes, transpose=transpose, **kwargs)
+    else:
+        return general_batching_rule(binary_densemm_p, args, axes, transpose=transpose, **kwargs)
+
+
+def _binary_densemm_benchmark_data(*, platform):
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
+        if bool_event:
+            spikes = jnp.asarray(np.random.rand(n_post, 10) > (1 - prob), dtype=jnp.bool_)
+        else:
+            spikes = jnp.asarray(np.random.rand(n_post, 10), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append(BenchmarkConfig(name, (weights, spikes), {'transpose': False}))
+    return configs
+
+
+def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] = None, weighted: bool = False):
+    """
+    Low-level primitive call for binary dense matrix-matrix multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``binary_densemm_p`` JAX primitive.
+    Unlike :func:`binary_densemm`, this function operates on raw numerical
+    arrays without ``brainunit`` unit handling.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, m)`` when ``transpose=True``.
+    spikes : jax.Array
+        The binary matrix with shape ``(k, n)``. Can be boolean or float.
+        Boolean inputs are passed through to backends that support them
+        natively (``cuda_raw``, ``numba``, ``cublas``) for better performance;
+        ``jax_raw`` converts internally.
+    transpose : bool
+        If False, compute ``weights @ spikes`` producing shape ``(m, n)``.
+        If True, compute ``weights.T @ spikes`` producing shape ``(m, n)``.
+    backend : str, optional
+        Backend to use for the computation. On GPU production backends include
+        ``'cuda_raw'`` (WPR event-driven CUDA), ``'jax_raw'``, and ``'cublas'``
+        (float32 weights only). ``None`` selects the platform
+        default.
+    weighted : bool, optional
+        If ``True``, multiply each weight by the event value instead of its
+        activity mask (:class:`~brainevent.WeightedArray` semantics); zero
+        events are still skipped and integer events are not binarised.
+        Defaults to ``False``.
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result matrix with shape
+        ``(m, n)``.
+
+    Raises
+    ------
+    AssertionError
+        If the shared dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    binary_densemm : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling. The
+    mathematical operation is identical to :func:`binary_densemm`:
+
+    When ``transpose=False``:
+
+    ``out[i, j] = sum_{k where s[k, j] active} weights[i, k]``
+
+    When ``transpose=True``:
+
+    ``out[i, j] = sum_{k where s[k, j] active} weights[k, i]``
+
+    Boolean spikes are passed through to the primitive unchanged. Backends
+    that require a numeric event matrix, such as ``jax_raw``, handle the
+    conversion internally. The function returns a single-element list to
+    conform to the JAX primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.binary import binary_densemm_p_call
+        >>> weights = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> spikes = jnp.array([[1., 0.], [0., 1.],
+        ...                     [1., 1.], [0., 0.]], dtype=jnp.float32)
+        >>> binary_densemm_p_call(weights, spikes, transpose=False)
+    """
+    if transpose:
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        assert weights.shape[0] == spikes.shape[0], (
+            f"weights shape {weights.shape} and spikes shape {spikes.shape} do not match"
+            f" for event matrix multiplication: weights dim 0 ({weights.shape[0]}) != spikes dim 0 ({spikes.shape[0]})"
+        )
+        out = jax.ShapeDtypeStruct([weights.shape[1], spikes.shape[1]], weights.dtype)
+    else:
+        # weights[m,k] @ spikes[k,n] -> out[m,n]
+        assert weights.shape[1] == spikes.shape[0], (
+            f"weights.shape[1] ({weights.shape[1]}) != spikes.shape[0] ({spikes.shape[0]})"
+            f", weights: {weights.shape}, spikes: {spikes.shape}"
+        )
+        out = jax.ShapeDtypeStruct([weights.shape[0], spikes.shape[1]], weights.dtype)
+    return binary_densemm_p(
+        weights,
+        spikes,
+        outs=[out],
+        transpose=transpose,
+        weighted=weighted,
+        spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
+    )
+
+
+def _binary_densemm_jax_kernel(
+    transpose: bool,
+    weighted: bool = False,
+    **kwargs
+):
+    def product(weights, spikes):
+        s = event_factor(spikes, dtype=weights.dtype, weighted=weighted)
+        return (weights.T if transpose else weights) @ s
+
+    def exact(weights, spikes):
+        return _exact_dense_mm(weights, spikes, transpose=transpose, weighted=weighted)
+
+    def run(weights, spikes):
+        # A matmul cannot select per batch column (masking ``weights`` only
+        # isolates rows inactive in every column); non-finite results take the
+        # exact select path.
+        return [_guard_nonfinite(product(weights, spikes), exact, weights, spikes)]
+
+    return run
+
+
+def _binary_densemm_cuda_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    weighted: bool = False,
+    **kwargs
+):
+    """
+    Select the production WPR CUDA entry point for dense binary MM.
+
+    The CUDA source writes a physical batch-major buffer ``[batch, post]`` so
+    each active event writes contiguous post-synaptic values within a batch row.
+    The Python wrapper transposes that physical buffer back to the public
+    logical result ``[post, batch]`` before returning.
+
+    Parameters
+    ----------
+    spk_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the spike matrix.
+    weight_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the weight matrix.
+    transpose : bool
+        If False, compute ``weights[m,k] @ spikes[k,batch]``. If True, compute
+        ``weights[k,m].T @ spikes[k,batch]``.
+    weighted : bool, optional
+        Select the value-weighted (``_wv``) kernels, which multiply each
+        weight by the event value.
+    **kwargs
+        Must include ``outs`` (list of jax.ShapeDtypeStruct for output).
+
+    Returns
+    -------
+    kernel : callable
+        A function ``kernel(weights, spikes) -> output`` that invokes the
+        selected CUDA kernel via ``jax.ffi.ffi_call``.
+    """
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_densemm.cu'),
+        name='dense_binary_mm',
+    )
+
+    # Spike type suffix: binary non-native event dtypes are converted to bool
+    # masks; weighted events are cast to the weight dtype.
+    abi = cuda_event_abi(spk_info.dtype, weighted=weighted, value_dtype=weight_info.dtype)
+    spk_suffix = abi.suffix
+
+    # Weight dtype suffix
+    wt_sfx = dtype_suffix(weight_info.dtype)
+    if transpose:
+        kernel_name = f'dense_binary_mm.binary_densemm_transpose{wt_sfx}{spk_suffix}'
+    else:
+        kernel_name = f'dense_binary_mm.binary_densemm_no_transpose{wt_sfx}{spk_suffix}'
+
+    out_info = kwargs['outs'][0]
+    physical_out_info = (
+        jax.ShapeDtypeStruct([out_info.shape[1], out_info.shape[0]], out_info.dtype),
+    )
+
+    def kernel(weights, spikes):
+        output = jax.ffi.ffi_call(kernel_name, physical_out_info)(weights, abi.prepare(spikes))[0]
+        return (jnp.transpose(output),)
+
+    return kernel
+
+
+def _binary_densemm_cublas_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    weighted: bool = False,
+    **kwargs
+):
+    """Select the cuBLAS dense MM backend for float32 weights (any event dtype)."""
+    if jnp.dtype(weight_info.dtype) != jnp.dtype('float32'):
+        raise NotImplementedError("cublas dense MM only supports float32 weights.")
+    if weighted:
+        # The cuBLAS entry points read bool events only; weighted events use the
+        # float product (dispatched by XLA to cuBLAS as well).
+        return _binary_densemm_jax_kernel(transpose=transpose, weighted=True)
+
+    _load_dense_cublas_file()
+
+    out_info = kwargs['outs']
+    suffix = 't' if transpose else 'nt'
+    kernel_name = f'dense_binary_cublas.binary_densemm_cublas_{suffix}_f32_bool'
+
+    def product(weights, spikes):
+        out = jax.ffi.ffi_call(kernel_name, out_info)(weights, event_active(spikes))[0]
+        # Under shard_map ffi_call types its result as replicated; _guard_nonfinite's
+        # cond needs the operands' varying axes on both branches (#245).
+        return match_varying_axes(out, weights, spikes)
+
+    def exact(weights, spikes):
+        return _exact_dense_mm(weights, spikes, transpose=transpose, weighted=False)
+
+    def kernel(weights, spikes):
+        # A GEMM multiplies every weight by its 0/1 event and cannot select per
+        # batch column; non-finite results take the exact select path.
+        return [_guard_nonfinite(product(weights, spikes), exact, weights, spikes)]
+
+    return kernel
+
+
+binary_densemm_p = XLACustomKernel(
+    'binary_densemm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_densemm``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) dense
+matrix-matrix multiplication operation to registered backends. On GPU,
+``cuda_raw`` is the WPR event-driven CUDA backend and remains the default;
+``jax_raw`` provides a pure JAX reference path, and ``cublas`` provides an
+optional float32-weight cuBLAS path.
+
+The operation computes ``weights[m,k] @ spikes[k,n] -> out[m,n]`` when ``transpose=False``,
+or ``weights[k,m].T @ spikes[k,n] -> out[m,n]`` when ``transpose=True``, where only active
+(nonzero) spike entries contribute to the output.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_densemm_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_densemm_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_densemm : High-level user-facing function wrapper.
+"""
+)
+binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
+binary_densemm_p.def_cuda_raw_kernel(_binary_densemm_cuda_kernel, asdefault=True)
+binary_densemm_p.def_kernel('jax_raw', 'cpu', _binary_densemm_jax_kernel)
+binary_densemm_p.def_kernel('jax_raw', 'gpu', _binary_densemm_jax_kernel)
+binary_densemm_p.def_kernel('jax_raw', 'tpu', _binary_densemm_jax_kernel)
+binary_densemm_p.def_kernel('cublas', 'gpu', _binary_densemm_cublas_kernel)
+binary_densemm_p.def_jvp_rule2(_binary_densemm_jvp_weights, _binary_densemm_jvp_spikes)
+binary_densemm_p.def_transpose_rule(_binary_densemm_transpose_rule)
+binary_densemm_p.def_batching_rule(_binary_densemm_batching)
+binary_densemm_p.def_call(binary_densemm_p_call)
+binary_densemm_p.def_tags('dense', 'binary')
+binary_densemm_p.def_benchmark_data(_binary_densemm_benchmark_data)

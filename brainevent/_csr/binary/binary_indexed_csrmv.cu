@@ -1,0 +1,313 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
+
+/*
+ * binary_indexed_csrmv.cu -- Fused Indexed Event-Driven Binary CSR Mat-Vec Kernels
+ * ===============================================================================
+ *
+ * CUDA backing kernels for ``binary_csrmv_indexed`` (see
+ * ``brainevent/_csr/binary/binary_indexed.py``). These are the permuted
+ * heterogeneous kernels for the non-transposed gather path. Each compressed
+ * row accumulates its active input events, reading the weight for structural
+ * slot ``j`` from the canonical position ``weights[perm[j]]``.
+ *
+ * Homogeneous weights need no perm variant (every slot reads ``weights[0]``);
+ * the Python dispatcher reuses the plain homogeneous kernels in
+ * ``binary_csrmv.cu`` for that case.
+ *
+ * Python API parameters:
+ *   weights  -- 1-D heterogeneous weight array (length == nnz), canonical order
+ *   indices  -- column indices of CSR non-zeros (int32, length == nnz)
+ *   indptr   -- row pointer array (int32 or int64, length == m+1)
+ *   perm     -- permutation mapping slot j -> canonical weight index (same dtype as indptr)
+ *   vector   -- dense input vector (bool/int8 or float)
+ *   output   -- dense output vector (same dtype as weights)
+ *   stream   -- CUDA stream handle (int64)
+ */
+
+#include "cuda_common.h"
+#include "brainevent/common.h"
+
+// Select, never multiply by the activity: an inactive event contributes exactly
+// zero even when its weight is NaN or +-Inf (``NaN * 0`` is NaN). ``F`` is the
+// event factor ``(ACC_T)IS_ACTIVE(x)``: 1/0 for binary events, the event value
+// for weighted (``_wv``) ones, so ``F != 0`` is the activity in both cases.
+// docs/specs/2026-10-24-inactive-row-nan-isolation.md
+#ifndef BE_EVENT_TERM
+#define BE_EVENT_TERM(W, F) (((F) != 0) ? (W) * (F) : 0)
+#endif
+
+// =========================================================================
+// Indexed (perm) Heterogeneous Kernels — weights read via weights[perm[j]]
+// =========================================================================
+
+#define DEFINE_CSRMV_NT_THREAD_PERM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
+                                            READ_W, WRITE_W, ACC_ZERO)                   \
+template <typename IndptrT> \
+__global__ void _csrmv_nt_thread_perm_hetero_kern##SUFFIX(                               \
+    const WEIGHT_T* __restrict__ weights,                                               \
+    const int32_t*  __restrict__ indices,                                               \
+    const IndptrT*  __restrict__ indptr,                                                \
+    const IndptrT*  __restrict__ perm,                                                  \
+    const SPIKE_T*  __restrict__ vector,                                                \
+    WEIGHT_T*       __restrict__ output,                                                \
+    int m                                                                               \
+) {                                                                                     \
+    int row = blockIdx.x * blockDim.x + threadIdx.x;                                    \
+    if (row >= m) return;                                                               \
+    IndptrT start = indptr[row], end = indptr[row + 1];                                     \
+    if (start == end) { output[row] = WRITE_W(ACC_ZERO); return; }                      \
+    ACC_T acc = ACC_ZERO;                                                               \
+    _Pragma("unroll 4")                                                                 \
+    for (IndptrT j = start; j < end; j++) {                                                 \
+        ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                              \
+        acc += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask);                           \
+    }                                                                                   \
+    output[row] = WRITE_W(acc);                                                         \
+}
+
+// One warp per row, 8 warps packed per block, grid-strided. `row` is
+// warp-uniform, so every lane reaches WARP_RED together — the convergence
+// precondition __shfl_down_sync requires.
+#define DEFINE_CSRMV_NT_WARP_PERM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,  \
+                                          READ_W, WRITE_W, WARP_RED, ACC_ZERO)         \
+template <typename IndptrT> \
+__global__ void _csrmv_nt_warp_perm_hetero_kern##SUFFIX(                               \
+    const WEIGHT_T* __restrict__ weights,                                              \
+    const int32_t*  __restrict__ indices,                                              \
+    const IndptrT*  __restrict__ indptr,                                               \
+    const IndptrT*  __restrict__ perm,                                                 \
+    const SPIKE_T*  __restrict__ vector,                                               \
+    WEIGHT_T*       __restrict__ output,                                               \
+    int m                                                                              \
+) {                                                                                    \
+    int lane      = threadIdx.x & 31;                                                  \
+    int warp_id   = threadIdx.x >> 5;                                                  \
+    int warps_per = blockDim.x >> 5;                                                   \
+    for (int row = blockIdx.x * warps_per + warp_id; row < m;                          \
+         row += gridDim.x * warps_per) {                                               \
+        IndptrT start = indptr[row], end = indptr[row + 1];                            \
+        ACC_T acc = ACC_ZERO;                                                          \
+        _Pragma("unroll 2")                                                            \
+        for (IndptrT j = start + lane; j < end; j += 32) {                             \
+            ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                         \
+            acc += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask);                      \
+        }                                                                              \
+        acc = WARP_RED(acc);                                                           \
+        if (lane == 0) output[row] = WRITE_W(acc);                                     \
+    }                                                                                  \
+}
+
+#define DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
+                                           READ_W, WRITE_W, WARP_RED, ACC_ZERO)         \
+template <typename IndptrT> \
+__global__ void _csrmv_nt_block_perm_hetero_kern##SUFFIX(                               \
+    const WEIGHT_T* __restrict__ weights,                                              \
+    const int32_t*  __restrict__ indices,                                              \
+    const IndptrT*  __restrict__ indptr,                                               \
+    const IndptrT*  __restrict__ perm,                                                 \
+    const SPIKE_T*  __restrict__ vector,                                               \
+    WEIGHT_T*       __restrict__ output,                                               \
+    int m                                                                              \
+) {                                                                                    \
+    extern __shared__ char _smem_bytes[];                                              \
+    ACC_T* smem_red = reinterpret_cast<ACC_T*>(_smem_bytes);                           \
+    int row = blockIdx.x;                                                              \
+    if (row >= m) return;                                                              \
+    IndptrT start = indptr[row], end = indptr[row + 1];                                    \
+    if (start == end) {                                                                \
+        if (threadIdx.x == 0) output[row] = WRITE_W(ACC_ZERO);                         \
+        return;                                                                        \
+    }                                                                                  \
+    ACC_T acc = ACC_ZERO;                                                              \
+    _Pragma("unroll 2")                                                                \
+    for (IndptrT j = start + (int)threadIdx.x; j < end; j += blockDim.x) {                 \
+        ACC_T mask = (ACC_T)IS_ACTIVE(vector[indices[j]]);                             \
+        acc += BE_EVENT_TERM(READ_W(weights[perm[j]]), mask);                          \
+    }                                                                                  \
+    int lane   = threadIdx.x & 31;                                                     \
+    int warpid = threadIdx.x >> 5;                                                     \
+    acc = WARP_RED(acc);                                                               \
+    if (lane == 0) smem_red[warpid] = acc;                                             \
+    __syncthreads();                                                                   \
+    int n_warps = (blockDim.x + 31) >> 5;                                              \
+    acc = (threadIdx.x < n_warps) ? smem_red[lane] : ACC_ZERO;                         \
+    if (warpid == 0) acc = WARP_RED(acc);                                              \
+    if (threadIdx.x == 0) output[row] = WRITE_W(acc);                                  \
+}
+
+
+// float32 perm heterogeneous
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, \
+                                    READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, \
+                                    READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,  \
+                                   READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,  \
+                                   READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,  \
+                                   READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,  \
+                                   READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+
+// float64 perm heterogeneous
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, \
+                                    READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, \
+                                    READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,  \
+                                   READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,  \
+                                   READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,  \
+                                   READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,  \
+                                   READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+
+// float16 perm heterogeneous
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, \
+                                    READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, \
+                                    READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,  \
+                                   READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,  \
+                                   READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,  \
+                                   READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,  \
+                                   READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+
+// bfloat16 perm heterogeneous
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, \
+                                    READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, \
+                                    READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,  \
+                                   READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,  \
+                                   READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,  \
+                                   READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,  \
+                                   READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+
+// =========================================================================
+// FFI Entry Points — Indexed (perm) Heterogeneous Weights
+// =========================================================================
+
+#define FFI_CSRMV_NT_AUTO_PERM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)       \
+void binary_csrmv_nt_auto_perm_hetero##SUFFIX(                                       \
+    const BE::Tensor weights, const BE::Tensor indices,                             \
+    const BE::Tensor indptr,  const BE::Tensor perm,                                \
+    const BE::Tensor vector,  BE::Tensor output,  int64_t stream                    \
+) {                                                                                  \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                             \
+    BE_CHECK(perm.dtype() == indptr.dtype())                                   \
+        << "[be] indexed CSR CUDA kernels require perm dtype ("              \
+        << BE::dtype_name(perm.dtype()) << ") to match indptr dtype ("       \
+        << BE::dtype_name(indptr.dtype()) << ")";                            \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                            \
+    int m          = static_cast<int>(indptr.size(0)) - 1;                          \
+    int nse        = static_cast<int>(indices.size(0));                             \
+    int avg_nnz    = (m > 0) ? (nse / m) : 0;                                       \
+    const WEIGHT_C_T* d_w    = static_cast<const WEIGHT_C_T*>(weights.data_ptr());  \
+    const int32_t*    d_i    = static_cast<const int32_t*>(indices.data_ptr());     \
+    const SPIKE_C_T*  d_v    = static_cast<const SPIKE_C_T*>(vector.data_ptr());    \
+    WEIGHT_C_T*       d_o    = static_cast<WEIGHT_C_T*>(output.data_ptr());         \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                               \
+        const IndptrT* d_p = static_cast<const IndptrT*>(indptr.data_ptr());        \
+        const IndptrT* d_perm = static_cast<const IndptrT*>(perm.data_ptr());       \
+        if (avg_nnz < 16) {                                                         \
+            int blocks = (m + 255) / 256;                                          \
+            _csrmv_nt_thread_perm_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(       \
+                d_w, d_i, d_p, d_perm, d_v, d_o, m);                                \
+        } else if (avg_nnz < 512) {                                                 \
+            int blocks = BE_WARP_PER_ROW_GRID(m);                                     \
+            _csrmv_nt_warp_perm_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(         \
+                d_w, d_i, d_p, d_perm, d_v, d_o, m);                                \
+        } else {                                                                    \
+            _csrmv_nt_block_perm_hetero_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>(      \
+                d_w, d_i, d_p, d_perm, d_v, d_o, m);                                \
+        }                                                                           \
+    });                                                                             \
+}
+
+
+// float32 perm heterogeneous
+// @BE binary_csrmv_nt_auto_perm_hetero_f32_bool
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
+// @BE binary_csrmv_nt_auto_perm_hetero_f32_float
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f32_float, float,  float,  8 * sizeof(float))
+
+// float64 perm heterogeneous
+// @BE binary_csrmv_nt_auto_perm_hetero_f64_bool
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f64_bool,  double, int8_t, 8 * sizeof(double))
+// @BE binary_csrmv_nt_auto_perm_hetero_f64_float
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f64_float, double, float,  8 * sizeof(double))
+
+// float16 perm heterogeneous
+// @BE binary_csrmv_nt_auto_perm_hetero_f16_bool
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f16_bool,  __half, int8_t, 8 * sizeof(float))
+// @BE binary_csrmv_nt_auto_perm_hetero_f16_float
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f16_float, __half, float,  8 * sizeof(float))
+
+// bfloat16 perm heterogeneous
+// @BE binary_csrmv_nt_auto_perm_hetero_bf16_bool
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * sizeof(float))
+// @BE binary_csrmv_nt_auto_perm_hetero_bf16_float
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_bf16_float, __nv_bfloat16, float,  8 * sizeof(float))
+
+
+// =========================================================================
+// Weighted (``_wv``) instantiations -- WeightedArray events
+// =========================================================================
+//
+// The event buffer has the weight dtype and the kernels accumulate
+// ``w * x`` instead of ``w * mask(x)``: the event-read slot of the kernel
+// macros (``IS_ACTIVE``) is given the weight reader ``READ_W``, so
+// ``(ACC_T)IS_ACTIVE(x)`` becomes the event value. Binary instantiations above
+// are unchanged.
+
+// f32 weighted
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f32_wv, float, READ_F32, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f32_wv, float, READ_F32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f32_wv, float, READ_F32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
+
+// f64 weighted
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f64_wv, double, READ_F64, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f64_wv, double, READ_F64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f64_wv, double, READ_F64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
+
+// f16 weighted
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_f16_wv, __half, READ_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_f16_wv, __half, READ_F16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_f16_wv, __half, READ_F16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+
+// bf16 weighted
+DEFINE_CSRMV_NT_THREAD_PERM_HETERO(_bf16_wv, __nv_bfloat16, READ_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMV_NT_BLOCK_PERM_HETERO(_bf16_wv, __nv_bfloat16, READ_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+DEFINE_CSRMV_NT_WARP_PERM_HETERO(_bf16_wv, __nv_bfloat16, READ_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
+
+// Weighted FFI entry points
+// @BE binary_csrmv_nt_auto_perm_hetero_f32_wv
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f32_wv, float, float, 8 * sizeof(float))
+// @BE binary_csrmv_nt_auto_perm_hetero_f64_wv
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f64_wv, double, double, 8 * sizeof(double))
+// @BE binary_csrmv_nt_auto_perm_hetero_f16_wv
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_f16_wv, __half, __half, 8 * sizeof(float))
+// @BE binary_csrmv_nt_auto_perm_hetero_bf16_wv
+FFI_CSRMV_NT_AUTO_PERM_HETERO(_bf16_wv, __nv_bfloat16, __nv_bfloat16, 8 * sizeof(float))

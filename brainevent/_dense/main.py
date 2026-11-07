@@ -34,7 +34,7 @@ from jax.tree_util import register_pytree_node_class
 from brainevent._data import DataRepresentation
 from brainevent._typing import ArrayData, Data, MatrixShape
 from .binary import binary_densemm, binary_densemv
-from .plasticity_binary import update_dense_on_binary_pre, update_dense_on_binary_post
+from .plasticity import update_dense_on_binary_pre, update_dense_on_binary_post
 
 __all__ = [
     'Dense',
