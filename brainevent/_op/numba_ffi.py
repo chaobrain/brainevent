@@ -93,6 +93,56 @@ def _wait_for_inflight_executions() -> None:
             pass
 
 
+def _exit_guard() -> None:
+    """The ``atexit`` handler: wait for the live arrays, then refresh the CPU-client hold."""
+    _wait_for_inflight_executions()
+    if _CPU_HOLD_WANTED:
+        _hold_cpu_client()  # the CPU client may have been replaced since the last registration
+
+
+# The CPU client held past interpreter finalization (:func:`_hold_cpu_client`), and
+# whether a Numba CPU target was registered, so the exit guard refreshes the hold.
+_HELD_CPU_CLIENT = None
+_CPU_HOLD_WANTED = False
+
+
+def _hold_cpu_client() -> None:
+    """Hold one extra reference to the current CPU client, so finalization never destroys it.
+
+    The wait of :func:`_wait_for_inflight_executions` cannot see an execution whose
+    outputs were all dropped (#259): its worker may enter the trampoline after
+    finalization began and hang there, and destroying the CPU client then joins
+    that worker for good. The hold is a ``Py_IncRef`` that no Python container
+    owns, so neither the clearing of module dicts nor the shutdown collection
+    releases it: the client outlives finalization, a parked worker stays parked
+    and the process exits. Trade-off: in a process that registered a Numba CPU
+    target, the CPU client's destructor does not run at exit (the OS reclaims
+    it). Only the CPU client: its workers run the CPU trampoline; the GPU client
+    keeps its normal teardown. At most one client is held: after
+    ``jax.clear_backends()`` the next call holds the new client and releases the
+    old one, which returns it to the lifetime JAX gives it. Under
+    ``jax_debug_leaked_clients_on_clear_backends`` nothing is held, as JAX would
+    report the held client as leaked.
+    """
+    global _HELD_CPU_CLIENT, _CPU_HOLD_WANTED
+    _CPU_HOLD_WANTED = True
+    client = None
+    if not getattr(jax.config, 'jax_debug_leaked_clients_on_clear_backends', False):
+        try:
+            client = jax.devices('cpu')[0].client
+        except Exception:  # noqa: BLE001 - no CPU backend: no CPU worker can call the target
+            pass
+    with _EXIT_GUARD_LOCK:
+        old = _HELD_CPU_CLIENT
+        if client is old:
+            return
+        if client is not None:
+            ctypes.pythonapi.Py_IncRef(ctypes.py_object(client))
+        _HELD_CPU_CLIENT = client
+        if old is not None:
+            ctypes.pythonapi.Py_DecRef(ctypes.py_object(old))
+
+
 def _register_exit_guard() -> None:
     """Register :func:`_wait_for_inflight_executions` with ``atexit`` once per process.
 
@@ -102,8 +152,9 @@ def _register_exit_guard() -> None:
     global _EXIT_GUARD_REGISTERED
     with _EXIT_GUARD_LOCK:
         if not _EXIT_GUARD_REGISTERED:
-            atexit.register(_wait_for_inflight_executions)
+            atexit.register(_exit_guard)
             _EXIT_GUARD_REGISTERED = True
+
 
 def _detect_xla_ffi_api_version() -> Tuple[int, int]:
     """Return the ``(major, minor)`` XLA FFI API version the installed jaxlib implements.
@@ -838,8 +889,10 @@ class NumbaCpuFfiHandler:
 
         # Create the ctypes callback - must be stored as an attribute to prevent GC
         self._callback = _FFI_CALLBACK_TYPE(self._ffi_callback)
-        # The target calls into Python: wait for in-flight executions at exit.
+        # The target calls into Python: wait for in-flight executions at exit,
+        # and keep the CPU client out of finalization (#259).
         _register_exit_guard()
+        _hold_cpu_client()
 
         # Register as an FFI target (typed FFI api_version=1 is the default in JAX 0.9+)
         _warn_if_untested_jax()
