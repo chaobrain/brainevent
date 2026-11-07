@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registers an `atexit` handler that waits for every live JAX array before
   finalization, as JAX does for its own host callbacks. An execution whose
   outputs were all dropped has nothing to wait on and is not covered.
+- Exit no longer hangs when every output of an in-flight execution calling a
+  Numba CPU FFI target was dropped (#259), which the wait of #256 cannot see.
+  The first Numba CPU target now holds one extra reference to the CPU client,
+  so finalization never destroys it and never joins a worker parked in the
+  trampoline. Trade-off: in such a process the CPU client's destructor does
+  not run at exit. Not taken under `jax_debug_leaked_clients_on_clear_backends`.
 
 ## [0.4.1] - 2026-11-03
 
