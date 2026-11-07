@@ -101,7 +101,7 @@ def test_capacity_bound_uses_the_row_length_hint():
     assert config.mv_capacity(0, 100) == 0
     assert config.mv_capacity(10, 0) == 0
     # A single 9000-long row needs ceil(9000 / task_nnz) chunks.
-    assert config.mv_capacity(9000, 1, max_row_nnz=9000) == 3
+    assert config.mv_capacity(9000, 1, max_row_nnz=9000) == (9000 + config.task_nnz - 1) // config.task_nnz
 
 
 def test_prepared_row_hint_matches_concrete_structure():

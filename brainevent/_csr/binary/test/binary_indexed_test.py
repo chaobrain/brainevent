@@ -808,7 +808,11 @@ def test_import_brainevent_needs_no_nvcc():
     # Importing the module must not compile CUDA (load_cuda_file is lazy).
     import importlib
     import brainevent._csr.binary.binary_indexed as mod
-    importlib.reload(mod)
+    with pytest.warns(UserWarning, match='already registered') as caught:
+        importlib.reload(mod)
+    assert len(caught) == 2
+    assert all(any(name in str(w.message) for w in caught) for name in
+               ('binary_csrmv_indexed', 'binary_csrmm_indexed'))
     assert hasattr(mod, "binary_csrmm_indexed")
 
 

@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+import pytest
+
 from brainevent._registry import (
     _PRIMITIVE_REGISTRY,
     register_primitive,
@@ -81,8 +83,9 @@ class TestRegistry:
         """Registering with same name should overwrite."""
         old_prim = _PRIMITIVE_REGISTRY.get('binary_csrmv')
         assert old_prim is not None
-        # Re-register should not raise
-        register_primitive('binary_csrmv', old_prim)
+        # Re-register warns about the name collision but still overwrites.
+        with pytest.warns(UserWarning, match='already registered'):
+            register_primitive('binary_csrmv', old_prim)
         assert _PRIMITIVE_REGISTRY['binary_csrmv'] is old_prim
 
     def test_primitives_have_tags(self):

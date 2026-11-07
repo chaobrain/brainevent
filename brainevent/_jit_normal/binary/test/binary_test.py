@@ -911,6 +911,7 @@ def _check_activity_forward(implementation, cls_name, corder, dtype, op):
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('op', ['mv', 'vm'])
 @pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+@pytest.mark.filterwarnings('ignore:.*is not event-driven;.*:brainevent.PerformanceWarning')
 def test_binary_jitnmv_activity_all_dtypes_match_dense(implementation, cls_name, corder, op, dtype):
     _check_activity_forward(implementation, cls_name, corder, dtype, op)
 

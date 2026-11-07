@@ -1760,6 +1760,7 @@ def test_jit_reuses_one_entry_for_structurally_equal_fixed_num(cls):
 @pytest.mark.parametrize('cls', _FIXED_NUM)
 @pytest.mark.parametrize('mirror', [False, True])
 @pytest.mark.parametrize('backend', _PYTREE_BACKENDS)
+@pytest.mark.filterwarnings('ignore:.*runs without the cached mirror layout.*:brainevent.PerformanceWarning')
 def test_scan_carry_fixed_num_with_binary_matmul_and_plasticity(cls, mirror, backend):
     M, dense = _pytree_fixed_num(cls, backend)
     if mirror:
