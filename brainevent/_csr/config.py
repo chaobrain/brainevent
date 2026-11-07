@@ -84,7 +84,7 @@ def _query_cuda_device_info(device):
     """Read CUDA launch properties once per device through a small native probe."""
     from brainevent._op import load_cuda_file
 
-    source = Path(__file__).parent / 'device_info.cu'
+    source = Path(__file__).parent / '_support' / 'device_info.cu'
     include_root = Path(__file__).parents[1] / 'include'
     dependencies = (source, *sorted(include_root.rglob('*.h')))
     digest = hashlib.sha256(b''.join(path.read_bytes() for path in dependencies)).hexdigest()[:12]

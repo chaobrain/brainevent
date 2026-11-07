@@ -959,6 +959,7 @@ class TiledCompressedSparseData(DataRepresentation):
             new_indptr,
             shape=shape,
             backend=self.backend,
+            backward_algorithm=self.backward_algorithm,
         )
         return type(self).from_sorted_csr(
             source,
@@ -1011,6 +1012,7 @@ class TiledCompressedSparseData(DataRepresentation):
             indptr,
             shape=self.shape,
             backend=self.backend,
+            backward_algorithm=self.backward_algorithm,
         )
 
     @classmethod
@@ -1656,6 +1658,7 @@ class TCSR(TiledCompressedSparseData):
             indptr,
             shape=self.shape,
             backend=self.backend,
+            backward_algorithm=self.backward_algorithm,
         )
 
     def transpose(self, axes: Any = None) -> TCSR:

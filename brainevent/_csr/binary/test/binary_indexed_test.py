@@ -438,7 +438,7 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
         raise AssertionError("cuda_raw unfavorable BinaryArray route must use indexed primitive")
 
     def fake_mv_indexed(data, indices, indptr, perm, vector, *, shape, transpose, backend=None, weighted=False,
-                        config=None):
+                        backward_algorithm="bptt", config=None):
         calls.append({
             "kind": "mv",
             "shape": shape,
@@ -452,7 +452,7 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
         return jnp.zeros((out_size,), dtype=data.dtype)
 
     def fake_mm_indexed(data, indices, indptr, perm, matrix, *, shape, transpose, backend=None, weighted=False,
-                        config=None):
+                        backward_algorithm="bptt", config=None):
         calls.append({
             "kind": "mm",
             "shape": shape,

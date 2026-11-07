@@ -32,6 +32,7 @@ from brainevent._misc import (
 from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
 from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
 from brainevent.config import _backend_preference
+from ._support.binary import _validate_backward_algorithm
 from .binary.binary import binary_csrmv, binary_csrmm
 from .binary.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
 from .config import (
@@ -86,6 +87,9 @@ class CompressedSparseData(DataRepresentation):
         Matrix shape ``(num_rows, num_columns)``.
     backend : str or None, optional
         Compute backend used by the matrix operations. Default ``None``.
+    backward_algorithm : {"bptt", "pp_prop"}, optional
+        Weight-gradient rule for binary events. ``pp_prop`` preserves numeric
+        event values in the weight cotangent; forward values stay binary.
     buffers : dict, optional
         Precomputed structure caches under their legacy names: the mirror
         layout (``'csc'`` for CSR, ``'csr'`` for CSC) and ``'diag_positions'``.
@@ -146,6 +150,7 @@ class CompressedSparseData(DataRepresentation):
         *,
         shape: MatrixShape,
         backend: Optional[str] = None,
+        backward_algorithm: str = "bptt",
         buffers: Optional[Dict] = None,
         indptr_dtype="auto",
         check_structure: bool = True,
@@ -193,7 +198,9 @@ class CompressedSparseData(DataRepresentation):
                 host_indptr=host_indptr,
             )
 
+        _validate_backward_algorithm(backward_algorithm)
         self.backend = backend
+        self.backward_algorithm = backward_algorithm
         super().__init__((self.data, self.indices, self.indptr), shape=shape)
         self._cache = StructureCache()
         host_structure = None
@@ -214,7 +221,7 @@ class CompressedSparseData(DataRepresentation):
             self._cache.set_mirror(self._weight_indices())
 
     @classmethod
-    def _from_parts(cls, data, indices, indptr, *, shape, backend=None, cache=None, config=None):
+    def _from_parts(cls, data, indices, indptr, *, shape, backend=None, backward_algorithm="bptt", cache=None, config=None):
         """Assemble a matrix from trusted parts, without conversion or validation.
 
         Structure-preserving paths (``with_data``, ``transpose``, ``apply``,
@@ -230,6 +237,7 @@ class CompressedSparseData(DataRepresentation):
         obj.indptr = indptr
         obj.shape = tuple(int(s) for s in shape)
         obj.backend = backend
+        obj.backward_algorithm = backward_algorithm
         obj._buffer_registry = set()
         obj._cache = StructureCache() if cache is None else cache
         obj.config = CSRConfig() if config is None else config
@@ -365,14 +373,14 @@ class CompressedSparseData(DataRepresentation):
             cache.set_mirror(self._weight_indices())
         return type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape, backend=self.backend, cache=cache,
-            config=self.config,
+            config=self.config, backward_algorithm=self.backward_algorithm,
         )
 
     def _same_structure(self, data):
         """A matrix of the same class and structure (shared caches) holding ``data``."""
         return type(self)._from_parts(
             data, self.indices, self.indptr, shape=self.shape, backend=self.backend, cache=self._cache,
-            config=self.config,
+            config=self.config, backward_algorithm=self.backward_algorithm,
         )
 
     def prepare_config(self, *, device=None):
@@ -410,7 +418,7 @@ class CompressedSparseData(DataRepresentation):
             )
         return type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape, backend=self.backend,
-            cache=self._cache, config=config,
+            cache=self._cache, config=config, backward_algorithm=self.backward_algorithm,
         )
 
     @property
@@ -487,14 +495,14 @@ class CompressedSparseData(DataRepresentation):
             return primary(
                 self.data, self.indices, self.indptr, x,
                 shape=shape, transpose=transpose, backend=self.backend, weighted=weighted,
-                config=self.config,
+                config=self.config, backward_algorithm=self.backward_algorithm,
             )
         mirror_indptr, mirror_indices, perm = mirror
         indexed = binary_csrmm_indexed if matrix else binary_csrmv_indexed
         return indexed(
             self.data, mirror_indices, mirror_indptr, perm, x,
             shape=(shape[1], shape[0]), transpose=True, backend=self.backend, weighted=weighted,
-            config=self.config.swap_layouts(),
+            config=self.config.swap_layouts(), backward_algorithm=self.backward_algorithm,
         )
 
     def tree_flatten(self):
@@ -512,7 +520,7 @@ class CompressedSparseData(DataRepresentation):
         children : tuple
             ``(data, indices, indptr, config, *mirror, *diag_plan)``.
         aux_data : tuple
-            ``(shape, backend, has_mirror, has_diag_plan)``.
+            ``(shape, backend, backward_algorithm, has_mirror, has_diag_plan)``.
 
         See Also
         --------
@@ -522,7 +530,7 @@ class CompressedSparseData(DataRepresentation):
         mirror = cache.mirror or ()
         plan = cache.diag_plan or ()
         children = (self.data, self.indices, self.indptr, self.config, *mirror, *plan)
-        aux = (self.shape, self.backend, bool(mirror), bool(plan))
+        aux = (self.shape, self.backend, self.backward_algorithm, bool(mirror), bool(plan))
         return children, aux
 
     @classmethod
@@ -553,7 +561,7 @@ class CompressedSparseData(DataRepresentation):
         --------
         tree_flatten : Flatten a sparse matrix for JAX pytree handling.
         """
-        shape, backend, has_mirror, has_plan = aux_data
+        shape, backend, backward_algorithm, has_mirror, has_plan = aux_data
         expected = 4 + 3 * has_mirror + 4 * has_plan
         if len(children) != expected:
             raise ValueError(f'{cls.__name__}.tree_unflatten expects {expected} leaves, got {len(children)}.')
@@ -561,7 +569,8 @@ class CompressedSparseData(DataRepresentation):
         mirror = tuple(children[4:7]) if has_mirror else None
         plan = tuple(children[4 + 3 * has_mirror:]) if has_plan else None
         cache = StructureCache(mirror=mirror, diag_plan=plan)
-        return cls._from_parts(data, indices, indptr, shape=shape, backend=backend, cache=cache, config=config)
+        return cls._from_parts(data, indices, indptr, shape=shape, backend=backend,
+                               backward_algorithm=backward_algorithm, cache=cache, config=config)
 
     def apply(self, fn):
         """
@@ -1111,6 +1120,7 @@ class CompressedSparseData(DataRepresentation):
             config=_config_for_new_structure(
                 self.config, new_indices, new_indptr, shape=self._storage_shape,
             ),
+            backward_algorithm=self.backward_algorithm,
         )
 
     def _diag_plan(self):
@@ -1214,6 +1224,8 @@ class CSR(CompressedSparseData):
         Number of stored elements (non-zero entries).
     dtype : dtype
         Data type of the matrix values.
+    backward_algorithm : {"bptt", "pp_prop"}
+        Weight-gradient rule for binary event products.
 
     Notes
     -----
@@ -1265,6 +1277,7 @@ class CSR(CompressedSparseData):
         index_dtype=jnp.int32,
         indptr_dtype="auto",
         backend: Optional[str] = None,
+        backward_algorithm: str = "bptt",
         precompute_weight_indices: bool = False,
         config: Optional[CSRConfig] = None,
         device=None,
@@ -1291,6 +1304,8 @@ class CSR(CompressedSparseData):
             requires ``jax_enable_x64``).
         backend : str or None, optional
             Compute backend to attach to the matrix. Default ``None``.
+        backward_algorithm : {"bptt", "pp_prop"}, optional
+            Weight-gradient rule for binary event products. Default ``"bptt"``.
         config : CSRConfig or None, optional
             Scheduler parameters to prepare for the resulting structure.
         device : jax.Device or None, optional
@@ -1333,7 +1348,7 @@ class CSR(CompressedSparseData):
         out = CSR(
             (csr.data, csr.indices, csr.indptr),
             shape=csr.shape, backend=backend, indptr_dtype=indptr_dtype,
-            config=config, device=device,
+            config=config, device=device, backward_algorithm=backward_algorithm,
         )
         if precompute_weight_indices:
             out = out.build_weight_indices()
@@ -1435,7 +1450,7 @@ class CSR(CompressedSparseData):
         csc_data = self.data if self.data.size == 1 else self.data[perm]
         return CSC._from_parts(
             csc_data, csc_indices, csc_indptr, shape=self.shape, backend=self.backend,
-            config=self.config.swap_layouts(),
+            config=self.config.swap_layouts(), backward_algorithm=self.backward_algorithm,
         )
 
     def tocoo(self) -> u.sparse.COO:
@@ -1496,7 +1511,7 @@ class CSR(CompressedSparseData):
         return CSC._from_parts(
             self.data, self.indices, self.indptr,
             shape=self.shape[::-1], backend=self.backend, cache=self._cache,
-            config=self.config,
+            config=self.config, backward_algorithm=self.backward_algorithm,
         )
 
     def apply(self, fn) -> 'CSR':
@@ -1841,6 +1856,7 @@ class CSR(CompressedSparseData):
         return CSR._from_parts(
             new_data, new_indices, new_indptr, shape=shape, backend=self.backend,
             config=_config_for_new_structure(self.config, new_indices, new_indptr, shape=shape),
+            backward_algorithm=self.backward_algorithm,
         )
 
     def _binary_op(self, other, op) -> 'CSR':
@@ -2181,6 +2197,8 @@ class CSC(CompressedSparseData):
         Number of stored elements (non-zero entries).
     dtype : dtype
         Data type of the matrix values.
+    backward_algorithm : {"bptt", "pp_prop"}
+        Weight-gradient rule for binary event products.
 
     Notes
     -----
@@ -2229,6 +2247,7 @@ class CSC(CompressedSparseData):
         index_dtype=jnp.int32,
         indptr_dtype="auto",
         backend: Optional[str] = None,
+        backward_algorithm: str = "bptt",
         precompute_weight_indices: bool = False,
         config: Optional[CSRConfig] = None,
         device=None,
@@ -2256,6 +2275,8 @@ class CSC(CompressedSparseData):
             requires ``jax_enable_x64``).
         backend : str or None, optional
             Compute backend to attach to the matrix. Default ``None``.
+        backward_algorithm : {"bptt", "pp_prop"}, optional
+            Weight-gradient rule for binary event products. Default ``"bptt"``.
         config : CSRConfig or None, optional
             Scheduler parameters to prepare for the resulting structure.
         device : jax.Device or None, optional
@@ -2298,7 +2319,7 @@ class CSC(CompressedSparseData):
         out = CSC(
             (csc.data, csc.indices, csc.indptr),
             shape=csc.shape, backend=backend, indptr_dtype=indptr_dtype,
-            config=config, device=device,
+            config=config, device=device, backward_algorithm=backward_algorithm,
         )
         if precompute_weight_indices:
             out = out.build_weight_indices()
@@ -2400,7 +2421,7 @@ class CSC(CompressedSparseData):
         csr_data = self.data if self.data.size == 1 else self.data[perm]
         return CSR._from_parts(
             csr_data, csr_indices, csr_indptr, shape=self.shape, backend=self.backend,
-            config=self.config.swap_layouts(),
+            config=self.config.swap_layouts(), backward_algorithm=self.backward_algorithm,
         )
 
     def tocoo(self) -> u.sparse.COO:
@@ -2459,7 +2480,7 @@ class CSC(CompressedSparseData):
         return CSR._from_parts(
             self.data, self.indices, self.indptr,
             shape=self.shape[::-1], backend=self.backend, cache=self._cache,
-            config=self.config,
+            config=self.config, backward_algorithm=self.backward_algorithm,
         )
 
     def apply(self, fn) -> 'CSC':
@@ -2634,6 +2655,7 @@ class CSC(CompressedSparseData):
         return CSC._from_parts(
             csc_data, csc_indices, csc_indptr, shape=shape, backend=self.backend,
             config=_config_for_new_structure(self.config, csc_indices, csc_indptr, shape=shape[::-1]),
+            backward_algorithm=self.backward_algorithm,
         )
 
     def _binary_op(self, other, op) -> 'CSC':

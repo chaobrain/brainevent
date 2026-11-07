@@ -43,6 +43,17 @@ from brainevent._misc import (
 )
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, load_cuda_file
 from brainevent._sddmm import dispatch as _sddmm_dispatch
+from .._support.binary import (
+    _validate_backward_algorithm,
+    _weight_gradient_mode,
+    _task_capacity,
+    _ignore_config_mask,
+    _config_from_params,
+    _batch_config_params,
+    _hybrid_scratch,
+    _check_max_row_nnz,
+    _config_for_call,
+)
 from ..config import CSRConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
@@ -51,13 +62,6 @@ from .binary import (
     _event_contrib,
     _numba_event_mask,
     _numba_weighted_events,
-    _hybrid_scratch,
-    _task_capacity,
-    _check_max_row_nnz,
-    _ignore_config_mask,
-    _config_from_params,
-    _config_for_call,
-    _batch_config_params,
     _make_hybrid_mm_kernel,
 )
 from ..float.float import csrmv, csrmm
@@ -71,8 +75,8 @@ __all__ = [
 ]
 
 
-@namescope(name="brainevent.binary_csrmv_indexed", static_argnames=("shape", "transpose", "weighted", "max_row_nnz"))
-def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpose, backend, weighted, max_row_nnz, config):
+@namescope(name="brainevent.binary_csrmv_indexed", static_argnames=("shape", "transpose", "weighted", "max_row_nnz", "backward_algorithm"))
+def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpose, backend, weighted, backward_algorithm, max_row_nnz, config):
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
     res = binary_csrmv_indexed_p_call(
@@ -85,6 +89,7 @@ def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpos
         transpose=transpose,
         backend=backend,
         weighted=weighted,
+        backward_algorithm=backward_algorithm,
         max_row_nnz=max_row_nnz, config=config,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
@@ -101,6 +106,7 @@ def binary_csrmv_indexed(
     transpose: bool = False,
     backend: Optional[str] = None,
     weighted: bool = False,
+    backward_algorithm: str = "bptt",
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
 ) -> Data:
@@ -143,6 +149,9 @@ def binary_csrmv_indexed(
         If ``True``, ``v`` holds value-weighted events
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value instead of by ``1``.  Default ``False``.
+    backward_algorithm : {"bptt", "pp_prop"}, optional
+        Weight cotangent rule for binary events; ``pp_prop`` preserves event
+        values without changing the forward. Default is ``"bptt"``.
     config : CSRConfig or None, optional
         Explicit configuration prepared for this compressed structure. None uses
         fixed default scheduling parameters without reading saved configuration.
@@ -161,10 +170,12 @@ def binary_csrmv_indexed(
     --------
     brainevent._csr.binary.binary.binary_csrmv : The non-indexed event-driven product.
     """
+    _validate_backward_algorithm(backward_algorithm)
     _check_max_row_nnz(max_row_nnz, config)
     return _binary_csrmv_indexed_jit(
         data, indices, indptr, perm, v,
-        shape=shape, transpose=transpose, backend=backend, weighted=weighted, max_row_nnz=max_row_nnz, config=config,
+        shape=shape, transpose=transpose, backend=backend, weighted=weighted,
+        backward_algorithm=backward_algorithm, max_row_nnz=max_row_nnz, config=config,
     )
 
 
@@ -508,6 +519,7 @@ def binary_csrmv_indexed_p_call(
     transpose: bool,
     backend: Optional[str] = None,
     weighted: bool = False,
+    backward_algorithm: str = "bptt",
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
 ):
@@ -530,6 +542,8 @@ def binary_csrmv_indexed_p_call(
     weighted : bool, optional
         Multiply the weights by the event value instead of the activity
         mask.  Default ``False``.
+    backward_algorithm : {"bptt", "pp_prop"}, optional
+        Weight cotangent rule for binary events. Default is ``"bptt"``.
     config : CSRConfig or None, optional
         Explicit configuration prepared for this compressed structure. None uses
         fixed default scheduling parameters without reading saved configuration.
@@ -542,6 +556,7 @@ def binary_csrmv_indexed_p_call(
     tuple of jax.Array
         A one-element tuple holding the result vector.
     """
+    _validate_backward_algorithm(backward_algorithm)
     assert perm.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "perm must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
     assert indices.ndim == 1, "Indices must be 1D."
@@ -579,6 +594,7 @@ def binary_csrmv_indexed_p_call(
         transpose=transpose,
         backend=backend,
         weighted=bool(weighted),
+        backward_algorithm=backward_algorithm,
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         perm_info=jax.ShapeDtypeStruct(perm.shape, perm.dtype),
@@ -609,6 +625,7 @@ def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, long_mask, *, sha
         transpose=transpose,
         backend=kw['backend'],
         weighted=kw.get('weighted', False),
+        backward_algorithm=kw.get('backward_algorithm', 'bptt'),
         max_row_nnz=kw.get('max_row_nnz'),
         config=_config_from_params(kw, long_mask),
     )
@@ -630,13 +647,13 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, long_mask, *
         if type(ct) is ad.Zero:
             ct_w = ad.Zero(weights.aval)
         else:
-            weighted = kw.get('weighted', False)
+            mode = _weight_gradient_mode(kw.get('weighted', False), kw.get('backward_algorithm', 'bptt'))
             # Slot k uses weights[perm[k]]. Inactive slots get exactly 0,
             # even for a NaN/Inf cotangent.
             left, right = (events, ct) if transpose else (ct, events)
             per_slot = _sddmm_dispatch.sddmm(
                 left, right, indices, indptr,
-                mode='weighted' if weighted else 'binary', transpose=transpose,
+                mode=mode, transpose=transpose,
                 backend=_sddmm_dispatch._CSRBackend(binary_csrmv_indexed_p, kw['backend'], kw.get('config_spec')),
             )
             if weights.aval.shape[0] == 1:
@@ -660,6 +677,7 @@ def _idx_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
+            backward_algorithm=kwargs.get('backward_algorithm', 'bptt'),
             config=_config_from_params(kwargs, args[-1]),
         )
         return r, [1]
@@ -697,7 +715,7 @@ binary_csrmv_indexed_p.def_tags('csr', 'binary', 'indexed')
 # =========================================================================== #
 
 
-@namescope(name="brainevent.binary_csrmm_indexed", static_argnames=("shape", "transpose", "weighted"))
+@namescope(name="brainevent.binary_csrmm_indexed", static_argnames=("shape", "transpose", "weighted", "backward_algorithm"))
 def binary_csrmm_indexed(
     data: Data,
     indices: Index,
@@ -709,6 +727,7 @@ def binary_csrmm_indexed(
     transpose: bool = False,
     backend: Optional[str] = None,
     weighted: bool = False,
+    backward_algorithm: str = "bptt",
     config: Optional[CSRConfig] = None,
 ) -> Data:
     """Event-driven CSR matrix-matrix product with a fused weight gather index.
@@ -749,6 +768,9 @@ def binary_csrmm_indexed(
         If ``True``, ``B`` holds value-weighted events
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value instead of by ``1``.  Default ``False``.
+    backward_algorithm : {"bptt", "pp_prop"}, optional
+        Weight cotangent rule for binary events; ``pp_prop`` preserves event
+        values without changing the forward. Default is ``"bptt"``.
     config : CSRConfig or None, optional
         Explicit configuration prepared for this compressed structure. None uses
         fixed default scheduling parameters without reading saved configuration.
@@ -765,12 +787,13 @@ def binary_csrmm_indexed(
     brainevent._csr.binary.binary.binary_csrmm : The non-indexed event-driven product.
     brainevent._csr.binary.binary_indexed.binary_csrmv_indexed : The matvec analog.
     """
+    _validate_backward_algorithm(backward_algorithm)
     data, unitd = u.split_mantissa_unit(data)
     B, unitb = u.split_mantissa_unit(B)
     res = binary_csrmm_indexed_p_call(
         data, indices, indptr, perm, B,
         shape=shape, transpose=transpose, backend=backend, weighted=weighted,
-        config=config,
+        config=config, backward_algorithm=backward_algorithm,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -1082,6 +1105,7 @@ def binary_csrmm_indexed_p_call(
     transpose: bool,
     backend: Optional[str] = None,
     weighted: bool = False,
+    backward_algorithm: str = "bptt",
     config: Optional[CSRConfig] = None,
 ):
     """Low-level primitive call for fused indexed event-driven CSR matmat.
@@ -1089,6 +1113,7 @@ def binary_csrmm_indexed_p_call(
     Validates inputs and dispatches ``binary_csrmm_indexed_p``.  See
     :func:`binary_csrmm_indexed` for the math.
     """
+    _validate_backward_algorithm(backward_algorithm)
     assert perm.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "perm must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
     assert indices.ndim == 1, "Indices must be 1D."
@@ -1125,6 +1150,7 @@ def binary_csrmm_indexed_p_call(
         transpose=transpose,
         backend=backend,
         weighted=bool(weighted),
+        backward_algorithm=backward_algorithm,
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         perm_info=jax.ShapeDtypeStruct(perm.shape, perm.dtype),
@@ -1141,6 +1167,7 @@ def _csrmm_idx_jvp_data(data_dot, data, indices, indptr, perm, B, long_mask, *, 
     return binary_csrmm_indexed_p_call(
         data_dot, indices, indptr, perm, B, shape=shape, transpose=transpose, backend=kw['backend'],
         weighted=kw.get('weighted', False),
+        backward_algorithm=kw.get('backward_algorithm', 'bptt'),
         config=_config_from_params(kw, long_mask),
     )
 
@@ -1171,7 +1198,7 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, long_mask, *, 
             left, right = (B, ct.T) if transpose else (ct, B.T)
             d_data = _sddmm_dispatch.sddmm(
                 left, right, indices, indptr,
-                mode='weighted' if kw.get('weighted', False) else 'binary',
+                mode=_weight_gradient_mode(kw.get('weighted', False), kw.get('backward_algorithm', 'bptt')),
                 transpose=transpose,
                 backend=_sddmm_dispatch._CSRBackend(binary_csrmm_indexed_p, kw['backend'], kw.get('config_spec')),
             )
@@ -1205,6 +1232,7 @@ def _csrmm_idx_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
+            backward_algorithm=kwargs.get('backward_algorithm', 'bptt'),
             config=_config_from_params(kwargs, args[-1]),
         )[0]
         if axes[4] == 2:

@@ -551,6 +551,9 @@ def test_views_and_pytree_have_no_binary_grad_mode_or_eager_mirror():
         assert not hasattr(view, "binary_grad_mode")
         assert view.backward_algorithm == "pp_prop"
         assert view.has_tcsc_mirror is False
+    with _explicit_int64_allowed():
+        assert matrix.tocsr().backward_algorithm == "pp_prop"
+        assert matrix.tocsc().backward_algorithm == "pp_prop"
 
 
 def test_tcsr_has_no_direction_specific_binary_service_selector():

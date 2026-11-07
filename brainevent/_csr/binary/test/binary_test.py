@@ -1854,16 +1854,18 @@ def test_binary_csrmv_weighted_default_is_binary():
 
 
 @pytest.mark.parametrize('axis', [0, 1])
-def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis):
-    """The mat-vec batching rule keeps ``weighted`` when it lowers to mat-mat."""
+@pytest.mark.parametrize('backward_algorithm', ['bptt', 'pp_prop'])
+def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis, backward_algorithm):
+    """The mat-vec batching rule keeps event and gradient modes when lowering to mat-mat."""
     weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
     indices = jnp.array([0, 1], dtype=jnp.int32)
     indptr = jnp.array([0, 2], dtype=jnp.int32)
     vector = jnp.array([[2.0, 0.0], [0.0, -1.0]], dtype=jnp.float32)
     seen = []
 
-    def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend, weighted=False, config=None):
-        seen.append(weighted)
+    def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend, weighted=False,
+                          backward_algorithm="bptt", config=None):
+        seen.append((weighted, backward_algorithm))
         return (jnp.ones((1, 2), dtype=jnp.float32),)
 
     monkeypatch.setattr("brainevent._csr.binary.binary.binary_csrmm_p_call", fake_csrmm_p_call)
@@ -1871,8 +1873,9 @@ def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis):
     _csrmv_batching(
         (weights, indices, indptr, vector, jnp.empty(0, jnp.uint32)),
         axes, shape=(1, 2), transpose=False, backend="jax_raw", weighted=True,
+        backward_algorithm=backward_algorithm,
     )
-    assert seen == [True]
+    assert seen == [(True, backward_algorithm)]
 
 
 # ---------------------------------------------------------------------------
