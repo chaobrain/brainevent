@@ -2923,9 +2923,11 @@ def _sampled_operands(case, transpose, batch, homo=False, backend='jax_raw'):
             weighted=case.endswith('weighted'), backend=backend)
     else:
         op = _sampled_binary_csr.binary_csrmv if batch is None else _sampled_binary_csr.binary_csrmm
+        config = (prepared_config(indices, indptr, (3, 4))
+                  if transpose and batch is not None and backend in (None, 'cuda_raw') else None)
         call = lambda w: op(
             w, indices, indptr, events, shape=(3, 4), transpose=transpose,
-            weighted=case == 'weighted', backend=backend)
+            weighted=case == 'weighted', backend=backend, config=config)
     return call, weights, events, rows, indices, perm
 
 
@@ -3057,7 +3059,10 @@ def test_shared_mv_gradient_avoids_unit_weight_forward_overflow(transpose, index
 @pytest.mark.parametrize('case', ['binary', 'weighted'])
 @pytest.mark.parametrize('batch', [None, 1, 3])
 @pytest.mark.parametrize('transpose', [False, True])
-@pytest.mark.parametrize('selection', ['jax_raw', 'cuda_raw', 'default_jax', 'default_cuda'])
+@pytest.mark.parametrize('selection', [
+    'jax_raw', 'cuda_raw', 'default_jax', 'default_cuda',
+    'cusparse', 'default_cusparse', 'global_cusparse',
+])
 def test_event_weight_gradient_follows_csr_backend(monkeypatch, case, batch, transpose, selection):
     if jax.default_backend() != 'gpu':
         pytest.skip('inspect the selected CSR and sampled CUDA backends on a GPU')
@@ -3066,8 +3071,14 @@ def test_event_weight_gradient_follows_csr_backend(monkeypatch, case, batch, tra
     name = 'binary_csrmv' if batch is None else 'binary_csrmm'
     primitive = getattr(module, name + ('_indexed_p' if indexed else '_p'))
     if selection.startswith('default_'):
-        selected = 'cuda_raw' if selection == 'default_cuda' else 'jax_raw'
+        selected = {'default_cuda': 'cuda_raw', 'default_jax': 'jax_raw',
+                    'default_cusparse': 'cusparse'}[selection]
         monkeypatch.setitem(primitive._defaults, 'gpu', selected)
+        backend = None
+    elif selection == 'global_cusparse':
+        from brainevent import config
+        selected = 'cusparse'
+        monkeypatch.setitem(config._global_backends, 'gpu', selected)
         backend = None
     else:
         selected = backend = selection
@@ -3104,6 +3115,7 @@ def test_event_weight_gradient_follows_csr_backend(monkeypatch, case, batch, tra
     ir = fn.lower(w, ct).as_text()
     target = 'hybrid_sddmv_' if batch in (None, 1) else 'batched_v3_sddmm_'
     assert (target in ir) == native
+    assert ('cusparse_sddmm_' in ir) == (selected == 'cusparse')
     if native:
         assert 'stablehlo.is_finite' not in ir
 
@@ -3111,7 +3123,7 @@ def test_event_weight_gradient_follows_csr_backend(monkeypatch, case, batch, tra
 @pytest.mark.parametrize('case', ['binary', 'weighted'])
 @pytest.mark.parametrize('batch', [None, 3])
 @pytest.mark.parametrize('transpose', [False, True])
-@pytest.mark.parametrize('backend', [None, 'cuda_raw'])
+@pytest.mark.parametrize('backend', [None, 'cuda_raw', 'cusparse'])
 def test_native_event_consumers_preserve_second_order_gradients(monkeypatch, case, batch, transpose, backend):
     if jax.default_backend() != 'gpu':
         pytest.skip('native sampled derivatives require a GPU')
@@ -3131,13 +3143,16 @@ def test_native_event_consumers_preserve_second_order_gradients(monkeypatch, cas
 @pytest.mark.parametrize('indexed', [False])
 @pytest.mark.parametrize('batch', [None, 3])
 @pytest.mark.parametrize('transpose', [False, True])
-def test_event_gradient_resolves_backend_on_compilation_platform(monkeypatch, indexed, batch, transpose):
+@pytest.mark.parametrize('gpu_backend', ['cuda_raw', 'cusparse'])
+def test_event_gradient_resolves_backend_on_compilation_platform(
+    monkeypatch, indexed, batch, transpose, gpu_backend,
+):
     if jax.default_backend() != 'gpu':
         pytest.skip('the default device must differ from the CPU compilation target')
     module = _sampled_indexed_csr if indexed else _sampled_binary_csr
     name = 'binary_csrmv' if batch is None else 'binary_csrmm'
     primitive = getattr(module, name + ('_indexed_p' if indexed else '_p'))
-    monkeypatch.setitem(primitive._defaults, 'gpu', 'cuda_raw')
+    monkeypatch.setitem(primitive._defaults, 'gpu', gpu_backend)
     monkeypatch.setitem(primitive._defaults, 'cpu', 'jax_raw' if indexed else 'numba')
     jax.clear_caches()
     case = 'indexed_weighted' if indexed else 'weighted'
@@ -3156,6 +3171,7 @@ def test_event_gradient_resolves_backend_on_compilation_platform(monkeypatch, in
     assert next(iter(actual.devices())).platform == 'cpu'
     ir = fn.lower(w, ct).as_text()
     assert 'hybrid_sddmv_' not in ir and 'batched_v3_sddmm_' not in ir
+    assert 'cusparse_sddmm_' not in ir
 
 
 @pytest.mark.parametrize('batch', [None, 3])
@@ -3164,6 +3180,11 @@ def test_event_gradient_resolves_backend_on_compilation_platform(monkeypatch, in
     ('jax_raw', 'cuda_raw', None, True),
     ('cuda_raw', 'cuda_raw', 'jax_raw', False),
     ('jax_raw', 'jax_raw', 'cuda_raw', True),
+    ('cuda_raw', 'cusparse', None, False),
+    ('cusparse', 'jax_raw', None, False),
+    ('cusparse', 'cuda_raw', None, True),
+    ('cusparse', 'cusparse', 'jax_raw', False),
+    ('jax_raw', 'jax_raw', 'cusparse', False),
 ])
 def test_event_gradient_respects_backend_priority(monkeypatch, batch, default, global_backend, requested, native):
     if jax.default_backend() != 'gpu':
@@ -3184,3 +3205,5 @@ def test_event_gradient_respects_backend_priority(monkeypatch, batch, default, g
     ir = fn.lower(w, ct).as_text()
     target = 'hybrid_sddmv_' if batch is None else 'batched_v3_sddmm_'
     assert (target in ir) == native
+    selected = global_backend if requested is None else requested
+    assert ('cusparse_sddmm_' in ir) == (selected == 'cusparse')

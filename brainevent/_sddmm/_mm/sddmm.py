@@ -161,8 +161,11 @@ def _cuda_kernel(*, transpose: bool, weighted: bool, ct_info: jax.ShapeDtypeStru
 
 
 def _auto_gpu_kernel(*, transpose: bool, ct_info: jax.ShapeDtypeStruct, csr_primitive=None, **kwargs: Any):
+    backend = None if csr_primitive is None else csr_primitive._resolve_backend('gpu')
+    if backend == 'cusparse':
+        return _cusparse_event_kernel(transpose=transpose, ct_info=ct_info, **kwargs)
     native = transpose and ct_info.shape[1] <= 65535 and ct_info.shape[0] <= 2**31 - 1
-    native = native and (csr_primitive is None or csr_primitive._resolve_backend('gpu') == 'cuda_raw')
+    native = native and backend in (None, 'cuda_raw')
     if native:
         return _cuda_kernel(transpose=transpose, ct_info=ct_info, **kwargs)
     return partial(_jax_kernel, transpose=transpose, **kwargs)

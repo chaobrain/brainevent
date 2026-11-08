@@ -276,3 +276,22 @@ def test_mm_out_of_range_batch_falls_back_under_auto():
     np.testing.assert_array_equal(csr_sddmm_dweight(e, e, i, p, transpose=True), [65536.])
     with pytest.raises(ValueError, match='65535'):
         csr_sddmm_dweight(e, e, i, p, transpose=True, backend='cuda_raw')
+
+
+@pytest.mark.parametrize('transpose', [False, True])
+def test_csr_cusparse_default_supports_batches_beyond_hybrid_limit(monkeypatch, transpose):
+    if jax.default_backend() != 'gpu':
+        pytest.skip('cuSPARSE execution requires a GPU')
+    from brainevent._csr.binary.binary import binary_csrmm_p
+    from brainevent._sddmm._common import _CSRBackend
+
+    monkeypatch.setitem(binary_csrmm_p._defaults, 'gpu', 'cusparse')
+    source = _CSRBackend(binary_csrmm_p, None)
+    indices, indptr = jnp.array([0], jnp.int32), jnp.array([0, 1], jnp.int32)
+    events = jnp.ones((1, 65536), jnp.float32)
+    fn = jax.jit(lambda e: sddmm(
+        e, e.T, indices, indptr, mode='weighted', transpose=transpose, backend=source,
+    ))
+
+    np.testing.assert_array_equal(fn(events), [65536.])
+    assert 'cusparse_sddmm_' in fn.lower(events).as_text()

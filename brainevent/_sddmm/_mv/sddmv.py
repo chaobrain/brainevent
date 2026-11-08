@@ -166,7 +166,10 @@ def _cuda_kernel(*, transpose: bool, weighted: bool, config_spec: CSRKernelSpec,
 
 
 def _auto_gpu_kernel(*, transpose: bool, csr_primitive=None, **kwargs: Any):
-    native = csr_primitive is None or csr_primitive._resolve_backend('gpu') == 'cuda_raw'
+    backend = None if csr_primitive is None else csr_primitive._resolve_backend('gpu')
+    if backend == 'cusparse':
+        return _cusparse_event_kernel(transpose=transpose, **kwargs)
+    native = backend in (None, 'cuda_raw')
     if transpose and native:
         return _cuda_kernel(transpose=transpose, **kwargs)
     return partial(_jax_kernel, transpose=transpose, **kwargs)

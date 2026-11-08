@@ -64,6 +64,30 @@ def test_csr_gradient_dispatch_preserves_forward_config(monkeypatch, requested):
     assert captured == [config_spec]
 
 
+@pytest.mark.parametrize('batch', [1, 3, 65536])
+@pytest.mark.parametrize('mode', ['float', 'binary', 'weighted'])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_csr_gradient_dispatch_preserves_explicit_cusparse(monkeypatch, batch, mode, transpose):
+    from brainevent._sddmm._common import _CSRBackend
+
+    captured = []
+
+    def sampled(a, b, indices, indptr, **kwargs):
+        captured.append(kwargs['backend'])
+        return jnp.full(indices.shape, 7, jnp.float32)
+
+    monkeypatch.setattr(mv if batch == 1 else mm, 'sampled', sampled)
+    indices = jnp.array([0, 1], jnp.int32)
+    indptr = jnp.array([0, 1, 2], jnp.int32)
+    source = _CSRBackend(object(), 'cusparse')
+    result = jax.jit(lambda a, b: sddmm(
+        a, b, indices, indptr, mode=mode, transpose=transpose, backend=source,
+    ))(jnp.ones((2, batch), jnp.float32), jnp.ones((batch, 3), jnp.float32))
+
+    np.testing.assert_array_equal(result, [7, 7])
+    assert captured == ['cusparse']
+
+
 @pytest.mark.parametrize('batch', [0, 1, 3])
 def test_dispatch_selects_leaf_by_contraction_size(monkeypatch, batch):
     calls = []

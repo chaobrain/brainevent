@@ -28,8 +28,9 @@ event primitives supply other operators' gradients and have no AD rules.
 Explicit ``jax_raw`` calls execute JAX directly and retain differentiation for
 CSR and COO inputs. CSR event gradient consumers pass their CSR structure and
 forward backend selection. Their private adapter retains differentiable JAX
-tangents while the primal uses the forward backend's available sampled path;
-automatic GPU selection resolves the source CSR primitive at lowering time.
+tangents while the primal uses the forward backend's available sampled path,
+including cuSPARSE. Automatic GPU selection resolves the source CSR primitive
+at lowering time, honoring its global and per-primitive backend choices.
 TCSR-specific adapters remain separate.
 """
 
@@ -165,17 +166,22 @@ def _sampled(A, B, indices, indptr, mode, transpose, backend, *, config_spec=Non
 def _csr_sampled(A, B, indices, indptr, mode, transpose, source):
     """Keep CSR derivatives while its primal follows the forward backend.
 
-    Only a CUDA forward selects the native event gradient. Other explicit
-    backends use JAX; an automatic request is resolved by the source CSR
-    primitive on the actual lowering platform. Public sampled-event calls
-    retain their existing primitive/AD contract.
+    Explicit cuSPARSE requests keep their backend in both directions. CUDA
+    forwards select native event gradients where supported; other explicit
+    backends use JAX. Automatic requests resolve the source CSR primitive on
+    the actual lowering platform, including its cuSPARSE choice. Public
+    sampled-event calls retain their existing primitive/AD contract.
     """
     native = (mode != 'float' and transpose and
               (A.shape[1] == 1 or (A.shape[1] <= 65535 and B.shape[1] <= 2**31 - 1)))
-    if not native or source.requested not in (None, 'cuda_raw'):
-        backend = 'jax_raw'
+    if source.requested == 'cusparse':
+        backend = 'cusparse'
+    elif source.requested is None and mode != 'float':
+        backend = source
+    elif native and source.requested == 'cuda_raw':
+        backend = 'cuda_raw'
     else:
-        backend = 'cuda_raw' if source.requested == 'cuda_raw' else source
+        backend = 'jax_raw'
     return _sampled(A, B, indices, indptr, mode, transpose, backend, config_spec=source.config_spec)
 
 
