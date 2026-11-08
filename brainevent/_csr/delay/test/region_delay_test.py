@@ -1230,7 +1230,8 @@ def test_unsorted_input_sorts_each_row_once(monkeypatch):
 def test_member_sort_overwrites_csr_and_invalidates_old_structure_cache():
     w = _delaycsr_init_case()
     # Structural CSR operations must not create a partially initialized delaycsr.
-    assert type(w.build_weight_indices()) is CSR
+    with pytest.warns(UserWarning, match="plain CSR without delay"):
+        assert type(w.build_weight_indices()) is CSR
     assert w._cache.mirror is not None
     w.data = jnp.array([2, 3, 5, 7], jnp.float32)
     w.indices = jnp.array([3, 0, 2, 2], jnp.int32)

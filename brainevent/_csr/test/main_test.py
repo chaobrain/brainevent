@@ -2116,6 +2116,48 @@ def test_config_snapshot_is_loaded_once_and_survives_reconstruction(monkeypatch,
 
 
 @pytest.mark.parametrize('cls', [CSR, CSC])
+@pytest.mark.parametrize('with_mirror', [False, True])
+@pytest.mark.parametrize('prepared_config', [False, True])
+def test_with_rebuilt_config_returns_matrix_without_mutating_source(
+    monkeypatch, cls, with_mirror, prepared_config,
+):
+    from brainevent._csr.binary import initialize
+
+    matrix = _lifecycle_matrix(cls, config=CSRConfig(block_size=128, tpr_threshold=7))
+    if with_mirror:
+        matrix = matrix.build_weight_indices()
+    if not prepared_config:
+        matrix.config = matrix.config.parameter_snapshot()
+    original_config = matrix.config
+    original_cache = matrix._cache
+
+    def no_load(*args, **kwargs):
+        raise AssertionError('rebuilding configuration must preserve the tuning snapshot')
+
+    monkeypatch.setattr(initialize, 'load_csr_config', no_load)
+    rebuilt = matrix.with_rebuilt_config()
+
+    assert not hasattr(matrix, 'prepare_config')
+    assert type(rebuilt) is cls
+    assert rebuilt is not matrix
+    assert rebuilt.data is matrix.data
+    assert rebuilt.indices is matrix.indices
+    assert rebuilt.indptr is matrix.indptr
+    assert rebuilt._cache is matrix._cache is original_cache
+    assert matrix.config is original_config
+    assert rebuilt.config is not original_config
+    assert rebuilt.config.mv == original_config.mv
+    assert rebuilt.config.shape == matrix._storage_shape
+    assert rebuilt.config.nnz == matrix.nse
+    assert rebuilt.config.primary is not None
+    assert rebuilt.config.mirror is not None
+    assert rebuilt.config.primary is not original_config.primary
+    assert rebuilt.config.mirror is not original_config.mirror
+    assert rebuilt.backend == matrix.backend
+    assert rebuilt.backward_algorithm == matrix.backward_algorithm
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
 def test_from_parts_and_unflatten_do_not_prepare(monkeypatch, cls):
     matrix = _lifecycle_matrix(cls, config=CSRConfig())
 
@@ -2162,7 +2204,7 @@ def test_structure_changes_rebind_eagerly_and_invalidate_traced_plans():
     assert traced.config.primary is None
     assert traced.config.mirror is None
     assert traced.config.tpr_threshold == 5
-    prepared = traced.prepare_config()
+    prepared = traced.with_rebuilt_config()
     assert prepared.config.nnz == 4
     assert prepared.config.tpr_threshold == 5
 
@@ -2293,10 +2335,10 @@ def test_constructor_prepares_supplied_mirror_without_reloading(monkeypatch, cls
     np.testing.assert_allclose(BinaryArray(left) @ matrix, left @ dense)
 
 
-def test_prepare_config_rejects_traced_structure():
+def test_with_rebuilt_config_rejects_traced_structure():
     matrix = _lifecycle_matrix(config=CSRConfig())
     with pytest.raises(ValueError, match='concrete structure'):
-        jax.jit(lambda value: value.prepare_config())(matrix)
+        jax.jit(lambda value: value.with_rebuilt_config())(matrix)
 
 
 def test_constructor_reuses_validation_host_copies_for_plan_preparation(monkeypatch):
@@ -2379,7 +2421,7 @@ def test_auto_preparation_uses_object_then_global_backend(
         )
     assert matrix.backend == backend
     assert len(queries) == expected_queries
-    prepared = matrix.prepare_config()
+    prepared = matrix.with_rebuilt_config()
     assert prepared.backend == backend
     assert len(queries) == 2 * expected_queries
 
@@ -2425,8 +2467,8 @@ for cls in (CSR, CSC, FixedNumPerPre, FixedNumPerPost):
     verify(CSRConfig().prepare_structure(direct_indices, direct_indptr, shape=(2, 2)))
     matrix = cls(*args, shape=(2, 2), config=CSRConfig())
     verify(matrix.config)
-    verify(matrix.prepare_config().config)
-    explicit = matrix.prepare_config(device=devices[0])
+    verify(matrix.with_rebuilt_config().config)
+    explicit = matrix.with_rebuilt_config(device=devices[0])
     assert explicit.config.primary.long_mask.devices() == {devices[0]}
     assert explicit.config.mirror.long_mask.devices() == {devices[0]}
     result = jax.jit(lambda m, x: m @ BinaryArray(x))(
@@ -2473,7 +2515,7 @@ def test_explicit_gpu_preparation_moves_both_masks_and_queries_on_jax_backend():
     with jax.default_device(cpu):
         matrix = _lifecycle_matrix(config=CSRConfig()).build_weight_indices()
     assert matrix.config.device_info is None
-    prepared = matrix.prepare_config(device=gpu)
+    prepared = matrix.with_rebuilt_config(device=gpu)
     assert prepared.backend == 'jax_raw'
     assert prepared.config.device_info.device_kind == gpu.device_kind
     assert prepared.config.primary.long_mask.devices() == {gpu}

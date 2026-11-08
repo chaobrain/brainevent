@@ -383,26 +383,37 @@ class FixedNumConn(DataRepresentation):
             cache=cache, config=self.config,
         )
 
-    def prepare_config(self, *, device=None):
-        """Prepare the CSR scheduler used by the indexed mirror route.
+    def with_rebuilt_config(self, *, device=None) -> 'FixedNumConn':
+        """Return a new matrix with rebuilt CSR scheduler configuration.
 
         Parameters
         ----------
         device : jax.Device or None, optional
-            Target GPU, inferred from the structure when omitted.
+            Target device for configuration and scheduler plans, inferred from
+            the structure when omitted. Matrix arrays are not moved.
 
         Returns
         -------
         FixedNumConn
-            A matrix sharing its structure with prepared scheduler plans.
+            A new matrix of the same class sharing this object's data, indices
+            and structure cache, with a newly prepared ``CSRConfig``.
 
         Raises
         ------
         ValueError
             If the structure is traced.
+
+        Notes
+        -----
+        Existing tuning parameters are retained without reloading persisted
+        configuration. The original matrix and its configuration are unchanged.
+        Only configuration and scheduler plans are rebuilt; the return value
+        is a matrix object, not a configuration object. Call outside
+        ``jax.jit`` after traced structure changes or to prepare plans for a
+        target device.
         """
         if not is_concrete(self.indices):
-            raise ValueError('prepare_config requires concrete structure outside jax.jit.')
+            raise ValueError('with_rebuilt_config requires concrete structure outside jax.jit.')
         from brainevent._csr.config import _prepare_csr_config, _config_with_mirror, _structure_device
 
         flat_indices, indptr = _ell_csr_parts(self.indices)
@@ -413,7 +424,7 @@ class FixedNumConn(DataRepresentation):
         if self._cache.mirror is not None:
             mirror_indptr, mirror_indices, _ = self._cache.mirror
             if not is_concrete(mirror_indices, mirror_indptr):
-                raise ValueError('prepare_config requires a concrete mirror outside jax.jit.')
+                raise ValueError('with_rebuilt_config requires a concrete mirror outside jax.jit.')
             config = _config_with_mirror(
                 config, self._cache.mirror, shape=self._a_shape[::-1],
                 device=_structure_device(self.indices, device),

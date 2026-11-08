@@ -383,27 +383,51 @@ class CompressedSparseData(DataRepresentation):
             config=self.config, backward_algorithm=self.backward_algorithm,
         )
 
-    def prepare_config(self, *, device=None):
-        """Prepare scheduler plans for this concrete structure.
+    def with_rebuilt_config(self, *, device=None):
+        """Return a new matrix with rebuilt scheduler configuration.
 
         Parameters
         ----------
         device : jax.Device or None, optional
-            Target GPU. If omitted, use the device holding the structure.
+            Device for preparing configuration and placing its plan arrays.
+            If omitted, use the device holding the structure. Matrix values
+            and index arrays are not moved to this device.
 
         Returns
         -------
         CSR or CSC
-            A matrix sharing the values and structure with freshly prepared
-            plans and the existing scheduler parameter snapshot.
+            A new matrix sharing the original values, sparse structure and
+            structure caches, with freshly prepared configuration. The
+            original matrix and its configuration are unchanged.
 
         Raises
         ------
         ValueError
-            If the structure is traced. Prepare before entering ``jax.jit``.
+            If the primary or cached mirror structure is traced. Call this
+            method outside ``jax.jit`` with concrete structure.
+
+        Notes
+        -----
+        Rebuild structure and device plans using the tuning parameters in
+        ``self.config``. Persisted tuning is not reloaded. This method returns
+        a matrix holding the new configuration, rather than a CSRConfig.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> from brainevent import CSR, CSRConfig
+            >>> matrix = CSR.fromdense(
+            ...     jnp.eye(2), backend='jax_raw', config=CSRConfig())
+            >>> rebuilt = matrix.with_rebuilt_config()
+            >>> rebuilt is matrix
+            False
+            >>> rebuilt.data is matrix.data
+            True
         """
         if not is_concrete(self.indices, self.indptr):
-            raise ValueError('prepare_config requires concrete structure outside jax.jit.')
+            raise ValueError('with_rebuilt_config requires concrete structure outside jax.jit.')
         config = _prepare_csr_config(
             self.indices, self.indptr, shape=self._storage_shape,
             backend=self.backend, config=self.config, device=device,
@@ -411,7 +435,7 @@ class CompressedSparseData(DataRepresentation):
         if self._cache.mirror is not None:
             mirror_indptr, mirror_indices, _ = self._cache.mirror
             if not is_concrete(mirror_indices, mirror_indptr):
-                raise ValueError('prepare_config requires a concrete mirror outside jax.jit.')
+                raise ValueError('with_rebuilt_config requires a concrete mirror outside jax.jit.')
             config = _config_with_mirror(
                 config, self._cache.mirror, shape=self._storage_shape[::-1],
                 device=_structure_device(self.indices, device),

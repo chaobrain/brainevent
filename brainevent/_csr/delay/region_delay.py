@@ -4,7 +4,9 @@ CUDA operators and their JAX transformation rules live in ``delay.py``.
 """
 
 from copy import copy
+import operator
 from typing import Any
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -13,8 +15,11 @@ import numpy as np
 import brainunit as u
 
 from brainevent._event import as_event_operand
+from brainevent._error import PerformanceWarning
+from brainevent._misc import build_sub_csr, normalize_row_index
 
 from ..main import CSR
+from ..config import _prepare_csr_config
 from ._util import _checked_head
 from .delay import (
     TASK_NNZ, TPR_THRESHOLD, VALUE_SUFFIX, HybridWorkspace, WeightedHybridWorkspace,
@@ -78,6 +83,27 @@ def _clear_ring_slot(ring: Any, head: jax.Array) -> jax.Array | u.Quantity:
     return u.Quantity(cleared, unit=unit) if isinstance(ring, u.Quantity) else cleared
 
 
+def _require_concrete(method: str, *values: Any) -> None:
+    """Reject host-dependent construction on traced operands."""
+    if any(isinstance(value, Tracer) for value in jax.tree_util.tree_leaves(values)):
+        raise RuntimeError(f"delaycsr.{method} requires concrete inputs outside jax.jit")
+
+
+def _checked_indptr(lengths: Any, dtype: Any) -> np.ndarray:
+    """Check the new edge count before accumulating into an offset dtype."""
+    total = sum(int(value) for value in lengths)
+    if total > _I64_MAX:
+        raise ValueError("new CSR edge count exceeds int64")
+    dtype = np.dtype(dtype)
+    if total > _I32_MAX:
+        dtype = np.dtype("int64")
+    if dtype == np.dtype("int64") and not jax.config.x64_enabled:
+        raise RuntimeError("enable jax_enable_x64 for int64 indptr")
+    pointers = np.zeros(len(lengths) + 1, dtype=dtype)
+    np.cumsum(np.asarray(lengths, dtype=np.int64), out=pointers[1:])
+    return pointers
+
+
 @jax.tree_util.register_pytree_node_class
 class delaycsr(CSR):
     """CSR with owned delay metadata, ring and task workspace.
@@ -136,6 +162,21 @@ class delaycsr(CSR):
     bound method with hidden Python state; these methods do not detect that
     unsupported usage. Operators support JVP, reverse-mode AD and vmap;
     binary events use the main library's straight-through rule.
+
+    Inherited queries such as ``sum`` and ``todense`` describe static weights,
+    not delayed arrivals. ``tocsc``, ``tocoo`` and ``transpose``/``T`` export
+    ordinary static matrices without delay state; ``self.T @ x`` is therefore
+    an instantaneous product. ``tocsr`` returns this delaycsr unchanged.
+    Addition/subtraction return static dense arrays. ``solve`` solves only the
+    static weight system, subject to its usual dtype/backend restrictions.
+
+    ``apply``, compatible ``apply2`` and ``with_data`` preserve existing arrivals
+    while replacing weights for future delivery. ``slice_rows`` and ``diag_add``
+    instead create fresh zero execution state. Plasticity and ``dt2t`` consume
+    supplied signals without aligning their history by delay, and require int32
+    column indices. ``delay_layout`` reinitializes a layout in its default binary
+    mode with zero state. ``with_rebuilt_config`` retains the inherited plain-CSR
+    return behavior; it does not preserve this object's delay functionality.
 
     Examples
     --------
@@ -583,6 +624,277 @@ class delaycsr(CSR):
         return (WeightedHybridWorkspace(*ranges, jnp.zeros(self.capacity, dtype), status)
                 if weighted else HybridWorkspace(*ranges, status))
 
+    def build_weight_indices(self) -> CSR:
+        """Export a plain CSR with its column-access indices prepared.
+
+        Returns
+        -------
+        CSR
+            Static weights and structure without delay metadata or execution
+            state. The source delaycsr's delay state is unchanged.
+
+        Warns
+        -----
+        UserWarning
+            The returned CSR is for static data extraction, not delay delivery.
+        """
+        warnings.warn(
+            "build_weight_indices() returns a plain CSR without delay information, "
+            "for static weight/structure extraction only; it cannot deliver delayed events. "
+            "The source delaycsr's delay state is unchanged.",
+            UserWarning, stacklevel=2,
+        )
+        return super().build_weight_indices()
+
+    @classmethod
+    # Static CSR can infer structure; delay construction requires an explicit template.
+    def fromdense(cls, mat: Any, *, template: 'delaycsr') -> 'delaycsr':  # type: ignore[override]
+        """Replace template-edge values from a dense matrix without changing delay.
+
+        Parameters
+        ----------
+        mat : array_like or brainunit.Quantity
+            Dense weights with the template's shape, dtype and unit. Values
+            outside its stored coordinates must be zero. Stored edges remain
+            present when their new value is zero.
+        template : delaycsr
+            Initialized object supplying the current edge order, delay layout
+            and execution state. Repeated coordinates are not representable
+            by one dense value and are rejected.
+
+        Returns
+        -------
+        delaycsr
+            A copy with per-edge weights, retaining the template's layout and
+            historical ring/head/workspace. The template is unchanged.
+
+        Raises
+        ------
+        ValueError
+            Shape differs, a new coordinate is nonzero, or coordinates repeat.
+        TypeError
+            The template, weight dtype or unit is incompatible.
+        RuntimeError
+            Inputs needed for validation are traced. Call outside JIT.
+
+        Warns
+        -----
+        UserWarning
+            Only numerical updates can reuse the template's delay information.
+
+        Notes
+        -----
+        A classmethod cannot infer an instance's delay state: always pass
+        ``template`` explicitly. Changes to connectivity require new structure
+        and delays; interpreting them as a value update would give wrong
+        arrival times. Use ``with_data`` for traced per-edge updates.
+        """
+        if not isinstance(template, cls) or not hasattr(template, "delay_count"):
+            raise TypeError("fromdense requires an initialized delaycsr template")
+        template._concrete_layout("fromdense", mat)
+        if isinstance(mat, u.sparse.SparseMatrix):
+            raise TypeError("fromdense expects a dense weight array")
+        if hasattr(mat, "dtype") and mat.dtype != template.dtype:
+            raise TypeError("fromdense weights must keep the template dtype")
+        mat = u.math.asarray(mat)
+        if mat.shape != template.shape:
+            raise ValueError("fromdense matrix shape must match the template")
+        template._check_weight_type(mat)
+        pointers = np.asarray(template.indptr)
+        rows = np.repeat(np.arange(template.shape[0], dtype=np.int64), np.diff(pointers))
+        cols = np.asarray(template.indices).astype(np.int64, copy=False)
+        coordinates = rows * template.shape[1] + cols
+        if np.unique(coordinates).size != coordinates.size:
+            raise ValueError("fromdense cannot recover per-edge values for duplicate coordinates")
+        nonzero_rows, nonzero_cols = np.nonzero(np.asarray(u.get_mantissa(mat)))
+        nonzero = nonzero_rows.astype(np.int64) * template.shape[1] + nonzero_cols
+        if np.any(~np.isin(nonzero, coordinates)):
+            raise ValueError("fromdense cannot add nonzero coordinates outside the template structure")
+        warnings.warn(
+            "fromdense only updates template-edge values and reuses existing delay information. "
+            "Connectivity changes invalidate that correspondence and would give wrong arrival "
+            "times; provide new structure and delays instead. Zero values retain stored edges.",
+            UserWarning, stacklevel=2,
+        )
+        return template._same_structure(mat[jnp.asarray(rows, jnp.int32), template.indices])
+
+    def slice_rows(self, index: Any) -> 'delaycsr':
+        """Select complete pre rows and create a delaycsr with fresh execution state.
+
+        Parameters
+        ----------
+        index : int, slice or one-dimensional integer array_like
+            Concrete rows, preserving selection order and duplicates. Negative
+            indices and empty selections are supported.
+
+        Returns
+        -------
+        delaycsr
+            Selected connectivity and delay segments, with zero ring/head and
+            new workspace/configuration. Ring dtype and unit are preserved.
+
+        Raises
+        ------
+        IndexError
+            A row is non-integral, out of bounds or not one-dimensional.
+        RuntimeError
+            Layout/selection is traced, or int64 offsets need JAX x64.
+        ValueError
+            Edge or task capacity exceeds the supported range.
+
+        Notes
+        -----
+        The original ring aggregates history from every pre row; selected-row
+        history cannot be separated from it. This operation starts a new
+        subnetwork, without transferring any original arrivals.
+        """
+        self._concrete_layout("slice_rows", index)
+        if isinstance(index, slice):
+            rows = normalize_row_index(index, self.shape[0])
+        else:
+            raw = np.asarray(index)
+            if isinstance(index, (list, tuple)) and raw.size == 0:
+                raw = np.asarray(index, dtype=np.int32)
+            if raw.ndim > 1 or raw.dtype.kind not in "iu":
+                raise IndexError("row selection must contain one-dimensional integer indices")
+            if (np.any(raw >= self.shape[0])
+                    or (raw.dtype.kind == "i" and np.any(raw < -self.shape[0]))):
+                raise IndexError("row index out of bounds")
+            rows = normalize_row_index(raw.astype(np.int32), self.shape[0])
+        rows = jnp.atleast_1d(rows)
+        if rows.size > _I32_MAX:
+            raise ValueError("selected row count exceeds int32")
+        host_rows = np.asarray(rows)
+        pointers = np.asarray(self.indptr)
+        lengths = pointers[host_rows + 1] - pointers[host_rows]
+        checked_pointers = _checked_indptr(lengths, self.indptr.dtype)
+        # The shared helper accumulates in its input pointer dtype. Promote
+        # before calling it, after checking the complete new edge count.
+        data, indices, indptr, shape = build_sub_csr(
+            self.data, self.indices, self.indptr.astype(checked_pointers.dtype), rows, self.shape[1])
+        tasks = self.row_task_count[rows]
+        capacity = sum(int(value) for value in np.asarray(tasks))
+        if capacity > _I32_MAX:
+            raise ValueError("hybrid task capacity exceeds int32")
+        counts = self.delay_count[rows].astype(indptr.dtype)
+        config = _prepare_csr_config(
+            indices, indptr, shape=shape, backend=self.backend, config=self.config)
+        result = type(self).from_prepared(
+            data, indices, indptr, shape=shape, delay_steps=self.delay_steps,
+            delay_count=counts, delay_off=self.delay_off, row_task_count=tasks,
+            capacity=capacity, buffer_slots=self.L, weighted=self.weighted,
+            ring=self._empty_ring(self.L), head=0, backend=self.backend,
+        )
+        result.config = config
+        result.backward_algorithm = self.backward_algorithm
+        return result
+
+    # Requiring increment delays deliberately excludes the parent's no-delay call.
+    def diag_add(self, other: Any, *, diag_delays: Any) -> 'delaycsr':  # type: ignore[override]
+        """Add independently delayed diagonal edges through full initialization.
+
+        Parameters
+        ----------
+        other : one-dimensional array_like or brainunit.Quantity
+            Diagonal increments of length ``min(shape)`` with compatible units.
+            Values are converted to the weight unit and dtypes are promoted.
+        diag_delays : int or one-dimensional integer array_like
+            Required nonnegative delay for each increment, or one scalar
+            broadcast to all diagonal positions. Old edge delays are unchanged.
+
+        Returns
+        -------
+        delaycsr
+            Fully rebuilt object with one additional edge per diagonal value,
+            including zeros and repeated coordinates. The new ring/head and
+            workspace are zero, with the original ring's dtype and unit.
+
+        Raises
+        ------
+        ValueError
+            Value/delay shapes or delay ranges are invalid, or capacity overflows.
+        TypeError
+            Values, units or promoted weight dtype are incompatible.
+        RuntimeError
+            Inputs are traced, or wide values/offsets require JAX x64.
+
+        Warns
+        -----
+        PerformanceWarning
+            Full host preparation, sorting and storage allocation can be costly.
+
+        Notes
+        -----
+        Each increment is a new edge, never a retiming of an old diagonal edge.
+        This method calls the ordinary initializer outside JIT and resets
+        execution history. It is not intended for per-timestep weight updates.
+        """
+        self._concrete_layout("diag_add", self.data, other, diag_delays)
+        if isinstance(other, u.sparse.SparseMatrix):
+            raise TypeError("diag_add expects a one-dimensional diagonal array")
+        explicit_dtype = getattr(other, "dtype", None)
+        if not jax.config.x64_enabled and explicit_dtype in (
+                np.dtype("int64"), np.dtype("uint64"), np.dtype("float64")):
+            raise RuntimeError("enable jax_enable_x64 before supplying wide diagonal values")
+        diagonal = u.math.asarray(other)
+        size = min(self.shape)
+        if diagonal.shape != (size,):
+            raise ValueError("diag_add values must have shape (min(shape),)")
+        delays = np.asarray(diag_delays)
+        if (delays.dtype.kind not in "iu" or np.any(delays < 0)
+                or np.any(delays >= _I32_MAX)):
+            raise ValueError("diag_delays must be nonnegative integers below INT32_MAX")
+        if delays.ndim == 0:
+            delays = np.full((size,), int(delays), dtype=np.int64)
+        elif delays.shape != (size,):
+            raise ValueError("diag_delays must be a scalar or have shape (min(shape),)")
+        else:
+            delays = delays.astype(np.int64)
+        converted = u.Quantity(diagonal).to(u.get_unit(self.data)).mantissa
+        dtype = jnp.result_type(self.dtype, converted.dtype)
+        if dtype not in VALUE_SUFFIX:
+            raise TypeError("diag_add requires a supported floating weight dtype")
+        warnings.warn(
+            "delaycsr.diag_add() fully rebuilds through __init__: host data transfers, "
+            "per-edge expansion, full sorting, configuration preparation and ring/workspace "
+            "allocation may have significant performance and memory costs. Do not call it "
+            "every timestep. The new ring/head/workspace are reset.",
+            PerformanceWarning, stacklevel=2,
+        )
+        weights = np.broadcast_to(np.asarray(u.get_mantissa(self.data)), (self.nse,)).astype(dtype)
+        increments = np.asarray(converted, dtype=dtype)
+        pointers, columns = np.asarray(self.indptr), np.asarray(self.indices)
+        old_delays = np.concatenate([
+            np.repeat(np.asarray(self.delay_steps, dtype=np.int64), row)
+            for row in np.asarray(self.delay_count)
+        ]) if self.shape[0] else np.empty((0,), dtype=np.int64)
+        lengths = np.diff(pointers).astype(np.int64)
+        lengths[:size] += 1
+        indptr = _checked_indptr(lengths, self.indptr.dtype)
+        new_weights, new_columns, new_delays = [], [], []
+        for row in range(self.shape[0]):
+            first, last = int(pointers[row]), int(pointers[row + 1])
+            new_weights.append(weights[first:last])
+            new_columns.append(columns[first:last])
+            new_delays.append(old_delays[first:last])
+            if row < size:
+                new_weights.append(increments[row:row + 1])
+                new_columns.append(np.asarray([row], dtype=columns.dtype))
+                new_delays.append(delays[row:row + 1])
+        weights = np.concatenate(new_weights) if new_weights else np.empty((0,), dtype=dtype)
+        columns = np.concatenate(new_columns) if new_columns else np.empty((0,), dtype=columns.dtype)
+        edge_delays = np.concatenate(new_delays) if new_delays else np.empty((0,), dtype=np.int64)
+        steps = tuple(sorted(set(self.delay_steps).union(int(value) for value in delays)))
+        slots = max(self.L, int(delays.max()) + 1) if size else self.L
+        result = type(self)(
+            (u.maybe_decimal(weights * u.get_unit(self.data)), columns, indptr),
+            edge_delays=edge_delays, shape=self.shape, delay_steps=steps,
+            buffer_slots=slots, sorted_by_delay=False, weighted=self.weighted,
+            ring=self._empty_ring(slots), head=0, backend=self.backend,
+        )
+        result.backward_algorithm = self.backward_algorithm
+        return result
+
     @property
     def weights(self) -> jax.Array | u.Quantity:
         """jax.Array or Quantity: CSR weights in the initialized delay order."""
@@ -814,12 +1126,336 @@ class delaycsr(CSR):
             raise TypeError("with_data weights must have the same unit as delaycsr.data")
         return self._replace_data(_owned_data(data))
 
+    def __matmul__(self, other: Any):
+        """Reject the unimplemented ``delaycsr @ other`` operation.
+
+        Parameters
+        ----------
+        other : Any
+            Right-hand operand.
+
+        Raises
+        ------
+        NotImplementedError
+            Always. For delayed delivery use pre events with ``events @ self``
+            or ``forward(events, t)``; these are different product directions.
+        """
+        raise NotImplementedError(
+            "delaycsr @ other is not implemented. For delayed delivery, "
+            "use events @ delaycsr or forward(events, t).")
+
+    def __getitem__(self, index: Any):
+        """Reject indexing until delaycsr has a supported indexing contract.
+
+        Parameters
+        ----------
+        index : Any
+            Requested selector.
+
+        Raises
+        ------
+        NotImplementedError
+            Always. Use ``slice_rows`` for a fresh delay subnetwork or
+            ``todense()[index]`` to explicitly extract static dense weights.
+        """
+        raise NotImplementedError(
+            "delaycsr.__getitem__ is not implemented. Use slice_rows(index) for a delaycsr "
+            "subgraph, or todense()[index] to extract static weights explicitly.")
+
+    def prepare_diag_add(self):
+        """Reject the parent diagonal planner, which delay rebuilding does not use.
+
+        Raises
+        ------
+        NotImplementedError
+            Always. ``diag_add(..., diag_delays=...)`` rebuilds through the
+            ordinary initializer outside JIT, without a parent diagonal plan.
+        """
+        raise NotImplementedError(
+            "delaycsr.prepare_diag_add() is not implemented. "
+            "diag_add(..., diag_delays=...) rebuilds through __init__ outside JIT "
+            "and does not use the parent CSR diagonal plan.")
+
+    def apply(self, fn: Any) -> 'delaycsr':
+        """Transform stored weights while retaining their shape, dtype and unit.
+
+        Parameters
+        ----------
+        fn : callable
+            Function applied to the current weight buffer.
+
+        Returns
+        -------
+        delaycsr
+            A copy retaining connectivity, delay layout and execution history.
+
+        Raises
+        ------
+        ValueError
+            The physical weight-buffer shape changes.
+        TypeError
+            The dtype or unit changes. No ring/workspace conversion is done.
+        """
+        return self._same_structure(self._apply_data(fn))
+
+    def apply2(self, other: Any, fn: Any, *, reverse: bool = False):
+        """Apply a binary weight operation with checked delay-layout compatibility.
+
+        Parameters
+        ----------
+        other : array_like, brainunit.Quantity or delaycsr
+            Numeric operand, or a delaycsr sharing this exact layout.
+        fn : callable
+            Binary operation supported by the parent CSR implementation.
+        reverse : bool, optional
+            Reverse numerical operands; the result still uses this object's
+            layout and history, without combining the other object's ring.
+
+        Returns
+        -------
+        delaycsr or array
+            Sparse results retain the weight dtype/unit and have one shared
+            or one per-edge value. Addition/subtraction return static arrays.
+
+        Raises
+        ------
+        TypeError
+            A sparse operand lacks delay metadata, or sparse-result dtype/unit
+            changes.
+        ValueError
+            A shared delay layout cannot be proven or result shape is invalid.
+
+        Notes
+        -----
+        Equal values in independently built layout arrays do not establish
+        compatibility. Identity checks avoid host comparisons of JAX tracers.
+        """
+        self._check_sparse_operand(other)
+        return super().apply2(other, fn, reverse=reverse)
+
+    def _binary_op(self, other, op):
+        self._check_sparse_operand(other)
+        if isinstance(other, delaycsr) and op in (operator.add, operator.sub):
+            other = other.todense()
+        return super()._binary_op(other, op)
+
+    def _binary_rop(self, other, op):
+        self._check_sparse_operand(other)
+        if isinstance(other, delaycsr) and op in (operator.add, operator.sub):
+            other = other.todense()
+        return super()._binary_rop(other, op)
+
+    def update_on_pre(self, pre_spike, post_trace, w_min=None, w_max=None) -> 'delaycsr':
+        """Delegate the presynaptic weight update with int32 column indices.
+
+        Parameters
+        ----------
+        pre_spike : array_like
+            Current presynaptic activity, shape ``(shape[0],)``.
+        post_trace : array_like or brainunit.Quantity
+            Supplied postsynaptic trace, shape ``(shape[1],)``.
+        w_min, w_max : scalar or None, optional
+            Parent update's clipping bounds, compatible with weight units.
+
+        Returns
+        -------
+        delaycsr
+            Updated weights with the same delay layout and historical state.
+
+        Raises
+        ------
+        TypeError
+            Original column indices are int64, on any backend.
+
+        Notes
+        -----
+        Signals are not automatically aligned to each edge's delay. Weights
+        must be per-edge as required by the parent plasticity operation.
+        """
+        self._require_int32_indices("update_on_pre")
+        return super().update_on_pre(pre_spike, post_trace, w_min, w_max)
+
+    def update_on_post(self, pre_trace, post_spike, w_min=None, w_max=None) -> 'delaycsr':
+        """Delegate the postsynaptic weight update with int32 column indices.
+
+        Parameters
+        ----------
+        pre_trace : array_like or brainunit.Quantity
+            Supplied presynaptic trace, shape ``(shape[0],)``.
+        post_spike : array_like
+            Current postsynaptic activity, shape ``(shape[1],)``.
+        w_min, w_max : scalar or None, optional
+            Parent update's weight clipping bounds.
+
+        Returns
+        -------
+        delaycsr
+            Updated weights retaining delay layout and execution history.
+
+        Raises
+        ------
+        TypeError
+            Original column indices are int64, before any mirror preparation.
+
+        Notes
+        -----
+        Supplied signals are not automatically aligned by edge delay.
+        """
+        self._require_int32_indices("update_on_post")
+        return super().update_on_post(pre_trace, post_spike, w_min, w_max)
+
+    def apply_on_pre(self, rule, pre_spike, *, edge_state=None, pre_vals=None, post_vals=None, params=None):
+        """Apply a supplied presynaptic edge rule with int32 column indices.
+
+        Parameters
+        ----------
+        rule : callable
+            Parent CSR plasticity rule on one edge state.
+        pre_spike : array_like
+            Supplied presynaptic activity.
+        edge_state : pytree or None, optional
+            Per-edge state in the current delay-sorted order; None uses weights.
+        pre_vals, post_vals : pytree or None, optional
+            Supplied per-neuron values, without automatic delay alignment.
+        params : Any, optional
+            Rule parameters.
+
+        Returns
+        -------
+        pytree
+            New edge state; use ``with_data`` explicitly to install new weights.
+
+        Raises
+        ------
+        TypeError
+            Original column indices are int64.
+        """
+        self._require_int32_indices("apply_on_pre")
+        return super().apply_on_pre(
+            rule, pre_spike, edge_state=edge_state, pre_vals=pre_vals, post_vals=post_vals, params=params)
+
+    def apply_on_post(self, rule, post_spike, *, edge_state=None, pre_vals=None, post_vals=None, params=None):
+        """Apply a supplied postsynaptic edge rule with int32 column indices.
+
+        Parameters
+        ----------
+        rule : callable
+            Parent CSR plasticity rule on one edge state.
+        post_spike : array_like
+            Supplied postsynaptic activity.
+        edge_state : pytree or None, optional
+            Per-edge state in the current delay-sorted order; None uses weights.
+        pre_vals, post_vals : pytree or None, optional
+            Supplied per-neuron values, without automatic delay alignment.
+        params : Any, optional
+            Rule parameters.
+
+        Returns
+        -------
+        pytree
+            New edge state, without replacing this object's weights or history.
+
+        Raises
+        ------
+        TypeError
+            Original column indices are int64.
+        """
+        self._require_int32_indices("apply_on_post")
+        return super().apply_on_post(
+            rule, post_spike, edge_state=edge_state, pre_vals=pre_vals, post_vals=post_vals, params=params)
+
+    def dt2t(self, y_dim_arr, w_dim_arr):
+        """Map supplied row values to stored edges with int32 column indices.
+
+        Parameters
+        ----------
+        y_dim_arr : array_like or brainunit.Quantity
+            Supplied row values, shape ``(shape[0],)``.
+        w_dim_arr : array_like or brainunit.Quantity
+            Per-edge values, shape ``(nnz,)``.
+
+        Returns
+        -------
+        array or brainunit.Quantity
+            Parent static edge mapping; no history is read or delay-aligned.
+
+        Raises
+        ------
+        TypeError
+            Original column indices are int64.
+        """
+        self._require_int32_indices("dt2t")
+        return super().dt2t(y_dim_arr, w_dim_arr)
+
+    def dt2t_transposed(self, y_dim_arr, w_dim_arr):
+        """Map supplied column values to stored edges with int32 indices.
+
+        Parameters
+        ----------
+        y_dim_arr : array_like or brainunit.Quantity
+            Supplied column values, shape ``(shape[1],)``.
+        w_dim_arr : array_like or brainunit.Quantity
+            Per-edge values, shape ``(nnz,)``.
+
+        Returns
+        -------
+        array or brainunit.Quantity
+            Parent static edge mapping, without delay-history alignment.
+
+        Raises
+        ------
+        TypeError
+            Original column indices are int64.
+        """
+        self._require_int32_indices("dt2t_transposed")
+        return super().dt2t_transposed(y_dim_arr, w_dim_arr)
+
+    def _check_weight_type(self, data):
+        if data.dtype != self.dtype:
+            raise TypeError(f"replacement weights must keep dtype {self.dtype}; got {data.dtype}")
+        if u.get_unit(data) != u.get_unit(self.data):
+            raise TypeError("replacement weights must keep the same unit as delaycsr.data")
+
     def _same_structure(self, data):
-        # with_data and data-only arithmetic receive weights in current order.
+        # Reject typed precision changes before JAX can canonicalize host input.
+        if hasattr(data, "dtype"):
+            self._check_weight_type(data)
         data = u.math.atleast_1d(_owned_data(data))
-        if data.dtype != self.dtype or data.shape not in ((1,), (self.nse,)):
-            raise ValueError("replacement weights must keep the weight dtype and have length 1 or nnz")
+        self._check_weight_type(data)
+        if data.shape not in ((1,), (self.nse,)):
+            raise ValueError("replacement weights must have length 1 or nnz")
         return self._replace_data(data)
+
+    def _check_sparse_operand(self, other):
+        if not isinstance(other, u.sparse.SparseMatrix):
+            return
+        if not isinstance(other, delaycsr):
+            raise TypeError("sparse weight operations require a delaycsr with the same delay layout")
+        same_static = all(getattr(self, name) == getattr(other, name)
+                          for name in ("shape", "L", "delay_steps", "weighted"))
+        same_arrays = all(getattr(self, name) is getattr(other, name)
+                          for name in ("indices", "indptr", "delay_count", "delay_off"))
+        if not same_static or not same_arrays:
+            raise ValueError("sparse operands must share the same delay layout and edge order")
+
+    def _require_int32_indices(self, method):
+        if self.indices.dtype != jnp.int32:
+            raise TypeError(f"delaycsr.{method} requires int32 indices; got {self.indices.dtype}")
+
+    def _concrete_layout(self, method, *extra):
+        _require_concrete(method, self.indices, self.indptr, self.delay_count,
+                          self.delay_off, self.row_task_count, *extra)
+        self._check_prepared_values()
+
+    def _empty_ring(self, slots):
+        values, unit = u.split_mantissa_unit(self.ring)
+        size = slots * self.shape[1]
+        if size > _I64_MAX // values.dtype.itemsize:
+            raise ValueError("ring buffer byte size overflows int64")
+        if size > _I32_MAX and not jax.config.x64_enabled:
+            raise RuntimeError("enable jax_enable_x64 for int64 ring offsets")
+        ring = jnp.zeros((slots, self.shape[1]), dtype=values.dtype)
+        return u.Quantity(ring, unit=unit) if isinstance(self.ring, u.Quantity) else ring
 
     def _replace_data(self, data):
         """Assemble a same-structure copy after caller-specific validation."""

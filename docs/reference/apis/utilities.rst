@@ -53,12 +53,19 @@ from the concrete primary and mirror layouts; batch size, value dtype and
 weighted scratch sizes are resolved when the operator's call signature is
 known, including the effective batch size produced by ``vmap``.
 
-``M.prepare_config(device=...)`` returns a new matrix sharing the original
-values and sparse structure. It prepares plans using ``M.config``'s existing
-tuning parameters, without reloading persistence or mutating ``M``. Use it
-outside ``jax.jit`` when preparing a matrix for a target GPU. Preparation is
-also preserved through structure-preserving operations such as ``with_data``;
-new sparse structures need new plans.
+``M.with_rebuilt_config(device=...)`` rebuilds structure and device plans using
+``M.config``'s existing tuning parameters, then returns a new matrix holding
+the rebuilt configuration. It shares the original values, sparse structure
+and structure caches, without reloading persisted tuning or mutating ``M``.
+The return value is a matrix, rather than a ``CSRConfig`` object. This method
+is available on CSR, CSC and FixedNum matrices.
+
+Use it outside ``jax.jit`` with concrete structure, for example to restore
+plans after a traced structural change or prepare configuration for a target
+GPU. An explicit ``device`` selects where configuration is prepared and its
+plan arrays are placed; it does not migrate matrix values or indices.
+Preparation is also preserved through structure-preserving operations such
+as ``with_data``; new sparse structures need new plans.
 
 Raw functions such as ``binary_csrmm`` accept the same explicit snapshot.
 For the scatter operation ``M.T @ events``, the events have shape
