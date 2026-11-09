@@ -17,5 +17,5 @@
 
 __all__ = ["__version__", "__version_info__"]
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 __version_info__ = tuple(map(int, __version__.split(".")))
