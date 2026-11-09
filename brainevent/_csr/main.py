@@ -1832,7 +1832,7 @@ class CSR(CompressedSparseData):
         """
         from .delay.region_delay import delaycsr  # pylint: disable=import-outside-toplevel
 
-        return delaycsr(self, edge_delays=delays, buffer_slots=n_slots)
+        return delaycsr(self, edge_delays=delays, n_slots=n_slots)
 
     def __getitem__(self, index):
         """Extract rows of the matrix ``W`` as a dense array.

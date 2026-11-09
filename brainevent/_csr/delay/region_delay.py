@@ -127,20 +127,20 @@ class delaycsr(CSR):
     delay_steps : array_like or None, optional
         Increasing distinct delay values covering every edge delay. Defaults
         to the distinct edge delays, or ``(0,)`` for an empty graph.
-    buffer_slots : int or None, optional
+    n_slots : int or None, optional
         Ring length, larger than every delay. Defaults to maximum delay + 1.
     sorted_by_delay : bool, optional
         Validate the existing (delay, column) row order instead of sorting.
     weighted : bool, optional
         Multiply by event values when True; use nonzero activity when False.
     ring : array_like or None, optional
-        Initial buffer with shape ``(buffer_slots, n_post)``. Its floating
+        Initial buffer with shape ``(n_slots, n_post)``. Its floating
         dtype determines delivery precision, independently of the weights.
         Units must be compatible with the delivered weight/event product;
         delivery preserves the initialized ring's unit. Defaults to zeros
         in the weights' dtype and unit, for dimensionless events.
     head : int or jax.Array, optional
-        Initial scalar slot in ``[0, buffer_slots)``, default zero.
+        Initial scalar slot in ``[0, n_slots)``, default zero.
     backend : str or None, optional
         ``'cuda_raw'`` or ``'jax_raw'``. None inherits the source CSR backend,
         or uses the execution platform's default when no backend is set.
@@ -151,7 +151,7 @@ class delaycsr(CSR):
     ``x @ W`` uses the current head without advancing it. A read never clears
     its slot: the following stateful step uses the same JAX clearing operation
     as :meth:`clear_head`.
-    :meth:`csr_delay_deliver_layout` only delivers into an explicit ring.
+    :meth:`deliver` only delivers into an explicit ring.
 
     Use :meth:`from_prepared` when the CSR is already sorted and its delay
     counts, offsets and hybrid task schedule are supplied by the caller.
@@ -202,7 +202,7 @@ class delaycsr(CSR):
     def __init__(
         self, data: Any, indices: Any = None, indptr: Any = None, *,
         edge_delays: Any, shape: tuple[int, int] | None = None,
-        delay_steps: Any = None, buffer_slots: int | None = None,
+        delay_steps: Any = None, n_slots: int | None = None,
         sorted_by_delay: bool = False, weighted: bool = False,
         ring: Any = None, head: Any = 0, backend: str | None = None,
     ):
@@ -256,9 +256,9 @@ class delaycsr(CSR):
         self.delay_steps = self._validate_delay_steps(
             delay_steps if delay_steps is not None else np.unique(delays) if delays.size else (0,))
         self._check_delay_segments(delays)
-        self.L = self.delay_steps[-1] + 1 if buffer_slots is None else buffer_slots
+        self.L = self.delay_steps[-1] + 1 if n_slots is None else n_slots
         if type(self.L) is not int or not self.delay_steps[-1] < self.L <= _I32_MAX:
-            raise ValueError("buffer_slots must exceed every delay and fit int32")
+            raise ValueError("n_slots must exceed every delay and fit int32")
         ring_values = None if ring is None else u.get_mantissa(ring)
         ring_dtype: np.dtype = self.dtype if ring_values is None else getattr(ring_values, "dtype", None)
         if ring_values is not None and not (hasattr(ring_values, "shape") and hasattr(ring_values, "dtype")):
@@ -291,7 +291,7 @@ class delaycsr(CSR):
         cls, data: Any, indices: Any = None, indptr: Any = None, *,
         shape: tuple[int, int] | None = None, delay_steps: Any,
         delay_count: Any, delay_off: Any, row_task_count: Any, capacity: int,
-        buffer_slots: int | None = None, weighted: bool = False,
+        n_slots: int | None = None, weighted: bool = False,
         ring: Any = None, head: Any = 0,
         workspace: HybridWorkspace | WeightedHybridWorkspace | None = None,
         backend: str | None = None, validate: str = "static",
@@ -327,7 +327,7 @@ class delaycsr(CSR):
         capacity : int
             Static workspace capacity, at least the sum of all row task
             counts and no larger than INT32_MAX. Zero is supported.
-        buffer_slots : int or None, optional
+        n_slots : int or None, optional
             Positive ring length ``L``, exceeding every delay. Defaults to
             ``delay_steps[-1] + 1``.
         weighted : bool, optional
@@ -410,9 +410,9 @@ class delaycsr(CSR):
         if isinstance(delay_steps, (jax.Array, Tracer)):
             raise TypeError("delay_steps must contain static host integers")
         steps = cls._validate_delay_steps(delay_steps)
-        slots = steps[-1] + 1 if buffer_slots is None else buffer_slots
+        slots = steps[-1] + 1 if n_slots is None else n_slots
         if type(slots) is not int or not steps[-1] < slots <= _I32_MAX:
-            raise ValueError("buffer_slots must exceed every delay and fit int32")
+            raise ValueError("n_slots must exceed every delay and fit int32")
         if type(capacity) is not int or not 0 <= capacity <= _I32_MAX:
             raise ValueError("capacity must be a nonnegative Python int fitting int32")
 
@@ -782,7 +782,7 @@ class delaycsr(CSR):
         result = type(self).from_prepared(
             data, indices, indptr, shape=shape, delay_steps=self.delay_steps,
             delay_count=counts, delay_off=self.delay_off, row_task_count=tasks,
-            capacity=capacity, buffer_slots=self.L, weighted=self.weighted,
+            capacity=capacity, n_slots=self.L, weighted=self.weighted,
             ring=self._empty_ring(self.L), head=0, backend=self.backend,
         )
         result.config = config
@@ -889,7 +889,7 @@ class delaycsr(CSR):
         result = type(self)(
             (u.maybe_decimal(weights * u.get_unit(self.data)), columns, indptr),
             edge_delays=edge_delays, shape=self.shape, delay_steps=steps,
-            buffer_slots=slots, sorted_by_delay=False, weighted=self.weighted,
+            n_slots=slots, sorted_by_delay=False, weighted=self.weighted,
             ring=self._empty_ring(slots), head=0, backend=self.backend,
         )
         result.backward_algorithm = self.backward_algorithm
@@ -1009,8 +1009,8 @@ class delaycsr(CSR):
         self.ring = _clear_ring_slot(self.ring, self.head)
         return self.ring
 
-    def csr_delay_deliver_layout(self, ring: Any, events: Any, t: Any, *,
-                                 weighted: bool | None = None, backend: str | None = None) -> jax.Array | u.Quantity:
+    def deliver(self, ring: Any, events: Any, t: Any, *,
+                weighted: bool | None = None, backend: str | None = None) -> jax.Array | u.Quantity:
         """Deliver into an external ring using this object's prepared layout.
 
         Parameters
@@ -1538,4 +1538,4 @@ def csr_delay_deliver_layout(ring, events, layout, t, *, weighted=None, backend=
     """
     if not isinstance(layout, delaycsr):
         raise TypeError("layout must be an existing delaycsr")
-    return layout.csr_delay_deliver_layout(ring, events, t, weighted=weighted, backend=backend)
+    return layout.deliver(ring, events, t, weighted=weighted, backend=backend)

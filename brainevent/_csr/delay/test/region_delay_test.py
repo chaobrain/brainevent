@@ -133,7 +133,7 @@ def _dtype_problem(seed: int, value_dtype, index_dtype, ptr_dtype, homogeneous: 
         edge_delays=delays,
         shape=(len(indptr) - 1, COLUMNS),
         delay_steps=DELAYS,
-        buffer_slots=SLOTS,
+        n_slots=SLOTS,
     )
     return data, (weights, indices, indptr, delays, events)
 
@@ -153,7 +153,7 @@ def _weighted_problem(dtype, index_dtype=np.int32, edge_dtype=np.int32, homo=Fal
         edge_delays=delays,
         shape=(len(ptr) - 1, 8193),
         delay_steps=(0, 1, 3, 4),
-        buffer_slots=6,
+        n_slots=6,
         weighted=True,
     )
     if wide:
@@ -205,7 +205,7 @@ def test_projection_matches_original_edges(
         edge_delays=delays,
         shape=(len(ptr) - 1, 4099),
         delay_steps=(0, 1, 2, 5),
-        buffer_slots=8,
+        n_slots=8,
     )
     arrays = _arrays(data)
     if wide_offsets:
@@ -625,7 +625,7 @@ def _delaycsr_init_matrix(*, homogeneous=False, weighted=False, backend=None):
         (np.array([2] if homogeneous else [2, 3, 5, 7], np.float32),
          np.array([2, 0, 1, 0], np.int32), np.array([0, 3, 4], np.int32)),
         edge_delays=np.array([2, 1, 1, 2], np.int32), shape=(2, 3),
-        buffer_slots=4, ring=jnp.arange(12, dtype=jnp.float32).reshape(4, 3), head=3,
+        n_slots=4, ring=jnp.arange(12, dtype=jnp.float32).reshape(4, 3), head=3,
         weighted=weighted, backend=backend,
     )
 
@@ -651,7 +651,7 @@ def _delaycsr_init_prepared_arguments(matrix: delaycsr) -> dict[str, Any]:
         data=(matrix.data, matrix.indices, matrix.indptr), shape=matrix.shape,
         delay_steps=matrix.delay_steps, delay_count=matrix.delay_count,
         delay_off=matrix.delay_off, row_task_count=matrix.row_task_count,
-        capacity=matrix.capacity, buffer_slots=matrix.L, weighted=matrix.weighted,
+        capacity=matrix.capacity, n_slots=matrix.L, weighted=matrix.weighted,
         ring=matrix.ring, head=matrix.head, workspace=matrix.workspace,
         backend=matrix.backend,
     )
@@ -724,7 +724,7 @@ def test_from_prepared_static_does_not_read_device_layout(monkeypatch) -> None:
 def test_from_prepared_source_forms_and_default_state(source_form) -> None:
     original = _delaycsr_init_matrix(homogeneous=True, backend="jax_raw")
     arguments = _delaycsr_init_prepared_arguments(original)
-    for name in ("ring", "head", "workspace", "buffer_slots", "backend"):
+    for name in ("ring", "head", "workspace", "n_slots", "backend"):
         arguments.pop(name)
     if source_form == "csr":
         arguments["data"] = original
@@ -749,7 +749,7 @@ def test_from_prepared_empty_layout(rows, columns) -> None:
         edge_delays=np.array([], np.int64), shape=(rows, columns), backend="jax_raw",
     )
     updated = delaycsr.from_prepared(**_delaycsr_init_prepared_arguments(original), validate="full")
-    actual = updated.csr_delay_deliver_layout(updated.ring, jnp.zeros(rows, jnp.bool_), 0)
+    actual = updated.deliver(updated.ring, jnp.zeros(rows, jnp.bool_), 0)
     assert actual.shape == (1, columns)
     assert updated.capacity == 0
     assert updated.indices.dtype == jnp.int64
@@ -774,8 +774,8 @@ def test_from_prepared_long_rows_and_overallocated_workspace(weighted, backend) 
     if weighted:
         assert updated.workspace.task_value.dtype == updated.ring.dtype
     events = jnp.array([1, 0, -2], jnp.float32)
-    expected = original.csr_delay_deliver_layout(original.ring, events, 5, weighted=weighted)
-    actual = updated.csr_delay_deliver_layout(updated.ring, events, 5, weighted=weighted)
+    expected = original.deliver(original.ring, events, 5, weighted=weighted)
+    actual = updated.deliver(updated.ring, events, 5, weighted=weighted)
     np.testing.assert_array_equal(actual, expected)
 
 
@@ -788,8 +788,8 @@ def test_from_prepared_long_rows_and_overallocated_workspace(weighted, backend) 
     ("capacity", -1, ValueError),
     ("capacity", True, ValueError),
     ("capacity", 2**31, ValueError),
-    ("buffer_slots", 2, ValueError),
-    ("buffer_slots", 4.0, ValueError),
+    ("n_slots", 2, ValueError),
+    ("n_slots", 4.0, ValueError),
     ("delay_steps", (), ValueError),
     ("delay_steps", (1, 1), ValueError),
     ("weights", np.ones(2, np.float32), ValueError),
@@ -866,7 +866,7 @@ def test_from_prepared_static_retains_runtime_metadata_checks() -> None:
     updated = delaycsr.from_prepared(**arguments)
     with pytest.raises((ValueError, RuntimeError), match="inconsistent delay/task metadata"):
         jax.block_until_ready(
-            updated.csr_delay_deliver_layout(updated.ring, jnp.zeros(2, jnp.bool_), 0))
+            updated.deliver(updated.ring, jnp.zeros(2, jnp.bool_), 0))
 
 
 @pytest.mark.parametrize("field,value,exception", [
@@ -908,7 +908,7 @@ def test_from_prepared_preserves_units_and_independent_ring_precision(weighted) 
         (np.array([2, 3, 5, 7], np.float32) * u.mV,
          np.array([2, 0, 1, 0], np.int32), np.array([0, 3, 4], np.int32)),
         shape=(2, 3), edge_delays=np.array([2, 1, 1, 2], np.int32),
-        buffer_slots=4, ring=np.arange(12, dtype=np.float16).reshape(4, 3) * u.mV,
+        n_slots=4, ring=np.arange(12, dtype=np.float16).reshape(4, 3) * u.mV,
         weighted=weighted, backend="jax_raw",
     )
     updated = delaycsr.from_prepared(**_delaycsr_init_prepared_arguments(original), validate="full")
@@ -919,8 +919,8 @@ def test_from_prepared_preserves_units_and_independent_ring_precision(weighted) 
     if weighted:
         assert updated.workspace.task_value.dtype == jnp.float16
     events = jnp.array([1, -2], jnp.float32)
-    expected = original.csr_delay_deliver_layout(original.ring, events, 2, weighted=weighted)
-    actual = updated.csr_delay_deliver_layout(updated.ring, events, 2, weighted=weighted)
+    expected = original.deliver(original.ring, events, 2, weighted=weighted)
+    actual = updated.deliver(updated.ring, events, 2, weighted=weighted)
     assert u.get_unit(actual) == u.mV
     np.testing.assert_array_equal(u.get_mantissa(actual), u.get_mantissa(expected))
 
@@ -958,7 +958,7 @@ def test_from_prepared_requires_x64_for_explicit_wide_inputs(name) -> None:
 
 def test_from_prepared_large_ring_requires_wide_offsets(monkeypatch) -> None:
     arguments = _delaycsr_init_prepared_arguments(_delaycsr_init_matrix())
-    arguments.update(buffer_slots=8, ring=None, workspace=None)
+    arguments.update(n_slots=8, ring=None, workspace=None)
     monkeypatch.setattr(module, "_I32_MAX", 15)
     with pytest.raises(ValueError, match="int64 delay_off"):
         delaycsr.from_prepared(**arguments)
@@ -1073,8 +1073,8 @@ def test_scalar_delay_matches_per_edge_delays(scalar: Any) -> None:
         np.testing.assert_array_equal(getattr(scalar_layout, name),
                                       getattr(per_edge_layout, name))
     events = jnp.array([True, False])
-    actual = scalar_layout.csr_delay_deliver_layout(scalar_layout.ring, events, 0)
-    expected = per_edge_layout.csr_delay_deliver_layout(per_edge_layout.ring, events, 0)
+    actual = scalar_layout.deliver(scalar_layout.ring, events, 0)
+    expected = per_edge_layout.deliver(per_edge_layout.ring, events, 0)
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(actual[2], [3, 0, 12, 2])
 
@@ -1092,7 +1092,7 @@ def test_zero_scalar_delay_delivers_into_current_slot() -> None:
     prepared = _delaycsr_init_case(edge_delays=0, delay_steps=None, backend="jax_raw")
     assert prepared.delay_steps == (0,)
     assert prepared.L == 1
-    ring = prepared.csr_delay_deliver_layout(prepared.ring, jnp.array([True, False]), 0)
+    ring = prepared.deliver(prepared.ring, jnp.array([True, False]), 0)
     np.testing.assert_array_equal(ring, [[3, 0, 12, 2]])
 
 
@@ -1128,7 +1128,7 @@ def test_scalar_delay_on_empty_graph_keeps_empty_default_metadata() -> None:
 
 def test_large_ring_offsets_are_independent_of_column_dtype(monkeypatch) -> None:
     monkeypatch.setattr(module, "_I32_MAX", 15)
-    prepared = _delaycsr_init_case(delay_steps=(0, 1, 2), buffer_slots=8)
+    prepared = _delaycsr_init_case(delay_steps=(0, 1, 2), n_slots=8)
     assert prepared.delay_off.dtype == np.int64
     assert prepared.indices.dtype == np.int32
 
@@ -1157,8 +1157,8 @@ def test_large_ring_offsets_are_independent_of_column_dtype(monkeypatch) -> None
     ({"edge_delays": np.zeros(4, np.float32)}, ValueError),
     ({"edge_delays": np.full(4, 2**31, np.uint64)}, ValueError),
     ({"delay_steps": (0, 1)}, ValueError),
-    ({"buffer_slots": 2}, ValueError),
-    ({"buffer_slots": 3.0}, ValueError),
+    ({"n_slots": 2}, ValueError),
+    ({"n_slots": 3.0}, ValueError),
 ])
 def test_invalid_data_is_rejected(changes: dict[str, Any], exception: type[Exception]) -> None:
     with pytest.raises(exception):
@@ -1295,7 +1295,7 @@ def test_cuda_delivery_uses_replacement_weights_on_current_edges(weighted):
     updated = matrix.with_data(jnp.array([10, 20, 30, 40], jnp.float32))
     initial = jnp.ones((4, 3), jnp.float32)
     events = jnp.array([-2, .5], jnp.float32)
-    result = jax.jit(lambda state, ring, event: state.csr_delay_deliver_layout(
+    result = jax.jit(lambda state, ring, event: state.deliver(
         ring, event, 3, weighted=weighted))(updated, initial, events)
     expected = np.ones((4, 3), np.float32)
     expected[0, :2] += [-20, -40] if weighted else [10, 20]
@@ -1470,7 +1470,7 @@ def test_constructor_prepares_weighted_workspace_in_explicit_ring_dtype():
     ring = np.full((3, 1), 5., np.float64)
     matrix = delaycsr(
         (np.array([2.], np.float32), np.zeros(129, np.int32), np.array([0, 129], np.int32)),
-        shape=(1, 1), edge_delays=np.ones(129, np.int32), buffer_slots=3,
+        shape=(1, 1), edge_delays=np.ones(129, np.int32), n_slots=3,
         ring=ring, weighted=True, backend="jax_raw",
     )
     ring[:] = -1
@@ -1526,7 +1526,7 @@ def _delaycsr_problem(dtype=jnp.float32, weighted=False, homo=False, backend=Non
     indptr = np.array([0, 3, 4], np.int64)
     delays = np.array([2, 1, 0, 1], np.int32)
     matrix = delaycsr((weights, indices, indptr), shape=(2, 2), edge_delays=delays,
-                      buffer_slots=4, weighted=weighted, backend=backend)
+                      n_slots=4, weighted=weighted, backend=backend)
     return matrix, (weights, indices, indptr, delays)
 
 
@@ -1569,7 +1569,7 @@ def test_forward_and_matmul_return_next_preserving_full_ring(dtype, weighted, ho
 @pytest.mark.parametrize('rows,columns', [(0, 0), (0, 3), (2, 0), (2, 3)])
 def test_no_edges_still_clear_head(weighted, rows, columns):
     w = delaycsr((np.array([1], np.float32), np.array([], np.int32), np.zeros(rows + 1, np.int32)),
-                 shape=(rows, columns), edge_delays=np.array([], np.int32), buffer_slots=3,
+                 shape=(rows, columns), edge_delays=np.array([], np.int32), n_slots=3,
                  weighted=weighted, ring=jnp.ones((3, columns), jnp.float32))
     y = w.forward(jnp.zeros(rows, jnp.float32), 5)
     expected = np.ones((3, columns), np.float32)
@@ -1773,7 +1773,7 @@ def test_half_ring_preserves_main_underflow_and_nonfinite_semantics(backend, wei
     np.testing.assert_array_equal(tiny.astype(jnp.float16), 0)
 
     def deliver(events):
-        return layout.csr_delay_deliver_layout(ring, events, 0, weighted=weighted)
+        return layout.deliver(ring, events, 0, weighted=weighted)
 
     output = jax.jit(deliver)(tiny)
     if not weighted:
@@ -1793,7 +1793,7 @@ def test_half_ring_preserves_main_underflow_and_nonfinite_semantics(backend, wei
         np.testing.assert_array_equal(tangent, 0)
 
     def deliver_weights(weights):
-        return layout.with_data(weights).csr_delay_deliver_layout(
+        return layout.with_data(weights).deliver(
             ring, tiny, 0, weighted=weighted)
 
     _, pullback = jax.vjp(deliver_weights, layout.data)
@@ -1903,7 +1903,7 @@ def test_low_level_rejects_bad_head_eager_and_jit(weighted, rows, head):
         (np.array([1], np.float32), np.array([], np.int32), np.zeros(rows + 1, np.int32)),
         edge_delays=np.array([], np.int32),
         shape=(rows, 2),
-        buffer_slots=3,
+        n_slots=3,
         weighted=weighted,
     )
     args = [jnp.asarray(a) for a in (data.weights, data.indices, data.indptr)]
@@ -1986,7 +1986,7 @@ def _deliver_layout_make(backend=None, weighted=False, delay=1):
     return delaycsr((np.array([3.], np.float32), np.array([0], np.int32),
                      np.array([0, 1], np.int32)),
                     shape=(1, 1), edge_delays=np.array([delay], np.int32),
-                    buffer_slots=2, backend=backend, weighted=weighted,
+                    n_slots=2, backend=backend, weighted=weighted,
                     ring=jnp.array([[10.], [20.]], jnp.float32))
 
 
@@ -2020,7 +2020,7 @@ def test_deliver_preserves_head_accumulates_and_keeps_owned_state(backend, weigh
     leaves = jax.tree.leaves(state)
     events = jnp.array([2.], jnp.float32)
     result = csr_delay_deliver_layout(state.ring, events, state, 0, weighted=weighted)
-    again = state.csr_delay_deliver_layout(result, events, 0, weighted=weighted)
+    again = state.deliver(result, events, 0, weighted=weighted)
     contribution = 6 if weighted else 3
     expected = np.array([[10], [20]])
     expected[delay, 0] += contribution
@@ -2050,13 +2050,13 @@ def test_supported_high_level_call_matches_arrival_rule(backend, t):
 def test_delivery_gradients_and_stateful_step_follow_selected_backend(backend):
     state = _deliver_layout_make(backend, weighted=True)
     events = jnp.array([2.], jnp.float32)
-    project = lambda r: state.csr_delay_deliver_layout(r, events, 0, weighted=True)
+    project = lambda r: state.deliver(r, events, 0, weighted=True)
     result, tangent = jax.jit(lambda r: jax.jvp(project, (r,), (jnp.ones_like(r),)))(state.ring)
     np.testing.assert_array_equal(result, [[10], [26]])
     np.testing.assert_array_equal(tangent, [[1], [1]])
 
     def loss(weights, ring, event):
-        return state.with_data(weights).csr_delay_deliver_layout(ring, event, 0, weighted=True).sum()
+        return state.with_data(weights).deliver(ring, event, 0, weighted=True).sum()
 
     value, (weight_gradient, ring_gradient, event_gradient) = jax.jit(jax.value_and_grad(
         loss, argnums=(0, 1, 2)))(state.data, state.ring, events)
@@ -2138,7 +2138,7 @@ def test_deliver_rejects_unsupported_backend_without_changing_state(backend):
     state = _deliver_layout_make()
     before = jax.tree.leaves(state)
     with pytest.raises(ValueError, match='backend'):
-        state.csr_delay_deliver_layout(state.ring, jnp.array([True]), 0, backend=backend)
+        state.deliver(state.ring, jnp.array([True]), 0, backend=backend)
     assert all(old is new for old, new in zip(before, jax.tree.leaves(state)))
 
 
@@ -2349,7 +2349,7 @@ def test_quantity_delivery_ring_scale_gradients(backend, weighted, weight_unit, 
     layout = delaycsr(
         (np.array([2], np.float64) * weight_unit, np.array([0], np.int32),
          np.array([0, 1], np.int32)),
-        shape=(1, 1), edge_delays=np.ones(1, np.int32), buffer_slots=3, backend=backend,
+        shape=(1, 1), edge_delays=np.ones(1, np.int32), n_slots=3, backend=backend,
     )
     leaves = jax.tree.leaves(layout)
     weights = u.get_mantissa(layout.data)
@@ -2357,7 +2357,7 @@ def test_quantity_delivery_ring_scale_gradients(backend, weighted, weight_unit, 
     events = jnp.array([2], jnp.float32)
 
     def deliver(w, r, x):
-        return layout.with_data(w * weight_unit).csr_delay_deliver_layout(
+        return layout.with_data(w * weight_unit).deliver(
             r * ring_unit, x * event_unit, 0, weighted=weighted)
 
     def values(w, r, x):
@@ -2389,7 +2389,7 @@ def test_quantity_delivery_ring_scale_keeps_inactive_half_ring_finite(backend, w
         shape=(1, 1), edge_delays=np.ones(1, np.int32), backend=backend,
     )
     ring = jnp.full((2, 1), 100, jnp.float16) * u.volt
-    result = jax.jit(lambda r: layout.csr_delay_deliver_layout(
+    result = jax.jit(lambda r: layout.deliver(
         r, jnp.zeros(1, jnp.float16), 0, weighted=weighted))(ring)
     # Converting the whole buffer to mV would overflow float16 before delivery.
     np.testing.assert_array_equal(u.get_mantissa(result), [[100], [100]])
@@ -2407,7 +2407,7 @@ def test_quantity_delivery_ring_scale_keeps_binary_event_activity(backend):
     tiny = jnp.array([1e-5], jnp.float16)
     assert bool(tiny[0] != 0)
     np.testing.assert_array_equal(tiny * jnp.float16(.001), 0)
-    result = jax.jit(lambda events: layout.csr_delay_deliver_layout(
+    result = jax.jit(lambda events: layout.deliver(
         jnp.zeros((2, 1), jnp.float16) * u.volt, events, 0))(tiny)
     assert u.get_unit(result) == u.volt
     np.testing.assert_allclose(u.get_mantissa(result), [[0], [.002]], rtol=1e-3)
@@ -2419,7 +2419,7 @@ def test_scaled_dimensionless_quantity_ring_keeps_pytree_for_delivery_and_clear(
     layout = _deliver_layout_make(backend)
     leaves = jax.tree.leaves(layout)
     ring = u.Quantity(jnp.ones((2, 1), jnp.float32), unit=ring_unit)
-    result = jax.jit(lambda r: layout.csr_delay_deliver_layout(
+    result = jax.jit(lambda r: layout.deliver(
         r, jnp.array([True]), 0))(ring)
     assert jax.tree.structure(result) == jax.tree.structure(ring)
     assert u.get_unit(result) == ring.unit
@@ -2451,7 +2451,7 @@ def test_quantity_ring_scale_converts_half_weights_at_ring_precision(backend, we
         shape=(1, 1), edge_delays=np.ones(1, np.int32), backend=backend,
     )
     ring = jnp.zeros((2, 1), jnp.float32) * u.volt
-    result = jax.jit(lambda r: layout.csr_delay_deliver_layout(
+    result = jax.jit(lambda r: layout.deliver(
         r, jnp.array([True]), 0))(ring)
     expected = float(np.float16(weight)) * factor
     np.testing.assert_allclose(u.get_mantissa(result), [[0], [expected]], rtol=1e-6)
@@ -2468,7 +2468,7 @@ def _region_delay_transform_problem(weighted, homo=False, dtype=jnp.float32):
     delays = np.array([0, 1, 3, 0, 1, 3], np.int32)
     data = np.array([.5] if homo else [2, -1, .5, 3, -2, .25], dtype)
     state = delaycsr((data, columns, pointers), edge_delays=delays, shape=(3, 3),
-                     delay_steps=(0, 1, 2, 3), buffer_slots=5, sorted_by_delay=True,
+                     delay_steps=(0, 1, 2, 3), n_slots=5, sorted_by_delay=True,
                      weighted=weighted, backend="cuda_raw")
     row_ids = jnp.array([0, 0, 0, 2, 2, 2])
     columns, delays = jnp.asarray(columns), jnp.asarray(delays)
@@ -2604,7 +2604,7 @@ def test_event_tangent_populates_long_row_task_value(weighted):
     nnz = 8194
     state = delaycsr((np.array([.5], np.float32), np.zeros(nnz, np.int32),
                       np.array([0, nnz], np.int32)), shape=(1, 1),
-                     edge_delays=np.repeat([0, 1], nnz // 2), buffer_slots=3,
+                     edge_delays=np.repeat([0, 1], nnz // 2), n_slots=3,
                      weighted=weighted, sorted_by_delay=True)
     assert state.capacity > 0
 
@@ -2625,7 +2625,7 @@ def test_event_tangent_populates_long_row_task_value(weighted):
 def test_empty_graph_gradients(rows, cols):
     state = delaycsr((np.array([1], np.float32), np.array([], np.int32),
                       np.zeros(rows + 1, np.int32)), shape=(rows, cols),
-                     edge_delays=np.array([], np.int32), buffer_slots=3,
+                     edge_delays=np.array([], np.int32), n_slots=3,
                      weighted=True, backend="cuda_raw")
 
     def loss(w, weights, events, ring):

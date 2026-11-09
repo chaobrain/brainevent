@@ -76,7 +76,7 @@ def test_matmul_binds_the_shared_primitive_directly(monkeypatch, weighted):
     state = state_module.delaycsr(
         (cuda[2], cuda[3], cuda[4]), shape=(2, 2),
         edge_delays=np.array([0, 2, 0, 2], np.int32), delay_steps=(0, 2),
-        buffer_slots=3, sorted_by_delay=True, weighted=weighted, backend=backend,
+        n_slots=3, sorted_by_delay=True, weighted=weighted, backend=backend,
         ring=cuda[0], head=1,
     )
     calls = []

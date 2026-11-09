@@ -30,7 +30,7 @@ def _matrix(*, shared=False, index_dtype=np.int32, ptr_dtype=np.int32,
         (weights, np.array([0, 2, 1, 0], index_dtype),
          np.array([0, 2, 4], ptr_dtype)),
         edge_delays=np.array([2, 0, 1, 2], np.int32), shape=(2, 3),
-        buffer_slots=4, ring=ring, head=3, weighted=True, backend=backend,
+        n_slots=4, ring=ring, head=3, weighted=True, backend=backend,
     )
 
 
@@ -317,7 +317,7 @@ def test_deprecated_aliases_use_int64_indices_guard(alias, y_size):
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_int64_indices_native_delivery_stays_supported(backend):
     source = _matrix(index_dtype=np.int64, backend=backend)
-    result = source.csr_delay_deliver_layout(jnp.zeros((4, 3), jnp.float32),
+    result = source.deliver(jnp.zeros((4, 3), jnp.float32),
                                             jnp.array([1., 2.], jnp.float32), 0, weighted=True)
     expected = np.array([[0., 0., 3.], [0., 10., 0.], [16., 0., 0.], [0., 0., 0.]])
     np.testing.assert_array_equal(result, expected)
@@ -413,7 +413,7 @@ def test_fromdense_rejects_traced_dense_content():
 def test_fromdense_empty_template_returns_per_edge_empty_storage():
     source = delaycsr(
         (np.array([2.], np.float32), np.array([], np.int32), np.array([0, 0, 0], np.int32)),
-        shape=(2, 3), edge_delays=0, buffer_slots=4, backend="jax_raw")
+        shape=(2, 3), edge_delays=0, n_slots=4, backend="jax_raw")
     with pytest.warns(UserWarning, match="(?i)delay"):
         result = delaycsr.fromdense(jnp.zeros(source.shape, jnp.float32), template=source)
     assert result.data.shape == (0,)
@@ -489,7 +489,7 @@ def test_slice_rows_long_row_task_capacity_counts_repetitions():
         (np.ones(int(sizes.sum()), np.float32), np.arange(int(sizes.sum()), dtype=np.int32) % 5,
          np.array([0, 130, 133, 262], np.int32)),
         shape=(3, 5), edge_delays=np.r_[np.arange(130) % 2 * 2, [0, 1, 2], np.full(129, 2)],
-        buffer_slots=4, weighted=True, backend="jax_raw")
+        n_slots=4, weighted=True, backend="jax_raw")
     np.testing.assert_array_equal(source.row_task_count, [2, 0, 1])
     source.workspace = type(source.workspace)(*(jnp.ones_like(a) for a in source.workspace))
     snapshot = _snapshot(source)
@@ -515,7 +515,7 @@ def test_slice_rows_checks_task_capacity_before_allocating(monkeypatch):
 def test_slice_rows_widens_indptr_before_cumsum_and_requires_x64(monkeypatch):
     source = delaycsr(
         (np.arange(1, 5, dtype=np.float32), np.zeros(4, np.int32), np.array([0, 2, 4], np.int32)),
-        shape=(2, 1), edge_delays=[0, 1, 0, 1], buffer_slots=2, backend="jax_raw")
+        shape=(2, 1), edge_delays=[0, 1, 0, 1], n_slots=2, backend="jax_raw")
     monkeypatch.setattr(region_delay, "_I32_MAX", 4)
     result = source.slice_rows([0, 1, 0])
     assert result.indices.dtype == jnp.int32
@@ -537,7 +537,7 @@ def test_slice_rows_arrivals_follow_the_selected_original_rows(backend):
         np.array([1, 0, 0, 2, 1, 0], np.int32), np.array([0, 2, 4, 6], np.int32),
         np.array([1, 2, 2, 0, 1, 2], np.int32), events, 0,
         np.zeros((4, 3)), weighted=True)
-    actual = result.csr_delay_deliver_layout(result.ring, events, 0, weighted=True)
+    actual = result.deliver(result.ring, events, 0, weighted=True)
     np.testing.assert_array_equal(actual, expected)
     _unchanged(source, snapshot)
 
@@ -581,7 +581,7 @@ def test_diag_add_increments_arrive_separately_at_their_own_delay(backend):
     source = _matrix(backend=backend)
     with pytest.warns(PerformanceWarning):
         result = source.diag_add(jnp.array([11., 13.], jnp.float32), diag_delays=[4, 1])
-    actual = result.csr_delay_deliver_layout(result.ring, jnp.array([1., 2.], jnp.float32),
+    actual = result.deliver(result.ring, jnp.array([1., 2.], jnp.float32),
                                             0, weighted=True)
     np.testing.assert_array_equal(actual, [[0., 0., 3.], [0., 36., 0.], [16., 0., 0.],
                                          [0., 0., 0.], [11., 0., 0.]])
@@ -643,7 +643,7 @@ def test_diag_add_converts_units_promotes_weights_and_preserves_ring_precision()
 def test_diag_add_empty_diagonal_does_not_expand_ring_for_unused_scalar_delay(shape):
     source = delaycsr(
         (np.array([], np.float32), np.array([], np.int32), np.zeros(shape[0] + 1, np.int32)),
-        shape=shape, edge_delays=0, delay_steps=(0, 2), buffer_slots=4, backend="jax_raw")
+        shape=shape, edge_delays=0, delay_steps=(0, 2), n_slots=4, backend="jax_raw")
     with pytest.warns(PerformanceWarning):
         result = source.diag_add(jnp.array([], jnp.float32), diag_delays=100)
     assert result.shape == shape
@@ -656,7 +656,7 @@ def test_diag_add_empty_diagonal_does_not_expand_ring_for_unused_scalar_delay(sh
 def test_diag_add_widens_indptr_before_appending_edges(monkeypatch):
     source = delaycsr(
         (np.arange(1, 5, dtype=np.float32), np.zeros(4, np.int32), np.array([0, 2, 4], np.int32)),
-        shape=(2, 1), edge_delays=[0, 1, 0, 1], buffer_slots=2, backend="jax_raw")
+        shape=(2, 1), edge_delays=[0, 1, 0, 1], n_slots=2, backend="jax_raw")
     monkeypatch.setattr(region_delay, "_I32_MAX", 4)
     with pytest.warns(PerformanceWarning):
         result = source.diag_add(jnp.ones(1, jnp.float32), diag_delays=0)

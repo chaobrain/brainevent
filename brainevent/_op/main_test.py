@@ -549,7 +549,7 @@ def _layout():
     with jax.ensure_compile_time_eval():  # concrete arrays, even if first called while tracing
         return brainevent.delaycsr(
             (np.ones(5, np.float32), _INDICES, _INDPTR), edge_delays=_DELAYS,
-            buffer_slots=_N_SLOTS, shape=(4, 4), backend='jax_raw')
+            n_slots=_N_SLOTS, shape=(4, 4), backend='jax_raw')
 
 
 def _csrmv(w, x, backend=None):

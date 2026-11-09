@@ -98,7 +98,7 @@ Edges must be consecutive in ``delay_steps`` order within each row, with
 ascending columns inside each segment; weights already follow that order.
 No ``edge_delays`` array is needed or retained. The scheduling counts target
 the current hybrid thresholds and must be regenerated if those change.
-``buffer_slots`` defaults to the maximum delay plus one. Optional ``ring``,
+``n_slots`` defaults to the maximum delay plus one. Optional ``ring``,
 ``head`` and mode-appropriate ``workspace`` restore an existing execution
 state; omitted buffers are freshly allocated. JAX operands are reused and
 NumPy operands receive owned snapshots.
