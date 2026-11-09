@@ -207,6 +207,60 @@ def test_select_nvcc_not_found(monkeypatch):
     assert path is None and includes == []
 
 
+def _conda_cuda_prefix(tmp_path):
+    """A conda env with conda-forge's ``cuda-nvcc`` and ``cuda-cudart-dev``:
+    nvcc in ``<prefix>/bin``, the CUDA headers only in
+    ``<prefix>/targets/x86_64-linux/include``, and a ``<prefix>/include``
+    of other packages' headers."""
+    prefix = tmp_path.resolve() / "env"
+    _touch_exec(prefix / "bin" / "nvcc")
+    (prefix / "include").mkdir()
+    (prefix / "include" / "zlib.h").write_text("")
+    inc = prefix / "targets" / "x86_64-linux" / "include"
+    inc.mkdir(parents=True)
+    (inc / "cuda_runtime.h").write_text("/* header */")
+    (prefix / "targets" / "sbsa-linux" / "include").mkdir(parents=True)  # another arch's: never used here
+    return prefix, inc
+
+
+@pytest.mark.parametrize("source", ["BRAINEVENT_NVCC_PATH", "CUDA_HOME", "PATH"])
+def test_select_nvcc_finds_the_conda_cuda_headers(monkeypatch, tmp_path, source):
+    """A conda env's nvcc (``cuda-nvcc``, CUDA 12+) passes the header check
+    from each nvcc source: its headers are under ``targets/<arch>-linux``.
+
+    Reproduces the E-HDR failure: only ``<prefix>/include`` was tried.
+    """
+    prefix, inc = _conda_cuda_prefix(tmp_path)
+    for var in ("BRAINEVENT_NVCC_PATH", "CUDA_HOME", "CUDA_PATH"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(kt.sys, "platform", "linux")
+    monkeypatch.setattr(kt.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(kt, "_NVCC_DISCOVERY", "system")
+    monkeypatch.setattr(kt, "_find_pip_cuda", lambda roots=None: (None, []))
+    nvcc = str(prefix / "bin" / "nvcc")
+    if source == "PATH":
+        monkeypatch.setattr(kt.shutil, "which", lambda n: nvcc if n == "nvcc" else None)
+    else:
+        monkeypatch.setattr(kt.shutil, "which", lambda n: None)
+        monkeypatch.setenv(source, nvcc if source == "BRAINEVENT_NVCC_PATH" else str(prefix))
+    path, includes, _ = kt._select_nvcc()
+    assert path == nvcc
+    assert includes == [str(prefix / "include"), str(inc)]
+    kt._validate_cuda_include(includes, nvcc_probes=[])  # must not raise
+
+
+def test_cuda_includes_takes_the_targets_of_this_machine_only(monkeypatch, tmp_path):
+    prefix, _ = _conda_cuda_prefix(tmp_path)
+    monkeypatch.setattr(kt.sys, "platform", "linux")
+    monkeypatch.setattr(kt.platform, "machine", lambda: "aarch64")
+    assert kt._cuda_includes(str(prefix)) == [str(prefix / "include"), str(prefix / "targets" / "sbsa-linux" / "include")]
+    monkeypatch.setattr(kt.platform, "machine", lambda: "riscv64")  # no CUDA target
+    assert kt._cuda_includes(str(prefix)) == [str(prefix / "include")]
+    monkeypatch.setattr(kt.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(kt.sys, "platform", "darwin")  # not Linux: no targets
+    assert kt._cuda_includes(str(prefix)) == [str(prefix / "include")]
+
+
 # --- detect_* -------------------------------------------------------------
 
 def test_detect_cuda_toolchain_no_nvcc(monkeypatch):

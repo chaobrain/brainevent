@@ -16,6 +16,7 @@
 """Detect and validate the CUDA/C++ compilation toolchain."""
 
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -421,17 +422,44 @@ def _find_host_cxx():
     return None, probes
 
 
-def _include_from_nvcc(nvcc_path: str) -> str:
-    """Guess the CUDA include dir as ``<nvcc>/../../include``.
+#: CUDA's target directory names under ``<root>/targets``, by ``platform.machine()``.
+_CUDA_TARGETS = {
+    "x86_64": ("x86_64-linux",),
+    "aarch64": ("sbsa-linux", "aarch64-linux"),
+    "ppc64le": ("ppc64le-linux",),
+}
+
+
+def _cuda_includes(root: str) -> "list[str]":
+    """The CUDA include dirs of the install at *root*.
+
+    ``<root>/include``, then each ``<root>/targets/<arch>-linux/include`` that
+    exists: conda-forge's CUDA 12+ packages (``cuda-nvcc``,
+    ``cuda-cudart-dev``) put the headers there and nothing in
+    ``<root>/include``; nvcc itself finds them through its ``nvcc.profile``.
+    """
+    out = [os.path.join(root, "include")]
+    if sys.platform.startswith("linux"):
+        for target in _CUDA_TARGETS.get(platform.machine(), ()):
+            inc = os.path.join(root, "targets", target, "include")
+            if os.path.isdir(inc):
+                out.append(inc)
+    return out
+
+
+def _includes_from_nvcc(nvcc_path: str) -> "list[str]":
+    """Guess the CUDA include dirs from the nvcc path: :func:`_cuda_includes`
+    of ``<nvcc>/../..``.
 
     This ``parent.parent`` heuristic holds for a real CUDA Toolkit layout
-    (``<prefix>/bin/nvcc`` ↔ ``<prefix>/include``) but can be wrong for a
-    distro shim at ``/usr/bin/nvcc`` (whose headers live in
-    ``/usr/include`` or a versioned ``/usr/lib/cuda/include``).  Callers
+    (``<prefix>/bin/nvcc`` ↔ ``<prefix>/include``) and a conda env
+    (``<prefix>/bin/nvcc`` ↔ ``<prefix>/targets/<arch>-linux/include``) but
+    can be wrong for a distro shim at ``/usr/bin/nvcc`` (whose headers live
+    in ``/usr/include`` or a versioned ``/usr/lib/cuda/include``).  Callers
     that depend on the result validate it via :func:`_validate_cuda_include`
     (audit L12).
     """
-    return str(Path(nvcc_path).resolve().parent.parent / "include")
+    return _cuda_includes(str(Path(nvcc_path).resolve().parent.parent))
 
 
 def _validate_cuda_include(
@@ -533,7 +561,7 @@ def _select_nvcc():
     if env:
         if os.path.isfile(env):
             probes.append(CandidateProbe("BRAINEVENT_NVCC_PATH", env, "ok"))
-            return env, [_include_from_nvcc(env)], probes
+            return env, _includes_from_nvcc(env), probes
         probes.append(CandidateProbe("BRAINEVENT_NVCC_PATH", env, "not-a-file"))
     else:
         probes.append(CandidateProbe("BRAINEVENT_NVCC_PATH", "", "unset"))
@@ -549,7 +577,7 @@ def _select_nvcc():
             cand = os.path.join(home, "bin", exe)
             if os.path.isfile(cand):
                 probes.append(CandidateProbe(src, cand, "ok"))
-                return cand, [os.path.join(home, "include")], probes
+                return cand, _cuda_includes(home), probes
             probes.append(CandidateProbe(src, cand, "not-found"))
         else:
             probes.append(CandidateProbe(src, "", "unset"))
@@ -566,7 +594,7 @@ def _select_nvcc():
             which = shutil.which("nvcc")
             if which:
                 probes.append(CandidateProbe("PATH:nvcc", which, "ok"))
-                return which, [_include_from_nvcc(which)], probes
+                return which, _includes_from_nvcc(which), probes
             probes.append(CandidateProbe("PATH:nvcc", "", "not-found"))
 
     return None, [], probes
