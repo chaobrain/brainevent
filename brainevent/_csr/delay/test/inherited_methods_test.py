@@ -331,14 +331,38 @@ def test_int64_indices_native_delivery_stays_supported(backend):
 def test_int32_plasticity_and_dt2t_keep_parent_numerics_and_return_types(backend):
     source = _matrix(ptr_dtype=np.int64, backend=backend)
     snapshot = _snapshot(source)
+    initial_config = source.config
+    assert initial_config.mirror is None
+    assert source._cache.mirror is None
     pre = jnp.array([True, False])
     post = jnp.array([True, False, True])
     updated_pre = source.update_on_pre(pre, jnp.array([1., 2., 3.], jnp.float32))
-    updated_post = source.update_on_post(jnp.array([10., 20.], jnp.float32), post)
     np.testing.assert_array_equal(updated_pre.data, [6., 3., 5., 7.])
-    np.testing.assert_array_equal(updated_post.data, [13., 12., 5., 27.])
     _same_state(updated_pre, source)
+    assert source.config is initial_config
+    assert source._cache.mirror is None
+
+    # Results share the config snapshot at creation. The post update then
+    # materializes the mirror and binds a new snapshot to the source.
+    updated_post = source.update_on_post(
+        jnp.array([10., 20.], jnp.float32), post,
+    )
+    np.testing.assert_array_equal(updated_post.data, [13., 12., 5., 27.])
     _same_state(updated_post, source)
+    assert updated_pre.config is initial_config
+    assert initial_config.mirror is None
+    assert initial_config.mirror_max_row_nnz is None
+    assert source.config is not initial_config
+    assert source.config.primary is initial_config.primary
+    mirror = source._cache.mirror
+    assert mirror is not None
+    plan, maximum = source._cache.mirror_preparation
+    assert source.config.mirror is plan
+    assert source.config.mirror_max_row_nnz == maximum
+    assert updated_pre._mirror() is mirror
+    assert updated_pre.config.mirror is plan
+    assert updated_pre.config.mirror_max_row_nnz == maximum
+    assert initial_config.mirror is None
     rule = lambda edge, pre_value, post_value, params: edge * jnp.float32(2)
     edge_pre = source.apply_on_pre(rule, pre)
     edge_post = source.apply_on_post(rule, post)
