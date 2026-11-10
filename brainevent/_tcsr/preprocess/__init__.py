@@ -14,7 +14,7 @@
 
 """Structure sorting and reusable tile geometry preparation for TCSR matrices."""
 
-from .preprocess import (
+from brainevent._tcsr.preprocess.preprocess import (
     TileGeometry, build_tile_geometries, geometry_widths,
     TilePlan, build_binary_mm_plan, ensure_preparation_context, sort_csr, validate_preparation,
 )

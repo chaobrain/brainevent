@@ -14,8 +14,8 @@ import jax
 import numpy as np
 
 from brainevent._error import KernelRegistrationError
-from .ffi_naming import kernel_content_fingerprint
-from .numba_ffi import (
+from brainevent._op.ffi_naming import kernel_content_fingerprint
+from brainevent._op.numba_ffi import (
     XLA_FFI_API_MAJOR,
     XLA_FFI_API_MINOR,
     XLA_FFI_Error_Code,
@@ -31,7 +31,7 @@ from .numba_ffi import (
     _warn_if_untested_jax,
     _register_exit_guard,
 )
-from .util import OutType, abstract_arguments
+from brainevent._op.util import OutType, abstract_arguments
 
 __all__ = [
     'numba_cuda_kernel',

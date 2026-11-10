@@ -14,20 +14,20 @@
 
 """Binary and weighted event multiplication."""
 
-from .binary import (
+from brainevent._csr.binary.binary import (
     binary_csrmv,
     binary_csrmv_p,
     binary_csrmm,
     binary_csrmm_p,
 )
-from .binary_indexed import (
+from brainevent._csr.binary.binary_indexed import (
     binary_csrmv_indexed,
     binary_csrmv_indexed_p,
     binary_csrmm_indexed,
     binary_csrmm_indexed_p,
 )
-from ..config import CSRConfig, MVSchedule
-from .initialize import (
+from brainevent._csr.config import CSRConfig, MVSchedule
+from brainevent._csr.binary.initialize import (
     init_csr_config,
     load_csr_config,
     save_csr_config,

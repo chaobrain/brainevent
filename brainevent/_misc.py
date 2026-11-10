@@ -12,8 +12,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.sparse import coo_todense_p
 
-from ._typing import MatrixShape, Data, Index
-from ._compatible_import import Tracer, match_varying_axes
+from brainevent._typing import MatrixShape, Data, Index
+from brainevent._compatible_import import Tracer, match_varying_axes
 
 
 # -*- coding: utf-8 -*-
@@ -1486,7 +1486,7 @@ def _load_csr_to_csc_cuda_module():
     if _CSR_TO_CSC_CUDA_MODULE is None:
         from pathlib import Path
 
-        from ._op import load_cuda_file
+        from brainevent._op import load_cuda_file
 
         _CSR_TO_CSC_CUDA_MODULE = load_cuda_file(
             Path(__file__).resolve().parent / "_csr" / "_support" / "csr_to_csc.cu",

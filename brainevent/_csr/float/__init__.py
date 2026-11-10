@@ -14,7 +14,7 @@
 
 """Floating-point sparse multiplication."""
 
-from .float import (
+from brainevent._csr.float.float import (
     csrmv,
     csrmv_p,
     csrmm,

@@ -14,7 +14,7 @@
 
 """Binary and weighted uniform-connectivity event multiplication."""
 
-from .binary import (
+from brainevent._jit_uniform.binary.binary import (
     binary_jitumv,
     binary_jitumv_p,
     binary_jitumm,

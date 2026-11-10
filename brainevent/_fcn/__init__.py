@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .binary import (
+from brainevent._fcn.binary import (
     binary_fcnmv,
     binary_fcnmv_p,
     binary_fcnmm,
     binary_fcnmm_p,
 )
-from .float import fcnmv, fcnmm
-from .dt2t import fcnmv_dt2t, fcnmm_dt2t
-from .main import FixedNumConn, FixedNumPerPost, FixedNumPerPre
-from .plasticity import (
+from brainevent._fcn.float import fcnmv, fcnmm
+from brainevent._fcn.dt2t import fcnmv_dt2t, fcnmm_dt2t
+from brainevent._fcn.main import FixedNumConn, FixedNumPerPost, FixedNumPerPre
+from brainevent._fcn.plasticity import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
     fcn_plasticity_row_p,

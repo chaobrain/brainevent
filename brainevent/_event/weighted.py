@@ -9,7 +9,11 @@ from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import binary_densemm, binary_densemv
 from brainevent._error import MathError
-from .base import EventRepresentation, extract_raw_value, is_known_type
+from brainevent._event.base import (
+    EventRepresentation,
+    extract_raw_value,
+    is_known_type,
+)
 
 __all__ = [
     'WeightedArray',

@@ -14,7 +14,7 @@
 
 """CSR diagonal structure and value updates."""
 
-from .diag_add import (
+from brainevent._csr.diag.diag_add import (
     csr_diag_position,
     csr_diag_add,
 )

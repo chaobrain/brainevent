@@ -14,7 +14,7 @@
 
 """Materialize normal connectivity in CSR format."""
 
-from .csr import (
+from brainevent._jit_normal.csr.csr import (
     jitn_to_csr,
     jitn_csr_count_p,
     jitn_csr_count_p_call,

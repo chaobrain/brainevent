@@ -26,11 +26,11 @@ from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix, _resolve_corder
 from brainevent._jitc_structure import JITCStructure
 from brainevent._typing import MatrixShape, WeightScalar
-from .binary import binary_jitsmv, binary_jitsmm
-from .csr import jits_to_csr
-from .csr.csr import jits_structure
-from .float import jits, jitsmv, jitsmm
-from .dt2t import jitsmv_dt2t
+from brainevent._jit_scalar.binary import binary_jitsmv, binary_jitsmm
+from brainevent._jit_scalar.csr import jits_to_csr
+from brainevent._jit_scalar.csr.csr import jits_structure
+from brainevent._jit_scalar.float import jits, jitsmv, jitsmm
+from brainevent._jit_scalar.dt2t import jitsmv_dt2t
 
 __all__ = [
     'JITCScalarR',

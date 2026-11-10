@@ -14,7 +14,7 @@
 
 """Materialize scalar connectivity in CSR format."""
 
-from .csr import (
+from brainevent._jit_scalar.csr.csr import (
     jits_to_csr,
     jits_csr_count_p,
     jits_csr_count_p_call,

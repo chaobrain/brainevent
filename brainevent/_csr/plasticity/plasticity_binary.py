@@ -20,7 +20,7 @@ from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent._op import load_cuda_file
 from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, select_active
-from ..binary.binary import _EVENT_FASTMATH, _numba_event_mask
+from brainevent._csr.binary.binary import _EVENT_FASTMATH, _numba_event_mask
 
 __all__ = [
     'update_csr_on_binary_pre',

@@ -22,7 +22,7 @@ from brainevent._compatible_import import init_zero, match_varying_axes
 from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_file
 from brainevent._op.util import cuda_event_abi
 
-from ._util import _checked_result, _head_out_of_bounds
+from brainevent._csr.delay._util import _checked_result, _head_out_of_bounds
 
 
 __all__ = [

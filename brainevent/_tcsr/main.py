@@ -27,9 +27,14 @@ from brainevent._csr.config import CSRConfig, _backend_preference, _structure_de
 from brainevent._csr.main import CSC, CSR
 from brainevent._event import as_event_operand
 from brainevent._structure import is_concrete
-from ._dispatch import dispatch_binary_mm
-from .binary.combined.planner import tile_schedule
-from .preprocess import TileGeometry, build_tile_geometries, geometry_widths, sort_csr
+from brainevent._tcsr._dispatch import dispatch_binary_mm
+from brainevent._tcsr.binary.combined.planner import tile_schedule
+from brainevent._tcsr.preprocess import (
+    TileGeometry,
+    build_tile_geometries,
+    geometry_widths,
+    sort_csr,
+)
 
 __all__ = ['TCSR']
 
@@ -408,7 +413,7 @@ class TCSR(CSR):
         ValueError
             Called while tracing, or the legacy arguments are unsupported.
         """
-        from .preprocess import validate_preparation
+        from brainevent._tcsr.preprocess import validate_preparation
 
         validate_preparation(batch, self.dtype if dtype is None else dtype)
         if transpose is not None and not isinstance(transpose, (bool, np.bool_)):

@@ -41,7 +41,11 @@ from brainevent._misc import _is_static_zero, _n_chunks, _with_linear_param_grad
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
-from ..float.float import _chunk_size, _walk_length, _LANE_STRIDE
+from brainevent._jit_uniform.float.float import (
+    _chunk_size,
+    _walk_length,
+    _LANE_STRIDE,
+)
 from brainevent._op.util import dtype_suffix
 
 __all__ = [

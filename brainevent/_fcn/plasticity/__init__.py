@@ -14,7 +14,7 @@
 
 """Row-driven fixed-connection event plasticity."""
 
-from .plasticity_binary import (
+from brainevent._fcn.plasticity.plasticity_binary import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
     fcn_plasticity_row_p,

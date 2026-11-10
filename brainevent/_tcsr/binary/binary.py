@@ -29,7 +29,7 @@ from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_fil
 from brainevent._op.util import cuda_event_abi
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
-from .combined.planner import INT32_MAX, tile_schedule
+from brainevent._tcsr.binary.combined.planner import INT32_MAX, tile_schedule
 
 __all__ = ['binary_csrmm', 'binary_csrmm_p_call', 'binary_csrmm_p']
 

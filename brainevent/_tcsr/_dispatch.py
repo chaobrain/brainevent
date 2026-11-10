@@ -17,9 +17,9 @@ from brainevent._csr.binary.binary import binary_csrmm_p as csr_binary_csrmm_p
 from brainevent._csr.binary.binary_indexed import binary_csrmm_indexed_p
 from brainevent._event import as_event_operand
 
-from ._resources import launch_supported
-from .binary.binary import binary_csrmm
-from .binary.combined.planner import tile_schedule
+from brainevent._tcsr._resources import launch_supported
+from brainevent._tcsr.binary.binary import binary_csrmm
+from brainevent._tcsr.binary.combined.planner import tile_schedule
 
 
 def dispatch_binary_mm(matrix: CSR, other: Any, *, transpose: bool, plan: Any) -> Any:

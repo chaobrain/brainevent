@@ -32,7 +32,7 @@ from brainevent._misc import (
 )
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, load_cuda_file
 from brainevent._sddmm import dispatch as _sddmm_dispatch
-from .._support.binary import (
+from brainevent._csr._support.binary import (
     _validate_backward_algorithm,
     _weight_gradient_mode,
     _task_capacity,
@@ -43,17 +43,17 @@ from .._support.binary import (
     _check_max_row_nnz,
     _config_for_call,
 )
-from ..config import CSRConfig
+from brainevent._csr.config import CSRConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
-from .binary import (
+from brainevent._csr.binary.binary import (
     _EVENT_FASTMATH,
     _event_contrib,
     _numba_event_mask,
     _numba_weighted_events,
     _make_hybrid_mm_kernel,
 )
-from ..float.float import csrmv, csrmm
+from brainevent._csr.float.float import csrmv, csrmm
 from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
 
 __all__ = [

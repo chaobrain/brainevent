@@ -17,10 +17,10 @@
 import jax
 import jax.numpy as jnp
 
-from . import dispatch as _dispatch
-from .dispatch import sddmm
-from ._mv.sddmv import csr_sddmv_p
-from ._mm.sddmm import csr_sddmm_p
+from brainevent._sddmm import dispatch as _dispatch
+from brainevent._sddmm.dispatch import sddmm
+from brainevent._sddmm._mv.sddmv import csr_sddmv_p
+from brainevent._sddmm._mm.sddmm import csr_sddmm_p
 
 __all__ = [
     'sddmm',

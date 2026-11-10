@@ -14,6 +14,6 @@
 
 """Numeric fixed-connection multiplication."""
 
-from .float import fcnmv, fcnmm
+from brainevent._fcn.float.float import fcnmv, fcnmm
 
 __all__ = ['fcnmv', 'fcnmm']

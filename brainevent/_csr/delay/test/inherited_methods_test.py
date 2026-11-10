@@ -16,8 +16,8 @@ import pytest
 from brainevent import BinaryArray, CSR, PerformanceWarning, WeightedArray, delaycsr
 from brainevent._csr.config import CSRConfig
 from brainevent._csr.delay import region_delay
-from ._helpers import BACKENDS
-from ._reference import numpy_project_step
+from brainevent._csr.delay.test._helpers import BACKENDS
+from brainevent._csr.delay.test._reference import numpy_project_step
 
 
 def _matrix(*, shared=False, index_dtype=np.int32, ptr_dtype=np.int32,

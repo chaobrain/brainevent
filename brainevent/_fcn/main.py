@@ -38,13 +38,13 @@ from brainevent._misc import (
     _as_int32_indices,
 )
 from brainevent._typing import ArrayData, Data, MatrixShape, Index
-from .binary import binary_fcnmv, binary_fcnmm
-from .float import fcnmv, fcnmm
-from .plasticity import (
+from brainevent._fcn.binary import binary_fcnmv, binary_fcnmm
+from brainevent._fcn.float import fcnmv, fcnmm
+from brainevent._fcn.plasticity import (
     update_fixed_post_conn_on_binary_pre,
     update_fixed_pre_conn_on_binary_post,
 )
-from .dt2t import fcnmv_dt2t
+from brainevent._fcn.dt2t import fcnmv_dt2t
 
 __all__ = [
     'FixedNumConn',

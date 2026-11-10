@@ -196,7 +196,7 @@ class CompilationCache:
 
     def _ext(self) -> str:
         """Shared-library extension for the current OS (.so/.dylib/.dll)."""
-        from .kernix_toolchain import so_ext
+        from brainevent._op.kernix_toolchain import so_ext
         return so_ext()
 
     # ------------------------------------------------------------------

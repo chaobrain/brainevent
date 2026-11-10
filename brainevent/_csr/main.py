@@ -31,22 +31,28 @@ from brainevent._misc import (
 from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
 from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
 from brainevent.config import _backend_preference
-from ._support.binary import _validate_backward_algorithm
-from .binary.binary import binary_csrmv, binary_csrmm
-from .binary.binary_indexed import binary_csrmv_indexed, binary_csrmm_indexed
-from .config import (
+from brainevent._csr._support.binary import _validate_backward_algorithm
+from brainevent._csr.binary.binary import binary_csrmv, binary_csrmm
+from brainevent._csr.binary.binary_indexed import (
+    binary_csrmv_indexed,
+    binary_csrmm_indexed,
+)
+from brainevent._csr.config import (
     CSRConfig, _structure_device, _host_structure_array,
     _prepare_csr_config, _config_for_new_structure, _config_with_mirror,
 )
-from .diag.diag_add import csr_diag_position, csr_diag_add
-from .float.float import csrmv, csrmm
-from .plasticity.plasticity_binary import (
+from brainevent._csr.diag.diag_add import csr_diag_position, csr_diag_add
+from brainevent._csr.float.float import csrmv, csrmm
+from brainevent._csr.plasticity.plasticity_binary import (
     update_csr_on_binary_pre, update_csr_on_binary_post, _update_csr_on_binary_post_masked,
 )
-from .plasticity.plasticity_generic import csr_apply_on_pre, csr_apply_on_post
-from .slice.slice import csr_slice_rows
-from .solve.spsolve import csr_solve
-from .dt2t.dt2t import csrmv_dt2t
+from brainevent._csr.plasticity.plasticity_generic import (
+    csr_apply_on_pre,
+    csr_apply_on_post,
+)
+from brainevent._csr.slice.slice import csr_slice_rows
+from brainevent._csr.solve.spsolve import csr_solve
+from brainevent._csr.dt2t.dt2t import csrmv_dt2t
 
 __all__ = [
     'CSR',
@@ -1833,7 +1839,7 @@ class CSR(CompressedSparseData):
                    [1., 0.],
                    [0., 2.]], dtype=float32)
         """
-        from .delay.region_delay import delaycsr  # pylint: disable=import-outside-toplevel
+        from brainevent._csr.delay.region_delay import delaycsr  # pylint: disable=import-outside-toplevel
 
         return delaycsr(self, edge_delays=delays, n_slots=n_slots)
 

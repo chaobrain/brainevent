@@ -160,6 +160,11 @@ change in the right place:
 
 ## Code style
 
+- **Internal imports**: use absolute imports rooted at `brainevent` for all
+  package-internal dependencies, including package initializers, tests,
+  `TYPE_CHECKING` blocks and lazy imports inside functions. For example, use
+  `from brainevent._sddmm import dispatch` instead of a relative import.
+  Preserve aliases and keep imports lazy where required.
 - **Docstrings**: all public classes, methods, and functions use
   [NumPy-style docstrings](https://numpydoc.readthedocs.io/en/latest/format.html),
   with sections in the canonical order: Short summary, Extended summary, Parameters,

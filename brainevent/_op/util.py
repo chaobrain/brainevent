@@ -16,7 +16,7 @@ from jax.interpreters import ad
 from brainevent._compatible_import import Primitive, init_zero
 
 if TYPE_CHECKING:
-    from .main import XLACustomKernel
+    from brainevent._op.main import XLACustomKernel
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -550,7 +550,7 @@ def defjvp(primitive: Union[Primitive, 'XLACustomKernel'], *jvp_rules: Optional[
         >>> defjvp(my_prim, jvp_rule_input0, jvp_rule_input1)
     """
     # Import XLACustomKernel locally to avoid circular dependencies.
-    from .main import XLACustomKernel
+    from brainevent._op.main import XLACustomKernel
 
     # If the input is an XLACustomKernel, extract the underlying JAX primitive.
     if isinstance(primitive, XLACustomKernel):

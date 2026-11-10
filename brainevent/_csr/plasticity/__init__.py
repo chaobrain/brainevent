@@ -14,7 +14,7 @@
 
 """Fixed and user-defined plasticity updates."""
 
-from .plasticity_binary import (
+from brainevent._csr.plasticity.plasticity_binary import (
     update_csr_on_binary_pre,
     update_csr_on_binary_pre_p,
     update_csr_on_binary_post,
@@ -22,7 +22,7 @@ from .plasticity_binary import (
     update_csc_on_binary_pre,
     update_csc_on_binary_post,
 )
-from .plasticity_generic import (
+from brainevent._csr.plasticity.plasticity_generic import (
     csr_apply_on_pre,
     csr_apply_on_post,
 )

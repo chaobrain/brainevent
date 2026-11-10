@@ -1006,7 +1006,7 @@ def _prepare_csr_config(indices: Any, indptr: Any, *, shape: Sequence[int],
                         device: Any = None,
                         host_structure: tuple[Any, Any] | None = None) -> CSRConfig:
     """Resolve a parameter snapshot and prepare concrete structure outside tracing."""
-    from .binary.initialize import load_csr_config
+    from brainevent._csr.binary.initialize import load_csr_config
 
     cpu_sharding = _replicated_cpu_sharding(indices, indptr) if device is None else None
     target = _structure_device(indices, device)

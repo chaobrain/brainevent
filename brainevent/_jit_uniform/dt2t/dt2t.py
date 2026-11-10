@@ -33,8 +33,12 @@ from brainevent._jitc_structure import JITCStructure
 from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, load_cuda_file, numba_kernel
 from brainevent._typing import MatrixShape
-from ..csr import jitu_to_csr
-from ..float.float import _chunk_size, _walk_length, _LANE_STRIDE
+from brainevent._jit_uniform.csr import jitu_to_csr
+from brainevent._jit_uniform.float.float import (
+    _chunk_size,
+    _walk_length,
+    _LANE_STRIDE,
+)
 from brainevent._op.util import dtype_suffix
 
 __all__ = [

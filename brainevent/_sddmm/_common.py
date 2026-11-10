@@ -13,10 +13,10 @@ from typing import Literal, TYPE_CHECKING
 import jax
 import jax.numpy as jnp
 
-from .._compatible_import import match_varying_axes
-from .._misc import _csr_to_coo, _cusparse_accepts_nse
-from .._op import load_cuda_file
-from .._op.util import event_active, select_active
+from brainevent._compatible_import import match_varying_axes
+from brainevent._misc import _csr_to_coo, _cusparse_accepts_nse
+from brainevent._op import load_cuda_file
+from brainevent._op.util import event_active, select_active
 
 if TYPE_CHECKING:
     from brainevent._op import XLACustomKernel

@@ -14,7 +14,7 @@
 
 """Binary and weighted dense event multiplication."""
 
-from .binary import (
+from brainevent._dense.binary.binary import (
     binary_densemv, binary_densemv_p, binary_densemv_p_call,
     binary_densemm, binary_densemm_p, binary_densemm_p_call,
 )

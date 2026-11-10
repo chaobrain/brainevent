@@ -14,6 +14,10 @@
 
 """CUDA tiled binary matrix-matrix multiplication."""
 
-from .binary import binary_csrmm, binary_csrmm_p, binary_csrmm_p_call
+from brainevent._tcsr.binary.binary import (
+    binary_csrmm,
+    binary_csrmm_p,
+    binary_csrmm_p_call,
+)
 
 __all__ = ['binary_csrmm', 'binary_csrmm_p', 'binary_csrmm_p_call']

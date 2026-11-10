@@ -14,6 +14,6 @@
 
 """CSR-compatible matrices with automatic MM tiles and lazy mirror tiles."""
 
-from .main import TCSR
+from brainevent._tcsr.main import TCSR
 
 __all__ = ['TCSR']

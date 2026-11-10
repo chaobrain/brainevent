@@ -20,8 +20,8 @@ import numpy as np
 import numpy.typing as npt
 
 from brainevent._op import load_cuda_inline
-from .. import jax_ffi as _base
-from ..jax_ffi import workspace_words
+from brainevent._tcsr.binary.combined import jax_ffi as _base
+from brainevent._tcsr.binary.combined.jax_ffi import workspace_words
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "combined_spmm_col_major_binary.cu"

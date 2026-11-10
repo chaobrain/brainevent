@@ -14,7 +14,7 @@
 
 """Per-synapse uniform-connectivity multiplication."""
 
-from .dt2t import (
+from brainevent._jit_uniform.dt2t.dt2t import (
     jitumv_dt2t,
     jitumv_dt2t_p,
     jitumv_dt2t_p_call,

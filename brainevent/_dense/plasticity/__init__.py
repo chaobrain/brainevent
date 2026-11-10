@@ -14,7 +14,7 @@
 
 """Pre- and post-synaptic dense event plasticity updates."""
 
-from .plasticity_binary import (
+from brainevent._dense.plasticity.plasticity_binary import (
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
 )

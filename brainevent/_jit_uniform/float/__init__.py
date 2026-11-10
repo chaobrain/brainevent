@@ -14,7 +14,7 @@
 
 """Uniform-connectivity generation and floating-point multiplication."""
 
-from .float import (
+from brainevent._jit_uniform.float.float import (
     jitu,
     jitu_p,
     jitumv,

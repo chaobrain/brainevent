@@ -41,9 +41,9 @@ from dataclasses import replace
 import jax
 import jax.numpy as jnp
 
-from ._common import Mode, VALUE_DTYPES, _CSRBackend
-from ._mv import sddmv as mv_backend
-from ._mm import sddmm as mm_backend
+from brainevent._sddmm._common import Mode, VALUE_DTYPES, _CSRBackend
+from brainevent._sddmm._mv import sddmv as mv_backend
+from brainevent._sddmm._mm import sddmm as mm_backend
 
 
 def sddmm(

@@ -6,10 +6,10 @@
 
 from typing import Any, Optional, Tuple
 
-from .binary import BinaryArray
-from .bitpack_binary import BitPackedBinary
-from .compact_binary import CompactBinary
-from .weighted import WeightedArray
+from brainevent._event.binary import BinaryArray
+from brainevent._event.bitpack_binary import BitPackedBinary
+from brainevent._event.compact_binary import CompactBinary
+from brainevent._event.weighted import WeightedArray
 
 __all__ = [
     'as_event_operand',

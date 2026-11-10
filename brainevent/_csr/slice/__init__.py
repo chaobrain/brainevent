@@ -14,7 +14,7 @@
 
 """CSR row extraction."""
 
-from .slice import (
+from brainevent._csr.slice.slice import (
     csr_slice_rows,
     csr_slice_rows_p,
 )

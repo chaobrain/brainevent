@@ -14,6 +14,6 @@
 
 """Per-synapse products for fixed-connection matrices."""
 
-from .dt2t import fcnmv_dt2t, fcnmm_dt2t
+from brainevent._fcn.dt2t.dt2t import fcnmv_dt2t, fcnmm_dt2t
 
 __all__ = ['fcnmv_dt2t', 'fcnmm_dt2t']

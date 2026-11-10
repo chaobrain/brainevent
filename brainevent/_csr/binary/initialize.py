@@ -27,7 +27,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from brainevent._op import get_cache_dir
-from ..config import _BenchmarkRecord, CSRConfig, MVSchedule
+from brainevent._csr.config import _BenchmarkRecord, CSRConfig, MVSchedule
 
 CONFIG_FILENAME = 'csr_hybrid_config.json'
 _ENV_OVERRIDE = 'BRAINEVENT_CSR_HYBRID_CONFIG'

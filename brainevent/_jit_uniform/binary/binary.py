@@ -19,7 +19,13 @@ from brainevent._numba_random import get_numba_light_rng_funcs
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent._op import load_cuda_file
 from brainevent._typing import Data, MatrixShape
-from ..float.float import _chunk_size, _walk_length, _LANE_STRIDE, jitumv_p_call, jitumm_p_call
+from brainevent._jit_uniform.float.float import (
+    _chunk_size,
+    _walk_length,
+    _LANE_STRIDE,
+    jitumv_p_call,
+    jitumm_p_call,
+)
 from brainevent._op.util import NUMBA_EVENT_FASTMATH, active_sum, dtype_suffix, event_active
 
 __all__ = [

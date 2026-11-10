@@ -10,7 +10,7 @@ import jax.numpy as jnp
 from jax.experimental.sparse.linalg import spsolve
 
 from brainevent._misc import _csr_to_coo
-from ..float.float import csrmv
+from brainevent._csr.float.float import csrmv
 
 __all__ = [
     'csr_solve'

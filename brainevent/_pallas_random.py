@@ -8,8 +8,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._typing import PallasRandomKey
-from .config import get_lfsr_algorithm
+from brainevent._typing import PallasRandomKey
+from brainevent.config import get_lfsr_algorithm
 
 __all__ = [
     'PallasLFSR88RNG',

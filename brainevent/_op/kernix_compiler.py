@@ -23,7 +23,7 @@ from brainevent._error import (
     CompilationError, HostCompilerIncompatibleError,
     UnsupportedArchError,
 )
-from .kernix_toolchain import (
+from brainevent._op.kernix_toolchain import (
     CppToolchain, CudaToolchain, cxx_shared_flags, cxx_std_flag,
     gencode_flags, nvcc_host_pic_flags,
 )

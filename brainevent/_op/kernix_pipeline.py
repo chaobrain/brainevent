@@ -24,14 +24,22 @@ import jaxlib
 
 from brainevent._error import KernelError
 from brainevent._version import __version__
-from .kernix_cache import CompilationCache
-from .kernix_codegen import (
+from brainevent._op.kernix_cache import CompilationCache
+from brainevent._op.kernix_codegen import (
     FunctionSpec, infer_arg_spec_from_source, normalize_tokens,
     parse_arg_spec, parse_annotations, preprocess_source, resolve_bare_attr_types,
 )
-from .kernix_compiler import CPPBackend, CUDABackend, _cuda_runtime_lib_linker_search_flags
-from .kernix_runtime import CompiledModule, _REGISTERED_TARGETS, register_ffi_target
-from .kernix_toolchain import (
+from brainevent._op.kernix_compiler import (
+    CPPBackend,
+    CUDABackend,
+    _cuda_runtime_lib_linker_search_flags,
+)
+from brainevent._op.kernix_runtime import (
+    CompiledModule,
+    _REGISTERED_TARGETS,
+    register_ffi_target,
+)
+from brainevent._op.kernix_toolchain import (
     collect_toolchain_diagnostics, detect_cpp_toolchain, detect_cuda_arch,
     detect_cuda_toolchain, get_compute_capabilities, resolve_compute_capabilities,
     so_ext,

@@ -14,7 +14,7 @@
 
 """Normal-connectivity generation and floating-point multiplication."""
 
-from .float import (
+from brainevent._jit_normal.float.float import (
     jitn,
     jitn_p,
     jitnmv,

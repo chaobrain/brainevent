@@ -8,8 +8,8 @@ import jax
 import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 
-from .bitpack_binary import bitpack
-from .compact import (
+from brainevent._event.bitpack_binary import bitpack
+from brainevent._event.compact import (
     _compact_1d_jax,
     binary_1d_array_index_p,
     binary_1d_array_index_p_call,

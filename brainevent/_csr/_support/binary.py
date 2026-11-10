@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..config import CSRConfig
+from brainevent._csr.config import CSRConfig
 
 
 BACKWARD_ALGORITHMS = frozenset({'binary', 'weighted_float'})

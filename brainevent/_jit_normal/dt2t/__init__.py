@@ -14,7 +14,7 @@
 
 """Per-synapse normal-connectivity multiplication."""
 
-from .dt2t import (
+from brainevent._jit_normal.dt2t.dt2t import (
     jitnmv_dt2t,
     jitnmv_dt2t_p,
     jitnmv_dt2t_p_call,

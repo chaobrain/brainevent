@@ -14,7 +14,7 @@
 
 """Binary and weighted normal-connectivity event multiplication."""
 
-from .binary import (
+from brainevent._jit_normal.binary.binary import (
     binary_jitnmv,
     binary_jitnmv_p,
     binary_jitnmm,

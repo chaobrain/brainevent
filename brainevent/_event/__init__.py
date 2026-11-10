@@ -13,12 +13,12 @@
 # limitations under the License.
 
 
-from .base import EventRepresentation
-from .binary import BinaryArray
-from .bitpack_binary import BitPackedBinary, bitpack
-from .compact_binary import CompactBinary
-from .dispatch import as_event_operand
-from .weighted import WeightedArray
+from brainevent._event.base import EventRepresentation
+from brainevent._event.binary import BinaryArray
+from brainevent._event.bitpack_binary import BitPackedBinary, bitpack
+from brainevent._event.compact_binary import CompactBinary
+from brainevent._event.dispatch import as_event_operand
+from brainevent._event.weighted import WeightedArray
 
 __all__ = [
     'EventRepresentation',

@@ -51,7 +51,7 @@ from brainevent._compatible_import import match_varying_axes, varying_axes_of
 from brainevent._misc import _csr_to_coo
 from brainevent._op import XLACustomKernel, load_cuda_file
 from brainevent._op.util import event_active, select_active
-from .._common import (
+from brainevent._sddmm._common import (
     BINARY_TARGET_SUFFIXES, VALUE_SUFFIXES, Mode, _CSRBackend, check_jax_backend,
     _cusparse_event_kernel, _cusparse_sampled,
 )

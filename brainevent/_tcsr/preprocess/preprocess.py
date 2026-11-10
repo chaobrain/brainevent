@@ -18,8 +18,14 @@ import numpy as np
 from jax._src import core
 
 from brainevent._compatible_import import Tracer
-from ..binary.combined.planner import INT32_MAX, TARGET_BLOCKS, tile_schedule
-from ..binary.combined.col_major.jax_ffi import prepare as _prepare_sorted
+from brainevent._tcsr.binary.combined.planner import (
+    INT32_MAX,
+    TARGET_BLOCKS,
+    tile_schedule,
+)
+from brainevent._tcsr.binary.combined.col_major.jax_ffi import (
+    prepare as _prepare_sorted,
+)
 
 __all__ = [
     'TileGeometry', 'build_tile_geometries', 'geometry_widths',

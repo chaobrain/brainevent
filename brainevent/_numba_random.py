@@ -28,7 +28,7 @@ from typing import Callable, Dict
 
 import numpy as np
 
-from .config import get_lfsr_algorithm
+from brainevent.config import get_lfsr_algorithm
 
 __all__ = [
     # LFSR88

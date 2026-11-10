@@ -13,11 +13,27 @@
 # limitations under the License.
 
 
-from .binary import binary_jitsmv, binary_jitsmv_p, binary_jitsmm, binary_jitsmm_p
-from .csr import jits_to_csr, jits_csr_count_p
-from .float import jits, jits_p, jitsmv, jitsmv_p, jitsmm, jitsmm_p
-from .main import JITCScalarMatrix, JITCScalarC, JITCScalarR
-from .dt2t import jitsmv_dt2t
+from brainevent._jit_scalar.binary import (
+    binary_jitsmv,
+    binary_jitsmv_p,
+    binary_jitsmm,
+    binary_jitsmm_p,
+)
+from brainevent._jit_scalar.csr import jits_to_csr, jits_csr_count_p
+from brainevent._jit_scalar.float import (
+    jits,
+    jits_p,
+    jitsmv,
+    jitsmv_p,
+    jitsmm,
+    jitsmm_p,
+)
+from brainevent._jit_scalar.main import (
+    JITCScalarMatrix,
+    JITCScalarC,
+    JITCScalarR,
+)
+from brainevent._jit_scalar.dt2t import jitsmv_dt2t
 
 __all__ = [
     'JITCScalarMatrix', 'JITCScalarR', 'JITCScalarC',

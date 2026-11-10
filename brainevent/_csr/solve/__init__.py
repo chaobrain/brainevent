@@ -14,7 +14,7 @@
 
 """Sparse linear system solving."""
 
-from .spsolve import (
+from brainevent._csr.solve.spsolve import (
     csr_solve,
 )
 

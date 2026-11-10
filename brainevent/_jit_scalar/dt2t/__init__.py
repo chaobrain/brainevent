@@ -14,7 +14,7 @@
 
 """Per-synapse scalar-connectivity multiplication."""
 
-from .dt2t import (
+from brainevent._jit_scalar.dt2t.dt2t import (
     jitsmv_dt2t,
     jitsmv_dt2t_p,
     jitsmv_dt2t_p_call,

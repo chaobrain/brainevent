@@ -14,7 +14,7 @@
 
 """Scalar-connectivity generation and floating-point multiplication."""
 
-from .float import (
+from brainevent._jit_scalar.float.float import (
     jits,
     jits_p,
     jitsmv,

@@ -14,7 +14,7 @@
 
 """Binary and weighted fixed-connection event multiplication."""
 
-from .binary import (
+from brainevent._fcn.binary.binary import (
     binary_fcnmv, binary_fcnmv_p, binary_fcnmv_p_call,
     binary_fcnmm, binary_fcnmm_p, binary_fcnmm_p_call,
 )

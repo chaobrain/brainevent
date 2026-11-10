@@ -22,10 +22,10 @@ from brainevent._event import as_event_operand
 from brainevent._error import PerformanceWarning
 from brainevent._misc import build_sub_csr, normalize_row_index
 
-from ..main import CSR
-from ..config import _prepare_csr_config
-from ._util import _checked_head
-from .delay import (
+from brainevent._csr.main import CSR
+from brainevent._csr.config import _prepare_csr_config
+from brainevent._csr.delay._util import _checked_head
+from brainevent._csr.delay.delay import (
     TASK_NNZ, TPR_THRESHOLD, VALUE_SUFFIX, HybridWorkspace, WeightedHybridWorkspace,
     csr_delay_deliver_layout_p,
 )

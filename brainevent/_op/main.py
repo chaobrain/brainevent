@@ -28,8 +28,12 @@ from brainevent._error import KernelCompilationError, KernelFallbackExhaustedErr
 from brainevent._registry import register_primitive
 from brainevent._typing import KernelGenerator
 from brainevent.config import _backend_preference
-from .benchmark import BenchmarkRecord, BenchmarkResult, benchmark_function
-from .util import (
+from brainevent._op.benchmark import (
+    BenchmarkRecord,
+    BenchmarkResult,
+    benchmark_function,
+)
+from brainevent._op.util import (
     general_batching_rule, defjvp, OutType, ShapeDtype,
     abstract_arguments, check_pallas_jax_version,
     check_warp_installed

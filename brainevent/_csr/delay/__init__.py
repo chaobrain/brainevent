@@ -14,11 +14,14 @@
 
 """Delay CSR state and additive delivery on its existing prepared layout."""
 
-from .delay import (
+from brainevent._csr.delay.delay import (
     HybridWorkspace, WeightedHybridWorkspace, csr_delay_deliver_layout_p,
     csr_delay_deliver_layout_p_call,
 )
-from .region_delay import delaycsr, csr_delay_deliver_layout
+from brainevent._csr.delay.region_delay import (
+    delaycsr,
+    csr_delay_deliver_layout,
+)
 
 __all__ = [
     "delaycsr", "csr_delay_deliver_layout",

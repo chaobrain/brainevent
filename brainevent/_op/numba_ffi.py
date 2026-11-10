@@ -18,8 +18,8 @@ import jax
 import ml_dtypes
 import numpy as np
 
-from .ffi_naming import kernel_content_fingerprint
-from .util import OutType, abstract_arguments
+from brainevent._op.ffi_naming import kernel_content_fingerprint
+from brainevent._op.util import OutType, abstract_arguments
 from brainevent._error import KernelRegistrationError
 
 __all__ = [

@@ -14,7 +14,7 @@
 
 """Per-connection node and weight operations."""
 
-from .dt2t import (
+from brainevent._csr.dt2t.dt2t import (
     csrmv_dt2t,
     cscmv_dt2t,
     csrmv_dt2t_p,

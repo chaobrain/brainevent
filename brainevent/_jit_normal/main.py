@@ -28,11 +28,11 @@ from brainevent._data import JITCMatrix, _resolve_corder
 from brainevent._jitc_structure import JITCStructure
 from brainevent._error import UnsupportedOperationError
 from brainevent._typing import MatrixShape, WeightScalar
-from .binary import binary_jitnmv, binary_jitnmm
-from .csr import jitn_to_csr
-from .csr.csr import jitn_structure
-from .float import jitn, jitnmv, jitnmm
-from .dt2t import jitnmv_dt2t
+from brainevent._jit_normal.binary import binary_jitnmv, binary_jitnmm
+from brainevent._jit_normal.csr import jitn_to_csr
+from brainevent._jit_normal.csr.csr import jitn_structure
+from brainevent._jit_normal.float import jitn, jitnmv, jitnmm
+from brainevent._jit_normal.dt2t import jitnmv_dt2t
 
 __all__ = [
     'JITCNormalR',

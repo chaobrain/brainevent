@@ -14,7 +14,7 @@
 
 """Binary and weighted scalar-connectivity event multiplication."""
 
-from .binary import (
+from brainevent._jit_scalar.binary.binary import (
     binary_jitsmv,
     binary_jitsmv_p,
     binary_jitsmm,

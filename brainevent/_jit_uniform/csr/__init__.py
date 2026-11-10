@@ -14,7 +14,7 @@
 
 """Materialize uniform connectivity in CSR format."""
 
-from .csr import (
+from brainevent._jit_uniform.csr.csr import (
     jitu_to_csr,
     jitu_csr_count_p,
     jitu_csr_count_p_call,

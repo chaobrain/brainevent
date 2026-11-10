@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from brainevent._op import load_cuda_file, load_cuda_inline
-from .planner import tile_schedule
+from brainevent._tcsr.binary.combined.planner import tile_schedule
 
 ROOT = Path(__file__).resolve().parent
 COMMON = ROOT / "_common"
