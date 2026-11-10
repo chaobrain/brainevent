@@ -17,7 +17,9 @@ from brainevent._csr.config import CSRConfig
 from brainevent._tcsr import main as tcsr_main
 
 
-def _matrix(*, backend='jax_raw', data=None, backward_algorithm='bptt'):
+def _matrix(
+    *, backend='jax_raw', data=None, backward_algorithm='weighted_float',
+):
     if data is None:
         data = jnp.array([1., 2., 3.], dtype=jnp.float32)
     return TCSR(CSR(

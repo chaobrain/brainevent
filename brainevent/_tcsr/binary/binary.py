@@ -141,7 +141,7 @@ def binary_csrmm(
     data: Data, indices: Index, indptr: Indptr, B: Data, *,
     local_targets: Index, tile_offsets: Indptr, tile_width: int,
     shape: MatrixShape, perm: Index | None = None, transpose: bool = True,
-    backend: str | None = None, backward_algorithm: str = 'bptt',
+    backend: str | None = None, backward_algorithm: str = 'weighted_float',
     config: CSRConfig | None = None,
 ) -> Data:
     """Multiply canonical CSR weights and binary events using CUDA tiles.
@@ -174,8 +174,10 @@ def binary_csrmm(
         mirror tiles, where ``e(x)=(x != 0)``. Default is True.
     backend : {None, 'cuda_raw'}, optional
         Forward implementation. Both select CUDA; no CPU kernel is registered.
-    backward_algorithm : {'bptt', 'pp_prop'}, optional
-        Public CSR weight-gradient convention. Does not change the forward.
+    backward_algorithm : {'binary', 'weighted_float'}, optional
+        Weight-gradient convention. ``binary`` uses the activity mask;
+        ``weighted_float`` uses numeric event values. Does not change the
+        forward. Default is ``'weighted_float'``.
     config : CSRConfig or None, optional
         Canonical CSR configuration for shared gradient dispatch.
 
@@ -208,7 +210,7 @@ def binary_csrmm_p_call(
     weights: Any, indices: Index, indptr: Indptr, B: Any, *,
     local_targets: Index, tile_offsets: Indptr, tile_width: int,
     shape: MatrixShape, perm: Index | None = None, transpose: bool = True,
-    backend: str | None = None, backward_algorithm: str = 'bptt',
+    backend: str | None = None, backward_algorithm: str = 'weighted_float',
     config: CSRConfig | None = None,
 ) -> tuple[jax.Array, ...]:
     """Validate and bind the seven-operand CUDA tiled binary MM primitive.
@@ -230,8 +232,10 @@ def binary_csrmm_p_call(
         Select direct ``W.T @ e(B)`` or mirror ``W @ e(B)``.
     backend : {None, 'cuda_raw'}, optional
         Both select the only registered forward backend, CUDA.
-    backward_algorithm : {'bptt', 'pp_prop'}, optional
-        Shared CSR weight-gradient convention.
+    backward_algorithm : {'binary', 'weighted_float'}, optional
+        Shared CSR weight-gradient convention. ``binary`` uses the activity
+        mask; ``weighted_float`` uses numeric event values. Default is
+        ``'weighted_float'``.
     config : CSRConfig or None, optional
         Canonical configuration snapshot used by shared gradient rules.
 
@@ -380,7 +384,7 @@ def _csrmm_jvp_data(
     return binary_csrmm_p_call(
         data_dot, indices, indptr, B, local_targets=local_targets, tile_offsets=tile_offsets,
         tile_width=tile_width, perm=perm, shape=shape, transpose=transpose,
-        backend='cuda_raw', backward_algorithm=kwargs.get('backward_algorithm', 'bptt'), config=config,
+        backend='cuda_raw', backward_algorithm=kwargs.get('backward_algorithm', 'weighted_float'), config=config,
     )
 
 
@@ -401,7 +405,7 @@ def _csrmm_transpose_rule(
     result = _csr_transpose_rule(
         ct, data, indices, indptr, B, None, shape=shape, transpose=transpose,
         backend='cuda_raw', config_spec=config_spec, weighted=False,
-        backward_algorithm=kwargs.get('backward_algorithm', 'bptt'),
+        backward_algorithm=kwargs.get('backward_algorithm', 'weighted_float'),
     )
     return (*result[:4], None, None, None)
 

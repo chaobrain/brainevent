@@ -86,9 +86,10 @@ class CompressedSparseData(DataRepresentation):
         Matrix shape ``(num_rows, num_columns)``.
     backend : str or None, optional
         Compute backend used by the matrix operations. Default ``None``.
-    backward_algorithm : {"bptt", "pp_prop"}, optional
-        Weight-gradient rule for binary events. ``pp_prop`` preserves numeric
-        event values in the weight cotangent; forward values stay binary.
+    backward_algorithm : {"binary", "weighted_float"}, optional
+        Weight-gradient rule for binary events. Default ``"weighted_float"``
+        uses numeric event values; ``"binary"`` uses their activity mask.
+        Forward values stay binary.
     buffers : dict, optional
         Precomputed structure caches under their legacy names: the mirror
         layout (``'csc'`` for CSR, ``'csr'`` for CSC) and ``'diag_positions'``.
@@ -149,7 +150,7 @@ class CompressedSparseData(DataRepresentation):
         *,
         shape: MatrixShape,
         backend: Optional[str] = None,
-        backward_algorithm: str = "bptt",
+        backward_algorithm: str = "weighted_float",
         buffers: Optional[Dict] = None,
         indptr_dtype="auto",
         check_structure: bool = True,
@@ -220,7 +221,10 @@ class CompressedSparseData(DataRepresentation):
             self._cache.set_mirror(self._weight_indices())
 
     @classmethod
-    def _from_parts(cls, data, indices, indptr, *, shape, backend=None, backward_algorithm="bptt", cache=None, config=None):
+    def _from_parts(
+        cls, data, indices, indptr, *, shape, backend=None,
+        backward_algorithm="weighted_float", cache=None, config=None,
+    ):
         """Assemble a matrix from trusted parts, without conversion or validation.
 
         Structure-preserving paths (``with_data``, ``transpose``, ``apply``,
@@ -1245,7 +1249,7 @@ class CSR(CompressedSparseData):
         Number of stored elements (non-zero entries).
     dtype : dtype
         Data type of the matrix values.
-    backward_algorithm : {"bptt", "pp_prop"}
+    backward_algorithm : {"binary", "weighted_float"}
         Weight-gradient rule for binary event products.
 
     Notes
@@ -1298,7 +1302,7 @@ class CSR(CompressedSparseData):
         index_dtype=jnp.int32,
         indptr_dtype="auto",
         backend: Optional[str] = None,
-        backward_algorithm: str = "bptt",
+        backward_algorithm: str = "weighted_float",
         precompute_weight_indices: bool = False,
         config: Optional[CSRConfig] = None,
         device=None,
@@ -1325,8 +1329,10 @@ class CSR(CompressedSparseData):
             requires ``jax_enable_x64``).
         backend : str or None, optional
             Compute backend to attach to the matrix. Default ``None``.
-        backward_algorithm : {"bptt", "pp_prop"}, optional
-            Weight-gradient rule for binary event products. Default ``"bptt"``.
+        backward_algorithm : {"binary", "weighted_float"}, optional
+            Weight-gradient rule for binary event products. Default
+            ``"weighted_float"`` uses event values; ``"binary"`` uses activity
+            masks.
         config : CSRConfig or None, optional
             Scheduler parameters to prepare for the resulting structure.
         device : jax.Device or None, optional
@@ -2218,7 +2224,7 @@ class CSC(CompressedSparseData):
         Number of stored elements (non-zero entries).
     dtype : dtype
         Data type of the matrix values.
-    backward_algorithm : {"bptt", "pp_prop"}
+    backward_algorithm : {"binary", "weighted_float"}
         Weight-gradient rule for binary event products.
 
     Notes
@@ -2268,7 +2274,7 @@ class CSC(CompressedSparseData):
         index_dtype=jnp.int32,
         indptr_dtype="auto",
         backend: Optional[str] = None,
-        backward_algorithm: str = "bptt",
+        backward_algorithm: str = "weighted_float",
         precompute_weight_indices: bool = False,
         config: Optional[CSRConfig] = None,
         device=None,
@@ -2296,8 +2302,10 @@ class CSC(CompressedSparseData):
             requires ``jax_enable_x64``).
         backend : str or None, optional
             Compute backend to attach to the matrix. Default ``None``.
-        backward_algorithm : {"bptt", "pp_prop"}, optional
-            Weight-gradient rule for binary event products. Default ``"bptt"``.
+        backward_algorithm : {"binary", "weighted_float"}, optional
+            Weight-gradient rule for binary event products. Default
+            ``"weighted_float"`` uses event values; ``"binary"`` uses activity
+            masks.
         config : CSRConfig or None, optional
             Scheduler parameters to prepare for the resulting structure.
         device : jax.Device or None, optional

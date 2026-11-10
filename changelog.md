@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CSR/CSC/TCSR event products now accept `backward_algorithm="binary"` or
+  `"weighted_float"`, with `"weighted_float"` as the default. Binary event
+  forwards retain their activity-mask semantics, while the default weight
+  gradient uses the original numeric event values through weighted SDDMM.
+  Set `"binary"` to use activity masks for weight gradients. The previous
+  `"bptt"` and `"pp_prop"` parameter values are no longer accepted.
 - Public `TCSR` inherits `CSR` and automatically prepares primary tile
   geometry when constructed as `TCSR(csr)`. Mirror tiles are prepared lazily
   after the public CSR mirror becomes available. Public left and right
@@ -26,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   maps to `'jax_raw'`; conflicting explicit choices raise `ValueError`.
   `materialize_tcsc_mirror()` delegates to `build_weight_indices()` and
   `has_tcsc_mirror` only queries the public cache. Set existing gradient
-  options on the source CSR or `fromdense`; no pp_prop/BPSA algorithm is added.
+  options on the source CSR or `fromdense`; conversions preserve them.
 - External TCSR per-edge state, including `edge_state`, `delays` and
   `w_dim_arr`, must follow the newly sorted edge order. `from_sorted_csr`
   preserves arrays and source configuration, preparing missing primary

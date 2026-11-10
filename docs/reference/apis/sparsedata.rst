@@ -31,6 +31,31 @@ CSR / CSC / TCSR
    TCSR
 
 
+Event weight gradients
+~~~~~~~~~~~~~~~~~~~~~~
+
+CSR and CSC constructors and event multiplication functions accept
+``backward_algorithm='weighted_float'`` (the default) or ``'binary'``.
+TCSR inherits this setting from its source CSR; ``TCSR.fromdense`` also
+accepts it directly.
+
+For binary event inputs, ``weighted_float`` uses each event's original
+numeric value when computing weight gradients. ``binary`` uses its activity
+mask, with one for any nonzero event and zero otherwise. For example, events
+``[0., 2., -3.]`` contribute gradient factors ``[0., 2., -3.]`` by default,
+or ``[0., 1., 1.]`` with ``backward_algorithm='binary'``. The forward binary
+product uses the activity mask for either setting. ``WeightedArray`` products
+use numeric event values for both settings.
+
+The default event weight-gradient path enters SDDMM with ``mode='weighted'``;
+ordinary floating-point CSR products use ``mode='float'``. The name
+``weighted_float`` describes gradient semantics and does not force a particular
+floating-point dtype. ``with_data``, format conversions and pytree restoration
+preserve the selected rule. Replace the previous ``'bptt'`` option with
+``'binary'`` and ``'pp_prop'`` with ``'weighted_float'``; the previous parameter
+values are no longer accepted.
+
+
 TCSR construction and migration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -125,8 +150,7 @@ Inherited methods retain their CSR argument names: ``slice_rows(index)``,
 edge value by its row or column value, respectively, and return values in the
 stored edge order. ``update_on_*``, ``apply_on_*``, ``delay_layout`` and
 ``solve`` retain CSR's input restrictions and backend support. Existing
-gradient options are inherited from a CSR source or accepted by
-``fromdense``; this integration adds no pp_prop or BPSA implementation.
+gradient options are inherited from a CSR source or accepted by ``fromdense``.
 
 External per-edge arrays such as ``edge_state``, ``delays`` and ``w_dim_arr``
 are not reordered by TCSR construction. Align them with the sorted stored

@@ -95,7 +95,7 @@ def binary_csrmv_indexed(
     transpose: bool = False,
     backend: Optional[str] = None,
     weighted: bool = False,
-    backward_algorithm: str = "bptt",
+    backward_algorithm: str = "weighted_float",
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
 ) -> Data:
@@ -138,9 +138,11 @@ def binary_csrmv_indexed(
         If ``True``, ``v`` holds value-weighted events
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value instead of by ``1``.  Default ``False``.
-    backward_algorithm : {"bptt", "pp_prop"}, optional
-        Weight cotangent rule for binary events; ``pp_prop`` preserves event
-        values without changing the forward. Default is ``"bptt"``.
+    backward_algorithm : {"binary", "weighted_float"}, optional
+        Weight cotangent rule for binary events. ``binary`` uses the activity
+        mask; ``weighted_float`` preserves numeric event values. Does not
+        change the forward. Ignored for weighted events. Default is
+        ``"weighted_float"``.
     config : CSRConfig or None, optional
         Explicit configuration prepared for this compressed structure. None uses
         fixed default scheduling parameters without reading saved configuration.
@@ -508,7 +510,7 @@ def binary_csrmv_indexed_p_call(
     transpose: bool,
     backend: Optional[str] = None,
     weighted: bool = False,
-    backward_algorithm: str = "bptt",
+    backward_algorithm: str = "weighted_float",
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
 ):
@@ -531,8 +533,9 @@ def binary_csrmv_indexed_p_call(
     weighted : bool, optional
         Multiply the weights by the event value instead of the activity
         mask.  Default ``False``.
-    backward_algorithm : {"bptt", "pp_prop"}, optional
-        Weight cotangent rule for binary events. Default is ``"bptt"``.
+    backward_algorithm : {"binary", "weighted_float"}, optional
+        Weight cotangent rule for binary events. Default is
+        ``"weighted_float"``.
     config : CSRConfig or None, optional
         Explicit configuration prepared for this compressed structure. None uses
         fixed default scheduling parameters without reading saved configuration.
@@ -614,7 +617,7 @@ def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, long_mask, *, sha
         transpose=transpose,
         backend=kw['backend'],
         weighted=kw.get('weighted', False),
-        backward_algorithm=kw.get('backward_algorithm', 'bptt'),
+        backward_algorithm=kw.get('backward_algorithm', 'weighted_float'),
         max_row_nnz=kw.get('max_row_nnz'),
         config=_config_from_params(kw, long_mask),
     )
@@ -636,7 +639,9 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, long_mask, *
         if type(ct) is ad.Zero:
             ct_w = ad.Zero(weights.aval)
         else:
-            mode = _weight_gradient_mode(kw.get('weighted', False), kw.get('backward_algorithm', 'bptt'))
+            mode = _weight_gradient_mode(
+                kw.get('weighted', False), kw.get('backward_algorithm', 'weighted_float'),
+            )
             # Slot k uses weights[perm[k]]. Inactive slots get exactly 0,
             # even for a NaN/Inf cotangent.
             left, right = (events, ct) if transpose else (ct, events)
@@ -666,7 +671,9 @@ def _idx_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            backward_algorithm=kwargs.get('backward_algorithm', 'bptt'),
+            backward_algorithm=kwargs.get(
+                'backward_algorithm', 'weighted_float',
+            ),
             config=_config_from_params(kwargs, args[-1]),
         )
         return r, [1]
@@ -716,7 +723,7 @@ def binary_csrmm_indexed(
     transpose: bool = False,
     backend: Optional[str] = None,
     weighted: bool = False,
-    backward_algorithm: str = "bptt",
+    backward_algorithm: str = "weighted_float",
     config: Optional[CSRConfig] = None,
 ) -> Data:
     """Event-driven CSR matrix-matrix product with a fused weight gather index.
@@ -757,9 +764,11 @@ def binary_csrmm_indexed(
         If ``True``, ``B`` holds value-weighted events
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value instead of by ``1``.  Default ``False``.
-    backward_algorithm : {"bptt", "pp_prop"}, optional
-        Weight cotangent rule for binary events; ``pp_prop`` preserves event
-        values without changing the forward. Default is ``"bptt"``.
+    backward_algorithm : {"binary", "weighted_float"}, optional
+        Weight cotangent rule for binary events. ``binary`` uses the activity
+        mask; ``weighted_float`` preserves numeric event values. Does not
+        change the forward. Ignored for weighted events. Default is
+        ``"weighted_float"``.
     config : CSRConfig or None, optional
         Explicit configuration prepared for this compressed structure. None uses
         fixed default scheduling parameters without reading saved configuration.
@@ -1094,7 +1103,7 @@ def binary_csrmm_indexed_p_call(
     transpose: bool,
     backend: Optional[str] = None,
     weighted: bool = False,
-    backward_algorithm: str = "bptt",
+    backward_algorithm: str = "weighted_float",
     config: Optional[CSRConfig] = None,
 ):
     """Low-level primitive call for fused indexed event-driven CSR matmat.
@@ -1156,7 +1165,7 @@ def _csrmm_idx_jvp_data(data_dot, data, indices, indptr, perm, B, long_mask, *, 
     return binary_csrmm_indexed_p_call(
         data_dot, indices, indptr, perm, B, shape=shape, transpose=transpose, backend=kw['backend'],
         weighted=kw.get('weighted', False),
-        backward_algorithm=kw.get('backward_algorithm', 'bptt'),
+        backward_algorithm=kw.get('backward_algorithm', 'weighted_float'),
         config=_config_from_params(kw, long_mask),
     )
 
@@ -1187,7 +1196,9 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, long_mask, *, 
             left, right = (B, ct.T) if transpose else (ct, B.T)
             d_data = _sddmm_dispatch.sddmm(
                 left, right, indices, indptr,
-                mode=_weight_gradient_mode(kw.get('weighted', False), kw.get('backward_algorithm', 'bptt')),
+                mode=_weight_gradient_mode(
+                    kw.get('weighted', False), kw.get('backward_algorithm', 'weighted_float'),
+                ),
                 transpose=transpose,
                 backend=_sddmm_dispatch._CSRBackend(binary_csrmm_indexed_p, kw['backend'], kw.get('config_spec')),
             )
@@ -1221,7 +1232,9 @@ def _csrmm_idx_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            backward_algorithm=kwargs.get('backward_algorithm', 'bptt'),
+            backward_algorithm=kwargs.get(
+                'backward_algorithm', 'weighted_float',
+            ),
             config=_config_from_params(kwargs, args[-1]),
         )[0]
         if axes[4] == 2:

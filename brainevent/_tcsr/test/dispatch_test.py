@@ -30,7 +30,10 @@ def _isolate_mock_backend_selection():
     jax.clear_caches()
 
 
-def _case(transpose, *, homo=False, backend=None, backward_algorithm='bptt'):
+def _case(
+    transpose, *, homo=False, backend=None,
+    backward_algorithm='weighted_float',
+):
     matrix = CSR(
         jnp.array([2.] if homo else [2., -1., 3., 4.], jnp.float32),
         jnp.array([0, 2, 1, 2], jnp.int32), jnp.array([0, 2, 4], jnp.int32),
@@ -98,7 +101,7 @@ def test_backend_policy_can_select_parent_on_cuda(monkeypatch, selection):
 
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('homo', [True, False])
-@pytest.mark.parametrize('backward_algorithm', ['bptt', 'pp_prop'])
+@pytest.mark.parametrize('backward_algorithm', ['binary', 'weighted_float'])
 def test_cuda_dispatch_runs_canonical_forward_and_gradients(transpose, homo, backward_algorithm):
     try:
         gpu = jax.devices('gpu')[0]
@@ -112,7 +115,9 @@ def test_cuda_dispatch_runs_canonical_forward_and_gradients(transpose, homo, bac
     dense = np.asarray(matrix.todense())
     np.testing.assert_allclose(result, (dense.T if transpose else dense) @ (np.asarray(events) != 0))
     grad = jax.jit(jax.grad(lambda w: fn(w, events).sum()))(matrix.data)
-    values = np.asarray(events if backward_algorithm == 'pp_prop' else events != 0).sum(axis=1)
+    values = np.asarray(
+        events if backward_algorithm == 'weighted_float' else events != 0
+    ).sum(axis=1)
     units = np.array([0, 0, 1, 1]) if transpose else np.array([0, 2, 1, 2])
     expected = values[units]
     if homo:

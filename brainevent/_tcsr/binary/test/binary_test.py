@@ -185,7 +185,7 @@ def test_jvp_keeps_numeric_input_tangents(cpu_math_backend, transpose, homo):
 
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('homo', [False, True])
-@pytest.mark.parametrize('algorithm', ['bptt', 'pp_prop'])
+@pytest.mark.parametrize('algorithm', ['binary', 'weighted_float'])
 def test_vjp_returns_canonical_edge_order_and_homo_sum(cpu_math_backend, transpose, homo,
                                                      algorithm):
     case = _make_case(transpose, homo)
@@ -198,7 +198,7 @@ def test_vjp_returns_canonical_edge_order_and_homo_sum(cpu_math_backend, transpo
     cols = np.asarray(case['indices'])
     unit, target = (rows, cols) if transpose else (cols, rows)
     events = np.asarray(case['events'])[unit]
-    factor = events if algorithm == 'pp_prop' else events != 0
+    factor = events if algorithm == 'weighted_float' else events != 0
     expected = np.sum(np.where(events != 0, factor * np.asarray(ct)[target], 0), axis=1)
     _assert_close(dw, expected.sum(keepdims=True) if homo else expected)
     backward_case = dict(case, transpose=not transpose)
@@ -210,7 +210,8 @@ def test_higher_weight_derivatives_match_selected_linear_map(cpu_math_backend, t
     case = _make_case(transpose)
     basis = np.eye(case['weights'].size, dtype=np.float32)
     columns = np.stack([_numpy_reference(case, weights=column).ravel() for column in basis], axis=1)
-    loss = lambda w: jnp.sum(_invoke(case, weights=w) ** 2)
+    loss = lambda w: jnp.sum(
+        _invoke(case, weights=w, backward_algorithm='binary') ** 2)
     hessian = jax.jacfwd(jax.grad(loss))(case['weights'])
     _assert_close(hessian, 2 * columns.T @ columns)
 
@@ -244,7 +245,7 @@ def test_bool_event_gradient_is_float0(cpu_math_backend):
 @requires_gpu
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('homo', [False, True])
-@pytest.mark.parametrize('algorithm', ['bptt', 'pp_prop'])
+@pytest.mark.parametrize('algorithm', ['binary', 'weighted_float'])
 @pytest.mark.parametrize('dtype', WEIGHT_DTYPES)
 def test_cuda_gradients_and_numeric_input_tangent(transpose, homo, algorithm, dtype):
     with jax_x64_enabled(), jax.default_device(jax.devices('gpu')[0]):
@@ -257,7 +258,9 @@ def test_cuda_gradients_and_numeric_input_tangent(transpose, homo, algorithm, dt
         rows = np.repeat(np.arange(case['shape'][0]), np.diff(np.asarray(case['indptr'])))
         unit = rows if transpose else np.asarray(case['indices'])
         selected = np.asarray(case['events'])[unit]
-        expected_dw = (selected if algorithm == 'pp_prop' else selected != 0).sum(axis=1)
+        expected_dw = (
+            selected if algorithm == 'weighted_float' else selected != 0
+        ).sum(axis=1)
         _assert_close(dw, expected_dw.sum(keepdims=True) if homo else expected_dw)
         output_shape = (case['shape'][1 if transpose else 0], case['events'].shape[1])
         _assert_close(de, _numpy_reference(dict(case, transpose=not transpose),
@@ -287,7 +290,8 @@ def test_cuda_batch_one_weight_derivatives_accept_optional_host_config(transpose
         gradient = jax.grad(lambda weights: jnp.sum(fn(weights)))(case['weights'])
         rows = np.repeat(np.arange(case['shape'][0]), np.diff(np.asarray(case['indptr'])))
         unit = rows if transpose else np.asarray(case['indices'])
-        _assert_close(gradient, np.sum(np.asarray(case['events'])[unit] != 0, axis=1))
+        _assert_close(
+            gradient, np.sum(np.asarray(case['events'])[unit], axis=1))
 
 
 def _wide_case(transpose, target, batch, dtype):

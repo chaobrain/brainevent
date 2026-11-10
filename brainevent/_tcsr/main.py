@@ -234,7 +234,7 @@ class TCSR(CSR):
     def fromdense(
         cls, mat: Any = None, *, nse: int | None = None, index_dtype: Any = jnp.int32,
         indptr_dtype: Any = 'auto', backend: str | None = None,
-        backward_algorithm: str = 'bptt', precompute_weight_indices: bool = False,
+        backward_algorithm: str = 'weighted_float', precompute_weight_indices: bool = False,
         config: CSRConfig | None = None, device: Any = None,
         source: Any = None, binary_backend: str | None = None,
     ) -> TCSR:
@@ -252,8 +252,9 @@ class TCSR(CSR):
             Row-pointer precision policy.
         backend : str or None, optional
             Compute backend preference.
-        backward_algorithm : {'bptt', 'pp_prop'}, optional
-            Public CSR weight-gradient convention.
+        backward_algorithm : {'binary', 'weighted_float'}, optional
+            Public CSR weight-gradient convention. Default ``'weighted_float'``
+            uses event values; ``'binary'`` uses their activity mask.
         precompute_weight_indices : bool, optional
             Build the shared mirror before returning.
         config : CSRConfig or None, optional

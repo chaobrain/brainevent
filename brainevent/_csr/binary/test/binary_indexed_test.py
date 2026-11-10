@@ -234,7 +234,10 @@ def _nonfinite_indexed_operands(case, seed=0):
     return jnp.asarray(data), jnp.asarray(perm)
 
 
-def _indexed_call(case, shape, transpose, backend, mm, data=None):
+def _indexed_call(
+    case, shape, transpose, backend, mm, data=None,
+    backward_algorithm='weighted_float',
+):
     stored, perm = _nonfinite_indexed_operands(case)
     data = stored if data is None else data
     indptr = jnp.asarray(case.indptr)
@@ -243,6 +246,7 @@ def _indexed_call(case, shape, transpose, backend, mm, data=None):
         data, jnp.asarray(case.indices), indptr, perm, case.events, shape=shape,
         transpose=transpose,
         backend=backend, weighted=case.weighted,
+        backward_algorithm=backward_algorithm,
         config=prepared_config(case.indices, case.indptr, shape),
     )
 
@@ -1032,8 +1036,10 @@ def test_indexed_mv_gradients_use_event_mask(backend, homo, transpose):
     x = event_values('float32', _ACT_M if transpose else _ACT_K, seed=2)
 
     def op(w, v):
-        return binary_csrmv_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
-                                    transpose=transpose, backend=backend, config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
+        return binary_csrmv_indexed(
+            w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
+            transpose=transpose, backend=backend, backward_algorithm='binary',
+            config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
 
     def dense_op(w, z):
         D = _indexed_dense(w, indices, perm, rows)
@@ -1052,8 +1058,10 @@ def test_indexed_mm_gradients_use_event_mask(backend, homo, transpose):
     B = event_values('float32', (_ACT_M if transpose else _ACT_K, _ACT_N), seed=3)
 
     def op(w, v):
-        return binary_csrmm_indexed(w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
-                                    transpose=transpose, backend=backend, config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
+        return binary_csrmm_indexed(
+            w, indices, indptr, perm, v, shape=(_ACT_M, _ACT_K),
+            transpose=transpose, backend=backend, backward_algorithm='binary',
+            config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
 
     def dense_op(w, z):
         D = _indexed_dense(w, indices, perm, rows)
@@ -1321,7 +1329,10 @@ def test_indexed_homo_weight_cotangent_ignores_nan_on_idle_outputs(backend, tran
     ct, expected = homo_ct_case(case, transpose)
 
     def f(d):
-        return _indexed_call(case, shape, transpose, backend, mm=mm, data=d)
+        return _indexed_call(
+            case, shape, transpose, backend, mm=mm, data=d,
+            backward_algorithm='binary',
+        )
 
     _, vjp = jax.vjp(f, jnp.ones(1, jnp.float32))
     (ct_w,) = vjp(ct)
@@ -1546,7 +1557,7 @@ def test_prepared_config_jvp_and_vjp(indexed, homo, weighted, mm):
         return pullback(cotangent)
     grad_weights, grad_events = jax.jit(gradients)(case.weights, events)
     rows = np.repeat(np.arange(4), np.diff(np.asarray(case.indptr)))
-    factors = np.asarray(events)[rows] if weighted else np.asarray(events)[rows] != 0
+    factors = np.asarray(events)[rows]
     slot_grads = factors * np.asarray(cotangent)[np.asarray(case.indices)]
     if mm:
         slot_grads = slot_grads.sum(axis=1)
@@ -1686,12 +1697,14 @@ def _sampled_operands(case, transpose, batch, homo=False, backend='jax_raw'):
         op = _sampled_indexed_csr.binary_csrmv_indexed if batch is None else _sampled_indexed_csr.binary_csrmm_indexed
         call = lambda w: op(
             w, indices, indptr, perm, events, shape=(3, 4), transpose=transpose,
-            weighted=case.endswith('weighted'), backend=backend)
+            weighted=case.endswith('weighted'),
+            backward_algorithm='binary', backend=backend)
     else:
         op = _sampled_binary_csr.binary_csrmv if batch is None else _sampled_binary_csr.binary_csrmm
         call = lambda w: op(
             w, indices, indptr, events, shape=(3, 4), transpose=transpose,
-            weighted=case == 'weighted', backend=backend)
+            weighted=case == 'weighted',
+            backward_algorithm='binary', backend=backend)
     return call, weights, events, rows, indices, perm
 
 
@@ -1772,11 +1785,13 @@ def test_event_consumers_preserve_activity_before_narrowing(transpose, batch, we
     if indexed:
         op = _sampled_indexed_csr.binary_csrmv_indexed if batch is None else _sampled_indexed_csr.binary_csrmm_indexed
         call = lambda w: op(w, cols, indptr, perm, events, shape=(3, 4), transpose=transpose,
-                            weighted=weighted, backend='jax_raw')
+                            weighted=weighted, backward_algorithm='binary',
+                            backend='jax_raw')
     else:
         op = _sampled_binary_csr.binary_csrmv if batch is None else _sampled_binary_csr.binary_csrmm
         call = lambda w: op(w, cols, indptr, events, shape=(3, 4), transpose=transpose,
-                            weighted=weighted, backend='jax_raw')
+                            weighted=weighted, backward_algorithm='binary',
+                            backend='jax_raw')
     actual = jax.jit(lambda w, c: jax.vjp(call, w)[1](c)[0])(weights, ct)
     unit, out = (rows, cols) if transpose else (cols, rows)
     x = events[unit]

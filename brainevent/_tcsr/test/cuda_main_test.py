@@ -27,7 +27,9 @@ def _cuda_available():
 pytestmark = pytest.mark.skipif(not _cuda_available(), reason='actual CUDA device required')
 
 
-def _matrix(dtype=jnp.float32, mode='hetero', algorithm='bptt', *, batch=3):
+def _matrix(
+    dtype=jnp.float32, mode='hetero', algorithm='weighted_float', *, batch=3,
+):
     values = {'hetero': [1., -2., .5, 3., 4.], 'singleton': [1.5], 'scalar': 1.5}[mode]
     return TCSR(CSR(jnp.asarray(values, dtype), np.array([2, 0, 2, 1, 2], np.int32),
                     np.array([0, 3, 5], np.int32), shape=(2, 3),
@@ -61,15 +63,15 @@ def _dense(matrix):
 
 
 _CASES = [
-    (jnp.float16, True, 'hetero', 'bptt'),
-    (jnp.float16, False, 'scalar', 'pp_prop'),
-    (jnp.bfloat16, True, 'singleton', 'pp_prop'),
-    (jnp.bfloat16, False, 'hetero', 'bptt'),
-    (jnp.float32, True, 'scalar', 'bptt'),
-    (jnp.float32, False, 'singleton', 'pp_prop'),
-    (jnp.float32, False, 'hetero', 'pp_prop'),
-    (jnp.float64, True, 'hetero', 'pp_prop'),
-    (jnp.float64, False, 'scalar', 'bptt'),
+    (jnp.float16, True, 'hetero', 'binary'),
+    (jnp.float16, False, 'scalar', 'weighted_float'),
+    (jnp.bfloat16, True, 'singleton', 'weighted_float'),
+    (jnp.bfloat16, False, 'hetero', 'binary'),
+    (jnp.float32, True, 'scalar', 'binary'),
+    (jnp.float32, False, 'singleton', 'weighted_float'),
+    (jnp.float32, False, 'hetero', 'weighted_float'),
+    (jnp.float64, True, 'hetero', 'weighted_float'),
+    (jnp.float64, False, 'scalar', 'binary'),
 ]
 
 
@@ -97,7 +99,10 @@ def test_public_cuda_forward_and_matrix_and_event_cotangents(dtype, transpose, m
         ))(matrix, events)
         rows = np.repeat(np.arange(matrix.shape[0]), np.diff(np.asarray(matrix.indptr)))
         cols = np.asarray(matrix.indices)
-        activity = np.asarray(events) if algorithm == 'pp_prop' else np.asarray(events) != 0
+        activity = (
+            np.asarray(events) if algorithm == 'weighted_float'
+            else np.asarray(events) != 0
+        )
         expected_weights = activity[:, rows].sum(axis=0) if transpose else activity[cols].sum(axis=1)
         if mode != 'hetero':
             expected_weights = np.asarray(expected_weights.sum()).reshape(matrix.data.shape)
