@@ -37,6 +37,8 @@ GPU/TPU Random Number Generator
    get_pallas_lfsr_rng_class
 
 
+.. _csr-mm-configuration:
+
 CSR Configuration and Planning
 ------------------------------
 
@@ -45,8 +47,11 @@ with prepared primary/mirror MM structure plans. CSR objects load the tuning
 snapshot during construction; operator calls derive their launch parameters
 from that object without reading persistent configuration.
 
-``CSR(..., config=None)`` loads persisted tuning once. Pass
-``CSR(..., config=CSRConfig(...))`` to use explicit parameters instead.
+``CSR(..., config=None)`` loads persisted tuning once and prepares the
+concrete stored traversal. Pass ``CSR(..., config=CSRConfig(...))`` to use
+explicit tuning parameters; the constructor still prepares that structure.
+For CUDA hybrid MM, construct the matrix outside ``jax.jit`` with concrete
+structure on the target GPU, or pass the preparation ``device`` explicitly.
 Saving another configuration later does not change existing matrices or their
 compiled scheduling snapshots. MM structure statistics and masks are prepared
 from the concrete primary and mirror layouts; batch size, value dtype and
@@ -67,8 +72,26 @@ plan arrays are placed; it does not migrate matrix values or indices.
 Preparation is also preserved through structure-preserving operations such
 as ``with_data``; new sparse structures need new plans.
 
-Raw functions such as ``binary_csrmm`` accept the same explicit snapshot.
-For the scatter operation ``M.T @ events``, the events have shape
+Raw functions such as ``binary_csrmm`` receive arrays, not a CSR object.
+They do not look up an owning matrix's configuration, even when the arrays
+come from that matrix. Pass its prepared ``M.config`` explicitly.
+
+.. important::
+
+   Before a nonempty CUDA hybrid scatter MM call to ``binary_csrmm`` or
+   ``binary_csrmm_indexed`` (``transpose=True`` with a backend resolving to
+   ``cuda_raw``), construct a configuration containing the matching structure
+   plan, long-row mask and target GPU information, outside ``jax.jit``.
+   Pass that configuration as ``config=...`` on the MM call.
+
+   Omitting ``config``, passing ``config=None``, or passing only
+   ``config=CSRConfig()`` does not satisfy this requirement. These raw calls
+   raise ``KernelCompilationError`` when constructing the hybrid MM kernel.
+   This also applies to weighted events and to ``backend=None`` when it
+   selects ``cuda_raw``.
+
+Constructing a CSR object is one way to prepare the configuration before
+calling raw MM. For the scatter operation ``M.T @ events``, the events have shape
 ``(M.shape[0], batch)`` and the result has shape ``(M.shape[1], batch)``:
 
 .. code-block:: python
@@ -77,26 +100,34 @@ For the scatter operation ``M.T @ events``, the events have shape
    >>> import jax.numpy as jnp
    >>> import brainevent
    >>> device = jax.devices("gpu")[0]
-   >>> M = brainevent.CSR(
-   ...     jnp.array([1., 2., 3.], dtype=jnp.float32),
-   ...     jnp.array([0, 2, 1], dtype=jnp.int32),
-   ...     jnp.array([0, 2, 3], dtype=jnp.int32),
-   ...     shape=(2, 3), backend="cuda_raw",
-   ...     config=brainevent.CSRConfig(), device=device)
-   >>> events = jnp.ones((2, 4), dtype=jnp.bool_)
+   >>> with jax.default_device(device):
+   ...     M = brainevent.CSR(
+   ...         jnp.array([1., 2., 3.], dtype=jnp.float32),
+   ...         jnp.array([0, 2, 1], dtype=jnp.int32),
+   ...         jnp.array([0, 2, 3], dtype=jnp.int32),
+   ...         shape=(2, 3), backend="cuda_raw",
+   ...         config=brainevent.CSRConfig(), device=device)
+   ...     events = jnp.ones((2, 4), dtype=jnp.bool_)
    >>> result = brainevent.binary_csrmm(
    ...     M.data, M.indices, M.indptr, events, shape=M.shape,
    ...     transpose=True, backend="cuda_raw", config=M.config)
    >>> result.shape
    (3, 4)
 
-For raw operators, ``config=None`` means fixed default scheduler constants;
-it does not load a saved configuration or implicitly scan the structure.
-Nonempty hybrid MM execution requires a matching prepared structure and GPU
-description, and raises an error if either is absent. Prepare before JIT
-tracing. Empty operations and paths that do not select hybrid MM do not
-require an MM plan. In particular, ``vmap`` can transform an MV call into MM,
-so that transformed call also needs preparation when it selects hybrid MM.
+For these raw binary CSR operators, the default ``config=None`` supplies
+fixed MV scheduler constants only. It does not load saved tuning, query GPU
+properties, scan ``indptr``, or construct a long-row mask or MM structure
+plan. A bare ``CSRConfig()`` has the same unprepared state. Calling
+``CSRConfig.prepare_structure(...)`` builds the mask from concrete structure,
+but does not query a GPU; its device metadata must also be supplied before
+using the resulting configuration for CUDA hybrid MM.
+
+This preparation requirement applies to nonempty CUDA hybrid scatter MM.
+Direct gather MM (``transpose=False``), JAX/Numba/cuSPARSE paths, and empty
+operations do not require that plan. Ordinary MV can use ``config=None``;
+if ``vmap`` converts MV into nonempty CUDA hybrid MM, prepare and pass the
+configuration before executing the transformed call. A batch size of one
+still uses MM when the raw input is rank two.
 
 A prepared snapshot belongs to its compressed traversal. Raw callers must
 pass it with the matching sparse arrays: equal shape and ``nnz`` alone do not

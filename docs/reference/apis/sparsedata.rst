@@ -34,11 +34,27 @@ CSR / CSC / TCSR
 Configuration and mirror preparation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-CSR, CSC and the fixed-connection formats prepare configuration statistics
-and an MM structure plan for their stored traversal during construction.
-``CSRConfig.prepare_structure()`` likewise prepares only the supplied
-traversal. Until a mirror is prepared, ``config.mirror`` and
-``config.mirror_max_row_nnz`` are ``None``.
+With concrete structure, CSR, CSC and the fixed-connection formats prepare
+configuration statistics and an MM structure plan for their stored traversal
+during construction. ``CSR(..., config=None)`` loads saved scheduler tuning
+once, then prepares the actual structure. Passing ``config=CSRConfig()``
+uses scheduler defaults and still prepares the structure. Matrix operations
+pass the selected configuration to their raw CSR operators automatically.
+
+``CSRConfig()`` alone has no prepared MM plan or long-row mask. Raw calls
+such as ``binary_csrmm(..., config=None)`` do not load tuning, inspect the
+structure or capture GPU information. Before a nonempty CUDA hybrid scatter
+MM call, pass a configuration already prepared for the actual sparse arrays
+and target GPU, for example ``config=matrix.config``. Other backends, empty
+operations and CUDA gather paths have different requirements; see
+:doc:`utilities` for the full contract.
+
+``CSRConfig.prepare_structure()`` reads concrete row pointers outside JIT
+and returns a new snapshot with statistics and a real long-row mask for only
+the supplied traversal. It does not query a GPU; device information must
+already be captured or supplied. CPU preparation can provide the mask while
+leaving GPU information unset. Until a mirror is prepared, ``config.mirror``
+and ``config.mirror_max_row_nnz`` are ``None``.
 
 The first concrete mirror request prepares its statistics and MM plan from
 the mirror row pointers, then retains them in the configuration and shared
@@ -128,6 +144,10 @@ contracts. Their TCSR overrides select Binary CUDA MM only for eligible
 inputs, supported actual-target resources and available matching geometry.
 MV, WeightedArray and ordinary numerical inputs use the corresponding parent
 operator. Binary event wrappers accepted by CSR need no changes.
+
+Native tiled TCSR MM uses its own prepared tile geometry rather than the
+parent hybrid MM long-row mask. Calls that select the inherited CSR hybrid
+MM route still require its matching prepared structure and GPU information.
 
 Primary geometry is initialized once. The public CSR mirror remains lazy;
 when it becomes available, concrete mirror geometry is prepared once and

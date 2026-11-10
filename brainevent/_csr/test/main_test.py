@@ -24,7 +24,7 @@ import brainevent as _be
 import brainevent as be
 import brainevent._csr.main as csr_main
 from brainevent import CSC, CSR, BinaryArray, FixedNumPerPost, FixedNumPerPre, WeightedArray
-from brainevent._csr._test_util import (
+from brainevent._csr.test._test_util import (
     WEIGHTED_EVENT_DTYPE_NAMES,
     csr_matrix,
     csr_vector,

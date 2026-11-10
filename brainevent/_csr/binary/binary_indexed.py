@@ -144,9 +144,13 @@ def binary_csrmv_indexed(
         change the forward. Ignored for weighted events. Default is
         ``"weighted_float"``.
     config : CSRConfig or None, optional
-        Explicit configuration prepared for this compressed structure. None uses
-        fixed default scheduling parameters without reading saved configuration.
-        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
+        ``None`` uses fixed MV scheduler defaults and a task-capacity bound
+        from static array sizes. Raw calls do not load saved tuning, query
+        GPU properties, scan the structure, or build a long-row mask.
+        Ordinary MV needs no preparation. If ``vmap`` turns this call into
+        nonempty CUDA hybrid scatter MM, pass a matching prepared config
+        with the target GPU information before the call or JIT; see
+        :func:`binary_csrmm_indexed`.
     max_row_nnz : int or None, optional
         Trusted row-length bound for the MV task queue when prepared config
         statistics are absent. This argument never scans the structure; see
@@ -537,9 +541,13 @@ def binary_csrmv_indexed_p_call(
         Weight cotangent rule for binary events. Default is
         ``"weighted_float"``.
     config : CSRConfig or None, optional
-        Explicit configuration prepared for this compressed structure. None uses
-        fixed default scheduling parameters without reading saved configuration.
-        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
+        ``None`` uses fixed MV scheduler defaults and a task-capacity bound
+        from static array sizes. Raw calls do not load saved tuning, query
+        GPU properties, scan the structure, or build a long-row mask.
+        Ordinary MV needs no preparation. If ``vmap`` turns this call into
+        nonempty CUDA hybrid scatter MM, pass a matching prepared config
+        with the target GPU information before the call or JIT; see
+        :func:`binary_csrmm_indexed`.
     max_row_nnz : int or None, optional
         Upper bound on the longest row of ``indptr`` (hybrid task queue size).
 
@@ -728,6 +736,11 @@ def binary_csrmm_indexed(
 ) -> Data:
     """Event-driven CSR matrix-matrix product with a fused weight gather index.
 
+    Nonempty CUDA hybrid scatter MM requires a matching prepared ``config``
+    before this call or JIT. This applies when ``transpose=True`` and the
+    backend resolves to ``'cuda_raw'``, including automatic selection.
+    ``config=None`` and bare ``CSRConfig()`` cannot run that path.
+
     Equivalent to ``binary_csrmm(data[perm], indices, indptr, B, ...)`` for
     heterogeneous weights, but the gather ``data[perm]`` is fused into the
     scatter kernel so only weights of *active* rows/columns are read.  For
@@ -770,9 +783,14 @@ def binary_csrmm_indexed(
         change the forward. Ignored for weighted events. Default is
         ``"weighted_float"``.
     config : CSRConfig or None, optional
-        Explicit configuration prepared for this compressed structure. None uses
-        fixed default scheduling parameters without reading saved configuration.
-        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
+        Required for nonempty CUDA hybrid scatter MM (``transpose=True`` and
+        backend resolving to ``'cuda_raw'``, including automatic selection).
+        Prepare and pass a snapshot matching this traversal's structure and
+        long-row mask, with real target GPU information, before calling this
+        function or entering ``jax.jit``. ``None`` and bare ``CSRConfig()``
+        are insufficient: raw calls never load saved tuning, query GPU
+        properties, scan the structure, or build a mask. Gather MM
+        (``transpose=False``), other backends, and empty products can omit it.
 
     Returns
     -------
@@ -780,10 +798,20 @@ def binary_csrmm_indexed(
         Result matrix, preserving units of ``data`` and ``B``.  Shape
         ``(shape[1], n)`` when ``transpose=True`` or ``(shape[0], n)``.
 
+    Raises
+    ------
+    KernelCompilationError
+        A nonempty CUDA hybrid scatter MM call reaches kernel construction
+        without a complete prepared config for the structure and target GPU.
+
     See Also
     --------
     brainevent._csr.binary.binary.binary_csrmm : The non-indexed event-driven product.
     brainevent._csr.binary.binary_indexed.binary_csrmv_indexed : The matvec analog.
+
+    Notes
+    -----
+    See :ref:`csr-mm-configuration` for configuration preparation steps.
     """
     _validate_backward_algorithm(backward_algorithm)
     data, unitd = u.split_mantissa_unit(data)
@@ -1109,7 +1137,9 @@ def binary_csrmm_indexed_p_call(
     """Low-level primitive call for fused indexed event-driven CSR matmat.
 
     Validates inputs and dispatches ``binary_csrmm_indexed_p``.  See
-    :func:`binary_csrmm_indexed` for the math.
+    :func:`binary_csrmm_indexed` for the math and config contract. Nonempty
+    CUDA hybrid scatter MM requires a matching prepared config before the
+    call or JIT; ``config=None`` and bare ``CSRConfig()`` are insufficient.
     """
     _validate_backward_algorithm(backward_algorithm)
     assert perm.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "perm must be int32 or int64."
@@ -1249,6 +1279,11 @@ binary_csrmm_indexed_p = XLACustomKernel(
     'binary_csrmm_indexed',
     doc="""
 Low-level XLA custom-kernel primitive for ``binary_csrmm_indexed``.
+
+Nonempty CUDA hybrid scatter MM requires a matching prepared config with
+structure, long-row mask, and target GPU information before the call or JIT;
+``None`` and bare ``CSRConfig()`` are insufficient. See :func:`binary_csrmm_indexed`
+for the config contract, including gather, backend, and empty-product exceptions.
 
 Event-driven CSR sparse matrix-matrix multiplication where heterogeneous
 weights are read through a permutation ``perm`` (structural slot ``j`` uses

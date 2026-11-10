@@ -22,7 +22,7 @@ import pytest
 import brainevent
 import brainevent._csr.binary.binary as binary_mod
 import brainevent._csr.config as config_mod
-from brainevent._csr._test_util import (
+from brainevent._csr.test._test_util import (
     EVENT_DTYPE_NAMES,
     EVENT_KINDS,
     NONFINITE_VALUES,

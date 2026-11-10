@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 import brainevent._csr.float.float as float_mod
-from brainevent._csr._test_util import (
+from brainevent._csr.test._test_util import (
     csr_matrix,
     csr_vector,
     cuda_kwargs,

@@ -11,6 +11,18 @@ CSR Operations
 
 Binary matrix-vector / matrix-matrix multiplication.
 
+.. important::
+
+   Raw ``binary_csrmm`` and ``binary_csrmm_indexed`` calls require an explicit
+   prepared ``config`` for nonempty CUDA hybrid scatter MM
+   (``transpose=True``, backend resolving to ``cuda_raw``). Construct it for
+   the actual structure and target GPU outside ``jax.jit``, before calling
+   MM. Omitting ``config`` or passing ``None`` or a bare ``CSRConfig()``
+   leaves that call unprepared and raises ``KernelCompilationError``.
+   The raw functions do not build a long-row mask automatically. See
+   :ref:`csr-mm-configuration` for preparation and the exceptions for gather
+   calls, other backends and empty operations.
+
 .. autosummary::
    :toctree: generated/
 

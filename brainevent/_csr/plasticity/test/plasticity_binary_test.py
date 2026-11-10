@@ -18,7 +18,17 @@ import brainevent
 import brainevent as be
 import brainevent as _be
 import brainevent._csr.plasticity.plasticity_binary as plasticity_mod
-from brainevent._csr._test_util import EVENT_DTYPE_NAMES, event_dtype_context, event_mask, event_values, int64_structure, random_csr_numpy, recording_ffi_call, requires_gpu_backend, shape_of
+from brainevent._csr.test._test_util import (
+    EVENT_DTYPE_NAMES,
+    event_dtype_context,
+    event_mask,
+    event_values,
+    int64_structure,
+    random_csr_numpy,
+    recording_ffi_call,
+    requires_gpu_backend,
+    shape_of,
+)
 from brainevent._csr.plasticity.plasticity_binary import (
     update_csr_on_binary_post,
     update_csr_on_binary_post_p,

@@ -19,7 +19,7 @@ from brainevent._csr.dt2t.dt2t import (
     csrmm_dt2t, cscmm_dt2t, csrmm_dt2t_p,
 )
 import brainevent._csr.dt2t.dt2t as dt2t_mod
-from brainevent._csr._test_util import (
+from brainevent._csr.test._test_util import (
     get_csr,
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
 )

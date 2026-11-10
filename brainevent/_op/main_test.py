@@ -791,8 +791,10 @@ _GRAD_CASES = {
 }
 
 
+# These raw calls omit config; CUDA scatter MM requires a prepared config.
 @pytest.mark.parametrize('case,backend', [
-    (case, be) for case, (prim, _, _) in sorted(_GRAD_CASES.items()) for be in _backends(prim)])
+    (case, be) for case, (prim, _, _) in sorted(_GRAD_CASES.items()) for be in _backends(prim)
+    if not (case.startswith('binary_csrmm') and be == 'cuda_raw')])
 def test_245_sharded_transpose_rules_keep_gradients_per_shard(case, backend):
     """Per-shard gradients under shard_map equal the gradients of each shard's
     computation without shard_map."""
@@ -838,7 +840,9 @@ _HVP_CASES = {
 
 @_W_SPECS
 @pytest.mark.parametrize('case,backend', [
-    (case, be) for case, (prim, _) in sorted(_HVP_CASES.items()) for be in _backends(prim)])
+    # These raw calls omit config; CUDA scatter MM requires a prepared config.
+    (case, be) for case, (prim, _) in sorted(_HVP_CASES.items()) for be in _backends(prim)
+    if not (case.startswith('binary_csrmm') and be == 'cuda_raw')])
 def test_245_sharded_second_order_gradients_stay_per_shard(case, backend, w_spec):
     """Hessian-vector products of ``sum_s sum(v_s * op(w, B_s) ** 2)`` in ``w``,
     reverse-over-reverse and forward-over-reverse, equal those of each shard's

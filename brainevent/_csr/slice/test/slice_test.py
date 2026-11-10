@@ -14,7 +14,7 @@ import pytest
 import brainevent._csr.slice.slice as slice_mod
 from brainevent._csr.slice.slice import csr_slice_rows, csr_slice_rows_grad, csr_slice_rows_p
 from brainevent._csr.main import CSR, CSC
-from brainevent._csr._test_util import (
+from brainevent._csr.test._test_util import (
     cuda_kwargs, int64_structure, recording_ffi_call, requires_gpu_backend, shape_of,
 )
 from brainevent._test_util import jax_x64_enabled, with_jax_x64

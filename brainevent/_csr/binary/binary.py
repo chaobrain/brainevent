@@ -142,9 +142,13 @@ def binary_csrmv(
         remains binary. Ignored for weighted events. Default is
         ``"weighted_float"``.
     config : CSRConfig or None, optional
-        Explicit configuration prepared for this compressed structure. None uses
-        fixed default scheduling parameters without reading saved configuration.
-        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
+        ``None`` uses fixed MV scheduler defaults and a task-capacity bound
+        from static array sizes. Raw calls do not load saved tuning, query
+        GPU properties, scan the structure, or build a long-row mask.
+        Ordinary MV needs no preparation. If ``vmap`` turns this call into
+        nonempty CUDA hybrid scatter MM, pass a matching prepared config
+        with the target GPU information before the call or JIT; see
+        :func:`binary_csrmm`.
     max_row_nnz : int or None, optional
         Optional trusted row-length bound for the MV task queue. A prepared
         config supplies its exact maximum; otherwise ``None`` uses a capacity
@@ -242,6 +246,11 @@ def binary_csrmm(
     Product of a CSR sparse matrix and a dense matrix using event-driven
     (binary) computation.
 
+    Nonempty CUDA hybrid scatter MM requires a matching prepared ``config``
+    before this call or JIT. This applies when ``transpose=True`` and the
+    backend resolves to ``'cuda_raw'``, including automatic selection.
+    ``config=None`` and bare ``CSRConfig()`` cannot run that path.
+
     Computes ``C = A @ B`` (or ``C = A.T @ B`` when ``transpose=True``)
     where ``A`` is stored in Compressed Sparse Row format and ``B`` is a
     dense matrix whose entries are treated as binary events. Entries of
@@ -287,15 +296,26 @@ def binary_csrmm(
         the binary forward. Ignored for weighted events. Default is
         ``"weighted_float"``.
     config : CSRConfig or None, optional
-        Explicit configuration prepared for this compressed structure. None uses
-        fixed default scheduling parameters without reading saved configuration.
-        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
+        Required for nonempty CUDA hybrid scatter MM (``transpose=True`` and
+        backend resolving to ``'cuda_raw'``, including automatic selection).
+        Prepare and pass a snapshot matching this traversal's structure and
+        long-row mask, with real target GPU information, before calling this
+        function or entering ``jax.jit``. ``None`` and bare ``CSRConfig()``
+        are insufficient: raw calls never load saved tuning, query GPU
+        properties, scan the structure, or build a mask. Gather MM
+        (``transpose=False``), other backends, and empty products can omit it.
 
     Returns
     -------
     C : jax.Array or brainunit.Quantity
         Result matrix.  Shape ``(shape[1], cols)`` when ``transpose=True``
         or ``(shape[0], cols)`` when ``transpose=False``.
+
+    Raises
+    ------
+    KernelCompilationError
+        A nonempty CUDA hybrid scatter MM call reaches kernel construction
+        without a complete prepared config for the structure and target GPU.
 
     See Also
     --------
@@ -304,6 +324,8 @@ def binary_csrmm(
 
     Notes
     -----
+    See :ref:`csr-mm-configuration` for configuration preparation steps.
+
     The operation is *event-driven*: entries of ``B`` that are inactive
     (``False`` or ``0``; negative values and NaN are active) are skipped, so
     they contribute exactly ``0`` on every backend even against NaN/+-Inf
@@ -340,6 +362,9 @@ def binary_csrmm(
 
     Examples
     --------
+    This example uses gather MM (``transpose=False``), which needs no
+    prepared MM config.
+
     .. code-block:: python
 
         >>> import jax.numpy as jnp
@@ -1050,9 +1075,13 @@ def binary_csrmv_p_call(
         Select binary-mask or value-weighted weight cotangents. Does not
         change the forward. Default is ``"weighted_float"``.
     config : CSRConfig or None, optional
-        Explicit configuration prepared for this compressed structure. None uses
-        fixed default scheduling parameters without reading saved configuration.
-        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
+        ``None`` uses fixed MV scheduler defaults and a task-capacity bound
+        from static array sizes. Raw calls do not load saved tuning, query
+        GPU properties, scan the structure, or build a long-row mask.
+        Ordinary MV needs no preparation. If ``vmap`` turns this call into
+        nonempty CUDA hybrid scatter MM, pass a matching prepared config
+        with the target GPU information before the call or JIT; see
+        :func:`binary_csrmm`.
     max_row_nnz : int or None, optional
         Upper bound on the longest row of ``indptr``, used to size the
         ``cuda_raw`` hybrid task queue (see :func:`binary_csrmv`).
@@ -1734,6 +1763,10 @@ def binary_csrmm_p_call(
     Low-level primitive call for event-driven CSR matrix--matrix
     multiplication.
 
+    The prepared-config requirement of :func:`binary_csrmm` also applies
+    here: nonempty CUDA hybrid scatter MM cannot run with ``config=None``
+    or bare ``CSRConfig()``.
+
     Prepares inputs, validates shapes and dtypes, and dispatches the
     ``binary_csrmm_p`` XLA custom kernel to compute ``C = A @ B`` (or
     ``C = A.T @ B``), where ``A`` is a CSR matrix and ``B`` is a dense
@@ -1769,9 +1802,14 @@ def binary_csrmm_p_call(
         Select binary-mask or value-weighted weight cotangents. Does not
         change the forward. Default is ``"weighted_float"``.
     config : CSRConfig or None, optional
-        Explicit configuration prepared for this compressed structure. None uses
-        fixed default scheduling parameters without reading saved configuration.
-        Hybrid MM requires a prepared config; prepare it outside JAX tracing.
+        Required for nonempty CUDA hybrid scatter MM (``transpose=True`` and
+        backend resolving to ``'cuda_raw'``, including automatic selection).
+        Prepare and pass a snapshot matching this traversal's structure and
+        long-row mask, with real target GPU information, before calling this
+        function or entering ``jax.jit``. ``None`` and bare ``CSRConfig()``
+        are insufficient: raw calls never load saved tuning, query GPU
+        properties, scan the structure, or build a mask. Gather MM
+        (``transpose=False``), other backends, and empty products can omit it.
 
     Returns
     -------
@@ -1792,6 +1830,9 @@ def binary_csrmm_p_call(
     AssertionError
         If there is a shape mismatch between ``B`` and the sparse
         matrix ``shape`` (considering the ``transpose`` flag).
+    KernelCompilationError
+        A nonempty CUDA hybrid scatter MM call reaches kernel construction
+        without a complete prepared config for the structure and target GPU.
 
     See Also
     --------
@@ -1816,6 +1857,9 @@ def binary_csrmm_p_call(
 
     Examples
     --------
+    This example uses gather MM (``transpose=False``), which needs no
+    prepared MM config.
+
     .. code-block:: python
 
         >>> import jax.numpy as jnp
@@ -1886,6 +1930,11 @@ binary_csrmm_p = XLACustomKernel(
     'binary_csrmm',
     doc="""
 Low-level XLA custom-kernel primitive for ``binary_csrmm``.
+
+Nonempty CUDA hybrid scatter MM requires a matching prepared config with
+structure, long-row mask, and target GPU information before the call or JIT;
+``None`` and bare ``CSRConfig()`` are insufficient. See :func:`binary_csrmm`
+for the config contract, including gather, backend, and empty-product exceptions.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR sparse matrix-matrix multiplication
 operation to registered backends (``numba``, ``cuda_raw``, ``cusparse``, ``jax_raw``),

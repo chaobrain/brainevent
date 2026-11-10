@@ -465,6 +465,12 @@ class _ConfigAux:
 class CSRConfig:
     """A CSR scheduling snapshot with MV tuning and optional MM preparation.
 
+    ``CSRConfig()`` initializes the default MV scheduler parameters only. It
+    does not read saved tuning, inspect sparse arrays, query a GPU, or create
+    a long-row mask or MM plan. Nonempty CUDA hybrid scatter MM requires a
+    snapshot prepared for the actual compressed traversal and target GPU
+    before the raw operator is called.
+
     Parameters
     ----------
     block_size, fixed_scatter_blocks, tpr_threshold, task_nnz : int, optional
@@ -483,6 +489,9 @@ class CSRConfig:
 
     Notes
     -----
+    Passing this object to a CSR/CSC constructor binds its parameters to that
+    matrix's concrete structure and captures applicable device information.
+    Passing it directly to a raw operator performs no such preparation.
     This object is a pytree, not a hashable static argument. Use
     :meth:`kernel_args` to separate a static specification from its array leaf.
     """
@@ -725,11 +734,17 @@ class CSRConfig:
 
     def prepare_structure(self, indices: Any, indptr: Any, *, shape: Sequence[int],
                           device_info: CSRDeviceInfo | None = None) -> CSRConfig:
-        """Prepare primary row statistics from concrete structure.
+        """Prepare primary MM statistics and a long-row mask from actual arrays.
+
+        Call outside ``jax.jit`` with concrete structure. This method reads
+        the actual row pointers and returns a new snapshot with its primary
+        row statistics, MM geometry and ``long_mask``. It does not query GPU
+        properties: supply previously captured ``device_info`` or retain it
+        from this snapshot before using nonempty CUDA hybrid scatter MM.
 
         Mirror statistics remain absent until the owning matrix builds its
         mirror. Masks for a CPU-sharded structure are replicated across its
-        mesh.
+        mesh. Traced inputs return a snapshot without structure preparation.
 
         Parameters
         ----------
@@ -738,7 +753,8 @@ class CSRConfig:
         shape : sequence of int
             Shape in compressed-row traversal order.
         device_info : CSRDeviceInfo or None, optional
-            Replacement device metadata; omitted values retain the snapshot.
+            Previously captured target device metadata. ``None`` retains
+            this snapshot's metadata without querying a device.
 
         Returns
         -------
@@ -874,6 +890,11 @@ class CSRConfig:
 
     def mm_plan(self, batch: int, value_dtype: Any, weighted: bool = False) -> MMCallPlan | None:
         """Derive a launch plan from prepared metadata and static call inputs.
+
+        This method sizes a call using the existing structure and GPU
+        metadata. It does not inspect sparse arrays, construct a missing
+        ``long_mask``, or query a device. Prepare the snapshot before calling
+        a raw nonempty CUDA hybrid scatter MM operator.
 
         Parameters
         ----------

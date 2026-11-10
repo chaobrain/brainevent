@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Clarify the existing configuration contract for raw event MM: nonempty
+  CUDA hybrid scatter calls require a configuration prepared for the actual
+  structure and target GPU before the call. `config=None` and a bare
+  `CSRConfig()` do not build the long-row mask or supply an MM plan. The
+  reference and API docstrings distinguish this requirement from automatic
+  preparation during CSR construction and from paths that need no MM plan.
 - CSRConfig prepares only the stored traversal's statistics and MM plan.
   CSR/CSC and fixed-connection mirror statistics are prepared lazily with
   the mirror, retained in the configuration, and reused by same-structure

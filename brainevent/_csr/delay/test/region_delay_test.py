@@ -16,7 +16,7 @@ import pytest
 from numpy.typing import NDArray
 
 import brainevent
-from brainevent import CSR, BinaryArray, KernelCompilationError, WeightedArray
+from brainevent import CSR, BinaryArray, WeightedArray
 from brainevent._csr.delay import delay as operator
 from brainevent._csr.delay import region_delay as module
 from brainevent._csr.delay.delay import csr_delay_deliver_layout_p
@@ -2680,7 +2680,7 @@ def test_edges_beyond_int32(request) -> None:
     assert np.asarray(work.status)[1] == 0
     np.testing.assert_array_equal(np.asarray(ring)[0], np.bincount(tail, minlength=cols).astype(np.float32))
 
-    with pytest.raises(KernelCompilationError, match="int32 indptr"):
+    with pytest.raises(ValueError, match="int32 indptr"):
         cuda_step(weights, indices, jnp.asarray(indptr.astype(np.int32)), jnp.asarray(events),
                              jnp.asarray(delay_count.astype(np.int32)), jnp.asarray(delay_off), jnp.asarray(tasks),
                              jnp.array([0], jnp.int32), ring, work)

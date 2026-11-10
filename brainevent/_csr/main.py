@@ -104,11 +104,16 @@ class CompressedSparseData(DataRepresentation):
         Build the mirror layout now (see :meth:`build_weight_indices`).
         Default ``False``.
     config : CSRConfig or None, optional
-        Scheduler parameters to bind to this structure. Existing structure
-        plans are rebuilt. ``None`` reads the persisted parameters once.
+        Scheduler parameters to bind to this structure. ``None`` reads the
+        persisted parameters once; an explicit ``CSRConfig()`` uses its
+        scheduler defaults instead. With concrete arrays, either choice
+        prepares actual structure statistics and the primary long-row mask;
+        existing structure plans are rebuilt. Unlike a raw operator's
+        ``config=None``, matrix construction performs this preparation.
     device : jax.Device or None, optional
         Target GPU for preparing device-dependent plans. CPU preparation
-        leaves GPU information unset.
+        leaves GPU information unset. This selects configuration and mask
+        placement without moving the matrix values or sparse index arrays.
 
     Attributes
     ----------
@@ -123,6 +128,13 @@ class CompressedSparseData(DataRepresentation):
 
     Notes
     -----
+    Construct with concrete structure outside ``jax.jit`` to prepare MM
+    configuration. Traced structure cannot supply these statistics or masks.
+    Nonempty inherited CUDA hybrid scatter MM also needs captured target GPU
+    information; use :meth:`with_rebuilt_config` outside JIT when rebuilding
+    a matrix prepared on CPU or for another backend. Matrix operations pass
+    the matching configuration to their raw CSR operators automatically.
+
     The matrix is a JAX pytree whose leaves are ``data``, ``indices``,
     ``indptr``, prepared configuration masks and, when cached, the three
     mirror arrays and the four ``diag_add`` plan arrays. The structure is
@@ -1294,6 +1306,13 @@ class CSR(CompressedSparseData):
 
     Notes
     -----
+    With concrete arrays, construction prepares ``config`` for this structure.
+    ``config=None`` loads saved scheduler tuning; ``config=CSRConfig()`` uses
+    scheduler defaults. Both prepare the actual primary long-row mask.
+    CUDA hybrid scatter MM also needs captured target GPU information.
+    Matrix event operators pass the selected configuration to their raw CSR
+    calls.
+
     In CSR format a matrix of shape ``(m, n)`` is stored as three arrays:
 
     * ``indptr`` of length ``m + 1`` -- the *i*-th row occupies entries
@@ -1375,8 +1394,11 @@ class CSR(CompressedSparseData):
             masks.
         config : CSRConfig or None, optional
             Scheduler parameters to prepare for the resulting structure.
+            ``None`` loads saved tuning; an explicit ``CSRConfig()`` uses
+            scheduler defaults. Both bind preparation to the actual structure.
         device : jax.Device or None, optional
-            Target GPU for device-dependent plans.
+            Target GPU for device-dependent plans and their mask placement.
+            Matrix values and sparse index arrays are not moved.
         precompute_weight_indices : bool, optional
             If ``True``, eagerly build and cache the column-major (CSC-like)
             weight indices used by the *unfavorable* ``CSR @ event`` direction
@@ -2269,6 +2291,13 @@ class CSC(CompressedSparseData):
 
     Notes
     -----
+    With concrete arrays, construction prepares ``config`` for this structure.
+    ``config=None`` loads saved scheduler tuning; ``config=CSRConfig()`` uses
+    scheduler defaults. Both prepare the actual primary long-row mask.
+    CUDA hybrid scatter MM also needs captured target GPU information.
+    Matrix event operators pass the selected configuration to their raw CSR
+    calls.
+
     In CSC format a matrix of shape ``(m, n)`` is stored as three arrays:
 
     * ``indptr`` of length ``n + 1`` -- the *j*-th column occupies entries
@@ -2348,8 +2377,11 @@ class CSC(CompressedSparseData):
             masks.
         config : CSRConfig or None, optional
             Scheduler parameters to prepare for the resulting structure.
+            ``None`` loads saved tuning; an explicit ``CSRConfig()`` uses
+            scheduler defaults. Both bind preparation to the actual structure.
         device : jax.Device or None, optional
-            Target GPU for device-dependent plans.
+            Target GPU for device-dependent plans and their mask placement.
+            Matrix values and sparse index arrays are not moved.
         precompute_weight_indices : bool, optional
             If ``True``, eagerly build and cache the row-major (CSR-like) weight
             indices used by the *unfavorable* ``event @ CSC`` direction (see

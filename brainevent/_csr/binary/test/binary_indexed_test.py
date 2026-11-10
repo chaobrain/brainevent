@@ -20,7 +20,7 @@ import brainevent
 import brainevent._csr.binary.binary as binary_mod
 import brainevent._csr.binary.binary_indexed as binary_indexed_mod
 from brainevent import BinaryArray, FixedNumPerPre
-from brainevent._csr._test_util import (
+from brainevent._csr.test._test_util import (
     EVENT_DTYPE_NAMES,
     EVENT_KINDS,
     NONFINITE_VALUES,
@@ -1890,8 +1890,8 @@ def test_event_weight_gradient_follows_csr_backend(monkeypatch, case, batch, tra
 
 
 @pytest.mark.parametrize('case', ['indexed_binary', 'indexed_weighted'])
-@pytest.mark.parametrize('batch', [None, 3])
-@pytest.mark.parametrize('transpose', [False, True])
+# Raw CUDA scatter MM requires a prepared config; retain MV and gather MM here.
+@pytest.mark.parametrize('transpose,batch', [(False, None), (False, 3), (True, None)])
 @pytest.mark.parametrize('backend', [None, 'cuda_raw'])
 def test_native_event_consumers_preserve_second_order_gradients(monkeypatch, case, batch, transpose, backend):
     if jax.default_backend() != 'gpu':

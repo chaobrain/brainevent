@@ -13,7 +13,7 @@ import pytest
 
 import brainevent
 import brainevent._csr.diag.diag_add as diag_add_mod
-from brainevent._csr._test_util import small_csr
+from brainevent._csr.test._test_util import small_csr
 
 
 # Module tests
