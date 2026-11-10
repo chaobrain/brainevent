@@ -1,3 +1,7 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
 // Compile with an ordinary C++ compiler; kernels are linked from standalone CUs.
 #include "../hybrid/hybrid_delay_spmv.cuh"
 #include <algorithm>

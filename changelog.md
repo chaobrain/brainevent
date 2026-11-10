@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Public `TCSR` inherits `CSR` and automatically prepares primary tile
+  geometry when constructed as `TCSR(csr)`. Mirror tiles are prepared lazily
+  after the public CSR mirror becomes available. Public left and right
+  matmul overrides select Binary CUDA MM; other inputs retain the original
+  operand for the corresponding parent operator. Geometry covers every
+  supported batch without explicit `prepare_binary_mm` calls. That method
+  remains an optional compatibility entry point. `.T` returns CSC and
+  `.T.T` returns CSR. Cached actual-target resource checks select the parent
+  path before native execution when a tile cannot launch; portable lowering
+  without a fixed assignment uses all local candidate devices conservatively.
+- TCSR construction and factory names use `csr`, `csc` and `mat`;
+  `source` remains a legacy keyword alias, and `fromcsr` / `fromcsc` are thin
+  conversion factories. `fromdense` accepts the full CSR factory parameter
+  set. `binary_backend` aliases the single `backend` preference and `'jax'`
+  maps to `'jax_raw'`; conflicting explicit choices raise `ValueError`.
+  `materialize_tcsc_mirror()` delegates to `build_weight_indices()` and
+  `has_tcsc_mirror` only queries the public cache. Set existing gradient
+  options on the source CSR or `fromdense`; no pp_prop/BPSA algorithm is added.
+- External TCSR per-edge state, including `edge_state`, `delays` and
+  `w_dim_arr`, must follow the newly sorted edge order. `from_sorted_csr`
+  preserves arrays and source configuration, preparing missing primary
+  geometry for concrete new sources. Internal restoration remains host-free. After
+  overriding a JAX/CPU backend preference to `cuda_raw`, explicitly call
+  `with_rebuilt_config()` outside JIT before an inherited MM requiring GPU
+  configuration, or use the ordinary constructor / `fromcsr` to rebind it.
 - CSR delay delivery now uses the prepared `delaycsr(CSR)` implementation.
   `CSR.delay_layout(delays, n_slots)` returns this object and inherits the
   source CSR backend. Explicit delay backends are `cuda_raw` and `jax_raw`;

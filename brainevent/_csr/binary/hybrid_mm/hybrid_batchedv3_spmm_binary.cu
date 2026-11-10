@@ -1,3 +1,7 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
 // hybrid (v3) binary SpMM: BN spikes, BN output. Kernels and the schedule live in hybrid_batchedv3_spmm_impl.cuh
 // (shared with hybrid_batchedv3_spmm_weighted.cu); geometry, planning and sizing in hybrid_batchedv3_spmm_plan.cuh.
 // launch_accumulate(): hybrid_v3, the caller zeroes the whole output beforehand.

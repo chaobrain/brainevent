@@ -11,34 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
-"""TCSR structure, mirrors, and traversal workspaces."""
+"""Structure sorting and reusable tile geometry preparation for TCSR matrices."""
 
 from .preprocess import (
-    HybridWorkspace,
-    TCSBuffers,
-    TCSCMirror,
-    TCSRComponents,
-    build_hybrid_workspace,
-    build_tcsr_structure,
-    build_tcsc_mirror,
-    sort_csr,
-    validate_tcsc_mirror,
-    workspace_from_operands,
-    workspace_operands,
+    TileGeometry, build_tile_geometries, geometry_widths,
+    TilePlan, build_binary_mm_plan, ensure_preparation_context, sort_csr, validate_preparation,
 )
 
 __all__ = [
-    "HybridWorkspace",
-    "TCSBuffers",
-    "TCSCMirror",
-    "TCSRComponents",
-    "build_hybrid_workspace",
-    "build_tcsr_structure",
-    "build_tcsc_mirror",
-    "sort_csr",
-    "validate_tcsc_mirror",
-    "workspace_from_operands",
-    "workspace_operands",
+    'TileGeometry', 'build_tile_geometries', 'geometry_widths',
+    'TilePlan', 'build_binary_mm_plan', 'ensure_preparation_context',
+    'sort_csr', 'validate_preparation',
 ]

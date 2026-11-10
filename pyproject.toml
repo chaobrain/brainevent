@@ -27,8 +27,9 @@ build-backend = "setuptools.build_meta"
 # "py.typed" is the PEP 561 marker that tells downstream type checkers brainevent ships
 # inline type information; it must be bundled in the wheel to have any effect.
 "brainevent" = ["include/brainevent/*.h", "py.typed"]
-# Tile MM loads both local CUDA headers at runtime.
-"brainevent._tcsr.binary.tile_mm" = ["*.cu", "*.cuh"]
+# Combined MM loads the planner and scalar/FFI traits transitively.
+"brainevent._tcsr.binary.combined" = ["*.cu", "*.cuh", "*.h", "_common/*.cuh"]
+"brainevent._tcsr.binary.combined.col_major" = ["*.cu", "*.cuh"]
 "brainevent._csr.binary.hybrid_mv" = ["*.cu", "*.cuh"]
 "brainevent._csr.binary.hybrid_mm" = ["*.cu", "*.cuh", "_common/*.cuh"]
 "brainevent._csr.delay" = ["hybrid/*.cu", "hybrid/*.cuh", "_common/*.cuh"]

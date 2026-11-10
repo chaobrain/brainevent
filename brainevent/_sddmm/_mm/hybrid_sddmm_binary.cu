@@ -1,3 +1,7 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
 // Binary SDDMM: compact independent batches, cooperate within rows, split long rows.
 // Adapted from tile hybrid v3 scheduling; output is shared dweight, never zeroed.
 // Types: ct/dweight ValueT in {half, bfloat16, float, double}; events int8 (bool) or float,

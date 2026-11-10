@@ -1,3 +1,7 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
 // Heterogeneous column-major weighted SpMM: each nonzero event multiplies
 // values[perm[j]]. Short columns re-read events; long tasks carry their value.
 #include "hybrid_batchedv3_spmm_col_major.cuh"

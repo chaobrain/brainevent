@@ -1,3 +1,7 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
 // Legacy binary-only implementation for the standalone GPU-native benchmark.
 // This header preserves the bool-event hybrid scheduling strategy while removing
 // the XLA FFI and BrainEvent tensor wrappers. The current binary/weighted FFI

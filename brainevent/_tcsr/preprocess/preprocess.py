@@ -1,605 +1,464 @@
 # Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
+# Licensed under the Apache License, Version 2.0:
 # http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
 
-"""Construct tile-ordered sparse components and traversal workspaces."""
+"""Host-only preparation; tile arrays remain dynamic matrix pytree leaves."""
 
+from __future__ import annotations
+
+import operator
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
+import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
-from numpy.typing import NDArray
+from jax._src import core
 
-from brainevent._csr.main import CSR as PlainCSR
-from brainevent._misc import csr_to_csc_index
-from brainevent._typing import Data, MatrixShape
-
-from .preprocess_config import hybrid_task_capacity
+from brainevent._compatible_import import Tracer
+from ..binary.combined.planner import INT32_MAX, TARGET_BLOCKS, tile_schedule
+from ..binary.combined.col_major.jax_ffi import prepare as _prepare_sorted
 
 __all__ = [
-    "HybridWorkspace",
-    "TCSBuffers",
-    "TCSCMirror",
-    "TCSRComponents",
-    "build_hybrid_workspace",
-    "build_tcsr_structure",
-    "build_tcsc_mirror",
-    "sort_csr",
-    "validate_tcsc_mirror",
-    "workspace_from_operands",
-    "workspace_operands",
+    'TileGeometry', 'build_tile_geometries', 'geometry_widths',
+    'TilePlan', 'build_binary_mm_plan', 'ensure_preparation_context',
+    'sort_csr', 'validate_preparation',
 ]
 
 
-_TILE_SIZE = 8192
-
-
-@dataclass(frozen=True)
-class TCSRComponents:
-    """Store canonical TCSR values and compressed structure.
+@dataclass(frozen=True, eq=False)
+class TileGeometry:
+    """Immutable tile arrays shared by all matching batches and value dtypes.
 
     Parameters
     ----------
-    data : Data
-        Canonical values in stable row-local target order.
-    indices : jax.Array
-        Int32 target indices.
-    indptr : jax.Array
-        Int64 row pointers.
-    """
-
-    data: Data
-    indices: jax.Array
-    indptr: jax.Array
-
-
-def sort_csr(csr: PlainCSR) -> PlainCSR:
-    """Sort CSR target indices and align their corresponding values.
-
-    Parameters
-    ----------
-    csr : brainevent._csr.main.CSR
-        Plain CSR matrix to sort in stable row-local target order.
-
-    Returns
-    -------
-    brainevent._csr.main.CSR
-        Plain CSR with sorted indices and correspondingly reordered values.
-
-    Raises
-    ------
-    TypeError
-        If ``csr`` is not a plain CSR matrix.
-    RuntimeError
-        If heterogeneous data requires a sorting permutation and JAX cannot
-        preserve its int64 dtype.
+    shape : tuple of int
+        Canonical CSR dimensions in both traversal directions.
+    nnz : int
+        Stored edge count, including duplicates.
+    transpose : bool
+        True for the primary traversal, False for the public CSR mirror.
+    tile_width : int
+        Actual accumulation tile width represented by these arrays.
+    offset_dtype : numpy.dtype
+        Absolute-offset dtype matching the selected traversal's pointers.
+    local_targets, tile_offsets : jax.Array
+        Dynamic uint16 targets and flattened absolute int32/int64 boundaries.
 
     Notes
     -----
-    The sorting permutation maps sorted slots to input slots and remains an
-    implementation detail. Row-local sorting leaves ``indptr`` unchanged.
-    """
-    if not isinstance(csr, PlainCSR):
-        raise TypeError("sort_csr requires a plain CSR input")
-
-    indices_np = np.asarray(jax.device_get(csr.indices))
-    indptr_np = np.asarray(jax.device_get(csr.indptr))
-    nnz = int(indices_np.size)
-    sorted_indices: NDArray[np.int32] = np.empty((nnz,), dtype=np.int32)
-    permutation: NDArray[np.int64] | None = None
-    if int(csr.data.size) != 1:
-        permutation = np.empty((nnz,), dtype=np.int64)
-
-    for row in range(int(csr.shape[0])):
-        begin = int(indptr_np[row])
-        end = int(indptr_np[row + 1])
-        order = np.argsort(indices_np[begin:end], kind="stable")
-        sorted_indices[begin:end] = indices_np[begin:end][order]
-        if permutation is not None:
-            permutation[begin:end] = begin + order
-
-    if permutation is None:
-        sorted_data = jax.device_put(csr.data)
-    else:
-        device_permutation = jnp.asarray(permutation, dtype=jnp.int64)
-        if device_permutation.dtype != jnp.int64:
-            raise RuntimeError(
-                "TCSR sorting requires an explicit int64 permutation; set "
-                "jax_explicit_x64_dtypes='allow' or enable JAX x64."
-            )
-        sorted_data = jax.device_put(csr.data[device_permutation])
-    return PlainCSR._from_parts(
-        sorted_data,
-        jnp.asarray(sorted_indices, dtype=jnp.int32),
-        csr.indptr,
-        shape=csr.shape,
-        backend=csr.backend,
-        config=csr.config,
-    )
-
-
-def build_tcsr_structure(
-    csr: PlainCSR,
-) -> tuple[TCSRComponents, jax.Array, jax.Array]:
-    """Build canonical TCSR arrays and tile traversal metadata.
-
-    Parameters
-    ----------
-    csr : brainevent._csr.main.CSR
-        Plain CSR whose target indices are already sorted within each row.
-
-    Returns
-    -------
-    components : TCSRComponents
-        Canonical values, int32 indices, and int64 row pointers.
-    local_targets : jax.Array
-        Uint16 target offsets within each 8192-column tile.
-    tile_offsets : jax.Array
-        Int32 row-local entry boundaries for every output tile.
-
-    Raises
-    ------
-    TypeError
-        If ``csr`` is not a plain CSR matrix.
-    ValueError
-        If a row exceeds the int32 tile-offset capacity.
-    RuntimeError
-        If JAX cannot preserve the required explicit int64 row pointers.
-
-    Notes
-    -----
-    This function assumes sorted row-local indices and never sorts its input.
-    """
-    if not isinstance(csr, PlainCSR):
-        raise TypeError("build_tcsr_structure requires a plain CSR input")
-
-    rows, cols = int(csr.shape[0]), int(csr.shape[1])
-    indices_np = np.asarray(jax.device_get(csr.indices))
-    row_ptr = np.ascontiguousarray(jax.device_get(csr.indptr), dtype=np.int64)
-    if np.any(np.diff(row_ptr) > np.iinfo(np.int32).max):
-        raise ValueError(
-            "TCSR tile offsets require each CSR row to fit int32"
-        )
-
-    tile_count = (cols + _TILE_SIZE - 1) // _TILE_SIZE
-    tile_offsets: NDArray[np.int32] = np.empty(
-        (rows, tile_count + 1), dtype=np.int32
-    )
-    for row in range(rows):
-        begin = int(row_ptr[row])
-        end = int(row_ptr[row + 1])
-        row_targets = indices_np[begin:end]
-        for tile in range(tile_count + 1):
-            boundary = min(tile * _TILE_SIZE, cols)
-            tile_offsets[row, tile] = np.searchsorted(
-                row_targets,
-                boundary,
-                side="left",
-            )
-
-    device_indptr = jnp.asarray(row_ptr, dtype=jnp.int64)
-    if device_indptr.dtype != jnp.int64:
-        raise RuntimeError(
-            "TCSR requires explicit int64 row pointers; set "
-            "jax_explicit_x64_dtypes='allow' or enable JAX x64."
-        )
-    components = TCSRComponents(
-        data=jax.device_put(csr.data),
-        indices=jnp.asarray(csr.indices, dtype=jnp.int32),
-        indptr=device_indptr,
-    )
-    local_targets = np.asarray(
-        indices_np & (_TILE_SIZE - 1),
-        dtype=np.uint16,
-    )
-    return (
-        components,
-        jnp.asarray(local_targets, dtype=jnp.uint16),
-        jnp.asarray(tile_offsets, dtype=jnp.int32),
-    )
-
-
-@jax.tree_util.register_pytree_node_class
-@dataclass(frozen=True)
-class HybridWorkspace:
-    """Store task arrays for one hybrid sparse traversal.
-
-    Parameters
-    ----------
-    task_capacity : int
-        Maximum number of tasks stored in the workspace.
-    task_begin : jax.Array
-        Per-task inclusive sparse offsets.
-    task_end : jax.Array
-        Per-task exclusive sparse offsets.
-    status : jax.Array
-        Int32 runtime status array with shape ``(2,)``.
+    The owning structure cache establishes structural identity. This object
+    stores no mirror permutation, weight array or call-specific scratch.
     """
 
-    task_capacity: int
-    task_begin: jax.Array
-    task_end: jax.Array
-    status: jax.Array
-
-    def tree_flatten(self):
-        """Flatten dynamic workspace arrays and static capacity metadata."""
-        return (
-            self.task_begin,
-            self.task_end,
-            self.status,
-        ), (self.task_capacity,)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        """Restore a workspace from flattened pytree state."""
-        task_begin, task_end, status = children
-        return cls(int(aux_data[0]), task_begin, task_end, status)
-
-    def block_until_ready(self):
-        """Block until all workspace arrays are ready and return this object."""
-        jax.block_until_ready((self.task_begin, self.task_end, self.status))
-        return self
-
-
-def workspace_from_operands(
-    task_capacity: int,
-    task_begin: jax.Array,
-    task_end: jax.Array,
-    status: jax.Array,
-) -> HybridWorkspace:
-    """Restore a hybrid workspace from primitive operands.
-
-    Parameters
-    ----------
-    task_capacity : int
-        Static task capacity.
-    task_begin : jax.Array
-        Per-task inclusive offsets.
-    task_end : jax.Array
-        Per-task exclusive offsets.
-    status : jax.Array
-        Runtime status array.
-
-    Returns
-    -------
-    HybridWorkspace
-        Reconstructed workspace object.
-    """
-    return HybridWorkspace(int(task_capacity), task_begin, task_end, status)
-
-
-def workspace_operands(
-    workspace: HybridWorkspace | None,
-    indptr: Any,
-) -> tuple[int, jax.Array, jax.Array, jax.Array]:
-    """Validate and flatten a workspace for a primitive call.
-
-    Parameters
-    ----------
-    workspace : HybridWorkspace or None
-        Workspace associated with the traversed sparse structure.
-    indptr : array-like
-        Sparse row pointers whose dtype determines the task offset dtype.
-
-    Returns
-    -------
-    task_capacity : int
-        Static task capacity.
-    task_begin : jax.Array
-        Per-task inclusive offsets.
-    task_end : jax.Array
-        Per-task exclusive offsets.
-    status : jax.Array
-        Runtime status array.
-
-    Raises
-    ------
-    ValueError
-        If workspace arrays have invalid shapes or capacity.
-    TypeError
-        If workspace arrays have invalid dtypes.
-    """
-    if workspace is None:
-        raise ValueError("hybrid workspace is required")
-    if not isinstance(workspace, HybridWorkspace):
-        raise TypeError("workspace must be a HybridWorkspace")
-
-    capacity = int(workspace.task_capacity)
-    if capacity < 0:
-        raise ValueError("task_capacity must be non-negative")
-    if tuple(workspace.task_begin.shape) != (capacity,):
-        raise ValueError("task_begin shape must match task_capacity")
-    if tuple(workspace.task_end.shape) != (capacity,):
-        raise ValueError("task_end shape must match task_capacity")
-    if tuple(workspace.status.shape) != (2,):
-        raise ValueError("workspace status shape must be (2,)")
-
-    offset_dtype = jnp.dtype(indptr.dtype)
-    if (
-        jnp.dtype(workspace.task_begin.dtype) != offset_dtype
-        or jnp.dtype(workspace.task_end.dtype) != offset_dtype
-    ):
-        raise TypeError("workspace task offsets must use the same dtype as indptr")
-    if jnp.dtype(workspace.status.dtype) != jnp.dtype(jnp.int32):
-        raise TypeError("workspace status must use int32")
-
-    return capacity, workspace.task_begin, workspace.task_end, workspace.status
-
-
-def build_hybrid_workspace(indptr: Any) -> HybridWorkspace:
-    """Build a hybrid workspace for sparse row pointers.
-
-    Parameters
-    ----------
-    indptr : array-like
-        Sparse row pointers used to determine task capacity and offset dtype.
-
-    Returns
-    -------
-    HybridWorkspace
-        Newly allocated uninitialized task arrays and status storage.
-    """
-    capacity = hybrid_task_capacity(indptr)
-    offset_dtype = jnp.dtype(indptr.dtype)
-    return HybridWorkspace(
-        task_capacity=capacity,
-        task_begin=jnp.empty((capacity,), dtype=offset_dtype),
-        task_end=jnp.empty((capacity,), dtype=offset_dtype),
-        status=jnp.empty((2,), dtype=jnp.int32),
-    )
-
-
-@jax.tree_util.register_pytree_node_class
-@dataclass(frozen=True)
-class TCSCMirror:
-    """Store the data-free TCSC mirror and its traversal buffers.
-
-    Parameters
-    ----------
-    indices : jax.Array
-        Int32 row indices in mirror order.
-    indptr : jax.Array
-        Int64 column pointers represented as CSR pointers of the transpose.
-    permutation : jax.Array
-        Int64 mapping from mirror slots to canonical TCSR value slots.
-    local_targets : jax.Array
-        Uint16 target offsets within each tile.
-    tile_offsets : jax.Array
-        Int32 row-local entry boundaries for every output tile.
-    workspace : HybridWorkspace
-        Hybrid traversal workspace for the mirror structure.
-    """
-
-    indices: jax.Array
-    indptr: jax.Array
-    permutation: jax.Array
-    local_targets: jax.Array
-    tile_offsets: jax.Array
-    workspace: HybridWorkspace
-
-    def tree_flatten(self):
-        """Flatten every dynamic mirror member for the JAX PyTree protocol."""
-        return (
-            self.indices,
-            self.indptr,
-            self.permutation,
-            self.local_targets,
-            self.tile_offsets,
-            self.workspace,
-        ), ()
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        """Restore a TCSC mirror from flattened PyTree state."""
-        del aux_data
-        return cls(*children)
-
-
-@dataclass
-class TCSBuffers:
-    """Store direct traversal buffers and an optional TCSC mirror.
-
-    Parameters
-    ----------
-    tcsr_local_targets : jax.Array
-        Uint16 direct TCSR target offsets within each tile.
-    tcsr_tile_offsets : jax.Array
-        Int32 direct TCSR tile boundaries for every row.
-    tcsr_workspace : HybridWorkspace
-        Hybrid traversal workspace for the direct TCSR structure.
-    tcsc : TCSCMirror, optional
-        Lazily materialized data-free TCSC mirror.
-    """
-
-    tcsr_local_targets: jax.Array
-    tcsr_tile_offsets: jax.Array
-    tcsr_workspace: HybridWorkspace
-    tcsc: TCSCMirror | None = None
+    shape: tuple[int, int]
+    nnz: int
+    transpose: bool
+    tile_width: int
+    offset_dtype: np.dtype
+    local_targets: Any
+    tile_offsets: Any
 
     @property
-    def has_tcsc(self) -> bool:
-        """Return whether the optional TCSC mirror has been materialized."""
-        return self.tcsc is not None
+    def key(self) -> tuple[bool, int, np.dtype]:
+        """Return the immutable direction, width and offset-dtype key.
+
+        Returns
+        -------
+        tuple
+            Direction, actual tile width and NumPy absolute-offset dtype.
+        """
+        return self.transpose, self.tile_width, self.offset_dtype
+
+    @property
+    def metadata(self) -> tuple:
+        """Return static pytree metadata without any dynamic arrays.
+
+        Returns
+        -------
+        tuple
+            Canonical shape, edge count, direction, width and offset dtype.
+        """
+        return self.shape, self.nnz, self.transpose, self.tile_width, self.offset_dtype
+
+    @classmethod
+    def from_metadata(cls, metadata: tuple, local_targets: Any, tile_offsets: Any) -> TileGeometry:
+        """Restore a geometry without inspecting or converting its leaves.
+
+        Parameters
+        ----------
+        metadata : tuple
+            Immutable description returned by :attr:`metadata`.
+        local_targets, tile_offsets : object
+            Exact leaves supplied by JAX, including tracers or placeholders.
+
+        Returns
+        -------
+        TileGeometry
+            Restored metadata with the supplied dynamic leaves.
+        """
+        return cls(metadata[0], metadata[1], metadata[2], metadata[3],
+                   metadata[4], local_targets, tile_offsets)
 
 
-def validate_tcsc_mirror(
-    mirror: TCSCMirror,
-    *,
-    shape: MatrixShape,
-    nnz: int,
-) -> TCSCMirror:
-    """Validate a TCSC mirror against its canonical TCSR dimensions.
+@lru_cache(maxsize=256, typed=True)
+def geometry_widths(target: int) -> tuple[int, ...]:
+    """Enumerate widths covering every supported batch and accumulator type.
 
     Parameters
     ----------
-    mirror : TCSCMirror
-        Mirror structure and traversal buffers to validate.
-    shape : tuple of int
-        Canonical TCSR matrix shape ``(num_pre, num_post)``.
-    nnz : int
-        Number of canonical structural entries.
+    target : int
+        Output dimension of the selected traversal, from zero to INT32_MAX.
 
     Returns
     -------
-    TCSCMirror
-        The validated mirror object.
+    tuple of int
+        Sorted unique adaptive widths covering batch 0..65535 with 4-byte
+        and 8-byte accumulators.
 
     Raises
     ------
-    TypeError
-        If mirror arrays use unsupported kernel dtypes.
     ValueError
-        If mirror shapes, pointers, indices, permutation, or workspace are
-        inconsistent with the canonical structure.
+        The output dimension is not a supported static integer.
+
+    Notes
+    -----
+    Positive batches affect width only through ``ceil(TARGET_BLOCKS / batch)``.
+    This equals one above TARGET_BLOCKS, so the finite 0..TARGET_BLOCKS range
+    includes every possible width, including the special zero-batch widths.
     """
-    rows, cols = int(shape[0]), int(shape[1])
-    nnz = int(nnz)
-    if rows <= 0 or cols <= 0:
-        raise ValueError("TCSC mirror shape dimensions must be positive")
-    if nnz < 0:
-        raise ValueError("TCSC mirror nnz must be non-negative")
-
-    indices = np.asarray(jax.device_get(mirror.indices))
-    indptr = np.asarray(jax.device_get(mirror.indptr))
-    permutation = np.asarray(jax.device_get(mirror.permutation))
-    local_targets = np.asarray(jax.device_get(mirror.local_targets))
-    tile_offsets = np.asarray(jax.device_get(mirror.tile_offsets))
-
-    if indices.dtype != np.dtype(np.int32):
-        raise TypeError("TCSC mirror indices must use int32")
-    if indptr.dtype != np.dtype(np.int64):
-        raise TypeError("TCSC mirror indptr must use int64")
-    if permutation.dtype != np.dtype(np.int64):
-        raise TypeError("TCSC mirror permutation must use int64")
-    if local_targets.dtype != np.dtype(np.uint16):
-        raise TypeError("TCSC mirror local_targets must use uint16")
-    if tile_offsets.dtype != np.dtype(np.int32):
-        raise TypeError("TCSC mirror tile_offsets must use int32")
-
-    if indices.shape != (nnz,):
-        raise ValueError("TCSC mirror indices shape must equal nnz")
-    if indptr.shape != (cols + 1,):
-        raise ValueError("TCSC mirror indptr length must equal shape[1] + 1")
-    if permutation.shape != (nnz,):
-        raise ValueError("TCSC mirror permutation shape must equal nnz")
-    if local_targets.shape != (nnz,):
-        raise ValueError("TCSC mirror local_targets shape must equal nnz")
-    tile_count = (rows + _TILE_SIZE - 1) // _TILE_SIZE
-    if tile_offsets.shape != (cols, tile_count + 1):
-        raise ValueError("TCSC mirror tile_offsets shape is inconsistent")
-
-    if indptr[0] != 0 or indptr[-1] != nnz or np.any(np.diff(indptr) < 0):
-        raise ValueError(
-            "TCSC mirror indptr must be monotonic, start at zero, and end at nnz"
-        )
-    if np.any(indices < 0) or np.any(indices >= rows):
-        raise ValueError("TCSC mirror index is outside [0, shape[0])")
-    if nnz and (
-        np.any(permutation < 0)
-        or np.any(permutation >= nnz)
-        or np.unique(permutation).size != nnz
-    ):
-        raise ValueError("TCSC mirror permutation must contain each slot once")
-    expected_local_targets = np.asarray(
-        indices & (_TILE_SIZE - 1),
-        dtype=np.uint16,
-    )
-    if not np.array_equal(local_targets, expected_local_targets):
-        raise ValueError("TCSC mirror local_targets do not match indices")
-
-    expected_tile_offsets = np.empty_like(tile_offsets)
-    for row in range(cols):
-        begin = int(indptr[row])
-        end = int(indptr[row + 1])
-        row_targets = indices[begin:end]
-        if np.any(np.diff(row_targets) < 0):
-            raise ValueError("TCSC mirror indices must be sorted within each row")
-        for tile in range(tile_count + 1):
-            boundary = min(tile * _TILE_SIZE, rows)
-            expected_tile_offsets[row, tile] = np.searchsorted(
-                row_targets,
-                boundary,
-                side="left",
-            )
-    if not np.array_equal(tile_offsets, expected_tile_offsets):
-        raise ValueError("TCSC mirror tile_offsets do not match indices")
-    workspace_operands(mirror.workspace, mirror.indptr)
-    return mirror
+    if isinstance(target, (bool, np.bool_)):
+        raise ValueError('target must be an integer between 0 and INT32_MAX')
+    try:
+        target = operator.index(target)
+    except TypeError as exc:
+        raise ValueError('target must be an integer between 0 and INT32_MAX') from exc
+    if not 0 <= target <= INT32_MAX:
+        raise ValueError('target must be an integer between 0 and INT32_MAX')
+    return tuple(sorted({tile_schedule(target, batch, size).tile_width
+                         for size in (4, 8) for batch in range(TARGET_BLOCKS + 1)}))
 
 
-def build_tcsc_mirror(
-    tcsr_indices: jax.Array,
-    tcsr_indptr: jax.Array,
-    *,
-    shape: MatrixShape,
-) -> TCSCMirror:
-    """Build and validate a data-free TCSC mirror from TCSR structure.
+def _geometry_placement(*arrays: Any) -> Any:
+    """Keep whole-structure metadata on the structure's known device or mesh."""
+    for array in arrays:
+        sharding = getattr(array, 'sharding', None)
+        if sharding is not None:
+            if sharding.is_fully_replicated:
+                return sharding
+            if isinstance(sharding, jax.sharding.NamedSharding):
+                return jax.sharding.NamedSharding(sharding.mesh, jax.sharding.PartitionSpec())
+    return None
+
+
+def build_tile_geometries(
+    indices: Any, indptr: Any, *, shape: tuple[int, int], transpose: bool,
+) -> dict[tuple[bool, int, np.dtype], TileGeometry]:
+    """Prepare one traversal's complete geometry table from sorted structure.
 
     Parameters
     ----------
-    tcsr_indices : jax.Array
-        Canonical TCSR int32 target indices.
-    tcsr_indptr : jax.Array
-        Canonical TCSR row pointers.
+    indices, indptr : array_like
+        Concrete sorted traversal indices (int32) and pointers (int32/int64).
+        Duplicates remain independent edges. The mirror must already be in
+        its public CSR slot order; no second permutation is constructed.
     shape : tuple of int
-        Canonical TCSR matrix shape ``(num_pre, num_post)``.
+        Canonical CSR shape, regardless of traversal direction.
+    transpose : bool
+        True selects primary traversal; False selects the public CSR mirror.
 
     Returns
     -------
-    TCSCMirror
-        Validated mirror structure, permutation, and traversal buffers.
+    dict
+        Complete geometry table keyed by direction, actual width and offset
+        dtype. Arrays for each width cover every batch and value dtype that
+        selects it. The caller publishes this table only after success.
 
     Raises
     ------
-    RuntimeError
-        If the CSR-to-CSC conversion does not produce a permutation.
+    ValueError
+        Called while staging outside compile-time evaluation, or shape,
+        pointer values or sortedness are invalid. Explicit int64 offsets
+        must survive JAX placement unchanged.
+    TypeError
+        Indices or pointers have unsupported rank or dtype.
     """
-    with jax.enable_x64():
-        tcsc_indptr, tcsc_indices, tcsc_permutation = csr_to_csc_index(
-            tcsr_indptr,
-            tcsr_indices,
-            shape=shape,
-            include_perm=True,
-            method="numpy",
-        )
-        if tcsc_permutation is None:
-            raise RuntimeError("TCSC mirror construction requires a permutation")
-        mirror_csr = PlainCSR(
-            (
-                jnp.asarray(tcsc_permutation, dtype=jnp.int64),
-                tcsc_indices,
-                tcsc_indptr,
-            ),
-            shape=shape[::-1],
-            check_structure=False,
-        )
-        sorted_mirror_csr = sort_csr(mirror_csr)
-        components, local_targets, tile_offsets = build_tcsr_structure(
-            sorted_mirror_csr
-        )
-        mirror = TCSCMirror(
-            indices=components.indices,
-            indptr=components.indptr,
-            permutation=jnp.asarray(components.data, dtype=jnp.int64),
-            local_targets=local_targets,
-            tile_offsets=tile_offsets,
-            workspace=build_hybrid_workspace(components.indptr),
-        )
-        return validate_tcsc_mirror(
-            mirror,
-            shape=shape,
-            nnz=int(tcsr_indices.size),
-        )
+    # The public compile-time context enables eager constant folding without
+    # replacing the active trace in JAX >= 0.9. Concrete closures can prepare
+    # their mirror once there; dynamic matrix arguments must never escape.
+    if (any(isinstance(a, Tracer) for a in (indices, indptr))
+            or not (core.trace_ctx.is_top_level() or jax.config.eager_constant_folding)):
+        raise ValueError('TCSR geometry preparation must run outside JIT or in explicit compile-time evaluation.')
+    if not isinstance(transpose, (bool, np.bool_)):
+        raise ValueError('transpose must be True or False')
+    if len(shape) != 2 or any(isinstance(s, (bool, np.bool_)) for s in shape):
+        raise ValueError('shape must contain two nonnegative int32 dimensions')
+    try:
+        shape = operator.index(shape[0]), operator.index(shape[1])
+    except TypeError as exc:
+        raise ValueError('shape must contain two nonnegative int32 dimensions') from exc
+    if any(s < 0 or s > INT32_MAX for s in shape):
+        raise ValueError('shape must contain two nonnegative int32 dimensions')
+    source, target = shape if transpose else shape[::-1]
+    idx, ptr = (np.asarray(jax.device_get(a)) for a in (indices, indptr))
+    if idx.ndim != 1 or idx.dtype != np.dtype('int32'):
+        raise TypeError('TCSR traversal indices must be rank-one int32')
+    if ptr.ndim != 1 or ptr.dtype not in (np.dtype('int32'), np.dtype('int64')):
+        raise TypeError('TCSR traversal indptr must be rank-one int32/int64')
+    if ptr.shape != (source + 1,):
+        raise ValueError('traversal indptr length does not match the canonical shape')
+    if ptr[0] != 0 or ptr[-1] != idx.size or np.any(ptr[1:] < ptr[:-1]):
+        raise ValueError('invalid CSR pointers')
+    if ptr.dtype == np.dtype('int32') and idx.size > INT32_MAX:
+        raise ValueError('int32 indptr cannot address this many edges')
+    if np.any(idx < 0) or np.any(idx >= target):
+        raise ValueError('traversal index out of range')
+    for row in range(source):
+        begin, end = int(ptr[row]), int(ptr[row + 1])
+        if end - begin > 1 and np.any(idx[begin + 1:end] < idx[begin:end - 1]):
+            raise ValueError('traversal indices must be sorted within each row')
+    placement = _geometry_placement(indices, indptr)
+    result = {}
+    for width in geometry_widths(target):
+        tile_count = (target + width - 1) // width
+        bounds: Any = np.arange(tile_count + 1, dtype=np.int64) * width
+        offsets = np.empty((source, tile_count + 1), dtype=ptr.dtype)
+        for row in range(source):
+            begin, end = int(ptr[row]), int(ptr[row + 1])
+            offsets[row] = begin + np.searchsorted(idx[begin:end], bounds)
+        local = (idx % width).astype(np.uint16)
+        flat_offsets = offsets.ravel()
+        local.flags.writeable = flat_offsets.flags.writeable = False
+        local_array = jax.device_put(local, placement)
+        offset_array = jax.device_put(flat_offsets, placement)
+        if np.dtype(offset_array.dtype) != ptr.dtype:
+            raise ValueError('JAX must preserve int64 tile offsets; enable x64 before preparation.')
+        geometry = TileGeometry(shape, idx.size, bool(transpose), width, ptr.dtype,
+                                local_array, offset_array)
+        result[geometry.key] = geometry
+    return result
+
+
+@dataclass(frozen=True, eq=False)
+class TilePlan:
+    """Immutable tile description belonging to one matrix structure cache.
+
+    Parameters
+    ----------
+    shape : tuple of int
+        Canonical CSR shape, independent of the selected traversal.
+    nnz : int
+        Number of stored edges, including duplicate coordinates.
+    transpose : bool
+        True for primary traversal; False for the common mirror traversal.
+    batch : int
+        Prepared event batch size.
+    value_dtype : numpy.dtype
+        Prepared weight and output dtype.
+    tile_width : int
+        Actual adaptive accumulation tile width.
+    offset_dtype : numpy.dtype
+        Absolute offset dtype, matching the selected traversal's pointers.
+    local_targets, tile_offsets : jax.Array
+        Dynamic uint16 local targets and flattened absolute edge boundaries.
+
+    Notes
+    -----
+    Structure ownership is supplied by the containing cache. Matching shape
+    and edge count alone never permits a plan to be moved to another cache.
+    No mirror permutation, weight arrays or native scratch are stored here.
+    """
+
+    shape: tuple[int, int]
+    nnz: int
+    transpose: bool
+    batch: int
+    value_dtype: np.dtype
+    tile_width: int
+    offset_dtype: np.dtype
+    local_targets: Any
+    tile_offsets: Any
+
+    @property
+    def key(self) -> tuple[bool, int, np.dtype]:
+        """Return the immutable direction, batch and value-dtype cache key.
+
+        Returns
+        -------
+        tuple
+            Direction, batch size and NumPy value dtype.
+        """
+        return self.transpose, self.batch, self.value_dtype
+
+    @property
+    def metadata(self) -> tuple:
+        """Return an immutable pytree description, excluding dynamic arrays.
+
+        Returns
+        -------
+        tuple
+            Canonical shape, edge count, direction, batch size, value dtype,
+            tile width and offset dtype.
+        """
+        return (self.shape, self.nnz, self.transpose, self.batch,
+                self.value_dtype, self.tile_width, self.offset_dtype)
+
+    @classmethod
+    def from_metadata(cls, metadata: tuple, local_targets: Any, tile_offsets: Any) -> TilePlan:
+        """Restore a plan without inspecting or converting its dynamic leaves.
+
+        Parameters
+        ----------
+        metadata : tuple
+            Static description returned by :attr:`metadata`.
+        local_targets, tile_offsets : object
+            Leaves supplied by JAX, including tracers or placeholders.
+
+        Returns
+        -------
+        TilePlan
+            Restored description with the exact supplied leaves.
+        """
+        return cls(metadata[0], metadata[1], metadata[2], metadata[3],
+                   metadata[4], metadata[5], metadata[6], local_targets, tile_offsets)
+
+
+def ensure_preparation_context(*arrays: Any) -> None:
+    """Require concrete structure and an execution context outside JAX transforms.
+
+    Parameters
+    ----------
+    *arrays : array_like
+        Structure arrays about to be read on the host.
+
+    Raises
+    ------
+    ValueError
+        If called while tracing or supplied a traced structure array.
+    """
+    if not core.trace_ctx.is_top_level() or any(isinstance(a, Tracer) for a in arrays):
+        raise ValueError('TCSR sorting and tile preparation must run outside JIT with concrete structure.')
+
+
+def validate_preparation(batch: Any, value_dtype: Any) -> int:
+    """Validate static preparation arguments before constructing a mirror.
+
+    Parameters
+    ----------
+    batch : int
+        Static event batch size, from zero to 65535 inclusive.
+    value_dtype : dtype
+        Weight/output dtype, one of float16, bfloat16, float32 or float64.
+
+    Returns
+    -------
+    int
+        Validated batch size as a Python integer.
+
+    Raises
+    ------
+    ValueError
+        Called while tracing, or batch/dtype is unsupported.
+    """
+    ensure_preparation_context()
+    if isinstance(batch, (bool, np.bool_)):
+        raise ValueError('batch must be a static integer between 0 and 65535')
+    try:
+        batch = operator.index(batch)
+    except TypeError as exc:
+        raise ValueError('batch must be a static integer between 0 and 65535') from exc
+    if not 0 <= batch <= 65535:
+        raise ValueError('invalid dimensions: batch must be between 0 and 65535')
+    if np.dtype(value_dtype) not in tuple(np.dtype(t) for t in (
+        jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64,
+    )):
+        raise ValueError('values must be f16, bf16, f32 or f64')
+    return batch
+
+
+def sort_csr(csr: Any) -> tuple[Any, jax.Array]:
+    """Stably sort columns within each CSR row and reorder heterogeneous weights.
+
+    Parameters
+    ----------
+    csr : CSR
+        Concrete source matrix; its arrays and caches are never changed.
+
+    Returns
+    -------
+    data : jax.Array or brainunit.Quantity
+        Sorted edge weights. Scalars and one-element shared weights are
+        returned unchanged, without expansion.
+    indices : jax.Array
+        Sorted column indices. Duplicate edges retain their relative order.
+    """
+    ensure_preparation_context(csr.indices, csr.indptr)
+    indices, indptr = (np.asarray(jax.device_get(a)) for a in (csr.indices, csr.indptr))
+    permutation = np.arange(indices.size, dtype=np.int64)
+    for row in range(indptr.size - 1):
+        begin, end = int(indptr[row]), int(indptr[row + 1])
+        permutation[begin:end] = begin + np.argsort(indices[begin:end], kind='stable')
+    # The permutation only addresses existing slots; no duplicate coalescing.
+    order = jnp.asarray(permutation, dtype=jnp.int64 if jax.config.jax_enable_x64 else jnp.int32)
+    data = csr.data if u.get_mantissa(csr.data).size == 1 else csr.data[order]
+    return data, csr.indices[order]
+
+
+def build_binary_mm_plan(
+    indices: Any, indptr: Any, *, shape: tuple[int, int], transpose: bool,
+    batch: int, value_dtype: Any,
+) -> TilePlan:
+    """Prepare adaptive tiles from a sorted primary or common mirror traversal.
+
+    Parameters
+    ----------
+    indices, indptr : array_like
+        Sorted traversal indices and int32/int64 row pointers. These arrays
+        belong to the primary CSR when transposed, or its common mirror.
+    shape : tuple of int
+        Canonical CSR shape in both directions.
+    transpose : bool
+        Select primary (True) or mirror (False) traversal.
+    batch : int
+        Static batch size between zero and 65535, inclusive.
+    value_dtype : dtype
+        Supported weight/output dtype: float16, bfloat16, float32 or float64.
+
+    Returns
+    -------
+    TilePlan
+        Plan with dynamic JAX arrays, requiring no host work during MM.
+
+    Raises
+    ------
+    ValueError
+        If called while tracing, the CSR structure is invalid or unsorted,
+        dimensions are invalid, or JAX would narrow int64 offsets.
+    TypeError
+        If traversal indices are not int32.
+    """
+    ensure_preparation_context(indices, indptr)
+    batch = validate_preparation(batch, value_dtype)
+    if not isinstance(transpose, (bool, np.bool_)):
+        raise ValueError('transpose must be True or False')
+    if len(shape) != 2 or any(isinstance(s, (bool, np.bool_)) for s in shape):
+        raise ValueError('shape must contain two nonnegative integer dimensions')
+    try:
+        shape = (operator.index(shape[0]), operator.index(shape[1]))
+    except TypeError as exc:
+        raise ValueError('shape must contain two nonnegative integer dimensions') from exc
+    idx, ptr = (np.asarray(jax.device_get(a)) for a in (indices, indptr))
+    if idx.dtype != np.dtype('int32'):
+        raise TypeError('TCSR traversal indices must be int32')
+    source, target = shape if transpose else shape[::-1]
+    if ptr.shape != (source + 1,):
+        raise ValueError('traversal indptr length does not match the canonical shape')
+    prepared = _prepare_sorted(ptr, idx, target, batch, dtype=value_dtype)
+    local_targets = jnp.asarray(prepared.local_targets)
+    tile_offsets = jnp.asarray(prepared.tile_offsets)
+    if np.dtype(tile_offsets.dtype) != prepared.tile_offsets.dtype:
+        raise ValueError('JAX must preserve int64 tile offsets; enable x64 before preparation.')
+    return TilePlan(shape, idx.size, bool(transpose), batch, np.dtype(value_dtype),
+                    prepared.tile_width, np.dtype(tile_offsets.dtype), local_targets, tile_offsets)

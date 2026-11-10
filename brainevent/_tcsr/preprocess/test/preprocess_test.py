@@ -1,161 +1,157 @@
 # Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
 
-"""Test staged TCSR preprocessing."""
+"""Preparation invariants, including empty structures and traced calls."""
 
+from dataclasses import FrozenInstanceError
+
+import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent._csr.main import CSR as PlainCSR
-from brainevent._tcsr import preprocess
-from brainevent._tcsr.preprocess.preprocess_config import (
-    DEFAULT_CANDIDATES, DEFAULT_HYBRID_CONFIG, HybridConfig,
-    compile_flags_for_config, hybrid_task_capacity,
+from brainevent._csr.main import CSR
+from brainevent._test_util import jax_x64_enabled
+from brainevent._tcsr.binary.combined.planner import tile_schedule
+from brainevent._tcsr.preprocess import (
+    TilePlan, build_binary_mm_plan, ensure_preparation_context, sort_csr, validate_preparation,
 )
 
 
-def test_hybrid_defaults_match_benchmark_configuration() -> None:
-    expected = HybridConfig(512, 1024, 128, 512)
-    assert DEFAULT_HYBRID_CONFIG == expected
-    assert expected in DEFAULT_CANDIDATES
-    assert compile_flags_for_config(expected) == [
-        '-DBE_HYBRID_BLOCK_SIZE=512',
-        '-DBE_HYBRID_FIXED_SCATTER_BLOCKS=1024',
-        '-DBE_HYBRID_TPR_THRESHOLD=128',
-        '-DBE_HYBRID_TASK_NNZ=512',
-    ]
+def _plan(**overrides):
+    args = dict(indices=jnp.array([0, 2, 2, 1], jnp.int32),
+                indptr=jnp.array([0, 3, 4], jnp.int32),
+                shape=(2, 3), transpose=True, batch=2, value_dtype=jnp.float32)
+    args.update(overrides)
+    return build_binary_mm_plan(**args)
 
 
-def test_sort_csr_stably_aligns_data_and_indices() -> None:
-    """Keep duplicate values in input order while sorting each CSR row."""
-    source = PlainCSR(
-        (
-            jnp.asarray([30.0, 10.0, 11.0, 20.0], dtype=jnp.float32),
-            jnp.asarray([3, 1, 1, 2], dtype=jnp.int32),
-            jnp.asarray([0, 4, 4], dtype=jnp.int32),
-        ),
-        shape=(2, 5),
-    )
-
-    with jax.enable_x64():
-        result = preprocess.sort_csr(source)
-
-    assert isinstance(result, PlainCSR)
-    np.testing.assert_array_equal(result.indices, [1, 1, 2, 3])
-    np.testing.assert_array_equal(result.indptr, [0, 4, 4])
-    np.testing.assert_array_equal(result.data, [10.0, 11.0, 20.0, 30.0])
+def test_stable_sort_preserves_source_duplicates_and_units():
+    source = CSR(jnp.array([10., 20., 30., 40., 50.]) * u.mV,
+                 jnp.array([2, 0, 2, 1, 0]), jnp.array([0, 3, 5]), shape=(2, 3))
+    data, indices = sort_csr(source)
+    np.testing.assert_array_equal(indices, [0, 2, 2, 0, 1])
+    np.testing.assert_array_equal(u.get_mantissa(data), [20., 10., 30., 50., 40.])
+    assert u.get_unit(data) == u.mV
+    np.testing.assert_array_equal(source.indices, [2, 0, 2, 1, 0])
+    np.testing.assert_array_equal(u.get_mantissa(source.data), [10., 20., 30., 40., 50.])
 
 
-def test_sort_csr_preserves_homogeneous_data() -> None:
-    """Keep one shared value compact when sorting multiple entries."""
-    source = PlainCSR(
-        (
-            jnp.asarray([2.0], dtype=jnp.float32),
-            jnp.asarray([3, 1, 2], dtype=jnp.int32),
-            jnp.asarray([0, 3], dtype=jnp.int32),
-        ),
-        shape=(1, 4),
-    )
-
-    previous_x64 = jax.config.jax_enable_x64
-    jax.config.update("jax_enable_x64", False)
-    try:
-        result = preprocess.sort_csr(source)
-    finally:
-        jax.config.update("jax_enable_x64", previous_x64)
-
-    np.testing.assert_array_equal(result.indices, [1, 2, 3])
-    np.testing.assert_array_equal(result.data, [2.0])
+@pytest.mark.parametrize('data', [jnp.array(2.), jnp.array([2.])])
+def test_shared_weight_is_not_expanded(data):
+    source = CSR(data, jnp.array([1, 0]), jnp.array([0, 2]), shape=(1, 2))
+    sorted_data, indices = sort_csr(source)
+    assert sorted_data is source.data
+    np.testing.assert_array_equal(indices, [0, 1])
 
 
-def test_build_tcsr_structure_constructs_cross_tile_metadata() -> None:
-    """Describe exact row-local boundaries across full and partial tiles."""
-    source = PlainCSR(
-        (
-            jnp.arange(1.0, 7.0, dtype=jnp.float32),
-            jnp.asarray([3, 8191, 8192, 9000, 0, 9999], dtype=jnp.int32),
-            jnp.asarray([0, 4, 4, 6], dtype=jnp.int32),
-        ),
-        shape=(3, 10_000),
-    )
-
-    with jax.enable_x64():
-        components, local_targets, tile_offsets = preprocess.build_tcsr_structure(
-            source
-        )
-
-    np.testing.assert_array_equal(components.data, [1, 2, 3, 4, 5, 6])
-    np.testing.assert_array_equal(components.indices, [3, 8191, 8192, 9000, 0, 9999])
-    assert components.indptr.dtype == jnp.int64
-    np.testing.assert_array_equal(components.indptr, [0, 4, 4, 6])
-    np.testing.assert_array_equal(local_targets, [3, 8191, 0, 808, 0, 1807])
-    assert local_targets.dtype == jnp.uint16
-    assert tile_offsets.dtype == jnp.int32
-    np.testing.assert_array_equal(
-        tile_offsets,
-        [[0, 2, 4], [0, 0, 0], [0, 1, 2]],
-    )
+def test_sort_empty_structure():
+    source = CSR(jnp.empty(0), jnp.empty(0, jnp.int32), jnp.zeros(3, jnp.int32), shape=(2, 0))
+    data, indices = sort_csr(source)
+    assert data.shape == indices.shape == (0,)
 
 
-def test_build_tcsr_structure_accepts_rows_larger_than_uint16() -> None:
-    """Represent row-relative boundaries beyond uint16 with int32 offsets."""
-    source = PlainCSR(
-        (
-            jnp.asarray([1.0], dtype=jnp.float32),
-            jnp.zeros((65_536,), dtype=jnp.int32),
-            jnp.asarray([0, 65_536], dtype=jnp.int32),
-        ),
-        shape=(1, 1),
-    )
-
-    with jax.enable_x64():
-        _, _, tile_offsets = preprocess.build_tcsr_structure(source)
-
-    assert tile_offsets.dtype == jnp.int32
-    np.testing.assert_array_equal(tile_offsets, [[0, 65_536]])
-
-
-def test_build_hybrid_workspace_matches_scheduler_capacity() -> None:
-    """Allocate task and status arrays with the scheduler's required layout."""
-    indptr = jnp.asarray([0, 2, 2, 140], dtype=jnp.int32)
-
-    workspace = preprocess.build_hybrid_workspace(indptr)
-
-    assert workspace.task_capacity == hybrid_task_capacity(indptr)
-    assert workspace.task_begin.shape == (workspace.task_capacity,)
-    assert workspace.task_end.shape == (workspace.task_capacity,)
-    assert workspace.task_begin.dtype == indptr.dtype
-    assert workspace.task_end.dtype == indptr.dtype
-    assert workspace.status.shape == (2,)
-    assert workspace.status.dtype == jnp.int32
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('batch', [0, 1, 2, 65535])
+@pytest.mark.parametrize('dtype', [jnp.float16, jnp.bfloat16, jnp.float32])
+def test_plan_matches_adaptive_geometry(transpose, batch, dtype):
+    shape = (2, 3) if transpose else (3, 2)
+    plan = _plan(shape=shape, transpose=transpose, batch=batch, value_dtype=dtype)
+    schedule = tile_schedule(3, batch, 4)
+    assert plan.key == (transpose, batch, np.dtype(dtype))
+    assert plan.shape == shape
+    assert plan.nnz == 4
+    assert plan.tile_width == schedule.tile_width
+    assert plan.local_targets.dtype == jnp.uint16
+    assert plan.tile_offsets.dtype == jnp.int32
+    np.testing.assert_array_equal(plan.local_targets, np.array([0, 2, 2, 1]) % plan.tile_width)
+    offsets = np.asarray(plan.tile_offsets).reshape(2, schedule.tile_count + 1)
+    np.testing.assert_array_equal(offsets[:, 0], [0, 3])
+    np.testing.assert_array_equal(offsets[:, -1], [3, 4])
 
 
-def test_build_tcsc_mirror_maps_mirror_slots_to_canonical_tcsr_slots() -> None:
-    """Preserve the data-free mirror permutation direction."""
-    indices = jnp.asarray([0, 2, 1, 2], dtype=jnp.int32)
-    indptr = jnp.asarray([0, 2, 4], dtype=jnp.int32)
+@pytest.mark.parametrize('shape', [(0, 0), (2, 0), (0, 2)])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_plan_zero_dimensions(shape, transpose):
+    source = shape[0] if transpose else shape[1]
+    plan = _plan(indices=jnp.empty(0, jnp.int32), indptr=jnp.zeros(source + 1, jnp.int32),
+                 shape=shape, transpose=transpose)
+    assert plan.local_targets.shape == (0,)
+    assert np.all(np.asarray(plan.tile_offsets) == 0)
 
-    with jax.enable_x64():
-        mirror = preprocess.build_tcsc_mirror(indices, indptr, shape=(2, 3))
 
-    np.testing.assert_array_equal(mirror.indices, [0, 1, 0, 1])
-    np.testing.assert_array_equal(mirror.indptr, [0, 1, 2, 4])
-    np.testing.assert_array_equal(mirror.permutation, [0, 2, 1, 3])
-    np.testing.assert_array_equal(mirror.local_targets, [0, 1, 0, 1])
-    assert mirror.local_targets.dtype == jnp.uint16
-    assert mirror.tile_offsets.dtype == jnp.int32
-    np.testing.assert_array_equal(mirror.tile_offsets, [[0, 1], [0, 1], [0, 2]])
+def test_float64_and_int64_offsets_preserved():
+    with jax_x64_enabled():
+        plan = _plan(indptr=jnp.array([0, 3, 4], jnp.int64), value_dtype=jnp.float64)
+        assert plan.tile_offsets.dtype == jnp.int64
+        assert plan.offset_dtype == np.dtype('int64')
+        assert plan.tile_width == tile_schedule(3, 2, 8).tile_width
+
+
+def test_metadata_reconstruction_accepts_placeholder_leaves():
+    plan = _plan()
+    restored = TilePlan.from_metadata(plan.metadata, None, object())
+    assert restored.metadata == plan.metadata
+    assert restored.local_targets is None
+    with pytest.raises(FrozenInstanceError):
+        plan.batch = 3
+
+
+@pytest.mark.parametrize('overrides, message', [
+    ({'batch': True}, 'batch'),
+    ({'batch': 1.5}, 'batch'),
+    ({'batch': -1}, 'dimensions'),
+    ({'batch': 65536}, 'dimensions'),
+    ({'transpose': 1}, 'transpose'),
+    ({'shape': (True, 3)}, 'shape'),
+    ({'shape': (2.5, 3)}, 'shape'),
+    ({'shape': (1, 3)}, 'indptr'),
+    ({'value_dtype': jnp.int32}, 'values'),
+    ({'indices': jnp.array([2, 0, 2, 1])}, 'sorted'),
+    ({'indices': jnp.array([0, 2, 3, 1])}, 'range'),
+    ({'indices': jnp.array([0., 2., 2., 1.])}, 'int32'),
+])
+def test_invalid_plan_inputs(overrides, message):
+    with pytest.raises((ValueError, TypeError), match=message):
+        _plan(**overrides)
+
+
+def test_prepare_rejects_jit_even_for_closed_concrete_structure():
+    with pytest.raises(ValueError, match='outside JIT'):
+        jax.jit(lambda x: (_plan(), x)[1])(jnp.array(1.))
+
+
+def test_sort_rejects_jit():
+    source = CSR(jnp.array(1.), jnp.array([1, 0]), jnp.array([0, 2]), shape=(1, 2))
+    with pytest.raises(ValueError, match='outside JIT'):
+        jax.jit(lambda x: (sort_csr(source), x)[1])(jnp.array(1.))
+
+
+def test_preparation_rejects_traced_structure():
+    with pytest.raises(ValueError, match='outside JIT'):
+        jax.jit(ensure_preparation_context)(jnp.array([1], jnp.int32))
+
+
+def test_validate_static_arguments():
+    assert validate_preparation(np.int64(3), jnp.float32) == 3
+    with pytest.raises(ValueError, match='f16'):
+        validate_preparation(3, jnp.int32)
+
+
+def test_int64_offsets_must_not_be_narrowed(monkeypatch):
+    from brainevent._tcsr.preprocess import preprocess
+
+    original_asarray = preprocess.jnp.asarray
+
+    def narrow_offsets(array, *args, **kwargs):
+        if getattr(array, 'dtype', None) == np.dtype('int64'):
+            return original_asarray(array, dtype=jnp.int32)
+        return original_asarray(array, *args, **kwargs)
+
+    with jax_x64_enabled():
+        ptr = jnp.array([0, 3, 4], jnp.int64)
+        monkeypatch.setattr(preprocess.jnp, 'asarray', narrow_offsets)
+        with pytest.raises(ValueError, match='preserve int64'):
+            _plan(indptr=ptr)

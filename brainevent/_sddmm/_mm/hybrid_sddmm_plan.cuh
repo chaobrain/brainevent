@@ -1,3 +1,7 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
 #ifndef DEVING_BATCHED_V3_HYBRID_SDDMM_PLAN_CUH
 #define DEVING_BATCHED_V3_HYBRID_SDDMM_PLAN_CUH
 

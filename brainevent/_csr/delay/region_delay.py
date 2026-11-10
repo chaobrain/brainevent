@@ -1,3 +1,7 @@
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
+
 """Stateful delayed CSR: initialization, sorting, ring and single-step reads.
 
 CUDA operators and their JAX transformation rules live in ``delay.py``.

@@ -1,5 +1,7 @@
 # Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0 (the "License").
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
+
 """Tests for kernix_toolchain discovery and diagnostics."""
 
 import sys

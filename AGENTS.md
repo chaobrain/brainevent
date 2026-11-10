@@ -3,6 +3,8 @@
 
 ## Working agreement
 
+Follow the repository's [CONTRIBUTING.md](CONTRIBUTING.md) when making changes.
+
 1. Before writing any code, describe approach, wait for approval.
 2. Requirements ambiguous? Ask clarifying questions before writing code.
 3. After writing code, list edge cases + suggest test cases.

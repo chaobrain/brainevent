@@ -1,3 +1,7 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
 // hybrid (v3) weighted SpMM: the binary operator's schedule (hybrid_batchedv3_spmm_impl.cuh) with QueueT = ValueT, so
 // each active event value scales its contributions:
 //   output[b, col] += events[b, row] * w   over events[b, row] != 0   (w = values[j] or values[0]).

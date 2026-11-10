@@ -1,3 +1,7 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
 // Weighted SDDMM: the binary operator's schedule (hybrid_sddmm_impl.cuh) with QueueT = ValueT, so each
 // active event value scales its contributions:
 //   dweight[j] += sum_b events[b, row] * ct[b, indices[j]]   over events[b, row] != 0.

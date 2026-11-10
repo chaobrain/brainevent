@@ -11,24 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
-"""TCSR binary and weighted event multiplication."""
+"""CUDA tiled binary matrix-matrix multiplication."""
 
-from .binary import (
-    BINARY_BACKENDS,
-    binary_csrmv,
-    binary_csrmv_p,
-    binary_csrmm,
-    binary_csrmm_p,
-    binary_csrmv_p_call,
-    binary_csrmm_p_call,
-)
+from .binary import binary_csrmm, binary_csrmm_p, binary_csrmm_p_call
 
-__all__ = [
-    "BINARY_BACKENDS",
-    "binary_csrmv",
-    "binary_csrmv_p",
-    "binary_csrmm",
-    "binary_csrmm_p",
-]
+__all__ = ['binary_csrmm', 'binary_csrmm_p', 'binary_csrmm_p_call']

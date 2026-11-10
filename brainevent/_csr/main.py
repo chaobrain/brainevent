@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
 
 import operator
@@ -257,10 +256,8 @@ class CompressedSparseData(DataRepresentation):
                 # Replacing a shared cache in place would leave sibling
                 # matrices with a plan for the previous mirror.
                 cache = self._cache
-                self._cache = StructureCache(
-                    mirror=mirror,
-                    diag_plan=cache.diag_plan,
-                )
+                self._cache = cache.copy()
+                self._cache.set_mirror(mirror)
                 self.config = config
             elif name == 'diag_positions':
                 self._cache.diag_plan = tuple(value)
@@ -369,7 +366,7 @@ class CompressedSparseData(DataRepresentation):
         if mirror is not None:
             cache = self._cache
         else:
-            cache = StructureCache(diag_plan=self._cache.diag_plan)
+            cache = self._cache.copy()
             cache.set_mirror(self._weight_indices())
         return type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape, backend=self.backend, cache=cache,

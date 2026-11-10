@@ -1,3 +1,7 @@
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
+
 """Keep delay dtype coverage scoped to each test and large allocations opt-in."""
 
 import pytest
