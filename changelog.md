@@ -38,8 +38,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for binary/weighted vector gradients. The generic CSR adapters and both
   primitive `.call()` registrations remain available.
 
+## [0.4.2] - 2026-11-09
+
+A patch release with five fixes. Building a CSR delay layout no longer
+compiles a program per shape, and it never aliases the caller's arrays. A
+process no longer hangs at exit while a Numba FFI execution is in flight. The
+CUDA toolchain finds the headers of a conda CUDA 12 install.
+
+**Requirements:** unchanged from 0.4.1: Python ≥ 3.12, `jax` ≥ 0.9.0
+(validated through 0.12.x), `brainunit` ≥ 0.0.8, `numpy` ≥ 2.0.
+
 ### Fixed
 
+- `CSRDelayLayout.build` moves its host arrays to the device with
+  `jax.device_put` instead of `jnp.asarray`, so a layout of a new size
+  compiles nothing (#251). On JAX 0.12, `jnp.asarray` of a NumPy array staged
+  one identity program per shape and dtype, about five per new layout. Inside
+  a trace the arrays stay constants.
+- `CSRDelayLayout.build` copies host arrays before `device_put` (#254), which
+  zero-copies a 64-byte-aligned NumPy buffer on jaxlib 0.12.0.1 CPU and ignores
+  `may_alias=False`. A caller writing to its array after `build` no longer
+  changes the layout.
+- The CUDA toolchain finds the headers of a conda environment under
+  `<prefix>/targets/<arch>-linux/include` (#261), where conda-forge's
+  `cuda-nvcc` and `cuda-cudart-dev` (CUDA 12+) put them. The lookup tried
+  `<root>/include` alone, so the header check refused a working `nvcc`
+  (E-HDR). Every `nvcc` source (`BRAINEVENT_NVCC_PATH`, `CUDA_HOME` /
+  `CUDA_PATH`, `PATH`) now also takes that directory where it exists.
 - A process no longer hangs at interpreter exit when an XLA execution that
   calls a Numba FFI target (CPU or CUDA) is still in flight (#256). The target
   is a `ctypes` trampoline into Python; a worker entering it after
