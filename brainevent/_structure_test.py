@@ -31,6 +31,18 @@ def test_structure_cache_set_mirror_does_not_read_array_values():
     assert cache.diag_plan is None
 
 
+def test_mirror_preparation_is_shared_by_copies_and_invalidated_on_replacement(
+):
+    preparation = (object(), 7)
+    mirror = (object(), object(), object())
+    cache = StructureCache(mirror=mirror, mirror_preparation=preparation)
+    copied = cache.copy()
+    assert copied.mirror_preparation is cache.mirror_preparation is preparation
+    copied.set_mirror((object(), object(), object()))
+    assert copied.mirror_preparation is None
+    assert cache.mirror_preparation is preparation
+
+
 def test_warn_mirror_fallback_warns_once_per_owner_and_operation():
     owner = 'StructureTestOwner'
     with warnings.catch_warnings(record=True) as caught:

@@ -52,6 +52,9 @@ class StructureCache:
         the mirror holds stored element ``perm[j]``.
     diag_plan : tuple of jax.Array or None
         The ``diag_add`` relocation plan (CSR/CSC only).
+    mirror_preparation : tuple or None
+        The mirror's immutable MM structure plan and longest compressed row.
+        Shared by same-structure objects after the mirror is prepared.
     tile_geometries : dict
         Immutable tiled-MM geometry keyed by direction, actual tile width and
         offset dtype, independent of batch and value dtype.
@@ -59,7 +62,9 @@ class StructureCache:
         mirror edge slots. Each cache owns its plan dictionary, while plan
         arrays may be shared by structure-preserving copies.
     """
-    __slots__ = ('mirror', 'diag_plan', 'tile_geometries')
+    __slots__ = (
+        'mirror', 'diag_plan', 'tile_geometries', 'mirror_preparation',
+    )
 
     def __init__(
         self,
@@ -68,10 +73,12 @@ class StructureCache:
         tile_plans: Optional[Mapping[Tuple, Any]] = None,
         *,
         tile_geometries: Optional[Mapping[Tuple, Any]] = None,
+        mirror_preparation: Optional[Tuple[Any, int]] = None,
     ):
         if tile_plans is not None and tile_geometries is not None:
             raise ValueError('Supply only tile_geometries or the legacy tile_plans alias.')
         self.mirror = None if mirror is None else tuple(mirror)
+        self.mirror_preparation = mirror_preparation
         self.diag_plan = None if diag_plan is None else tuple(diag_plan)
         entries = tile_geometries if tile_geometries is not None else tile_plans
         self.tile_geometries = {} if entries is None else dict(entries)
@@ -104,6 +111,7 @@ class StructureCache:
         return type(self)(
             mirror=self.mirror, diag_plan=self.diag_plan,
             tile_geometries=self.tile_geometries,
+            mirror_preparation=self.mirror_preparation,
         )
 
     def set_mirror(self, mirror: Tuple) -> Tuple:
@@ -118,9 +126,11 @@ class StructureCache:
         -------
         tuple
             The stored mirror. Primary tile plans are preserved; mirror
-            tile plans must be prepared again. No array values are read.
+            statistics and tile plans must be prepared again. No array values
+            are read.
         """
         self.mirror = tuple(mirror)
+        self.mirror_preparation = None
         self.tile_geometries = {
             key: geometry for key, geometry in self.tile_geometries.items() if key[0]
         }

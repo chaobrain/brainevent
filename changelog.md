@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CSRConfig prepares only the stored traversal's statistics and MM plan.
+  CSR/CSC and fixed-connection mirror statistics are prepared lazily with
+  the mirror, retained in the configuration, and reused by same-structure
+  objects. `build_weight_indices()` prepares the mirror before JIT;
+  `with_rebuilt_config()` rebuilds mirror parameters only when a mirror
+  already exists. TCSR prepares mirror tiles after the parent's mirror
+  configuration is ready.
 - CSR/CSC/TCSR event products now accept `backward_algorithm="binary"` or
   `"weighted_float"`, with `"weighted_float"` as the default. Binary event
   forwards retain their activity-mask semantics, while the default weight

@@ -2079,6 +2079,135 @@ def _lifecycle_matrix(cls=CSR, **kwargs):
 
 
 @pytest.mark.parametrize('cls', [CSR, CSC])
+def test_mirror_statistics_are_lazy_and_shared_by_existing_siblings(
+    monkeypatch, cls,
+):
+    import brainevent._csr.config as config_mod
+
+    matrix = _lifecycle_matrix(cls, config=CSRConfig())
+    sibling = matrix.with_data(matrix.data * 2)
+    transposed = matrix.T
+    primary = matrix.config.primary
+    assert matrix._cache.mirror is None
+    assert matrix.config.mirror is None
+    assert matrix.config.mirror_max_row_nnz is None
+    calls = []
+    original = config_mod._structure_plan
+
+    def record(lengths):
+        calls.append(lengths.copy())
+        return original(lengths)
+
+    monkeypatch.setattr(config_mod, '_structure_plan', record)
+    mirror = matrix._mirror()
+    assert len(calls) == 1
+    np.testing.assert_array_equal(calls[0], np.diff(np.asarray(mirror[0])))
+    assert matrix.config.primary is primary
+    assert matrix.config.mirror_max_row_nnz == int(calls[0].max(initial=0))
+    assert sibling.config.mirror is None
+    assert transposed.config.mirror is None
+    assert sibling._mirror() is mirror
+    assert transposed._mirror() is mirror
+    assert matrix._mirror() is mirror
+    assert len(calls) == 1
+    assert sibling.config.mirror is matrix.config.mirror
+    assert transposed.config.mirror is matrix.config.mirror
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_pytree_binds_shared_mirror_statistics_without_preparing(
+    monkeypatch, cls,
+):
+    import brainevent._csr.config as config_mod
+
+    matrix = _lifecycle_matrix(cls, config=CSRConfig())
+    sibling = matrix.with_data(matrix.data * 2)
+    matrix.build_weight_indices()
+    assert sibling.config.mirror is None
+
+    def no_prepare(*args, **kwargs):
+        raise AssertionError('carried mirror statistics must be reused')
+
+    monkeypatch.setattr(config_mod, '_structure_plan', no_prepare)
+    monkeypatch.setattr(CSRConfig, 'prepare_structure', no_prepare)
+    restored = jax.jit(lambda value: value)(sibling)
+    assert sibling.config.mirror is matrix.config.mirror
+    assert (restored.config.mirror_max_row_nnz
+            == matrix.config.mirror_max_row_nnz)
+    assert restored._cache.mirror_preparation[0] is restored.config.mirror
+    np.testing.assert_array_equal(
+        restored.config.mirror.long_mask, matrix.config.mirror.long_mask,
+    )
+    mapped = jax.tree.map(lambda _: None, sibling)
+    assert mapped.config.mirror.long_mask is None
+    assert mapped._cache.mirror_preparation[0] is mapped.config.mirror
+
+
+def test_failed_lazy_mirror_statistics_can_be_retried(monkeypatch):
+    import brainevent._csr.config as config_mod
+
+    matrix = _lifecycle_matrix(config=CSRConfig())
+    original = config_mod._structure_plan
+
+    def fail(lengths):
+        raise RuntimeError('injected mirror statistics failure')
+
+    monkeypatch.setattr(config_mod, '_structure_plan', fail)
+    with pytest.raises(
+        RuntimeError, match='injected mirror statistics failure',
+    ):
+        matrix._mirror()
+    mirror = matrix._cache.mirror
+    assert mirror is not None
+    assert matrix.config.mirror is None
+    assert matrix._cache.mirror_preparation is None
+    monkeypatch.setattr(config_mod, '_structure_plan', original)
+    assert matrix._mirror() is mirror
+    assert matrix.config.mirror is not None
+    assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
+
+
+@pytest.mark.skipif(
+    jax.default_backend() != 'gpu', reason='CUDA MM fallback requires GPU',
+)
+@pytest.mark.parametrize('cls', [CSR, CSC])
+@pytest.mark.parametrize('operation', ['build_mirror', 'convert'])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_traced_mirror_preparation_keeps_cuda_mm_usable(
+    cls, operation, weighted,
+):
+    matrix = _lifecycle_matrix(cls, config=CSRConfig())
+    matrix.backend = 'cuda_raw'
+    # Prepare device metadata while deliberately leaving the mirror lazy.
+    matrix = matrix.with_rebuilt_config()
+    if operation == 'build_mirror':
+        prepared = jax.jit(lambda value: value.build_weight_indices())(matrix)
+        assert prepared.config.mirror is None
+    else:
+        convert = (
+            (lambda value: value.tocsc()) if cls is CSR
+            else (lambda value: value.tocsr())
+        )
+        prepared = jax.jit(convert)(matrix)
+        assert prepared.config.primary is None
+    dense = np.asarray(matrix.todense())
+    kind = WeightedArray if weighted else BinaryArray
+    for left in (False, True):
+        size = prepared.shape[0 if left else 1]
+        values = jnp.arange(1, 1 + 2 * size, dtype=jnp.float32)
+        values = values.reshape((2, size) if left else (size, 2))
+        values = values.at[0, 0].set(0)
+        call = (
+            (lambda m, x: kind(x) @ m) if left
+            else (lambda m, x: m @ kind(x))
+        )
+        actual = jax.jit(call)(prepared, values)
+        events = np.asarray(values) if weighted else np.asarray(values) != 0
+        expected = events @ dense if left else dense @ events
+        np.testing.assert_allclose(actual, expected)
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
 def test_config_snapshot_is_loaded_once_and_survives_reconstruction(monkeypatch, cls):
     from brainevent._csr.binary import initialize
 
@@ -2103,7 +2232,7 @@ def test_config_snapshot_is_loaded_once_and_survives_reconstruction(monkeypatch,
     assert transformed.config.shape == (2, 3)
     leaves = jax.tree.leaves(matrix)
     assert any(value is matrix.config.primary.long_mask for value in leaves)
-    assert any(value is matrix.config.mirror.long_mask for value in leaves)
+    assert matrix.config.mirror is None
 
 
 @pytest.mark.parametrize('cls', [CSR, CSC])
@@ -2141,9 +2270,13 @@ def test_with_rebuilt_config_returns_matrix_without_mutating_source(
     assert rebuilt.config.shape == matrix._storage_shape
     assert rebuilt.config.nnz == matrix.nse
     assert rebuilt.config.primary is not None
-    assert rebuilt.config.mirror is not None
     assert rebuilt.config.primary is not original_config.primary
-    assert rebuilt.config.mirror is not original_config.mirror
+    if with_mirror:
+        assert rebuilt.config.mirror is not None
+        assert rebuilt.config.mirror is not original_config.mirror
+    else:
+        assert rebuilt.config.mirror is None
+        assert rebuilt.config.mirror_max_row_nnz is None
     assert rebuilt.backend == matrix.backend
     assert rebuilt.backward_algorithm == matrix.backward_algorithm
 
@@ -2435,6 +2568,8 @@ def placed(value, spec):
     return jax.device_put(jnp.asarray(value), NamedSharding(mesh, spec))
 def verify(config):
     for plan in (config.primary, config.mirror):
+        if plan is None:
+            continue
         mask = plan.long_mask
         assert isinstance(mask.sharding, NamedSharding), mask.sharding
         assert mask.sharding.spec == P(), mask.sharding
@@ -2461,11 +2596,17 @@ for cls in (CSR, CSC, FixedNumPerPre, FixedNumPerPost):
     verify(matrix.with_rebuilt_config().config)
     explicit = matrix.with_rebuilt_config(device=devices[0])
     assert explicit.config.primary.long_mask.devices() == {devices[0]}
-    assert explicit.config.mirror.long_mask.devices() == {devices[0]}
+    assert explicit.config.mirror is None
     result = jax.jit(lambda m, x: m @ BinaryArray(x))(
         matrix, placed(np.ones(2, np.float32), P()))
     np.testing.assert_array_equal(np.asarray(result), [2, 2])
     mirror = matrix.build_weight_indices()
+    leaves, treedef = jax.tree.flatten(explicit)
+    explicit = jax.tree.unflatten(treedef, leaves)
+    assert explicit.config.mirror.long_mask.devices() == {devices[0]}
+    assert explicit._mirror() is explicit._cache.mirror
+    assert explicit.config.mirror.long_mask.devices() == {devices[0]}
+    assert mirror.config.mirror.long_mask.devices() == set(devices)
     rebuilt = cls(*args, shape=(2, 2),
                   buffers=mirror.buffers, config=CSRConfig())
     verify(rebuilt.config)
@@ -2511,6 +2652,25 @@ def test_explicit_gpu_preparation_moves_both_masks_and_queries_on_jax_backend():
     assert prepared.config.device_info.device_kind == gpu.device_kind
     assert prepared.config.primary.long_mask.devices() == {gpu}
     assert prepared.config.mirror.long_mask.devices() == {gpu}
+
+
+@pytest.mark.skipif(
+    jax.default_backend() != 'gpu', reason='GPU device query requires CUDA',
+)
+def test_explicit_gpu_preparation_preserves_later_lazy_mirror_placement():
+    cpu, gpu = jax.devices('cpu')[0], jax.devices('gpu')[0]
+    with jax.default_device(cpu):
+        source = _lifecycle_matrix(config=CSRConfig())
+    prepared = source.with_rebuilt_config(device=gpu)
+    assert prepared.config.mirror is None
+    source._mirror()
+    assert source.config.mirror.long_mask.devices() == {cpu}
+    leaves, treedef = jax.tree.flatten(prepared)
+    prepared = jax.tree.unflatten(treedef, leaves)
+    assert prepared.config.mirror.long_mask.devices() == {gpu}
+    assert prepared._mirror() is prepared._cache.mirror
+    assert prepared.config.mirror.long_mask.devices() == {gpu}
+    assert source.config.mirror.long_mask.devices() == {cpu}
 
 
 @pytest.mark.skipif(jax.default_backend() != 'gpu', reason='GPU device query requires CUDA')

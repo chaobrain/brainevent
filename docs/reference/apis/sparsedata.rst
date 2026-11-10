@@ -31,6 +31,53 @@ CSR / CSC / TCSR
    TCSR
 
 
+Configuration and mirror preparation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CSR, CSC and the fixed-connection formats prepare configuration statistics
+and an MM structure plan for their stored traversal during construction.
+``CSRConfig.prepare_structure()`` likewise prepares only the supplied
+traversal. Until a mirror is prepared, ``config.mirror`` and
+``config.mirror_max_row_nnz`` are ``None``.
+
+The first concrete mirror request prepares its statistics and MM plan from
+the mirror row pointers, then retains them in the configuration and shared
+structure cache. Later mirror requests and same-structure objects reuse this
+preparation. TCSR inherits this lifecycle: CSR prepares the mirror and its
+configuration before TCSR prepares mirror tiles.
+
+Use ``build_weight_indices()`` before passing a matrix as a JIT argument
+when its operations need the mirror. A CSR or CSC constructor's
+``precompute_weight_indices=True`` option also prepares it eagerly:
+
+.. code-block:: python
+
+   >>> import jax.numpy as jnp
+   >>> from brainevent import CSR, CSRConfig
+   >>> matrix = CSR.fromdense(
+   ...     jnp.array([[1., 0.], [2., 3.]]),
+   ...     backend='jax_raw', config=CSRConfig())
+   >>> matrix.config.mirror_max_row_nnz is None
+   True
+   >>> matrix = matrix.build_weight_indices()
+   >>> matrix.config.mirror_max_row_nnz
+   2
+
+A mirror created from traced structure can carry arrays without statistics.
+MM then uses an applicable fallback; call ``build_weight_indices()`` outside
+JIT to fill in the missing statistics and plan.
+
+``with_rebuilt_config()`` returns a new matrix with freshly prepared
+configuration. It rebuilds mirror parameters only if the mirror already
+exists. Its ``device`` argument controls plan placement without moving the
+matrix arrays, including the placement of a subsequently prepared mirror
+mask. Replacing the structure or mirror invalidates its previous preparation.
+Earlier configuration references remain immutable snapshots; existing
+same-structure objects receive cached mirror parameters when they next
+request the mirror or are packed as pytrees. Packing and reconstruction do
+not scan the structure to create missing statistics.
+
+
 Event weight gradients
 ~~~~~~~~~~~~~~~~~~~~~~
 

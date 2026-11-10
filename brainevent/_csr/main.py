@@ -38,8 +38,9 @@ from brainevent._csr.binary.binary_indexed import (
     binary_csrmm_indexed,
 )
 from brainevent._csr.config import (
-    CSRConfig, _structure_device, _host_structure_array,
-    _prepare_csr_config, _config_for_new_structure, _config_with_mirror,
+    CSRConfig, _host_structure_array,
+    _prepare_csr_config, _config_for_new_structure,
+    _config_with_mirror, _sync_mirror_config,
 )
 from brainevent._csr.diag.diag_add import csr_diag_position, csr_diag_add
 from brainevent._csr.float.float import csrmv, csrmm
@@ -261,13 +262,18 @@ class CompressedSparseData(DataRepresentation):
                 mirror = tuple(value)
                 config = _config_with_mirror(
                     self.config, mirror, shape=self._storage_shape[::-1],
-                    device=_structure_device(self.indices, device),
+                    device=device,
                 )
                 # Replacing a shared cache in place would leave sibling
                 # matrices with a plan for the previous mirror.
                 cache = self._cache
                 self._cache = cache.copy()
                 self._cache.set_mirror(mirror)
+                if (config.mirror is not None
+                        and config.mirror_max_row_nnz is not None):
+                    self._cache.mirror_preparation = (
+                        config.mirror, config.mirror_max_row_nnz,
+                    )
                 self.config = config
             elif name == 'diag_positions':
                 self._cache.diag_plan = tuple(value)
@@ -319,17 +325,24 @@ class CompressedSparseData(DataRepresentation):
 
         A concrete structure builds the mirror once and caches it, even under
         an active trace (the arrays are computed eagerly, so they are not
-        tracers). A traced structure without a carried mirror returns ``None``
-        so the caller can take a mirror-free path.
+        tracers). Its row statistics and MM plan are prepared at that point,
+        and shared cache hits bind those parameters to this object's config.
+        A traced structure without a carried mirror returns ``None`` so the
+        caller can take a mirror-free path.
         """
         cache = self._cache
-        if cache.mirror is not None:
-            return cache.mirror
-        if not is_concrete(self.indices, self.indptr):
-            return None
-        with jax.ensure_compile_time_eval():
-            mirror = csr_to_csc_index(self.indptr, self.indices, shape=self._storage_shape)
-        return cache.set_mirror(mirror)
+        if cache.mirror is None:
+            if not is_concrete(self.indices, self.indptr):
+                return None
+            with jax.ensure_compile_time_eval():
+                mirror = csr_to_csc_index(
+                    self.indptr, self.indices, shape=self._storage_shape,
+                )
+                cache.set_mirror(mirror)
+        self.config = _sync_mirror_config(
+            self.config, cache, shape=self._storage_shape[::-1],
+        )
+        return cache.mirror
 
     def _weight_indices(self):
         """Return the mirror ``(indptr, indices, perm)``, computing it if needed.
@@ -445,7 +458,7 @@ class CompressedSparseData(DataRepresentation):
                 raise ValueError('with_rebuilt_config requires a concrete mirror outside jax.jit.')
             config = _config_with_mirror(
                 config, self._cache.mirror, shape=self._storage_shape[::-1],
-                device=_structure_device(self.indices, device),
+                device=device,
             )
         return type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape, backend=self.backend,
@@ -516,16 +529,28 @@ class CompressedSparseData(DataRepresentation):
         """
         shape = self._storage_shape
         matrix = x.ndim == 2
+        native = _use_cuda_indexed_binary_route(self.backend)
         mirror = None
-        if not transpose and _use_cuda_indexed_binary_route(self.backend):
+        if not transpose and native:
             mirror = self._mirror()
             if mirror is None:
                 warn_mirror_fallback(type(self).__name__, 'the unfavorable event product')
+            elif matrix and self.config.mirror is None:
+                # A mirror computed inside JIT can carry arrays without host
+                # statistics. The canonical CUDA gather needs no MM plan.
+                mirror = None
         if mirror is None:
             primary = binary_csrmm if matrix else binary_csrmv
+            # Traced format conversion can also leave the new primary
+            # unprepared. Its transposed hybrid MM must use the JAX route.
+            backend = self.backend
+            if (matrix and transpose and native
+                    and self.config.primary is None):
+                backend = 'jax_raw'
             return primary(
                 self.data, self.indices, self.indptr, x,
-                shape=shape, transpose=transpose, backend=self.backend, weighted=weighted,
+                shape=shape, transpose=transpose,
+                backend=backend, weighted=weighted,
                 config=self.config, backward_algorithm=self.backward_algorithm,
             )
         mirror_indptr, mirror_indices, perm = mirror
@@ -558,6 +583,9 @@ class CompressedSparseData(DataRepresentation):
         tree_unflatten : Reconstruct a sparse matrix from flattened data.
         """
         cache = self._cache
+        self.config = _sync_mirror_config(
+            self.config, cache, shape=self._storage_shape[::-1], prepare=False,
+        )
         mirror = cache.mirror or ()
         plan = cache.diag_plan or ()
         children = (self.data, self.indices, self.indptr, self.config, *mirror, *plan)
@@ -600,6 +628,12 @@ class CompressedSparseData(DataRepresentation):
         mirror = tuple(children[4:7]) if has_mirror else None
         plan = tuple(children[4 + 3 * has_mirror:]) if has_plan else None
         cache = StructureCache(mirror=mirror, diag_plan=plan)
+        if (has_mirror and isinstance(config, CSRConfig)
+                and config.mirror is not None
+                and config.mirror_max_row_nnz is not None):
+            cache.mirror_preparation = (
+                config.mirror, config.mirror_max_row_nnz,
+            )
         return cls._from_parts(data, indices, indptr, shape=shape, backend=backend,
                                backward_algorithm=backward_algorithm, cache=cache, config=config)
 

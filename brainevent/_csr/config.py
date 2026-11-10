@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._structure import is_concrete
+from brainevent._structure import StructureCache, is_concrete
 from brainevent.config import _backend_preference
 
 __all__ = [
@@ -725,9 +725,11 @@ class CSRConfig:
 
     def prepare_structure(self, indices: Any, indptr: Any, *, shape: Sequence[int],
                           device_info: CSRDeviceInfo | None = None) -> CSRConfig:
-        """Prepare primary and mirror row statistics from concrete structure.
+        """Prepare primary row statistics from concrete structure.
 
-        Masks for a CPU-sharded structure are replicated across its mesh.
+        Mirror statistics remain absent until the owning matrix builds its
+        mirror. Masks for a CPU-sharded structure are replicated across its
+        mesh.
 
         Parameters
         ----------
@@ -763,12 +765,9 @@ class CSRConfig:
             raise ValueError('indptr must be nondecreasing')
         if idx.size and (idx.min() < 0 or idx.max() >= cols):
             raise ValueError('indices are outside the matrix shape')
-        mirror_lengths = np.bincount(idx.astype(np.int64), minlength=cols).astype(np.int64)
         prepared = replace(base, shape=(rows, cols), nnz=int(idx.size),
                            primary_max_row_nnz=int(lengths.max(initial=0)),
-                           mirror_max_row_nnz=int(mirror_lengths.max(initial=0)),
-                           primary=_structure_plan(lengths),
-                           mirror=_structure_plan(mirror_lengths))
+                           primary=_structure_plan(lengths))
         return _place_prepared_masks(prepared, _replicated_cpu_sharding(indices, indptr))
 
     def swap_layouts(self) -> CSRConfig:
@@ -1063,5 +1062,90 @@ def _config_with_mirror(config: CSRConfig, mirror: Sequence[Any], *,
     prepared = _config_for_new_structure(
         config, mirror_indices, mirror_indptr, shape=shape, device=device,
     )
-    return replace(config, mirror=prepared.primary,
-                   mirror_max_row_nnz=prepared.primary_max_row_nnz)
+    plan = prepared.primary
+    if plan is not None:
+        plan = _place_mirror_plan(config, plan, device=device)
+    return replace(
+        config,
+        shape=(prepared.shape[::-1] if prepared.shape is not None
+               else config.shape),
+        nnz=prepared.nnz if prepared.nnz is not None else config.nnz,
+        mirror=plan, mirror_max_row_nnz=prepared.primary_max_row_nnz,
+    )
+
+
+def _place_mirror_plan(
+    config: CSRConfig, plan: MMStructurePlan, *, device: Any = None,
+) -> MMStructurePlan:
+    """Match this snapshot's mask placement without querying a device."""
+    placement = device
+    if placement is None and config.primary is not None:
+        placement = getattr(config.primary.long_mask, 'sharding', None)
+    mask = plan.long_mask
+    if placement is None or not isinstance(mask, (jax.Array, np.ndarray)):
+        return plan
+    current = getattr(mask, 'sharding', None)
+    if current == placement:
+        return plan
+    return replace(plan, long_mask=jax.device_put(mask, placement))
+
+
+def _sync_mirror_config(config: CSRConfig, cache: StructureCache, *,
+                        shape: Sequence[int], device: Any = None,
+                        prepare: bool = True) -> CSRConfig:
+    """Bind shared mirror preparation, optionally preparing concrete pointers.
+
+    ``shape`` is the mirror's compressed traversal shape. Packing a pytree
+    passes ``prepare=False``: it only binds metadata that is already available.
+    Existing snapshots keep their own mask placement, even when a sibling
+    shares the same structure cache.
+    """
+    mirror = cache.mirror
+    if mirror is None:
+        return config
+    if config.mirror is not None:
+        mask = config.mirror.long_mask
+        if (cache.mirror_preparation is None
+                and config.mirror_max_row_nnz is not None
+                and isinstance(mask, (jax.Array, np.ndarray))
+                and not isinstance(mask, jax.core.Tracer)
+                and mask.dtype == np.dtype(np.uint32)):
+            cache.mirror_preparation = (
+                config.mirror, config.mirror_max_row_nnz,
+            )
+        return config
+
+    preparation = cache.mirror_preparation
+    if preparation is None:
+        pointers = mirror[0]
+        if (not prepare or isinstance(pointers, jax.core.Tracer)
+                or not isinstance(pointers, (jax.Array, np.ndarray))
+                or pointers.dtype not in
+                (np.dtype(np.int32), np.dtype(np.int64))):
+            return config
+        rows, _ = shape
+        with jax.ensure_compile_time_eval():
+            ptr = np.asarray(pointers)
+            if ptr.ndim != 1 or ptr.size != rows + 1 or ptr[0] != 0:
+                raise ValueError(
+                    'mirror indptr must start at zero and match its rows')
+            nnz = config.nnz if config.nnz is not None else mirror[1].shape[0]
+            if ptr[-1] != nnz:
+                raise ValueError('mirror indptr must end at nnz')
+            lengths = np.diff(ptr.astype(np.int64))
+            if np.any(lengths < 0):
+                raise ValueError('mirror indptr must be nondecreasing')
+            plan = _place_mirror_plan(
+                config, _structure_plan(lengths), device=device)
+            preparation = (plan, int(lengths.max(initial=0)))
+        cache.mirror_preparation = preparation
+
+    plan, maximum = preparation
+    with jax.ensure_compile_time_eval():
+        plan = _place_mirror_plan(config, plan, device=device)
+    return replace(
+        config,
+        shape=(shape[1], shape[0]) if config.shape is None else config.shape,
+        nnz=mirror[1].shape[0] if config.nnz is None else config.nnz,
+        mirror=plan, mirror_max_row_nnz=maximum,
+    )

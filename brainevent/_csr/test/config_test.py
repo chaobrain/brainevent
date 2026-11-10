@@ -29,6 +29,7 @@ from brainevent._csr.config import (
     _call_plan,
     get_device_info,
 )
+from brainevent._structure import StructureCache
 
 
 # Structure plans, scheduling snapshots and validation
@@ -51,13 +52,214 @@ def test_structure_plan_uses_integer_group_rule_and_exact_long_mask():
     assert (config.shape, config.nnz, config.primary_max_row_nnz) == ((5, 128), 1571, 1025)
     assert (primary.group, primary.long_threshold, primary.long_tasks) == (4, 64, 5)
     np.testing.assert_array_equal(primary.long_mask, np.array([0b11000], dtype=np.uint32))
-    mirror = config.mirror
-    lengths = np.bincount(indices, minlength=128)
-    assert config.shape[::-1] == (128, 5)
-    assert config.nnz == len(indices)
-    assert config.mirror_max_row_nnz == int(lengths.max())
-    assert mirror.long_tasks == 0
+    assert config.mirror is None and config.mirror_max_row_nnz is None
     np.testing.assert_array_equal(indptr, [0, 16, 33, 33, 546, 1571])
+
+
+def _mirror_cache(indices, indptr, shape):
+    from brainevent._misc import csr_to_csc_index
+
+    return StructureCache(
+        mirror=csr_to_csc_index(indptr, indices, shape=shape))
+
+
+def test_primary_preparation_does_not_count_columns(monkeypatch):
+    def no_count(*args, **kwargs):
+        raise AssertionError(
+            'primary preparation must not compute mirror statistics')
+
+    monkeypatch.setattr(config_mod.np, 'bincount', no_count)
+    config, _, _ = _prepared()
+    assert config.primary is not None
+    assert config.mirror is config.mirror_max_row_nnz is None
+
+
+def test_mirror_statistics_are_prepared_once_and_shared_without_recounting(
+    monkeypatch,
+):
+    config, indices, indptr = _prepared()
+    cache = _mirror_cache(indices, indptr, config.shape)
+    lengths = np.diff(np.asarray(cache.mirror[0]))
+    prepared = config_mod._sync_mirror_config(
+        config, cache, shape=config.shape[::-1])
+    assert prepared.primary is config.primary
+    assert prepared.mirror_max_row_nnz == int(lengths.max())
+    assert cache.mirror_preparation == (
+        prepared.mirror, prepared.mirror_max_row_nnz)
+
+    def no_plan(*args, **kwargs):
+        raise AssertionError('mirror statistics must be reused')
+
+    monkeypatch.setattr(config_mod, '_structure_plan', no_plan)
+    sibling = config_mod._sync_mirror_config(
+        config, cache, shape=config.shape[::-1], prepare=False)
+    assert sibling.mirror is prepared.mirror
+    assert config_mod._sync_mirror_config(
+        prepared, cache, shape=config.shape[::-1]) is prepared
+    assert config.mirror is None
+
+
+def test_mirror_sync_only_reads_pointers_and_preserves_existing_plan(
+    monkeypatch,
+):
+    config, indices, indptr = _prepared()
+    cache = _mirror_cache(indices, indptr, config.shape)
+
+    class NoHostRead:
+        shape = indices.shape
+        dtype = np.dtype(np.int32)
+
+        def __array__(self, *args, **kwargs):
+            raise AssertionError(
+                'mirror statistics need only the compressed pointers')
+
+    cache.mirror = (cache.mirror[0], NoHostRead(), NoHostRead())
+    prepared = config_mod._sync_mirror_config(
+        config, cache, shape=config.shape[::-1])
+    assert prepared.mirror is not None
+    alternate = replace(
+        prepared.mirror, long_mask=jnp.array(prepared.mirror.long_mask))
+    independent = replace(prepared, mirror=alternate)
+    assert config_mod._sync_mirror_config(
+        independent, cache, shape=config.shape[::-1]) is independent
+
+
+def test_mirror_sync_without_preparation_preserves_an_incomplete_snapshot(
+    monkeypatch,
+):
+    config, indices, indptr = _prepared()
+    cache = _mirror_cache(indices, indptr, config.shape)
+
+    def no_plan(*args, **kwargs):
+        raise AssertionError('packing must not create a plan')
+
+    monkeypatch.setattr(config_mod, '_structure_plan', no_plan)
+    assert config_mod._sync_mirror_config(
+        config, cache, shape=config.shape[::-1], prepare=False) is config
+    assert cache.mirror_preparation is None
+
+
+def test_mirror_sync_recovers_structure_identity_from_cached_preparation():
+    config, indices, indptr = _prepared()
+    cache = _mirror_cache(indices, indptr, config.shape)
+    prepared = config_mod._sync_mirror_config(
+        config, cache, shape=config.shape[::-1])
+    restored = config_mod._sync_mirror_config(
+        config.parameter_snapshot(), cache, shape=config.shape[::-1],
+        prepare=False)
+    assert restored.shape == config.shape and restored.nnz == config.nnz
+    assert restored.mirror is prepared.mirror
+    assert restored.validate() is restored
+
+
+def test_traced_mirror_without_metadata_is_not_scanned():
+    config, indices, indptr = _prepared()
+    mirror = _mirror_cache(indices, indptr, config.shape).mirror
+
+    @jax.jit
+    def run(ptr, idx, perm):
+        cache = StructureCache(mirror=(ptr, idx, perm))
+        result = config_mod._sync_mirror_config(
+            config, cache, shape=config.shape[::-1])
+        assert result is config and cache.mirror_preparation is None
+        return ptr
+
+    np.testing.assert_array_equal(run(*mirror), mirror[0])
+
+
+@pytest.mark.parametrize('pointer', [
+    None, jax.ShapeDtypeStruct((129,), np.int32),
+    np.zeros(129, dtype=jax.dtypes.float0),
+])
+def test_mirror_sync_does_not_scan_placeholder_pointers(pointer):
+    config, indices, _ = _prepared()
+    cache = StructureCache(mirror=(pointer, indices, None))
+    assert config_mod._sync_mirror_config(
+        config, cache, shape=config.shape[::-1]) is config
+    assert cache.mirror_preparation is None
+
+
+def test_known_mirror_plan_seeds_cache_without_reading_structure(monkeypatch):
+    config, indices, indptr = _prepared()
+    cache = _mirror_cache(indices, indptr, config.shape)
+    prepared = config_mod._sync_mirror_config(
+        config, cache, shape=config.shape[::-1])
+    cache.mirror_preparation = None
+
+    def no_plan(*args, **kwargs):
+        raise AssertionError('a known reverse-layout plan must be reused')
+
+    monkeypatch.setattr(config_mod, '_structure_plan', no_plan)
+    assert config_mod._sync_mirror_config(
+        prepared, cache, shape=config.shape[::-1], prepare=False) is prepared
+    assert cache.mirror_preparation[0] is prepared.mirror
+
+
+@pytest.mark.parametrize('pointers', [
+    np.zeros((2, 2), np.int32), np.zeros(3, np.int32),
+    np.array([1, 1, 2], np.int32), np.array([0, 0, 1], np.int32),
+    np.array([0, 3, 2], np.int32),
+])
+def test_invalid_mirror_pointers_do_not_publish_preparation(pointers):
+    config = CSRConfig().prepare_structure(
+        np.array([0, 1], np.int32), np.array([0, 2], np.int32), shape=(1, 2))
+    cache = StructureCache(mirror=(pointers, np.array([0, 0], np.int32), None))
+    with pytest.raises(ValueError, match='mirror indptr'):
+        config_mod._sync_mirror_config(config, cache, shape=(2, 1))
+    assert cache.mirror_preparation is None
+    assert config.mirror is None
+
+
+def test_failed_mirror_plan_preparation_does_not_publish_metadata(monkeypatch):
+    config, indices, indptr = _prepared()
+    cache = _mirror_cache(indices, indptr, config.shape)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('injected preparation failure')
+
+    monkeypatch.setattr(config_mod, '_structure_plan', fail)
+    with pytest.raises(RuntimeError, match='injected'):
+        config_mod._sync_mirror_config(config, cache, shape=config.shape[::-1])
+    assert cache.mirror_preparation is None and config.mirror is None
+
+
+def test_mirror_sync_without_cached_mirror_does_not_prepare():
+    config, _, _ = _prepared()
+    assert config_mod._sync_mirror_config(
+        config, StructureCache(), shape=config.shape[::-1]) is config
+
+
+def test_concrete_mirror_preparation_under_trace_does_not_cache_tracers():
+    config, indices, indptr = _prepared()
+    cache = _mirror_cache(indices, indptr, config.shape)
+
+    @jax.jit
+    def run(snapshot):
+        return config_mod._sync_mirror_config(
+            snapshot, cache, shape=config.shape[::-1]).mirror.long_mask
+
+    result = run(config)
+    assert not isinstance(
+        cache.mirror_preparation[0].long_mask, jax.core.Tracer)
+    np.testing.assert_array_equal(
+        result, cache.mirror_preparation[0].long_mask)
+
+
+def test_existing_traced_mirror_mask_does_not_escape_into_shared_cache():
+    config, indices, indptr = _prepared()
+    cache = _mirror_cache(indices, indptr, config.shape)
+    prepared = config_mod._sync_mirror_config(
+        config, cache, shape=config.shape[::-1])
+    cache.mirror_preparation = None
+
+    @jax.jit
+    def run(snapshot):
+        return config_mod._sync_mirror_config(
+            snapshot, cache, shape=config.shape[::-1],
+            prepare=False).mirror.long_mask
+
+    np.testing.assert_array_equal(run(prepared), prepared.mirror.long_mask)
+    assert cache.mirror_preparation is None
 
 
 def test_same_shape_and_nnz_different_rows_produce_different_plans():
@@ -141,7 +343,10 @@ def test_call_plan_keeps_weighted_identity_even_without_long_tasks():
 
 
 def test_selected_kernel_roundtrip_and_layout_swap_share_masks():
-    config, _, _ = _prepared()
+    config, indices, indptr = _prepared()
+    config = config_mod._sync_mirror_config(
+        config, _mirror_cache(indices, indptr, config.shape),
+        shape=config.shape[::-1])
     spec, mask = config.kernel_args('mirror')
     restored = CSRConfig.from_kernel_args(spec, mask)
     assert restored.kernel_args()[0].structure == spec.structure
@@ -161,10 +366,15 @@ def test_selected_kernel_roundtrip_and_layout_swap_share_masks():
         config.kernel_args('invalid')
 
 
-def test_config_pytree_uses_mask_leaves_and_survives_jit_scan():
-    config, _, _ = _prepared()
+@pytest.mark.parametrize('with_mirror', [False, True])
+def test_config_pytree_uses_mask_leaves_and_survives_jit_scan(with_mirror):
+    config, indices, indptr = _prepared()
+    if with_mirror:
+        config = config_mod._sync_mirror_config(
+            config, _mirror_cache(indices, indptr, config.shape),
+            shape=config.shape[::-1])
     leaves, tree = jax.tree_util.tree_flatten(config)
-    assert len(leaves) == 2
+    assert len(leaves) == 1 + int(with_mirror)
     restored = jax.tree_util.tree_unflatten(tree, leaves)
     assert restored.kernel_args()[0] == config.kernel_args()[0]
     np.testing.assert_array_equal(restored.primary.long_mask, config.primary.long_mask)
@@ -209,7 +419,11 @@ def test_empty_structure_has_valid_empty_or_zero_masks(lengths, cols):
     config = CSRConfig(device_info=DEVICE).prepare_structure(
         np.empty(0, dtype=np.int32), ptr, shape=(len(lengths), cols))
     assert config.nnz == config.primary.long_tasks == 0
-    assert config.mirror.long_tasks == 0
+    assert config.mirror is None
+    cache = _mirror_cache(np.empty(0, np.int32), ptr, config.shape)
+    prepared = config_mod._sync_mirror_config(
+        config, cache, shape=config.shape[::-1])
+    assert prepared.mirror.long_tasks == prepared.mirror_max_row_nnz == 0
     assert config.mm_plan(0, np.float32).task_capacity == 0
 
 
@@ -268,7 +482,10 @@ def test_scalar_plan_cache_is_bounded():
 
 
 def test_incomplete_snapshots_roundtrip_without_creating_plan_arrays():
-    config, _, _ = _prepared()
+    config, indices, indptr = _prepared()
+    config = config_mod._sync_mirror_config(
+        config, _mirror_cache(indices, indptr, config.shape),
+        shape=config.shape[::-1])
     for snapshot in (CSRConfig(), replace(config, primary=None), replace(config, mirror=None)):
         leaves, tree = jax.tree_util.tree_flatten(snapshot)
         restored = jax.tree_util.tree_unflatten(tree, leaves)

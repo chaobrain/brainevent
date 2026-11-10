@@ -22,6 +22,222 @@ def _matrix(cls):
 
 
 @pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+def test_fcn_construction_and_rebuild_keep_mirror_statistics_lazy(cls):
+    matrix = _matrix(cls)
+    original_config = matrix.config
+    assert matrix.config.primary is not None
+    assert matrix.config.mirror is None
+    assert matrix.config.mirror_max_row_nnz is None
+    assert matrix._cache.mirror is None
+
+    rebuilt = matrix.with_rebuilt_config()
+    assert matrix.config is original_config
+    assert rebuilt.config.primary is not None
+    assert rebuilt.config.mirror is None
+    assert rebuilt._cache.mirror is None
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+def test_first_fcn_mirror_prepares_once_and_siblings_reuse_statistics(
+    monkeypatch, cls,
+):
+    from brainevent._csr import config as config_mod
+
+    matrix = _matrix(cls)
+    sibling = matrix.with_data(matrix.data * 2)
+    transpose = matrix.T
+    primary = matrix.config.primary
+    calls = []
+    prepare = config_mod._structure_plan
+
+    def record(lengths):
+        calls.append(np.asarray(lengths).copy())
+        return prepare(lengths)
+
+    monkeypatch.setattr(config_mod, '_structure_plan', record)
+    mirror = matrix._mirror()
+    assert matrix.config.primary is primary
+    assert matrix.config.mirror_max_row_nnz == 2
+    assert matrix.config.mirror is not None
+    assert len(calls) == 1
+    np.testing.assert_array_equal(calls[0], [1, 1, 2])
+    assert sibling._mirror() is mirror
+    assert transpose._mirror() is mirror
+    assert matrix._mirror() is mirror
+    assert len(calls) == 1
+    assert sibling.config.mirror is matrix.config.mirror
+    assert transpose.config.mirror is matrix.config.mirror
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+def test_fcn_pytree_binds_shared_statistics_without_preparing(
+    monkeypatch, cls,
+):
+    from brainevent._csr import config as config_mod
+
+    matrix = _matrix(cls)
+    sibling = matrix.with_data(matrix.data * 2)
+    matrix._mirror()
+
+    def no_prepare(*args, **kwargs):
+        raise AssertionError(
+            'pytree reconstruction must reuse mirror statistics',
+        )
+
+    monkeypatch.setattr(config_mod, '_structure_plan', no_prepare)
+    monkeypatch.setattr(CSRConfig, 'prepare_structure', no_prepare)
+    leaves, tree = jax.tree_util.tree_flatten(sibling)
+    restored = jax.tree_util.tree_unflatten(tree, leaves)
+    assert sibling.config.mirror is matrix.config.mirror
+    assert restored.config.mirror_max_row_nnz == 2
+    assert restored._cache.mirror_preparation[0] is restored.config.mirror
+    np.testing.assert_array_equal(
+        restored.config.mirror.long_mask, matrix.config.mirror.long_mask,
+    )
+    np.testing.assert_array_equal(
+        jax.jit(lambda value: value.with_data(value.data * 2))(restored).data,
+        restored.data * 2,
+    )
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+def test_fcn_mirror_replacement_detaches_prepared_statistics(cls):
+    matrix = _matrix(cls).build_weight_indices()
+    sibling = matrix.with_data(matrix.data * 2)
+    original_preparation = sibling._cache.mirror_preparation
+    primary = matrix.config.primary
+    replacement = tuple(jnp.array(array) for array in matrix.buffers['csc'])
+    matrix.set_buffer('csc', replacement)
+    assert matrix.config.primary is primary
+    assert matrix._cache is not sibling._cache
+    assert sibling._cache.mirror_preparation is original_preparation
+    assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
+    assert matrix.config.mirror is not sibling.config.mirror
+    assert (matrix.config.mirror_max_row_nnz
+            == sibling.config.mirror_max_row_nnz == 2)
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+def test_fcn_traced_missing_mirror_does_not_prepare_statistics(
+    monkeypatch, cls,
+):
+    from brainevent._csr import config as config_mod
+
+    matrix = _matrix(cls)
+
+    def no_prepare(*args, **kwargs):
+        raise AssertionError(
+            'traced missing mirror must not prepare on the host',
+        )
+
+    monkeypatch.setattr(config_mod, '_structure_plan', no_prepare)
+
+    @jax.jit
+    def check(value):
+        assert value._mirror() is None
+        assert value.config.mirror is None
+        return value.data * 2
+
+    np.testing.assert_array_equal(check(matrix), matrix.data * 2)
+    assert matrix._cache.mirror is None
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+def test_fcn_closure_prepares_first_mirror_during_tracing(cls):
+    matrix = _matrix(cls)
+    transpose = cls is FixedNumPerPost
+    values = jnp.array([True, False, True])
+    product = jax.jit(lambda events: matrix._binary_matvec(
+        events, transpose_W=transpose,
+    ))
+    expected = (matrix.todense().T @ values if transpose
+                else matrix.todense() @ values)
+    np.testing.assert_allclose(product(values), expected)
+    assert matrix.config.mirror is not None
+    assert matrix.config.mirror_max_row_nnz == 2
+    assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+def test_fcn_failed_mirror_statistics_can_be_retried(monkeypatch, cls):
+    from brainevent._csr import config as config_mod
+
+    matrix = _matrix(cls)
+    original_config = matrix.config
+    prepare = config_mod._structure_plan
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('injected mirror statistics failure')
+
+    monkeypatch.setattr(config_mod, '_structure_plan', fail)
+    with pytest.raises(
+        RuntimeError, match='injected mirror statistics failure',
+    ):
+        matrix._mirror()
+    mirror = matrix._cache.mirror
+    assert mirror is not None
+    assert matrix.config is original_config
+    assert matrix._cache.mirror_preparation is None
+    monkeypatch.setattr(config_mod, '_structure_plan', prepare)
+    assert matrix._mirror() is mirror
+    assert matrix.config.mirror_max_row_nnz == 2
+    assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+@pytest.mark.parametrize('backend', ['cuda_raw', 'jax_raw', 'numba'])
+def test_fcn_traced_carried_mirror_without_statistics_selects_mm_route(
+    monkeypatch, cls, backend,
+):
+    from brainevent._fcn import main
+
+    matrix = jax.jit(lambda value: value.build_weight_indices())(_matrix(cls))
+    assert matrix._cache.mirror is not None
+    assert matrix.config.mirror is None
+    matrix.backend = backend
+    calls = []
+
+    def indexed(*args, **kwargs):
+        calls.append(('indexed', kwargs['backend']))
+        return jnp.zeros((2, 2), dtype=jnp.float32)
+
+    def gather(*args, **kwargs):
+        calls.append(('gather', kwargs['backend']))
+        return jnp.zeros((2, 2), dtype=jnp.float32)
+
+    monkeypatch.setattr(main, 'binary_csrmm_indexed', indexed)
+    monkeypatch.setattr(main, 'binary_fcnmm', gather)
+    events = jnp.ones((3, 2), dtype=jnp.bool_)
+    jax.jit(lambda value: value._binary_matmat(
+        events, transpose_W=cls is FixedNumPerPost,
+    ))(matrix)
+    assert calls == ([('gather', 'jax_raw')] if backend == 'cuda_raw'
+                     else [('indexed', backend)])
+
+
+@pytest.mark.skipif(
+    jax.default_backend() != 'gpu', reason='native mirror MM requires a GPU',
+)
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+@pytest.mark.parametrize('backend', ['cuda_raw', None])
+def test_fcn_cuda_mm_with_mirror_built_under_jit(cls, backend):
+    matrix = _matrix(cls)
+    matrix.backend = backend
+    matrix = matrix.with_rebuilt_config()
+    expected_matrix = (matrix.todense().T if cls is FixedNumPerPost
+                       else matrix.todense())
+    prepared = jax.jit(lambda value: value.build_weight_indices())(matrix)
+    assert prepared._cache.mirror is not None
+    assert prepared.config.mirror is None
+    events = jnp.array([[True, False], [False, True], [True, True]])
+    product = jax.jit(lambda value, spikes: value._binary_matmat(
+        spikes, transpose_W=cls is FixedNumPerPost))
+    np.testing.assert_allclose(
+        product(prepared, events), expected_matrix @ events,
+    )
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
 def test_fcn_config_shares_and_survives_jit_without_reading_persistence(monkeypatch, cls):
     from brainevent._csr.binary import initialize
 

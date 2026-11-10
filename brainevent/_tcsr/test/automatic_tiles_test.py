@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from brainevent import BinaryArray, BitPackedBinary, CompactBinary, CSR, TCSR, WeightedArray
+from brainevent._csr import config as csr_config
 from brainevent._tcsr import main as tcsr_main
 
 
@@ -26,6 +27,10 @@ def test_construction_prepares_all_primary_batches_without_building_mirror():
     assert matrix._cache.tile_geometries
     assert all(key[0] for key in matrix._cache.tile_geometries)
     assert matrix._cache.mirror is None
+    assert matrix.config.primary is not None
+    assert matrix.config.mirror is None
+    assert matrix.config.mirror_max_row_nnz is None
+    assert matrix._cache.mirror_preparation is None
     for batch in (0, 1, 187, 188, 189, 65535):
         for dtype in (jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64):
             assert matrix._get_binary_mm_plan(batch, transpose=True, dtype=dtype) is not None
@@ -39,6 +44,10 @@ def test_mirror_hook_runs_after_parent_and_prepares_once_for_all_batches(monkeyp
 
     def prepare(indices, indptr, **kwargs):
         assert matrix._cache.mirror is not None
+        assert matrix.config.mirror is not None
+        assert matrix.config.mirror_max_row_nnz == 1
+        assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
+        assert matrix._cache.mirror_preparation[1] == 1
         calls.append(kwargs['transpose'])
         return real(indices, indptr, **kwargs)
 
@@ -68,13 +77,19 @@ def test_shared_values_reuse_first_mirror_geometry_initialization(monkeypatch):
     matrix = _matrix()
     sibling = matrix.with_data(matrix.data * 2)
     matrix._mirror()
+    assert sibling.config.mirror is None
 
     def forbidden(*args, **kwargs):
         raise AssertionError('same-structure siblings must share mirror preparation')
 
     monkeypatch.setattr(tcsr_main, 'build_tile_geometries', forbidden)
+    monkeypatch.setattr(csr_config, '_structure_plan', forbidden)
     assert sibling._mirror() is matrix._cache.mirror
     assert sibling._cache is matrix._cache
+    assert sibling.config.mirror is matrix.config.mirror
+    assert (
+        sibling.config.mirror_max_row_nnz == matrix.config.mirror_max_row_nnz
+    )
     assert sibling._get_binary_mm_plan(65535, transpose=False) is matrix._get_binary_mm_plan(65535, transpose=False)
 
 
@@ -101,6 +116,8 @@ def test_concrete_structure_closure_can_prepare_first_mirror_while_tracing():
     result = jax.jit(run)(jnp.ones((3, 2), bool))
     np.testing.assert_array_equal(result, [[3., 3.], [3., 3.]])
     assert matrix._cache.mirror is not None
+    assert matrix.config.mirror is not None
+    assert matrix.config.mirror_max_row_nnz == 1
     assert matrix._get_binary_mm_plan(2, transpose=False) is not None
     assert all(not isinstance(leaf, jax.core.Tracer) for leaf in jax.tree.leaves(matrix))
 
@@ -182,6 +199,8 @@ def test_failed_mirror_preparation_does_not_publish_partial_geometries(monkeypat
     with pytest.raises(RuntimeError, match='injected'):
         matrix._mirror()
     assert matrix._cache.mirror is not None
+    assert matrix.config.mirror is not None
+    assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
     assert matrix._cache.tile_geometries.keys() == primary.keys()
     assert all(matrix._cache.tile_geometries[key] is geometry for key, geometry in primary.items())
     monkeypatch.setattr(tcsr_main, 'build_tile_geometries', real)

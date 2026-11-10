@@ -29,6 +29,7 @@ from brainevent._csr.binary.binary_indexed import binary_csrmv_indexed, binary_c
 from brainevent._csr.config import CSRConfig
 from brainevent._csr.plasticity.plasticity_binary import update_csr_on_binary_post, _update_csr_on_binary_post_masked
 from brainevent._csr.slice.slice import csr_slice_rows
+from brainevent.config import _backend_preference
 from brainevent._data import DataRepresentation
 from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
 from brainevent._event.dispatch import as_event_operand
@@ -254,7 +255,7 @@ class FixedNumConn(DataRepresentation):
 
     def _ingest_buffers(self, buffers, *, device=None) -> None:
         """Store the legacy ``'csc'`` mirror and bind its scheduler plan."""
-        from brainevent._csr.config import _config_with_mirror, _structure_device
+        from brainevent._csr.config import _config_with_mirror
 
         for name, value in (buffers or {}).items():
             if value is None:
@@ -267,9 +268,15 @@ class FixedNumConn(DataRepresentation):
             mirror = tuple(value)
             config = _config_with_mirror(
                 self.config, mirror, shape=self._a_shape[::-1],
-                device=_structure_device(self.indices, device),
+                device=device,
             )
-            self._cache = StructureCache(mirror=mirror)
+            cache = StructureCache(mirror=mirror)
+            if (config.mirror is not None
+                    and config.mirror_max_row_nnz is not None):
+                cache.mirror_preparation = (
+                    config.mirror, config.mirror_max_row_nnz,
+                )
+            self._cache = cache
             self.config = config
 
     def register_buffer(self, name, value=None):
@@ -341,14 +348,21 @@ class FixedNumConn(DataRepresentation):
         computed eagerly); a traced structure without a carried mirror returns
         ``None``.
         """
+        from brainevent._csr.config import _sync_mirror_config
+
         cache = self._cache
-        if cache.mirror is not None:
-            return cache.mirror
-        if not is_concrete(self.indices):
-            return None
-        with jax.ensure_compile_time_eval():
-            mirror = fixed_conn_num_csc_structure(self.indices, shape=self._a_shape)
-        return cache.set_mirror(mirror)
+        if cache.mirror is None:
+            if not is_concrete(self.indices):
+                return None
+            with jax.ensure_compile_time_eval():
+                mirror = fixed_conn_num_csc_structure(
+                    self.indices, shape=self._a_shape,
+                )
+            cache.set_mirror(mirror)
+        self.config = _sync_mirror_config(
+            self.config, cache, shape=self._a_shape[::-1],
+        )
+        return cache.mirror
 
     def _weight_indices(self):
         """Return the CSC mirror, computing it (uncached) for a traced structure."""
@@ -370,7 +384,8 @@ class FixedNumConn(DataRepresentation):
         -------
         FixedNumConn
             A matrix of the same class sharing ``data`` and ``indices``, with
-            the mirror cached (and carried as pytree leaves).
+            the mirror and its scheduler parameters prepared (and carried as
+            pytree leaves).
         """
         if self._mirror() is not None:
             cache = self._cache
@@ -406,6 +421,8 @@ class FixedNumConn(DataRepresentation):
         -----
         Existing tuning parameters are retained without reloading persisted
         configuration. The original matrix and its configuration are unchanged.
+        Mirror parameters are rebuilt only when a mirror has already been
+        materialized; otherwise they remain lazy.
         Only configuration and scheduler plans are rebuilt; the return value
         is a matrix object, not a configuration object. Call outside
         ``jax.jit`` after traced structure changes or to prepare plans for a
@@ -413,7 +430,9 @@ class FixedNumConn(DataRepresentation):
         """
         if not is_concrete(self.indices):
             raise ValueError('with_rebuilt_config requires concrete structure outside jax.jit.')
-        from brainevent._csr.config import _prepare_csr_config, _config_with_mirror, _structure_device
+        from brainevent._csr.config import (
+            _prepare_csr_config, _config_with_mirror,
+        )
 
         flat_indices, indptr = _ell_csr_parts(self.indices)
         config = _prepare_csr_config(
@@ -426,7 +445,7 @@ class FixedNumConn(DataRepresentation):
                 raise ValueError('with_rebuilt_config requires a concrete mirror outside jax.jit.')
             config = _config_with_mirror(
                 config, self._cache.mirror, shape=self._a_shape[::-1],
-                device=_structure_device(self.indices, device),
+                device=device,
             )
         return type(self)._from_parts(
             self.data, self.indices, shape=self.shape, backend=self.backend,
@@ -477,7 +496,14 @@ class FixedNumConn(DataRepresentation):
         # Unfavorable: perm-fused indexed matmat over the cached CSC mirror --
         # parity with the matvec unfavorable path.
         mirror = self._mirror()
-        if mirror is None:
+        native_mm = (
+            self.backend == 'cuda_raw'
+            or (self.backend is None and jax.default_backend() == 'gpu'
+                and _backend_preference('gpu') != 'jax_raw')
+        )
+        # A mirror built inside JIT can be carried without host statistics.
+        # Native hybrid MM needs those statistics; the ELL gather does not.
+        if mirror is None or (native_mm and self.config.mirror is None):
             warn_mirror_fallback(type(self).__name__, 'the unfavorable event product')
             return binary_fcnmm(
                 self.data, self.indices, matrix,
@@ -815,6 +841,11 @@ class FixedNumConn(DataRepresentation):
 
     def tree_flatten(self):
         """Flatten into children ``(data, indices, config, *mirror)``."""
+        from brainevent._csr.config import _sync_mirror_config
+
+        self.config = _sync_mirror_config(
+            self.config, self._cache, shape=self._a_shape[::-1], prepare=False,
+        )
         mirror = self._cache.mirror or ()
         aux = (self.shape, self.backend, bool(mirror))
         return (self.data, self.indices, self.config, *mirror), aux
@@ -828,8 +859,16 @@ class FixedNumConn(DataRepresentation):
             raise ValueError(f'{cls.__name__}.tree_unflatten expects {expected} leaves, got {len(children)}.')
         mirror = tuple(children[3:]) if has_mirror else None
         cache = StructureCache(mirror=mirror)
+        config = children[2]
+        if (mirror is not None and isinstance(config, CSRConfig)
+                and config.mirror is not None
+                and config.mirror_max_row_nnz is not None):
+            cache.mirror_preparation = (
+                config.mirror, config.mirror_max_row_nnz,
+            )
         return cls._from_parts(
-            children[0], children[1], shape=shape, backend=backend, cache=cache, config=children[2],
+            children[0], children[1], shape=shape, backend=backend,
+            cache=cache, config=config,
         )
 
     # ------------------------------------------------------------------ #

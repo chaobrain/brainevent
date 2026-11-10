@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from brainevent import BinaryArray, CSC, CSR, TCSR, WeightedArray
+from brainevent._csr import config as csr_config
 from brainevent._csr.config import CSRConfig
 from brainevent._tcsr import main as tcsr_main
 
@@ -47,6 +48,8 @@ def test_constructor_stably_sorts_duplicate_edges_without_mutating_source():
     assert matrix.backend == 'jax_raw' and matrix.config.tpr_threshold == 7
     assert matrix._cache is not source._cache
     assert matrix._cache.mirror is None and matrix._cache.diag_plan is None
+    assert matrix.config.mirror is None
+    assert matrix._cache.mirror_preparation is None
     assert matrix._cache.tile_geometries and all(k[0] for k in matrix._cache.tile_geometries)
     np.testing.assert_allclose(u.get_mantissa(matrix.todense()), u.get_mantissa(source.todense()))
 
@@ -82,6 +85,7 @@ def test_sorted_existing_tcsr_reuses_geometries_without_host_reads(monkeypatch):
     assert result.config is source.config and result._cache is not source._cache
     assert result._cache.tile_geometries is not source._cache.tile_geometries
     assert result._cache.mirror is source._cache.mirror
+    assert result._cache.mirror_preparation is source._cache.mirror_preparation
     assert result._cache.diag_plan is source._cache.diag_plan
     assert all(result._cache.tile_geometries[k] is p for k, p in source._cache.tile_geometries.items())
 
@@ -90,8 +94,39 @@ def test_sorted_plain_csr_factory_prepares_primary_and_keeps_mirror_lazy():
     source = CSR.fromdense(jnp.array([[1., 0., 2.], [0., 3., 0.]]), backend='jax_raw')
     result = TCSR.from_sorted_csr(source)
     assert type(result) is TCSR and result._cache.mirror is None
+    assert result.config.mirror is None
+    assert result.config.mirror_max_row_nnz is None
     assert result._get_binary_mm_plan(188, transpose=True) is not None
     assert source._cache.tile_plans == {}
+
+
+def test_sorted_factory_carries_stale_mirror_config_into_jit(monkeypatch):
+    source = CSR.fromdense(
+        jnp.array([[1., 0., 2.], [0., 3., 0.]]), backend='jax_raw',
+    )
+    sibling = source.with_data(source.data * 2)
+    source.build_weight_indices()
+    assert sibling.config.mirror is None
+    result = TCSR.from_sorted_csr(sibling)
+    preparation = source._cache.mirror_preparation
+    assert result._cache.mirror_preparation is preparation
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(
+            'carried mirror statistics must not be recomputed'
+        )
+
+    monkeypatch.setattr(csr_config, '_structure_plan', forbidden)
+    monkeypatch.setattr(jax, 'device_get', forbidden)
+    restored = jax.jit(lambda m: m)(result)
+    assert type(restored) is TCSR
+    assert (
+        restored.config.mirror_max_row_nnz == source.config.mirror_max_row_nnz
+    )
+    assert restored._cache.mirror_preparation[0] is restored.config.mirror
+    np.testing.assert_array_equal(
+        restored.config.mirror.long_mask, source.config.mirror.long_mask,
+    )
 
 
 def test_dense_factory_row_slice_diagonal_and_transpose_types():
@@ -143,9 +178,13 @@ def test_mirror_replacement_invalidates_only_mirror_geometry():
     matrix = _matrix()
     matrix._mirror()
     sibling = matrix.with_data(matrix.data * 2)
+    preparation = sibling._cache.mirror_preparation
     primary = matrix._get_binary_mm_plan(2, transpose=True)
     mirror_plan = matrix._get_binary_mm_plan(2, transpose=False)
     matrix.set_buffer('csc', tuple(jnp.array(a) for a in matrix.buffers['csc']))
+    assert sibling._cache.mirror_preparation is preparation
+    assert matrix._cache.mirror_preparation is not preparation
+    assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
     assert matrix._get_binary_mm_plan(2, transpose=True) is primary
     assert matrix._get_binary_mm_plan(2, transpose=False) is None
     assert sibling._get_binary_mm_plan(2, transpose=False) is mirror_plan
@@ -162,6 +201,10 @@ def test_pytree_roundtrip_is_hashable_and_restores_all_geometries():
     restored = TCSR.tree_unflatten(aux, children)
     assert type(restored) is TCSR and restored._cache is not matrix._cache
     assert restored._cache.tile_geometries.keys() == matrix._cache.tile_geometries.keys()
+    assert restored._cache.mirror_preparation[0] is restored.config.mirror
+    assert (
+        restored.config.mirror_max_row_nnz == matrix.config.mirror_max_row_nnz
+    )
     for key, plan in matrix._cache.tile_geometries.items():
         assert restored._cache.tile_geometries[key].local_targets is plan.local_targets
         assert restored._cache.tile_geometries[key].tile_offsets is plan.tile_offsets
