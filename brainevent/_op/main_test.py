@@ -551,10 +551,12 @@ def _csrmv_ref(w, x):
     return jax.ops.segment_sum(x[_ROWS] * w, jnp.asarray(_INDICES), num_segments=4)
 
 
-def _binary_csrmv(w, x, backend=None):
-    """``x @ A`` for binary events ``x != 0``."""
-    return brainevent.binary_csrmv(w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), x, shape=(4, 4),
-                                   transpose=True, backend=backend)
+def _binary_csrmv(w, x, backend=None, **kwargs):
+    """Binary forward product with an optional weight-gradient rule."""
+    return brainevent.binary_csrmv(
+        w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), x, shape=(4, 4),
+        transpose=True, backend=backend, **kwargs,
+    )
 
 
 def _binary_csrmv_ref(w, x):
@@ -697,7 +699,56 @@ def test_245_sharded_csr_product_gradients_match_pure_jax(backend, w_spec):
 @_W_SPECS
 @pytest.mark.parametrize('backend', _backends(binary_csrmv_p))
 def test_245_sharded_binary_csr_product_gradients_match_pure_jax(backend, w_spec):
-    _assert_grads_match(functools.partial(_binary_csrmv, backend=backend), _binary_csrmv_ref, w_spec, (0,))
+    mv = functools.partial(
+        _binary_csrmv, backend=backend, backward_algorithm='binary',
+    )
+    _assert_grads_match(mv, _binary_csrmv_ref, w_spec, (0,))
+
+
+@_W_SPECS
+@pytest.mark.parametrize('backend', _backends(binary_csrmv_p))
+@pytest.mark.parametrize(
+    'backward_algorithm', [None, 'weighted_float'],
+    ids=['default', 'weighted_float'],
+)
+def test_245_sharded_binary_csr_value_weight_gradients(
+    backend, w_spec, backward_algorithm,
+):
+    """Value-weighted VJPs stay local until replicated weights are reduced."""
+    options = ({} if backward_algorithm is None else
+               {'backward_algorithm': backward_algorithm})
+    mv = functools.partial(_binary_csrmv, backend=backend, **options)
+    w, x, _, v4, _ = _shard_data()
+    per_shard_w = w_spec == P(_AXIS)
+    args = (
+        _put(w if per_shard_w else w[0], w_spec),
+        _put(x, P(_AXIS)), _put(v4, P(_AXIS)),
+    )
+    loss = _sharded_loss(mv, w_spec)
+    reference = _sharded_loss(_binary_csrmv_ref, w_spec)
+    np.testing.assert_allclose(
+        jax.jit(loss)(*args), jax.jit(reference)(*args), rtol=1e-6,
+    )
+
+    slot_gradients = x[:, _ROWS] * v4[:, _INDICES]
+    expected = (slot_gradients if per_shard_w else
+                slot_gradients.sum(axis=0))
+    actual = jax.jit(jax.grad(loss))(*args)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6)
+
+    # Only the weight VJP changes; the binary forward and weight JVP do not.
+    tangent = jnp.ones_like(args[0])
+
+    def weight_jvp(function):
+        return jax.jvp(
+            lambda weights: function(weights, *args[1:]),
+            (args[0],), (tangent,),
+        )[1]
+
+    np.testing.assert_allclose(
+        jax.jit(lambda: weight_jvp(loss))(),
+        jax.jit(lambda: weight_jvp(reference))(), rtol=1e-6,
+    )
 
 
 @_W_SPECS
