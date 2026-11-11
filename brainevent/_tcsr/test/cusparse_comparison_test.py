@@ -20,10 +20,10 @@ import pytest
 from brainevent import BinaryArray, CSR, TCSR, WeightedArray
 from brainevent._csr.test._test_util import (
     BATCH,
-    EVENT_DTYPES,
+    CUSPARSE_COMPARISON_DTYPE_PAIRS,
+    CUSPARSE_COMPARISON_VALUE_DTYPES,
     OFFSET_DTYPES,
     SHAPE,
-    VALUE_DTYPES,
     assert_comparison,
     cusparse_product,
     dense_reference,
@@ -135,8 +135,9 @@ def _assert_inherited_cuda(text, rank):
 @pytest.mark.parametrize('rank', ['mv', 'mm'])
 @pytest.mark.parametrize('transpose', [False, True], ids=['right', 'left'])
 @pytest.mark.parametrize('mode', ['binary', 'weighted'])
-@pytest.mark.parametrize('value_dtype', VALUE_DTYPES)
-@pytest.mark.parametrize('event_dtype', EVENT_DTYPES)
+@pytest.mark.parametrize(
+    ('event_dtype', 'value_dtype'), CUSPARSE_COMPARISON_DTYPE_PAIRS,
+)
 @pytest.mark.parametrize('offset_dtype', OFFSET_DTYPES)
 def test_public_tcsr_matches_cusparse(
     rank, transpose, mode, value_dtype, event_dtype, offset_dtype,
@@ -196,7 +197,7 @@ def test_public_tcsr_matches_cusparse(
 
 
 @pytest.mark.parametrize('direction', ['direct', 'mirror'])
-@pytest.mark.parametrize('value_dtype', VALUE_DTYPES)
+@pytest.mark.parametrize('value_dtype', CUSPARSE_COMPARISON_VALUE_DTYPES)
 @pytest.mark.parametrize('offset_dtype', OFFSET_DTYPES)
 def test_native_weighted_tcsr_matches_cusparse(
     direction, value_dtype, offset_dtype, record_property,
