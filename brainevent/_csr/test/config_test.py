@@ -791,3 +791,165 @@ def test_non_cuda_gpu_preparation_does_not_query_cuda(monkeypatch, platform_vers
     device = SimpleNamespace(platform='gpu', client=SimpleNamespace(platform_version=platform_version))
     monkeypatch.setattr(config_mod, '_query_cuda_device_info', lambda *args: pytest.fail('non-CUDA device query'))
     assert config_mod.get_device_info(device=device) is None
+
+
+# Workload-aware selection during matrix preparation
+# --------------------------------------------------
+
+@pytest.fixture
+def _preparation_store(monkeypatch, tmp_path):
+    from brainevent._csr.binary import initialize
+
+    previous = brainevent.get_cache_dir()
+    monkeypatch.delenv('BRAINEVENT_CSR_HYBRID_CONFIG', raising=False)
+    monkeypatch.setattr(initialize, '_current_device_kind', lambda: 'TEST_GPU')
+    # Exercise persisted selection with CPU arrays and no device-property query.
+    monkeypatch.setattr(config_mod, '_structure_device', lambda *args, **kwargs: None)
+    brainevent.set_cache_dir(str(tmp_path))
+    try:
+        yield tmp_path
+    finally:
+        brainevent.set_cache_dir(previous)
+
+
+@pytest.mark.parametrize('cls', [brainevent.CSR, brainevent.CSC])
+def test_construction_selects_both_densities_in_storage_direction(_preparation_store, cls):
+    shape = (2, 1000)
+    choices = ((60, CSRConfig(256, 512, 128, 1024)),
+               (6, CSRConfig(512, 2048, 256, 4096)))
+    for nnz, config in choices:
+        save_csr_config(config, 'TEST_GPU', matrix_metadata={'shape': shape, 'nnz': nnz})
+
+    for nnz, expected in choices:
+        pointers = np.array([0, nnz // 2, nnz], np.int32)
+        indices = np.arange(nnz, dtype=np.int32)
+        public_shape = shape if cls is brainevent.CSR else shape[::-1]
+        matrix = cls((np.ones(nnz, np.float32), indices, pointers),
+                     shape=public_shape, backend='jax_raw')
+        assert matrix.config.mv == expected.mv
+        assert matrix.config.shape == shape
+        assert matrix.config.nnz == nnz
+        assert matrix.config.primary is not None
+
+
+@pytest.mark.parametrize('cls', [brainevent.FixedNumPerPre, brainevent.FixedNumPerPost])
+def test_fixed_connections_select_using_flattened_edge_count(_preparation_store, cls):
+    shape = (2, 1000)
+    wrong_count = CSRConfig(512, 512, 128, 512)
+    expected = CSRConfig(256, 2048, 256, 4096)
+    save_csr_config(wrong_count, 'TEST_GPU', matrix_metadata={'shape': shape, 'nnz': 2})
+    save_csr_config(expected, 'TEST_GPU', matrix_metadata={'shape': shape, 'nnz': 6})
+    public_shape = shape if cls is brainevent.FixedNumPerPre else shape[::-1]
+    matrix = cls(np.ones((2, 3), np.float32),
+                 np.array([[0, 1, 2], [3, 4, 5]], np.int32),
+                 shape=public_shape, backend='jax_raw')
+    assert matrix.config.mv == expected.mv
+    assert matrix.config.shape == shape
+    assert matrix.config.nnz == 6
+
+
+def test_explicit_preparation_config_beats_environment_and_local_store(
+    _preparation_store, monkeypatch,
+):
+    from brainevent._csr.binary import initialize
+
+    save_csr_config(CSRConfig(512), 'TEST_GPU',
+                    matrix_metadata={'shape': (2, 4), 'nnz': 3})
+    monkeypatch.setenv('BRAINEVENT_CSR_HYBRID_CONFIG', json.dumps({
+        'block_size': 128, 'fixed_scatter_blocks': 512,
+        'tpr_threshold': 128, 'task_nnz': 4096,
+    }))
+    monkeypatch.setattr(initialize, 'load_csr_config',
+                        lambda **kwargs: pytest.fail('explicit config must not load persisted tuning'))
+    explicit = CSRConfig(256, 1024, 256, 1024)
+    matrix = brainevent.CSR((np.ones(3, np.float32), np.array([0, 1, 2], np.int32),
+                            np.array([0, 1, 3], np.int32)),
+                            shape=(2, 4), backend='jax_raw', config=explicit)
+    assert matrix.config.mv == explicit.mv
+    assert matrix.config.primary is not None
+
+
+def test_traced_preparation_forwards_static_metadata_without_reading_arrays(monkeypatch):
+    from brainevent._csr.binary import initialize
+
+    calls = []
+    expected = CSRConfig(256, 512, 256, 1024)
+
+    def load(**kwargs):
+        calls.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(initialize, 'load_csr_config', load)
+    monkeypatch.setattr(jax, 'device_get',
+                        lambda *args, **kwargs: pytest.fail('metadata must not read tracer arrays'))
+    monkeypatch.setattr(CSRConfig, 'prepare_structure',
+                        lambda *args, **kwargs: pytest.fail('traced structure cannot be prepared'))
+
+    @jax.jit
+    def prepare(indices, indptr):
+        result = config_mod._prepare_csr_config(
+            indices, indptr, shape=(2, 5), backend='jax_raw',
+            matrix_metadata={'shape': (2, 5), 'nnz': indices.shape[0]},
+        )
+        assert result.primary is result.mirror is None
+        return indices + result.block_size
+
+    actual = prepare(jnp.array([0, 1, 2], jnp.int32), jnp.array([0, 1, 3], jnp.int32))
+    np.testing.assert_array_equal(actual, np.array([256, 257, 258]))
+    assert len(calls) == 1
+    assert calls[0]['matrix_metadata']['shape'] == (2, 5)
+    assert calls[0]['matrix_metadata']['nnz'] == 3
+
+
+@pytest.mark.parametrize('metadata', [
+    {'shape': (3, 4), 'nnz': 3},
+    {'shape': (2, 4), 'nnz': 2},
+])
+def test_preparation_rejects_metadata_that_disagrees_with_actual_structure(metadata):
+    with pytest.raises(ValueError):
+        config_mod._prepare_csr_config(
+            np.array([0, 1, 2], np.int32), np.array([0, 1, 3], np.int32),
+            shape=(2, 4), backend='jax_raw', config=CSRConfig(), matrix_metadata=metadata,
+        )
+
+
+@pytest.mark.parametrize('shape', [(0, 5), (2, 0)])
+def test_empty_preparation_infers_static_metadata_and_preserves_selected_parameters(
+    monkeypatch, shape,
+):
+    from brainevent._csr.binary import initialize
+
+    expected = CSRConfig(256, 512, 128, 1024)
+    calls = []
+
+    def load(**kwargs):
+        calls.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(initialize, 'load_csr_config', load)
+    result = config_mod._prepare_csr_config(
+        np.empty(0, np.int32), np.zeros(shape[0] + 1, np.int32),
+        shape=shape, backend='jax_raw',
+    )
+    assert result.mv == expected.mv
+    assert result.shape == shape and result.nnz == 0
+    assert calls[0]['matrix_metadata']['shape'] == shape
+    assert calls[0]['matrix_metadata']['nnz'] == 0
+
+
+def test_rebuild_keeps_matched_snapshot_after_persisted_winner_changes(_preparation_store):
+    metadata = {'shape': (2, 4), 'nnz': 3}
+    original = CSRConfig(256, 512, 128, 1024)
+    replacement = CSRConfig(512, 2048, 256, 4096)
+    save_csr_config(original, 'TEST_GPU', matrix_metadata=metadata)
+    parts = (np.ones(3, np.float32), np.array([0, 1, 2], np.int32),
+             np.array([0, 1, 3], np.int32))
+    matrix = brainevent.CSR(parts, shape=(2, 4), backend='jax_raw')
+    save_csr_config(replacement, 'TEST_GPU', matrix_metadata=metadata)
+
+    rebuilt = matrix.with_rebuilt_config()
+    fresh = brainevent.CSR(parts, shape=(2, 4), backend='jax_raw')
+    assert matrix.config.mv == rebuilt.config.mv == original.mv
+    assert fresh.config.mv == replacement.mv
+    assert rebuilt.config.primary is not matrix.config.primary
+    assert rebuilt.indices is matrix.indices and rebuilt.indptr is matrix.indptr

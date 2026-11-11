@@ -232,6 +232,7 @@ class CompressedSparseData(DataRepresentation):
             self.indices, self.indptr, shape=self._storage_shape,
             backend=backend, config=config, device=device,
             host_structure=host_structure,
+            matrix_metadata={'shape': self._storage_shape, 'nnz': nse},
         )
         self._ingest_buffers(buffers, device=device)
         if precompute_weight_indices and self._mirror() is None:
@@ -463,6 +464,7 @@ class CompressedSparseData(DataRepresentation):
         config = _prepare_csr_config(
             self.indices, self.indptr, shape=self._storage_shape,
             backend=self.backend, config=self.config, device=device,
+            matrix_metadata={'shape': self._storage_shape, 'nnz': self.indices.shape[0]},
         )
         if self._cache.mirror is not None:
             mirror_indptr, mirror_indices, _ = self._cache.mirror

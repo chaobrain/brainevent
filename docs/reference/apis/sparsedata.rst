@@ -36,10 +36,19 @@ Configuration and mirror preparation
 
 With concrete structure, CSR, CSC and the fixed-connection formats prepare
 configuration statistics and an MM structure plan for their stored traversal
-during construction. ``CSR(..., config=None)`` loads saved scheduler tuning
-once, then prepares the actual structure. Passing ``config=CSRConfig()``
-uses scheduler defaults and still prepares the structure. Matrix operations
-pass the selected configuration to their raw CSR operators automatically.
+during construction. ``CSR(..., config=None)`` selects saved scheduler tuning
+once from the target GPU and the matrix's stored shape and edge count, then
+prepares the actual structure. Selection uses an explicit configuration or
+environment override first, followed by a matching local workload, another
+valid local configuration for the same GPU, and finally library defaults.
+Passing ``config=CSRConfig()`` explicitly uses scheduler defaults and still
+prepares the structure. Matrix operations pass the selected configuration
+to their raw CSR operators automatically.
+
+Matching uses static metadata and does not read device arrays to calculate
+density. A traced matrix can retain its selected scheduler snapshot without
+preparing a structure plan. Local tuning records never supply another
+matrix's masks or workspace capacity; those belong to the actual structure.
 
 ``CSRConfig()`` alone has no prepared MM plan or long-row mask. Raw calls
 such as ``binary_csrmm(..., config=None)`` do not load tuning, inspect the

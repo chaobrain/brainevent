@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CSR hybrid initialization now searches 48 Cartesian scheduler candidates
+  independently at 3% and 0.3% matrix density and persists both workload
+  winners with their measurement records. `init_csr_config()` returns a
+  per-workload result list instead of one `CSRConfig`. Matrix construction
+  selects tuning from static shape/nnz metadata, with explicit configuration,
+  matching local tuning, other local tuning, and library defaults in that
+  order. Structure preparation and replacement share one binding path.
 - Clarify the existing configuration contract for raw event MM: nonempty
   CUDA hybrid scatter calls require a configuration prepared for the actual
   structure and target GPU before the call. `config=None` and a bare

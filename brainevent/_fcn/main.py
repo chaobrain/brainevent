@@ -230,6 +230,7 @@ class FixedNumConn(DataRepresentation):
             flat_indices, indptr, shape=self._a_shape,
             backend=backend, config=config, device=device,
             host_structure=None if host_indices is None else (host_indices.reshape(-1), indptr),
+            matrix_metadata={'shape': self._a_shape, 'nnz': flat_indices.shape[0]},
         )
         self._ingest_buffers(buffers, device=device)
 
@@ -438,6 +439,7 @@ class FixedNumConn(DataRepresentation):
         config = _prepare_csr_config(
             flat_indices, indptr, shape=self._a_shape, backend=self.backend,
             config=self.config, device=device,
+            matrix_metadata={'shape': self._a_shape, 'nnz': flat_indices.shape[0]},
         )
         if self._cache.mirror is not None:
             mirror_indptr, mirror_indices, _ = self._cache.mirror

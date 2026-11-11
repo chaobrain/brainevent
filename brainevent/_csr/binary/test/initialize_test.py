@@ -7,6 +7,7 @@
 import json
 import sys
 import types
+from itertools import product
 
 import numpy as np
 import pytest
@@ -99,18 +100,17 @@ def test_init_csr_config_is_exported():
 
 
 @pytest.mark.usefixtures('_restore_cache_dir')
-def test_default_candidates_cover_more_tpr512_task_nnz2048_cases():
-    tpr512_nnz2048_cases = {
-        (candidate.block_size, candidate.fixed_scatter_blocks)
+def test_default_candidates_are_the_complete_ordered_cartesian_grid():
+    actual = [
+        (candidate.block_size, candidate.fixed_scatter_blocks,
+         candidate.tpr_threshold, candidate.task_nnz)
         for candidate in initialize.DEFAULT_CANDIDATES
-        if candidate.tpr_threshold == 512 and candidate.task_nnz == 2048
-    }
-    assert tpr512_nnz2048_cases >= {
-        (128, 2048),
-        (256, 1024),
-        (256, 2048),
-        (512, 2048),
-    }
+    ]
+    expected = list(product((512, 256), (512, 1024, 2048),
+                            (128, 256), (512, 1024, 2048, 4096)))
+    assert actual == expected
+    assert len(actual) == len(set(actual)) == 48
+    assert (512, 1024, 128, 512) in actual
 
 
 @pytest.mark.usefixtures('_restore_cache_dir')
@@ -204,7 +204,7 @@ def test_run_benchmark_defaults_to_200_steps_and_50_warmup_while_reusing_spike_b
 
     def fake_make_spike_batch(**kwargs):
         spike_batch_sizes.append(kwargs["batch_size"])
-        return np.array([[True]], dtype=np.bool_)
+        return np.ones((kwargs["batch_size"], kwargs["n_pre"]), dtype=np.bool_)
 
     captured_kwargs = []
 
@@ -300,6 +300,7 @@ def test_benchmark_config_cycles_spike_batch_for_timed_steps(monkeypatch):
     )
 
     assert vectors == [
+        (True, False),  # Untimed compilation even with warmup=0.
         (True, False),
         (False, True),
         (True, True),
@@ -326,7 +327,10 @@ def test_init_csr_config_does_not_print_benchmark_details(monkeypatch, capsys):
         ],
     )
 
-    assert initialize.init_csr_config(save=False) == cfg
+    results = initialize.init_csr_config(save=False)
+    assert len(results) == 2
+    assert [item["metadata"]["requested_density"] for item in results] == [0.03, 0.003]
+    assert all(item["best_config"].mv == cfg.mv for item in results)
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -359,10 +363,11 @@ def test_init_csr_config_saves_records_for_load_csr_config_print(monkeypatch, tm
         ],
     )
 
-    assert initialize.init_csr_config() == best
+    results = initialize.init_csr_config(n_pre=100, n_post=1000)
+    assert all(item["best_config"].mv == best.mv for item in results)
     assert capsys.readouterr().out == ""
 
-    output = str(initialize.load_csr_config())
+    output = str(initialize.load_csr_config(matrix_metadata=results[0]["metadata"]))
     assert output.startswith(str(best))
     assert str(best) in output
     assert "12.345 ms" in output
@@ -470,3 +475,365 @@ def test_persistence_recovers_invalid_store_but_rejects_invalid_override(_persis
         load_csr_config('TEST_GPU')
     with pytest.raises(RuntimeError, match='device_kind'):
         save_csr_config(CSRConfig(), '')
+
+
+def _metadata(rows=20, cols=1000, conn=30):
+    return {'shape': (rows, cols), 'nnz': rows * conn}
+
+
+def _timing(config, elapsed_ms=1.0):
+    return {'config': config, 'elapsed_ms': elapsed_ms,
+            'per_call_us': elapsed_ms * 5, 'task_capacity': 0,
+            'status': 'ok', 'checked': True}
+
+
+def test_workload_roundtrips_keep_both_winners_legacy_fallback_and_other_devices(
+    _persistence_isolated_store,
+):
+    legacy = CSRConfig(128)
+    dense, sparse, another_size = CSRConfig(256), CSRConfig(512, 2048), CSRConfig(256, 512)
+    path = save_csr_config(legacy, 'TEST_GPU')
+    save_csr_config(CSRConfig(128, 4096), 'OTHER_GPU')
+    for config, metadata in ((dense, _metadata()), (sparse, _metadata(conn=3)),
+                             (another_size, _metadata(rows=40))):
+        save_csr_config(config, 'TEST_GPU', [_timing(config)], matrix_metadata=metadata)
+
+    assert load_csr_config('TEST_GPU').mv == legacy.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == dense.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(conn=3)).mv == sparse.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40)).mv == another_size.mv
+    assert load_csr_config('OTHER_GPU').mv == CSRConfig(128, 4096).mv
+
+    replacement = CSRConfig(256, 1024, 256, 4096)
+    save_csr_config(replacement, 'TEST_GPU', [_timing(replacement, 2.0)],
+                    matrix_metadata=_metadata())
+    stored = json.loads(path.read_text())
+    assert len(stored['TEST_GPU']['workloads']) == 3
+    assert stored['TEST_GPU']['block_size'] == 128
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == replacement.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(conn=3)).mv == sparse.mv
+    assert load_csr_config('OTHER_GPU').mv == CSRConfig(128, 4096).mv
+    record = load_csr_config('TEST_GPU', matrix_metadata=_metadata()).benchmark_records[0]
+    assert record.elapsed_ms == 2.0
+
+
+def test_loader_uses_environment_exact_legacy_other_then_builtin(
+    _persistence_isolated_store, monkeypatch,
+):
+    legacy, matched, other, explicit = (CSRConfig(128), CSRConfig(256),
+                                        CSRConfig(512, 512), CSRConfig(256, 2048))
+    path = save_csr_config(legacy, 'TEST_GPU')
+    save_csr_config(matched, 'TEST_GPU', matrix_metadata=_metadata())
+    save_csr_config(other, 'TEST_GPU', matrix_metadata=_metadata(conn=3))
+    monkeypatch.setenv(initialize._ENV_OVERRIDE, json.dumps({
+        name: getattr(explicit, name) for name in initialize._CONFIG_FIELDS
+    }))
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == explicit.mv
+    monkeypatch.delenv(initialize._ENV_OVERRIDE)
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == matched.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=99)).mv == legacy.mv
+
+    stored = json.loads(path.read_text())
+    for workload in stored['TEST_GPU']['workloads'].values():
+        if workload['metadata']['nnz'] == _metadata()['nnz']:
+            workload['best_config']['block_size'] = 0
+    path.write_text(json.dumps(stored))
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == legacy.mv
+
+    for name in initialize._CONFIG_FIELDS:
+        stored['TEST_GPU'].pop(name)
+    path.write_text(json.dumps(stored))
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == other.mv
+    stored['TEST_GPU']['workloads'].clear()
+    path.write_text(json.dumps(stored))
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == CSRConfig().mv
+    assert load_csr_config('MISSING_GPU', matrix_metadata=_metadata()).mv == CSRConfig().mv
+
+
+@pytest.mark.parametrize('metadata', [None, {}, {'shape': (20, 1000)},
+                                      {'shape': (0, 1000), 'nnz': 0},
+                                      {'shape': (20, 1000), 'nnz': 999}])
+def test_nonmatching_fallback_is_deterministic_without_complete_metadata(
+    _persistence_isolated_store, metadata,
+):
+    dense, sparse = CSRConfig(256), CSRConfig(512, 512)
+    path = save_csr_config(dense, 'TEST_GPU', matrix_metadata=_metadata())
+    save_csr_config(sparse, 'TEST_GPU', matrix_metadata=_metadata(conn=3))
+    assert load_csr_config('TEST_GPU', matrix_metadata=metadata).mv == sparse.mv
+    stored = json.loads(path.read_text())
+    workloads = stored['TEST_GPU']['workloads']
+    stored['TEST_GPU']['workloads'] = dict(reversed(list(workloads.items())))
+    path.write_text(json.dumps(stored))
+    assert load_csr_config('TEST_GPU', matrix_metadata=metadata).mv == sparse.mv
+
+
+def test_invalid_diagnostic_records_do_not_discard_valid_workload_parameters(
+    _persistence_isolated_store,
+):
+    config = CSRConfig(256, 512)
+    path = save_csr_config(config, 'TEST_GPU', matrix_metadata=_metadata())
+    stored = json.loads(path.read_text())
+    workload = next(iter(stored['TEST_GPU']['workloads'].values()))
+    workload['benchmark_records'] = [{'config': {'block_size': 'broken'}}]
+    path.write_text(json.dumps(stored))
+    loaded = load_csr_config('TEST_GPU', matrix_metadata=_metadata())
+    assert loaded.mv == config.mv
+    assert loaded.benchmark_records == ()
+
+
+def test_init_measures_all_candidates_separately_and_can_select_different_winners(monkeypatch):
+    calls = []
+
+    def measure(**kwargs):
+        calls.append(kwargs)
+        candidates = kwargs['candidates']
+        winner = candidates[0] if kwargs['density'] == .03 else candidates[-1]
+        return sorted([_timing(cfg, 1.0 if cfg == winner else 2.0) for cfg in candidates],
+                      key=lambda record: record['elapsed_ms'])
+
+    monkeypatch.setattr(initialize, 'run_benchmark', measure)
+    results = initialize.init_csr_config(save=False, n_pre=100, n_post=1000)
+    assert [call['density'] for call in calls] == [.03, .003]
+    assert all((call['n_pre'], call['n_post']) == (100, 1000) for call in calls)
+    assert all(tuple(call['candidates']) == initialize.DEFAULT_CANDIDATES for call in calls)
+    assert [item['metadata']['conn'] for item in results] == [30, 3]
+    assert [item['metadata']['nnz'] for item in results] == [3000, 300]
+    assert [item['best_config'].mv for item in results] == [
+        initialize.DEFAULT_CANDIDATES[0].mv, initialize.DEFAULT_CANDIDATES[-1].mv]
+    assert all(len(item['records']) == 48 and item['status'] == 'ok' for item in results)
+
+
+def test_init_failed_density_keeps_previous_workload_and_saves_successful_one(
+    _persistence_isolated_store, monkeypatch,
+):
+    old_dense, new_sparse = CSRConfig(128), CSRConfig(256)
+    save_csr_config(old_dense, 'TEST_GPU', matrix_metadata=_metadata(rows=100))
+
+    def measure(**kwargs):
+        if kwargs['density'] == .03:
+            raise MemoryError('not enough memory for the requested matrix')
+        return [_timing(new_sparse)]
+
+    monkeypatch.setattr(initialize, 'run_benchmark', measure)
+    results = initialize.init_csr_config(device_kind='TEST_GPU', n_pre=100, n_post=1000)
+    assert results[0]['status'] == 'error'
+    assert results[0]['best_config'] is None
+    assert 'memory' in results[0]['error']
+    assert results[1]['best_config'].mv == new_sparse.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=100)).mv == old_dense.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=100, conn=3)).mv == new_sparse.mv
+
+
+def test_rounded_densities_keep_independent_records_even_with_the_same_winner(
+    _persistence_isolated_store, monkeypatch,
+):
+    winner = CSRConfig(256)
+    monkeypatch.setattr(initialize, 'run_benchmark', lambda **kwargs: [_timing(winner)])
+    results = initialize.init_csr_config(device_kind='TEST_GPU', n_pre=2, n_post=10)
+    assert [item['metadata']['nnz'] for item in results] == [2, 2]
+    path = _persistence_isolated_store / initialize.CONFIG_FILENAME
+    stored = json.loads(path.read_text())['TEST_GPU']['workloads']
+    assert len(stored) == 2
+    assert {item['metadata']['requested_density'] for item in stored.values()} == {.03, .003}
+    initialize.init_csr_config(device_kind='TEST_GPU', n_pre=2, n_post=10, densities=(.03,))
+    updated = json.loads(path.read_text())['TEST_GPU']['workloads']
+    assert len(updated) == 2
+    assert {item['metadata']['requested_density'] for item in updated.values()} == {.03, .003}
+
+
+def test_all_failed_candidates_leave_the_previous_workload_intact(
+    _persistence_isolated_store, monkeypatch,
+):
+    previous, candidate = CSRConfig(128), CSRConfig(256)
+    metadata = dict(_metadata(rows=100), requested_density=.03)
+    save_csr_config(previous, 'TEST_GPU', matrix_metadata=metadata)
+
+    def measure(**kwargs):
+        assert tuple(kwargs['candidates']) == (candidate,)
+        return [{'config': candidate, 'status': 'error', 'error': 'task queue overflowed'}]
+
+    monkeypatch.setattr(initialize, 'run_benchmark', measure)
+    results = initialize.init_csr_config(device_kind='TEST_GPU', n_pre=100, n_post=1000,
+                                         densities=(.03,), candidates=(candidate,))
+    assert results[0]['status'] == 'error' and results[0]['best_config'] is None
+    assert results[0]['records'][0]['error'] == 'task queue overflowed'
+    assert load_csr_config('TEST_GPU', matrix_metadata=metadata).mv == previous.mv
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'conn': 1, 'density': .03}, {'density': 0}, {'density': -0.1}, {'density': 1.1},
+    {'n_pre': 0}, {'n_post': 0}, {'steps': 0}, {'batch_size': 0}, {'candidates': ()},
+])
+def test_invalid_benchmark_requests_fail_before_matrix_allocation(monkeypatch, kwargs):
+    def allocate(**unused):
+        pytest.fail('invalid workload reached matrix allocation')
+
+    monkeypatch.setattr(initialize, '_make_uniform_csr', allocate)
+    with pytest.raises(ValueError):
+        initialize.run_benchmark(show_progress=False, **kwargs)
+
+
+def test_large_density_requires_int64_support_before_allocation(monkeypatch):
+    import jax
+
+    def allocate(**unused):
+        pytest.fail('large workload allocated while x64 offsets were disabled')
+
+    monkeypatch.setattr(initialize, '_make_uniform_csr', allocate)
+    was_enabled = jax.config.jax_enable_x64
+    try:
+        jax.config.update('jax_enable_x64', False)
+        with pytest.raises(RuntimeError, match='64|x64'):
+            initialize.run_benchmark(n_pre=500_000, n_post=500_000, density=.03,
+                                     show_progress=False)
+    finally:
+        jax.config.update('jax_enable_x64', was_enabled)
+
+
+def test_missing_x64_marks_only_large_density_failed_and_continues(monkeypatch):
+    import jax
+
+    run_benchmark = initialize.run_benchmark
+    winner = CSRConfig(256)
+    calls = []
+
+    def allocate(**unused):
+        pytest.fail('x64-incompatible workload reached allocation')
+
+    def measure(**kwargs):
+        calls.append(kwargs['density'])
+        if kwargs['density'] == .03:
+            return run_benchmark(**kwargs)
+        return [_timing(winner)]
+
+    monkeypatch.setattr(initialize, '_make_uniform_csr', allocate)
+    monkeypatch.setattr(initialize, 'run_benchmark', measure)
+    was_enabled = jax.config.jax_enable_x64
+    try:
+        jax.config.update('jax_enable_x64', False)
+        results = initialize.init_csr_config(save=False, show_progress=False)
+    finally:
+        jax.config.update('jax_enable_x64', was_enabled)
+    assert calls == [.03, .003]
+    assert results[0]['status'] == 'error' and results[0]['best_config'] is None
+    assert 'x64' in results[0]['error']
+    assert results[1]['status'] == 'ok' and results[1]['best_config'].mv == winner.mv
+
+
+def test_failed_candidate_is_recorded_without_discarding_successful_candidate(monkeypatch):
+    bad, good = CSRConfig(512), CSRConfig(256)
+
+    def measure(config, **kwargs):
+        if config == bad:
+            raise RuntimeError('CUDA hybrid task queue overflowed')
+        return _timing(config)
+
+    monkeypatch.setattr(initialize, '_benchmark_config', measure)
+    records = initialize.run_benchmark(n_pre=4, n_post=1000, density=.03,
+                                       candidates=(bad, good), batch_size=2, steps=3,
+                                       warmup=1, show_progress=False)
+    assert len(records) == 2
+    assert records[0]['config'] == good and records[0]['status'] == 'ok'
+    assert records[1]['config'] == bad and records[1]['status'] == 'error'
+    assert 'overflow' in records[1]['error']
+    assert 'elapsed_ms' not in records[1]
+
+
+def test_large_workspace_candidate_does_not_prevent_smaller_candidate_from_running(monkeypatch):
+    fake_jax, fake_jnp = types.ModuleType('jax'), types.ModuleType('jax.numpy')
+    fake_jnp.asarray, fake_jnp.float32 = np.asarray, np.float32
+    fake_jnp.int32, fake_jnp.bool_ = np.int32, np.bool_
+    fake_jax.block_until_ready = lambda value: value
+    # Input/output buffers need 20040 bytes; only the smaller task queue fits.
+    fake_jax.devices = lambda: [types.SimpleNamespace(
+        memory_stats=lambda: {'bytes_limit': 20080, 'bytes_in_use': 0})]
+    monkeypatch.setitem(sys.modules, 'jax', fake_jax)
+    monkeypatch.setitem(sys.modules, 'jax.numpy', fake_jnp)
+    large, small = CSRConfig(task_nnz=512), CSRConfig(task_nnz=4096)
+    measured = []
+
+    def measure(config, **kwargs):
+        measured.append(config.mv)
+        if config is large:
+            raise MemoryError('candidate task workspace exceeds remaining memory')
+        return _timing(config)
+
+    monkeypatch.setattr(initialize, '_benchmark_config', measure)
+    records = initialize.run_benchmark(n_pre=4, n_post=1000, conn=1000,
+                                       batch_size=2, candidates=(large, small),
+                                       steps=1, warmup=0, show_progress=False)
+    assert measured == [large.mv, small.mv]
+    assert records[0]['config'] is small and records[0]['status'] == 'ok'
+    assert records[1]['config'] is large and records[1]['status'] == 'error'
+
+
+@pytest.mark.parametrize('steps, expected', [(3, [2., 0., 1., 0.]),
+                                             (4, [0., 1., 2., 0.])])
+def test_reference_counts_duplicate_edges_for_the_last_timed_vector(monkeypatch, steps, expected):
+    monkeypatch.setattr(initialize, '_make_uniform_csr', lambda **kwargs: (
+        np.array([0, 0, 2, 1, 2, 2], np.int32), np.array([0, 3, 6], np.int32)))
+    monkeypatch.setattr(initialize, '_make_spike_batch', lambda **kwargs: np.array(
+        [[True, False], [False, True]], np.bool_))
+    references = []
+
+    def measure(config, **kwargs):
+        references.append(kwargs['expected_output'])
+        return _timing(config)
+
+    monkeypatch.setattr(initialize, '_benchmark_config', measure)
+    initialize.run_benchmark(n_pre=2, n_post=4, conn=3, batch_size=2, steps=steps,
+                             candidates=(CSRConfig(),), warmup=0, show_progress=False)
+    np.testing.assert_array_equal(references, [expected])
+
+
+def test_paired_initialization_rejects_conflicting_conn_without_running_benchmark(monkeypatch):
+    def measure(**unused):
+        pytest.fail('conflicting conn reached paired benchmark')
+
+    monkeypatch.setattr(initialize, 'run_benchmark', measure)
+    with pytest.raises((TypeError, ValueError), match='conn'):
+        initialize.init_csr_config(conn=2000, save=False)
+
+
+@pytest.mark.parametrize('output, overflow, expected_error', [
+    ([1., 0.], 0, None),
+    ([0., 0.], 0, 'output|correct|numer|mismatch'),
+    ([1., 0.], 1, 'overflow'),
+])
+def test_benchmark_validates_output_and_queue_after_timing(
+    monkeypatch, output, overflow, expected_error,
+):
+    import brainevent._op as op
+
+    fake_jax = types.ModuleType('jax')
+    fake_jnp = types.ModuleType('jax.numpy')
+    fake_jnp.dtype, fake_jnp.empty, fake_jnp.int32 = np.dtype, np.empty, np.int32
+    fake_jax.ShapeDtypeStruct = lambda shape, dtype: types.SimpleNamespace(shape=shape, dtype=dtype)
+    fake_jax.block_until_ready = fake_jax.device_get = lambda value: value
+    fake_jax.jit = lambda function: function
+
+    def fake_ffi(*unused, **ignored):
+        def call(weights, indices, indptr, vector, task_begin, task_end, status, *, task_capacity):
+            return (np.asarray(output, np.float32), task_begin, task_end,
+                    np.asarray([0, overflow], np.int32))
+        return call
+
+    fake_jax.ffi = types.SimpleNamespace(ffi_call=fake_ffi)
+    monkeypatch.setitem(sys.modules, 'jax', fake_jax)
+    monkeypatch.setitem(sys.modules, 'jax.numpy', fake_jnp)
+    monkeypatch.setattr(op, 'load_cuda_file', lambda *args, **kwargs: types.SimpleNamespace(
+        function_names={initialize._TARGET_FUNCTION}, path='fake.so'))
+    clock = iter((1.0, 1.5))
+    monkeypatch.setattr(initialize.time, 'perf_counter', lambda: next(clock))
+    kwargs = dict(weights=np.array([1.0], np.float32), indices=np.array([0, 1], np.int32),
+                  indptr=np.array([0, 1, 2], np.int32),
+                  spikes=np.array([[True, False]], np.bool_), n_pre=2, n_post=2, conn=1,
+                  batch_size=1, warmup=0, steps=3, force_rebuild=False, verbose_compile=False,
+                  expected_output=np.array([1., 0.], np.float32))
+    if expected_error:
+        with pytest.raises(RuntimeError, match=expected_error):
+            initialize._benchmark_config(CSRConfig(), **kwargs)
+    else:
+        record = initialize._benchmark_config(CSRConfig(), **kwargs)
+        assert record['checked'] is True
+        assert record['elapsed_ms'] == 500.

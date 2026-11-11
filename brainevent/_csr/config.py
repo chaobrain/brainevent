@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import logging
 import operator
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, ClassVar, Sequence
+from typing import Any, ClassVar, Mapping, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -38,6 +39,7 @@ _MM_TASK_EDGES = 32 * _MM_ITERATIONS
 _MM_L2_DIVISOR = 4
 _MM_MAX_CHUNK = 65535
 _MM_GEOMETRY_VERSION = 1
+_logger = logging.getLogger(__name__)
 
 
 def _integer(value: Any, name: str, minimum: int = 0) -> int:
@@ -1024,14 +1026,32 @@ def _host_structure_array(original: Any, converted: Any) -> np.ndarray[Any, Any]
 def _prepare_csr_config(indices: Any, indptr: Any, *, shape: Sequence[int],
                         backend: str | None, config: CSRConfig | None = None,
                         device: Any = None,
-                        host_structure: tuple[Any, Any] | None = None) -> CSRConfig:
-    """Resolve a parameter snapshot and prepare concrete structure outside tracing."""
+                        host_structure: tuple[Any, Any] | None = None,
+                        matrix_metadata: Mapping[str, Any] | None = None) -> CSRConfig:
+    """Select tuning from static matrix metadata, then bind concrete structure.
+
+    Shape and stored-edge count never require a device read, including when
+    the arrays are tracers. Explicit parameters bypass persisted selection;
+    binding shares the same implementation as structure replacement.
+    """
     from brainevent._csr.binary.initialize import load_csr_config
 
-    cpu_sharding = _replicated_cpu_sharding(indices, indptr) if device is None else None
+    if config is not None and not isinstance(config, CSRConfig):
+        raise TypeError('config must be a CSRConfig or None.')
+    metadata = dict(matrix_metadata or {})
+    for name, actual in (('shape', tuple(shape)), ('nnz', indices.shape[0])):
+        supplied = metadata.get(name)
+        if supplied is not None:
+            supplied = tuple(supplied) if name == 'shape' else supplied
+            if supplied != actual:
+                raise ValueError(f'matrix_metadata {name} does not match the matrix')
+        metadata[name] = actual
+
     target = _structure_device(indices, device)
-    if target is None and cpu_sharding is not None:
-        target = min(cpu_sharding.device_set, key=lambda item: item.id)
+    if target is None and device is None:
+        cpu_sharding = _replicated_cpu_sharding(indices, indptr)
+        if cpu_sharding is not None:
+            target = min(cpu_sharding.device_set, key=lambda item: item.id)
     device_info = None
     preferred = _backend_preference('gpu', backend)
     # A global choice other than jax_raw may be unsupported by an indexed
@@ -1043,20 +1063,22 @@ def _prepare_csr_config(indices: Any, indptr: Any, *, shape: Sequence[int],
     if config is None:
         device_kind = (device_info.device_kind if device_info is not None
                        else getattr(target, 'device_kind', None))
-        config = load_csr_config(device_kind=device_kind)
-    if not isinstance(config, CSRConfig):
-        raise TypeError('config must be a CSRConfig or None.')
-    snapshot = replace(config.parameter_snapshot(), device_info=device_info)
-    if not is_concrete(indices, indptr):
-        return snapshot
-    with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
-        source_indices, source_indptr = (indices, indptr) if host_structure is None else host_structure
-        prepared = snapshot.prepare_structure(source_indices, source_indptr, shape=shape, device_info=device_info)
-        return _place_prepared_masks(prepared, device if device is not None else cpu_sharding)
+        config = load_csr_config(device_kind=device_kind, matrix_metadata=metadata)
+    else:
+        _logger.debug('CSR config source=explicit shape=%s nnz=%s parameters=%s',
+                      metadata['shape'], metadata['nnz'], config.mv)
+    if device_info is None and target is None:
+        device_info = config.device_info
+    selected = replace(config, device_info=device_info)
+    return _config_for_new_structure(
+        selected, indices, indptr, shape=shape, device=device,
+        host_structure=host_structure,
+    )
 
 
 def _config_for_new_structure(config: CSRConfig, indices: Any, indptr: Any, *,
-                              shape: Sequence[int], device: Any = None) -> CSRConfig:
+                              shape: Sequence[int], device: Any = None,
+                              host_structure: tuple[Any, Any] | None = None) -> CSRConfig:
     """Preserve MV tuning while preparing or invalidating a replacement structure."""
     snapshot = config.parameter_snapshot()
     if not is_concrete(indices, indptr):
@@ -1070,8 +1092,9 @@ def _config_for_new_structure(config: CSRConfig, indices: Any, indptr: Any, *,
     if target is None and cpu_sharding is not None:
         target = min(cpu_sharding.device_set, key=lambda item: item.id)
     with jax.ensure_compile_time_eval(), (jax.default_device(target) if target is not None else contextlib.nullcontext()):
+        source_indices, source_indptr = (indices, indptr) if host_structure is None else host_structure
         prepared = snapshot.prepare_structure(
-            indices, indptr, shape=shape, device_info=config.device_info,
+            source_indices, source_indptr, shape=shape, device_info=config.device_info,
         )
         return _place_prepared_masks(prepared, device if device is not None else cpu_sharding)
 

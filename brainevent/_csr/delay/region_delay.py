@@ -782,7 +782,9 @@ class delaycsr(CSR):
             raise ValueError("hybrid task capacity exceeds int32")
         counts = self.delay_count[rows].astype(indptr.dtype)
         config = _prepare_csr_config(
-            indices, indptr, shape=shape, backend=self.backend, config=self.config)
+            indices, indptr, shape=shape, backend=self.backend, config=self.config,
+            matrix_metadata={'shape': shape, 'nnz': indices.shape[0]},
+        )
         result = type(self).from_prepared(
             data, indices, indptr, shape=shape, delay_steps=self.delay_steps,
             delay_count=counts, delay_off=self.delay_off, row_task_count=tasks,

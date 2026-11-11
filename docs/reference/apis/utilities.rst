@@ -155,6 +155,39 @@ trusted row-length bound for raw calls without prepared statistics.
    init_csr_config
 
 
+CSR hybrid scheduler tuning
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``init_csr_config()`` explicitly benchmarks the production homogeneous,
+float32 binary SpMV kernel. Its default search is the Cartesian product of
+``block_size=(512, 256)``, ``fixed_scatter_blocks=(512, 1024, 2048)``,
+``tpr_threshold=(128, 256)`` and ``task_nnz=(512, 1024, 2048, 4096)``:
+48 candidates for each of matrix densities 3% and 0.3%, at the same shape.
+Event activity remains a separate setting, defaulting to 0.4%.
+
+Initialization returns a list of workload results. Each result includes
+``metadata``, ``best_config``, ``records`` and ``status``; an unsuccessful
+workload has no winner. Successful workloads are stored independently in
+``csr_hybrid_config.json`` under the target GPU model. Repeating one workload
+updates its record while retaining other workloads, GPU models and any
+legacy flat fallback. Timing includes host submission and the final device
+synchronization; numerical checks run outside the timed interval.
+
+``load_csr_config(matrix_metadata={'shape': (rows, cols), 'nnz': nnz})``
+selects an exact stored workload using integer metadata. Without a match,
+it tries the same GPU's legacy fallback, then another valid workload in
+stable shape/density order, and finally library defaults. An explicit
+``config`` passed to a matrix constructor takes precedence over the
+``BRAINEVENT_CSR_HYBRID_CONFIG`` environment override and persisted tuning.
+Existing matrices keep their own snapshots after the saved results change.
+
+``save_csr_config(config, matrix_metadata=metadata)`` saves one workload;
+omitting metadata retains the legacy device-fallback interface. The file
+uses the current compilation cache directory, which includes the library
+version by default; older version directories are not migrated automatically.
+Initialization is never triggered by loading or matrix construction.
+
+
 Benchmarking
 ------------
 
