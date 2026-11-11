@@ -1744,10 +1744,13 @@ class TestExitGuard:
 
     def test_register_exit_guard_is_idempotent(self):
         with mock.patch.object(numba_ffi, '_EXIT_GUARD_REGISTERED', False), \
-                mock.patch.object(numba_ffi.atexit, 'register') as register:
+                mock.patch.object(numba_ffi.atexit, 'register') as register, \
+                mock.patch.object(numba_ffi.ctypes.pythonapi, 'Py_IncRef') as pin:
             numba_ffi._register_exit_guard()
             numba_ffi._register_exit_guard()
         register.assert_called_once_with(numba_ffi._exit_guard)
+        pin.assert_called_once()
+        assert pin.call_args.args[0].value is numba_ffi._NUMBA_CPU_FFI_HANDLES
 
     def test_handler_registers_exit_guard(self):
         with mock.patch.object(numba_ffi, '_register_exit_guard') as guard, \
@@ -1764,6 +1767,43 @@ class TestExitGuard:
         proc = _run_exit_script(mode, timeout=20)
         assert proc.returncode == 0, proc.stderr
         assert 'IN_FLIGHT True' in proc.stdout
+
+    def test_registered_callback_survives_module_registry_release(self):
+        # Module teardown drops this binding while the held CPU client can
+        # still have a queued raw target pointer. Assert lifetime before
+        # calling the target, so the unfixed subprocess fails without a crash.
+        script = textwrap.dedent('''
+            import gc, weakref
+            import numpy as np, jax, jax.numpy as jnp
+            from brainevent._op import numba_ffi
+
+            def kernel(x, out):
+                out[...] = x + 1.0
+
+            handler = numba_ffi.NumbaCpuFfiHandler(
+                'registry_lifetime_probe', kernel,
+                (np.dtype('float32'),), (np.dtype('float32'),))
+            handler_ref = weakref.ref(handler)
+            callback_ref = weakref.ref(handler._callback)
+            del handler
+            numba_ffi._NUMBA_CPU_FFI_HANDLES = {}
+            gc.collect()
+            assert handler_ref() is not None, 'registered handler was released'
+            assert callback_ref() is not None, 'registered callback was released'
+
+            call = jax.jit(jax.ffi.ffi_call(
+                'registry_lifetime_probe', jax.ShapeDtypeStruct((4,), jnp.float32)))
+            actual = np.asarray(call(jnp.arange(4, dtype=jnp.float32)))
+            np.testing.assert_array_equal(actual, np.arange(4, dtype=np.float32) + 1)
+            print('PINNED_CALLBACK_OK', flush=True)
+        ''')
+        proc = subprocess.run(
+            [sys.executable, '-c', script],
+            env=dict(os.environ, JAX_PLATFORMS='cpu'), timeout=30,
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert 'PINNED_CALLBACK_OK' in proc.stdout
 
     def test_hold_keeps_one_cpu_client_and_releases_a_replaced_one(self):
         class Client:

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep registered Numba CPU FFI callbacks alive past module cleanup, alongside
+  the held CPU client. An execution queued after its outputs were dropped
+  could otherwise call a freed ctypes trampoline during interpreter shutdown,
+  causing a native crash such as Windows `0xC0000096` instead of a clean exit.
+
 ### Changed
 
 - CSR hybrid initialization now searches 48 Cartesian scheduler candidates

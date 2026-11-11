@@ -133,7 +133,7 @@ def _hold_cpu_client() -> None:
 
 
 def _register_exit_guard() -> None:
-    """Register :func:`_wait_for_inflight_executions` with ``atexit`` once per process.
+    """Register the exit guard and retain CPU callbacks once per process.
 
     Called by every FFI handler whose target calls into Python (the Numba CPU and
     CUDA handlers), before the target is registered with XLA.
@@ -142,6 +142,11 @@ def _register_exit_guard() -> None:
     with _EXIT_GUARD_LOCK:
         if not _EXIT_GUARD_REGISTERED:
             atexit.register(_exit_guard)
+            # A held CPU client can outlive module-dict clearing with a queued
+            # raw target pointer. Keep the handler registry alive as well, so
+            # ctypes cannot free its executable trampolines before that worker
+            # reaches Python's finalization guard. The OS reclaims both holds.
+            ctypes.pythonapi.Py_IncRef(ctypes.py_object(_NUMBA_CPU_FFI_HANDLES))
             _EXIT_GUARD_REGISTERED = True
 
 
@@ -861,7 +866,8 @@ class NumbaCpuFfiHandler:
     ctypes trampoline) alive on its own. Without the self-pin, a directly
     constructed handler that goes out of scope leaves XLA holding a dangling
     function pointer — a later ``ffi_call`` to *name* is a use-after-free, not
-    a catchable Python error.
+    a catchable Python error. The exit guard retains the registry past module
+    clearing so these callbacks outlive the held CPU client during shutdown.
     """
 
     def __init__(
