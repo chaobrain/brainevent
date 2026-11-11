@@ -20,10 +20,10 @@ import pytest
 from brainevent import BinaryArray, CSR, TCSR, WeightedArray
 from brainevent._csr.test._test_util import (
     BATCH,
-    CUSPARSE_COMPARISON_DTYPE_PAIRS,
-    CUSPARSE_COMPARISON_VALUE_DTYPES,
+    EVENT_DTYPES,
     OFFSET_DTYPES,
     SHAPE,
+    VALUE_DTYPES,
     assert_comparison,
     cusparse_product,
     dense_reference,
@@ -36,6 +36,16 @@ from brainevent._tcsr.binary.combined.col_major import jax_ffi as mirror
 
 
 pytestmark = [requires_cuda, pytest.mark.usefixtures('comparison_x64')]
+
+_HALF_SKIP_REASONS = {
+    'float16': 'FP16 cuSPARSE comparisons await an accuracy policy',
+    'bfloat16': 'No reliable BF16 numerical comparison reference is available',
+}
+_COMPARISON_VALUE_DTYPES = tuple(
+    pytest.param(dtype, marks=pytest.mark.skip(reason=_HALF_SKIP_REASONS[dtype]))
+    if dtype in _HALF_SKIP_REASONS else dtype
+    for dtype in VALUE_DTYPES
+)
 
 
 @partial(jax.jit, static_argnames=('mode', 'transpose'))
@@ -135,9 +145,8 @@ def _assert_inherited_cuda(text, rank):
 @pytest.mark.parametrize('rank', ['mv', 'mm'])
 @pytest.mark.parametrize('transpose', [False, True], ids=['right', 'left'])
 @pytest.mark.parametrize('mode', ['binary', 'weighted'])
-@pytest.mark.parametrize(
-    ('event_dtype', 'value_dtype'), CUSPARSE_COMPARISON_DTYPE_PAIRS,
-)
+@pytest.mark.parametrize('value_dtype', _COMPARISON_VALUE_DTYPES)
+@pytest.mark.parametrize('event_dtype', EVENT_DTYPES)
 @pytest.mark.parametrize('offset_dtype', OFFSET_DTYPES)
 def test_public_tcsr_matches_cusparse(
     rank, transpose, mode, value_dtype, event_dtype, offset_dtype,
@@ -197,7 +206,7 @@ def test_public_tcsr_matches_cusparse(
 
 
 @pytest.mark.parametrize('direction', ['direct', 'mirror'])
-@pytest.mark.parametrize('value_dtype', CUSPARSE_COMPARISON_VALUE_DTYPES)
+@pytest.mark.parametrize('value_dtype', _COMPARISON_VALUE_DTYPES)
 @pytest.mark.parametrize('offset_dtype', OFFSET_DTYPES)
 def test_native_weighted_tcsr_matches_cusparse(
     direction, value_dtype, offset_dtype, record_property,

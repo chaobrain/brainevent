@@ -21,9 +21,10 @@ import pytest
 
 import brainevent as be
 from brainevent._csr.test._test_util import (
-    CUSPARSE_COMPARISON_DTYPE_PAIRS,
+    EVENT_DTYPES,
     OFFSET_DTYPES,
     SHAPE,
+    VALUE_DTYPES,
     assert_comparison,
     cusparse_product,
     dense_reference,
@@ -35,6 +36,16 @@ from brainevent._csr.config import CSRConfig, get_device_info
 
 
 pytestmark = [requires_cuda, pytest.mark.usefixtures('comparison_x64')]
+
+_HALF_SKIP_REASONS = {
+    'float16': 'FP16 cuSPARSE comparisons await an accuracy policy',
+    'bfloat16': 'No reliable BF16 numerical comparison reference is available',
+}
+_COMPARISON_VALUE_DTYPES = tuple(
+    pytest.param(dtype, marks=pytest.mark.skip(reason=_HALF_SKIP_REASONS[dtype]))
+    if dtype in _HALF_SKIP_REASONS else dtype
+    for dtype in VALUE_DTYPES
+)
 
 
 @lru_cache(maxsize=2)
@@ -184,9 +195,8 @@ def _compare_repeated_calls(
 @pytest.mark.parametrize('matrix', [False, True], ids=['mv', 'mm_batch4'])
 @pytest.mark.parametrize('transpose', [False, True], ids=['gather', 'scatter'])
 @pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
-@pytest.mark.parametrize(
-    ('event_dtype', 'value_dtype'), CUSPARSE_COMPARISON_DTYPE_PAIRS,
-)
+@pytest.mark.parametrize('value_dtype', _COMPARISON_VALUE_DTYPES)
+@pytest.mark.parametrize('event_dtype', EVENT_DTYPES)
 @pytest.mark.parametrize('offset_dtype', OFFSET_DTYPES)
 def test_direct_csr_1k_matches_cusparse(
     matrix, transpose, weighted, value_dtype, event_dtype, offset_dtype,
@@ -219,9 +229,8 @@ def test_direct_csr_1k_matches_cusparse(
 
 @pytest.mark.parametrize('matrix', [False, True], ids=['mv', 'mm_batch4'])
 @pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
-@pytest.mark.parametrize(
-    ('event_dtype', 'value_dtype'), CUSPARSE_COMPARISON_DTYPE_PAIRS,
-)
+@pytest.mark.parametrize('value_dtype', _COMPARISON_VALUE_DTYPES)
+@pytest.mark.parametrize('event_dtype', EVENT_DTYPES)
 @pytest.mark.parametrize('offset_dtype', OFFSET_DTYPES)
 def test_indexed_mirror_1k_matches_original_csr_cusparse(
     matrix, weighted, value_dtype, event_dtype, offset_dtype, record_property,

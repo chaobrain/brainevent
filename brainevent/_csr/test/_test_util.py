@@ -838,23 +838,6 @@ EVENT_DTYPES = (
     'float16', 'bfloat16', 'float32', 'float64',
 )
 OFFSET_DTYPES = ('int32', 'int64')
-_BF16_COMPARISON_SKIP = pytest.mark.skip(
-    reason='No reliable BF16 numerical comparison reference is available',
-)
-CUSPARSE_COMPARISON_VALUE_DTYPES = tuple(
-    pytest.param(dtype, marks=_BF16_COMPARISON_SKIP)
-    if dtype == 'bfloat16' else dtype
-    for dtype in VALUE_DTYPES
-)
-# The full-suite log also flags BF16 events paired with FP16 results.
-CUSPARSE_COMPARISON_DTYPE_PAIRS = tuple(
-    pytest.param(event_dtype, value_dtype, marks=_BF16_COMPARISON_SKIP)
-    if value_dtype == 'bfloat16' or (
-        event_dtype == 'bfloat16' and value_dtype == 'float16'
-    ) else (event_dtype, value_dtype)
-    for event_dtype in EVENT_DTYPES
-    for value_dtype in VALUE_DTYPES
-)
 
 
 def _default_is_cuda():
