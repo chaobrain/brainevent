@@ -1715,6 +1715,7 @@ _EXIT_HANG_SCRIPT = textwrap.dedent('''
     numba_ffi.NumbaCpuFfiHandler('exit_guard_probe', kern, (np.dtype('float32'),), (np.dtype('float32'),))
     call = jax.ffi.ffi_call('exit_guard_probe', jax.ShapeDtypeStruct((100,), jnp.float32))
     f = jax.jit(lambda c: jax.lax.scan(lambda c, _: (jnp.sin(call(c)) + 1.0, None), c, None, length=200)[0])
+    f = f.lower(jax.ShapeDtypeStruct((100,), jnp.float32)).compile()
     heavy = jax.jit(lambda a: jax.lax.fori_loop(0, 10, lambda i, a: jnp.tanh(a @ a), a)[0, :100])
     a = jnp.ones((1500, 1500), jnp.float32) * 1e-3
     heavy(a).block_until_ready()
@@ -1750,7 +1751,9 @@ class TestExitGuard:
             numba_ffi._register_exit_guard()
         register.assert_called_once_with(numba_ffi._exit_guard)
         pin.assert_called_once()
-        assert pin.call_args.args[0].value is numba_ffi._NUMBA_CPU_FFI_HANDLES
+        handles, gates = pin.call_args.args[0].value
+        assert handles is numba_ffi._NUMBA_CPU_FFI_HANDLES
+        assert gates is numba_ffi._CPU_CALLBACK_GATES
 
     def test_handler_registers_exit_guard(self):
         with mock.patch.object(numba_ffi, '_register_exit_guard') as guard, \
@@ -1763,10 +1766,88 @@ class TestExitGuard:
     @pytest.mark.parametrize('mode', ['queued', 'running'])
     def test_exit_with_dropped_inflight_outputs_does_not_hang(self, mode):
         # #259: every output dropped, so the live-array wait has nothing to block on;
-        # the held CPU client keeps finalization from joining the worker in the trampoline.
+        # the native gate rejects late entries before ctypes takes the GIL.
         proc = _run_exit_script(mode, timeout=20)
         assert proc.returncode == 0, proc.stderr
         assert 'IN_FLIGHT True' in proc.stdout
+
+    def test_late_execution_is_cancelled_without_reentering_python(self):
+        # Simulate a queued execution reaching its target after the exit guard.
+        # A strong callback reference alone cannot make PyGILState_Ensure safe
+        # after finalization. Reject entry before ctypes tries to take the GIL.
+        script = textwrap.dedent('''
+            import numpy as np, jax, jax.numpy as jnp
+            from brainevent._op import numba_ffi
+
+            calls = []
+            def kernel(x, out):
+                calls.append(1)
+                out[...] = x + 1
+
+            numba_ffi.NumbaCpuFfiHandler(
+                'late_entry_probe', kernel,
+                (np.dtype('float32'),), (np.dtype('float32'),))
+            call = jax.jit(jax.ffi.ffi_call(
+                'late_entry_probe', jax.ShapeDtypeStruct((4,), jnp.float32)))
+            x = jnp.arange(4, dtype=jnp.float32)
+            np.testing.assert_array_equal(np.asarray(call(x)), np.arange(4) + 1)
+            numba_ffi._exit_guard()
+            try:
+                call(x).block_until_ready()
+            except Exception as exc:
+                assert 'shutting down' in str(exc), str(exc)
+            else:
+                raise AssertionError('FFI execution was accepted after shutdown')
+            assert len(calls) == 1, 'late callback reentered Python'
+        ''')
+        proc = subprocess.run(
+            [sys.executable, '-c', script],
+            env=dict(os.environ, JAX_PLATFORMS='cpu'), timeout=30,
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+    def test_shutdown_waits_for_an_entered_callback_without_live_arrays(self):
+        # A callback can release the GIL (Numba nogil, sleep, etc.). Closing its
+        # native entry must await its return even when no live-array wait helps.
+        script = textwrap.dedent('''
+            import threading
+            import numpy as np, jax, jax.numpy as jnp
+            from brainevent._op import numba_ffi
+
+            started = threading.Event()
+            release = threading.Event()
+            finished = threading.Event()
+            def kernel(x, out):
+                started.set()
+                assert release.wait(10)
+                out[...] = x
+                finished.set()
+
+            numba_ffi.NumbaCpuFfiHandler(
+                'active_entry_probe', kernel,
+                (np.dtype('float32'),), (np.dtype('float32'),))
+            call = jax.jit(jax.ffi.ffi_call(
+                'active_entry_probe', jax.ShapeDtypeStruct((4,), jnp.float32)))
+            x = jnp.arange(4, dtype=jnp.float32)
+            worker = threading.Thread(target=lambda: call(x).block_until_ready())
+            worker.start()
+            assert started.wait(10)
+            numba_ffi._wait_for_inflight_executions = lambda: None
+            timer = threading.Timer(0.1, release.set)
+            timer.start()
+            numba_ffi._exit_guard()
+            assert finished.is_set(), 'shutdown returned while Python callback was active'
+            worker.join(10)
+            timer.join(10)
+            assert not worker.is_alive()
+        ''')
+        proc = subprocess.run(
+            [sys.executable, '-c', script],
+            env=dict(os.environ, JAX_PLATFORMS='cpu'), timeout=30,
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
 
     def test_registered_callback_survives_module_registry_release(self):
         # Module teardown drops this binding while the held CPU client can
@@ -1840,7 +1921,7 @@ class TestExitGuard:
         with mock.patch.object(numba_ffi, '_CPU_HOLD_WANTED', wanted), \
                 mock.patch.object(numba_ffi, '_wait_for_inflight_executions') as wait, \
                 mock.patch.object(numba_ffi, '_hold_cpu_client') as hold:
-            numba_ffi._exit_guard()
+            numba_ffi._exit_guard([])  # do not close the pytest process's real gates
         wait.assert_called_once_with()
         assert hold.called is wanted
 

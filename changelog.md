@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Guard Numba CPU FFI entries in native code during interpreter shutdown.
+  After live outputs finish, wait for callbacks already entering Python and
+  cancel late queued calls before ctypes acquires the GIL. This prevents a
+  Python 3.13 segmentation fault even when the client and callbacks remain
+  alive after their outputs are dropped.
 - Keep registered Numba CPU FFI callbacks alive past module cleanup, alongside
   the held CPU client. An execution queued after its outputs were dropped
   could otherwise call a freed ctypes trampoline during interpreter shutdown,
