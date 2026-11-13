@@ -6,7 +6,6 @@
 #include "cuda_common.h"
 #include <cusparse.h>
 #include <limits>
-#include <mutex>
 #include <type_traits>
 #include <unordered_map>
 
@@ -20,13 +19,16 @@
 
 namespace
 {
-    cusparseHandle_t handle_for_device(std::unique_lock<std::mutex> &lock)
+    // One handle per (thread, device). A handle carries the stream it was last
+    // bound to, so a handle shared by XLA's execution threads would need a lock
+    // held across the whole call, serializing concurrent streams. Handles are
+    // created once per thread and deliberately never destroyed: thread exit can
+    // follow CUDA context teardown, and XLA's execution threads are long-lived.
+    cusparseHandle_t handle_for_device()
     {
-        static std::mutex mutex;
-        static std::unordered_map<int, cusparseHandle_t> handles;
+        thread_local std::unordered_map<int, cusparseHandle_t> handles;
         int device = 0;
         BE_CUDA_CHECK(cudaGetDevice(&device));
-        lock = std::unique_lock<std::mutex>(mutex);
         cusparseHandle_t &handle = handles[device];
         if (handle == nullptr)
             BE_CUSPARSE_CHECK(cusparseCreate(&handle));
@@ -86,8 +88,7 @@ namespace
         BE_CHECK(output_in.data_ptr<const ValueT>() == output.data_ptr<ValueT>())
             << "cusparse SDDMM: FFI requires output alias";
 
-        std::unique_lock<std::mutex> lock;
-        const cusparseHandle_t handle = handle_for_device(lock);
+        const cusparseHandle_t handle = handle_for_device();
         SDDMMPlan plan(reinterpret_cast<cudaStream_t>(stream));
         BE_CUSPARSE_CHECK(cusparseSetStream(handle, plan.stream));
         BE_CUSPARSE_CHECK(cusparseSetPointerMode(handle, CUSPARSE_POINTER_MODE_HOST));
@@ -115,6 +116,10 @@ namespace
         BE_CUSPARSE_CHECK(cusparseSDDMM_bufferSize(
             handle, left_op, right_op, &alpha, plan.left, plan.right, &beta,
             plan.sampled, cuda_dtype, algorithm, &workspace_bytes));
+        // The kernel FFI exposes no XLA scratch allocator, so the workspace
+        // comes from the device's stream-ordered pool on the call's stream; it
+        // is freed on the same stream, after the SDDMM that uses it. It is not
+        // part of XLA's memory accounting, but is usually zero or a few bytes.
         if (workspace_bytes)
             BE_CUDA_CHECK(cudaMallocAsync(&plan.workspace, workspace_bytes, plan.stream));
         BE_CUSPARSE_CHECK(cusparseSDDMM_preprocess(

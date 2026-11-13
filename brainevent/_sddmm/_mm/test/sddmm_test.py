@@ -43,8 +43,10 @@ def reference(events, ct, indices, *, transpose, weighted):
     rows = jnp.array([0, 0, 2, 2], jnp.int32)
     unit, out = (rows, indices) if transpose else (indices, rows)
     x = events[unit]
+    # Weighted activity is tested after the cast to ct.dtype, binary before it.
+    active = x.astype(ct.dtype) != 0 if weighted else x != 0
     values = x.astype(ct.dtype) * ct[out] if weighted else ct[out]
-    return jnp.sum(jnp.where(x != 0, values, 0), axis=1)
+    return jnp.sum(jnp.where(active, values, 0), axis=1)
 
 
 _EVENT_DTYPES = [jnp.bool_, jnp.int8, jnp.int16, jnp.int32, jnp.int64,
@@ -89,12 +91,30 @@ def test_nonfinite_values_are_selected_before_batch_sum(value_dtype, transpose, 
 
 @pytest.mark.usefixtures('enable_x64')
 @pytest.mark.parametrize('transpose', [False, True])
-def test_jax_activity_precedes_narrowing_and_reduction(transpose):
-    i, p = jnp.array([0, 1], jnp.int32), jnp.array([0, 1, 2], jnp.int32)
-    e = jnp.array([[1e-200, 0], [0, 0]], jnp.float64)
-    c = jnp.full((2, 2), jnp.inf, jnp.float32)
-    result = csr_sddmm_dweight(e, c, i, p, transpose=transpose, weighted=True, backend='jax_raw')
-    assert jnp.isnan(result[0]) and result[1] == 0
+@pytest.mark.parametrize('weighted', [False, True])
+def test_jax_event_kernel_is_branch_free(transpose, weighted):
+    # Nonfinite cotangents are masked per slot and batch entry before the
+    # batch reduction: no global isfinite reduction and no conditional.
+    args = operands(jnp.float32, jnp.float32, transpose)
+    fn = jax.jit(lambda e, c, i, p: csr_sddmm_dweight(
+        e, c, i, p, transpose=transpose, weighted=weighted, backend='jax_raw'))
+    ir = fn.lower(*args).as_text()
+    assert 'stablehlo.case' not in ir and 'stablehlo.if' not in ir
+
+
+@pytest.mark.usefixtures('enable_x64')
+@pytest.mark.parametrize('value_dtype', [jnp.float16, jnp.bfloat16])
+def test_jax_half_batch_sum_accumulates_in_float32(value_dtype):
+    # 4096 unit products: a half-precision running sum stalls (bfloat16 at
+    # 256, float16 at 2048); the batch reduction must accumulate in float32.
+    batch = 4096
+    e = jnp.ones((1, batch), value_dtype)
+    c = jnp.ones((1, batch), value_dtype)
+    i, p = jnp.array([0], jnp.int32), jnp.array([0, 1], jnp.int32)
+    for weighted in (False, True):
+        result = csr_sddmm_dweight(e, c, i, p, transpose=True, weighted=weighted, backend='jax_raw')
+        assert result.dtype == value_dtype
+        np.testing.assert_array_equal(np.asarray(result, np.float64), [batch])
 
 
 @pytest.mark.usefixtures('enable_x64')
@@ -136,13 +156,36 @@ def test_coo_empty_and_out_of_bounds_slots(batch, mode):
 
 
 @pytest.mark.usefixtures('enable_x64')
-def test_registry_call_and_no_event_derivative_rule():
+def test_registry_call_and_event_derivatives():
     e, c, i, p = operands(jnp.float32, jnp.float32, True)
     assert set(csr_sddmm_p.available_backends('gpu')) == {'auto', 'cuda_raw', 'cusparse', 'jax_raw'}
     np.testing.assert_allclose(csr_sddmm_p.call(e, c, i, p, transpose=True, weighted=True),
                                reference(e, c, i, transpose=True, weighted=True))
-    with pytest.raises(NotImplementedError, match='Differentiation rule'):
-        jax.jvp(lambda x: csr_sddmm_dweight(e, x, i, p, transpose=True), (c,), (c,))
+    # The default backend is differentiable: its tangent is the JAX product.
+    call = lambda x, b: csr_sddmm_dweight(e, x, i, p, transpose=True, backend=b)
+    np.testing.assert_allclose(jax.jvp(lambda x: call(x, None), (c,), (c,))[1],
+                               jax.jvp(lambda x: call(x, 'jax_raw'), (c,), (c,))[1])
+
+
+@pytest.mark.usefixtures('enable_x64')
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('backend', [None, 'auto', 'cuda_raw', 'cusparse'])
+def test_native_event_backends_differentiate_like_jax(transpose, weighted, backend):
+    if backend in ('cuda_raw', 'cusparse') and jax.default_backend() != 'gpu':
+        pytest.skip('native execution requires a GPU')
+    if backend == 'cuda_raw' and not transpose:
+        pytest.skip('cuda_raw requires transpose=True')
+    e, c, i, p = operands(jnp.float32, jnp.float32, transpose)
+
+    def loss(x, y, b):
+        return jnp.sum(csr_sddmm_dweight(x, y, i, p, transpose=transpose,
+                                         weighted=weighted, backend=b) ** 2)
+
+    actual = jax.jit(jax.grad(lambda x, y: loss(x, y, backend), argnums=(0, 1)))(e, c)
+    expected = jax.grad(lambda x, y: loss(x, y, 'jax_raw'), argnums=(0, 1))(e, c)
+    for a, b in zip(actual, expected):
+        np.testing.assert_allclose(a, b, rtol=1e-6)
 
 
 # Native registration, activity and portable execution
@@ -186,15 +229,19 @@ def test_portable_routes_do_not_load_cuda(monkeypatch, batch, transpose, backend
 
 
 @pytest.mark.parametrize('batch', [3])
-@pytest.mark.parametrize('backend', ['auto', 'cuda_raw'])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('backend', ['jax_raw', 'auto', 'cuda_raw', 'cusparse'])
 @pytest.mark.parametrize('event_dtype,value_dtype,tiny', [
     (jnp.float64, jnp.float32, 1e-200),
     (jnp.float32, jnp.float16, 1e-10),
     (jnp.float64, jnp.bfloat16, 1e-200),
 ])
-def test_weighted_cuda_checks_activity_after_cast(batch, backend, event_dtype, value_dtype, tiny):
-    if jax.default_backend() != 'gpu':
-        pytest.skip('CUDA execution requires a GPU')
+def test_weighted_activity_is_checked_after_cast(batch, transpose, backend, event_dtype, value_dtype, tiny):
+    gpu = jax.default_backend() == 'gpu'
+    if backend in ('cuda_raw', 'cusparse') and not gpu:
+        pytest.skip('native execution requires a GPU')
+    if backend == 'cuda_raw' and not transpose:
+        pytest.skip('cuda_raw requires transpose=True')
     with jax_x64_enabled():
         e = jnp.zeros((3, batch), event_dtype).at[:, 0].set(
             jnp.array([tiny, -tiny, 2.], event_dtype))
@@ -202,16 +249,18 @@ def test_weighted_cuda_checks_activity_after_cast(batch, backend, event_dtype, v
             jnp.array([jnp.inf, jnp.nan, 3.], value_dtype))
         i, p = jnp.arange(3, dtype=jnp.int32), jnp.arange(4, dtype=jnp.int32)
         fn = jax.jit(lambda e, c: csr_sddmm_dweight(
-            e, c, i, p, transpose=True, weighted=True, backend=backend))
+            e, c, i, p, transpose=transpose, weighted=True, backend=backend))
         result = fn(e, c)
         assert result.dtype == c.dtype
-        # Narrowed events and exact zeros skip nonfinite cotangents; the
-        # active third row still contributes its weighted finite value.
+        # Every backend agrees: events that narrow to zero in ct.dtype and
+        # exact zeros skip nonfinite cotangents; the active third row still
+        # contributes its weighted finite value.
         np.testing.assert_array_equal(np.asarray(result, np.float64), [0., 0., 6.])
         ir = fn.lower(e, c).as_text()
-        target = 'hybrid_sddmv_weighted_' if batch == 1 else 'batched_v3_sddmm_weighted_'
-        assert target in ir
-        assert 'stablehlo.is_finite' not in ir
+        if gpu and transpose and backend in ('auto', 'cuda_raw'):
+            target = 'hybrid_sddmv_weighted_' if batch == 1 else 'batched_v3_sddmm_weighted_'
+            assert target in ir
+            assert 'stablehlo.is_finite' not in ir
 
 
 @pytest.mark.parametrize('weighted', [False, True])

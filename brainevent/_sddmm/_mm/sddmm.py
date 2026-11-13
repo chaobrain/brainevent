@@ -14,6 +14,8 @@ Weighted CUDA tests event activity after casting events to the cotangent dtype.
 Explicit ``cusparse`` uses a shared cuSPARSE SDDMM FFI for CSR products in both
 directions and all modes. Half types compute in float32; nonfinite event
 cotangents use exact selection, with activity tested after casting.
+JAX masks each slot's cotangents where its event factor is zero, without a
+branch on global finiteness, and accumulates half-precision batches in float32.
 """
 
 from functools import lru_cache, partial
@@ -27,7 +29,7 @@ from jax.experimental import sparse
 from brainevent._compatible_import import match_varying_axes, varying_axes_of
 from brainevent._misc import _csr_to_coo
 from brainevent._op import XLACustomKernel, load_cuda_file
-from brainevent._op.util import event_active, select_active
+from brainevent._op.util import event_active
 from brainevent._sddmm._common import (
     BINARY_TARGET_SUFFIXES, VALUE_SUFFIXES, Mode, _CSRBackend, check_jax_backend,
     _cusparse_event_kernel, _cusparse_sampled,
@@ -45,7 +47,7 @@ def _load_hybrid(weighted: bool) -> str:
     name = f'csr_sddmm_hybrid_{kind}'
     load_cuda_file(
         _DIRECTORY / f'hybrid_sddmm_{kind}.cu', name=name,
-        extra_include_paths=[str(_DIRECTORY), str(_DIRECTORY.parent / '_common')],
+        extra_include_paths=[str(_DIRECTORY)],
         allow_cuda_graph=True,
     )
     return name
@@ -96,38 +98,30 @@ def _long_mask(indptr: jax.Array) -> jax.Array:
 def _jax_kernel(events: jax.Array, ct: jax.Array, indices: jax.Array,
                 indptr: jax.Array | None, *, transpose: bool, weighted: bool,
                 **kwargs: Any) -> tuple[jax.Array]:
-    """Compute event slot values for CSR lowering or direct CSR/COO calls."""
+    """Compute event slot values for CSR lowering or direct CSR/COO calls.
+
+    Branch-free: each slot and batch entry masks its own cotangent before the
+    batch reduction, instead of testing the whole cotangent for finiteness.
+    Weighted activity is tested after the cast to ``ct.dtype``, as in the
+    native kernels. Half types accumulate the batch in float32.
+    """
     if indptr is not None:
         rows, cols = _csr_to_coo(indices, indptr)
-        indices = jnp.stack([rows, cols], axis=1)
     else:
         rows, cols = indices[:, 0], indices[:, 1]
     unit, out = (rows, cols) if transpose else (cols, rows)
     factors = events.astype(ct.dtype) if weighted else event_active(events).astype(ct.dtype)
-    left, right = (factors, ct.T) if transpose else (ct, factors.T)
-    if varying_axes_of(left, right, indices):
-        sampled_dot = partial(
-            jax.lax.dot_general,
-            left.at[rows, :].get(mode='fill', fill_value=0),
-            right.at[:, cols].get(mode='fill', fill_value=0),
-            dimension_numbers=(((1,), (0,)), ((0,), (1,))),
-            precision=jax.lax.Precision.HIGHEST,
-        )
-    else:
-        sampled_dot = partial(
-            sparse.bcoo_dot_general_sampled, left, right, indices,
-            dimension_numbers=(((1,), (0,)), ((), ())),
-        )
-    # Inactive events must suppress NaN/Inf before the batch reduction.
-    return (jax.lax.cond(
-        jnp.all(jnp.isfinite(ct)), sampled_dot,
-        lambda: jnp.sum(select_active(
-            event_active(events.at[unit, :].get(mode='fill', fill_value=0)),
-            (events.at[unit, :].get(mode='fill', fill_value=0).astype(ct.dtype)
-             * ct.at[out, :].get(mode='fill', fill_value=0))
-            if weighted else ct.at[out, :].get(mode='fill', fill_value=0),
-        ), axis=1),
-    ),)
+    # CSR coordinates are non-negative: skip the per-slot negative-index wrap.
+    wrap = indptr is None
+    factor = factors.at[unit, :].get(mode='fill', fill_value=0, wrap_negative_indices=wrap)
+    cotangent = ct.at[out, :].get(mode='fill', fill_value=0, wrap_negative_indices=wrap)
+    cotangent = jnp.where((factor != 0) | jnp.isfinite(cotangent), cotangent, jnp.zeros_like(cotangent))
+    accumulate = jnp.float32 if ct.dtype.itemsize < 4 else None
+    result = jax.lax.dot_general(
+        factor, cotangent, dimension_numbers=(((1,), (1,)), ((0,), (0,))),
+        precision=jax.lax.Precision.HIGHEST, preferred_element_type=accumulate,
+    )
+    return (result.astype(ct.dtype),)
 
 
 def _cuda_kernel(*, transpose: bool, weighted: bool, ct_info: jax.ShapeDtypeStruct,
@@ -192,8 +186,8 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
         ``cusparse`` supports CSR products on GPU in both directions and all
         modes, with float32 computation for half types. COO and patterns with
         more slots than rows times columns are unsupported. Nonfinite event
-        cotangents use exact JAX selection. Explicit native backends have no AD
-        rules; use ``jax_raw`` for differentiation.
+        cotangents use exact JAX selection. Native backends have no AD rules
+        here; :func:`brainevent._sddmm.sddmm` supplies them.
 
     Returns
     -------

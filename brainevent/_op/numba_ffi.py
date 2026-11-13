@@ -11,6 +11,7 @@ import re
 import sys
 import threading
 import traceback
+import warnings
 from ctypes import c_void_p, c_int, c_int32, c_int64, c_uint32, c_size_t, c_char_p, POINTER, Structure, CFUNCTYPE
 from typing import TYPE_CHECKING, Callable, Dict, Optional, Sequence, Tuple
 
@@ -23,7 +24,7 @@ from brainevent._op.util import OutType, abstract_arguments
 from brainevent._error import KernelRegistrationError
 
 if TYPE_CHECKING:
-    from brainevent._op._numba_callback_gate import _CpuCallbackGate
+    from brainevent._op._numba_callback_gate import _FfiCallbackGate
 
 __all__ = [
     'numba_kernel',
@@ -55,11 +56,21 @@ _FFI_CALLBACK_COUNTER = 0
 # Serializes target registration (trace/lowering time, distinct from execution).
 _REGISTRATION_LOCK = threading.Lock()
 
-# Whether :func:`_wait_for_inflight_executions` is registered with ``atexit``.
+# Whether :func:`_exit_guard` is registered with ``atexit``.
 _EXIT_GUARD_REGISTERED = False
 _EXIT_GUARD_LOCK = threading.Lock()
+# Default wait, in seconds, for admitted callbacks at exit (BRAINEVENT_FFI_EXIT_TIMEOUT).
+_EXIT_TIMEOUT = 30.0
+
+
+class _GateList(list):
+    """The native entry gates of Numba FFI targets, and whether exit closed them."""
+
+    closed = False
+
+
 # Each registered exit guard captures its own list, including across reloads.
-_CPU_CALLBACK_GATES: list['_CpuCallbackGate'] = []
+_FFI_CALLBACK_GATES: _GateList = _GateList()
 
 
 def _wait_for_inflight_executions() -> None:
@@ -87,13 +98,47 @@ def _wait_for_inflight_executions() -> None:
             pass
 
 
-def _exit_guard(_gates: list['_CpuCallbackGate'] = _CPU_CALLBACK_GATES) -> None:
-    """Wait for live outputs, retain the client, then close native CPU entries."""
+def _exit_timeout() -> float:
+    """Return the exit guard's wait for admitted callbacks, in seconds.
+
+    ``BRAINEVENT_FFI_EXIT_TIMEOUT`` overrides the 30 s default; ``inf`` waits
+    indefinitely and negative values do not wait.
+    """
+    try:
+        return max(0.0, float(os.environ.get('BRAINEVENT_FFI_EXIT_TIMEOUT', _EXIT_TIMEOUT)))
+    except ValueError:
+        return _EXIT_TIMEOUT
+
+
+def _exit_guard(_gates: _GateList = _FFI_CALLBACK_GATES) -> None:
+    """Wait for live outputs, retain the client, then close native FFI entries.
+
+    ``atexit`` runs handlers last-in first-out, and this guard is registered
+    with the first Numba FFI target. An ``atexit`` handler registered *before*
+    that runs after the guard: its Numba FFI executions fail with a "shutting
+    down" error instead of entering Python. Admitted callbacks get
+    ``BRAINEVENT_FFI_EXIT_TIMEOUT`` seconds (default 30) to return; after that
+    a warning is issued and shutdown continues, so a callback that never
+    returns cannot hang exit here (it may still block its own thread).
+    """
     _wait_for_inflight_executions()
     if _CPU_HOLD_WANTED:
         _hold_cpu_client()  # the CPU client may have been replaced since the last registration
-    for gate in _gates:
-        gate.close()
+    with _EXIT_GUARD_LOCK:
+        # A gate created from here on is born closed (see _guard_ffi_callback).
+        _gates.closed = True
+        gates = tuple(_gates)
+    # Close outside the lock: an admitted callback may register a target.
+    timeout = _exit_timeout()
+    stuck = [gate for gate in gates if not gate.close(timeout)]
+    if stuck:
+        count = sum(gate.in_flight() for gate in stuck)
+        warnings.warn(
+            f'brainevent: {count} Numba FFI callback(s) still running {timeout:g} s after '
+            f'interpreter exit began; continuing shutdown without them. Set '
+            f'BRAINEVENT_FFI_EXIT_TIMEOUT to wait longer.',
+            RuntimeWarning, stacklevel=2,
+        )
 
 
 # The CPU client held past interpreter finalization (:func:`_hold_cpu_client`), and
@@ -143,7 +188,9 @@ def _register_exit_guard() -> None:
     """Register the exit guard and retain CPU callbacks and native gates.
 
     Called by every FFI handler whose target calls into Python (the Numba CPU and
-    CUDA handlers), before the target is registered with XLA.
+    CUDA handlers), before the target is registered with XLA. ``atexit``
+    handlers registered before this call run after the guard (see
+    :func:`_exit_guard`).
     """
     global _EXIT_GUARD_REGISTERED
     with _EXIT_GUARD_LOCK:
@@ -153,27 +200,34 @@ def _register_exit_guard() -> None:
             # gate, error data and ctypes trampoline must all survive module
             # clearing. A raw tuple hold keeps both containers (and gates added
             # later) alive; the OS reclaims their memory on process exit.
-            ctypes.pythonapi.Py_IncRef(ctypes.py_object((_NUMBA_CPU_FFI_HANDLES, _CPU_CALLBACK_GATES)))
+            ctypes.pythonapi.Py_IncRef(ctypes.py_object((_NUMBA_CPU_FFI_HANDLES, _FFI_CALLBACK_GATES)))
             _EXIT_GUARD_REGISTERED = True
 
 
-def _guard_cpu_callback(callback) -> int:
-    """Return a native entry that cannot call ctypes after the exit guard."""
-    from brainevent._op._numba_callback_gate import _CpuCallbackGate
+def _guard_ffi_callback(callback) -> int:
+    """Return a native entry that cannot call ctypes after the exit guard.
+
+    Used by the Numba CPU and CUDA handlers alike: both targets are ctypes
+    trampolines behind the same XLA FFI call frame.
+    """
+    from brainevent._op._numba_callback_gate import _FfiCallbackGate
 
     with _EXIT_GUARD_LOCK:
-        if not _CPU_CALLBACK_GATES:
-            _CPU_CALLBACK_GATES.append(_CpuCallbackGate(
+        if not _FFI_CALLBACK_GATES:
+            gate = _FfiCallbackGate(
                 frame_api_offset=XLA_FFI_CallFrame.api.offset,
                 error_create_offset=XLA_FFI_Api.XLA_FFI_Error_Create.offset,
                 error_args=XLA_FFI_Error_Create_Args(
                     struct_size=ctypes.sizeof(XLA_FFI_Error_Create_Args),
                     extension_start=None,
-                    message=b'Numba CPU FFI is shutting down',
+                    message=b'Numba FFI is shutting down',
                     errc=1,  # XLA_FFI_Error_Code_CANCELLED
                 ),
-            ))
-        return _CPU_CALLBACK_GATES[0].wrap(callback)
+            )
+            if _FFI_CALLBACK_GATES.closed:
+                gate.close(timeout=0)  # created after the exit guard: admit nothing
+            _FFI_CALLBACK_GATES.append(gate)
+        return _FFI_CALLBACK_GATES[0].wrap(callback)
 
 
 def _detect_xla_ffi_api_version() -> Tuple[int, int]:
@@ -916,7 +970,7 @@ class NumbaCpuFfiHandler:
         # and keep the CPU client out of finalization (#259).
         _register_exit_guard()
         _hold_cpu_client()
-        self._callback_address = _guard_cpu_callback(self._callback)
+        self._callback_address = _guard_ffi_callback(self._callback)
 
         # Register as an FFI target (typed FFI api_version=1 is the default in JAX 0.9+)
         _warn_if_untested_jax()

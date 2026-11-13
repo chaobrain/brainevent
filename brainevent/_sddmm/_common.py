@@ -5,10 +5,11 @@
 """Backend metadata and cuSPARSE execution shared by sampled-product leaves."""
 
 import importlib.util
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, TYPE_CHECKING
+from typing import Iterable, Literal, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from brainevent._csr.config import CSRKernelSpec
 
 Mode = Literal['float', 'binary', 'weighted']
+_INT32_MAX = 2**31 - 1
 VALUE_DTYPES = (jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64)
 # Both native leaves expose the same value/event ABI pairs.
 VALUE_SUFFIXES = dict(zip(map(jnp.dtype, VALUE_DTYPES), ('f16', 'bf16', 'f32', 'f64')))
@@ -54,6 +56,53 @@ def check_jax_backend(backend: str | None | _CSRBackend) -> None:
         raise ValueError(f'unsupported sampled-product backend: {backend!r}')
 
 
+def _jaxlib_cuda_major() -> int | None:
+    """Return the CUDA major version of the running jaxlib GPU plugin, if known."""
+    try:
+        version = jax.devices('gpu')[0].client.platform_version  # e.g. 'cuda 12080'
+    except Exception:  # noqa: BLE001 - no GPU client: fall back to the installed plugins
+        version = ''
+    match = re.search(r'cuda\s+(\d+)', version)
+    if match:
+        number = int(match.group(1))
+        return number // 1000 if number >= 1000 else number
+    majors = {
+        major for major in range(11, 20)
+        if importlib.util.find_spec(f'jax_cuda{major}_plugin') is not None
+        or _find_spec(f'jax_plugins.xla_cuda{major}') is not None
+    }
+    return majors.pop() if len(majors) == 1 else None
+
+
+def _find_spec(name: str):
+    """``importlib.util.find_spec`` that treats a missing parent package as absent."""
+    try:
+        return importlib.util.find_spec(name)
+    except ModuleNotFoundError:
+        return None
+
+
+def _cusparse_wheel_library(roots: Iterable[str], cuda_major: int | None) -> Path | None:
+    """Pick the NVIDIA wheel cuSPARSE library built for ``cuda_major``.
+
+    CUDA 13 wheels install ``nvidia/cu13/lib``; CUDA 12 wheels install
+    ``nvidia/cusparse/lib`` (or ``nvidia/cu12/lib``). Sorting alone would put
+    ``cu13`` before ``cusparse`` and link a CUDA 13 library into a CUDA 12
+    process. With a known major and no matching wheel, return ``None`` so the
+    toolkit library is used instead; with an unknown major, keep the first.
+    """
+    candidates = sorted(
+        candidate
+        for root in roots
+        for candidate in Path(root).glob('cu*/lib/libcusparse.so.*')
+        if candidate.is_file()
+    )
+    if cuda_major is None:
+        return candidates[0] if candidates else None
+    wanted = {f'cu{cuda_major}'} | ({'cusparse'} if cuda_major <= 12 else set())
+    return next((c for c in candidates if c.parent.parent.name in wanted), None)
+
+
 @lru_cache(maxsize=1)
 def _load_cusparse() -> str:
     """Load the shared SDDMM FFI against wheel or toolkit cuSPARSE libraries."""
@@ -62,18 +111,12 @@ def _load_cusparse() -> str:
     include_paths = []
     spec = importlib.util.find_spec('nvidia')
     if spec is not None and spec.submodule_search_locations:
-        candidates = [
-            candidate
-            for root in spec.submodule_search_locations
-            for candidate in sorted(Path(root).glob('cu*/lib/libcusparse.so.*'))
-            if candidate.is_file()
-        ]
-        if candidates:
-            library = candidates[0]
+        library = _cusparse_wheel_library(spec.submodule_search_locations, _jaxlib_cuda_major())
+        if library is not None:
             link_flags = [str(library), f'-rpath={library.parent}']
             include_paths = [str(library.parent.parent / 'include')]
     load_cuda_file(
-        Path(__file__).parent / '_common' / 'cusparse_sddmm.cu', name=name,
+        Path(__file__).parent / '_cuda' / 'cusparse_sddmm.cu', name=name,
         extra_ldflags=link_flags, extra_include_paths=include_paths,
         allow_cuda_graph=False,
     )
@@ -100,13 +143,21 @@ def _cusparse_sampled(left: jax.Array, right: jax.Array, indices: jax.Array,
         raise ValueError('cusparse SDDMM requires nnz <= rows * cols; use jax_raw for larger duplicate patterns')
     compute_dtype = jnp.dtype(jnp.float64 if dtype == jnp.float64 else jnp.float32)
 
+    # cuSPARSE needs one index type for offsets and columns. Narrow the
+    # rows + 1 offsets instead of widening the nnz columns whenever every
+    # offset (at most nnz) fits in int32.
+    if indptr.dtype == jnp.int64 and indices.size <= _INT32_MAX:
+        offsets, columns = indptr.astype(jnp.int32), indices
+    else:
+        offsets, columns = indptr, indices.astype(indptr.dtype)
+
     def product():
         module = _load_cusparse()
         result = jax.ffi.ffi_call(
             f'{module}.cusparse_sddmm_{VALUE_SUFFIXES[compute_dtype]}',
             jax.ShapeDtypeStruct(indices.shape, compute_dtype),
             input_output_aliases={4: 0}, vmap_method='sequential',
-                )(left.astype(compute_dtype), right.T.astype(compute_dtype), indices.astype(indptr.dtype), indptr,
+        )(left.astype(compute_dtype), right.T.astype(compute_dtype), columns, offsets,
           jnp.zeros(indices.shape, compute_dtype))
         return match_varying_axes(result.astype(dtype), left, right, indices, indptr)
 
@@ -122,6 +173,11 @@ def _cusparse_sampled(left: jax.Array, right: jax.Array, indices: jax.Array,
         result = jnp.sum(select_active(event_active(event_values), values), axis=1)
         return match_varying_axes(result, left, right, indices, indptr)
 
+    # cuSPARSE sums factor * ct over the batch, so an inactive event meeting a
+    # NaN/Inf cotangent would poison its slot. Masking per slot would need the
+    # gathers cuSPARSE avoids, so only nonfinite cotangents take the exact JAX
+    # selection. The predicate is computed on device and does not block host
+    # dispatch.
     return jax.lax.cond(jnp.all(jnp.isfinite(ct)), product, selected_product)
 
 

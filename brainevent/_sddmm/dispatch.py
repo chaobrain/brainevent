@@ -15,8 +15,8 @@ duplicates. ``sddmm`` returns an array of slot values.
 ``float`` means ordinary multiplication; ``binary`` selects active cotangents;
 ``weighted`` multiplies active event amplitudes by cotangents. Event leaves
 handle NaN/Inf cotangents without contributions from inactive events.
-Weighted CUDA tests activity after casting events to the cotangent dtype;
-JAX and binary products use the original event activity.
+Weighted products test activity after casting events to the cotangent dtype
+on every backend; binary products use the original event activity.
 
 JAX supports both leaves on CPU/GPU/TPU. GPU auto uses hybrid CUDA for
 transposed CSR events in both leaves, with JAX for the other direction.
@@ -24,15 +24,15 @@ MM batches larger than 65535 or column counts above INT32_MAX also use JAX
 under auto; explicit CUDA requests reject these unsupported dimensions.
 Explicit ``cusparse`` uses a shared cuSPARSE SDDMM FFI for CSR products on GPU
 in both directions and all modes; automatic backend selection is unchanged.
-Ordinary JAX products retain differentiation and ``shard_map`` support; CSR
-event primitives supply other operators' gradients and have no AD rules.
-Explicit ``jax_raw`` calls execute JAX directly and retain differentiation for
-CSR and COO inputs. CSR event gradient consumers pass their CSR structure and
-forward backend selection. Their private adapter retains differentiable JAX
-tangents while the primal uses the forward backend's available sampled path,
-including cuSPARSE. Automatic GPU selection resolves the source CSR primitive
-at lowering time, honoring its global and per-primitive backend choices.
-TCSR-specific adapters remain separate.
+Every product is differentiable and supports ``shard_map``. Explicit
+``jax_raw`` calls and other pure JAX products differentiate directly. Calls
+that bind a CSR event primitive or the cuSPARSE FFI, which have no AD rules of
+their own, run the primal on that backend and take derivatives from the JAX
+sampled product. CSR event gradient consumers pass their CSR structure and
+forward backend selection; the primal then uses the forward backend's
+available sampled path, including cuSPARSE. Automatic GPU selection resolves
+the source CSR primitive at lowering time, honoring its global and
+per-primitive backend choices. TCSR-specific adapters remain separate.
 """
 
 from functools import partial
@@ -68,9 +68,9 @@ def sddmm(
         are required. No sorting or coalescing is performed.
     mode : {'float', 'binary', 'weighted'}, optional
         Ordinary sampled multiplication, binary-event selection, or
-        value-weighted event selection. Weighted CUDA tests activity after
-        converting amplitudes to the cotangent dtype. JAX and binary products
-        preserve original event activity.
+        value-weighted event selection. Weighted products test activity after
+        converting amplitudes to the cotangent dtype on every backend; binary
+        products use the original event activity.
     transpose : bool, optional
         In event modes, ``True`` identifies ``A`` as events and ``B.T`` as
         output cotangents; ``False`` identifies ``B.T`` as events and ``A`` as
@@ -85,7 +85,7 @@ def sddmm(
         and all modes. Half types compute in float32. COO and patterns with
         more slots than rows times columns are unsupported. Nonfinite event
         cotangents use exact JAX selection; weighted activity is tested after
-        casting to the cotangent dtype. This backend has no derivative rules.
+        casting to the cotangent dtype.
     config : CSRConfig or None, optional
         Explicit CSR scheduler snapshot for the vector leaf. ``None`` uses
         default constants without reading persisted configuration. Matrix
@@ -100,9 +100,25 @@ def sddmm(
     Notes
     -----
     Batch one dispatches to ``_mv``; other sizes, including zero, to ``_mm``.
-    Ordinary JAX products and explicit ``jax_raw`` event calls remain
-    differentiable. CSR event calls using ``auto`` or ``cuda_raw`` and all
-    explicit ``cusparse`` calls have no derivative rules.
+    Every backend is differentiable to any order. CSR event calls using
+    ``None``, ``auto`` or ``cuda_raw`` and explicit ``cusparse`` calls run the
+    primal on the selected backend and take derivatives from the JAX sampled
+    product; ``jax_raw`` and other JAX products differentiate directly.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax
+        >>> import jax.numpy as jnp
+        >>> from brainevent._sddmm import sddmm
+        >>> events = jnp.array([1., 0.])
+        >>> ct = jnp.array([2., 3.])
+        >>> indices, indptr = jnp.array([0, 1], jnp.int32), jnp.array([0, 1, 2], jnp.int32)
+        >>> sddmm(events, ct, indices, indptr, mode='weighted')
+        Array([2., 0.], dtype=float32)
+        >>> jax.grad(lambda c: sddmm(events, c, indices, indptr, mode='weighted').sum())(ct)
+        Array([1., 0.], dtype=float32)
     """
     if mode not in ('float', 'binary', 'weighted'):
         raise ValueError('mode must be float, binary or weighted')
@@ -150,6 +166,9 @@ def sddmm(
         if config_spec is not None:
             backend = replace(backend, config_spec=config_spec)
         return _csr_sampled(A, B, indices, indptr, mode, transpose, backend)
+    if indptr is not None and backend != 'jax_raw' and (mode != 'float' or backend == 'cusparse'):
+        # This call binds a native primitive or the cuSPARSE FFI.
+        return _native_sampled(A, B, indices, indptr, mode, transpose, backend, config_spec)
     return _sampled(A, B, indices, indptr, mode, transpose, backend, config_spec=config_spec)
 
 
@@ -163,15 +182,13 @@ def _sampled(A, B, indices, indptr, mode, transpose, backend, *, config_spec=Non
                                mode=mode, transpose=transpose, backend=backend)
 
 
-@partial(jax.custom_jvp, nondiff_argnums=(4, 5, 6))
 def _csr_sampled(A, B, indices, indptr, mode, transpose, source):
-    """Keep CSR derivatives while its primal follows the forward backend.
+    """Run a CSR consumer's sampled product on its forward backend.
 
-    Explicit cuSPARSE requests keep their backend in both directions. CUDA
-    forwards select native event gradients where supported; other explicit
-    backends use JAX. Automatic requests resolve the source CSR primitive on
-    the actual lowering platform, including its cuSPARSE choice. Public
-    sampled-event calls retain their existing primitive/AD contract.
+    Explicit cuSPARSE requests keep their backend. CUDA forwards select native
+    event gradients where supported; other explicit backends use JAX.
+    Automatic requests resolve the source CSR primitive on the actual lowering
+    platform, including its cuSPARSE choice.
     """
     native = (mode != 'float' and transpose and
               (A.shape[1] == 1 or (A.shape[1] <= 65535 and B.shape[1] <= 2**31 - 1)))
@@ -182,20 +199,31 @@ def _csr_sampled(A, B, indices, indptr, mode, transpose, source):
     elif native and source.requested == 'cuda_raw':
         backend = 'cuda_raw'
     else:
-        backend = 'jax_raw'
-    return _sampled(A, B, indices, indptr, mode, transpose, backend, config_spec=source.config_spec)
+        return _sampled(A, B, indices, indptr, mode, transpose, 'jax_raw',
+                        config_spec=source.config_spec)
+    return _native_sampled(A, B, indices, indptr, mode, transpose, backend, source.config_spec)
 
 
-@_csr_sampled.defjvp
-def _csr_sampled_jvp(mode, transpose, source, primals, tangents):
+@partial(jax.custom_jvp, nondiff_argnums=(4, 5, 6, 7))
+def _native_sampled(A, B, indices, indptr, mode, transpose, backend, config_spec):
+    """Run a native sampled product whose derivatives are the JAX product's.
+
+    Native event primitives and the cuSPARSE FFI have no AD rules of their
+    own. The primal keeps the selected backend; the tangent is the JAX
+    sampled product's, which is linear in the tangents and differentiable
+    again, so reverse mode and higher orders follow.
+    """
+    return _sampled(A, B, indices, indptr, mode, transpose, backend, config_spec=config_spec)
+
+
+@_native_sampled.defjvp
+def _native_sampled_jvp(mode, transpose, backend, config_spec, primals, tangents):
     A, B, indices, indptr = primals
     A_dot, B_dot, _, _ = tangents
-    primal = _csr_sampled(A, B, indices, indptr, mode, transpose, source)
-    # Preserve the CSR consumers' existing differentiable JAX rules. This
-    # runs only under further differentiation, not in a first-order VJP.
+    primal = _native_sampled(A, B, indices, indptr, mode, transpose, backend, config_spec)
     _, tangent = jax.jvp(
         lambda a, b: _sampled(a, b, indices, indptr, mode, transpose, 'jax_raw',
-                             config_spec=source.config_spec),
+                             config_spec=config_spec),
         (A, B), (A_dot, B_dot),
     )
     return primal, tangent

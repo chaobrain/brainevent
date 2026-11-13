@@ -5,6 +5,7 @@
 """Tests for ``brainevent/_sddmm/dispatch.py``, grouped by behavior."""
 
 import importlib
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -248,6 +249,61 @@ def test_explicit_jax_csr_keeps_derivatives(batch, transpose, weighted):
         return jax.jit(lambda c: jax.jvp(jax.grad(loss), (c,), (tangent,))[1])(ct)
 
     np.testing.assert_allclose(hvp(call), hvp(reference))
+
+
+@pytest.mark.parametrize('batch', [1, 3])
+@pytest.mark.parametrize('mode', ['float', 'binary', 'weighted'])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('backend', [None, 'auto', 'cuda_raw', 'cusparse'])
+def test_csr_native_backends_differentiate_like_jax(batch, mode, transpose, backend):
+    """Every CSR backend is differentiable: the primal stays native, the tangent is JAX."""
+    gpu = jax.default_backend() == 'gpu'
+    if backend in ('cuda_raw', 'cusparse') and not gpu:
+        pytest.skip('native execution requires a GPU')
+    if backend == 'cuda_raw' and (mode == 'float' or not transpose):
+        pytest.skip('cuda_raw supports transposed CSR event products only')
+    indices = jnp.array([2, 0, 1, 1], jnp.int32)
+    indptr = jnp.array([0, 2, 2, 4], jnp.int32)
+    a = jnp.asarray(np.resize([0., -2., 1., 3.], (3, batch)), jnp.float32)
+    b = jnp.asarray(np.resize([1.5, 0., -3., 2.], (batch, 3)), jnp.float32)
+
+    def loss(x, y, chosen):
+        return jnp.sum(sddmm(x, y, indices, indptr, mode=mode, transpose=transpose,
+                             backend=chosen) ** 2)
+
+    grad = jax.jit(jax.grad(partial(loss, chosen=backend), argnums=(0, 1)))
+    expected = jax.grad(partial(loss, chosen='jax_raw'), argnums=(0, 1))(a, b)
+    for got, want in zip(grad(a, b), expected):
+        np.testing.assert_allclose(got, want, rtol=1e-6)
+    second = jax.jacfwd(jax.grad(partial(loss, chosen=backend)))(a, b)
+    np.testing.assert_allclose(second, jax.jacfwd(jax.grad(partial(loss, chosen='jax_raw')))(a, b),
+                               rtol=1e-6)
+    if gpu and mode != 'float' and transpose and backend in (None, 'auto', 'cuda_raw'):
+        # The primal the gradient reuses still runs the native kernel.
+        target = 'hybrid_sddmv_' if batch == 1 else 'batched_v3_sddmm_'
+        assert target in grad.lower(a, b).as_text()
+
+
+@pytest.mark.parametrize('batch', [1, 3])
+@pytest.mark.parametrize('mode', ['float', 'binary', 'weighted'])
+def test_coo_negative_coordinates_keep_numpy_wrapping(batch, mode):
+    # CSR gathers skip the negative-index wrap; COO keeps the NumPy semantics.
+    a = jnp.arange(2 * batch, dtype=jnp.float32).reshape(2, batch) + 1
+    b = jnp.arange(batch * 3, dtype=jnp.float32).reshape(batch, 3) + 2
+    wrapped = sddmm(a, b, jnp.array([[-1, -3], [0, -1]], jnp.int32), mode=mode)
+    explicit = sddmm(a, b, jnp.array([[1, 0], [0, 2]], jnp.int32), mode=mode)
+    np.testing.assert_array_equal(wrapped, explicit)
+
+
+def test_explicit_jax_calls_do_not_wrap_a_custom_derivative():
+    indices, indptr = jnp.array([0, 1], jnp.int32), jnp.array([0, 1, 2], jnp.int32)
+    a, b = jnp.ones((2, 1)), jnp.ones((1, 2))
+    for mode in ('float', 'binary', 'weighted'):
+        jaxpr = str(jax.make_jaxpr(lambda x: sddmm(
+            x, b, indices, indptr, mode=mode, backend='jax_raw'))(a))
+        assert 'custom_jvp' not in jaxpr
+    jaxpr = str(jax.make_jaxpr(lambda x: sddmm(x, b, indices, indptr, mode='binary'))(a))
+    assert 'custom_jvp' in jaxpr
 
 
 # Sampled values, coordinate order, derivatives and sharding

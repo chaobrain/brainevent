@@ -2,7 +2,7 @@
 # Licensed under the Apache License, Version 2.0:
 # http://www.apache.org/licenses/LICENSE-2.0
 
-"""Native admission control for CPU callbacks during interpreter shutdown."""
+"""Native admission control for Numba FFI callbacks during interpreter shutdown."""
 
 import ctypes
 import threading
@@ -10,12 +10,14 @@ import time
 from typing import Any, Optional
 
 
-class _CpuCallbackGate:
-    """Keep late XLA workers outside Python after the exit guard has run.
+class _FfiCallbackGate:
+    """Keep late XLA executions outside Python after the exit guard has run.
 
-    The owner must outlive interpreter finalization: its engine owns executable
-    code and its state, error arguments, and callbacks are embedded as raw
-    addresses in that code. The caller is responsible for retaining the owner.
+    Wraps the ctypes trampolines of the Numba CPU and CUDA FFI targets; both
+    use the same XLA FFI call frame. The owner must outlive interpreter
+    finalization: its engine owns executable code and its state, error
+    arguments, and callbacks are embedded as raw addresses in that code. The
+    caller is responsible for retaining the owner.
     """
 
     def __init__(
@@ -210,10 +212,30 @@ class _CpuCallbackGate:
             self.callbacks.append(callback)
             return address
 
-    def close(self) -> None:
-        """Reject Python entries and wait for admitted calls to return."""
+    def in_flight(self) -> int:
+        """Return the number of admitted calls that have not returned."""
+        return int(self._read_state() >> 1)
+
+    def close(self, timeout: Optional[float] = None) -> bool:
+        """Reject new entries, then wait for admitted calls to return.
+
+        Parameters
+        ----------
+        timeout : float or None, optional
+            Seconds to wait for admitted calls. ``None`` waits indefinitely.
+
+        Returns
+        -------
+        bool
+            Whether every admitted call returned. Either way the gate stays
+            closed; calls still inside finish, or block, on their own.
+        """
         self._shutdown()
+        deadline = None if timeout is None else time.monotonic() + timeout
         # These reads are atomic too: callbacks execute without the GIL. Sleep
         # releases the GIL so callbacks already admitted can finish their work.
         while self._read_state() != 1:
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
             time.sleep(0.001)
+        return True

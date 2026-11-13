@@ -6,7 +6,11 @@
 
 import importlib.util
 import os
+import subprocess
+import sys
+import textwrap
 import unittest
+from unittest import mock
 
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
@@ -2170,3 +2174,62 @@ class TestNestedVmapRejection(unittest.TestCase):
         y2 = jnp.ones((b_outer, b_inner, n), dtype=jnp.float32)
         with pytest.raises(Exception, match='only one level of vmap'):
             jax.block_until_ready(jax.vmap(jax.vmap(fn))(x2, y2))
+
+
+# ---------------------------------------------------------------------------
+# Interpreter shutdown: CUDA targets are gated like CPU targets (G1)
+# ---------------------------------------------------------------------------
+
+def _make_kernel_handler(name):
+    return numba_cuda_ffi.NumbaCudaFfiHandler(
+        name, object(), (np.dtype('float32'),), (np.dtype('float32'),), ((4,),),
+        ('explicit', 1, 4))
+
+
+def _make_callable_handler(name):
+    return numba_cuda_ffi.NumbaCudaCallableHandler(
+        name, lambda x, out, stream: None, 1, 1, (np.dtype('float32'),), ((4,),),
+        (np.dtype('float32'),))
+
+
+@pytest.mark.parametrize('make', [_make_kernel_handler, _make_callable_handler],
+                         ids=['kernel', 'callable'])
+def test_cuda_handlers_register_the_gated_entry(make):
+    # A late XLA execution must hit the native gate, not the ctypes trampoline.
+    with mock.patch.object(numba_cuda_ffi, '_register_exit_guard') as guard, \
+            mock.patch.object(numba_cuda_ffi, '_guard_ffi_callback', return_value=0x1234) as gate, \
+            mock.patch.object(numba_cuda_ffi.jax.ffi, 'pycapsule', side_effect=lambda a: ('capsule', a)), \
+            mock.patch.object(numba_cuda_ffi.jax.ffi, 'register_ffi_target') as register:
+        handler = make(f'gated_cuda_entry_{make.__name__}')
+    guard.assert_called_once_with()
+    gate.assert_called_once_with(handler._callback)
+    register.assert_called_once_with(handler.name, ('capsule', 0x1234), platform='CUDA')
+
+
+@requires_gpu
+def test_cuda_callable_is_cancelled_after_the_exit_guard():
+    script = textwrap.dedent('''
+        import numpy as np, jax, jax.numpy as jnp
+        from brainevent import numba_cuda_callable
+        from brainevent._op import numba_ffi
+
+        calls = []
+        def copy(x, out, stream):
+            calls.append(1)
+            out.copy_to_device(x, stream=stream)
+
+        call = jax.jit(numba_cuda_callable(copy, outs=jax.ShapeDtypeStruct((4,), jnp.float32)))
+        x = jnp.arange(4, dtype=jnp.float32)
+        np.testing.assert_array_equal(np.asarray(call(x)), np.arange(4))
+        numba_ffi._exit_guard()
+        try:
+            call(x + 1).block_until_ready()
+        except Exception as exc:
+            assert 'shutting down' in str(exc), str(exc)
+        else:
+            raise AssertionError('CUDA FFI execution was accepted after shutdown')
+        assert len(calls) == 1, 'late callback reentered Python'
+    ''')
+    proc = subprocess.run([sys.executable, '-c', script], env=dict(os.environ), timeout=120,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr

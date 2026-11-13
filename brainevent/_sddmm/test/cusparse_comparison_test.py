@@ -30,17 +30,6 @@ from brainevent._sddmm import csr_sddmm_dweight, csr_sddmv_dweight
 
 pytestmark = [requires_cuda, pytest.mark.usefixtures('comparison_x64')]
 
-_COMPARISON_VALUE_DTYPES = tuple(
-    pytest.param(
-        dtype,
-        marks=pytest.mark.skip(
-            reason='FP16 cuSPARSE comparisons await an accuracy policy',
-        ),
-    ) if dtype == 'float16' else dtype
-    for dtype in VALUE_DTYPES
-)
-
-
 @partial(jax.jit, static_argnames=('weighted', 'backend'))
 def _sampled(events, ct, indices, indptr, *, weighted, backend):
     function = csr_sddmv_dweight if events.ndim == 1 else csr_sddmm_dweight
@@ -68,7 +57,7 @@ def _reference(events, ct, rows, cols, *, weighted, value_dtype):
 
 @pytest.mark.parametrize('batch', [1, 4], ids=['sddmv', 'sddmm'])
 @pytest.mark.parametrize('mode', ['binary', 'weighted'])
-@pytest.mark.parametrize('value_dtype', _COMPARISON_VALUE_DTYPES)
+@pytest.mark.parametrize('value_dtype', VALUE_DTYPES)
 @pytest.mark.parametrize('event_dtype', EVENT_DTYPES)
 @pytest.mark.parametrize('offset_dtype', OFFSET_DTYPES)
 def test_native_sampled_products_match_cusparse(

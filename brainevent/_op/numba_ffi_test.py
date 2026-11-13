@@ -1753,7 +1753,7 @@ class TestExitGuard:
         pin.assert_called_once()
         handles, gates = pin.call_args.args[0].value
         assert handles is numba_ffi._NUMBA_CPU_FFI_HANDLES
-        assert gates is numba_ffi._CPU_CALLBACK_GATES
+        assert gates is numba_ffi._FFI_CALLBACK_GATES
 
     def test_handler_registers_exit_guard(self):
         with mock.patch.object(numba_ffi, '_register_exit_guard') as guard, \
@@ -1921,9 +1921,72 @@ class TestExitGuard:
         with mock.patch.object(numba_ffi, '_CPU_HOLD_WANTED', wanted), \
                 mock.patch.object(numba_ffi, '_wait_for_inflight_executions') as wait, \
                 mock.patch.object(numba_ffi, '_hold_cpu_client') as hold:
-            numba_ffi._exit_guard([])  # do not close the pytest process's real gates
+            numba_ffi._exit_guard(numba_ffi._GateList())  # not the pytest process's real gates
         wait.assert_called_once_with()
         assert hold.called is wanted
+
+    def test_exit_guard_snapshots_gates_under_the_lock_and_closes_outside_it(self):
+        # G3: a target registered concurrently must not race the iteration,
+        # and an admitted callback that registers a target must not deadlock.
+        held = []
+
+        class Gate:
+            def close(self, timeout):
+                held.append(('close', numba_ffi._EXIT_GUARD_LOCK.locked(), timeout))
+                return True
+
+        class Gates(numba_ffi._GateList):
+            def __iter__(self):
+                held.append(('iterate', numba_ffi._EXIT_GUARD_LOCK.locked()))
+                return super().__iter__()
+
+        gates = Gates([Gate()])
+        with mock.patch.object(numba_ffi, '_wait_for_inflight_executions'), \
+                mock.patch.dict(os.environ, {'BRAINEVENT_FFI_EXIT_TIMEOUT': '7.5'}):
+            numba_ffi._exit_guard(gates)
+        assert held == [('iterate', True), ('close', False, 7.5)]
+        assert gates.closed
+
+    def test_gate_created_after_the_exit_guard_admits_nothing(self):
+        pytest.importorskip('llvmlite')
+        gates = numba_ffi._GateList()
+        gates.closed = True
+        callback = numba_ffi._FFI_CALLBACK_TYPE(lambda frame: None)
+        with mock.patch.object(numba_ffi, '_FFI_CALLBACK_GATES', gates):
+            numba_ffi._guard_ffi_callback(callback)
+        assert len(gates) == 1
+        assert gates[0]._read_state() == 1  # closed before any call could enter
+
+    def test_exit_guard_warns_and_continues_when_a_callback_does_not_return(self):
+        # G2: the wait is bounded; exit continues and says why it may hang.
+        closed = []
+
+        class Gate:
+            def __init__(self, drained, in_flight):
+                self.drained, self.count = drained, in_flight
+
+            def close(self, timeout):
+                closed.append(timeout)
+                return self.drained
+
+            def in_flight(self):
+                return self.count
+
+        gates = numba_ffi._GateList([Gate(False, 2), Gate(True, 0)])
+        with mock.patch.object(numba_ffi, '_wait_for_inflight_executions'), \
+                mock.patch.dict(os.environ, {'BRAINEVENT_FFI_EXIT_TIMEOUT': '0'}), \
+                pytest.warns(RuntimeWarning, match='2 Numba FFI callback.*BRAINEVENT_FFI_EXIT_TIMEOUT'):
+            numba_ffi._exit_guard(gates)
+        assert closed == [0., 0.]  # every gate is closed, even after one timed out
+
+    @pytest.mark.parametrize('value,expected', [(None, 30.), ('2.5', 2.5), ('-1', 0.), ('soon', 30.),
+                                                ('inf', float('inf'))])
+    def test_exit_timeout_reads_the_environment(self, value, expected):
+        env = {} if value is None else {'BRAINEVENT_FFI_EXIT_TIMEOUT': value}
+        with mock.patch.dict(os.environ, env, clear=False):
+            if value is None:
+                os.environ.pop('BRAINEVENT_FFI_EXIT_TIMEOUT', None)
+            assert numba_ffi._exit_timeout() == expected
 
     def test_wait_blocks_live_arrays_and_skips_deleted_and_failed(self):
         ready = mock.Mock(**{'is_deleted.return_value': False})

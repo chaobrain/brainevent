@@ -4,6 +4,9 @@
 
 """Tests for ``brainevent/_sddmm/_common.py``, grouped by behavior."""
 
+import importlib
+from unittest import mock
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -239,3 +242,120 @@ def test_cusparse_rejects_integer_result(batch):
     indices, indptr = jnp.array([1, 0], jnp.int32), jnp.arange(3, dtype=jnp.int32)
     with pytest.raises(TypeError, match='must promote to'):
         sddmm(left, right, indices, indptr, backend='cusparse')
+
+
+# cuSPARSE library selection
+# --------------------------
+
+def _wheel_tree(root, *layouts):
+    for layout in layouts:
+        library = root / layout / 'lib' / 'libcusparse.so.12'
+        library.parent.mkdir(parents=True)
+        library.write_bytes(b'')
+    return root
+
+
+@pytest.mark.parametrize('major,layouts,expected', [
+    # A CUDA 12 process must not link the CUDA 13 wheel, which sorts first.
+    (12, ('cu13', 'cusparse'), 'cusparse'),
+    (12, ('cu12', 'cu13'), 'cu12'),
+    (13, ('cu13', 'cusparse'), 'cu13'),
+    (13, ('cusparse',), None),  # known major without its wheel: use the toolkit
+    (None, ('cu13', 'cusparse'), 'cu13'),  # unknown major keeps the first wheel
+    (12, (), None),
+])
+def test_cusparse_wheel_matches_jaxlib_cuda_major(tmp_path, major, layouts, expected):
+    common = importlib.import_module('brainevent._sddmm._common')
+    library = common._cusparse_wheel_library([str(_wheel_tree(tmp_path, *layouts))], major)
+    assert (None if library is None else library.parent.parent.name) == expected
+
+
+@pytest.mark.parametrize('version,expected', [('cuda 12080', 12), ('cuda 13040', 13), ('cuda 11', 11)])
+def test_jaxlib_cuda_major_reads_the_gpu_platform_version(monkeypatch, version, expected):
+    common = importlib.import_module('brainevent._sddmm._common')
+    device = mock.NonCallableMock(client=mock.NonCallableMock(platform_version=version))
+    monkeypatch.setattr(common.jax, 'devices', lambda platform=None: [device])
+    assert common._jaxlib_cuda_major() == expected
+
+
+@pytest.mark.parametrize('installed,expected', [({'jax_cuda12_plugin'}, 12),
+                                                ({'jax_plugins.xla_cuda13'}, 13),
+                                                ({'jax_cuda12_plugin', 'jax_cuda13_plugin'}, None),
+                                                (set(), None)])
+def test_jaxlib_cuda_major_falls_back_to_a_unique_plugin(monkeypatch, installed, expected):
+    common = importlib.import_module('brainevent._sddmm._common')
+
+    def no_gpu(platform=None):
+        raise RuntimeError('no GPU backend')
+
+    def find_spec(name):
+        if name.startswith('jax_plugins.') and not any(n.startswith('jax_plugins.') for n in installed):
+            raise ModuleNotFoundError(name)
+        return object() if name in installed else None
+
+    monkeypatch.setattr(common.jax, 'devices', no_gpu)
+    monkeypatch.setattr(common.importlib.util, 'find_spec', find_spec)
+    assert common._jaxlib_cuda_major() == expected
+
+
+@pytest.mark.parametrize('major,linked', [(12, 'cusparse'), (13, 'cu13'), (14, None)])
+def test_load_cusparse_links_the_matching_wheel(monkeypatch, tmp_path, major, linked):
+    common = importlib.import_module('brainevent._sddmm._common')
+    root = _wheel_tree(tmp_path, 'cu13', 'cusparse')
+    captured = {}
+    monkeypatch.setattr(common.importlib.util, 'find_spec',
+                        lambda name: mock.NonCallableMock(submodule_search_locations=[str(root)]))
+    monkeypatch.setattr(common, '_jaxlib_cuda_major', lambda: major)
+    monkeypatch.setattr(common, 'load_cuda_file', lambda path, **kwargs: captured.update(kwargs, path=path))
+    common._load_cusparse.cache_clear()
+    try:
+        assert common._load_cusparse() == 'csr_sddmm_cusparse'
+    finally:
+        common._load_cusparse.cache_clear()
+    assert captured['path'].parent.name == '_cuda'
+    if linked is None:
+        assert captured['extra_ldflags'] == ['-lcusparse'] and captured['extra_include_paths'] == []
+    else:
+        library = root / linked / 'lib' / 'libcusparse.so.12'
+        assert captured['extra_ldflags'] == [str(library), f'-rpath={library.parent}']
+        assert captured['extra_include_paths'] == [str(root / linked / 'include')]
+
+
+@pytest.mark.parametrize('batch', [1, 3])
+def test_cusparse_int64_offsets_do_not_widen_columns(batch):
+    # The FFI needs one index type: the rows + 1 offsets narrow to int32
+    # rather than copying all nnz columns to int64.
+    if jax.default_backend() != 'gpu':
+        pytest.skip('cuSPARSE execution requires a GPU')
+    with jax_x64_enabled():
+        left = jnp.asarray(np.resize([0., -2., 1., .5], (3, batch)), jnp.float32)
+        right = jnp.asarray(np.resize([.5, 2., -1., 3., 0.], (batch, 4)), jnp.float32)
+        indices = jnp.array([3, 1, 1, 0], jnp.int32)
+        indptr = jnp.array([0, 3, 3, 4], jnp.int64)
+        fn = jax.jit(lambda left, right, indices, indptr: sddmm(
+            left, right, indices, indptr, backend='cusparse'))
+        expected = sddmm(left, right, indices, indptr, backend='jax_raw')
+        np.testing.assert_allclose(fn(left, right, indices, indptr), expected, rtol=1e-6)
+        calls = [line for line in fn.lower(left, right, indices, indptr).as_text().splitlines()
+                 if 'cusparse_sddmm_f32' in line and 'custom_call' in line]
+        assert calls and all('xi64>' not in line for line in calls)
+
+
+def test_cusparse_concurrent_host_threads_agree():
+    # Each execution thread binds its own handle to its stream; no shared
+    # handle may leak one thread's stream or workspace into another's call.
+    if jax.default_backend() != 'gpu':
+        pytest.skip('cuSPARSE execution requires a GPU')
+    from concurrent.futures import ThreadPoolExecutor
+    rng = np.random.default_rng(3)
+    rows, cols, batch, nnz = 64, 48, 16, 600
+    indptr = jnp.asarray(np.linspace(0, nnz, rows + 1).astype(np.int32))
+    indices = jnp.asarray(rng.integers(0, cols, nnz), jnp.int32)
+    fn = jax.jit(lambda left, right: sddmm(left, right, indices, indptr, backend='cusparse'))
+    operands = [(jnp.asarray(rng.standard_normal((rows, batch)), jnp.float32),
+                 jnp.asarray(rng.standard_normal((batch, cols)), jnp.float32)) for _ in range(16)]
+    expected = [sddmm(a, b, indices, indptr, backend='jax_raw') for a, b in operands]
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(lambda args: np.asarray(fn(*args)), operands * 4))
+    for position, result in enumerate(results):
+        np.testing.assert_allclose(result, expected[position % len(operands)], rtol=1e-5, atol=1e-5)

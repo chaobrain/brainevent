@@ -46,16 +46,16 @@ def csr_sddmm_dweight(
     transpose : bool
         Whether the forward product is ``W.T @ events``.
     weighted : bool, optional
-        Use event amplitudes instead of binary activity alone.
-        CUDA tests weighted activity after casting events to ``ct.dtype``;
-        JAX tests the original events before casting.
+        Use event amplitudes instead of binary activity alone. Every backend
+        tests weighted activity after casting events to ``ct.dtype``.
     backend : str or None, optional
         Forwarded to the chosen MV/MM implementation. GPU auto uses CUDA for
         supported transposed CSR events and JAX otherwise. ``jax_raw`` forces
-        differentiable JAX in both directions without binding an event primitive.
+        JAX in both directions without binding an event primitive.
         Explicit ``cusparse`` uses cuSPARSE SDDMM on GPU in either direction,
-        with exact selection for nonfinite cotangents and no derivative rules.
-        Half types compute in float32; weighted activity is tested after casting.
+        with exact selection for nonfinite cotangents. Half types compute in
+        float32. Every backend is differentiable: native primals take their
+        derivatives from the JAX sampled product.
     config : CSRConfig or None, optional
         Explicit scheduler snapshot. Defaults do not read persisted settings.
 

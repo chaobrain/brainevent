@@ -21,14 +21,15 @@ Explicit ``cusparse`` uses the shared cuSPARSE SDDMM FFI for CSR products in
 either direction, including ordinary outer products. Half types compute in
 float32; weighted activity is tested after casting, as with native CUDA.
 
-JAX uses sampled multiplication for finite cotangents and exact selection
-otherwise, preserving activity before narrowing. Weighted CUDA tests activity
-after casting events to the cotangent dtype and skips values cast to zero. Each
+JAX masks each slot's cotangent where its event factor is zero, without a
+branch on global finiteness. Every backend tests weighted activity after
+casting events to the cotangent dtype, so values cast to zero are skipped. Each
 ``.cu`` owns its kernels and FFI bindings. The output dW is created and zeroed
 in JAX before each FFI call (the kernels write only active rows), and private
 scratch capacity uses the same captured CSR scheduler snapshot as compilation.
 
-The CSR event primitive has no AD rule. Consumers handle shared-weight sums
+The CSR event primitive has no AD rule; the dispatcher wraps native calls in
+a custom JVP taken from the JAX product. Consumers handle shared-weight sums
 and indexed scatter-add into canonical weight order. Summing selected slot
 products avoids overflow from an intermediate unit-weight forward reduction.
 Explicit ``jax_raw`` calls execute JAX directly and retain differentiation
@@ -50,7 +51,7 @@ from jax.experimental import sparse
 from brainevent._compatible_import import match_varying_axes, varying_axes_of
 from brainevent._misc import _csr_to_coo
 from brainevent._op import XLACustomKernel, load_cuda_file
-from brainevent._op.util import event_active, select_active
+from brainevent._op.util import event_active
 from brainevent._sddmm._common import (
     BINARY_TARGET_SUFFIXES, VALUE_SUFFIXES, Mode, _CSRBackend, check_jax_backend,
     _cusparse_event_kernel, _cusparse_sampled,
@@ -82,7 +83,7 @@ def _load_hybrid_cached(weighted: bool, block_size: int, fixed_scatter_blocks: i
     load_cuda_file(
         _DIRECTORY / source, name=name,
         extra_cuda_cflags=config_spec.compile_flags(),
-        extra_include_paths=[str(_DIRECTORY), str(_DIRECTORY.parent / '_common')],
+        extra_include_paths=[str(_DIRECTORY)],
         allow_cuda_graph=True,
     )
     return name
@@ -91,36 +92,39 @@ def _load_hybrid_cached(weighted: bool, block_size: int, fixed_scatter_blocks: i
 def _jax_kernel(events: jax.Array, ct: jax.Array, indices: jax.Array,
                 indptr: jax.Array | None, *, transpose: bool, weighted: bool,
                 **kwargs: Any) -> tuple[jax.Array]:
-    """Compute event slot values for CSR lowering or direct CSR/COO calls."""
+    """Compute event slot values for CSR lowering or direct CSR/COO calls.
+
+    Branch-free: each slot masks its own cotangent instead of testing the
+    whole cotangent for finiteness first. Weighted activity is tested after
+    the cast to ``ct.dtype``, as in the native kernels.
+    """
     if indptr is not None:
         rows, cols = _csr_to_coo(indices, indptr)
-        indices = jnp.stack([rows, cols], axis=1)
     else:
         rows, cols = indices[:, 0], indices[:, 1]
     unit, out = (rows, cols) if transpose else (cols, rows)
     factors = events.astype(ct.dtype) if weighted else event_active(events).astype(ct.dtype)
-    left, right = (factors, ct) if transpose else (ct, factors)
-    if varying_axes_of(left, right, indices):
-        sampled_product = partial(
-            jnp.multiply,
-            left.at[rows].get(mode='fill', fill_value=0),
-            right.at[cols].get(mode='fill', fill_value=0),
-        )
-    else:
-        sampled_product = partial(
-            sparse.bcoo_dot_general_sampled, left, right, indices,
-            dimension_numbers=(((), ()), ((), ())),
-        )
-    # Preserve original activity when an event narrows to zero in ct.dtype.
-    return (jax.lax.cond(
-        jnp.all(jnp.isfinite(ct)), sampled_product,
-        lambda: select_active(
-            event_active(events.at[unit].get(mode='fill', fill_value=0)),
-            (events.at[unit].get(mode='fill', fill_value=0).astype(ct.dtype)
-             * ct.at[out].get(mode='fill', fill_value=0))
-            if weighted else ct.at[out].get(mode='fill', fill_value=0),
-        ),
-    ),)
+    gather = partial(_gather_slots, csr=indptr is not None)
+    return (_masked_product(gather(factors, unit), gather(ct, out)),)
+
+
+def _gather_slots(values: jax.Array, index: jax.Array, *, csr: bool) -> jax.Array:
+    """Gather one leading-axis entry per slot; out-of-range slots read zero.
+
+    CSR coordinates are non-negative, so their gathers skip the negative-index
+    wrap, a per-slot select that otherwise costs about a quarter of the
+    kernel. COO keeps NumPy's wrapping of negative coordinates.
+    """
+    return values.at[index].get(mode='fill', fill_value=0, wrap_negative_indices=not csr)
+
+
+def _masked_product(factor: jax.Array, ct: jax.Array) -> jax.Array:
+    """Multiply slot factors by cotangents; zero factors drop NaN/Inf cotangents.
+
+    For finite cotangents this is the plain product (including its sign of
+    zero), and its derivative with respect to ``factor`` stays ``ct``.
+    """
+    return factor * jnp.where((factor != 0) | jnp.isfinite(ct), ct, jnp.zeros_like(ct))
 
 
 def _cuda_kernel(*, transpose: bool, weighted: bool, config_spec: CSRKernelSpec,
@@ -216,8 +220,8 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
         ``cusparse`` supports CSR products on GPU in both directions and all
         modes, with float32 computation for half types. COO and patterns with
         more slots than rows times columns are unsupported. Nonfinite event
-        cotangents use exact JAX selection. Explicit native backends have no AD
-        rules; use ``jax_raw`` for differentiation.
+        cotangents use exact JAX selection. Native backends have no AD rules
+        here; :func:`brainevent._sddmm.sddmm` supplies them.
     config_spec : CSRKernelSpec or None, optional
         Explicit scheduler metadata. Defaults never read persisted settings.
 
