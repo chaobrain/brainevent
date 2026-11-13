@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0:
 // http://www.apache.org/licenses/LICENSE-2.0
 
-// Binary tile SpMM launchers; kernels are shared with combined_spmm_weighted.cu.
+// Binary tile SpMM launchers and FFI entry points (row-major and, via perm, col-major).
 #include "combined_impl.cuh"
 
 namespace combined

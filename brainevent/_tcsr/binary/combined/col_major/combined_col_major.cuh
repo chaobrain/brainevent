@@ -24,12 +24,5 @@ cudaError_t launch(const ValueT *values, const uint16_t *local_targets,
                    const OffsetT *tile_offsets, const OffsetT *perm, const EventT *events,
                    ValueT *output, int32_t *active_rows, void *workspace,
                    const Plan &plan, cudaStream_t stream);
-// Weighted counterpart: same metadata/scratch, events share ValueT.
-// Link combined_spmm_col_major_weighted.cu, ../combined_spmm_weighted.cu and ../combined_spmm_binary.cu.
-template <class ValueT, class OffsetT>
-cudaError_t launch_weighted(const ValueT *values, const uint16_t *local_targets,
-                   const OffsetT *tile_offsets, const OffsetT *perm, const ValueT *events,
-                   ValueT *output, int32_t *active_rows, void *workspace,
-                   const Plan &plan, cudaStream_t stream);
 } // namespace combined_col_major
 #endif

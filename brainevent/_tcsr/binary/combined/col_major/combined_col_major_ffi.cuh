@@ -8,23 +8,19 @@
 #include "brainevent/op_traits.cuh"
 namespace
 {
-template <class V, class E, class O, bool Weighted>
+template <class V, class E, class O>
 constexpr auto combined_col_major_launcher()
 {
-  if constexpr (Weighted) return combined_col_major::launch_weighted<V, O>;
-  else return combined_col_major::launch<V, E, O>;
+  return combined_col_major::launch<V, E, O>;
 }
 
-template <class V, class E, bool Weighted = false>
+template <class V, class E>
 void combined_col_major_ffi(const BE::Tensor &values, const BE::Tensor &local,
     const BE::Tensor &offsets, const BE::Tensor &perm, const BE::Tensor &events,
     BE::Tensor &output, BE::Tensor &active, BE::Tensor &workspace,
     int64_t width, int64_t type, int64_t stream)
 {
-  constexpr auto event_dtype = [] {
-    if constexpr (Weighted) return op_traits::ValueTraits<V>::dtype;
-    else return op_traits::EventTraits<E>::dtype;
-  }();
+  constexpr auto event_dtype = op_traits::EventTraits<E>::dtype;
   BE_CHECK(values.dtype() == op_traits::ValueTraits<V>::dtype && output.dtype() == values.dtype() &&
            events.dtype() == event_dtype && local.dtype() == BE::DType::UInt16 &&
            op_traits::is_signed_index(offsets.dtype()) && perm.dtype() == offsets.dtype() &&
@@ -50,7 +46,7 @@ void combined_col_major_ffi(const BE::Tensor &values, const BE::Tensor &local,
   const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
   if (offsets.dtype() == BE::DType::Int32)
   {
-    constexpr auto launch = combined_col_major_launcher<V, E, int32_t, Weighted>();
+    constexpr auto launch = combined_col_major_launcher<V, E, int32_t>();
     BE_CUDA_CHECK((launch(values.data_ptr<const V>(),
         local.data_ptr<const uint16_t>(), offsets.data_ptr<const int32_t>(), perm.data_ptr<const int32_t>(),
         events.data_ptr<const E>(), output.data_ptr<V>(), active.data_ptr<int32_t>(),
@@ -58,7 +54,7 @@ void combined_col_major_ffi(const BE::Tensor &values, const BE::Tensor &local,
   }
   else
   {
-    constexpr auto launch = combined_col_major_launcher<V, E, int64_t, Weighted>();
+    constexpr auto launch = combined_col_major_launcher<V, E, int64_t>();
     BE_CUDA_CHECK((launch(values.data_ptr<const V>(),
         local.data_ptr<const uint16_t>(), offsets.data_ptr<const int64_t>(), perm.data_ptr<const int64_t>(),
         events.data_ptr<const E>(), output.data_ptr<V>(), active.data_ptr<int32_t>(),

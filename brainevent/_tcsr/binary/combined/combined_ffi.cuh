@@ -8,24 +8,18 @@
 #include "brainevent/op_traits.cuh"
 namespace
 {
-  template <class V, class E, class O, bool Homo, bool Weighted>
+  template <class V, class E, class O, bool Homo>
   constexpr auto combined_launcher()
   {
-    if constexpr (Weighted)
-      return Homo ? combined::launch_weighted_homo<V, O> : combined::launch_weighted<V, O>;
-    else
-      return Homo ? combined::launch_homo<V, E, O> : combined::launch<V, E, O>;
+    return Homo ? combined::launch_homo<V, E, O> : combined::launch<V, E, O>;
   }
 
-  template <class V, class E, bool Homo, bool Weighted = false>
+  template <class V, class E, bool Homo>
   void combined_ffi(const BE::Tensor &values, const BE::Tensor &local, const BE::Tensor &offsets,
                     const BE::Tensor &events, BE::Tensor &output, BE::Tensor &active,
                     BE::Tensor &workspace, int64_t width, int64_t type, int64_t stream)
   {
-    constexpr auto event_dtype = [] {
-      if constexpr (Weighted) return op_traits::ValueTraits<V>::dtype;
-      else return op_traits::EventTraits<E>::dtype;
-    }();
+    constexpr auto event_dtype = op_traits::EventTraits<E>::dtype;
     BE_CHECK(values.dtype() == op_traits::ValueTraits<V>::dtype && output.dtype() == values.dtype() &&
              events.dtype() == event_dtype && local.dtype() == BE::DType::UInt16 &&
              op_traits::is_signed_index(offsets.dtype()) && active.dtype() == BE::DType::Int32 &&
@@ -49,14 +43,14 @@ namespace
     const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
     if (offsets.dtype() == BE::DType::Int32)
     {
-      constexpr auto launch = combined_launcher<V, E, int32_t, Homo, Weighted>();
+      constexpr auto launch = combined_launcher<V, E, int32_t, Homo>();
       BE_CUDA_CHECK((launch(values.data_ptr<const V>(), local.data_ptr<const uint16_t>(),
                             offsets.data_ptr<const int32_t>(), events.data_ptr<const E>(), output.data_ptr<V>(),
                             active.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(), plan, cuda_stream)));
     }
     else
     {
-      constexpr auto launch = combined_launcher<V, E, int64_t, Homo, Weighted>();
+      constexpr auto launch = combined_launcher<V, E, int64_t, Homo>();
       BE_CUDA_CHECK((launch(values.data_ptr<const V>(), local.data_ptr<const uint16_t>(),
                             offsets.data_ptr<const int64_t>(), events.data_ptr<const E>(), output.data_ptr<V>(),
                             active.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(), plan, cuda_stream)));

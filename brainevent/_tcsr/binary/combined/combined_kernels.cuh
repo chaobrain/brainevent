@@ -40,22 +40,5 @@ cudaError_t launch_permuted(const ValueT* values, const uint16_t* local_targets,
                    const OffsetT* tile_offsets, const OffsetT* perm, const EventT* events,
                    ValueT* output, int32_t* active_rows, void* workspace,
                    const Plan& plan, cudaStream_t stream);
-// Weighted events/weights/output share ValueT. Only nonzero events contribute;
-// products and accumulation use float for f16/bf16/f32, double for f64.
-// Link combined_spmm_weighted.cu together with combined_spmm_binary.cu. Plans and scratch are
-// identical to binary: amplitudes are read from events using active row IDs.
-template<class ValueT, class OffsetT>
-cudaError_t launch_weighted(const ValueT* values, const uint16_t* local_targets,
-                   const OffsetT* tile_offsets, const ValueT* events, ValueT* output,
-                   int32_t* active_rows, void* workspace, const Plan& plan, cudaStream_t stream);
-template<class ValueT, class OffsetT>
-cudaError_t launch_weighted_homo(const ValueT* values, const uint16_t* local_targets,
-                   const OffsetT* tile_offsets, const ValueT* events, ValueT* output,
-                   int32_t* active_rows, void* workspace, const Plan& plan, cudaStream_t stream);
-template<class ValueT, class OffsetT>
-cudaError_t launch_weighted_permuted(const ValueT* values, const uint16_t* local_targets,
-                   const OffsetT* tile_offsets, const OffsetT* perm, const ValueT* events,
-                   ValueT* output, int32_t* active_rows, void* workspace,
-                   const Plan& plan, cudaStream_t stream);
 } // namespace combined
 #endif

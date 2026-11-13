@@ -18,9 +18,7 @@ _BE_INCLUDE = Path(_brainevent.__file__).resolve().parent / 'include'
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = (
     ROOT / 'combined_spmm_binary.cu',
-    ROOT / 'combined_spmm_weighted.cu',
     ROOT / 'col_major' / 'combined_spmm_col_major_binary.cu',
-    ROOT / 'col_major' / 'combined_spmm_col_major_weighted.cu',
 )
 
 

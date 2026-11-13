@@ -270,14 +270,13 @@ namespace combined
       return cuda_traits::ValueTraits<ValueT>::read(values[entry]);
   }
 
-  template <bool Homo, bool Permuted, bool Weighted, typename ValueT, typename EventT,
-            typename OffsetT, int kBlockSize>
+  // Binary events: activity was consumed by extraction, so the scatter reads no events.
+  template <bool Homo, bool Permuted, typename ValueT, typename OffsetT, int kBlockSize>
   __global__ void __launch_bounds__(kBlockSize) scatter_kernel(
       const ValueT *__restrict__ values,
       const uint16_t *__restrict__ local_targets,
       const OffsetT *__restrict__ tile_offsets,
       const OffsetT *__restrict__ perm,
-      const EventT *__restrict__ events,
       const int32_t *__restrict__ active_rows,
       const int32_t *__restrict__ status,
       ValueT *__restrict__ output_bn,
@@ -315,7 +314,6 @@ namespace combined
       // Stage loop: every load here depends only on the active row index.
       int64_t begins[kDepth];
       int64_t ends[kDepth];
-      AccT scales[kDepth]; // Eliminated for binary specializations.
 #pragma unroll
       for (int stage = 0; stage < kDepth; ++stage)
       {
@@ -328,8 +326,6 @@ namespace combined
           const size_t offset = static_cast<size_t>(row) * boundaries + tile;
           begins[stage] = static_cast<int64_t>(tile_offsets[offset]);
           ends[stage] = static_cast<int64_t>(tile_offsets[offset + 1]);
-          if constexpr (Weighted)
-            scales[stage] = Traits::read(events[static_cast<size_t>(batch_col) * rows + row]);
         }
       }
       // Direct weights share the targets' load level; permuted weights add one indirection.
@@ -338,8 +334,7 @@ namespace combined
       {
         for (int64_t entry = begins[stage] + lane; entry < ends[stage]; entry += kGroupSize)
         {
-          AccT weight = Homo ? shared_weight : read_edge_weight<Permuted>(values, perm, entry);
-          if constexpr (Weighted) weight *= scales[stage];
+          const AccT weight = Homo ? shared_weight : read_edge_weight<Permuted>(values, perm, entry);
           atomicAdd(&tile_output[local_targets[entry]], weight);
         }
       }
@@ -350,25 +345,24 @@ namespace combined
       output[tile_begin + local] = Traits::write(tile_output[local]);
   }
 
-  template <int kBlockSize, bool Homo, bool Permuted, bool Weighted,
-            class ValueT, class EventT, class OffsetT>
+  template <int kBlockSize, bool Homo, bool Permuted, class ValueT, class OffsetT>
   cudaError_t launch_scatter(const ValueT *values, const uint16_t *local_targets,
-                            const OffsetT *tile_offsets, const OffsetT *perm, const EventT *events,
+                            const OffsetT *tile_offsets, const OffsetT *perm,
                             ValueT *output, const int32_t *active_rows, const void *workspace,
                             const Plan &plan, const TileSchedule &schedule, cudaStream_t stream)
   {
-    auto kernel = scatter_kernel<Homo, Permuted, Weighted, ValueT, EventT, OffsetT, kBlockSize>;
+    auto kernel = scatter_kernel<Homo, Permuted, ValueT, OffsetT, kBlockSize>;
     const cudaError_t result = prepare_scatter_kernel(
         reinterpret_cast<const void *>(kernel), kBlockSize, schedule.shared_bytes);
     if (result != cudaSuccess) return result;
     kernel<<<dim3(schedule.grid_tiles, plan.batch), kBlockSize, schedule.shared_bytes, stream>>>(
-        values, local_targets, tile_offsets, perm, events, active_rows,
+        values, local_targets, tile_offsets, perm, active_rows,
         static_cast<const int32_t *>(workspace), output, plan.rows, plan.cols,
         schedule.tile_width, schedule.tile_count);
     return cudaGetLastError();
   }
 
-  template <bool Homo, class ValueT, class EventT, class OffsetT, bool Permuted = false, bool Weighted = false>
+  template <bool Homo, class ValueT, class EventT, class OffsetT, bool Permuted = false>
   cudaError_t launch_impl(const ValueT *values, const uint16_t *local_targets,
                      const OffsetT *tile_offsets, const EventT *events, ValueT *output,
                      int32_t *active_rows, void *workspace, const Plan &plan, cudaStream_t stream,
@@ -376,7 +370,6 @@ namespace combined
   {
     static_assert(std::is_same_v<OffsetT, int32_t> || std::is_same_v<OffsetT, int64_t>);
     static_assert(!Homo || !Permuted, "permuted weights are heterogeneous only");
-    static_assert(!Weighted || std::is_same_v<ValueT, EventT>, "weighted events must match values");
     const int rows = plan.rows, cols = plan.cols, batch = plan.batch;
     Plan checked;
     if (make_plan(rows, cols, batch, plan.nnz, plan.value_type, &checked) != cudaSuccess ||
@@ -395,12 +388,12 @@ namespace combined
     if (result != cudaSuccess)
       return result;
     const auto schedule = make_tile_schedule(cols, batch, sizeof(typename cuda_traits::ValueTraits<ValueT>::AccT));
-#define COMBINED_SCATTER_ARGS values, local_targets, tile_offsets, perm, events, output, active_rows, workspace, checked, schedule, stream
+#define COMBINED_SCATTER_ARGS values, local_targets, tile_offsets, perm, output, active_rows, workspace, checked, schedule, stream
     if (schedule.block_size == 256)
-      return launch_scatter<256, Homo, Permuted, Weighted>(COMBINED_SCATTER_ARGS);
+      return launch_scatter<256, Homo, Permuted>(COMBINED_SCATTER_ARGS);
     if (schedule.block_size == 512)
-      return launch_scatter<512, Homo, Permuted, Weighted>(COMBINED_SCATTER_ARGS);
-    return launch_scatter<1024, Homo, Permuted, Weighted>(COMBINED_SCATTER_ARGS);
+      return launch_scatter<512, Homo, Permuted>(COMBINED_SCATTER_ARGS);
+    return launch_scatter<1024, Homo, Permuted>(COMBINED_SCATTER_ARGS);
 #undef COMBINED_SCATTER_ARGS
   }
 } // namespace combined
