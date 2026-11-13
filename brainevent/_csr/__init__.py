@@ -36,7 +36,7 @@ from brainevent._csr.dt2t.dt2t import (
 from brainevent._csr.float.float import csrmv, csrmv_p, csrmm, csrmm_p
 from brainevent._csr.main import CSR, CSC
 from brainevent._csr.delay import (
-    delaycsr,
+    CSRDelayLayout,
     csr_delay_deliver_layout,
     csr_delay_deliver_layout_p,
 )
@@ -68,6 +68,6 @@ __all__ = [
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',
     'csr_apply_on_pre', 'csr_apply_on_post',
     'csr_slice_rows', 'csr_slice_rows_p',
-    'delaycsr', 'csr_delay_deliver_layout', 'csr_delay_deliver_layout_p',
+    'CSRDelayLayout', 'csr_delay_deliver_layout', 'csr_delay_deliver_layout_p',
     'CSRConfig', 'MVSchedule', 'load_csr_config', 'save_csr_config', 'init_csr_config',
 ]

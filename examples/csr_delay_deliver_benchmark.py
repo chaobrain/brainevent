@@ -21,8 +21,9 @@ a ``lax.scan`` delivers the spikes of that step, reads slot ``t % L`` and
 clears it. Variants:
 
 - ``layout/<backend>``: ``csr_delay_deliver_layout`` on a precomputed
-  :class:`delaycsr` (built once, outside the timed loop), using ``cuda_raw``
-  or ``jax_raw``;
+  :class:`CSRDelayLayout` (``CSR.delay_layout``, built once outside the timed
+  loop), for each backend of the platform (``numba``/``jax_raw`` on CPU,
+  ``cuda_raw``/``jax_raw`` on GPU);
 - ``jax_event``: event-driven pure JAX (compact active rows with a fixed
   capacity, gather their edges, one scatter-add), as in brainpy.state;
 - ``none``: no delivery (cost of the scan, ring read and clear only).
@@ -139,7 +140,7 @@ def main():
         if unsupported:
             parser.error(f'unsupported variants on {platform}: {unsupported}; choose from {supported}')
     if args.n <= 0 or args.k <= 0 or args.slots <= 1 or args.steps <= 0 or args.repeats <= 0:
-        parser.error('n, k, steps and repeats must be positive, and slots must exceed 1')
+        parser.error('n, k, steps and repeats must be positive, and slots must exceed 1 (delays lie in [1, L))')
     if any(not 0 <= rate <= 1 for rate in args.rates):
         parser.error('rates must lie in [0, 1]')
 

@@ -1,173 +1,122 @@
 # Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0:
-# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 
-"""Delay-delivery reference helpers: dtypes, tolerances, CSR and event generators."""
+"""Shared inputs and references for the delay-delivery tests."""
 
-from typing import Any
+import contextlib
+from typing import Any, Iterator
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
-VALUE_DTYPES = (jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64)
-EVENT_DTYPES = (jnp.bool_, jnp.float32)
-INDEX_DTYPES = (jnp.int32, jnp.int64)
+from brainevent import CSRDelayLayout, csr_delay_deliver_layout_p
 
-# Row lengths around the hybrid thresholds: empty, short (<= 128), heavy
-# single-task (<= 4096) and heavy multi-task rows.
-HYBRID_ROW_LENGTHS = (0, 1, 7, 128, 129, 300, 4096, 4097, 9000, 0, 33)
+PLATFORM = jax.default_backend()
+BACKENDS = tuple(csr_delay_deliver_layout_p.available_backends(PLATFORM))
+# float16/bfloat16 events have no numba type; the numba kernel reads them
+# through their mask (binary) or as float32 (weighted).
+EVENT_DTYPES = ('bool', 'int8', 'int32', 'float32', 'float16', 'bfloat16')
 
-_TOLERANCE = {
-    jnp.dtype(jnp.float16): 1e-2,
-    jnp.dtype(jnp.bfloat16): 5e-2,
-    jnp.dtype(jnp.float32): 1e-5,
-    jnp.dtype(jnp.float64): 1e-12,
-}
+N_PRE, N_POST, MAX_CONN, L = 40, 30, 9, 7
 
 
-def dtype_name(dtype: Any) -> str:
-    """Short name used in pytest ids, e.g. ``'bf16'`` or ``'bool'``."""
-    return {"float16": "f16", "bfloat16": "bf16", "float32": "f32", "float64": "f64",
-            "bool": "bool", "int32": "i32", "int64": "i64"}[jnp.dtype(dtype).name]
+@contextlib.contextmanager
+def x64_disabled() -> Iterator[None]:
+    """Run with ``jax_enable_x64`` off, whatever the session default, then restore it."""
+    old = jax.config.jax_enable_x64
+    jax.config.update('jax_enable_x64', False)
+    try:
+        yield
+    finally:
+        jax.config.update('jax_enable_x64', old)
 
 
-def tolerance(dtype: Any) -> float:
-    """Relative and absolute tolerance for results stored in ``dtype``."""
-    return _TOLERANCE[jnp.dtype(dtype)]
+def make_csr(n_pre, n_post, max_conn, n_slots, seed=0, indptr_dtype=np.int32, sorted_columns=False):
+    """Random CSR with repeated targets inside rows, empty rows and delays in ``[0, L)``."""
+    rng = np.random.default_rng(seed)
+    counts = rng.integers(0, max_conn + 1, n_pre)
+    if n_pre > 1:
+        counts[0] = 0  # an empty row
+    indptr = np.concatenate([[0], np.cumsum(counts)]).astype(indptr_dtype)
+    nse = int(indptr[-1])
+    indices = rng.integers(0, n_post, nse).astype(np.int32)
+    if sorted_columns:
+        for i in range(n_pre):
+            indices[indptr[i]:indptr[i + 1]].sort()
+    delays = rng.integers(0, n_slots, nse).astype(np.int32)
+    weights = rng.normal(size=nse).astype(np.float32)
+    return weights, indices, indptr, delays
 
 
-def csr_from_lengths(rng: np.random.Generator, lengths: Any, cols: int,
-                     index_dtype: Any = np.int64) -> tuple[np.ndarray, np.ndarray]:
-    """Random CSR structure with the given row lengths.
+def make_events(n_pre, dtype, seed=1):
+    """Events whose activity is ``x != 0``, with negative values among the active ones."""
+    rng = np.random.default_rng(seed)
+    if dtype == 'bool':
+        return rng.random(n_pre) < 0.5
+    vals = rng.choice(np.array([2.0, -1.0, 0.0, 0.5, 0.0, 3.0]), n_pre)
+    if jnp.dtype(dtype).kind == 'i':
+        vals = np.round(vals * 2)
+    return vals.astype(jnp.dtype(dtype))
 
-    Parameters
-    ----------
-    rng : numpy.random.Generator
-        Random source.
-    lengths : sequence of int
-        Stored entries per row; columns may repeat within a row.
-    cols : int
-        Column count (> 0 unless every length is 0).
-    index_dtype : dtype, optional
-        dtype of ``indptr``.
 
-    Returns
-    -------
-    indptr, indices : numpy.ndarray
-        ``indptr`` in ``index_dtype`` and int32 ``indices``.
+def random_ring(n_slots=L, n_post=N_POST, dtype=jnp.float32, seed=3):
+    return jnp.asarray(np.random.default_rng(seed).normal(size=(n_slots, n_post)), dtype)
+
+
+def build(seed=0, homo=False, indptr_dtype=np.int32, n_pre=N_PRE, n_post=N_POST, max_conn=MAX_CONN, n_slots=L):
+    """Inputs in the original edge order and their layout."""
+    w, idx, ipt, dl = make_csr(n_pre, n_post, max_conn, n_slots, seed=seed, indptr_dtype=indptr_dtype)
+    data = jnp.asarray(w[:1] if homo else w)
+    return data, idx, ipt, dl, CSRDelayLayout.build(data, idx, ipt, dl, n_slots=n_slots, shape=(n_pre, n_post))
+
+
+def reference(ring, events, data, indices, indptr, delays, t, weighted=False):
+    """Dense NumPy loop: ``ring[(t + d_e) % L, indices[e]] += w_e * f(x)[row(e)]`` (float64)."""
+    out = np.array(ring, dtype=np.float64)
+    n_slots = out.shape[0]
+    data = np.asarray(data, dtype=np.float64).reshape(-1)
+    delays = np.broadcast_to(np.asarray(delays), np.asarray(indices).shape)
+    events = np.asarray(events)
+    for i in range(len(indptr) - 1):
+        x = events[i]
+        if x != 0:
+            f = float(x) if weighted else 1.0
+            for e in range(int(indptr[i]), int(indptr[i + 1])):
+                w = data[0] if data.size == 1 else data[e]
+                out[(int(t) + int(delays[e])) % n_slots, indices[e]] += w * f
+    return out
+
+
+def jax_reference(ring, events, data, indices, indptr, delays, t, *, weighted: bool) -> Any:
+    """Differentiable pure-JAX delivery on the original edge order.
+
+    Encodes the derivative contract: binary events use the activity mask in the
+    forward pass and are straight-through for the event cotangent; weighted
+    events are exact.
     """
-    lengths = np.asarray(lengths, dtype=np.int64)
-    indptr = np.zeros(lengths.size + 1, dtype=np.int64)
-    np.cumsum(lengths, out=indptr[1:])
-    indices = rng.integers(0, max(cols, 1), size=int(indptr[-1]), dtype=np.int32)
-    return indptr.astype(index_dtype), indices
-
-
-def random_values(rng: np.random.Generator, shape: Any, dtype: Any) -> np.ndarray:
-    """Values in [-1, 1) rounded to ``dtype`` (returned as a numpy array of ``dtype``)."""
-    return np.asarray(rng.uniform(-1.0, 1.0, size=shape)).astype(jnp.dtype(dtype))
-
-
-def random_events(rng: np.random.Generator, shape: Any, dtype: Any, rate: float = 0.5) -> np.ndarray:
-    """Binary events; float32 events mix 1, negative values and NaN among the active ones.
-
-    Parameters
-    ----------
-    rng : numpy.random.Generator
-        Random source.
-    shape : int or tuple of int
-        Event shape.
-    dtype : dtype
-        ``bool`` or ``float32``.
-    rate : float, optional
-        Fraction of active events.
-
-    Returns
-    -------
-    numpy.ndarray
-        Events whose activity is ``events != 0``.
-    """
-    active = rng.random(shape) < rate
-    if jnp.dtype(dtype) == jnp.dtype(jnp.bool_):
-        return active
-    kind = rng.integers(0, 3, size=shape)
-    value = np.where(kind == 0, 1.0, np.where(kind == 1, -2.5, np.nan)).astype(np.float32)
-    return np.where(active, value, np.float32(0.0))
-
-
-def active_mask(events: np.ndarray) -> np.ndarray:
-    """Event activity ``events != 0`` (NaN and negative values are active)."""
-    return np.asarray(events) != 0
-
-
-def numpy_project_step(weights: np.ndarray, indices: np.ndarray, indptr: np.ndarray,
-                       delays: np.ndarray, events: np.ndarray, head: int,
-                       ring: np.ndarray, *, weighted: bool = False) -> np.ndarray:
-    """Project original CSR edges into a copy of the ring in float64.
-
-    Parameters
-    ----------
-    weights, indices, indptr : numpy.ndarray
-        Original CSR arrays; a single weight is shared by every edge.
-    delays : numpy.ndarray
-        Delay per original edge, before any sorting by delay.
-    events : numpy.ndarray
-        Event vector. Nonzero values, including NaN, are active.
-    head : int
-        Current ring slot.
-    ring : numpy.ndarray
-        Existing ring contents, left unchanged.
-    weighted : bool, optional
-        Multiply active edges by their event values instead of binary activity.
-
-    Returns
-    -------
-    numpy.ndarray
-        Updated float64 ring, including contributions to wrapped slots.
-    """
-    result = np.asarray(ring, dtype=np.float64).copy()
-    values = np.broadcast_to(np.asarray(weights, dtype=np.float64), indices.shape)
-    for row in np.flatnonzero(active_mask(events)):
-        edges = slice(int(indptr[row]), int(indptr[row + 1]))
-        contribution = values[edges] * float(events[row]) if weighted else values[edges]
-        np.add.at(result, ((head + delays[edges]) % len(result), indices[edges]), contribution)
-    return result
-
-
-def assert_same_bits(actual: Any, expected: np.ndarray) -> None:
-    """Assert bitwise equality (exact copies; NaN-safe also for bfloat16, which numpy cannot compare)."""
-    actual = np.asarray(actual)
-    expected = np.asarray(expected)
-    assert actual.dtype == expected.dtype, (actual.dtype, expected.dtype)
-    view = np.dtype(f"u{expected.dtype.itemsize}")
-    np.testing.assert_array_equal(actual.view(view), expected.view(view))
-
-
-def assert_close(actual: Any, expected: np.ndarray, dtype: Any, scale: float = 1.0) -> None:
-    """Compare in float64 with ``scale`` times the tolerance of ``dtype``; NaN must match NaN."""
-    tol = tolerance(dtype) * scale
-    np.testing.assert_allclose(np.asarray(actual).astype(np.float64), np.asarray(expected).astype(np.float64),
-                               rtol=tol, atol=tol, equal_nan=True)
-
-
-# nnz > 2**31 structure for int64 indptr checks: one inactive leading row of LARGE_HEAD edges,
-# then rows whose edge offsets all exceed INT32_MAX (the first short row straddles it).
-LARGE_HEAD = 2**31 - 40
-LARGE_TAIL = (100, 5000, 3, 600)
-
-
-def large_structure(cols: int) -> tuple[np.ndarray, np.ndarray]:
-    """Row pointers (int64) and the int32 columns of the edges after the leading row.
-
-    The leading row's columns are all 0; tail edge ``k`` uses column ``k % cols``.
-    """
-    lengths = np.asarray((LARGE_HEAD, *LARGE_TAIL), dtype=np.int64)
-    indptr = np.zeros(lengths.size + 1, np.int64)
-    np.cumsum(lengths, out=indptr[1:])
-    tail = (np.arange(sum(LARGE_TAIL)) % cols).astype(np.int32)
-    return indptr, tail
-
-
-def large_indices(tail: np.ndarray) -> Any:
-    """Device int32 column array: LARGE_HEAD zeros followed by ``tail``."""
-    return jnp.concatenate([jnp.zeros(LARGE_HEAD, jnp.int32), jnp.asarray(tail)])
+    indptr = np.asarray(indptr)
+    rows = np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
+    x = events[rows]
+    if weighted:
+        f = x.astype(ring.dtype)
+    else:
+        f = (x != 0).astype(ring.dtype)
+        if jnp.issubdtype(x.dtype, jnp.floating):
+            f = f + (x - jax.lax.stop_gradient(x)).astype(ring.dtype)
+    w = jnp.broadcast_to(data.reshape(-1), (rows.size,)) if data.size == 1 else data
+    delays = np.broadcast_to(np.asarray(delays), (rows.size,))
+    slots = jnp.remainder(jnp.asarray(t) + jnp.asarray(delays), ring.shape[0])  # t may be traced
+    return ring.at[slots, np.asarray(indices)].add(w * f)
