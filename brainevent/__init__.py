@@ -11,12 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
 
-from . import _deprecation
-from . import config
-from ._csr import (
+from brainevent import _deprecation
+from brainevent import config
+from brainevent._csr import (
     CSR, CSC,
     binary_csrmv, binary_csrmv_p,
     binary_csrmv_indexed, binary_csrmv_indexed_p,
@@ -31,23 +30,22 @@ from ._csr import (
     update_csc_on_binary_pre, update_csc_on_binary_post,
     csr_apply_on_pre, csr_apply_on_post,
     csr_slice_rows, csr_slice_rows_p,
-    csr_delay_deliver, csr_delay_deliver_p,
     CSRDelayLayout, csr_delay_deliver_layout, csr_delay_deliver_layout_p,
-    HybridConfig, get_hybrid_config, init_csr_config,
+    CSRConfig, MVSchedule, load_csr_config, save_csr_config, init_csr_config,
 )
-from ._tcsr import TCSR
-from ._data import (
+from brainevent._tcsr import TCSR
+from brainevent._data import (
     DataRepresentation,
     JITCMatrix,
 )
-from ._dense import (
+from brainevent._dense import (
     Dense,
     binary_densemv, binary_densemv_p,
     binary_densemm, binary_densemm_p,
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
 )
-from ._error import (
+from brainevent._error import (
     BrainEventError,
     MathError,
     UnsupportedOperationError,
@@ -70,7 +68,7 @@ from ._error import (
     UnsupportedArchError,
     KernelLoadError,
 )
-from ._event import (
+from brainevent._event import (
     EventRepresentation,
     BinaryArray,
     BitPackedBinary,
@@ -78,7 +76,7 @@ from ._event import (
     CompactBinary,
     WeightedArray,
 )
-from ._fcn import (
+from brainevent._fcn import (
     FixedNumConn, FixedNumPerPost, FixedNumPerPre,
     binary_fcnmv, binary_fcnmv_p,
     binary_fcnmm, binary_fcnmm_p,
@@ -87,7 +85,7 @@ from ._fcn import (
     update_fixed_pre_conn_on_binary_post,
     fcn_plasticity_row_p,
 )
-from ._jit_normal import (
+from brainevent._jit_normal import (
     JITCNormalR, JITCNormalC,
     binary_jitnmv, binary_jitnmv_p,
     binary_jitnmm, binary_jitnmm_p,
@@ -96,7 +94,7 @@ from ._jit_normal import (
     jitnmm, jitnmm_p,
     jitnmv_dt2t,
 )
-from ._jit_scalar import (
+from brainevent._jit_scalar import (
     JITCScalarMatrix, JITCScalarR, JITCScalarC,
     binary_jitsmv, binary_jitsmv_p,
     binary_jitsmm, binary_jitsmm_p,
@@ -105,7 +103,7 @@ from ._jit_scalar import (
     jitsmm, jitsmm_p,
     jitsmv_dt2t,
 )
-from ._jit_uniform import (
+from brainevent._jit_uniform import (
     JITCUniformR, JITCUniformC,
     binary_jitumv, binary_jitumv_p,
     binary_jitumm, binary_jitumm_p,
@@ -114,10 +112,10 @@ from ._jit_uniform import (
     jitumm, jitumm_p,
     jitumv_dt2t,
 )
-from ._misc import (
+from brainevent._misc import (
     csr_to_coo_index, coo_to_csc_index, csr_to_csc_index, csc_to_csr_index, coo2csr,
 )
-from ._op import (
+from brainevent._op import (
     XLACustomKernel, KernelEntry,
     BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function,
     numba_kernel, numba_cuda_kernel, numba_cuda_callable,
@@ -141,14 +139,14 @@ from ._op import (
     CPPBackend,
     HIPBackend,
 )
-from ._pallas_random import (
+from brainevent._pallas_random import (
     PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG,
     PallasLFSRRNG, get_pallas_lfsr_rng_class,
 )
-from ._registry import (
+from brainevent._registry import (
     get_registry, get_primitives_by_tags, get_all_primitive_names,
 )
-from ._version import __version__, __version_info__
+from brainevent._version import __version__, __version_info__
 
 __all__ = [
 
@@ -173,13 +171,12 @@ __all__ = [
     'csrmm', 'csrmm_p',
     'csrmv_dt2t', 'cscmv_dt2t', 'csrmv_dt2t_p',
     'csrmm_dt2t', 'cscmm_dt2t', 'csrmm_dt2t_p',
-    'HybridConfig', 'get_hybrid_config', 'init_csr_config',
+    'CSRConfig', 'MVSchedule', 'load_csr_config', 'save_csr_config', 'init_csr_config',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',
     'csr_apply_on_pre', 'csr_apply_on_post',
     'csr_slice_rows', 'csr_slice_rows_p',
-    'csr_delay_deliver', 'csr_delay_deliver_p',
     'CSRDelayLayout', 'csr_delay_deliver_layout', 'csr_delay_deliver_layout_p',
 
     # --- dense matrix --- #

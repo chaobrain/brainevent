@@ -1,17 +1,6 @@
 # Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
 
 """Audit tests for ``brainevent/_op/main.py`` (L3, M13).
 
@@ -50,9 +39,8 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 import brainevent
 from brainevent import KernelCompilationError, KernelFallbackExhaustedError
 from brainevent._compatible_import import apply_primitive, varying_axes
-from brainevent._csr.binary import binary_csrmm_p, binary_csrmv_p
-from brainevent._csr.binary_indexed import binary_csrmm_indexed_p
-from brainevent._csr.delay_layout import csr_delay_deliver_layout_p
+from brainevent._csr.binary import binary_csrmm_indexed_p, binary_csrmm_p, binary_csrmv_p
+from brainevent._csr.delay import csr_delay_deliver_layout_p
 from brainevent._csr.dt2t import csrmm_dt2t_p, csrmv_dt2t_p
 from brainevent._csr.float import csrmm_p, csrmv_p
 from brainevent._op.main import DETERMINISTIC_GPU_BACKEND, XLACustomKernel, xla_gpu_deterministic_ops
@@ -562,18 +550,25 @@ def _csrmv_ref(w, x):
     return jax.ops.segment_sum(x[_ROWS] * w, jnp.asarray(_INDICES), num_segments=4)
 
 
-def _binary_csrmv(w, x, backend=None):
-    """``x @ A`` for binary events ``x != 0``."""
-    return brainevent.binary_csrmv(w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), x, shape=(4, 4),
-                                   transpose=True, backend=backend)
+def _binary_csrmv(w, x, backend=None, **kwargs):
+    """Binary (or, with ``weighted=True``, value-weighted) forward product."""
+    return brainevent.binary_csrmv(
+        w, jnp.asarray(_INDICES), jnp.asarray(_INDPTR), x, shape=(4, 4),
+        transpose=True, backend=backend, **kwargs,
+    )
 
 
 def _binary_csrmv_ref(w, x):
     return jax.ops.segment_sum((x[_ROWS] != 0).astype(w.dtype) * w, jnp.asarray(_INDICES), num_segments=4)
 
 
+def _weighted_csrmv_ref(w, x):
+    return jax.ops.segment_sum(x[_ROWS].astype(w.dtype) * w, jnp.asarray(_INDICES), num_segments=4)
+
+
 def _deliver(ring, x, w, t, backend=None, weighted=True):
     """The fused per-edge-delay delivery of ``x`` into ``ring``."""
+    # ``with_data`` takes weights in the original edge order.
     return brainevent.csr_delay_deliver_layout(ring, x, _layout().with_data(w), t, weighted=weighted,
                                                backend=backend)
 
@@ -706,7 +701,45 @@ def test_245_sharded_csr_product_gradients_match_pure_jax(backend, w_spec):
 @_W_SPECS
 @pytest.mark.parametrize('backend', _backends(binary_csrmv_p))
 def test_245_sharded_binary_csr_product_gradients_match_pure_jax(backend, w_spec):
-    _assert_grads_match(functools.partial(_binary_csrmv, backend=backend), _binary_csrmv_ref, w_spec, (0,))
+    mv = functools.partial(_binary_csrmv, backend=backend)
+    _assert_grads_match(mv, _binary_csrmv_ref, w_spec, (0,))
+
+
+@_W_SPECS
+@pytest.mark.parametrize('backend', _backends(binary_csrmv_p))
+def test_245_sharded_weighted_binary_csr_weight_gradients(backend, w_spec):
+    """Value-weighted VJPs stay local until replicated weights are reduced."""
+    mv = functools.partial(_binary_csrmv, backend=backend, weighted=True)
+    w, x, _, v4, _ = _shard_data()
+    per_shard_w = w_spec == P(_AXIS)
+    args = (
+        _put(w if per_shard_w else w[0], w_spec),
+        _put(x, P(_AXIS)), _put(v4, P(_AXIS)),
+    )
+    loss = _sharded_loss(mv, w_spec)
+    reference = _sharded_loss(_weighted_csrmv_ref, w_spec)
+    np.testing.assert_allclose(
+        jax.jit(loss)(*args), jax.jit(reference)(*args), rtol=1e-6,
+    )
+
+    slot_gradients = x[:, _ROWS] * v4[:, _INDICES]
+    expected = (slot_gradients if per_shard_w else
+                slot_gradients.sum(axis=0))
+    actual = jax.jit(jax.grad(loss))(*args)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6)
+
+    tangent = jnp.ones_like(args[0])
+
+    def weight_jvp(function):
+        return jax.jvp(
+            lambda weights: function(weights, *args[1:]),
+            (args[0],), (tangent,),
+        )[1]
+
+    np.testing.assert_allclose(
+        jax.jit(lambda: weight_jvp(loss))(),
+        jax.jit(lambda: weight_jvp(reference))(), rtol=1e-6,
+    )
 
 
 @_W_SPECS
@@ -731,7 +764,7 @@ def test_245_sharded_delay_delivery_gradients_match_pure_jax(backend, w_spec):
 
 # Transpose rules that build a cotangent outside the primitive itself: the dt2t
 # ``y`` cotangent (``jax.linear_transpose`` of the pure-JAX kernel) and the CSR
-# mat-mat weight cotangent (``sddmm_indices``).
+# mat-mat weight cotangent (the sampled-product dispatcher).
 _B = np.asarray([[1., 2.], [0., 3.], [4., 0.], [5., 6.]], np.float32)  # (4, 2) events / dense block
 
 _GRAD_CASES = {
@@ -749,8 +782,10 @@ _GRAD_CASES = {
 }
 
 
+# These raw calls omit config; CUDA scatter MM requires a prepared config.
 @pytest.mark.parametrize('case,backend', [
-    (case, be) for case, (prim, _, _) in sorted(_GRAD_CASES.items()) for be in _backends(prim)])
+    (case, be) for case, (prim, _, _) in sorted(_GRAD_CASES.items()) for be in _backends(prim)
+    if not (case.startswith('binary_csrmm') and be == 'cuda_raw')])
 def test_245_sharded_transpose_rules_keep_gradients_per_shard(case, backend):
     """Per-shard gradients under shard_map equal the gradients of each shard's
     computation without shard_map."""
@@ -796,7 +831,9 @@ _HVP_CASES = {
 
 @_W_SPECS
 @pytest.mark.parametrize('case,backend', [
-    (case, be) for case, (prim, _) in sorted(_HVP_CASES.items()) for be in _backends(prim)])
+    # These raw calls omit config; CUDA scatter MM requires a prepared config.
+    (case, be) for case, (prim, _) in sorted(_HVP_CASES.items()) for be in _backends(prim)
+    if not (case.startswith('binary_csrmm') and be == 'cuda_raw')])
 def test_245_sharded_second_order_gradients_stay_per_shard(case, backend, w_spec):
     """Hessian-vector products of ``sum_s sum(v_s * op(w, B_s) ** 2)`` in ``w``,
     reverse-over-reverse and forward-over-reverse, equal those of each shard's

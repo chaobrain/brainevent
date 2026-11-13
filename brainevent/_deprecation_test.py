@@ -1,17 +1,6 @@
 # Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
 
 # -*- coding: utf-8 -*-
 
@@ -68,6 +57,10 @@ _REMOVED = {
     "compact_binary_fcnmm": "fcnmv", "compact_binary_fcnmm_p": "fcnmv",
     # layout objects
     "EllLayout": "FixedNumPer", "CscLayout": "FixedNumPer",
+    # removed after 0.4.2
+    "HybridConfig": "CSRConfig", "get_hybrid_config": "load_csr_config",
+    "csr_delay_deliver": "csr_delay_deliver_layout",
+    "csr_delay_deliver_p": "CSRDelayLayout.build",
 }
 
 # The 23 names exported by brainevent 0.0.7 ``__all__`` that are absent from 0.1.0.
@@ -212,3 +205,10 @@ def test_public_dir_does_not_mutate_the_namespace():
     namespace = {"BinaryArray": None}
     _deprecation.public_dir(namespace)
     assert namespace == {"BinaryArray": None}
+
+
+def test_csr_delay_deliver_method_raises_with_migration():
+    import jax.numpy as jnp
+    matrix = brainevent.CSR.fromdense(jnp.eye(2, dtype=jnp.float32), backend='jax_raw')
+    with pytest.raises(AttributeError, match='csr_delay_deliver_layout'):
+        matrix.delay_deliver(jnp.zeros((2, 2)), jnp.ones(2), jnp.ones(2, jnp.int32), 0)

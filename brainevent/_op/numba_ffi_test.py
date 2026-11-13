@@ -1,17 +1,6 @@
 # Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
 
 """Tests for Numba CPU FFI integration with JAX."""
 
@@ -1726,6 +1715,7 @@ _EXIT_HANG_SCRIPT = textwrap.dedent('''
     numba_ffi.NumbaCpuFfiHandler('exit_guard_probe', kern, (np.dtype('float32'),), (np.dtype('float32'),))
     call = jax.ffi.ffi_call('exit_guard_probe', jax.ShapeDtypeStruct((100,), jnp.float32))
     f = jax.jit(lambda c: jax.lax.scan(lambda c, _: (jnp.sin(call(c)) + 1.0, None), c, None, length=200)[0])
+    f = f.lower(jax.ShapeDtypeStruct((100,), jnp.float32)).compile()
     heavy = jax.jit(lambda a: jax.lax.fori_loop(0, 10, lambda i, a: jnp.tanh(a @ a), a)[0, :100])
     a = jnp.ones((1500, 1500), jnp.float32) * 1e-3
     heavy(a).block_until_ready()
@@ -1755,10 +1745,15 @@ class TestExitGuard:
 
     def test_register_exit_guard_is_idempotent(self):
         with mock.patch.object(numba_ffi, '_EXIT_GUARD_REGISTERED', False), \
-                mock.patch.object(numba_ffi.atexit, 'register') as register:
+                mock.patch.object(numba_ffi.atexit, 'register') as register, \
+                mock.patch.object(numba_ffi.ctypes.pythonapi, 'Py_IncRef') as pin:
             numba_ffi._register_exit_guard()
             numba_ffi._register_exit_guard()
         register.assert_called_once_with(numba_ffi._exit_guard)
+        pin.assert_called_once()
+        handles, gates = pin.call_args.args[0].value
+        assert handles is numba_ffi._NUMBA_CPU_FFI_HANDLES
+        assert gates is numba_ffi._FFI_CALLBACK_GATES
 
     def test_handler_registers_exit_guard(self):
         with mock.patch.object(numba_ffi, '_register_exit_guard') as guard, \
@@ -1771,10 +1766,125 @@ class TestExitGuard:
     @pytest.mark.parametrize('mode', ['queued', 'running'])
     def test_exit_with_dropped_inflight_outputs_does_not_hang(self, mode):
         # #259: every output dropped, so the live-array wait has nothing to block on;
-        # the held CPU client keeps finalization from joining the worker in the trampoline.
+        # the native gate rejects late entries before ctypes takes the GIL.
         proc = _run_exit_script(mode, timeout=20)
         assert proc.returncode == 0, proc.stderr
         assert 'IN_FLIGHT True' in proc.stdout
+
+    def test_late_execution_is_cancelled_without_reentering_python(self):
+        # Simulate a queued execution reaching its target after the exit guard.
+        # A strong callback reference alone cannot make PyGILState_Ensure safe
+        # after finalization. Reject entry before ctypes tries to take the GIL.
+        script = textwrap.dedent('''
+            import numpy as np, jax, jax.numpy as jnp
+            from brainevent._op import numba_ffi
+
+            calls = []
+            def kernel(x, out):
+                calls.append(1)
+                out[...] = x + 1
+
+            numba_ffi.NumbaCpuFfiHandler(
+                'late_entry_probe', kernel,
+                (np.dtype('float32'),), (np.dtype('float32'),))
+            call = jax.jit(jax.ffi.ffi_call(
+                'late_entry_probe', jax.ShapeDtypeStruct((4,), jnp.float32)))
+            x = jnp.arange(4, dtype=jnp.float32)
+            np.testing.assert_array_equal(np.asarray(call(x)), np.arange(4) + 1)
+            numba_ffi._exit_guard()
+            try:
+                call(x).block_until_ready()
+            except Exception as exc:
+                assert 'shutting down' in str(exc), str(exc)
+            else:
+                raise AssertionError('FFI execution was accepted after shutdown')
+            assert len(calls) == 1, 'late callback reentered Python'
+        ''')
+        proc = subprocess.run(
+            [sys.executable, '-c', script],
+            env=dict(os.environ, JAX_PLATFORMS='cpu'), timeout=30,
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+    def test_shutdown_waits_for_an_entered_callback_without_live_arrays(self):
+        # A callback can release the GIL (Numba nogil, sleep, etc.). Closing its
+        # native entry must await its return even when no live-array wait helps.
+        script = textwrap.dedent('''
+            import threading
+            import numpy as np, jax, jax.numpy as jnp
+            from brainevent._op import numba_ffi
+
+            started = threading.Event()
+            release = threading.Event()
+            finished = threading.Event()
+            def kernel(x, out):
+                started.set()
+                assert release.wait(10)
+                out[...] = x
+                finished.set()
+
+            numba_ffi.NumbaCpuFfiHandler(
+                'active_entry_probe', kernel,
+                (np.dtype('float32'),), (np.dtype('float32'),))
+            call = jax.jit(jax.ffi.ffi_call(
+                'active_entry_probe', jax.ShapeDtypeStruct((4,), jnp.float32)))
+            x = jnp.arange(4, dtype=jnp.float32)
+            worker = threading.Thread(target=lambda: call(x).block_until_ready())
+            worker.start()
+            assert started.wait(10)
+            numba_ffi._wait_for_inflight_executions = lambda: None
+            timer = threading.Timer(0.1, release.set)
+            timer.start()
+            numba_ffi._exit_guard()
+            assert finished.is_set(), 'shutdown returned while Python callback was active'
+            worker.join(10)
+            timer.join(10)
+            assert not worker.is_alive()
+        ''')
+        proc = subprocess.run(
+            [sys.executable, '-c', script],
+            env=dict(os.environ, JAX_PLATFORMS='cpu'), timeout=30,
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+    def test_registered_callback_survives_module_registry_release(self):
+        # Module teardown drops this binding while the held CPU client can
+        # still have a queued raw target pointer. Assert lifetime before
+        # calling the target, so the unfixed subprocess fails without a crash.
+        script = textwrap.dedent('''
+            import gc, weakref
+            import numpy as np, jax, jax.numpy as jnp
+            from brainevent._op import numba_ffi
+
+            def kernel(x, out):
+                out[...] = x + 1.0
+
+            handler = numba_ffi.NumbaCpuFfiHandler(
+                'registry_lifetime_probe', kernel,
+                (np.dtype('float32'),), (np.dtype('float32'),))
+            handler_ref = weakref.ref(handler)
+            callback_ref = weakref.ref(handler._callback)
+            del handler
+            numba_ffi._NUMBA_CPU_FFI_HANDLES = {}
+            gc.collect()
+            assert handler_ref() is not None, 'registered handler was released'
+            assert callback_ref() is not None, 'registered callback was released'
+
+            call = jax.jit(jax.ffi.ffi_call(
+                'registry_lifetime_probe', jax.ShapeDtypeStruct((4,), jnp.float32)))
+            actual = np.asarray(call(jnp.arange(4, dtype=jnp.float32)))
+            np.testing.assert_array_equal(actual, np.arange(4, dtype=np.float32) + 1)
+            print('PINNED_CALLBACK_OK', flush=True)
+        ''')
+        proc = subprocess.run(
+            [sys.executable, '-c', script],
+            env=dict(os.environ, JAX_PLATFORMS='cpu'), timeout=30,
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert 'PINNED_CALLBACK_OK' in proc.stdout
 
     def test_hold_keeps_one_cpu_client_and_releases_a_replaced_one(self):
         class Client:
@@ -1811,9 +1921,72 @@ class TestExitGuard:
         with mock.patch.object(numba_ffi, '_CPU_HOLD_WANTED', wanted), \
                 mock.patch.object(numba_ffi, '_wait_for_inflight_executions') as wait, \
                 mock.patch.object(numba_ffi, '_hold_cpu_client') as hold:
-            numba_ffi._exit_guard()
+            numba_ffi._exit_guard(numba_ffi._GateList())  # not the pytest process's real gates
         wait.assert_called_once_with()
         assert hold.called is wanted
+
+    def test_exit_guard_snapshots_gates_under_the_lock_and_closes_outside_it(self):
+        # G3: a target registered concurrently must not race the iteration,
+        # and an admitted callback that registers a target must not deadlock.
+        held = []
+
+        class Gate:
+            def close(self, timeout):
+                held.append(('close', numba_ffi._EXIT_GUARD_LOCK.locked(), timeout))
+                return True
+
+        class Gates(numba_ffi._GateList):
+            def __iter__(self):
+                held.append(('iterate', numba_ffi._EXIT_GUARD_LOCK.locked()))
+                return super().__iter__()
+
+        gates = Gates([Gate()])
+        with mock.patch.object(numba_ffi, '_wait_for_inflight_executions'), \
+                mock.patch.dict(os.environ, {'BRAINEVENT_FFI_EXIT_TIMEOUT': '7.5'}):
+            numba_ffi._exit_guard(gates)
+        assert held == [('iterate', True), ('close', False, 7.5)]
+        assert gates.closed
+
+    def test_gate_created_after_the_exit_guard_admits_nothing(self):
+        pytest.importorskip('llvmlite')
+        gates = numba_ffi._GateList()
+        gates.closed = True
+        callback = numba_ffi._FFI_CALLBACK_TYPE(lambda frame: None)
+        with mock.patch.object(numba_ffi, '_FFI_CALLBACK_GATES', gates):
+            numba_ffi._guard_ffi_callback(callback)
+        assert len(gates) == 1
+        assert gates[0]._read_state() == 1  # closed before any call could enter
+
+    def test_exit_guard_warns_and_continues_when_a_callback_does_not_return(self):
+        # G2: the wait is bounded; exit continues and says why it may hang.
+        closed = []
+
+        class Gate:
+            def __init__(self, drained, in_flight):
+                self.drained, self.count = drained, in_flight
+
+            def close(self, timeout):
+                closed.append(timeout)
+                return self.drained
+
+            def in_flight(self):
+                return self.count
+
+        gates = numba_ffi._GateList([Gate(False, 2), Gate(True, 0)])
+        with mock.patch.object(numba_ffi, '_wait_for_inflight_executions'), \
+                mock.patch.dict(os.environ, {'BRAINEVENT_FFI_EXIT_TIMEOUT': '0'}), \
+                pytest.warns(RuntimeWarning, match='2 Numba FFI callback.*BRAINEVENT_FFI_EXIT_TIMEOUT'):
+            numba_ffi._exit_guard(gates)
+        assert closed == [0., 0.]  # every gate is closed, even after one timed out
+
+    @pytest.mark.parametrize('value,expected', [(None, 30.), ('2.5', 2.5), ('-1', 0.), ('soon', 30.),
+                                                ('inf', float('inf'))])
+    def test_exit_timeout_reads_the_environment(self, value, expected):
+        env = {} if value is None else {'BRAINEVENT_FFI_EXIT_TIMEOUT': value}
+        with mock.patch.dict(os.environ, env, clear=False):
+            if value is None:
+                os.environ.pop('BRAINEVENT_FFI_EXIT_TIMEOUT', None)
+            assert numba_ffi._exit_timeout() == expected
 
     def test_wait_blocks_live_arrays_and_skips_deleted_and_failed(self):
         ready = mock.Mock(**{'is_deleted.return_value': False})

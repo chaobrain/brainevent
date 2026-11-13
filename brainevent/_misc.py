@@ -1,19 +1,10 @@
 # Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
+
 import functools
 import inspect
+import operator
 from typing import Tuple, NamedTuple, Sequence, Union, Callable, Optional
 
 import brainunit as u
@@ -22,8 +13,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.sparse import coo_todense_p
 
-from ._typing import MatrixShape, Data, Index
-from ._compatible_import import Tracer, match_varying_axes
+from brainevent._typing import MatrixShape, Data, Index
+from brainevent._compatible_import import Tracer, match_varying_axes
 
 
 # -*- coding: utf-8 -*-
@@ -300,6 +291,43 @@ def _resolve_indptr_dtype(nse, requested="auto"):
     )
 
 
+def _static_integer(value, name: str, minimum: int = 0, maximum: Optional[int] = None) -> int:
+    """Return a static Python integer, rejecting bools, tracers and out-of-range values.
+
+    Parameters
+    ----------
+    value : int-like
+        Value accepted by :func:`operator.index`; ``bool`` is rejected.
+    name : str
+        Name used in error messages.
+    minimum : int, optional
+        Smallest accepted value.
+    maximum : int or None, optional
+        Largest accepted value; ``None`` means unbounded.
+
+    Returns
+    -------
+    int
+        The validated integer.
+
+    Raises
+    ------
+    ValueError
+        ``value`` is a bool, not integer-like, or out of range.
+    """
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f'{name} must be an integer')
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f'{name} must be an integer') from exc
+    if result < minimum:
+        raise ValueError(f'{name} must be >= {minimum}')
+    if maximum is not None and result > maximum:
+        raise ValueError(f'{name} must be <= {maximum}')
+    return result
+
+
 def _require_jax_x64_for_int64(dtype, context):
     """Raise if ``dtype`` is int64 but JAX x64 is disabled.
 
@@ -317,14 +345,15 @@ def _require_jax_x64_for_int64(dtype, context):
         )
 
 
-def _as_int32_indices(indices, secondary_dim, context, check_values=True):
+def _as_int32_indices(indices, secondary_dim, context, check_values=True, *, host_indices=None):
     """Validate and cast a CSR/CSC ``indices`` array to int32.
 
     ``indices`` are secondary-axis coordinates and are always int32. Under a JAX
     tracer only static dtype is enforced (int64 tracers are rejected); host value
     checks are skipped. When ``check_values`` is ``False`` (structure-preserving
     reconstruction of already-validated arrays) the concrete value checks are
-    skipped and only a dtype coercion is performed.
+    skipped and only a dtype coercion is performed. ``host_indices`` may carry
+    an already-read host copy, shared with structure preparation.
     """
     arr = u.math.asarray(indices)
     dtype = jnp.dtype(arr.dtype)
@@ -343,7 +372,7 @@ def _as_int32_indices(indices, secondary_dim, context, check_values=True):
             )
         return arr if dtype == jnp.dtype(jnp.int32) else arr.astype(jnp.int32)
     if check_values:
-        host = np.asarray(jax.device_get(arr))
+        host = np.asarray(jax.device_get(arr)) if host_indices is None else np.asarray(host_indices)
         if host.size:
             min_v = int(host.min())
             max_v = int(host.max())
@@ -381,13 +410,14 @@ def _as_indptr(indptr, nse, indptr_dtype, context):
     return arr.astype(target)
 
 
-def _check_compressed_structure(indices, indptr, shape, format="csr", check_values=True):
+def _check_compressed_structure(indices, indptr, shape, format="csr", check_values=True, *, host_indptr=None):
     """Validate CSR/CSC structural invariants.
 
     Static checks (ndim, dtype, indptr length, x64 gating for int64 indptr) run
     for both concrete and traced arrays. Value checks (``indptr[0] == 0``,
     monotonicity, ``indptr[-1] == indices.size``) run only for concrete arrays
-    and only when ``check_values`` is set.
+    and only when ``check_values`` is set. An optional ``host_indptr`` reuses
+    a host copy already obtained while preparing the matrix.
     """
     fmt = format.lower()
     if fmt not in ("csr", "csc"):
@@ -414,7 +444,7 @@ def _check_compressed_structure(indices, indptr, shape, format="csr", check_valu
     if not check_values or isinstance(indices, Tracer) or isinstance(indptr, Tracer):
         return
 
-    ptr_host = np.asarray(jax.device_get(indptr))
+    ptr_host = np.asarray(jax.device_get(indptr)) if host_indptr is None else np.asarray(host_indptr)
     if ptr_host.size and int(ptr_host[0]) != 0:
         raise ValueError(f"{fmt} indptr[0] must be 0; got {int(ptr_host[0])}.")
     if np.any(np.diff(ptr_host) < 0):
@@ -1494,10 +1524,10 @@ def _load_csr_to_csc_cuda_module():
     if _CSR_TO_CSC_CUDA_MODULE is None:
         from pathlib import Path
 
-        from ._op import load_cuda_file
+        from brainevent._op import load_cuda_file
 
         _CSR_TO_CSC_CUDA_MODULE = load_cuda_file(
-            Path(__file__).resolve().parent / "_csr" / "csr_to_csc.cu",
+            Path(__file__).resolve().parent / "_csr" / "_support" / "csr_to_csc.cu",
             name="csr_to_csc",
         )
     return _CSR_TO_CSC_CUDA_MODULE
@@ -1528,6 +1558,15 @@ def _csr_to_csc_index_gpu_column_block(
     nse = int(nse)
     # offsets auto-promote to int64 only when nnz exceeds the int32 range.
     offset_dtype = _offset_index_dtype(nse)
+
+    if nse == 0:
+        # Empty layouts need no device query or CUDA launch, including when
+        # either matrix dimension is zero.
+        mod = np if isinstance(csr_indptr, np.ndarray) and isinstance(csr_indices, np.ndarray) else jnp
+        csc_indptr = mod.zeros(n_post + 1, dtype=offset_dtype)
+        csc_indices = mod.empty(0, dtype=coord_dtype)
+        perm = mod.empty(0, dtype=offset_dtype) if include_perm else None
+        return csc_indptr, csc_indices, perm
 
     # Creating int64 JAX arrays requires x64; refuse rather than toggle the
     # global config behind the user's back.
@@ -1672,7 +1711,7 @@ def csr_to_csc_index(
     ------
     AssertionError
         If ``shape`` is not a tuple or list, does not have exactly two
-        elements, or contains non-positive dimensions.
+        elements, or contains negative dimensions.
 
     See Also
     --------
@@ -1701,7 +1740,7 @@ def csr_to_csc_index(
     """
     assert isinstance(shape, (tuple, list)), "Shape must be a tuple or list"
     assert len(shape) == 2, "Shape must have exactly two dimensions (rows, columns)"
-    assert shape[0] > 0 and shape[1] > 0, "Shape dimensions must be positive integers"
+    assert shape[0] >= 0 and shape[1] >= 0, "Shape dimensions must be non-negative integers"
     if method == "coo":
         csc_indptr, csc_indices, post_positions = _csr_to_csc_index_via_coo(
             csr_indptr,
@@ -1777,7 +1816,7 @@ def csc_to_csr_index(
     Raises
     ------
     AssertionError
-        If ``shape`` is not a length-2 tuple/list of positive integers.
+        If ``shape`` is not a length-2 tuple/list of non-negative integers.
 
     See Also
     --------
@@ -1805,7 +1844,7 @@ def csc_to_csr_index(
     """
     assert isinstance(shape, (tuple, list)), "Shape must be a tuple or list"
     assert len(shape) == 2, "Shape must have exactly two dimensions (rows, columns)"
-    assert shape[0] > 0 and shape[1] > 0, "Shape dimensions must be positive integers"
+    assert shape[0] >= 0 and shape[1] >= 0, "Shape dimensions must be non-negative integers"
     csr_indptr, csr_indices, perm = csr_to_csc_index(
         csc_indptr,
         csc_indices,

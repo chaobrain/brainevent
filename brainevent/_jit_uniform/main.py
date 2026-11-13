@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
 # -*- coding: utf-8 -*-
 
@@ -29,10 +28,11 @@ from brainevent._data import JITCMatrix, _resolve_corder
 from brainevent._jitc_structure import JITCStructure
 from brainevent._error import UnsupportedOperationError
 from brainevent._typing import MatrixShape, WeightScalar
-from .binary import binary_jitumv, binary_jitumm
-from .csr import jitu_structure, jitu_to_csr
-from .float import jitu, jitumv, jitumm
-from .dt2t import jitumv_dt2t
+from brainevent._jit_uniform.binary import binary_jitumv, binary_jitumm
+from brainevent._jit_uniform.csr import jitu_to_csr
+from brainevent._jit_uniform.csr.csr import jitu_structure
+from brainevent._jit_uniform.float import jitu, jitumv, jitumm
+from brainevent._jit_uniform.dt2t import jitumv_dt2t
 
 __all__ = [
     'JITCUniformR',

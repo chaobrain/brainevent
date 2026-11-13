@@ -1,17 +1,6 @@
 # Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
 
 """High-level compilation pipeline and diagnostics.
 
@@ -35,14 +24,22 @@ import jaxlib
 
 from brainevent._error import KernelError
 from brainevent._version import __version__
-from .kernix_cache import CompilationCache
-from .kernix_codegen import (
+from brainevent._op.kernix_cache import CompilationCache
+from brainevent._op.kernix_codegen import (
     FunctionSpec, infer_arg_spec_from_source, normalize_tokens,
     parse_arg_spec, parse_annotations, preprocess_source, resolve_bare_attr_types,
 )
-from .kernix_compiler import CPPBackend, CUDABackend, _cuda_runtime_lib_linker_search_flags
-from .kernix_runtime import CompiledModule, _REGISTERED_TARGETS, register_ffi_target
-from .kernix_toolchain import (
+from brainevent._op.kernix_compiler import (
+    CPPBackend,
+    CUDABackend,
+    _cuda_runtime_lib_linker_search_flags,
+)
+from brainevent._op.kernix_runtime import (
+    CompiledModule,
+    _REGISTERED_TARGETS,
+    register_ffi_target,
+)
+from brainevent._op.kernix_toolchain import (
     collect_toolchain_diagnostics, detect_cpp_toolchain, detect_cuda_arch,
     detect_cuda_toolchain, get_compute_capabilities, resolve_compute_capabilities,
     so_ext,
@@ -101,8 +98,9 @@ def _cache_header_paths(toolchain) -> list[str]:
     candidates: list[str] = []
     # All brainevent headers: both the ``brainevent/`` subdir and any top-level
     # headers (cuda_common.h lives one level up).
-    candidates.extend(glob.glob(os.path.join(be_inc, "brainevent", "*.h")))
-    candidates.extend(glob.glob(os.path.join(be_inc, "*.h")))
+    for pattern in ("*.h", "*.cuh"):
+        candidates.extend(glob.glob(os.path.join(be_inc, "brainevent", pattern)))
+        candidates.extend(glob.glob(os.path.join(be_inc, pattern)))
     # jaxlib FFI ABI header.
     candidates.append(os.path.join(toolchain.xla_ffi_include_dir, "xla", "ffi", "api", "ffi.h"))
     return [p for p in candidates if os.path.isfile(p)]

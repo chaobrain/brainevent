@@ -1,0 +1,965 @@
+# Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
+
+# -*- coding: utf-8 -*-
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pytest
+
+from brainevent._data import _initialize_conn_length, _initialize_seed
+from brainevent._jit_normal.binary import (
+    binary_jitnmv,
+    binary_jitnmv_p,
+    binary_jitnmm,
+    binary_jitnmm_p,
+    binary_jitnmm_p_call,
+)
+from brainevent._jit_normal._test_util import dense_normal_reference
+from brainevent._jit_normal.float import jitnmv, jitnmm
+from brainevent._test_util import allclose
+
+platform = jax.default_backend()
+CPU_DEVICE = jax.devices('cpu')[0]
+JITNMV_IMPLEMENTATIONS = tuple(binary_jitnmv_p.available_backends(platform))
+JITNMM_IMPLEMENTATIONS = tuple(binary_jitnmm_p.available_backends(platform))
+CPU_JITNMV_IMPLEMENTATIONS = tuple(binary_jitnmv_p.available_backends('cpu'))
+CPU_JITNMM_IMPLEMENTATIONS = tuple(binary_jitnmm_p.available_backends('cpu'))
+
+requires_cpu_jitnmv = pytest.mark.skipif(
+    'numba' not in CPU_JITNMV_IMPLEMENTATIONS,
+    reason='No binary_jitnmv numba backend registered on CPU',
+)
+requires_cpu_jitnmm = pytest.mark.skipif(
+    'numba' not in CPU_JITNMM_IMPLEMENTATIONS,
+    reason='No binary_jitnmm numba backend registered on CPU',
+)
+
+if platform == 'cpu':
+    SHAPES = ((20, 30), (100, 50))
+else:
+    SHAPES = ((20, 30), (100, 50), (400, 300))
+
+
+def _implementation_params(implementations, op_name: str):
+    if implementations:
+        return [pytest.param(impl, id=impl) for impl in implementations]
+    return [
+        pytest.param(
+            None,
+            marks=pytest.mark.skip(reason=f'No {op_name} implementations on platform={platform}'),
+            id=f'no-{op_name}',
+        )
+    ]
+
+
+JITNMV_PARAMS = _implementation_params(JITNMV_IMPLEMENTATIONS, 'binary_jitnmv')
+JITNMM_PARAMS = _implementation_params(JITNMM_IMPLEMENTATIONS, 'binary_jitnmm')
+
+
+def _binary_events(x, dtype=jnp.float32):
+    # Activity contract: a numeric event is active iff it is non-zero.
+    return jnp.asarray(jnp.asarray(x) != 0, dtype=dtype)
+
+
+def _sample_vector(size: int, event_dtype, seed: int):
+    rng = np.random.RandomState(seed)
+    if event_dtype is bool:
+        return jnp.asarray(rng.rand(size) > 0.5)
+    # Signed values: negative events are active too.
+    raw = rng.uniform(-1.0, 1.0, size).astype(np.float32)
+    mask = rng.rand(size) > 0.5
+    return jnp.asarray(raw * mask)
+
+
+def _sample_matrix(rows: int, cols: int, event_dtype, seed: int):
+    rng = np.random.RandomState(seed)
+    if event_dtype is bool:
+        return jnp.asarray(rng.rand(rows, cols) > 0.5)
+    # Signed values: negative events are active too.
+    raw = rng.uniform(-1.0, 1.0, (rows, cols)).astype(np.float32)
+    mask = rng.rand(rows, cols) > 0.5
+    return jnp.asarray(raw * mask)
+
+
+def _call_binary_jitnmm(w_loc, w_scale, prob, matrix, seed, *, shape, transpose, corder, implementation):
+    return binary_jitnmm_p_call(
+        w_loc,
+        w_scale,
+        _initialize_conn_length(prob),
+        matrix,
+        _initialize_seed(seed),
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )[0]
+
+
+@requires_cpu_jitnmv
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+def test_binary_jitnmv_numba_matches_light_rng_reference(transpose, corder, event_dtype):
+    shape = (13, 17)
+    prob, seed = 0.2, 123
+    w_loc = jnp.asarray(1.5, dtype=jnp.float32)
+    w_scale = jnp.asarray(0.15, dtype=jnp.float32)
+    event_size = shape[0] if transpose else shape[1]
+    vector = _sample_vector(event_size, event_dtype, seed + 31)
+    vector_ref = np.asarray(_binary_events(vector, dtype=jnp.float32))
+
+    with jax.default_device(CPU_DEVICE):
+        actual = binary_jitnmv(
+            w_loc, w_scale, prob, vector, seed,
+            shape=shape, transpose=transpose, corder=corder, backend='numba',
+        )
+    dense = dense_normal_reference(
+        w_loc, w_scale, prob, seed,
+        shape=shape, transpose=transpose, corder=corder,
+    )
+    expected = dense @ vector_ref
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
+
+
+@requires_cpu_jitnmm
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+def test_binary_jitnmm_numba_matches_light_rng_reference(transpose, corder, event_dtype):
+    shape = (13, 17)
+    prob, seed = 0.2, 123
+    w_loc = jnp.asarray([1.5], dtype=jnp.float32)
+    w_scale = jnp.asarray([0.15], dtype=jnp.float32)
+    b_rows = shape[0] if transpose else shape[1]
+    matrix = _sample_matrix(b_rows, 3, event_dtype, seed + 37)
+    matrix_ref = np.asarray(_binary_events(matrix, dtype=jnp.float32))
+
+    with jax.default_device(CPU_DEVICE):
+        actual = _call_binary_jitnmm(
+            w_loc, w_scale, prob, matrix, seed,
+            shape=shape, transpose=transpose, corder=corder, implementation='numba',
+        )
+    dense = dense_normal_reference(
+        w_loc[0], w_scale[0], prob, seed,
+        shape=shape, transpose=transpose, corder=corder,
+    )
+    expected = dense @ matrix_ref
+    assert np.allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', SHAPES)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+@pytest.mark.parametrize('prob', [0.1, 0.2])
+def test_binary_jitnmv_forward_matches_reference(implementation, shape, transpose, corder, event_dtype, prob):
+    seed = 123
+    w_loc = jnp.asarray(1.5, dtype=jnp.float32)
+    w_scale = jnp.asarray(0.1, dtype=jnp.float32)
+    event_size = shape[0] if transpose else shape[1]
+    vector = _sample_vector(event_size, event_dtype, seed + 7)
+    vector_ref = _binary_events(vector, dtype=jnp.float32)
+
+    y = binary_jitnmv(
+        w_loc,
+        w_scale,
+        prob,
+        vector,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )
+    y_ref = jitnmv(
+        w_loc,
+        w_scale,
+        prob,
+        vector_ref,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )
+    assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_loc, w_scale, vector, vector_ref, y, y_ref))
+
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', SHAPES)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+@pytest.mark.parametrize('prob', [0.1, 0.2])
+@pytest.mark.parametrize('k', [5, 10])
+def test_binary_jitnmm_forward_matches_reference(implementation, shape, transpose, corder, event_dtype, prob, k):
+    seed = 123
+    w_loc = jnp.asarray([1.5], dtype=jnp.float32)
+    w_scale = jnp.asarray([0.1], dtype=jnp.float32)
+    rows = shape[0] if transpose else shape[1]
+    matrix = _sample_matrix(rows, k, event_dtype, seed + 11)
+    matrix_ref = _binary_events(matrix, dtype=jnp.float32)
+
+    y = _call_binary_jitnmm(
+        w_loc,
+        w_scale,
+        prob,
+        matrix,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        implementation=implementation,
+    )
+    y_ref = jitnmm(
+        w_loc[0],
+        w_scale[0],
+        prob,
+        matrix_ref,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )
+    assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_loc, w_scale, matrix, matrix_ref, y, y_ref))
+
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+def test_binary_jitnmv_thresholds_float_events(implementation, shape, transpose, corder):
+    seed = 123
+    prob = 0.1
+    w_loc = jnp.asarray(1.5, dtype=jnp.float32)
+    w_scale = jnp.asarray(0.1, dtype=jnp.float32)
+    size = shape[0] if transpose else shape[1]
+    vector = _sample_vector(size, float, seed + 17)
+    vector_binary = _binary_events(vector, dtype=jnp.float32)
+
+    y_float = binary_jitnmv(
+        w_loc,
+        w_scale,
+        prob,
+        vector,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )
+    y_binary = binary_jitnmv(
+        w_loc,
+        w_scale,
+        prob,
+        vector_binary,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )
+    assert allclose(y_float, y_binary, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_loc, w_scale, vector, vector_binary, y_float, y_binary))
+
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('k', [10])
+def test_binary_jitnmm_thresholds_float_events(implementation, shape, transpose, corder, k):
+    seed = 123
+    prob = 0.1
+    w_loc = jnp.asarray([1.5], dtype=jnp.float32)
+    w_scale = jnp.asarray([0.1], dtype=jnp.float32)
+    rows = shape[0] if transpose else shape[1]
+    matrix = _sample_matrix(rows, k, float, seed + 23)
+    matrix_binary = _binary_events(matrix, dtype=jnp.float32)
+
+    y_float = _call_binary_jitnmm(
+        w_loc,
+        w_scale,
+        prob,
+        matrix,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        implementation=implementation,
+    )
+    y_binary = _call_binary_jitnmm(
+        w_loc,
+        w_scale,
+        prob,
+        matrix_binary,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        implementation=implementation,
+    )
+    assert allclose(y_float, y_binary, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_loc, w_scale, matrix, matrix_binary, y_float, y_binary))
+
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+def test_binary_jitnmv_jvp_and_vjp_match_reference(implementation, transpose, corder):
+    shape = (20, 30)
+    seed = 123
+    prob = 0.1
+    vector_size = shape[0] if transpose else shape[1]
+    vector = _binary_events(_sample_vector(vector_size, float, seed + 29), dtype=jnp.float32)
+
+    def f_binary(w_loc, w_scale, v):
+        return binary_jitnmv(
+            w_loc,
+            w_scale,
+            prob,
+            v,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+
+    def f_ref(w_loc, w_scale, v):
+        return jitnmv(
+            w_loc,
+            w_scale,
+            prob,
+            v,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+
+    primals = (jnp.asarray(1.5, dtype=jnp.float32), jnp.asarray(0.1, dtype=jnp.float32), vector)
+    tangents = (jnp.asarray(1.0, dtype=jnp.float32), jnp.asarray(0.5, dtype=jnp.float32), jnp.ones_like(vector))
+
+    out1, jvp1 = jax.jvp(f_binary, primals, tangents)
+    out2, jvp2 = jax.jvp(f_ref, primals, tangents)
+    assert allclose(out1, out2, rtol=1e-4, atol=1e-4)
+    assert allclose(jvp1, jvp2, rtol=1e-4, atol=1e-4)
+
+    def scalar_binary(w_loc, w_scale, v):
+        return f_binary(w_loc, w_scale, v).sum()
+
+    def scalar_ref(w_loc, w_scale, v):
+        return f_ref(w_loc, w_scale, v).sum()
+
+    (g_wloc1, g_wscale1, g_v1) = jax.grad(scalar_binary, argnums=(0, 1, 2))(*primals)
+    (g_wloc2, g_wscale2, g_v2) = jax.grad(scalar_ref, argnums=(0, 1, 2))(*primals)
+    assert allclose(g_wloc1, g_wloc2, rtol=1e-4, atol=1e-4)
+    assert allclose(g_wscale1, g_wscale2, rtol=1e-4, atol=1e-4)
+    assert allclose(g_v1, g_v2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, primals[0], primals[1], tangents[0], tangents[1], tangents[2],
+                           out1, jvp1, out2, jvp2, g_wloc1, g_wscale1, g_v1, g_wloc2, g_wscale2, g_v2))
+
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+def test_binary_jitnmm_jvp_matches_reference(implementation, transpose, corder):
+    shape = (20, 30)
+    seed = 123
+    prob = 0.1
+    k = 8
+    rows = shape[0] if transpose else shape[1]
+    matrix = _binary_events(_sample_matrix(rows, k, float, seed + 31), dtype=jnp.float32)
+
+    def f_binary(w_loc, w_scale, B):
+        return _call_binary_jitnmm(
+            jnp.atleast_1d(w_loc),
+            jnp.atleast_1d(w_scale),
+            prob,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            implementation=implementation,
+        )
+
+    def f_ref(w_loc, w_scale, B):
+        return jitnmm(
+            w_loc,
+            w_scale,
+            prob,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+
+    primals = (jnp.asarray(1.5, dtype=jnp.float32), jnp.asarray(0.1, dtype=jnp.float32), matrix)
+    tangents = (jnp.asarray(1.0, dtype=jnp.float32), jnp.asarray(0.5, dtype=jnp.float32), jnp.ones_like(matrix))
+    out1, jvp1 = jax.jvp(f_binary, primals, tangents)
+    out2, jvp2 = jax.jvp(f_ref, primals, tangents)
+    assert allclose(out1, out2, rtol=1e-4, atol=1e-4)
+    assert allclose(jvp1, jvp2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((matrix, primals[0], primals[1], tangents[0], tangents[1], tangents[2],
+                           out1, jvp1, out2, jvp2))
+
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+def test_binary_jitnmv_vmap_matches_reference(implementation, transpose, corder):
+    shape = (20, 30)
+    seed = 123
+    prob = 0.1
+    batch = 6
+    event_size = shape[0] if transpose else shape[1]
+    vectors = _sample_matrix(batch, event_size, float, seed + 41)
+
+    f_binary = jax.vmap(
+        lambda v: binary_jitnmv(
+            jnp.asarray(1.5, dtype=jnp.float32),
+            jnp.asarray(0.1, dtype=jnp.float32),
+            prob,
+            v,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+    )
+    f_ref = jax.vmap(
+        lambda v: jitnmv(
+            jnp.asarray(1.5, dtype=jnp.float32),
+            jnp.asarray(0.1, dtype=jnp.float32),
+            prob,
+            _binary_events(v, dtype=jnp.float32),
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+    )
+    result_binary = f_binary(vectors)
+    result_ref = f_ref(vectors)
+    assert allclose(result_binary, result_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vectors, result_binary, result_ref))
+
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+def test_binary_jitnmm_vmap_matches_reference(implementation, transpose, corder):
+    shape = (20, 30)
+    seed = 123
+    prob = 0.1
+    batch = 4
+    k = 7
+    rows = shape[0] if transpose else shape[1]
+    matrices = _sample_matrix(batch * rows, k, float, seed + 43).reshape(batch, rows, k)
+
+    f_binary = jax.vmap(
+        lambda B: _call_binary_jitnmm(
+            jnp.asarray([1.5], dtype=jnp.float32),
+            jnp.asarray([0.1], dtype=jnp.float32),
+            prob,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            implementation=implementation,
+        )
+    )
+    f_ref = jax.vmap(
+        lambda B: jitnmm(
+            jnp.asarray(1.5, dtype=jnp.float32),
+            jnp.asarray(0.1, dtype=jnp.float32),
+            prob,
+            _binary_events(B, dtype=jnp.float32),
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+    )
+    result_binary = f_binary(matrices)
+    result_ref = f_ref(matrices)
+    assert allclose(result_binary, result_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((matrices, result_binary, result_ref))
+
+
+# ---- Gradient VJP: binary_jitnmv w.r.t. w_loc ----
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_jitnmv_vjp_wloc(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    vector = _binary_events(_sample_vector(vec_size, float, seed + 7), dtype=jnp.float32)
+    w_loc_arr = jnp.array([w_loc])
+
+    def f_fn(wl):
+        return binary_jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                             backend=implementation).sum()
+
+    def f_ref(wl):
+        return jitnmv(wl[0], w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
+
+    grad1 = jax.grad(f_fn)(w_loc_arr)
+    grad2 = jax.grad(f_ref)(w_loc_arr)
+    assert allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, w_loc_arr, grad1, grad2))
+
+
+# ---- Gradient VJP: binary_jitnmv w.r.t. w_scale ----
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_jitnmv_vjp_wscale(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    vector = _binary_events(_sample_vector(vec_size, float, seed + 7), dtype=jnp.float32)
+    w_scale_arr = jnp.array([w_scale])
+
+    def f_fn(ws):
+        return binary_jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                             backend=implementation).sum()
+
+    def f_ref(ws):
+        return jitnmv(w_loc, ws[0], prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
+
+    grad1 = jax.grad(f_fn)(w_scale_arr)
+    grad2 = jax.grad(f_ref)(w_scale_arr)
+    assert allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, w_scale_arr, grad1, grad2))
+
+
+# ---- End-to-end VJP: binary_jitnmv w.r.t. w_loc with loss ----
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_jitnmv_vjp_wloc_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    out_size = shape[1] if transpose else shape[0]
+    vector = _binary_events(_sample_vector(vec_size, float, seed + 7), dtype=jnp.float32)
+    target = jnp.asarray(np.random.rand(out_size))
+    w_loc_arr = jnp.array([w_loc])
+
+    def loss_fn(wl):
+        out = binary_jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                            backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(wl):
+        out = jitnmv(wl[0], w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                     backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_loc_arr)
+    grad2 = jax.grad(loss_ref)(w_loc_arr)
+    assert allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, target, w_loc_arr, grad1, grad2))
+
+
+# ---- End-to-end VJP: binary_jitnmv w.r.t. w_scale with loss ----
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_jitnmv_vjp_wscale_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    out_size = shape[1] if transpose else shape[0]
+    vector = _binary_events(_sample_vector(vec_size, float, seed + 7), dtype=jnp.float32)
+    target = jnp.asarray(np.random.rand(out_size))
+    w_scale_arr = jnp.array([w_scale])
+
+    def loss_fn(ws):
+        out = binary_jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                            backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(ws):
+        out = jitnmv(w_loc, ws[0], prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                     backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_scale_arr)
+    grad2 = jax.grad(loss_ref)(w_scale_arr)
+    assert allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, target, w_scale_arr, grad1, grad2))
+
+
+# ---- Gradient VJP: binary_jitnmm w.r.t. w_loc ----
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_jitnmm_vjp_wloc(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    B = _binary_events(_sample_matrix(mat_rows, k, float, seed + 31), dtype=jnp.float32)
+    w_loc_arr = jnp.array([w_loc])
+
+    def f_fn(wl):
+        return _call_binary_jitnmm(wl, jnp.array([w_scale]), prob, B, seed,
+                                   shape=shape, transpose=transpose, corder=corder, implementation=implementation).sum()
+
+    def f_ref(wl):
+        return jitnmm(wl[0], w_scale, prob, B, seed, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
+
+    grad1 = jax.grad(f_fn)(w_loc_arr)
+    grad2 = jax.grad(f_ref)(w_loc_arr)
+    assert allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, w_loc_arr, grad1, grad2))
+
+
+# ---- Gradient VJP: binary_jitnmm w.r.t. w_scale ----
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_jitnmm_vjp_wscale(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    B = _binary_events(_sample_matrix(mat_rows, k, float, seed + 31), dtype=jnp.float32)
+    w_scale_arr = jnp.array([w_scale])
+
+    def f_fn(ws):
+        return _call_binary_jitnmm(jnp.array([w_loc]), ws, prob, B, seed,
+                                   shape=shape, transpose=transpose, corder=corder, implementation=implementation).sum()
+
+    def f_ref(ws):
+        return jitnmm(w_loc, ws[0], prob, B, seed, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
+
+    grad1 = jax.grad(f_fn)(w_scale_arr)
+    grad2 = jax.grad(f_ref)(w_scale_arr)
+    assert allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, w_scale_arr, grad1, grad2))
+
+
+# ---- End-to-end VJP: binary_jitnmm w.r.t. w_loc with loss ----
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_jitnmm_vjp_wloc_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    out_rows = shape[1] if transpose else shape[0]
+    B = _binary_events(_sample_matrix(mat_rows, k, float, seed + 31), dtype=jnp.float32)
+    target = jnp.asarray(np.random.rand(out_rows, k))
+    w_loc_arr = jnp.array([w_loc])
+
+    def loss_fn(wl):
+        out = _call_binary_jitnmm(wl, jnp.array([w_scale]), prob, B, seed,
+                                  shape=shape, transpose=transpose, corder=corder, implementation=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(wl):
+        out = jitnmm(wl[0], w_scale, prob, B, seed, shape=shape, transpose=transpose, corder=corder,
+                     backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_loc_arr)
+    grad2 = jax.grad(loss_ref)(w_loc_arr)
+    assert allclose(grad1, grad2, rtol=2e-2, atol=2e-2)
+    jax.block_until_ready((B, target, w_loc_arr, grad1, grad2))
+
+
+# ---- End-to-end VJP: binary_jitnmm w.r.t. w_scale with loss ----
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_binary_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    out_rows = shape[1] if transpose else shape[0]
+    B = _binary_events(_sample_matrix(mat_rows, k, float, seed + 31), dtype=jnp.float32)
+    target = jnp.asarray(np.random.rand(out_rows, k))
+    w_scale_arr = jnp.array([w_scale])
+
+    def loss_fn(ws):
+        out = _call_binary_jitnmm(jnp.array([w_loc]), ws, prob, B, seed,
+                                  shape=shape, transpose=transpose, corder=corder, implementation=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(ws):
+        out = jitnmm(w_loc, ws[0], prob, B, seed, shape=shape, transpose=transpose, corder=corder,
+                     backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_scale_arr)
+    grad2 = jax.grad(loss_ref)(w_scale_arr)
+    assert allclose(grad1, grad2, rtol=2e-2, atol=2e-2)
+    jax.block_until_ready((B, target, w_scale_arr, grad1, grad2))
+
+
+# ---- One matrix: matmat is n independent matvecs, and vmap agrees with a loop ----
+# Regression guards for the pre-unification defects: ``binary_jitnmm`` drew the
+# AW-T4 matrix while ``binary_jitnmv`` drew the 32-lane one, so both
+# ``binary_jitnmm(...)[:, c]`` and ``vmap(binary_jitnmv)`` silently disagreed
+# with a plain loop over ``binary_jitnmv``.
+
+@pytest.mark.parametrize("implementation", JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30), (33, 33)])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_binary_jitnmm_batch1_matches_binary_jitnmv(implementation, shape, transpose, corder):
+    prob, seed = 0.2, 123
+    k = shape[0] if transpose else shape[1]
+    spikes = np.random.rand(k, 1) < 0.5
+    mm = binary_jitnmm(1.5, 0.15, prob, jnp.asarray(spikes), seed, shape=shape,
+                    transpose=transpose, corder=corder, backend=implementation)
+    mv = binary_jitnmv(1.5, 0.15, prob, jnp.asarray(spikes[:, 0]), seed, shape=shape,
+                    transpose=transpose, corder=corder, backend=implementation)
+    assert allclose(mm[:, 0], mv, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((mm, mv))
+
+
+@pytest.mark.parametrize("implementation", JITNMM_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30)])
+@pytest.mark.parametrize('n', [1, 4, 33])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_binary_jitnmm_columns_are_independent_mvs(implementation, shape, n, transpose, corder):
+    prob, seed = 0.2, 123
+    k = shape[0] if transpose else shape[1]
+    spikes = np.random.rand(k, n) < 0.5
+    mm = binary_jitnmm(1.5, 0.15, prob, jnp.asarray(spikes), seed, shape=shape,
+                    transpose=transpose, corder=corder, backend=implementation)
+    for c in range(n):
+        mv = binary_jitnmv(1.5, 0.15, prob, jnp.asarray(spikes[:, c]), seed, shape=shape,
+                        transpose=transpose, corder=corder, backend=implementation)
+        assert allclose(mm[:, c], mv, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready(mm)
+
+
+@pytest.mark.parametrize("implementation", JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', [(20, 30)])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [True, False])
+def test_vmap_binary_jitnmv_matches_loop(implementation, shape, transpose, corder):
+    prob, seed, batch = 0.2, 123, 5
+    k = shape[0] if transpose else shape[1]
+    spikes = np.random.rand(batch, k) < 0.5
+
+    def f(v):
+        return binary_jitnmv(1.5, 0.15, prob, v, seed, shape=shape,
+                          transpose=transpose, corder=corder, backend=implementation)
+
+    batched = jax.vmap(f)(jnp.asarray(spikes))
+    looped = jnp.stack([f(jnp.asarray(spikes[i])) for i in range(batch)])
+    assert allclose(batched, looped, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((batched, looped))
+
+
+# ---- Same check on the event-driven path ----
+# ``binary_jitnmv``'s notrans/trans kernels must replay the same stream too.
+
+@pytest.mark.parametrize("implementation", JITNMV_PARAMS)
+@pytest.mark.parametrize('shape', [(12, 20), (17, 9)])
+def test_binary_notrans_and_trans_kernels_draw_one_matrix(implementation, shape):
+    a, b = shape
+    prob, seed = 0.2, 123
+    eye_b = np.eye(b, dtype=bool)
+    eye_a = np.eye(a, dtype=bool)
+    via_notrans = np.stack(
+        [np.asarray(binary_jitnmv(1.5, 0.15, prob, jnp.asarray(eye_b[j]), seed, shape=(a, b),
+                              transpose=False, corder=True, backend=implementation))
+         for j in range(b)], axis=1)
+    via_trans = np.stack(
+        [np.asarray(binary_jitnmv(1.5, 0.15, prob, jnp.asarray(eye_a[i]), seed, shape=(b, a),
+                              transpose=False, corder=False, backend=implementation))
+         for i in range(a)], axis=1).T
+    assert np.array_equal(via_notrans != 0, via_trans != 0)
+    assert np.allclose(via_notrans, via_trans, rtol=1e-5, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Activity contract: a numeric event is active iff ``x != 0`` (negative values
+# and NaN included), a boolean event iff ``x``; binary weight gradients use the
+# same activity mask, never the raw event value (#198).
+# ---------------------------------------------------------------------------
+
+from contextlib import nullcontext as _nullcontext
+
+import brainevent as _be
+from brainevent._test_util import check_event_op_grads, jax_x64_enabled
+
+_ACTIVITY_DTYPES = [
+    jnp.bool_, jnp.int8, jnp.uint8, jnp.int16, jnp.int32,
+    jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64,
+]
+_ACTIVITY_SHAPE = (20, 30)
+_ACTIVITY_PROB = 0.3
+_ACTIVITY_SEED = 123
+_ACTIVITY_CLASSES = ['JITCNormalR', 'JITCNormalC']
+
+
+def _activity_dtype_id(dtype):
+    return np.dtype(dtype).name
+
+
+def _activity_events(shape, dtype):
+    """Events from ``[2, -1, 0, 0.5]`` (integers ``[2, -1, 0, 1]``) as ``dtype``.
+
+    Floating dtypes also carry one NaN, which is active.
+    """
+    n = int(np.prod(shape))
+    dtype = np.dtype(dtype)
+    if dtype == np.bool_:
+        base = np.asarray([True, True, False, True])
+    elif np.issubdtype(dtype, np.integer):
+        base = np.asarray([2, -1, 0, 1])
+    else:
+        base = np.asarray([2.0, -1.0, 0.0, 0.5])
+    values = np.resize(base, n)
+    values = values[np.random.RandomState(0).permutation(n)].reshape(shape).astype(dtype)
+    if np.issubdtype(dtype, np.floating):
+        flat = values.reshape(-1)
+        flat[np.flatnonzero(flat)[1]] = np.nan
+    return values
+
+
+def _activity_context(dtype):
+    return jax_x64_enabled() if np.dtype(dtype) == np.float64 else _nullcontext()
+
+
+def _activity_params():
+    return (jnp.asarray(1.5, dtype=jnp.float32), jnp.asarray(0.3, dtype=jnp.float32))
+
+
+def _activity_matrix(cls_name, params, corder, backend=None):
+    cls = getattr(_be, cls_name)
+    return cls(
+        (params[0], params[1], _ACTIVITY_PROB, _ACTIVITY_SEED),
+        shape=_ACTIVITY_SHAPE, corder=corder, backend=backend,
+    )
+
+
+def _activity_event_shape(op):
+    m, n = _ACTIVITY_SHAPE
+    return {'mv': (n,), 'vm': (m,), 'mm': (n, 3), 'mr': (3, m)}[op]
+
+
+def _activity_apply(op, mat, events):
+    return mat @ events if op in ('mv', 'mm') else events @ mat
+
+
+def _check_activity_forward(implementation, cls_name, corder, dtype, op):
+    host = _activity_events(_activity_event_shape(op), dtype)
+    with _activity_context(dtype):
+        params = _activity_params()
+        dense = _activity_matrix(cls_name, params, corder).todense()
+        mat = _activity_matrix(cls_name, params, corder, backend=implementation)
+        got = np.asarray(_activity_apply(op, mat, _be.BinaryArray(jnp.asarray(host))))
+        ref = np.asarray(_activity_apply(op, dense, jnp.asarray((host != 0).astype(np.float32))))
+    assert got.shape == ref.shape
+    assert np.allclose(got, ref, rtol=1e-4, atol=1e-4), (got, ref)
+
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('cls_name', _ACTIVITY_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('op', ['mv', 'vm'])
+@pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+def test_binary_jitnmv_activity_all_dtypes_match_dense(implementation, cls_name, corder, op, dtype):
+    _check_activity_forward(implementation, cls_name, corder, dtype, op)
+
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('cls_name', _ACTIVITY_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('op', ['mm', 'mr'])
+@pytest.mark.parametrize('dtype', _ACTIVITY_DTYPES, ids=_activity_dtype_id)
+def test_binary_jitnmm_activity_all_dtypes_match_dense(implementation, cls_name, corder, op, dtype):
+    _check_activity_forward(implementation, cls_name, corder, dtype, op)
+
+
+def _check_activity_grads(implementation, cls_name, corder, op):
+    n = int(np.prod(_activity_event_shape(op)))
+    values = np.resize(np.asarray([2.0, -1.0, 0.0], dtype=np.float32), n)
+    x = jnp.asarray(values[np.random.RandomState(1).permutation(n)].reshape(_activity_event_shape(op)))
+
+    def op_fn(params, v):
+        mat = _activity_matrix(cls_name, params, corder, backend=implementation)
+        return _activity_apply(op, mat, _be.BinaryArray(v))
+
+    def dense_fn(params, z):
+        return _activity_apply(op, _activity_matrix(cls_name, params, corder).todense(), z)
+
+    check_event_op_grads(op_fn, dense_fn, _activity_params(), x, mode='binary', rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize('implementation', JITNMV_PARAMS)
+@pytest.mark.parametrize('cls_name', _ACTIVITY_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('op', ['mv', 'vm'])
+def test_binary_jitnmv_grads_use_activity_mask(implementation, cls_name, corder, op):
+    _check_activity_grads(implementation, cls_name, corder, op)
+
+
+@pytest.mark.parametrize('implementation', JITNMM_PARAMS)
+@pytest.mark.parametrize('cls_name', _ACTIVITY_CLASSES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('op', ['mm', 'mr'])
+def test_binary_jitnmm_grads_use_activity_mask(implementation, cls_name, corder, op):
+    _check_activity_grads(implementation, cls_name, corder, op)
+
+
+@pytest.mark.parametrize('backend', JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('corder', [False, True])
+def test_weight_grads_keep_weight_dtype_under_x64(backend, transpose, corder):
+    # Regression: the JVP/transpose rules passed Python ``1.``/``0.`` as
+    # weights, which become float64 under x64: float64 gradients for float32
+    # weights, dtype assertion errors, and (cuda_raw) float32 buffers read as
+    # float64.
+    from brainevent._test_util import check_jitc_weight_grads, jax_x64_enabled
+    shape = (7, 9)
+    n_in = shape[0] if transpose else shape[1]
+    kw = dict(shape=shape, transpose=transpose, corder=corder, backend=backend)
+    rng = np.random.default_rng(0)
+    with jax_x64_enabled():
+        params = tuple(jnp.asarray(w, jnp.float32) for w in (1.5, 0.4))
+        ev = jnp.asarray(rng.random(n_in) > 0.5)
+        EB = jnp.asarray(rng.random((n_in, 3)) > 0.5)
+        check_jitc_weight_grads(lambda a, b: binary_jitnmv(a, b, 0.4, ev, 11, **kw), params)
+        check_jitc_weight_grads(lambda a, b: binary_jitnmm(a, b, 0.4, EB, 11, **kw), params)

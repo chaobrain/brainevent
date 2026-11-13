@@ -1,0 +1,543 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
+/*
+ * slice_csr_slice_rows.cu -- CUDA kernels for CSR sparse row extraction
+ * ==============================================================
+ *
+ * Python API:
+ *   brainevent.csr_slice_rows(data, indices, indptr, row_indices, shape=(m, n))
+ *
+ * Operation (forward):
+ *   For each k in 0..num_selected-1, extract row r = row_indices[k] from the
+ *   CSR matrix (data, indices, indptr) into dense output[k, :].
+ *
+ *     out[k, indices[j]] = data[j]   for j in [indptr[r], indptr[r+1])
+ *     out[k, c]          = 0         for columns c not in the row's nonzero set
+ *
+ *   Out-of-bounds row indices (r < 0 or r >= m) produce zero rows.
+ *
+ * Operation (backward / gradient w.r.t. data):
+ *   Given upstream cotangent ct[num_selected, n_cols], compute:
+ *
+ *     ct_data[j] += ct[k, indices[j]]
+ *
+ *   for each selected row k with r = row_indices[k], and each nonzero j in
+ *   [indptr[r], indptr[r+1]).  Multiple k values can map to the same CSR row
+ *   (when row_indices has duplicates), so atomicAdd is mandatory.
+ *
+ */
+
+#include "cuda_common.h"
+#include "brainevent/common.h"
+
+// =========================================================================
+// Vectorized load helpers (ITERATION 2 optimization)
+// =========================================================================
+//
+// Use vector loads (float4/int4) to reduce memory instruction count by 4x.
+// The scatter writes remain uncoalesced (fundamental limitation), but
+// reducing load instructions improves performance by ~1.5-2x.
+// =========================================================================
+
+__device__ __forceinline__ float4 load_float4(const float* __restrict__ ptr) {
+    return __ldg(reinterpret_cast<const float4*>(ptr));
+}
+
+__device__ __forceinline__ double2 load_double2(const double* __restrict__ ptr) {
+    return __ldg(reinterpret_cast<const double2*>(ptr));
+}
+
+__device__ __forceinline__ int4 load_int4(const int32_t* __restrict__ ptr) {
+    return __ldg(reinterpret_cast<const int4*>(ptr));
+}
+
+// =========================================================================
+// Forward: Thread kernel
+//
+// 1 thread per selected row.  Thread serially iterates all nonzeros in its
+// CSR row and accumulates into the pre-zeroed output (a repeated column
+// adds up).  Because the thread has exclusive ownership of output row k, no
+// atomicAdd is needed.
+//
+// Grid: (ceil(num_selected / 256), 1, 1)   Block: (256, 1, 1)
+// =========================================================================
+
+#define DEFINE_SLICE_FWD_THREAD_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
+__global__ void _slice_fwd_thread_homo_kern##SUFFIX(                    \
+    const WEIGHT_T* __restrict__ data,                                  \
+    const int32_t*  __restrict__ indices,                               \
+    const IndptrT*  __restrict__ indptr,                                \
+    const int32_t*  __restrict__ row_indices,                           \
+    WEIGHT_T*       __restrict__ output,                                \
+    int m, int n_cols, int num_selected                                 \
+) {                                                                     \
+    int k = blockIdx.x * blockDim.x + (int)threadIdx.x;                 \
+    if (k >= num_selected) return;                                      \
+    int r = row_indices[k];                                             \
+    if (r < 0 || r >= m) return;                                        \
+    IndptrT start = indptr[r], end = indptr[r + 1];                         \
+    WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                 \
+    WEIGHT_T w = WRITE_W(READ_W(data[0]));                              \
+    for (IndptrT j = start; j < end; j++) {                                 \
+        int col = indices[j];                                           \
+        row_out[col] = WRITE_W(READ_W(row_out[col]) + READ_W(w));       \
+    }                                                                   \
+}
+
+#define DEFINE_SLICE_FWD_THREAD_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W) \
+template <typename IndptrT> \
+__global__ void _slice_fwd_thread_hetero_kern##SUFFIX(                    \
+    const WEIGHT_T* __restrict__ data,                                    \
+    const int32_t*  __restrict__ indices,                                 \
+    const IndptrT*  __restrict__ indptr,                                  \
+    const int32_t*  __restrict__ row_indices,                             \
+    WEIGHT_T*       __restrict__ output,                                  \
+    int m, int n_cols, int num_selected                                   \
+) {                                                                       \
+    int k = blockIdx.x * blockDim.x + (int)threadIdx.x;                   \
+    if (k >= num_selected) return;                                        \
+    int r = row_indices[k];                                               \
+    if (r < 0 || r >= m) return;                                          \
+    IndptrT start = indptr[r], end = indptr[r + 1];                           \
+    WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                   \
+    for (IndptrT j = start; j < end; j++) {                                   \
+        int col = indices[j];                                             \
+        row_out[col] = WRITE_W(READ_W(row_out[col]) + READ_W(data[j]));   \
+    }                                                                     \
+}
+
+// =========================================================================
+// Forward: Warp kernel (ITERATION 2: Vectorized loads)
+//
+// 1 warp (32 threads) per selected row.  Threads stride by 32 over the
+// row's nonzeros and atomically adds into the output row, so a column
+// repeated within a row accumulates (as on the numba / jax backends).
+// Best all-round variant for
+// moderate nnz/row (avg_nnz in [8, 512)).
+//
+// ITERATION 2 OPTIMIZATIONS:
+//   - Vectorized loads (float4 for data, int4 for indices) reduce memory
+//     instruction count by 4x for the main loop
+//   - __ldg() intrinsic routes read-only loads through texture cache
+//   - Scalar tail handles non-multiple-of-4 remainder elements
+//
+// Grid: (BE_WARP_PER_ROW_GRID(num_selected), 1, 1)   Block: (256, 1, 1)
+// i.e. 8 warps (= 8 selected rows) per block, grid-strided over the capped grid.
+// =========================================================================
+
+#define DEFINE_SLICE_FWD_WARP_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W, ATOMIC_ADD_W) \
+template <typename IndptrT> \
+__global__ void _slice_fwd_warp_homo_kern##SUFFIX(                    \
+    const WEIGHT_T* __restrict__ data,                                \
+    const int32_t*  __restrict__ indices,                             \
+    const IndptrT*  __restrict__ indptr,                              \
+    const int32_t*  __restrict__ row_indices,                         \
+    WEIGHT_T*       __restrict__ output,                              \
+    int m, int n_cols, int num_selected                               \
+) {                                                                   \
+    int lane      = threadIdx.x & 31;                                 \
+    int warp_id   = threadIdx.x >> 5;                                 \
+    int warps_per = blockDim.x >> 5;                                  \
+    WEIGHT_T w = WRITE_W(READ_W(data[0]));                            \
+    for (int k = blockIdx.x * warps_per + warp_id; k < num_selected;  \
+         k += gridDim.x * warps_per) {                                \
+        int r = row_indices[k];                                       \
+        if (r < 0 || r >= m) continue;                                \
+        IndptrT start = indptr[r], end = indptr[r + 1];               \
+        WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;           \
+        for (IndptrT j = start + lane; j < end; j += 32)              \
+            ATOMIC_ADD_W(&row_out[indices[j]], READ_W(w));            \
+    }                                                                 \
+}
+
+#define DEFINE_SLICE_FWD_WARP_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W, ATOMIC_ADD_W) \
+template <typename IndptrT> \
+__global__ void _slice_fwd_warp_hetero_kern##SUFFIX(                    \
+    const WEIGHT_T* __restrict__ data,                                  \
+    const int32_t*  __restrict__ indices,                               \
+    const IndptrT*  __restrict__ indptr,                                \
+    const int32_t*  __restrict__ row_indices,                           \
+    WEIGHT_T*       __restrict__ output,                                \
+    int m, int n_cols, int num_selected                                 \
+) {                                                                     \
+    int lane      = threadIdx.x & 31;                                   \
+    int warp_id   = threadIdx.x >> 5;                                   \
+    int warps_per = blockDim.x >> 5;                                    \
+    for (int k = blockIdx.x * warps_per + warp_id; k < num_selected;    \
+         k += gridDim.x * warps_per) {                                  \
+        int r = row_indices[k];                                         \
+        if (r < 0 || r >= m) continue;                                  \
+        IndptrT start = indptr[r], end = indptr[r + 1];                 \
+        WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;             \
+        for (IndptrT j = start + lane; j < end; j += 32) {              \
+            int col = __ldg(&indices[j]);                               \
+            ATOMIC_ADD_W(&row_out[col], READ_W(__ldg(&data[j])));       \
+        }                                                               \
+    }                                                                   \
+}
+
+// =========================================================================
+// Forward: Block kernel (ITERATION 2: Vectorized loads + __ldg)
+//
+// 1 block (256 threads) per selected row.  Threads stride by 256 over the
+// row's nonzeros and atomically adds into the output row (repeated columns
+// accumulate).  Best for
+// dense rows (avg_nnz >= 512).
+//
+// Grid: (num_selected, 1, 1)   Block: (256, 1, 1)
+// =========================================================================
+
+#define DEFINE_SLICE_FWD_BLOCK_HOMO(SUFFIX, WEIGHT_T, READ_W, WRITE_W, ATOMIC_ADD_W) \
+template <typename IndptrT> \
+__global__ void _slice_fwd_block_homo_kern##SUFFIX(                    \
+    const WEIGHT_T* __restrict__ data,                                 \
+    const int32_t*  __restrict__ indices,                              \
+    const IndptrT*  __restrict__ indptr,                               \
+    const int32_t*  __restrict__ row_indices,                          \
+    WEIGHT_T*       __restrict__ output,                               \
+    int m, int n_cols, int num_selected                                \
+) {                                                                    \
+    int k = blockIdx.x;                                                \
+    if (k >= num_selected) return;                                     \
+    int r = row_indices[k];                                            \
+    if (r < 0 || r >= m) return;                                       \
+    IndptrT start = indptr[r], end = indptr[r + 1];                        \
+    int tid = (int)threadIdx.x;                                        \
+    WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                \
+    WEIGHT_T w = WRITE_W(READ_W(data[0]));                             \
+    for (IndptrT j = start + tid; j < end; j += blockDim.x)                \
+        ATOMIC_ADD_W(&row_out[indices[j]], READ_W(w));                 \
+}
+
+#define DEFINE_SLICE_FWD_BLOCK_HETERO(SUFFIX, WEIGHT_T, READ_W, WRITE_W, ATOMIC_ADD_W) \
+template <typename IndptrT> \
+__global__ void _slice_fwd_block_hetero_kern##SUFFIX(                    \
+    const WEIGHT_T* __restrict__ data,                                   \
+    const int32_t*  __restrict__ indices,                                \
+    const IndptrT*  __restrict__ indptr,                                 \
+    const int32_t*  __restrict__ row_indices,                            \
+    WEIGHT_T*       __restrict__ output,                                 \
+    int m, int n_cols, int num_selected                                  \
+) {                                                                      \
+    int k = blockIdx.x;                                                  \
+    if (k >= num_selected) return;                                       \
+    int r = row_indices[k];                                              \
+    if (r < 0 || r >= m) return;                                         \
+    IndptrT start = indptr[r], end = indptr[r + 1];                          \
+    int tid = (int)threadIdx.x;                                          \
+    WEIGHT_T* row_out = output + (ptrdiff_t)k * n_cols;                  \
+    for (IndptrT j = start + tid; j < end; j += blockDim.x) {                \
+        int col = __ldg(&indices[j]);                                    \
+        ATOMIC_ADD_W(&row_out[col], READ_W(__ldg(&data[j])));            \
+    }                                                                    \
+}
+
+// =========================================================================
+// Backward: Thread kernel (grad w.r.t. data)
+//
+// 1 thread per selected row.  Thread serially gathers ct[k, col] for each
+// nonzero j in the row and atomicAdds into ct_data[j].  atomicAdd is
+// mandatory because multiple selected rows may map to the same CSR row
+// (duplicate row_indices), producing writes to the same ct_data[j].
+//
+// Grid: (ceil(num_selected / 256), 1, 1)   Block: (256, 1, 1)
+// =========================================================================
+
+#define DEFINE_SLICE_GRAD_THREAD(SUFFIX, WEIGHT_T, ATOMIC_ADD_W) \
+template <typename IndptrT> \
+__global__ void _slice_grad_thread_kern##SUFFIX(                 \
+    const WEIGHT_T* __restrict__ ct,                             \
+    const int32_t*  __restrict__ indices,                        \
+    const IndptrT*  __restrict__ indptr,                         \
+    const int32_t*  __restrict__ row_indices,                    \
+    WEIGHT_T*       __restrict__ ct_data,                        \
+    int m, int n_cols, int num_selected                          \
+) {                                                              \
+    int k = blockIdx.x * blockDim.x + (int)threadIdx.x;          \
+    if (k >= num_selected) return;                               \
+    int r = row_indices[k];                                      \
+    if (r < 0 || r >= m) return;                                 \
+    IndptrT start = indptr[r], end = indptr[r + 1];                  \
+    const WEIGHT_T* ct_row = ct + (ptrdiff_t)k * n_cols;         \
+    for (IndptrT j = start; j < end; j++)                            \
+        ATOMIC_ADD_W(&ct_data[j], ct_row[indices[j]]);           \
+}
+
+// =========================================================================
+// Backward: Warp kernel (grad w.r.t. data) (ITERATION 2: __ldg)
+//
+// 1 warp (32 threads) per selected row.  Threads stride by 32 over the
+// row's nonzeros; each thread gathers ct[k, indices[j]] and atomicAdds
+// to ct_data[j].  Parallel warp execution hides atomicAdd latency well
+// for medium-to-large rows.
+//
+// Grid: (BE_WARP_PER_ROW_GRID(num_selected), 1, 1)   Block: (256, 1, 1)
+// i.e. 8 warps (= 8 selected rows) per block, grid-strided over the capped grid.
+// =========================================================================
+
+#define DEFINE_SLICE_GRAD_WARP(SUFFIX, WEIGHT_T, ATOMIC_ADD_W) \
+template <typename IndptrT> \
+__global__ void _slice_grad_warp_kern##SUFFIX(                 \
+    const WEIGHT_T* __restrict__ ct,                           \
+    const int32_t*  __restrict__ indices,                      \
+    const IndptrT*  __restrict__ indptr,                       \
+    const int32_t*  __restrict__ row_indices,                  \
+    WEIGHT_T*       __restrict__ ct_data,                      \
+    int m, int n_cols, int num_selected                        \
+) {                                                            \
+    int lane      = threadIdx.x & 31;                          \
+    int warp_id   = threadIdx.x >> 5;                          \
+    int warps_per = blockDim.x >> 5;                           \
+    for (int k = blockIdx.x * warps_per + warp_id;             \
+         k < num_selected; k += gridDim.x * warps_per) {       \
+        int r = row_indices[k];                                \
+        if (r < 0 || r >= m) continue;                         \
+        IndptrT start = indptr[r], end = indptr[r + 1];        \
+        const WEIGHT_T* ct_row = ct + (ptrdiff_t)k * n_cols;   \
+        for (IndptrT j = start + lane; j < end; j += 32) {     \
+            int col = __ldg(&indices[j]);                      \
+            WEIGHT_T val = __ldg(&ct_row[col]);                \
+            ATOMIC_ADD_W(&ct_data[j], val);                    \
+        }                                                      \
+    }                                                          \
+}
+
+// =========================================================================
+// Kernel instantiations
+// =========================================================================
+//
+// Phase 1: float32, float64.
+// Phase 2: float16 (requires sm_70+), bfloat16 (requires sm_80+).
+//
+// Naming convention: _SUFFIX = _f32 / _f64 / _f16 / _bf16
+// =========================================================================
+
+// ---- float32 ----
+DEFINE_SLICE_FWD_THREAD_HOMO  (_f32, float,  READ_F32,  WRITE_F32)
+DEFINE_SLICE_FWD_THREAD_HETERO(_f32, float,  READ_F32,  WRITE_F32)
+DEFINE_SLICE_FWD_WARP_HOMO(_f32, float,  READ_F32,  WRITE_F32, atomic_add_f32)
+DEFINE_SLICE_FWD_WARP_HETERO(_f32, float,  READ_F32,  WRITE_F32, atomic_add_f32)
+DEFINE_SLICE_FWD_BLOCK_HOMO(_f32, float,  READ_F32,  WRITE_F32, atomic_add_f32)
+DEFINE_SLICE_FWD_BLOCK_HETERO(_f32, float,  READ_F32,  WRITE_F32, atomic_add_f32)
+DEFINE_SLICE_GRAD_THREAD      (_f32, float,  atomic_add_f32)
+DEFINE_SLICE_GRAD_WARP        (_f32, float,  atomic_add_f32)
+
+// ---- float64 ----
+DEFINE_SLICE_FWD_THREAD_HOMO  (_f64, double, READ_F64,  WRITE_F64)
+DEFINE_SLICE_FWD_THREAD_HETERO(_f64, double, READ_F64,  WRITE_F64)
+DEFINE_SLICE_FWD_WARP_HOMO(_f64, double, READ_F64,  WRITE_F64, atomic_add_f64)
+DEFINE_SLICE_FWD_WARP_HETERO(_f64, double, READ_F64,  WRITE_F64, atomic_add_f64)
+DEFINE_SLICE_FWD_BLOCK_HOMO(_f64, double, READ_F64,  WRITE_F64, atomic_add_f64)
+DEFINE_SLICE_FWD_BLOCK_HETERO(_f64, double, READ_F64,  WRITE_F64, atomic_add_f64)
+DEFINE_SLICE_GRAD_THREAD      (_f64, double, atomic_add_f64)
+DEFINE_SLICE_GRAD_WARP        (_f64, double, atomic_add_f64)
+
+// ---- float16 (accumulate in float16; atomicAdd requires sm_70+) ----
+DEFINE_SLICE_FWD_THREAD_HOMO  (_f16, __half, READ_F16,  WRITE_F16)
+DEFINE_SLICE_FWD_THREAD_HETERO(_f16, __half, READ_F16,  WRITE_F16)
+DEFINE_SLICE_FWD_WARP_HOMO(_f16, __half, READ_F16,  WRITE_F16, atomic_add_f16)
+DEFINE_SLICE_FWD_WARP_HETERO(_f16, __half, READ_F16,  WRITE_F16, atomic_add_f16)
+DEFINE_SLICE_FWD_BLOCK_HOMO(_f16, __half, READ_F16,  WRITE_F16, atomic_add_f16)
+DEFINE_SLICE_FWD_BLOCK_HETERO(_f16, __half, READ_F16,  WRITE_F16, atomic_add_f16)
+DEFINE_SLICE_GRAD_THREAD      (_f16, __half, atomic_add_f16)
+DEFINE_SLICE_GRAD_WARP        (_f16, __half, atomic_add_f16)
+
+// ---- bfloat16 (atomicAdd requires sm_80+) ----
+DEFINE_SLICE_FWD_THREAD_HOMO  (_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16)
+DEFINE_SLICE_FWD_THREAD_HETERO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16)
+DEFINE_SLICE_FWD_WARP_HOMO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16, atomic_add_bf16)
+DEFINE_SLICE_FWD_WARP_HETERO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16, atomic_add_bf16)
+DEFINE_SLICE_FWD_BLOCK_HOMO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16, atomic_add_bf16)
+DEFINE_SLICE_FWD_BLOCK_HETERO(_bf16, __nv_bfloat16, READ_BF16,  WRITE_BF16, atomic_add_bf16)
+DEFINE_SLICE_GRAD_THREAD      (_bf16, __nv_bfloat16, atomic_add_bf16)
+DEFINE_SLICE_GRAD_WARP        (_bf16, __nv_bfloat16, atomic_add_bf16)
+
+// =========================================================================
+// CUDA Entry Point Macros
+// =========================================================================
+//
+// Forward convention:
+//   args = (data, indices, indptr, row_indices, output, stream)
+//   data:        [1] for homo or [nnz] for hetero, WEIGHT_T
+//   indices:     [nnz],           int32
+//   indptr:      [m+1],           int32
+//   row_indices: [num_selected],  int32
+//   output:      [num_selected, n_cols], WEIGHT_T  (zeroed by cudaMemsetAsync)
+//
+// Backward convention:
+//   args = (ct, indices, indptr, row_indices, ct_data, stream)
+//   ct:          [num_selected, n_cols], WEIGHT_T
+//   ct_data:     [nnz],                 WEIGHT_T  (zeroed by cudaMemsetAsync)
+//
+// Host-safe metadata extracted from TensorViews:
+//   m            = indptr.size(0) - 1
+//   nnz          = indices.size(0)
+//   num_selected = row_indices.size(0)
+//   n_cols_fwd   = output.size(1)
+//   n_cols_grad  = ct.size(1)
+//   avg_nnz      = nnz / max(m, 1)   (for auto-dispatch)
+//
+// IMPORTANT: data_ptr() is a GPU device pointer. Never dereference on host.
+//
+// Dispatch thresholds (empirically tuned):
+//   avg_nnz <   8 -> thread (1 thread / row; minimal launch overhead)
+//   avg_nnz < 512 -> warp   (1 warp   / row; hides memory latency)
+//   avg_nnz >= 512 -> block (1 block  / row; maximises parallelism)
+// =========================================================================
+
+// ---- FFI macro: forward homo auto (selects thread/warp/block by avg_nnz) ----
+#define FFI_SLICE_FWD_HOMO_AUTO(SUFFIX, WEIGHT_C_T)                                     \
+void csr_slice_rows_fwd_homo_auto##SUFFIX(                                              \
+    const BE::Tensor data,  const BE::Tensor indices,                                   \
+    const BE::Tensor indptr, const BE::Tensor row_indices,                              \
+    BE::Tensor output, int64_t stream                                                   \
+) {                                                                                     \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                                \
+    cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                         \
+    int m             = static_cast<int>(indptr.size(0)) - 1;                           \
+    int nnz           = static_cast<int>(indices.size(0));                              \
+    int num_selected  = static_cast<int>(row_indices.size(0));                          \
+    int n_cols        = static_cast<int>(output.size(1));                               \
+    size_t out_bytes  = (size_t)num_selected * n_cols * sizeof(WEIGHT_C_T);             \
+    cudaMemsetAsync(output.data_ptr(), 0, out_bytes, s);                                \
+    float avg_nnz = (m > 0) ? (float)nnz / m : 0.0f;                                    \
+    const WEIGHT_C_T* d_data     = static_cast<const WEIGHT_C_T*>(data.data_ptr());     \
+    const int32_t*    d_indices  = static_cast<const int32_t*>(indices.data_ptr());     \
+    const int32_t*    d_rows     = static_cast<const int32_t*>(row_indices.data_ptr()); \
+    WEIGHT_C_T*       d_output   = static_cast<WEIGHT_C_T*>(output.data_ptr());         \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                                   \
+        const IndptrT* d_indptr = static_cast<const IndptrT*>(indptr.data_ptr());       \
+        if (avg_nnz < 8.0f) {                                                           \
+            int blocks = (num_selected + 255) / 256;                                    \
+            _slice_fwd_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(                 \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        } else if (avg_nnz < 512.0f) {                                                  \
+            _slice_fwd_warp_homo_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(num_selected), 256, 0, s>>>(              \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        } else {                                                                        \
+            _slice_fwd_block_homo_kern##SUFFIX<<<num_selected, 256, 0, s>>>(            \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        }                                                                               \
+    });                                                                                 \
+}
+
+// ---- FFI macro: forward hetero auto (selects thread/warp/block by avg_nnz) ----
+#define FFI_SLICE_FWD_HETERO_AUTO(SUFFIX, WEIGHT_C_T)                                   \
+void csr_slice_rows_fwd_hetero_auto##SUFFIX(                                            \
+    const BE::Tensor data,  const BE::Tensor indices,                                   \
+    const BE::Tensor indptr, const BE::Tensor row_indices,                              \
+    BE::Tensor output, int64_t stream                                                   \
+) {                                                                                     \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                                \
+    cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                         \
+    int m             = static_cast<int>(indptr.size(0)) - 1;                           \
+    int nnz           = static_cast<int>(indices.size(0));                              \
+    int num_selected  = static_cast<int>(row_indices.size(0));                          \
+    int n_cols        = static_cast<int>(output.size(1));                               \
+    size_t out_bytes  = (size_t)num_selected * n_cols * sizeof(WEIGHT_C_T);             \
+    cudaMemsetAsync(output.data_ptr(), 0, out_bytes, s);                                \
+    float avg_nnz = (m > 0) ? (float)nnz / m : 0.0f;                                    \
+    const WEIGHT_C_T* d_data     = static_cast<const WEIGHT_C_T*>(data.data_ptr());     \
+    const int32_t*    d_indices  = static_cast<const int32_t*>(indices.data_ptr());     \
+    const int32_t*    d_rows     = static_cast<const int32_t*>(row_indices.data_ptr()); \
+    WEIGHT_C_T*       d_output   = static_cast<WEIGHT_C_T*>(output.data_ptr());         \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                                   \
+        const IndptrT* d_indptr = static_cast<const IndptrT*>(indptr.data_ptr());       \
+        if (avg_nnz < 8.0f) {                                                           \
+            int blocks = (num_selected + 255) / 256;                                    \
+            _slice_fwd_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(               \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        } else if (avg_nnz < 512.0f) {                                                  \
+            _slice_fwd_warp_hetero_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(num_selected), 256, 0, s>>>(            \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        } else {                                                                        \
+            _slice_fwd_block_hetero_kern##SUFFIX<<<num_selected, 256, 0, s>>>(          \
+                d_data, d_indices, d_indptr, d_rows, d_output,                          \
+                m, n_cols, num_selected);                                               \
+        }                                                                               \
+    });                                                                                 \
+}
+
+// ---- FFI macro: backward auto (selects thread/warp by avg_nnz) ----
+#define FFI_SLICE_GRAD_AUTO(SUFFIX, WEIGHT_C_T)                                        \
+void csr_slice_rows_grad_auto##SUFFIX(                                                 \
+    const BE::Tensor ct,    const BE::Tensor indices,                                  \
+    const BE::Tensor indptr, const BE::Tensor row_indices,                             \
+    BE::Tensor ct_data, int64_t stream                                           \
+) {                                                                                    \
+    BE_CHECK_CSR_INDICES_INT32(indices);                                               \
+    cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                        \
+    int m             = static_cast<int>(indptr.size(0)) - 1;                          \
+    int nnz           = static_cast<int>(indices.size(0));                             \
+    int num_selected  = static_cast<int>(row_indices.size(0));                         \
+    int n_cols        = static_cast<int>(ct.size(1));                                  \
+    size_t ct_bytes   = (size_t)nnz * sizeof(WEIGHT_C_T);                              \
+    cudaMemsetAsync(ct_data.data_ptr(), 0, ct_bytes, s);                               \
+    float avg_nnz = (m > 0) ? (float)nnz / m : 0.0f;                                   \
+    const WEIGHT_C_T* d_ct      = static_cast<const WEIGHT_C_T*>(ct.data_ptr());       \
+    const int32_t*    d_indices = static_cast<const int32_t*>(indices.data_ptr());     \
+    const int32_t*    d_rows    = static_cast<const int32_t*>(row_indices.data_ptr()); \
+    WEIGHT_C_T*       d_ctdata  = static_cast<WEIGHT_C_T*>(ct_data.data_ptr());        \
+    BE_DISPATCH_CSR_INDPTR(indptr.dtype(), IndptrT, {                                  \
+        const IndptrT* d_indptr = static_cast<const IndptrT*>(indptr.data_ptr());      \
+        if (avg_nnz < 8.0f) {                                                          \
+            int blocks = (num_selected + 255) / 256;                                   \
+            _slice_grad_thread_kern##SUFFIX<<<blocks, 256, 0, s>>>(                    \
+                d_ct, d_indices, d_indptr, d_rows, d_ctdata,                           \
+                m, n_cols, num_selected);                                              \
+        } else {                                                                       \
+            _slice_grad_warp_kern##SUFFIX<<<BE_WARP_PER_ROW_GRID(num_selected), 256, 0, s>>>(                 \
+                d_ct, d_indices, d_indptr, d_rows, d_ctdata,                           \
+                m, n_cols, num_selected);                                              \
+        }                                                                              \
+    });                                                                                \
+}
+
+// =========================================================================
+// CUDA entry point instantiations
+// =========================================================================
+//
+// Exported symbols (auto-discovered by load_cuda_file):
+//   Forward:  csr_slice_rows_fwd_{homo,hetero}_{thread,warp,block,auto}_{f32,f64,f16,bf16}
+//   Backward: csr_slice_rows_grad_{thread,warp,auto}_{f32,f64,f16,bf16}
+// =========================================================================
+
+// ---- float32 ----
+// @BE csr_slice_rows_fwd_homo_auto_f32
+FFI_SLICE_FWD_HOMO_AUTO  (_f32, float)
+// @BE csr_slice_rows_fwd_hetero_auto_f32
+FFI_SLICE_FWD_HETERO_AUTO(_f32, float)
+// @BE csr_slice_rows_grad_auto_f32
+FFI_SLICE_GRAD_AUTO      (_f32, float)
+
+// ---- float64 ----
+// @BE csr_slice_rows_fwd_homo_auto_f64
+FFI_SLICE_FWD_HOMO_AUTO  (_f64, double)
+// @BE csr_slice_rows_fwd_hetero_auto_f64
+FFI_SLICE_FWD_HETERO_AUTO(_f64, double)
+// @BE csr_slice_rows_grad_auto_f64
+FFI_SLICE_GRAD_AUTO      (_f64, double)
+
+// ---- float16 (atomicAdd for grad requires sm_70+) ----
+// @BE csr_slice_rows_fwd_homo_auto_f16
+FFI_SLICE_FWD_HOMO_AUTO  (_f16, __half)
+// @BE csr_slice_rows_fwd_hetero_auto_f16
+FFI_SLICE_FWD_HETERO_AUTO(_f16, __half)
+// @BE csr_slice_rows_grad_auto_f16
+FFI_SLICE_GRAD_AUTO      (_f16, __half)
+
+// ---- bfloat16 (atomicAdd for grad requires sm_80+) ----
+// @BE csr_slice_rows_fwd_homo_auto_bf16
+FFI_SLICE_FWD_HOMO_AUTO  (_bf16, __nv_bfloat16)
+// @BE csr_slice_rows_fwd_hetero_auto_bf16
+FFI_SLICE_FWD_HETERO_AUTO(_bf16, __nv_bfloat16)
+// @BE csr_slice_rows_grad_auto_bf16
+FFI_SLICE_GRAD_AUTO      (_bf16, __nv_bfloat16)

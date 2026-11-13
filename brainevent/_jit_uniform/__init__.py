@@ -11,14 +11,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
 
-from .binary import binary_jitumv, binary_jitumv_p, binary_jitumm, binary_jitumm_p
-from .csr import jitu_to_csr, jitu_csr_count_p
-from .float import jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p
-from .main import JITCUniformR, JITCUniformC
-from .dt2t import jitumv_dt2t
+from brainevent._jit_uniform.binary import (
+    binary_jitumv,
+    binary_jitumv_p,
+    binary_jitumm,
+    binary_jitumm_p,
+)
+from brainevent._jit_uniform.csr import jitu_to_csr, jitu_csr_count_p
+from brainevent._jit_uniform.float import (
+    jitu,
+    jitu_p,
+    jitumv,
+    jitumv_p,
+    jitumm,
+    jitumm_p,
+)
+from brainevent._jit_uniform.main import JITCUniformR, JITCUniformC
+from brainevent._jit_uniform.dt2t import jitumv_dt2t
 
 __all__ = [
     'JITCUniformR', 'JITCUniformC',

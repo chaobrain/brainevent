@@ -1,0 +1,515 @@
+// Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+// Licensed under the Apache License, Version 2.0:
+// http://www.apache.org/licenses/LICENSE-2.0
+
+/*
+ * binary_jitsmm.cu - bit-packed light-RNG WPR chunk backend for matmat.
+ *
+ * MM = repeated MV: each column is an independent MV over the *same* matrix.
+ *   - packed layout: [n][ceil(k/32)] column-major bitmask.
+ *   - Grid 3D: (row_warp_blocks, n_chunks, n).
+ *   - One warp owns one (row, chunk_id, col) task, each lane one residue class:
+ *
+ *       local_j = lane + 32 * q
+ *
+ * The connection stream is keyed by (seed, row, chunk_id, lane) with lane in
+ * [0, 32) and stride 32, exactly as in binary_jitsmv.cu -- the two draw the
+ * same matrix.  Only the grid's z-dimension over columns distinguishes this
+ * file from the matvec one.
+ *
+ * Both notrans and trans orientations are provided.
+ *
+ * Restrictions: bool/int8 spikes.
+ */
+
+#include <cstdio>
+#include <cstdlib>
+
+#include "cuda_common.h"
+#include "jitc_walk.h"
+#include "brainevent/common.h"
+
+// =========================================================================
+// Bit-packed active check
+// =========================================================================
+#define IS_ACTIVE_PACKED(packed, idx) \
+    ((__ldg(&(packed)[(idx) >> 5]) >> ((idx) & 31)) & 1U)
+
+// =========================================================================
+// Light RNG helpers
+// =========================================================================
+
+__device__ __forceinline__ unsigned int fast_bounded_u32(
+    unsigned int r, unsigned int bound)
+{
+    return __umulhi(r, bound);
+}
+
+__device__ __forceinline__ unsigned int mix32(unsigned int x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352dU;
+    x ^= x >> 15;
+    x *= 0x846ca68bU;
+    x ^= x >> 16;
+    return x;
+}
+
+__device__ __forceinline__ unsigned int light_rng_init_wpr(
+    unsigned int seed, int row, int chunk_id, int lane)
+{
+    unsigned int x = seed ^ 0xd1b54a35U;
+    x ^= (unsigned int)row * 0x85ebca6bU;
+    x ^= (unsigned int)chunk_id * 0xc2b2ae35U;
+    x ^= (unsigned int)lane * 0x27d4eb2dU;
+    x = mix32(x);
+    return x == 0U ? 0x6d2b79f5U : x;
+}
+
+__device__ __forceinline__ unsigned int light_rng_next(unsigned int *state)
+{
+    unsigned int x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x == 0U ? 0x6d2b79f5U : x;
+    return *state;
+}
+
+__device__ __forceinline__ float hash_scalar01(
+    unsigned int seed, int row, int col)
+{
+    unsigned int h = seed ^ 0xa0761d65U;
+    h ^= (unsigned int)row * 0xe7037ed1U;
+    h ^= (unsigned int)col * 0x8ebc6af1U;
+    h = mix32(h);
+    return (float)(h & 0x00ffffffU) * (1.0f / 16777216.0f);
+}
+
+__device__ __forceinline__ unsigned int stationary_initial_q(
+    unsigned int* state,
+    unsigned int cl
+) {
+    /*
+     * The inter-arrival skip is Uniform{1, ..., cl - 1}.  A stationary
+     * renewal stream must start from the equilibrium residual distribution
+     * P(q = r) = 2 * (cl - 1 - r) / (cl * (cl - 1)), r in [0, cl - 2].
+     * Starting from Uniform{0, ..., cl - 1} creates a chunk-position ramp.
+     */
+    unsigned int n = cl - 1U;
+    while (true) {
+        unsigned int q = fast_bounded_u32(light_rng_next(state), n);
+        unsigned int gate = fast_bounded_u32(light_rng_next(state), n);
+        if (gate < n - q) return q;
+    }
+}
+
+// #########################################################################
+// ##  Pack Kernel - column-major layout -> packed[n][ceil(k/32)]         ##
+// #########################################################################
+
+__global__ void _pack_kern(
+    const int8_t *__restrict__ B,
+    uint32_t *__restrict__ packed,
+    int k, int n, int n_words)
+{
+    int word = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
+    int col = (int)blockIdx.y;
+    if (word >= n_words || col >= n)
+        return;
+
+    int base = word << 5;
+    uint32_t bits = 0U;
+#pragma unroll
+    for (int b = 0; b < 32; ++b)
+    {
+        int j = base + b;
+        if (j < k && __ldg(&B[(size_t)j * n + col]) != 0)
+        {
+            bits |= (1U << b);
+        }
+    }
+    packed[(size_t)col * n_words + word] = bits;
+}
+
+// #########################################################################
+// ##  Notrans                                                            ##
+// ##  Y[row, col] = sum_j w(row,j) * active(B[j, col])                  ##
+// #########################################################################
+
+__global__ void _notrans_f32_kern(
+    const float *__restrict__ weight,
+    const int *__restrict__ clen,
+    const int *__restrict__ seed,
+    const uint32_t *__restrict__ packed,
+    float *__restrict__ output,
+    int m, int k, int n, int n_words, int chunk_size, int n_chunks)
+{
+    int lane = threadIdx.x & 31;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int row_block = (int)blockIdx.x;
+    int chunk_id = (int)blockIdx.y;
+    int col = (int)blockIdx.z;
+    int row = row_block * warps_per_block + warp_id;
+    if (row >= m || chunk_id >= n_chunks || col >= n)
+        return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= k)
+        return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > k)
+        chunk_end = k;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U)
+        return;
+
+    float w = READ_F32(__ldg(&weight[0]));
+
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);
+    if (cl < 2U)
+        cl = 2U;
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
+
+    const uint32_t *packed_col = packed + (size_t)col * n_words;
+
+    unsigned int q = stationary_initial_q(&rng, cl);
+    unsigned int local_j = (unsigned int)lane + 32U * q;
+    float acc = 0.0f;
+    while (local_j < chunk_width)
+    {
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {
+            int j = chunk_start + (int)local_j;
+            if (IS_ACTIVE_PACKED(packed_col, j))
+            {
+                            acc += w;
+            }
+        }
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)lane + 32U * q;
+    }
+
+    float row_acc = warp_reduce_sum_f32(acc);
+    if (lane == 0)
+    {
+        atomic_add_f32(&output[(size_t)row * n + col], row_acc);
+    }
+}
+
+// #########################################################################
+// ##  Trans                                                              ##
+// ##  For active B[row, col], write w(row,j) to Y[j, col]              ##
+// #########################################################################
+
+__global__ void _trans_f32_kern(
+    const float *__restrict__ weight,
+    const int *__restrict__ clen,
+    const int *__restrict__ seed,
+    const uint32_t *__restrict__ packed,
+    float *__restrict__ output,
+    int m, int k, int n, int n_words, int chunk_size, int n_chunks)
+{
+    int lane = threadIdx.x & 31;
+    int warp_id = threadIdx.x >> 5;
+    int warps_per_block = blockDim.x >> 5;
+    int row_block = (int)blockIdx.x;
+    int chunk_id = (int)blockIdx.y;
+    int col = (int)blockIdx.z;
+    int row = row_block * warps_per_block + warp_id;
+    if (row >= m || chunk_id >= n_chunks || col >= n)
+        return;
+
+    const uint32_t *packed_col = packed + (size_t)col * n_words;
+    if (!IS_ACTIVE_PACKED(packed_col, row))
+        return;
+
+    int chunk_start = chunk_id * chunk_size;
+    if (chunk_start >= k)
+        return;
+    int chunk_end = chunk_start + chunk_size;
+    if (chunk_end > k)
+        chunk_end = k;
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);
+    if (chunk_width == 0U)
+        return;
+
+    float w = READ_F32(__ldg(&weight[0]));
+
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);
+    if (cl < 2U)
+        cl = 2U;
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);
+
+    unsigned int q = stationary_initial_q(&rng, cl);
+    unsigned int local_j = (unsigned int)lane + 32U * q;
+    while (local_j < chunk_width)
+    {
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {
+            int j = chunk_start + (int)local_j;
+            atomic_add_f32(&output[(size_t)j * n + col], w);
+        }
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);
+        local_j = (unsigned int)lane + 32U * q;
+    }
+}
+
+// #########################################################################
+// ##  FFI Wrappers                                                        ##
+// #########################################################################
+
+// @BE pack
+void pack(
+    const BE::Tensor B,
+    BE::Tensor packed,
+    int k, int n, int n_words,
+    int64_t stream)
+{
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (n_words <= 0 || n <= 0)
+        return;
+    BE_CHECK(n <= 65535)
+        << "pack grid overflow: n=" << n << " event columns exceed the 65535 grid.y limit";
+
+    int threads = 256;
+    dim3 blocks((unsigned int)((n_words + threads - 1) / threads),
+                (unsigned int)n, 1U);
+
+    _pack_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const int8_t *>(B.data_ptr()),
+        static_cast<uint32_t *>(packed.data_ptr()),
+        k, n, n_words);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// @BE notrans_f32
+void notrans_f32(
+    const BE::Tensor weight,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    const BE::Tensor packed,
+    BE::Tensor output,
+    int m, int k, int n, int n_words, int chunk_size,
+    int64_t stream)
+{
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (m <= 0 || n <= 0)
+        return;
+    BE_CUDA_CHECK(cudaMemsetAsync(
+        output.data_ptr(), 0, (size_t)m * n * sizeof(float), s));
+    if (k <= 0 || chunk_size <= 0)
+        return;
+
+    int n_chunks = (k + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0)
+        return;
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535))
+        << "notrans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks << " n=" << n;
+    dim3 blocks((unsigned int)row_warp_blocks,
+                (unsigned int)n_chunks,
+                (unsigned int)n);
+
+    _notrans_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float *>(weight.data_ptr()),
+        static_cast<const int *>(clen.data_ptr()),
+        static_cast<const int *>(seed.data_ptr()),
+        static_cast<const uint32_t *>(packed.data_ptr()),
+        static_cast<float *>(output.data_ptr()),
+        m, k, n, n_words, chunk_size, n_chunks);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+// @BE trans_f32
+void trans_f32(
+    const BE::Tensor weight,
+    const BE::Tensor clen,
+    const BE::Tensor seed,
+    const BE::Tensor packed,
+    BE::Tensor output,
+    int m, int k, int n, int n_words, int chunk_size,
+    int64_t stream)
+{
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (m <= 0 || n <= 0)
+        return;
+    BE_CUDA_CHECK(cudaMemsetAsync(
+        output.data_ptr(), 0, (size_t)k * n * sizeof(float), s));
+    if (k <= 0 || chunk_size <= 0)
+        return;
+
+    int n_chunks = (k + chunk_size - 1) / chunk_size;
+    if (n_chunks <= 0)
+        return;
+
+    int threads = 256;
+    int warps_per_block = threads / 32;
+    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535))
+        << "trans_f32 grid overflow: row_warp_blocks=" << row_warp_blocks << " n_chunks=" << n_chunks << " n=" << n;
+    dim3 blocks((unsigned int)row_warp_blocks,
+                (unsigned int)n_chunks,
+                (unsigned int)n);
+
+    _trans_f32_kern<<<blocks, threads, 0, s>>>(
+        static_cast<const float *>(weight.data_ptr()),
+        static_cast<const int *>(clen.data_ptr()),
+        static_cast<const int *>(seed.data_ptr()),
+        static_cast<const uint32_t *>(packed.data_ptr()),
+        static_cast<float *>(output.data_ptr()),
+        m, k, n, n_words, chunk_size, n_chunks);
+    BE_CHECK_KERNEL_LAUNCH();
+}
+
+#define DEFINE_BINARY_JITSMM_NOTRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD, WARP_REDUCE) \
+__global__ void _notrans##SFX##_kern(                                                        \
+    const WEIGHT_T* __restrict__ weight,                                                      \
+    const int*      __restrict__ clen,                                                        \
+    const int*      __restrict__ seed,                                                        \
+    const uint32_t* __restrict__ packed,                                                      \
+    WEIGHT_T*       __restrict__ output,                                                      \
+    int m, int k, int n, int n_words, int chunk_size, int n_chunks                            \
+) {                                                                                          \
+    int lane = threadIdx.x & 31;                                                              \
+    int warp_id = threadIdx.x >> 5;                                                           \
+    int warps_per_block = blockDim.x >> 5;                                                    \
+    int row_block = (int)blockIdx.x;                                                          \
+    int chunk_id = (int)blockIdx.y;                                                           \
+    int col = (int)blockIdx.z;                                                                \
+    int row = row_block * warps_per_block + warp_id;                                          \
+    if (row >= m || chunk_id >= n_chunks || col >= n) return;                                 \
+    int chunk_start = chunk_id * chunk_size;                                                  \
+    if (chunk_start >= k) return;                                                             \
+    int chunk_end = chunk_start + chunk_size;                                                 \
+    if (chunk_end > k) chunk_end = k;                                                         \
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);                       \
+    if (chunk_width == 0U) return;                                                            \
+    ACC_T w = READ_W(__ldg(&weight[0]));                                                      \
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                          \
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);                                         \
+    if (cl < 2U) cl = 2U;                                                                     \
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                                       \
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);                        \
+    const uint32_t* packed_col = packed + (size_t)col * n_words;                              \
+    unsigned int q = stationary_initial_q(&rng, cl);                                          \
+    unsigned int local_j = (unsigned int)lane + 32U * q;                                      \
+    ACC_T acc = (ACC_T)0;                                                                     \
+    while (local_j < chunk_width) {                                                           \
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {                         \
+            int j = chunk_start + (int)local_j;                                               \
+            if (IS_ACTIVE_PACKED(packed_col, j)) acc += w;                                    \
+        }                                                                                     \
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);                            \
+        local_j = (unsigned int)lane + 32U * q;                                               \
+    }                                                                                         \
+    ACC_T row_acc = WARP_REDUCE(acc);                                                         \
+    if (lane == 0) ATOMIC_ADD(&output[(size_t)row * n + col], row_acc);                       \
+}
+
+#define DEFINE_BINARY_JITSMM_TRANS(SFX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD)    \
+__global__ void _trans##SFX##_kern(                                             \
+    const WEIGHT_T* __restrict__ weight,                                        \
+    const int*      __restrict__ clen,                                          \
+    const int*      __restrict__ seed,                                          \
+    const uint32_t* __restrict__ packed,                                        \
+    WEIGHT_T*       __restrict__ output,                                        \
+    int m, int k, int n, int n_words, int chunk_size, int n_chunks              \
+) {                                                                            \
+    int lane = threadIdx.x & 31;                                                \
+    int warp_id = threadIdx.x >> 5;                                             \
+    int warps_per_block = blockDim.x >> 5;                                      \
+    int row_block = (int)blockIdx.x;                                            \
+    int chunk_id = (int)blockIdx.y;                                             \
+    int col = (int)blockIdx.z;                                                  \
+    int row = row_block * warps_per_block + warp_id;                            \
+    if (row >= m || chunk_id >= n_chunks || col >= n) return;                   \
+    const uint32_t* packed_col = packed + (size_t)col * n_words;                \
+    if (!IS_ACTIVE_PACKED(packed_col, row)) return;                             \
+    int chunk_start = chunk_id * chunk_size;                                    \
+    if (chunk_start >= k) return;                                               \
+    int chunk_end = chunk_start + chunk_size;                                   \
+    if (chunk_end > k) chunk_end = k;                                           \
+    unsigned int chunk_width = (unsigned int)(chunk_end - chunk_start);         \
+    if (chunk_width == 0U) return;                                              \
+    ACC_T w = READ_W(__ldg(&weight[0]));                                        \
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);                            \
+    unsigned int thr = (unsigned int)__ldg(&clen[1]);                           \
+    if (cl < 2U) cl = 2U;                                                       \
+    unsigned int seed0 = (unsigned int)__ldg(&seed[0]);                         \
+    unsigned int rng = light_rng_init_wpr(seed0, row, chunk_id, lane);          \
+    unsigned int q = stationary_initial_q(&rng, cl);                            \
+    unsigned int local_j = (unsigned int)lane + 32U * q;                        \
+    while (local_j < chunk_width) {                                             \
+        if (jitc_keep(thr, seed0, row, chunk_start + (int)local_j)) {           \
+            int j = chunk_start + (int)local_j;                                 \
+            ATOMIC_ADD(&output[(size_t)j * n + col], w);                        \
+        }                                                                       \
+        q += 1U + fast_bounded_u32(light_rng_next(&rng), cl - 1U);              \
+        local_j = (unsigned int)lane + 32U * q;                                 \
+    }                                                                           \
+}
+
+DEFINE_BINARY_JITSMM_NOTRANS(_f64, double, double, READ_F64, atomic_add_f64, warp_reduce_sum_f64)
+DEFINE_BINARY_JITSMM_NOTRANS(_f16, __half, float, READ_F16, atomic_add_f16, warp_reduce_sum_f32)
+DEFINE_BINARY_JITSMM_NOTRANS(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16, warp_reduce_sum_f32)
+
+DEFINE_BINARY_JITSMM_TRANS(_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_BINARY_JITSMM_TRANS(_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_BINARY_JITSMM_TRANS(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+
+#define FFI_BINARY_JITSMM(NAME, KERNEL, SFX, WEIGHT_T, OUT_ROWS)             \
+void NAME##SFX(                                                              \
+    const BE::Tensor weight,                                                 \
+    const BE::Tensor clen,                                                   \
+    const BE::Tensor seed,                                                   \
+    const BE::Tensor packed,                                                 \
+    BE::Tensor output,                                                       \
+    int m, int k, int n, int n_words, int chunk_size,                        \
+    int64_t stream                                                           \
+) {                                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                 \
+    if (m <= 0 || n <= 0) return;                                            \
+    BE_CUDA_CHECK(cudaMemsetAsync(                                           \
+        output.data_ptr(), 0, (size_t)OUT_ROWS * n * sizeof(WEIGHT_T), s));  \
+    if (k <= 0 || chunk_size <= 0) return;                                   \
+    int n_chunks = (k + chunk_size - 1) / chunk_size;                        \
+    if (n_chunks <= 0) return;                                               \
+    int threads = 256;                                                       \
+    int warps_per_block = threads / 32;                                      \
+    int row_warp_blocks = (m + warps_per_block - 1) / warps_per_block;       \
+    BE_CHECK(!(row_warp_blocks > 2147483647 || n_chunks > 65535 || n > 65535)) \
+        << #NAME << #SFX << " grid overflow"; \
+    dim3 blocks((unsigned int)row_warp_blocks,                               \
+                (unsigned int)n_chunks,                                      \
+                (unsigned int)n);                                            \
+    _##KERNEL##SFX##_kern<<<blocks, threads, 0, s>>>(                        \
+        static_cast<const WEIGHT_T*>(weight.data_ptr()),                     \
+        static_cast<const int*>(clen.data_ptr()),                            \
+        static_cast<const int*>(seed.data_ptr()),                            \
+        static_cast<const uint32_t*>(packed.data_ptr()),                     \
+        static_cast<WEIGHT_T*>(output.data_ptr()),                           \
+        m, k, n, n_words, chunk_size, n_chunks                               \
+    );                                                                       \
+    BE_CHECK_KERNEL_LAUNCH();                                                \
+}
+
+// @BE notrans_f64
+FFI_BINARY_JITSMM(notrans, notrans, _f64, double, m)
+// @BE notrans_f16
+FFI_BINARY_JITSMM(notrans, notrans, _f16, __half, m)
+// @BE notrans_bf16
+FFI_BINARY_JITSMM(notrans, notrans, _bf16, __nv_bfloat16, m)
+
+// @BE trans_f64
+FFI_BINARY_JITSMM(trans, trans, _f64, double, k)
+// @BE trans_f16
+FFI_BINARY_JITSMM(trans, trans, _f16, __half, k)
+// @BE trans_bf16
+FFI_BINARY_JITSMM(trans, trans, _bf16, __nv_bfloat16, k)
