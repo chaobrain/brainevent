@@ -944,3 +944,22 @@ def test_dense_cublas_products_under_shard_map_keep_the_varying_axes(op, transpo
     assert types == [frozenset({'s'})]
     np.testing.assert_allclose(np.asarray(y[0]), np.asarray(fn(W, x, transpose=transpose, backend="cublas")),
                                rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize('major,linked', [(12, 'cublas'), (13, 'cu13'), (14, None)])
+def test_load_dense_cublas_links_the_wheel_of_the_jaxlib_cuda_major(monkeypatch, tmp_path, major, linked):
+    toolchain = __import__('brainevent._op.kernix_toolchain', fromlist=['_'])
+    for layout, version in (('cu13', '13'), ('cublas', '12')):
+        library = tmp_path / layout / 'lib' / f'libcublas.so.{version}'
+        library.parent.mkdir(parents=True)
+        library.write_bytes(b'')
+    captured = {}
+    monkeypatch.setattr(toolchain, '_nvidia_roots', lambda: [str(tmp_path)])
+    monkeypatch.setattr(toolchain, '_jaxlib_cuda_major', lambda: major)
+    monkeypatch.setattr(dense_binary_mod, 'load_cuda_file', lambda path, **kwargs: captured.update(kwargs))
+    dense_binary_mod._load_dense_cublas_file()
+    if linked is None:
+        assert captured['extra_ldflags'] == ['-lcublas']
+    else:
+        library = next((tmp_path / linked / 'lib').glob('libcublas.so.*'))
+        assert captured['extra_ldflags'] == [str(library), f'-rpath={library.parent}']

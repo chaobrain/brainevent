@@ -4,7 +4,6 @@
 
 # -*- coding: utf-8 -*-
 
-import importlib.util
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +19,7 @@ from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
 from brainevent._op import load_cuda_file
+from brainevent._op.kernix_toolchain import nvidia_wheel_library
 from brainevent._op.util import (
     cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask, select_active,
 )
@@ -30,29 +30,14 @@ __all__ = [
 ]
 
 
-def _find_cublas_library() -> Path:
-    """Locate the cuBLAS shared library shipped by NVIDIA Python wheels."""
-    candidates: list[Path] = []
-    spec = importlib.util.find_spec("nvidia")
-    if spec is not None and spec.submodule_search_locations:
-        for root in spec.submodule_search_locations:
-            candidates.extend(Path(root).glob("cu*/lib/libcublas.so.13"))
-            candidates.extend(Path(root).glob("cu*/lib/libcublas.so.*"))
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise RuntimeError(
-        "Unable to find libcublas.so.13 in the installed nvidia CUDA Python packages."
-    )
-
-
 def _load_dense_cublas_file():
     """Compile and load the dense cuBLAS FFI module with its runtime library."""
-    libcublas = _find_cublas_library()
+    libcublas = nvidia_wheel_library('cublas')
     return load_cuda_file(
         Path(__file__).parent.joinpath('binary_dense_cublas.cu'),
         name='dense_binary_cublas',
-        extra_ldflags=[str(libcublas), f'-rpath={libcublas.parent}'],
+        extra_ldflags=(['-lcublas'] if libcublas is None
+                       else [str(libcublas), f'-rpath={libcublas.parent}']),
         # This cuBLAS path allocates and frees a temporary event buffer per call.
         allow_cuda_graph=False,
     )

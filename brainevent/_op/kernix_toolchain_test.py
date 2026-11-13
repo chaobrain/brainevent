@@ -710,3 +710,77 @@ def test_l12_global_state_lock_exists_and_used(monkeypatch):
     finally:
         kt.set_compute_capabilities(None)
     assert acquired, "global-state setters must acquire _STATE_LOCK"
+
+
+# --- NVIDIA wheel libraries -------------------------------------------------
+
+def _wheel_tree(root, name, *layouts, versions=('12',)):
+    for layout in layouts:
+        for version in versions:
+            library = root / layout / 'lib' / f'lib{name}.so.{version}'
+            library.parent.mkdir(parents=True, exist_ok=True)
+            library.write_bytes(b'')
+    return root
+
+
+@pytest.mark.parametrize('name', ['cusparse', 'cublas'])
+@pytest.mark.parametrize('major,layouts,expected', [
+    # A CUDA 12 process must not link the CUDA 13 wheel, which sorts first.
+    (12, ('cu13', '{name}'), '{name}'),
+    (12, ('cu12', 'cu13'), 'cu12'),
+    (13, ('cu13', '{name}'), 'cu13'),
+    (13, ('{name}',), None),  # known major without its wheel: use the toolkit
+    (None, ('cu13', '{name}'), 'cu13'),  # unknown major keeps the first wheel
+    (12, (), None),
+])
+def test_wheel_library_matches_the_jaxlib_cuda_major(tmp_path, name, major, layouts, expected):
+    layouts = tuple(layout.format(name=name) for layout in layouts)
+    expected = None if expected is None else expected.format(name=name)
+    library = kt._wheel_library(name, [str(_wheel_tree(tmp_path, name, *layouts))], major)
+    assert (None if library is None else library.parent.parent.name) == expected
+
+
+def test_cublas_lookup_ignores_cublaslt(tmp_path):
+    root = tmp_path / 'cu13' / 'lib'
+    root.mkdir(parents=True)
+    (root / 'libcublasLt.so.13').write_bytes(b'')
+    assert kt._wheel_library('cublas', [str(tmp_path)], 13) is None
+    (root / 'libcublas.so.13').write_bytes(b'')
+    assert kt._wheel_library('cublas', [str(tmp_path)], 13).name == 'libcublas.so.13'
+
+
+def test_nvidia_wheel_library_detects_roots_and_major(monkeypatch, tmp_path):
+    root = _wheel_tree(tmp_path, 'cublas', 'cu13', 'cublas')
+    monkeypatch.setattr(kt, '_nvidia_roots', lambda: [str(root)])
+    monkeypatch.setattr(kt, '_jaxlib_cuda_major', lambda: 12)
+    assert kt.nvidia_wheel_library('cublas').parent.parent.name == 'cublas'
+    monkeypatch.setattr(kt, '_nvidia_roots', lambda: [])
+    assert kt.nvidia_wheel_library('cublas') is None
+
+
+@pytest.mark.parametrize('version,expected', [('cuda 12080', 12), ('cuda 13040', 13), ('cuda 11', 11)])
+def test_jaxlib_cuda_major_reads_the_gpu_platform_version(monkeypatch, version, expected):
+    from unittest import mock
+    device = mock.NonCallableMock(client=mock.NonCallableMock(platform_version=version))
+    monkeypatch.setattr(kt.jax, 'devices', lambda platform=None: [device])
+    assert kt._jaxlib_cuda_major() == expected
+
+
+@pytest.mark.parametrize('installed,expected', [({'jax_cuda12_plugin'}, 12),
+                                                ({'jax_plugins.xla_cuda13'}, 13),
+                                                ({'jax_cuda12_plugin', 'jax_cuda13_plugin'}, None),
+                                                (set(), None)])
+def test_jaxlib_cuda_major_falls_back_to_a_unique_plugin(monkeypatch, installed, expected):
+    import importlib.util
+
+    def no_gpu(platform=None):
+        raise RuntimeError('no GPU backend')
+
+    def find_spec(name):
+        if name.startswith('jax_plugins.') and not any(n.startswith('jax_plugins.') for n in installed):
+            raise ModuleNotFoundError(name)
+        return object() if name in installed else None
+
+    monkeypatch.setattr(kt.jax, 'devices', no_gpu)
+    monkeypatch.setattr(importlib.util, 'find_spec', find_spec)
+    assert kt._jaxlib_cuda_major() == expected

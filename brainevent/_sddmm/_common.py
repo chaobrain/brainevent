@@ -4,12 +4,10 @@
 
 """Backend metadata, primitive registration and cuSPARSE execution shared by sampled-product leaves."""
 
-import importlib.util
-import re
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from pathlib import Path
-from typing import Callable, Iterable, Literal, TYPE_CHECKING
+from typing import Callable, Literal, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -18,7 +16,7 @@ import numpy as np
 from brainevent._compatible_import import match_varying_axes
 from brainevent._misc import _cusparse_accepts_nse
 from brainevent._op import XLACustomKernel, load_cuda_file
-from brainevent._op.kernix_toolchain import _nvidia_roots
+from brainevent._op.kernix_toolchain import nvidia_wheel_library
 from brainevent._op.util import CUDA_VALUE_DTYPES, cuda_event_abi, dtype_suffix, event_factor
 
 if TYPE_CHECKING:
@@ -119,61 +117,13 @@ def check_jax_backend(backend: str | None | _CSRBackend) -> None:
         raise ValueError(f'unsupported sampled-product backend: {backend!r}')
 
 
-def _jaxlib_cuda_major() -> int | None:
-    """Return the CUDA major version of the running jaxlib GPU plugin, if known."""
-    try:
-        version = jax.devices('gpu')[0].client.platform_version  # e.g. 'cuda 12080'
-    except Exception:  # noqa: BLE001 - no GPU client: fall back to the installed plugins
-        version = ''
-    match = re.search(r'cuda\s+(\d+)', version)
-    if match:
-        number = int(match.group(1))
-        return number // 1000 if number >= 1000 else number
-    majors = {
-        major for major in range(11, 20)
-        if importlib.util.find_spec(f'jax_cuda{major}_plugin') is not None
-        or _find_spec(f'jax_plugins.xla_cuda{major}') is not None
-    }
-    return majors.pop() if len(majors) == 1 else None
-
-
-def _find_spec(name: str):
-    """``importlib.util.find_spec`` that treats a missing parent package as absent."""
-    try:
-        return importlib.util.find_spec(name)
-    except ModuleNotFoundError:
-        return None
-
-
-def _cusparse_wheel_library(roots: Iterable[str], cuda_major: int | None) -> Path | None:
-    """Pick the NVIDIA wheel cuSPARSE library built for ``cuda_major``.
-
-    CUDA 13 wheels install ``nvidia/cu13/lib``; CUDA 12 wheels install
-    ``nvidia/cusparse/lib`` (or ``nvidia/cu12/lib``). Sorting alone would put
-    ``cu13`` before ``cusparse`` and link a CUDA 13 library into a CUDA 12
-    process. With a known major and no matching wheel, return ``None`` so the
-    toolkit library is used instead; with an unknown major, keep the first.
-    """
-    candidates = sorted(
-        candidate
-        for root in roots
-        for candidate in Path(root).glob('cu*/lib/libcusparse.so.*')
-        if candidate.is_file()
-    )
-    if cuda_major is None:
-        return candidates[0] if candidates else None
-    wanted = {f'cu{cuda_major}'} | ({'cusparse'} if cuda_major <= 12 else set())
-    return next((c for c in candidates if c.parent.parent.name in wanted), None)
-
-
 @lru_cache(maxsize=1)
 def _load_cusparse() -> str:
     """Load the shared SDDMM FFI against wheel or toolkit cuSPARSE libraries."""
     name = 'csr_sddmm_cusparse'
     link_flags = ['-lcusparse']
     include_paths = []
-    roots = _nvidia_roots()
-    library = _cusparse_wheel_library(roots, _jaxlib_cuda_major()) if roots else None
+    library = nvidia_wheel_library('cusparse')
     if library is not None:
         link_flags = [str(library), f'-rpath={library.parent}']
         include_paths = [str(library.parent.parent / 'include')]

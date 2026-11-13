@@ -14,6 +14,7 @@ or the library defaults.
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import logging
 import math
@@ -102,8 +103,8 @@ _STORE_CACHE: dict[str, tuple[tuple[int, int, int], Any]] = {}
 _STORE_CACHE_LOCK = threading.Lock()
 
 
-def _read_store(path: Path) -> Any:
-    """Return the parsed store, reparsing only when the file changes.
+def _read_store(path: Path) -> tuple[tuple[int, int, int], Any]:
+    """Return the store's file version and parsed content, reparsing only when it changes.
 
     The result is shared between callers and must not be mutated.
     """
@@ -121,7 +122,7 @@ def _read_store(path: Path) -> Any:
             _STORE_CACHE[str(path)] = cached
     if isinstance(cached[1], ValueError):
         raise cached[1]
-    return cached[1]
+    return cached
 
 
 def _workload_distance(request: tuple[int, int, int],
@@ -179,6 +180,52 @@ def _config_from_mapping(entry: Mapping[str, Any]) -> CSRConfig:
     return CSRConfig(mv=schedule, benchmark_records=tuple(records))
 
 
+# Saved workloads resolved per (store path, file version, device kind). Every
+# value is immutable, so matrices constructed from one store version share them.
+_WORKLOAD_CACHE: dict[tuple[str, tuple[int, int, int], str], tuple[Any, ...]] = {}
+
+_Workload = tuple[tuple[int, int, int], str, CSRConfig]
+
+
+def _device_workloads(path: Path, device_kind: str) -> tuple[list[_Workload], CSRConfig | None]:
+    """Return a device's valid saved workloads and its fallback configuration.
+
+    Workloads are sorted by matrix key, then name. The fallback is ``None``
+    when the device entry has no valid flat configuration. Results are cached
+    until the store file changes.
+    """
+    version, store = _read_store(path)
+    key = (str(path), version, device_kind)
+    with _STORE_CACHE_LOCK:
+        cached = _WORKLOAD_CACHE.get(key)
+    if cached is not None:
+        return cached[0], cached[1]
+    entry = store.get(device_kind, {})
+    workloads = entry.get('workloads', {})
+    valid_workloads: list[_Workload] = []
+    if isinstance(workloads, Mapping):
+        for name, workload in workloads.items():
+            try:
+                matrix_key = _matrix_key(workload.get('metadata'))
+                if matrix_key is not None and workload.get('status', 'ok') == 'ok':
+                    valid_workloads.append((matrix_key, str(name), _config_from_mapping(workload)))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+    # Equal shapes also order densities by nnz. The persistent label breaks
+    # ties when distinct requested densities round to the same matrix.
+    valid_workloads.sort(key=lambda item: (item[0], item[1]))
+    try:
+        fallback: CSRConfig | None = _config_from_mapping(entry)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        fallback = None
+    with _STORE_CACHE_LOCK:
+        # Drop resolutions of older versions of this file.
+        for stale in [k for k in _WORKLOAD_CACHE if k[0] == key[0] and k[1] != version]:
+            del _WORKLOAD_CACHE[stale]
+        _WORKLOAD_CACHE[key] = (valid_workloads, fallback)
+    return valid_workloads, fallback
+
+
 def load_csr_config(
     device_kind: str | None = None,
     *,
@@ -207,7 +254,8 @@ def load_csr_config(
     Existing flat GPU entries remain valid. Exact workload matching uses
     integer shape/nnz metadata rather than floating-point density keys.
     Existing matrices retain their snapshots when the persisted configuration
-    changes. The parsed store is cached until the file changes.
+    changes. The parsed store and its resolved configurations are cached
+    until the file changes, so repeated calls share immutable snapshots.
     """
     raw = os.environ.get(_ENV_OVERRIDE)
     if raw:
@@ -219,34 +267,19 @@ def load_csr_config(
     device_kind = _current_device_kind() if device_kind is None else device_kind
     reason = 'no valid configuration for target GPU'
     try:
-        store = _read_store(path)
-        entry = store.get(device_kind, {})
-        workloads = entry.get('workloads', {})
-        valid_workloads = []
-        if isinstance(workloads, Mapping):
-            for name, workload in workloads.items():
-                try:
-                    key = _matrix_key(workload.get('metadata'))
-                    if key is not None and workload.get('status', 'ok') == 'ok':
-                        valid_workloads.append((key, str(name), _config_from_mapping(workload)))
-                except (ValueError, KeyError, TypeError, AttributeError):
-                    continue
-        # Equal shapes also order densities by nnz. The persistent label breaks
-        # ties when distinct requested densities round to the same matrix.
-        valid_workloads.sort(key=lambda item: (item[0], item[1]))
+        valid_workloads, fallback = _device_workloads(path, device_kind)
         key = _matrix_key(matrix_metadata)
         for saved_key, _, config in valid_workloads:
             if key is not None and saved_key == key:
                 _LOG.debug('CSR config source=local_matched path=%s gpu=%s metadata=%s parameters=%s',
                            path, device_kind, key, config)
                 return config
-        try:
-            config = _config_from_mapping(entry)
-            source = 'local_fallback'
-        except (ValueError, KeyError, TypeError, AttributeError):
-            if not valid_workloads:
-                raise ValueError(reason) from None
+        if fallback is not None:
+            config, source = fallback, 'local_fallback'
+        elif valid_workloads:
             config, source = _nearest_workload(key, valid_workloads), 'local_nearest'
+        else:
+            raise ValueError(reason)
         _LOG.debug('CSR config source=%s path=%s gpu=%s requested=%s parameters=%s',
                    source, path, device_kind, key, config)
         return config
@@ -308,8 +341,9 @@ def save_csr_config(
     Device properties, primary/mirror masks, and MM plans are never persisted.
     Other GPU entries and workload records are retained. The path still uses
     the current compilation cache directory; cross-version migration is not
-    performed. Concurrent writers are serialized by an advisory lock file
-    (POSIX) and every write is an atomic replace. A store that cannot be parsed
+    performed. Concurrent writers are serialized by a per-process lock and an
+    advisory lock file (fcntl on POSIX, msvcrt on Windows), and every write is
+    an atomic replace. A store that cannot be parsed
     is moved to ``<path>.corrupt-<timestamp>`` with a warning instead of being
     silently overwritten.
     """
@@ -326,27 +360,74 @@ def save_csr_config(
         tmp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp')
         try:
             tmp.write_text(json.dumps(store, indent=2, sort_keys=True, allow_nan=False), encoding='utf-8')
-            os.replace(tmp, path)
+            _replace(tmp, path)
         finally:
             with contextlib.suppress(FileNotFoundError):
                 tmp.unlink()
     return path
 
 
-@contextlib.contextmanager
-def _store_lock(path: Path):
-    """Serialize read-modify-write cycles of one store across threads and processes."""
+_STORE_LOCKS: dict[str, threading.Lock] = {}
+_STORE_LOCKS_GUARD = threading.Lock()
+
+
+def _optional_module(name: str) -> Any:
+    """Import a platform-specific module, or return ``None`` where it does not exist."""
     try:
-        import fcntl
-    except ImportError:  # pragma: no cover - non-POSIX: atomic replace only
-        yield
-        return
-    with open(path.with_name(path.name + '.lock'), 'a') as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
+
+@contextlib.contextmanager
+def _os_file_lock(path: Path):
+    """Best-effort inter-process lock on ``<path>.lock``: fcntl (POSIX) or msvcrt (Windows)."""
+    with open(path.with_name(path.name + '.lock'), 'a+b') as handle:
+        fcntl = _optional_module('fcntl')
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return
+        msvcrt = _optional_module('msvcrt')
+        if msvcrt is None:
+            yield  # no inter-process lock on this platform; threads still serialize
+            return
+        handle.seek(0)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                break
+            except OSError:  # LK_LOCK gives up after ~10 s; keep waiting
+                continue
         try:
             yield
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextlib.contextmanager
+def _store_lock(path: Path):
+    """Serialize read-modify-write cycles of one store across threads and processes."""
+    with _STORE_LOCKS_GUARD:
+        lock = _STORE_LOCKS.setdefault(str(path), threading.Lock())
+    with lock, _os_file_lock(path):
+        yield
+
+
+def _replace(source: Path, target: Path) -> None:
+    """``os.replace``, retried on Windows while a reader briefly holds ``target`` open."""
+    for attempt in range(20):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if os.name != 'nt' or attempt == 19:
+                raise
+            time.sleep(0.01 * (attempt + 1))
 
 
 def _read_store_for_update(path: Path) -> dict[str, Any]:

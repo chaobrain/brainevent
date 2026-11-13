@@ -78,17 +78,17 @@ come from that matrix. Pass its prepared ``M.config`` explicitly.
 
 .. important::
 
-   Before a nonempty CUDA hybrid scatter MM call to ``binary_csrmm`` or
+   The native CUDA hybrid scatter MM of ``binary_csrmm`` or
    ``binary_csrmm_indexed`` (``transpose=True`` with a backend resolving to
-   ``cuda_raw``), construct a configuration containing the matching structure
-   plan, long-row mask and target GPU information, outside ``jax.jit``.
+   ``cuda_raw``) needs a configuration containing the matching structure
+   plan, long-row mask and target GPU information, built outside ``jax.jit``.
    Pass that configuration as ``config=...`` on the MM call.
 
-   Omitting ``config``, passing ``config=None``, or passing only
-   ``config=CSRConfig()`` does not satisfy this requirement. These raw calls
-   raise ``KernelCompilationError`` when constructing the hybrid MM kernel.
-   This also applies to weighted events and to ``backend=None`` when it
-   selects ``cuda_raw``.
+   Omitting ``config``, passing ``config=None``, passing only
+   ``config=CSRConfig()``, or calling with traced or vmapped structure leaves
+   the call unprepared. It then runs the portable JAX scatter instead and
+   issues a one-time ``PerformanceWarning``. This also applies to weighted
+   events and to ``backend=None`` when it selects ``cuda_raw``.
 
 Constructing a CSR object is one way to prepare the configuration before
 calling raw MM. For the scatter operation ``M.T @ events``, the events have shape

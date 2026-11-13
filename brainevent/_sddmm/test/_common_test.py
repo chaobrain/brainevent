@@ -5,7 +5,6 @@
 """Tests for ``brainevent/_sddmm/_common.py``, grouped by behavior."""
 
 import importlib
-from unittest import mock
 
 import jax
 import jax.numpy as jnp
@@ -255,56 +254,14 @@ def _wheel_tree(root, *layouts):
     return root
 
 
-@pytest.mark.parametrize('major,layouts,expected', [
-    # A CUDA 12 process must not link the CUDA 13 wheel, which sorts first.
-    (12, ('cu13', 'cusparse'), 'cusparse'),
-    (12, ('cu12', 'cu13'), 'cu12'),
-    (13, ('cu13', 'cusparse'), 'cu13'),
-    (13, ('cusparse',), None),  # known major without its wheel: use the toolkit
-    (None, ('cu13', 'cusparse'), 'cu13'),  # unknown major keeps the first wheel
-    (12, (), None),
-])
-def test_cusparse_wheel_matches_jaxlib_cuda_major(tmp_path, major, layouts, expected):
-    common = importlib.import_module('brainevent._sddmm._common')
-    library = common._cusparse_wheel_library([str(_wheel_tree(tmp_path, *layouts))], major)
-    assert (None if library is None else library.parent.parent.name) == expected
-
-
-@pytest.mark.parametrize('version,expected', [('cuda 12080', 12), ('cuda 13040', 13), ('cuda 11', 11)])
-def test_jaxlib_cuda_major_reads_the_gpu_platform_version(monkeypatch, version, expected):
-    common = importlib.import_module('brainevent._sddmm._common')
-    device = mock.NonCallableMock(client=mock.NonCallableMock(platform_version=version))
-    monkeypatch.setattr(common.jax, 'devices', lambda platform=None: [device])
-    assert common._jaxlib_cuda_major() == expected
-
-
-@pytest.mark.parametrize('installed,expected', [({'jax_cuda12_plugin'}, 12),
-                                                ({'jax_plugins.xla_cuda13'}, 13),
-                                                ({'jax_cuda12_plugin', 'jax_cuda13_plugin'}, None),
-                                                (set(), None)])
-def test_jaxlib_cuda_major_falls_back_to_a_unique_plugin(monkeypatch, installed, expected):
-    common = importlib.import_module('brainevent._sddmm._common')
-
-    def no_gpu(platform=None):
-        raise RuntimeError('no GPU backend')
-
-    def find_spec(name):
-        if name.startswith('jax_plugins.') and not any(n.startswith('jax_plugins.') for n in installed):
-            raise ModuleNotFoundError(name)
-        return object() if name in installed else None
-
-    monkeypatch.setattr(common.jax, 'devices', no_gpu)
-    monkeypatch.setattr(common.importlib.util, 'find_spec', find_spec)
-    assert common._jaxlib_cuda_major() == expected
-
-
 @pytest.mark.parametrize('major,linked', [(12, 'cusparse'), (13, 'cu13'), (14, None)])
 def test_load_cusparse_links_the_matching_wheel(monkeypatch, tmp_path, major, linked):
     common = importlib.import_module('brainevent._sddmm._common')
     root = _wheel_tree(tmp_path, 'cu13', 'cusparse')
     captured = {}
-    monkeypatch.setattr(common, '_nvidia_roots', lambda: [str(root)])
-    monkeypatch.setattr(common, '_jaxlib_cuda_major', lambda: major)
+    toolchain = importlib.import_module('brainevent._op.kernix_toolchain')
+    monkeypatch.setattr(toolchain, '_nvidia_roots', lambda: [str(root)])
+    monkeypatch.setattr(toolchain, '_jaxlib_cuda_major', lambda: major)
     monkeypatch.setattr(common, 'load_cuda_file', lambda path, **kwargs: captured.update(kwargs, path=path))
     common._load_cusparse.cache_clear()
     try:

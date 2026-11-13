@@ -908,6 +908,31 @@ def test_load_parses_the_store_once_until_it_changes(_persistence_isolated_store
     assert len(parsed) == 1
 
 
+def test_load_resolves_saved_workloads_once_until_the_store_changes(_persistence_isolated_store, monkeypatch):
+    save_csr_config(CSRConfig(128), 'TEST_GPU')
+    for conn in (3, 30):
+        save_csr_config(CSRConfig(256), 'TEST_GPU', [_timing(CSRConfig(512))],
+                        matrix_metadata=_metadata(conn=conn))
+    built = []
+    from_mapping = initialize._config_from_mapping
+    monkeypatch.setattr(initialize, '_config_from_mapping',
+                        lambda entry: built.append(1) or from_mapping(entry))
+    first = load_csr_config('TEST_GPU', matrix_metadata=_metadata())
+    count = len(built)
+    assert count
+    for metadata in (_metadata(), _metadata(conn=3), _metadata(rows=99), None):
+        load_csr_config('TEST_GPU', matrix_metadata=metadata)
+    assert len(built) == count
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()) is first
+    assert first.block_size == 256 and first.benchmark_records[0].config.block_size == 512
+    assert load_csr_config('OTHER_GPU').block_size == CSRConfig().block_size
+
+    save_csr_config(CSRConfig(512), 'TEST_GPU', matrix_metadata=_metadata())
+    built.clear()
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).block_size == 512
+    assert built
+
+
 def test_corrupt_store_is_backed_up_before_it_is_replaced(_persistence_isolated_store):
     path = _persistence_isolated_store / initialize.CONFIG_FILENAME
     path.write_text('{"TEST_GPU": broken')
@@ -919,8 +944,13 @@ def test_corrupt_store_is_backed_up_before_it_is_replaced(_persistence_isolated_
     assert not list(_persistence_isolated_store.glob('*.tmp'))
 
 
-def test_concurrent_saves_keep_every_device_entry(_persistence_isolated_store):
+@pytest.mark.parametrize('posix_lock', [True, False], ids=['fcntl', 'no_fcntl'])
+def test_concurrent_saves_keep_every_device_entry(_persistence_isolated_store, monkeypatch, posix_lock):
     import threading
+
+    if not posix_lock:
+        # Windows has no fcntl; threads of one process must still serialize.
+        monkeypatch.setitem(sys.modules, 'fcntl', None)
 
     devices = [f'GPU_{i}' for i in range(16)]
     barrier = threading.Barrier(len(devices))

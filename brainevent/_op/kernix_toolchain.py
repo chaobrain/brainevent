@@ -281,6 +281,73 @@ def _nvidia_roots() -> "list[str]":
     return list(spec.submodule_search_locations)
 
 
+def _find_spec(name: str):
+    """``importlib.util.find_spec`` that treats a missing parent package as absent."""
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name)
+    except ModuleNotFoundError:
+        return None
+
+
+def _jaxlib_cuda_major() -> "int | None":
+    """Return the CUDA major version of the running jaxlib GPU plugin, if known."""
+    import importlib.util
+    try:
+        version = jax.devices('gpu')[0].client.platform_version  # e.g. 'cuda 12080'
+    except Exception:  # noqa: BLE001 - no GPU client: fall back to the installed plugins
+        version = ''
+    match = re.search(r'cuda\s+(\d+)', version)
+    if match:
+        number = int(match.group(1))
+        return number // 1000 if number >= 1000 else number
+    majors = {
+        major for major in range(11, 20)
+        if importlib.util.find_spec(f'jax_cuda{major}_plugin') is not None
+        or _find_spec(f'jax_plugins.xla_cuda{major}') is not None
+    }
+    return majors.pop() if len(majors) == 1 else None
+
+
+def _wheel_library(name: str, roots: "list[str]", cuda_major: "int | None") -> "Path | None":
+    """Pick the NVIDIA wheel ``lib{name}.so.*`` built for ``cuda_major``.
+
+    CUDA 13+ wheels install ``nvidia/cu{major}/lib``; CUDA 12 wheels install
+    ``nvidia/{name}/lib`` (or ``nvidia/cu12/lib``). Sorting alone would put
+    ``cu13`` first and link a CUDA 13 library into a CUDA 12 process. With a
+    known major and no matching wheel, return ``None`` so the toolkit library
+    is used; with an unknown major, keep the first candidate.
+    """
+    candidates = sorted(
+        candidate
+        for root in roots
+        for candidate in Path(root).glob(f'cu*/lib/lib{name}.so.*')
+        if candidate.is_file()
+    )
+    if cuda_major is None:
+        return candidates[0] if candidates else None
+    wanted = {f'cu{cuda_major}'} | ({name} if cuda_major <= 12 else set())
+    return next((c for c in candidates if c.parent.parent.name in wanted), None)
+
+
+def nvidia_wheel_library(name: str) -> "Path | None":
+    """Locate an NVIDIA wheel library matching the running jaxlib's CUDA major.
+
+    Parameters
+    ----------
+    name : str
+        Library stem without the ``lib`` prefix, e.g. ``'cublas'`` or ``'cusparse'``.
+
+    Returns
+    -------
+    pathlib.Path or None
+        The wheel's shared library, or ``None`` when no matching wheel is
+        installed and the CUDA toolkit library should be linked instead.
+    """
+    roots = _nvidia_roots()
+    return _wheel_library(name, roots, _jaxlib_cuda_major()) if roots else None
+
+
 def _pip_include_for(pkg: str, roots: "list[str]") -> "str | None":
     for root in roots:
         inc = Path(root) / pkg / "include"
