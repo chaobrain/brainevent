@@ -34,53 +34,59 @@ namespace hybrid
 
 namespace hybrid
 {
-    // Both launchers use caller-owned workspace and short_rows[batch * rows].
+    // Output element type: the accumulator, float for half/bfloat16 values, so every edge adds
+    // in float32 and the caller rounds each finished sum once to ValueT.
+    template <class ValueT>
+    using OutT = typename cuda_traits::ValueTraits<ValueT>::AccT;
+
+    // Both launchers use caller-owned workspace and short_rows[plan.chunk * rows] (groups run in order
+    // on the stream and reuse it). output[batch, cols] is OutT<ValueT>.
     // launch_accumulate requires a prezeroed output for an independent product.
     template <class ValueT, class EventT, class IndexT, class OffsetT>
     cudaError_t launch_accumulate(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                  const uint32_t *long_mask, const EventT *events, ValueT *output,
+                                  const uint32_t *long_mask, const EventT *events, OutT<ValueT> *output,
                                   int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                   const Plan &plan, cudaStream_t stream);
     template <class ValueT, class EventT, class IndexT, class OffsetT>
     cudaError_t launch_group_zeroed(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                    const uint32_t *long_mask, const EventT *events, ValueT *output,
+                                    const uint32_t *long_mask, const EventT *events, OutT<ValueT> *output,
                                     int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                     const Plan &plan, cudaStream_t stream);
     // Homo variants read one device value shared by all edges. Plan/workspace are unchanged.
     template <class ValueT, class EventT, class IndexT, class OffsetT>
     cudaError_t launch_accumulate_homo(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                       const uint32_t *long_mask, const EventT *events, ValueT *output,
+                                       const uint32_t *long_mask, const EventT *events, OutT<ValueT> *output,
                                        int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                        const Plan &plan, cudaStream_t stream);
     template <class ValueT, class EventT, class IndexT, class OffsetT>
     cudaError_t launch_group_zeroed_homo(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                         const uint32_t *long_mask, const EventT *events, ValueT *output,
+                                         const uint32_t *long_mask, const EventT *events, OutT<ValueT> *output,
                                          int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                          const Plan &plan, cudaStream_t stream);
 
     // Weighted variants (hybrid_batchedv3_spmm_weighted.cu): output[b, col] += events[b, row] * w for
-    // active events[b, row] != 0, with events, values and output sharing ValueT. Plan, long_mask,
+    // active events[b, row] != 0, with events and values sharing ValueT (output is OutT<ValueT>). Plan, long_mask,
     // short_rows and the output contracts are those of the binary launchers above. The workspace
     // adds a task value queue (the vw standard: each long-row task stores its event value, short
     // rows re-read events[b, row]), so it must hold workspace_bytes(plan, batch, sizeof(ValueT)).
     template <class ValueT, class IndexT, class OffsetT>
     cudaError_t launch_accumulate_weighted(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                           const uint32_t *long_mask, const ValueT *events, ValueT *output,
+                                           const uint32_t *long_mask, const ValueT *events, OutT<ValueT> *output,
                                            int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                            const Plan &plan, cudaStream_t stream);
     template <class ValueT, class IndexT, class OffsetT>
     cudaError_t launch_group_zeroed_weighted(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                             const uint32_t *long_mask, const ValueT *events, ValueT *output,
+                                             const uint32_t *long_mask, const ValueT *events, OutT<ValueT> *output,
                                              int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                              const Plan &plan, cudaStream_t stream);
     template <class ValueT, class IndexT, class OffsetT>
     cudaError_t launch_accumulate_weighted_homo(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                                const uint32_t *long_mask, const ValueT *events, ValueT *output,
+                                                const uint32_t *long_mask, const ValueT *events, OutT<ValueT> *output,
                                                 int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                                 const Plan &plan, cudaStream_t stream);
     template <class ValueT, class IndexT, class OffsetT>
     cudaError_t launch_group_zeroed_weighted_homo(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                                  const uint32_t *long_mask, const ValueT *events, ValueT *output,
+                                                  const uint32_t *long_mask, const ValueT *events, OutT<ValueT> *output,
                                                   int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                                   const Plan &plan, cudaStream_t stream);
 } // namespace hybrid

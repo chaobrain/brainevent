@@ -13,19 +13,24 @@ or the library defaults.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
 import operator
 import os
 import sys
+import threading
 import time
+import uuid
+import warnings
 from itertools import product
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from brainevent._error import BrainEventError
 from brainevent._op import get_cache_dir
 from brainevent._csr.config import _BenchmarkRecord, CSRConfig, MVSchedule
 
@@ -89,6 +94,65 @@ def _matrix_key(metadata: Mapping[str, Any] | None) -> tuple[int, int, int] | No
         return None
 
 
+# Parsed stores keyed by path, validated by (inode, mtime_ns, size): matrix
+# construction resolves a configuration without re-reading an unchanged file.
+_STORE_CACHE: dict[str, tuple[tuple[int, int, int], Any]] = {}
+_STORE_CACHE_LOCK = threading.Lock()
+
+
+def _read_store(path: Path) -> Any:
+    """Return the parsed store, reparsing only when the file changes.
+
+    The result is shared between callers and must not be mutated.
+    """
+    stat = path.stat()
+    version = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    with _STORE_CACHE_LOCK:
+        cached = _STORE_CACHE.get(str(path))
+    if cached is None or cached[0] != version:
+        try:
+            parsed: Any = json.loads(path.read_text(encoding='utf-8'))
+        except ValueError as exc:
+            parsed = exc
+        cached = (version, parsed)
+        with _STORE_CACHE_LOCK:
+            _STORE_CACHE[str(path)] = cached
+    if isinstance(cached[1], ValueError):
+        raise cached[1]
+    return cached[1]
+
+
+def _workload_distance(request: tuple[int, int, int],
+                       saved: tuple[int, int, int]) -> tuple[float, float] | None:
+    """Log distance in mean row length, then density, between two workloads."""
+    rows, cols, nnz = request
+    saved_rows, saved_cols, saved_nnz = saved
+    if not (rows and cols and nnz and saved_rows and saved_cols and saved_nnz):
+        return None
+    row_length = abs(math.log((nnz / rows) / (saved_nnz / saved_rows)))
+    density = abs(math.log((nnz / (rows * cols)) / (saved_nnz / (saved_rows * saved_cols))))
+    return row_length, density
+
+
+def _nearest_workload(key: tuple[int, int, int] | None,
+                      workloads: Sequence[tuple[tuple[int, int, int], str, CSRConfig]]) -> CSRConfig:
+    """Pick the tuned workload whose row length (then density) is nearest.
+
+    The hybrid MV schedule depends mainly on row lengths, so a winner measured
+    at a similar mean row length is the best available estimate. Without
+    usable metadata, the first workload in deterministic order is used.
+    """
+    if key is not None:
+        ranked = []
+        for saved_key, name, config in workloads:
+            distance = _workload_distance(key, saved_key)
+            if distance is not None:
+                ranked.append((distance, saved_key, name, config))
+        if ranked:
+            return min(ranked, key=lambda item: item[:3])[3]
+    return workloads[0][2]
+
+
 def _config_from_mapping(entry: Mapping[str, Any]) -> CSRConfig:
     schedule = _mv_from_mapping(entry.get('best_config', entry))
     records = []
@@ -131,15 +195,17 @@ def load_csr_config(
     Returns
     -------
     CSRConfig
-        Environment override, matching workload, device fallback, or library
+        Environment override, exactly matching workload, device fallback, the
+        workload nearest in mean row length (then density), or library
         defaults, in that order. A caller's explicit configuration is resolved
         before this function is called.
 
     Notes
     -----
-    Existing flat GPU entries remain valid. Workload matching uses integer
-    shape/nnz metadata rather than floating-point density keys. Existing
-    matrices retain their snapshots when the persisted configuration changes.
+    Existing flat GPU entries remain valid. Exact workload matching uses
+    integer shape/nnz metadata rather than floating-point density keys.
+    Existing matrices retain their snapshots when the persisted configuration
+    changes. The parsed store is cached until the file changes.
     """
     raw = os.environ.get(_ENV_OVERRIDE)
     if raw:
@@ -151,7 +217,7 @@ def load_csr_config(
     device_kind = _current_device_kind() if device_kind is None else device_kind
     reason = 'no valid configuration for target GPU'
     try:
-        store = json.loads(path.read_text(encoding='utf-8'))
+        store = _read_store(path)
         entry = store.get(device_kind, {})
         workloads = entry.get('workloads', {})
         valid_workloads = []
@@ -174,12 +240,13 @@ def load_csr_config(
                 return config
         try:
             config = _config_from_mapping(entry)
+            source = 'local_fallback'
         except (ValueError, KeyError, TypeError, AttributeError):
             if not valid_workloads:
                 raise ValueError(reason) from None
-            config = valid_workloads[0][2]
-        _LOG.debug('CSR config source=local_fallback path=%s gpu=%s requested=%s parameters=%s',
-                   path, device_kind, key, config)
+            config, source = _nearest_workload(key, valid_workloads), 'local_nearest'
+        _LOG.debug('CSR config source=%s path=%s gpu=%s requested=%s parameters=%s',
+                   source, path, device_kind, key, config)
         return config
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         reason = str(exc)
@@ -239,7 +306,10 @@ def save_csr_config(
     Device properties, primary/mirror masks, and MM plans are never persisted.
     Other GPU entries and workload records are retained. The path still uses
     the current compilation cache directory; cross-version migration is not
-    performed.
+    performed. Concurrent writers are serialized by an advisory lock file
+    (POSIX) and every write is an atomic replace. A store that cannot be parsed
+    is moved to ``<path>.corrupt-<timestamp>`` with a warning instead of being
+    silently overwritten.
     """
     if device_kind is None:
         device_kind = _current_device_kind()
@@ -247,19 +317,64 @@ def save_csr_config(
         raise RuntimeError('cannot determine device_kind; pass it explicitly')
     path = Path(get_cache_dir()) / CONFIG_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    store: dict[str, Any] = {}
-    if path.exists():
+    config.validate()
+    with _store_lock(path):
+        store = _read_store_for_update(path)
+        _merge_entry(store, config, device_kind, benchmark_records, matrix_metadata)
+        tmp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp')
         try:
-            old = json.loads(path.read_text(encoding='utf-8'))
-            if isinstance(old, dict):
-                store = old
-        except (OSError, ValueError):
-            pass
+            tmp.write_text(json.dumps(store, indent=2, sort_keys=True, allow_nan=False), encoding='utf-8')
+            os.replace(tmp, path)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                tmp.unlink()
+    return path
+
+
+@contextlib.contextmanager
+def _store_lock(path: Path):
+    """Serialize read-modify-write cycles of one store across threads and processes."""
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - non-POSIX: atomic replace only
+        yield
+        return
+    with open(path.with_name(path.name + '.lock'), 'a') as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _read_store_for_update(path: Path) -> dict[str, Any]:
+    """Read a private copy of the store, moving an unparsable store aside."""
+    try:
+        text = path.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        return {}
+    try:
+        old = json.loads(text)
+        reason = None if isinstance(old, dict) else f'top-level {type(old).__name__} is not an object'
+    except ValueError as exc:
+        reason = str(exc)
+    if reason is None:
+        return old
+    backup = path.with_name(f'{path.name}.corrupt-{time.strftime("%Y%m%dT%H%M%S")}-{uuid.uuid4().hex[:8]}')
+    os.replace(path, backup)
+    warnings.warn(f'CSR tuning store {path} is corrupt ({reason}); moved it to {backup} '
+                  'and started a new store.', UserWarning, stacklevel=3)
+    return {}
+
+
+def _merge_entry(store: dict[str, Any], config: CSRConfig, device_kind: str,
+                 benchmark_records: Sequence[_BenchmarkRecord | Mapping[str, Any]] | None,
+                 matrix_metadata: Mapping[str, Any] | None) -> None:
+    """Merge one device fallback or workload winner into ``store`` in place."""
     existing = store.get(device_kind, {})
     entry: dict[str, Any] = dict(existing) if isinstance(existing, Mapping) else {}
     records = config.benchmark_records if benchmark_records is None else benchmark_records
     parameters = _mv_to_mapping(config.mv)
-    config.validate()
     if matrix_metadata is None:
         entry.update(parameters)
         entry.pop('benchmark_records', None)
@@ -287,10 +402,6 @@ def save_csr_config(
         }
         entry['workloads'] = workloads
     store[device_kind] = entry
-    tmp = path.with_suffix(path.suffix + f'.{os.getpid()}.tmp')
-    tmp.write_text(json.dumps(store, indent=2, sort_keys=True, allow_nan=False), encoding='utf-8')
-    os.replace(tmp, path)
-    return path
 
 
 def _progress_bar(completed: int, total: int, *, width: int = 30) -> str:
@@ -478,7 +589,7 @@ def _reference_output(indices: np.ndarray, indptr: np.ndarray,
 
 def run_benchmark(
     *,
-    scale: float = 500.0,
+    scale: float = 50.0,
     conn: int | None = None,
     density: float | None = None,
     n_pre: int | None = None,
@@ -498,7 +609,9 @@ def run_benchmark(
     Parameters
     ----------
     scale : float, optional
-        Default dimensions in units of 1000 neurons.
+        Default dimensions in units of 1000 neurons. The default 50 (50k x 50k)
+        keeps the largest default density within int32 offsets and a few
+        hundred MB of device memory.
     conn : int or None, optional
         Connections per row. Defaults to 2000 when density is also omitted.
     density : float or None, optional
@@ -594,7 +707,8 @@ def run_benchmark(
                 verbose_compile=verbose_compile, expected_output=expected,
             )
             record.setdefault('status', 'ok')
-        except (MemoryError, RuntimeError, ValueError) as exc:
+        except (MemoryError, RuntimeError, ValueError, BrainEventError) as exc:
+            # A candidate that fails to compile, load or run must not end the sweep.
             record = {'config': config, 'status': 'error', 'error': str(exc)}
         records.append(record)
         if show_progress:
@@ -609,7 +723,7 @@ def init_csr_config(
     device_kind: str | None = None,
     densities: Sequence[float] = DEFAULT_DENSITIES,
     candidates: Sequence[CSRConfig] = DEFAULT_CANDIDATES,
-    scale: float = 500.0,
+    scale: float = 50.0,
     n_pre: int | None = None,
     n_post: int | None = None,
     batch_size: int = 100,
@@ -634,7 +748,9 @@ def init_csr_config(
     candidates : sequence of CSRConfig, optional
         Scheduling candidates shared by all workloads.
     scale : float, optional
-        Default dimensions in units of 1000 neurons.
+        Default dimensions in units of 1000 neurons. The default 50 (50k x 50k)
+        keeps the largest default density within int32 offsets and a few
+        hundred MB of device memory.
     n_pre, n_post : int or None, optional
         Common matrix dimensions overriding scale.
     batch_size, steps, spike_sparsity, seed, warmup : optional
@@ -691,7 +807,7 @@ def init_csr_config(
                 result.update(best_config=best_record['config'], status='ok')
             else:
                 result['error'] = 'no candidate configuration completed successfully'
-        except (MemoryError, RuntimeError) as exc:
+        except (MemoryError, RuntimeError, BrainEventError) as exc:
             result['error'] = str(exc)
         if save and result['status'] == 'ok':
             path = save_csr_config(result['best_config'], device_kind, result['records'], matrix_metadata=metadata)

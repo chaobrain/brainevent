@@ -1063,12 +1063,7 @@ class TestBatchingMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         for implementation in CSRMM_IMPLEMENTATIONS:
             self._implementation = implementation
-            # These varying indices are traced before a fixture can bind its config.
-            if implementation == 'cuda_raw':
-                from brainevent import KernelCompilationError
-                with pytest.raises(KernelCompilationError, match='prepared CSRConfig'):
-                    jax.block_until_ready(brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices))
-                continue
+            # Traced indices have no prepared plan: native MM uses the portable fallback.
             res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
             assert jnp.all(res)
 
@@ -1149,12 +1144,7 @@ class TestBatchingMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         for implementation in CSRMM_IMPLEMENTATIONS:
             self._implementation = implementation
-            # These varying indices are traced before a fixture can bind its config.
-            if implementation == 'cuda_raw':
-                from brainevent import KernelCompilationError
-                with pytest.raises(KernelCompilationError, match='prepared CSRConfig'):
-                    jax.block_until_ready(brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices))
-                continue
+            # Traced indices have no prepared plan: native MM uses the portable fallback.
             r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
@@ -1231,12 +1221,7 @@ class TestBatchingMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         for implementation in CSRMM_IMPLEMENTATIONS:
             self._implementation = implementation
-            # These varying indices are traced before a fixture can bind its config.
-            if implementation == 'cuda_raw':
-                from brainevent import KernelCompilationError
-                with pytest.raises(KernelCompilationError, match='prepared CSRConfig'):
-                    jax.block_until_ready(brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices))
-                continue
+            # Traced indices have no prepared plan: native MM uses the portable fallback.
             r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
@@ -2445,10 +2430,12 @@ def test_hybrid_mm_ffi_short_long_rows_and_repeated_calls(permuted, homo, weight
         workspace_bytes = batch * 8 + 2 * 8 + capacity * 12
         if weighted:
             workspace_bytes += (capacity * jnp.dtype(dtype).itemsize + 3) // 4 * 4
+        # Half values accumulate into a float32 output; short-row lists hold one group.
+        accumulator = jnp.float64 if dtype == jnp.float64 else jnp.float32
         outputs = (
-            jax.ShapeDtypeStruct((batch, cols), dtype),
+            jax.ShapeDtypeStruct((batch, cols), accumulator),
             jax.ShapeDtypeStruct(((workspace_bytes + 3) // 4,), jnp.uint32),
-            jax.ShapeDtypeStruct((batch * rows,), jnp.int32),
+            jax.ShapeDtypeStruct((chunk * rows,), jnp.int32),
         )
         mode = 'weighted' if weighted else 'binary'
         layout = 'col_major' if permuted else 'row'
@@ -2495,6 +2482,8 @@ def test_hybrid_mm_ffi_short_long_rows_and_repeated_calls(permuted, homo, weight
                 values = terms[selected] * event[selected] if weighted else terms[selected]
                 np.add.at(expected[b], indices[selected], values)
             result = call(weights, current)
+            assert result.dtype == accumulator
+            result = result.astype(dtype)
             # The reference sums in float64, then observes the output dtype.
             expected = np.asarray(jnp.asarray(expected, dtype), np.float64)
             np.testing.assert_array_equal(np.asarray(result, np.float64), expected)
@@ -2747,11 +2736,8 @@ def test_auto_hybrid_guard_does_not_block_native_gather():
     function = jax.jit(lambda x: binary_csrmm_p_call(
         case.weights, case.indices, case.indptr, x, shape=case.shape,
         transpose=True, backend=None, config=None)[0])
-    if jax.default_backend() == 'gpu':
-        with pytest.raises(brainevent.KernelCompilationError, match='prepared CSRConfig'):
-            function(case.events)
-    else:
-        np.testing.assert_array_equal(function(case.events), _prepared_reference(case, case.weights, case.events))
+    # On GPU the unprepared native scatter MM falls back to the portable path.
+    np.testing.assert_array_equal(function(case.events), _prepared_reference(case, case.weights, case.events))
     x = jnp.asarray(np.resize([-2., 0., 1.], (case.shape[1], 2)), jnp.float32)
     gather = jax.jit(lambda value: binary_csrmm_p_call(
         case.weights, case.indices, case.indptr, value, shape=case.shape,
@@ -2830,23 +2816,27 @@ def test_structural_vmap_invalidates_exact_plan(indexed):
     if jax.default_backend() == 'gpu':
         native = jax.vmap(lambda ptr: _prepared_call(
             case, case.weights, case.events, indexed=indexed, config=case.config, indptr=ptr))
-        with pytest.raises(brainevent.KernelCompilationError, match='prepared CSRConfig'):
-            jax.jit(native)(pointers)
+        binary = np.stack([_prepared_reference(case, case.weights, case.events, indexed=indexed,
+                                               indptr=ptr) for ptr in pointers])
+        np.testing.assert_array_equal(jax.jit(native)(pointers), binary)
 
 
 @pytest.mark.usefixtures('_prepared_enable_x64')
 @pytest.mark.parametrize('indexed', [False])
-def test_native_unprepared_mm_and_mv_vmap_fail_at_hybrid_lowering(indexed):
+def test_native_unprepared_mm_and_mv_vmap_use_portable_fallback(indexed, monkeypatch):
     if jax.default_backend() != 'gpu':
         pytest.skip('actual hybrid lowering requires GPU')
     case = _prepared_case()
+    expected = _prepared_reference(case, case.weights, case.events, indexed=indexed)
     for config in (None, CSRConfig(device_info=case.config.device_info),
                    replace(case.config, device_info=None)):
         function = lambda x: _prepared_call(case, case.weights, x, indexed=indexed, config=config)
-        with pytest.raises(brainevent.KernelCompilationError, match='prepared CSRConfig'):
-            jax.jit(function)(case.events)
-        with pytest.raises(brainevent.KernelCompilationError, match='prepared CSRConfig'):
-            jax.jit(jax.vmap(function))(case.events.T)
+        jax.clear_caches()  # the warning is raised once, while lowering
+        monkeypatch.setattr(binary_mod, '_UNPREPARED_MM_WARNED', set())
+        with pytest.warns(brainevent.PerformanceWarning, match='no prepared CSRConfig'):
+            np.testing.assert_array_equal(jax.jit(function)(case.events), expected)
+        batched = jax.jit(jax.vmap(function))(case.events.T)
+        np.testing.assert_array_equal(np.asarray(batched).T, expected)
 
 
 @pytest.mark.usefixtures('_prepared_enable_x64')
@@ -2992,7 +2982,10 @@ def test_csr_consumers_dispatch_slot_gradients(monkeypatch, case, transpose, bat
 @pytest.mark.parametrize('batch', [None, 1, 3])
 @pytest.mark.parametrize('weighted', [False, True])
 @pytest.mark.parametrize('indexed', [False])
-def test_event_consumers_preserve_activity_before_narrowing(transpose, batch, weighted, indexed):
+def test_event_consumers_preserve_activity_after_cast(transpose, batch, weighted, indexed):
+    # Binary activity reads the original events (1e-8 is active). Weighted activity is
+    # tested after the cast to the cotangent dtype, as in CUDA and cuSPARSE: 1e-8
+    # underflows to zero in float16 and contributes nothing.
     rows = jnp.array([0, 0, 1, 2], jnp.int32)
     cols = jnp.array([2, 0, 1, 1], jnp.int32)
     indptr = jnp.array([0, 2, 3, 4], jnp.int32)
@@ -3018,7 +3011,8 @@ def test_event_consumers_preserve_activity_before_narrowing(transpose, batch, we
     unit, out = (rows, cols) if transpose else (cols, rows)
     x = events[unit]
     terms = x.astype(ct.dtype) * ct[out] if weighted else ct[out]
-    expected = jnp.where(x != 0, terms, 0)
+    active = x.astype(ct.dtype) != 0 if weighted else x != 0
+    expected = jnp.where(active, terms, 0)
     if batch is not None:
         expected = jnp.sum(expected, axis=1)
     if indexed:
@@ -3208,3 +3202,93 @@ def test_event_gradient_respects_backend_priority(monkeypatch, batch, default, g
     assert (target in ir) == native
     selected = global_backend if requested is None else requested
     assert ('cusparse_sddmm_' in ir) == (selected == 'cusparse')
+
+
+# Half-precision scatter accumulation
+# -----------------------------------
+
+# Integer sums above 256 (bf16) or 2048 (fp16) stop growing when every edge
+# adds 1 in the storage dtype: x + 1 rounds back to x. A float32 accumulator
+# rounded once at the end represents both chosen totals exactly.
+_HALF_FAN_IN = {'bfloat16': 1000, 'float16': 3000}
+
+
+def _half_fan_in_case(dtype_name, row_nnz, homo):
+    """Every row connects to the same ``row_nnz`` columns with unit weight."""
+    rows = _HALF_FAN_IN[dtype_name]
+    dtype = jnp.dtype(dtype_name)
+    indices = jnp.asarray(np.tile(np.arange(row_nnz, dtype=np.int32), rows))
+    indptr = jnp.asarray(np.arange(rows + 1, dtype=np.int32) * row_nnz)
+    weights = jnp.ones((1 if homo else rows * row_nnz,), dtype)
+    return weights, indices, indptr, (rows, row_nnz)
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('matrix', [False, True], ids=['mv', 'mm'])
+@pytest.mark.parametrize('row_nnz', [2, 600], ids=['short_rows', 'long_rows'])
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('homo', [False, True], ids=['hetero', 'homo'])
+@pytest.mark.parametrize('dtype_name', sorted(_HALF_FAN_IN))
+def test_native_half_scatter_accumulates_in_float32(dtype_name, homo, weighted, row_nnz, matrix):
+    weights, indices, indptr, shape = _half_fan_in_case(dtype_name, row_nnz, homo)
+    rows = shape[0]
+    events = jnp.ones((rows, 2) if matrix else (rows,), jnp.float32 if weighted else jnp.bool_)
+    operation = binary_csrmm if matrix else binary_csrmv
+    actual = operation(weights, indices, indptr, events, shape=shape, transpose=True,
+                       weighted=weighted, backend='cuda_raw',
+                       config=prepared_config(indices, indptr, shape))
+    assert actual.dtype == weights.dtype
+    expected = np.full(actual.shape, rows, np.float32)
+    np.testing.assert_array_equal(np.asarray(actual, np.float32), expected)
+
+
+# Undersized native task queues
+# -----------------------------
+
+def _overflow_case(lengths, cols, homo, weighted, batch=None, seed=0):
+    rng = np.random.default_rng(seed)
+    lengths = np.asarray(lengths, np.int64)
+    nnz = int(lengths.sum())
+    indices = jnp.asarray((np.arange(nnz) * 7) % cols, jnp.int32)
+    indptr = jnp.asarray(np.r_[0, np.cumsum(lengths)], jnp.int32)
+    weights = jnp.asarray([0.5] if homo else rng.integers(-4, 5, nnz) / 4, jnp.float32)
+    shape = (len(lengths),) if batch is None else (len(lengths), batch)
+    if weighted:
+        events = jnp.asarray(rng.integers(-2, 3, shape), jnp.float32)
+    else:
+        events = jnp.asarray(rng.random(shape) < 0.8)
+    return weights, indices, indptr, events, (len(lengths), cols)
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('hint', [100, 129], ids=['no_queue', 'short_queue'])
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('homo', [False, True], ids=['hetero', 'homo'])
+def test_native_mv_understated_row_hint_keeps_every_edge(hint, weighted, homo):
+    # Rows of 600 edges need two 512-edge tasks each; the hint sizes the queue
+    # for none (<= tpr_threshold) or one task per heavy row.
+    weights, indices, indptr, events, shape = _overflow_case([600, 600, 600, 5], 700, homo, weighted)
+    events = events.at[:3].set(1 if weighted else True)
+    kwargs = dict(shape=shape, transpose=True, weighted=weighted)
+    actual = binary_csrmv(weights, indices, indptr, events, backend='cuda_raw', max_row_nnz=hint, **kwargs)
+    expected = binary_csrmv(weights, indices, indptr, events, backend='jax_raw', **kwargs)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('batch', [1, 3])
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('homo', [False, True], ids=['hetero', 'homo'])
+def test_native_mm_stale_config_keeps_every_edge(batch, weighted, homo):
+    # The stale plan marks rows 0..3 long with one task each (4 tasks); the
+    # current structure has the same dimensions but needs 4 + 1 + 1 + 1 tasks.
+    stale = np.r_[[512] * 4, [1] * 1000]
+    current = np.r_[[2045, 1, 1, 1], [1] * 1000]
+    _, stale_indices, stale_indptr, _, shape = _overflow_case(stale, 2048, homo, weighted, batch)
+    weights, indices, indptr, events, _ = _overflow_case(current, 2048, homo, weighted, batch)
+    config = prepared_config(stale_indices, stale_indptr, shape)
+    assert config.primary.long_tasks == 4
+    kwargs = dict(shape=shape, transpose=True, weighted=weighted)
+    actual = binary_csrmm(weights, indices, indptr, events, backend='cuda_raw', config=config, **kwargs)
+    expected = binary_csrmm(weights, indices, indptr, events, backend='jax_raw', **kwargs)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)

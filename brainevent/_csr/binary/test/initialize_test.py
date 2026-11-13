@@ -467,9 +467,11 @@ def test_persistence_recovers_invalid_store_but_rejects_invalid_override(_persis
     path = _persistence_isolated_store / 'csr_hybrid_config.json'
     path.write_text('[]')
     assert load_csr_config('TEST_GPU').kernel_args()[0] == CSRConfig().kernel_args()[0]
-    save_csr_config(CSRConfig(), 'TEST_GPU')
+    with pytest.warns(UserWarning, match='corrupt'):
+        save_csr_config(CSRConfig(), 'TEST_GPU')
     path.write_text('broken')
-    save_csr_config(CSRConfig(), 'TEST_GPU')
+    with pytest.warns(UserWarning, match='corrupt'):
+        save_csr_config(CSRConfig(), 'TEST_GPU')
     monkeypatch.setenv('BRAINEVENT_CSR_HYBRID_CONFIG', '{')
     with pytest.raises(ValueError):
         load_csr_config('TEST_GPU')
@@ -551,8 +553,7 @@ def test_loader_uses_environment_exact_legacy_other_then_builtin(
 
 
 @pytest.mark.parametrize('metadata', [None, {}, {'shape': (20, 1000)},
-                                      {'shape': (0, 1000), 'nnz': 0},
-                                      {'shape': (20, 1000), 'nnz': 999}])
+                                      {'shape': (0, 1000), 'nnz': 0}])
 def test_nonmatching_fallback_is_deterministic_without_complete_metadata(
     _persistence_isolated_store, metadata,
 ):
@@ -711,7 +712,8 @@ def test_missing_x64_marks_only_large_density_failed_and_continues(monkeypatch):
     was_enabled = jax.config.jax_enable_x64
     try:
         jax.config.update('jax_enable_x64', False)
-        results = initialize.init_csr_config(save=False, show_progress=False)
+        # 500k x 500k at 3% exceeds int32 offsets; 0.3% does not.
+        results = initialize.init_csr_config(save=False, show_progress=False, scale=500.0)
     finally:
         jax.config.update('jax_enable_x64', was_enabled)
     assert calls == [.03, .003]
@@ -837,3 +839,106 @@ def test_benchmark_validates_output_and_queue_after_timing(
         record = initialize._benchmark_config(CSRConfig(), **kwargs)
         assert record['checked'] is True
         assert record['elapsed_ms'] == 500.
+
+
+# Workload matching, sweep robustness and store integrity
+# --------------------------------------------------------
+
+def test_default_tuning_workload_fits_int32_offsets_and_modest_memory():
+    import inspect
+
+    for function in (initialize.run_benchmark, initialize.init_csr_config):
+        scale = inspect.signature(function).parameters['scale'].default
+        rows, cols = initialize._workload_shape(scale, None, None)
+        for density in initialize.DEFAULT_DENSITIES:
+            nnz = rows * initialize._density_conn(cols, density)
+            assert nnz <= initialize._INT32_MAX
+            assert 4 * nnz <= 1 << 30  # int32 indices of the largest default matrix
+
+
+def test_nonexact_workload_uses_nearest_mean_row_length(_persistence_isolated_store):
+    dense, sparse = CSRConfig(256), CSRConfig(512, 512)
+    save_csr_config(dense, 'TEST_GPU', matrix_metadata=_metadata(conn=30))
+    save_csr_config(sparse, 'TEST_GPU', matrix_metadata=_metadata(conn=3))
+    # 25 edges per row is nearest to 30 (log scale); 4 edges per row to 3.
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40, cols=2000, conn=25)).mv == dense.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=10, conn=4)).mv == sparse.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata={'shape': (20, 1000), 'nnz': 999}).mv == dense.mv
+    # Equal row lengths (30 edges): the nearer density decides.
+    wide = CSRConfig(512, 1024)
+    save_csr_config(wide, 'TEST_GPU', matrix_metadata=_metadata(cols=10000, conn=30))
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40, cols=2000, conn=30)).mv == dense.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40, cols=20000, conn=30)).mv == wide.mv
+    # An explicit device fallback still takes precedence over a nearest workload.
+    legacy = CSRConfig(128)
+    save_csr_config(legacy, 'TEST_GPU')
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=10, conn=4)).mv == legacy.mv
+    assert load_csr_config('OTHER_GPU', matrix_metadata=_metadata(conn=30)).mv == CSRConfig().mv
+
+
+def test_compilation_failure_marks_only_that_candidate_failed(monkeypatch):
+    from brainevent._error import KernelCompilationError
+
+    bad, good = CSRConfig(512), CSRConfig(256)
+
+    def measure(config, **kwargs):
+        if config == bad:
+            raise KernelCompilationError('nvcc failed for this candidate')
+        return _timing(config)
+
+    monkeypatch.setattr(initialize, '_benchmark_config', measure)
+    records = initialize.run_benchmark(n_pre=4, n_post=1000, density=.03, candidates=(bad, good),
+                                       batch_size=2, steps=3, warmup=1, show_progress=False)
+    assert [record['status'] for record in records] == ['ok', 'error']
+    assert 'nvcc failed' in records[1]['error']
+
+
+def test_load_parses_the_store_once_until_it_changes(_persistence_isolated_store, monkeypatch):
+    save_csr_config(CSRConfig(128), 'TEST_GPU')
+    parsed = []
+    loads = initialize.json.loads
+    monkeypatch.setattr(initialize.json, 'loads', lambda text: parsed.append(1) or loads(text))
+    for _ in range(3):
+        assert load_csr_config('TEST_GPU').block_size == 128
+    assert len(parsed) == 1
+    save_csr_config(CSRConfig(256), 'TEST_GPU')
+    parsed.clear()
+    assert load_csr_config('TEST_GPU').block_size == 256
+    assert load_csr_config('TEST_GPU').block_size == 256
+    assert len(parsed) == 1
+
+
+def test_corrupt_store_is_backed_up_before_it_is_replaced(_persistence_isolated_store):
+    path = _persistence_isolated_store / initialize.CONFIG_FILENAME
+    path.write_text('{"TEST_GPU": broken')
+    with pytest.warns(UserWarning, match='corrupt'):
+        save_csr_config(CSRConfig(256), 'TEST_GPU')
+    backups = list(_persistence_isolated_store.glob(initialize.CONFIG_FILENAME + '.corrupt-*'))
+    assert len(backups) == 1 and backups[0].read_text() == '{"TEST_GPU": broken'
+    assert load_csr_config('TEST_GPU').block_size == 256
+    assert not list(_persistence_isolated_store.glob('*.tmp'))
+
+
+def test_concurrent_saves_keep_every_device_entry(_persistence_isolated_store):
+    import threading
+
+    devices = [f'GPU_{i}' for i in range(16)]
+    barrier = threading.Barrier(len(devices))
+    errors = []
+
+    def save(device_kind):
+        try:
+            barrier.wait()
+            save_csr_config(CSRConfig(256), device_kind)
+        except Exception as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=save, args=(device,)) for device in devices]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    stored = json.loads((_persistence_isolated_store / initialize.CONFIG_FILENAME).read_text())
+    assert set(stored) == set(devices)
+    assert not list(_persistence_isolated_store.glob('*.tmp'))

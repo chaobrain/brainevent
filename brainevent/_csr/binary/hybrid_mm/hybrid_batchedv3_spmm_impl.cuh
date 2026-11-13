@@ -20,8 +20,8 @@
 // QueueT selects the semantics: void is binary (output[b, col] += w), ValueT is weighted
 // (output[b, col] += events[b, row] * w). Weighted follows the vw standard, no row lookup: K2
 // re-reads events[b, row] from the short list's row; K3 tasks carry their event value in the task
-// value queue written by K1. Types: values/output ValueT in {half, bfloat16, float, double}
-// (atomics through cuda_traits::ValueTraits, accumulating in AccT); binary events int8 (bool) or
+// value queue written by K1. Types: values ValueT in {half, bfloat16, float, double}; output
+// OutT<ValueT> = AccT (float for half/bfloat16, so edges never add in 8/11-bit precision); binary events int8 (bool) or
 // float, active iff != 0; indices IndexT and row_ptr OffsetT in {int32, int64}.
 #include "hybrid_batchedv3_spmm.cuh"
 
@@ -79,7 +79,7 @@ namespace hybrid
   // cached; __ldg keeps it a distinct load) instead of keeping the 16 events live across the scans.
   template <bool kZeroOutput, typename ValueT, typename EventT, typename QueueT, typename OffsetT>
   __global__ void __launch_bounds__(kExtractBlockSize) classify_extract_kernel(
-      ValueT *__restrict__ output_bn,
+      OutT<ValueT> *__restrict__ output_bn,
       int cols,
       const EventT *__restrict__ spike_bn,
       const OffsetT *__restrict__ row_ptr,
@@ -108,8 +108,8 @@ namespace hybrid
     const EventT *spikes = spike_bn + static_cast<size_t>(b) * rows;
     if constexpr (kZeroOutput)
     {
-      ValueT *slice = output_bn + static_cast<size_t>(b) * cols;
-      const ValueT zero = cuda_traits::ValueTraits<ValueT>::write(0);
+      OutT<ValueT> *slice = output_bn + static_cast<size_t>(b) * cols;
+      const OutT<ValueT> zero = 0;
       const int64_t col_end = min(row_base + kRowsPerChunk, static_cast<int64_t>(cols));
       for (int64_t col = row_base + threadIdx.x; col < col_end; col += kExtractBlockSize)
         slice[col] = zero;
@@ -145,7 +145,7 @@ namespace hybrid
       {
         const int64_t row = row_base + segment * 32 + lane;
         const int64_t len = long_masks[iteration] >> lane & 1U ? static_cast<int64_t>(row_ptr[row + 1]) - row_ptr[row] : 0;
-        segment_tasks = __reduce_add_sync(0xffffffffU, static_cast<unsigned>((len + kTaskEdges - 1) / kTaskEdges));
+        segment_tasks = cuda_traits::warp_reduce_add_u32(static_cast<unsigned>((len + kTaskEdges - 1) / kTaskEdges));
       }
       if (lane == 0)
       {
@@ -197,7 +197,8 @@ namespace hybrid
       }
     }
     __syncthreads();
-    int32_t *selected = short_rows + static_cast<size_t>(b) * rows;
+    // short_rows holds one group (chunk * rows): groups run in stream order and reuse it.
+    int32_t *selected = short_rows + static_cast<size_t>(b_local) * rows;
     const unsigned lower_lanes = (1U << lane) - 1U;
 #pragma unroll
     for (int iteration = 0; iteration < kSegmentsPerWarp; ++iteration)
@@ -230,9 +231,19 @@ namespace hybrid
       const unsigned long long slot = task_base + task_offsets[segment] + (inclusive - tasks);
       if (slot + tasks > static_cast<unsigned long long>(task_capacity))
       {
-        // Only reachable with a stale or foreign plan: report instead of dropping silently.
+        // Only reachable with a stale or undersized plan, and it never drops edges: the task
+        // kernel reads every slot below the capacity, so this row's in-range slots become empty
+        // tasks, and the row joins its batch's short list (room for every row of the batch).
         if (tasks)
+        {
           atomicExch(&status[static_cast<size_t>(b) * 2 + kStatusOverflow], 1);
+          for (unsigned long long k = slot; k < slot + tasks && k < static_cast<unsigned long long>(task_capacity); ++k)
+          {
+            task_begin[k] = 0;
+            task_meta[k] = b_local << kMetaLenBits;
+          }
+          selected[atomicAdd(&status[static_cast<size_t>(b) * 2 + kStatusCount], 1)] = static_cast<int32_t>(row);
+        }
         continue;
       }
       for (int k = 0; k < tasks; ++k)
@@ -269,7 +280,7 @@ namespace hybrid
       const int64_t *__restrict__ task_begin,
       const QueueT *__restrict__ task_value,
       const int32_t *__restrict__ task_meta,
-      ValueT *__restrict__ output_group,
+      OutT<ValueT> *__restrict__ output_group,
       int cols,
       int64_t task_capacity)
   {
@@ -288,10 +299,10 @@ namespace hybrid
       typename Traits::AccT scale{1};
       if constexpr (kWeighted<QueueT>)
         scale = Traits::read(task_value[task]);
-      ValueT *output = output_group + static_cast<size_t>(meta >> kMetaLenBits) * cols;
+      OutT<ValueT> *output = output_group + static_cast<size_t>(meta >> kMetaLenBits) * cols;
       const int64_t end = begin + (meta & ((1 << kMetaLenBits) - 1));
       for (int64_t entry = begin + lane; entry < end; entry += 32)
-        Traits::atomic_add(&output[indices[entry]],
+        cuda_traits::ValueTraits<OutT<ValueT>>::atomic_add(&output[indices[entry]],
                            contribution<QueueT>(scale, Homo ? shared_weight : read_edge_weight<Permuted>(values, perm, entry)));
     }
   }
@@ -308,7 +319,7 @@ namespace hybrid
       const OffsetT *__restrict__ perm,
       const int32_t *__restrict__ active_rows,
       const int32_t *__restrict__ status,
-      ValueT *__restrict__ output_bn,
+      OutT<ValueT> *__restrict__ output_bn,
       int rows,
       int cols,
       int batch_begin)
@@ -320,8 +331,8 @@ namespace hybrid
     constexpr int kGroups = kShortBlockSize / kGroup;
     const int b = batch_begin + static_cast<int>(blockIdx.y);
     const int count = min(status[static_cast<size_t>(b) * 2 + kStatusCount], rows);
-    const int32_t *selected = active_rows + static_cast<size_t>(b) * rows;
-    ValueT *output = output_bn + static_cast<size_t>(b) * cols;
+    const int32_t *selected = active_rows + static_cast<size_t>(blockIdx.y) * rows;
+    OutT<ValueT> *output = output_bn + static_cast<size_t>(b) * cols;
     const int lane = threadIdx.x % kGroup;
     for (int index = blockIdx.x * kGroups + threadIdx.x / kGroup; index < count;
          index += gridDim.x * kGroups)
@@ -332,7 +343,7 @@ namespace hybrid
         scale = Traits::read(events[static_cast<size_t>(b) * rows + row]);
       const int64_t end = row_ptr[row + 1];
       for (int64_t entry = static_cast<int64_t>(row_ptr[row]) + lane; entry < end; entry += kGroup)
-        Traits::atomic_add(&output[indices[entry]],
+        cuda_traits::ValueTraits<OutT<ValueT>>::atomic_add(&output[indices[entry]],
                            contribution<QueueT>(scale, Homo ? shared_weight : read_edge_weight<Permuted>(values, perm, entry)));
     }
   }
@@ -340,7 +351,7 @@ namespace hybrid
   template <int kGroup, bool Homo, bool Permuted, typename ValueT, typename QueueT, typename IndexT, typename OffsetT>
   cudaError_t scatter_short(const QueueT *events, const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
                             const OffsetT *perm,
-                            const int32_t *short_rows, const int32_t *status, ValueT *output_bn,
+                            const int32_t *short_rows, const int32_t *status, OutT<ValueT> *output_bn,
                             int rows, int cols, int begin, int size, int sms, cudaStream_t stream)
   {
     const int64_t groups = kShortBlockSize / kGroup;
@@ -356,7 +367,7 @@ namespace hybrid
   template <bool kZeroOutput, bool Homo, typename ValueT, typename EventT, typename QueueT, typename IndexT, typename OffsetT,
             bool Permuted = false>
   cudaError_t launch_impl(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                          const uint32_t *long_mask, const EventT *spike_bn, ValueT *output_bn,
+                          const uint32_t *long_mask, const EventT *spike_bn, OutT<ValueT> *output_bn,
                           int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                           const Plan &plan, cudaStream_t stream, const OffsetT *perm = nullptr)
   {
@@ -370,7 +381,7 @@ namespace hybrid
     if (!output_bn)
       return cudaErrorInvalidValue;
     if (rows == 0 || plan.nnz == 0)
-      return kZeroOutput ? cudaMemsetAsync(output_bn, 0, static_cast<size_t>(batch) * cols * sizeof(ValueT), stream)
+      return kZeroOutput ? cudaMemsetAsync(output_bn, 0, static_cast<size_t>(batch) * cols * sizeof(OutT<ValueT>), stream)
                          : cudaSuccess;
     if (!values || !indices || !row_ptr || (Permuted && !perm) || !long_mask || !spike_bn || !short_rows || !workspace ||
         plan.chunk <= 0 || plan.chunk > kMaxGroupBatches ||

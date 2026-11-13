@@ -12,6 +12,22 @@
 namespace cuda_traits {
 enum class ValueType : int { f16, bf16, f32, f64 };
 #ifdef __CUDACC__
+/**
+ * Full-warp unsigned sum, returned to every lane.
+ *
+ * Uses the sm_80+ ``__reduce_add_sync`` instruction and a butterfly shuffle
+ * reduction on older architectures. All 32 lanes must participate.
+ */
+__device__ __inline__ unsigned warp_reduce_add_u32(unsigned value) {
+#if __CUDA_ARCH__ >= 800
+    return __reduce_add_sync(0xffffffffU, value);
+#else
+    for (int offset = 16; offset > 0; offset >>= 1)
+        value += __shfl_xor_sync(0xffffffffU, value, offset);
+    return value;
+#endif
+}
+
 __device__ __inline__ void atomic_add_f32(float* addr, float val) {
     atomicAdd(addr, val);
 }

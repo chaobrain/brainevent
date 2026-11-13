@@ -22,18 +22,19 @@ namespace hybrid_col_major
   using hybrid::make_plan;
   using hybrid::workspace_bytes;
 
-  // Caller-owned scratch: workspace_bytes(plan, batch), short_rows[batch * rows].
+  // Caller-owned scratch: workspace_bytes(plan, batch), short_rows[plan.chunk * rows].
+  // output[batch, cols] is hybrid::OutT<ValueT> (float for half/bfloat16 values).
   // accumulate adds to output; group_zeroed overwrites each batch group's output.
   // perm has the same element type as row_ptr, independently of indices.
   template <class ValueT, class EventT, class IndexT, class OffsetT>
   cudaError_t launch_accumulate(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
                                 const OffsetT *perm, const uint32_t *long_mask, const EventT *events,
-                                ValueT *output, int32_t *short_rows, void *workspace,
+                                hybrid::OutT<ValueT> *output, int32_t *short_rows, void *workspace,
                                 int rows, int cols, int batch, const Plan &plan, cudaStream_t stream);
   template <class ValueT, class EventT, class IndexT, class OffsetT>
   cudaError_t launch_group_zeroed(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
                                   const OffsetT *perm, const uint32_t *long_mask, const EventT *events,
-                                  ValueT *output, int32_t *short_rows, void *workspace,
+                                  hybrid::OutT<ValueT> *output, int32_t *short_rows, void *workspace,
                                   int rows, int cols, int batch, const Plan &plan, cudaStream_t stream);
 
   // Weighted events share ValueT; scratch includes the long-task event queue:
@@ -41,12 +42,12 @@ namespace hybrid_col_major
   template <class ValueT, class IndexT, class OffsetT>
   cudaError_t launch_accumulate_weighted(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
                                          const OffsetT *perm, const uint32_t *long_mask, const ValueT *events,
-                                         ValueT *output, int32_t *short_rows, void *workspace,
+                                         hybrid::OutT<ValueT> *output, int32_t *short_rows, void *workspace,
                                          int rows, int cols, int batch, const Plan &plan, cudaStream_t stream);
   template <class ValueT, class IndexT, class OffsetT>
   cudaError_t launch_group_zeroed_weighted(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
                                            const OffsetT *perm, const uint32_t *long_mask, const ValueT *events,
-                                           ValueT *output, int32_t *short_rows, void *workspace,
+                                           hybrid::OutT<ValueT> *output, int32_t *short_rows, void *workspace,
                                            int rows, int cols, int batch, const Plan &plan, cudaStream_t stream);
 } // namespace hybrid_col_major
 

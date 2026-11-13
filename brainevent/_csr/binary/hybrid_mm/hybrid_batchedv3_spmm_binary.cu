@@ -8,7 +8,8 @@
 // launch_group_zeroed(): hybrid_v3_gz, K1 also zeroes its group's output slice right before K2/K3
 //   accumulate into it, so the zeros are still in L2 (no separate memset; no precondition on the output).
 // Homo variants read one device value shared by all edges.
-// Types: values/output ValueT in {half, bfloat16, float, double}; events int8 (bool) or float,
+// Types: values ValueT in {half, bfloat16, float, double}, output OutT<ValueT> (float for half/bfloat16);
+// events int8 (bool) or float,
 // active iff != 0; indices IndexT and row_ptr OffsetT in {int32, int64}.
 #include "hybrid_batchedv3_spmm_impl.cuh"
 
@@ -18,7 +19,7 @@ namespace hybrid
   // long_mask: long_row_mask() of the same matrix and plan, on the device.
   template <typename ValueT, typename EventT, typename IndexT, typename OffsetT>
   cudaError_t launch_accumulate(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                const uint32_t *long_mask, const EventT *spike_bn, ValueT *output_bn,
+                                const uint32_t *long_mask, const EventT *spike_bn, OutT<ValueT> *output_bn,
                                 int32_t *short_rows, void *workspace, int rows, int cols, int batch, const Plan &plan,
                                 cudaStream_t stream)
   {
@@ -29,7 +30,7 @@ namespace hybrid
   // hybrid_v3_gz: output_bn may hold anything; each group's K1 zeroes that group's output rows first.
   template <typename ValueT, typename EventT, typename IndexT, typename OffsetT>
   cudaError_t launch_group_zeroed(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                  const uint32_t *long_mask, const EventT *spike_bn, ValueT *output_bn,
+                                  const uint32_t *long_mask, const EventT *spike_bn, OutT<ValueT> *output_bn,
                                   int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                   const Plan &plan, cudaStream_t stream)
   {
@@ -41,7 +42,7 @@ namespace hybrid
   // long_mask: long_row_mask() of the same matrix and plan, on the device.
   template <typename ValueT, typename EventT, typename IndexT, typename OffsetT>
   cudaError_t launch_accumulate_homo(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                     const uint32_t *long_mask, const EventT *spike_bn, ValueT *output_bn,
+                                     const uint32_t *long_mask, const EventT *spike_bn, OutT<ValueT> *output_bn,
                                      int32_t *short_rows, void *workspace, int rows, int cols, int batch, const Plan &plan,
                                      cudaStream_t stream)
   {
@@ -52,7 +53,7 @@ namespace hybrid
   // hybrid_v3_gz: output_bn may hold anything; each group's K1 zeroes that group's output rows first.
   template <typename ValueT, typename EventT, typename IndexT, typename OffsetT>
   cudaError_t launch_group_zeroed_homo(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr,
-                                       const uint32_t *long_mask, const EventT *spike_bn, ValueT *output_bn,
+                                       const uint32_t *long_mask, const EventT *spike_bn, OutT<ValueT> *output_bn,
                                        int32_t *short_rows, void *workspace, int rows, int cols, int batch,
                                        const Plan &plan, cudaStream_t stream)
   {
@@ -65,10 +66,10 @@ namespace hybrid
 {
   // Definitions live in this translation unit; ordinary C++ callers link these instances.
 #define INSTANTIATE_V3(V, E, I, O)                                                                                                                                                          \
-  template cudaError_t launch_accumulate<V, E, I, O>(const V *, const I *, const O *, const uint32_t *, const E *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);      \
-  template cudaError_t launch_group_zeroed<V, E, I, O>(const V *, const I *, const O *, const uint32_t *, const E *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);    \
-  template cudaError_t launch_accumulate_homo<V, E, I, O>(const V *, const I *, const O *, const uint32_t *, const E *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t); \
-  template cudaError_t launch_group_zeroed_homo<V, E, I, O>(const V *, const I *, const O *, const uint32_t *, const E *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);
+  template cudaError_t launch_accumulate<V, E, I, O>(const V *, const I *, const O *, const uint32_t *, const E *, OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);      \
+  template cudaError_t launch_group_zeroed<V, E, I, O>(const V *, const I *, const O *, const uint32_t *, const E *, OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);    \
+  template cudaError_t launch_accumulate_homo<V, E, I, O>(const V *, const I *, const O *, const uint32_t *, const E *, OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t); \
+  template cudaError_t launch_group_zeroed_homo<V, E, I, O>(const V *, const I *, const O *, const uint32_t *, const E *, OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);
 #define INSTANTIATE_V3_INDICES(V, E)     \
   INSTANTIATE_V3(V, E, int32_t, int32_t) \
   INSTANTIATE_V3(V, E, int32_t, int64_t) \
@@ -108,7 +109,10 @@ namespace
                             int64_t task_capacity, int64_t expected_sms, int64_t expected_l2_bytes, int64_t stream)
   {
     constexpr BE::DType value_dtype = op_traits::ValueTraits<ValueT>::dtype;
-    BE_CHECK(values.dtype() == value_dtype && output.dtype() == value_dtype &&
+    // Edges accumulate in OutT (float for half/bfloat16); the caller rounds once to ValueT.
+    using OutT = hybrid::OutT<ValueT>;
+    constexpr BE::DType out_dtype = op_traits::ValueTraits<OutT>::dtype;
+    BE_CHECK(values.dtype() == value_dtype && output.dtype() == out_dtype &&
              events.dtype() == op_traits::EventTraits<EventT>::dtype &&
              op_traits::is_signed_index(indices.dtype()) && op_traits::is_signed_index(indptr.dtype()) &&
              long_mask.dtype() == BE::DType::UInt32 && workspace.dtype() == BE::DType::UInt32 &&
@@ -124,20 +128,22 @@ namespace
     BE_CHECK(rows <= std::numeric_limits<int>::max() && cols <= std::numeric_limits<int>::max() &&
              batch <= std::numeric_limits<int>::max())
         << name << ": dimensions exceed int32";
+    BE_CHECK(indptr.dtype() != BE::DType::Int32 || nnz <= std::numeric_limits<int32_t>::max())
+        << name << ": int32 indptr cannot address nnz";
     const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
     if (batch == 0 || cols == 0)
       return;
     if (rows == 0 || nnz == 0)
     {
       // Nothing to scatter: the overwrite contract still requires a zero output.
-      BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr<ValueT>(), 0,
-                                    static_cast<size_t>(batch) * cols * sizeof(ValueT), cuda_stream));
+      BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr<OutT>(), 0,
+                                    static_cast<size_t>(batch) * cols * sizeof(OutT), cuda_stream));
       return;
     }
     check_prepared_spmm_device(name, expected_sms, expected_l2_bytes);
     BE_CHECK((group == 4 || group == 8 || group == 16 || group == 32) && long_threshold >= 0 &&
              chunk >= 1 && chunk <= batch && chunk <= hybrid::kMaxGroupBatches && long_tasks >= 0 &&
-             task_capacity == chunk * long_tasks)
+             long_tasks <= std::numeric_limits<int64_t>::max() / chunk && task_capacity == chunk * long_tasks)
         << name << ": invalid plan";
     hybrid::Plan plan;
     plan.group = static_cast<int>(group);
@@ -148,14 +154,14 @@ namespace
     plan.nnz = nnz;
     BE_CHECK(static_cast<size_t>(workspace.numel()) * sizeof(uint32_t) >=
                  hybrid::workspace_bytes(plan, static_cast<int>(batch)) &&
-             static_cast<int64_t>(short_rows.numel()) >= batch * rows)
+             static_cast<int64_t>(short_rows.numel()) >= chunk * rows)
         << name << ": scratch too small";
     BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, {
       constexpr auto launch = Homo ? hybrid::launch_group_zeroed_homo<ValueT, EventT, IndexT, OffsetT>
                                    : hybrid::launch_group_zeroed<ValueT, EventT, IndexT, OffsetT>;
       BE_CUDA_CHECK((launch(
           values.data_ptr<const ValueT>(), indices.data_ptr<const IndexT>(), indptr.data_ptr<const OffsetT>(),
-          long_mask.data_ptr<const uint32_t>(), events.data_ptr<const EventT>(), output.data_ptr<ValueT>(),
+          long_mask.data_ptr<const uint32_t>(), events.data_ptr<const EventT>(), output.data_ptr<OutT>(),
           short_rows.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(), static_cast<int>(rows),
           static_cast<int>(cols), static_cast<int>(batch), plan, cuda_stream)));
     });

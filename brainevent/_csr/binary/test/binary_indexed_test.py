@@ -1638,23 +1638,24 @@ def test_structural_vmap_invalidates_exact_plan(indexed):
     if jax.default_backend() == 'gpu':
         native = jax.vmap(lambda ptr: _prepared_call(
             case, case.weights, case.events, indexed=indexed, config=case.config, indptr=ptr))
-        with pytest.raises(brainevent.KernelCompilationError, match='prepared CSRConfig'):
-            jax.jit(native)(pointers)
+        binary = np.stack([_prepared_reference(case, case.weights, case.events, indexed=indexed,
+                                               indptr=ptr) for ptr in pointers])
+        np.testing.assert_array_equal(jax.jit(native)(pointers), binary)
 
 
 @pytest.mark.usefixtures('_prepared_enable_x64')
 @pytest.mark.parametrize('indexed', [True])
-def test_native_unprepared_mm_and_mv_vmap_fail_at_hybrid_lowering(indexed):
+def test_native_unprepared_mm_and_mv_vmap_use_portable_fallback(indexed):
     if jax.default_backend() != 'gpu':
         pytest.skip('actual hybrid lowering requires GPU')
     case = _prepared_case()
+    expected = _prepared_reference(case, case.weights, case.events, indexed=indexed)
     for config in (None, CSRConfig(device_info=case.config.device_info),
                    replace(case.config, device_info=None)):
         function = lambda x: _prepared_call(case, case.weights, x, indexed=indexed, config=config)
-        with pytest.raises(brainevent.KernelCompilationError, match='prepared CSRConfig'):
-            jax.jit(function)(case.events)
-        with pytest.raises(brainevent.KernelCompilationError, match='prepared CSRConfig'):
-            jax.jit(jax.vmap(function))(case.events.T)
+        np.testing.assert_array_equal(jax.jit(function)(case.events), expected)
+        batched = jax.jit(jax.vmap(function))(case.events.T)
+        np.testing.assert_array_equal(np.asarray(batched).T, expected)
 
 
 # Sampled gradient dispatch and backend derivatives
@@ -1766,7 +1767,10 @@ def test_csr_consumers_dispatch_slot_gradients(monkeypatch, case, transpose, bat
 @pytest.mark.parametrize('batch', [None, 1, 3])
 @pytest.mark.parametrize('weighted', [False, True])
 @pytest.mark.parametrize('indexed', [True])
-def test_event_consumers_preserve_activity_before_narrowing(transpose, batch, weighted, indexed):
+def test_event_consumers_preserve_activity_after_cast(transpose, batch, weighted, indexed):
+    # Binary activity reads the original events (1e-8 is active). Weighted activity is
+    # tested after the cast to the cotangent dtype, as in CUDA and cuSPARSE: 1e-8
+    # underflows to zero in float16 and contributes nothing.
     rows = jnp.array([0, 0, 1, 2], jnp.int32)
     cols = jnp.array([2, 0, 1, 1], jnp.int32)
     indptr = jnp.array([0, 2, 3, 4], jnp.int32)
@@ -1792,7 +1796,8 @@ def test_event_consumers_preserve_activity_before_narrowing(transpose, batch, we
     unit, out = (rows, cols) if transpose else (cols, rows)
     x = events[unit]
     terms = x.astype(ct.dtype) * ct[out] if weighted else ct[out]
-    expected = jnp.where(x != 0, terms, 0)
+    active = x.astype(ct.dtype) != 0 if weighted else x != 0
+    expected = jnp.where(active, terms, 0)
     if batch is not None:
         expected = jnp.sum(expected, axis=1)
     if indexed:
@@ -1933,3 +1938,29 @@ def test_event_gradient_resolves_backend_on_compilation_platform(monkeypatch, in
     assert next(iter(actual.devices())).platform == 'cpu'
     ir = fn.lower(w, ct).as_text()
     assert 'hybrid_sddmv_' not in ir and 'batched_v3_sddmm_' not in ir
+
+
+# Half-precision indexed scatter accumulation
+# -------------------------------------------
+
+@requires_gpu_backend
+@pytest.mark.parametrize('matrix', [False, True], ids=['mv', 'mm'])
+@pytest.mark.parametrize('column_nnz', [2, 600], ids=['short_columns', 'long_columns'])
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('dtype_name,fan_in', [('bfloat16', 1000), ('float16', 3000)])
+def test_native_half_indexed_scatter_accumulates_in_float32(dtype_name, fan_in, weighted, column_nnz, matrix):
+    # Fan-ins above 256 (bf16) / 2048 (fp16) saturate a storage-dtype accumulator.
+    nnz = fan_in * column_nnz
+    indices = jnp.asarray(np.tile(np.arange(column_nnz, dtype=np.int32), fan_in))
+    indptr = jnp.asarray(np.arange(fan_in + 1, dtype=np.int32) * column_nnz)
+    perm = jnp.arange(nnz - 1, -1, -1, dtype=jnp.int32)
+    weights = jnp.ones((nnz,), dtype_name)
+    shape = (fan_in, column_nnz)
+    events = jnp.ones((fan_in, 2) if matrix else (fan_in,), jnp.float32 if weighted else jnp.bool_)
+    operation = binary_csrmm_indexed if matrix else binary_csrmv_indexed
+    actual = operation(weights, indices, indptr, perm, events, shape=shape, transpose=True,
+                       weighted=weighted, backend='cuda_raw',
+                       config=prepared_config(indices, indptr, shape))
+    assert actual.dtype == weights.dtype
+    np.testing.assert_array_equal(np.asarray(actual, np.float32),
+                                  np.full(actual.shape, fan_in, np.float32))

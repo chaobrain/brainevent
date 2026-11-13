@@ -1906,10 +1906,11 @@ def test_public_binary_functions_need_no_workspace(backend, transpose):
 
 @pytest.mark.parametrize('indexed', [False, True])
 def test_understated_max_row_nnz_is_rejected_against_prepared_config(indexed):
-    # An understated hint shrinks the cuda_raw task queue and silently drops
-    # work, so it is checked against the prepared structural statistics.
+    # A hint whose power-of-two bucket is below the prepared bound is certainly
+    # below the longest row; it is rejected against the prepared statistics.
     M, dense = _pytree_matrix(CSR, 'jax_raw')
     longest = int(np.diff(np.asarray(M.indptr)).max())
+    assert longest <= M.config.primary_max_row_nnz < 2 * longest
     x = _spike_vector(M.shape[1])
     if indexed:
         perm = jnp.arange(M.nse)
@@ -1919,18 +1920,20 @@ def test_understated_max_row_nnz_is_rejected_against_prepared_config(indexed):
         call = lambda hint: brainevent.binary_csrmv(
             M.data, M.indices, M.indptr, x, shape=M.shape, max_row_nnz=hint, config=M.config)
     with pytest.raises(ValueError, match='max_row_nnz'):
-        call(longest - 1)
+        call(M.config.primary_max_row_nnz // 2)
     np.testing.assert_allclose(call(longest), dense @ np.asarray(x, np.float32), rtol=1e-5)
 
 
 @pytest.mark.parametrize('cls', [CSR, CSC])
 def test_config_carries_prepared_longest_rows_for_both_layouts(cls):
     M, _ = _pytree_matrix(cls, 'jax_raw')
+    from brainevent._csr.config import _bucket
+
     longest = int(np.diff(np.asarray(M.indptr)).max())
-    assert M.config.primary_max_row_nnz == longest
+    assert M.config.primary_max_row_nnz == _bucket(longest, M.nse)
     M2 = M.build_weight_indices()
     mirror_longest = int(np.diff(np.asarray(M2.buffers[M2._mirror_key][0])).max())
-    assert M2.config.mirror_max_row_nnz == mirror_longest
+    assert M2.config.mirror_max_row_nnz == _bucket(mirror_longest, M.nse)
 
 
 # Object and global backend selection
@@ -2489,7 +2492,10 @@ def test_constructor_reuses_validation_host_copies_for_plan_preparation(monkeypa
         return check_structure(*args, **kwargs)
 
     def record_prepare(config, indices, indptr, **kwargs):
-        assert indices is validated['indices']
+        # Planning needs only index metadata, so the device indices are
+        # passed through rather than a host copy.
+        assert indices is not validated['indices']
+        assert not isinstance(indices, np.ndarray)
         assert indptr is validated['indptr']
         return prepare(config, indices, indptr, **kwargs)
 
@@ -3036,3 +3042,52 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
     for call, mirror in zip(calls, (csr_mirror, csr_mirror, csc_mirror, csc_mirror)):
         assert call["indptr"] is mirror[0]
         assert call["perm"] is mirror[2]
+
+
+# Executable reuse across redrawn structures
+# ------------------------------------------
+
+def _redrawn_csr(seed, rows, cols, nnz):
+    rng = np.random.default_rng(seed)
+    slots = np.sort(rng.choice(rows * cols, nnz, replace=False))
+    counts = np.bincount(slots // cols, minlength=rows)
+    indptr = np.r_[0, np.cumsum(counts)].astype(np.int32)
+    weights = jnp.asarray(rng.standard_normal(nnz), jnp.float32)
+    matrix = CSR((weights, jnp.asarray(slots % cols, jnp.int32), jnp.asarray(indptr)), shape=(rows, cols))
+    return matrix, int(counts.max())
+
+
+@pytest.mark.parametrize('matmat', [False, True], ids=['vector', 'matrix'])
+@pytest.mark.parametrize('rows,cols,nnz', [(400, 300, 6000), (40, 3000, 24000)], ids=['short_rows', 'long_rows'])
+def test_redrawn_structures_with_equal_shape_and_nnz_share_one_executable(rows, cols, nnz, matmat):
+    # Prepared row statistics are static metadata; power-of-two buckets keep a
+    # fresh random structure of the same shape and nnz on the cached executable.
+    product = jax.jit(lambda matrix, events: events @ matrix)
+    events = jnp.ones((2, rows) if matmat else (rows,), jnp.float32)
+    longest = set()
+    for seed in range(5):
+        matrix, maximum = _redrawn_csr(seed, rows, cols, nnz)
+        longest.add(maximum)
+        expected = np.asarray(events) @ np.asarray(matrix.todense())
+        np.testing.assert_allclose(product(matrix, events), expected, rtol=1e-4, atol=1e-4)
+    assert len(longest) > 1
+    assert product._cache_size() == 1
+
+
+@pytest.mark.parametrize('check_structure', [False, True])
+def test_construction_copies_index_values_only_to_validate_them(monkeypatch, check_structure):
+    copied = []
+    original = csr_main._host_structure_array
+
+    def record(source, converted):
+        copied.append(tuple(converted.shape))
+        return original(source, converted)
+
+    monkeypatch.setattr(csr_main, '_host_structure_array', record)
+    indices = jnp.array([0, 2, 1, 2, 0], jnp.int32)
+    indptr = jnp.array([0, 2, 5], jnp.int32)
+    matrix = CSR((jnp.ones(5), indices, indptr), shape=(2, 3), check_structure=check_structure)
+    assert ((5,) in copied) == check_structure
+    assert (3,) in copied  # indptr is needed for the plan
+    assert matrix.config.primary is not None
+    np.testing.assert_array_equal(matrix.todense(), [[1, 0, 1], [1, 1, 1]])

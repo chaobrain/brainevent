@@ -5,8 +5,8 @@
 // hybrid (v3) weighted SpMM: the binary operator's schedule (hybrid_batchedv3_spmm_impl.cuh) with QueueT = ValueT, so
 // each active event value scales its contributions:
 //   output[b, col] += events[b, row] * w   over events[b, row] != 0   (w = values[j] or values[0]).
-// Events, values and output share ValueT in {half, bfloat16, float, double}; products and sums use
-// AccT. Negative and NaN events are active. Event values follow the vw standard (no row lookup):
+// Events and values share ValueT in {half, bfloat16, float, double}; products, sums and the output
+// use AccT (OutT<ValueT>). Negative and NaN events are active. Event values follow the vw standard (no row lookup):
 // short rows re-read events[b, row] from the short list's row; long-row tasks carry their value in
 // the task value queue, so the workspace is workspace_bytes(plan, batch, sizeof(ValueT)).
 #include "hybrid_batchedv3_spmm_impl.cuh"
@@ -16,7 +16,7 @@ namespace hybrid
 #define DEFINE_WEIGHTED_LAUNCH(NAME, ZERO, HOMO)                                                                 \
   template <typename ValueT, typename IndexT, typename OffsetT>                                                  \
   cudaError_t NAME(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr, const uint32_t *long_mask, \
-                   const ValueT *events, ValueT *output, int32_t *short_rows, void *workspace, int rows, int cols,  \
+                   const ValueT *events, OutT<ValueT> *output, int32_t *short_rows, void *workspace, int rows, int cols,  \
                    int batch, const Plan &plan, cudaStream_t stream)                                             \
   {                                                                                                              \
     return launch_impl<ZERO, HOMO, ValueT, ValueT, ValueT, IndexT, OffsetT>(                                     \
@@ -31,10 +31,10 @@ namespace hybrid
 
   // Definitions live in this translation unit; ordinary C++ callers link these instances.
 #define INSTANTIATE_WEIGHTED(V, I, O)                                                                                                                                                         \
-  template cudaError_t launch_accumulate_weighted<V, I, O>(const V *, const I *, const O *, const uint32_t *, const V *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);      \
-  template cudaError_t launch_group_zeroed_weighted<V, I, O>(const V *, const I *, const O *, const uint32_t *, const V *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);    \
-  template cudaError_t launch_accumulate_weighted_homo<V, I, O>(const V *, const I *, const O *, const uint32_t *, const V *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t); \
-  template cudaError_t launch_group_zeroed_weighted_homo<V, I, O>(const V *, const I *, const O *, const uint32_t *, const V *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);
+  template cudaError_t launch_accumulate_weighted<V, I, O>(const V *, const I *, const O *, const uint32_t *, const V *, OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);      \
+  template cudaError_t launch_group_zeroed_weighted<V, I, O>(const V *, const I *, const O *, const uint32_t *, const V *, OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);    \
+  template cudaError_t launch_accumulate_weighted_homo<V, I, O>(const V *, const I *, const O *, const uint32_t *, const V *, OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t); \
+  template cudaError_t launch_group_zeroed_weighted_homo<V, I, O>(const V *, const I *, const O *, const uint32_t *, const V *, OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);
 #define INSTANTIATE_WEIGHTED_INDICES(V)    \
   INSTANTIATE_WEIGHTED(V, int32_t, int32_t) \
   INSTANTIATE_WEIGHTED(V, int32_t, int64_t) \
@@ -70,7 +70,10 @@ namespace
                             int64_t task_capacity, int64_t expected_sms, int64_t expected_l2_bytes, int64_t stream)
   {
     constexpr BE::DType value_dtype = op_traits::ValueTraits<ValueT>::dtype;
-    BE_CHECK(values.dtype() == value_dtype && output.dtype() == value_dtype &&
+    // Edges accumulate in OutT (float for half/bfloat16); the caller rounds once to ValueT.
+    using OutT = hybrid::OutT<ValueT>;
+    constexpr BE::DType out_dtype = op_traits::ValueTraits<OutT>::dtype;
+    BE_CHECK(values.dtype() == value_dtype && output.dtype() == out_dtype &&
              events.dtype() == value_dtype &&
              op_traits::is_signed_index(indices.dtype()) && op_traits::is_signed_index(indptr.dtype()) &&
              long_mask.dtype() == BE::DType::UInt32 && workspace.dtype() == BE::DType::UInt32 &&
@@ -86,20 +89,22 @@ namespace
     BE_CHECK(rows <= std::numeric_limits<int>::max() && cols <= std::numeric_limits<int>::max() &&
              batch <= std::numeric_limits<int>::max())
         << name << ": dimensions exceed int32";
+    BE_CHECK(indptr.dtype() != BE::DType::Int32 || nnz <= std::numeric_limits<int32_t>::max())
+        << name << ": int32 indptr cannot address nnz";
     const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
     if (batch == 0 || cols == 0)
       return;
     if (rows == 0 || nnz == 0)
     {
       // Nothing to scatter: the overwrite contract still requires a zero output.
-      BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr<ValueT>(), 0,
-                                    static_cast<size_t>(batch) * cols * sizeof(ValueT), cuda_stream));
+      BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr<OutT>(), 0,
+                                    static_cast<size_t>(batch) * cols * sizeof(OutT), cuda_stream));
       return;
     }
     check_prepared_spmm_device(name, expected_sms, expected_l2_bytes);
     BE_CHECK((group == 4 || group == 8 || group == 16 || group == 32) && long_threshold >= 0 &&
              chunk >= 1 && chunk <= batch && chunk <= hybrid::kMaxGroupBatches && long_tasks >= 0 &&
-             task_capacity == chunk * long_tasks)
+             long_tasks <= std::numeric_limits<int64_t>::max() / chunk && task_capacity == chunk * long_tasks)
         << name << ": invalid plan";
     hybrid::Plan plan;
     plan.group = static_cast<int>(group);
@@ -110,14 +115,14 @@ namespace
     plan.nnz = nnz;
     BE_CHECK(static_cast<size_t>(workspace.numel()) * sizeof(uint32_t) >=
                  hybrid::workspace_bytes(plan, static_cast<int>(batch), sizeof(ValueT)) &&
-             static_cast<int64_t>(short_rows.numel()) >= batch * rows)
+             static_cast<int64_t>(short_rows.numel()) >= chunk * rows)
         << name << ": scratch too small";
     BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, {
       constexpr auto launch = Homo ? hybrid::launch_group_zeroed_weighted_homo<ValueT, IndexT, OffsetT>
                                    : hybrid::launch_group_zeroed_weighted<ValueT, IndexT, OffsetT>;
       BE_CUDA_CHECK((launch(
           values.data_ptr<const ValueT>(), indices.data_ptr<const IndexT>(), indptr.data_ptr<const OffsetT>(),
-          long_mask.data_ptr<const uint32_t>(), events.data_ptr<const ValueT>(), output.data_ptr<ValueT>(),
+          long_mask.data_ptr<const uint32_t>(), events.data_ptr<const ValueT>(), output.data_ptr<OutT>(),
           short_rows.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(), static_cast<int>(rows),
           static_cast<int>(cols), static_cast<int>(batch), plan, cuda_stream)));
     });

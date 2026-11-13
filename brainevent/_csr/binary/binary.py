@@ -3,6 +3,7 @@
 # http://www.apache.org/licenses/LICENSE-2.0
 
 import hashlib
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +14,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._compatible_import import match_varying_axes
+from brainevent._error import PerformanceWarning
 from brainevent._misc import (
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
@@ -27,6 +29,7 @@ from brainevent._csr._support.binary import (
     _ignore_config_mask,
     _config_from_params,
     _batch_config_params,
+    _accumulator_info,
     _hybrid_scratch,
     _check_max_row_nnz,
     _config_for_call,
@@ -794,9 +797,10 @@ def _binary_csrmv_cuda_kernel(
         def kernel(weights, indices, indptr, vector):
             vector = event_abi.prepare(vector)
             scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
+            out_info = kwargs['outs'][0]
             math_out = jax.ffi.ffi_call(
                 kernel_name,
-                (kwargs['outs'][0], *scratch_info),
+                (_accumulator_info(out_info), *scratch_info),
                 input_output_aliases={4: 1, 5: 2, 6: 3},
             )(
                 weights,
@@ -806,7 +810,7 @@ def _binary_csrmv_cuda_kernel(
                 *scratch,
                 task_capacity=kwargs['task_capacity'],
             )[0]
-            return (math_out,)
+            return (math_out.astype(out_info.dtype),)
 
     else:
         load_cuda_file(
@@ -1448,6 +1452,43 @@ def _binary_csrmm_cusparse_kernel(
 
 
 # Shared hybrid MM CUDA path for ordinary and indexed CSR calls.
+_UNPREPARED_MM_WARNED: set = set()
+
+
+def _hybrid_mm_needs_fallback(kwargs, vector_info, weight_info) -> bool:
+    """Whether a native scatter MM lacks the prepared plan the hybrid kernel needs.
+
+    Empty calls never launch the kernel, so they need no plan. Otherwise the
+    hybrid SpMM needs an exact call plan and the preparation GPU's launch
+    properties, which traced, vmapped or ``config=None`` structures lack.
+    """
+    out_info = kwargs['outs'][0]
+    if (not vector_info.shape[1] or not kwargs['indptr_info'].size - 1
+            or not out_info.shape[0] or not kwargs['indices_info'].size):
+        return False
+    if np.dtype(weight_info.dtype).name not in ('float16', 'bfloat16', 'float32', 'float64'):
+        return False  # let the adapter raise its dtype error
+    spec = kwargs.get('config_spec')
+    device = None if spec is None else spec.device_info
+    return (kwargs.get('call_plan') is None or device is None or device.platform != 'gpu'
+            or device.sms <= 0 or device.l2_bytes <= 0)
+
+
+def _warn_unprepared_mm(primitive: str) -> None:
+    """Warn once per primitive that native scatter MM uses the portable path."""
+    if primitive in _UNPREPARED_MM_WARNED:
+        return
+    _UNPREPARED_MM_WARNED.add(primitive)
+    warnings.warn(
+        f"{primitive}: the native CUDA scatter MM has no prepared CSRConfig plan for this "
+        "structure (it is traced, vmapped, or config=None), so it uses the portable JAX "
+        "scatter. Construct the sparse matrix (or call CSRConfig.prepare_structure) outside "
+        "jax.jit and pass its config to use the native kernel.",
+        PerformanceWarning,
+        stacklevel=2,
+    )
+
+
 def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
                            indices_info, indptr_info, outs=None, out_info=None,
                            weighted=False, permuted=False, perm_info=None, **kwargs):
@@ -1526,7 +1567,7 @@ def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
     if not weighted:
         symbol += abi.suffix
     infos = (
-        jax.ShapeDtypeStruct((batch, cols), out_info.dtype),
+        _accumulator_info(jax.ShapeDtypeStruct((batch, cols), out_info.dtype)),
         jax.ShapeDtypeStruct((call_plan.workspace_words,), jnp.uint32),
         jax.ShapeDtypeStruct((call_plan.short_rows_size,), jnp.int32),
     )
@@ -1549,7 +1590,7 @@ def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
         if native_permuted:
             operands += (perm,)
         output = ffi(*operands, long_mask, abi.prepare(events).T, **attrs)[0]
-        return (match_varying_axes(output.T, *args),)
+        return (match_varying_axes(output.T.astype(out_info.dtype), *args),)
 
     return kernel
 
@@ -1575,6 +1616,10 @@ def _binary_csrmm_cuda_kernel(
     homo_suffix = '_homo' if is_homo else '_hetero'
 
     if transpose:
+        if _hybrid_mm_needs_fallback(kwargs, vector_info, weight_info):
+            _warn_unprepared_mm('binary_csrmm')
+            return _ignore_config_mask(_binary_csrmm_jax_kernel)(
+                weight_info=weight_info, vector_info=vector_info, transpose=True, **kwargs)
         return _make_hybrid_mm_kernel(
             weight_info=weight_info, vector_info=vector_info,
             permuted=False, **kwargs,

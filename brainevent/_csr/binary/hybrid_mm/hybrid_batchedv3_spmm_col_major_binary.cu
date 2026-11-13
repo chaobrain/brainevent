@@ -12,7 +12,7 @@ namespace hybrid_col_major
 #define DEFINE_COL_MAJOR_BINARY_LAUNCH(NAME, ZERO)                                                             \
   template <class ValueT, class EventT, class IndexT, class OffsetT>                                            \
   cudaError_t NAME(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr, const OffsetT *perm,     \
-                   const uint32_t *long_mask, const EventT *events, ValueT *output, int32_t *short_rows,        \
+                   const uint32_t *long_mask, const EventT *events, hybrid::OutT<ValueT> *output, int32_t *short_rows,        \
                    void *workspace, int rows, int cols, int batch, const Plan &plan, cudaStream_t stream)      \
   {                                                                                                          \
     return hybrid::launch_impl<ZERO, false, ValueT, EventT, void, IndexT, OffsetT, true>(                        \
@@ -25,9 +25,9 @@ namespace hybrid_col_major
 
 #define INSTANTIATE_COL_MAJOR_BINARY(V, E, I, O)                                                               \
   template cudaError_t launch_accumulate<V, E, I, O>(const V *, const I *, const O *, const O *,                \
-      const uint32_t *, const E *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);           \
+      const uint32_t *, const E *, hybrid::OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);           \
   template cudaError_t launch_group_zeroed<V, E, I, O>(const V *, const I *, const O *, const O *,              \
-      const uint32_t *, const E *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);
+      const uint32_t *, const E *, hybrid::OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);
 #define INSTANTIATE_COL_MAJOR_BINARY_INDICES(V, E)      \
   INSTANTIATE_COL_MAJOR_BINARY(V, E, int32_t, int32_t)   \
   INSTANTIATE_COL_MAJOR_BINARY(V, E, int32_t, int64_t)   \

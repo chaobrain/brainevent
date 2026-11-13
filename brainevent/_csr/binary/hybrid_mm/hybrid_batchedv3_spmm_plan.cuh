@@ -46,6 +46,7 @@ namespace hybrid
   }
 
   // Batches per chunk so that one chunk's output (cols x value_bytes each) uses at most L2 / kL2Divisor.
+  // value_bytes is the output element size, sizeof(OutT<ValueT>): 4 for half/bfloat16/float, 8 for double.
   constexpr int chunk_batches(int cols, int batch, int l2_bytes, int value_bytes)
   {
     const int64_t per_batch = static_cast<int64_t>(cols) * value_bytes;

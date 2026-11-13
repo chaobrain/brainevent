@@ -87,8 +87,9 @@ namespace
     {
         using AccT = float;
         static constexpr BE::DType dtype = BE::DType::Float32;
+        static constexpr BE::DType out_dtype = BE::DType::Float32;
         __device__ static AccT read(float value) { return READ_F32(value); }
-        __device__ static void atomic_add(float *addr, AccT value) { atomic_add_f32(addr, value); }
+        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f32(addr, value); }
     };
 
     template <>
@@ -96,8 +97,9 @@ namespace
     {
         using AccT = double;
         static constexpr BE::DType dtype = BE::DType::Float64;
+        static constexpr BE::DType out_dtype = BE::DType::Float64;
         __device__ static AccT read(double value) { return READ_F64(value); }
-        __device__ static void atomic_add(double *addr, AccT value) { atomic_add_f64(addr, value); }
+        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f64(addr, value); }
     };
 
     template <>
@@ -105,8 +107,9 @@ namespace
     {
         using AccT = float;
         static constexpr BE::DType dtype = BE::DType::Float16;
+        static constexpr BE::DType out_dtype = BE::DType::Float32;
         __device__ static AccT read(__half value) { return READ_F16(value); }
-        __device__ static void atomic_add(__half *addr, AccT value) { atomic_add_f16(addr, value); }
+        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f32(addr, value); }
     };
 
     template <>
@@ -114,9 +117,15 @@ namespace
     {
         using AccT = float;
         static constexpr BE::DType dtype = BE::DType::BFloat16;
+        static constexpr BE::DType out_dtype = BE::DType::Float32;
         __device__ static AccT read(__nv_bfloat16 value) { return READ_BF16(value); }
-        __device__ static void atomic_add(__nv_bfloat16 *addr, AccT value) { atomic_add_bf16(addr, value); }
+        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f32(addr, value); }
     };
+
+    // Output (and accumulator) element type: float for f16/bf16, so each
+    // edge adds in float32 and the caller rounds the sum once.
+    template <typename WeightT>
+    using HybridOutT = typename HybridWeightTraits<WeightT>::AccT;
 
     template <typename EventT>
     struct HybridEventTraits;
@@ -173,7 +182,7 @@ namespace
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         const OffsetT *__restrict__ perm,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
         typename HybridWeightTraits<WeightT>::AccT scale)
@@ -201,7 +210,7 @@ namespace
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
         const OffsetT *__restrict__ perm,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
         typename HybridWeightTraits<WeightT>::AccT scale)
@@ -229,7 +238,7 @@ namespace
         const OffsetT *__restrict__ perm,
         const OffsetT *__restrict__ indptr,
         const EventT *__restrict__ vector,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         OffsetT *__restrict__ task_begin,
         OffsetT *__restrict__ task_end,
         int32_t *__restrict__ status,
@@ -272,14 +281,17 @@ namespace
         int32_t n_chunks = TaskChunksForColumnNnz(nnz, status);
         if (n_chunks <= 0)
         {
+            // Chunk count beyond int32: keep every edge on this thread.
+            ScatterRangeThread<Weighted>(weights, indices, perm, output, col_begin, col_end, scale);
             return;
         }
 
         int32_t base = atomicAdd(&status[kStatusCountIndex], n_chunks);
         if (base < 0 || base > task_capacity || n_chunks > task_capacity - base)
         {
+            // A stale or undersized capacity never drops edges: the chunks that
+            // fit are queued, the rest are scattered by this thread below.
             atomicExch(&status[kStatusOverflowIndex], 1);
-            return;
         }
 
         for (int32_t chunk = 0; chunk < n_chunks; ++chunk)
@@ -288,6 +300,11 @@ namespace
             OffsetT remaining = col_end - begin;
             OffsetT end = remaining > static_cast<OffsetT>(kTaskNnz)
                               ? begin + static_cast<OffsetT>(kTaskNnz) : col_end;
+            if (base < 0 || chunk >= task_capacity - base)
+            {
+                ScatterRangeThread<Weighted>(weights, indices, perm, output, begin, end, scale);
+                continue;
+            }
             int32_t task = base + chunk;
             task_begin[task] = begin;
             if constexpr (Weighted)
@@ -312,7 +329,7 @@ namespace
         const OffsetT *__restrict__ task_end,
         const int32_t *__restrict__ status,
         int task_capacity,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         const OffsetT *__restrict__ indptr,
         const EventT *__restrict__ vector)
     {
@@ -369,7 +386,7 @@ namespace
         const OffsetT *indptr,
         const OffsetT *perm,
         const EventT *vector,
-        WeightT *output,
+        HybridOutT<WeightT> *output,
         OffsetT *task_begin,
         OffsetT *task_end,
         int32_t *device_status,
@@ -389,7 +406,7 @@ namespace
         cudaError_t status_code = cudaSuccess;
         if (n_rows > 0)
         {
-            status_code = cudaMemsetAsync(output, 0, static_cast<size_t>(n_rows) * sizeof(WeightT), stream);
+            status_code = cudaMemsetAsync(output, 0, static_cast<size_t>(n_rows) * sizeof(HybridOutT<WeightT>), stream);
             if (status_code != cudaSuccess)
             {
                 return InternalCudaError("cudaMemsetAsync(output) failed", status_code);
@@ -490,8 +507,8 @@ namespace
                 status_output.dtype() == BE::DType::Int32,
             (std::string(name) + " expects status=s32 and task scratch dtype to match indptr").c_str());
         BE_SPMV_COL_MAJOR_CHECK(
-            output.dtype() == HybridWeightTraits<WeightT>::dtype,
-            (std::string(name) + " expects matching output dtype").c_str());
+            output.dtype() == HybridWeightTraits<WeightT>::out_dtype,
+            (std::string(name) + " expects a float32 (f16/bf16/f32) or float64 accumulator output").c_str());
         BE_SPMV_COL_MAJOR_CHECK(
             weights.ndim() == 1 && indices.ndim() == 1 &&
                 indptr.ndim() == 1 && perm.ndim() == 1 && vector.ndim() == 1 &&
@@ -532,7 +549,7 @@ namespace
                 indptr.data_ptr<const OffsetT>(),
                 perm.data_ptr<const OffsetT>(),
                 vector.data_ptr<const EventT>(),
-                output.data_ptr<WeightT>(),
+                output.data_ptr<HybridOutT<WeightT>>(),
                 task_begin_output.data_ptr<OffsetT>(),
                 task_end_output.data_ptr<OffsetT>(),
                 status_output.data_ptr<int32_t>(),

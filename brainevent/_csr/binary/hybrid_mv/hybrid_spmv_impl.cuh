@@ -33,6 +33,9 @@
  *     vector         : bool/float32[m] for binary; weight dtype[m] for weighted
  *     task_begin/end : same dtype as indptr, scratch/output task ranges
  *     status         : s32[2] scratch/output {active_task_count, overflow_flag}
+ *     output         : f32[k] for f16/bf16/f32 weights, f64[k] for f64; every
+ *                      edge adds in this accumulator dtype and the caller
+ *                      rounds the finished sum once to the weight dtype
  *
  *   The output length is the CSR column count supplied by the Python/JAX caller.
  *   Vector activity is read inside the extract kernel each launch.
@@ -45,7 +48,8 @@
  *   Then allocate task_begin/task_end with task_capacity entries each using the
  *   same dtype as indptr and status with two int32 entries. task_capacity is a
  *   worst-case capacity for all heavy rows; the fixed-block scatter kernel reads
- *   status[0] on device.
+ *   status[0] on device. A smaller (stale) capacity stays correct: chunks without
+ *   a queue slot are scattered by the extracting thread and status[1] is set.
  *
  *   The hetero path reads weights[j]. The homo path reads weights[0] for every
  *   nonzero and otherwise reuses the same metadata and scratch contract.
@@ -125,8 +129,9 @@ namespace
     {
         using AccT = float;
         static constexpr BE::DType dtype = BE::DType::Float32;
+        static constexpr BE::DType out_dtype = BE::DType::Float32;
         __device__ static AccT read(float value) { return READ_F32(value); }
-        __device__ static void atomic_add(float *addr, AccT value) { atomic_add_f32(addr, value); }
+        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f32(addr, value); }
     };
 
     template <>
@@ -134,8 +139,9 @@ namespace
     {
         using AccT = double;
         static constexpr BE::DType dtype = BE::DType::Float64;
+        static constexpr BE::DType out_dtype = BE::DType::Float64;
         __device__ static AccT read(double value) { return READ_F64(value); }
-        __device__ static void atomic_add(double *addr, AccT value) { atomic_add_f64(addr, value); }
+        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f64(addr, value); }
     };
 
     template <>
@@ -143,8 +149,9 @@ namespace
     {
         using AccT = float;
         static constexpr BE::DType dtype = BE::DType::Float16;
+        static constexpr BE::DType out_dtype = BE::DType::Float32;
         __device__ static AccT read(__half value) { return READ_F16(value); }
-        __device__ static void atomic_add(__half *addr, AccT value) { atomic_add_f16(addr, value); }
+        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f32(addr, value); }
     };
 
     template <>
@@ -152,9 +159,15 @@ namespace
     {
         using AccT = float;
         static constexpr BE::DType dtype = BE::DType::BFloat16;
+        static constexpr BE::DType out_dtype = BE::DType::Float32;
         __device__ static AccT read(__nv_bfloat16 value) { return READ_BF16(value); }
-        __device__ static void atomic_add(__nv_bfloat16 *addr, AccT value) { atomic_add_bf16(addr, value); }
+        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f32(addr, value); }
     };
+
+    // Output (and accumulator) element type: float for f16/bf16, so each
+    // edge adds in float32 and the caller rounds the sum once.
+    template <typename WeightT>
+    using HybridOutT = typename HybridWeightTraits<WeightT>::AccT;
 
     template <typename EventT>
     struct HybridEventTraits;
@@ -210,7 +223,7 @@ namespace
     __device__ __forceinline__ void ScatterRange(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
         typename HybridWeightTraits<WeightT>::AccT scale)
@@ -235,7 +248,7 @@ namespace
     __device__ __forceinline__ void ScatterRangeThread(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
         typename HybridWeightTraits<WeightT>::AccT scale)
@@ -258,7 +271,7 @@ namespace
     __device__ __forceinline__ void ScatterRangeHomo(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
         typename HybridWeightTraits<WeightT>::AccT scale)
@@ -283,7 +296,7 @@ namespace
     __device__ __forceinline__ void ScatterRangeThreadHomo(
         const WeightT *__restrict__ weights,
         const IndexT *__restrict__ indices,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
         typename HybridWeightTraits<WeightT>::AccT scale)
@@ -308,7 +321,7 @@ namespace
         const IndexT *__restrict__ indices,
         const OffsetT *__restrict__ indptr,
         const EventT *__restrict__ vector,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         OffsetT *__restrict__ task_begin,
         OffsetT *__restrict__ task_end,
         int32_t *__restrict__ status,
@@ -351,14 +364,17 @@ namespace
         int32_t n_chunks = TaskChunksForRowNnz(nnz, status);
         if (n_chunks <= 0)
         {
+            // Chunk count beyond int32: keep every edge on this thread.
+            ScatterRangeThread<Weighted>(weights, indices, output, row_begin, row_end, scale);
             return;
         }
 
         int32_t base = atomicAdd(&status[kStatusCountIndex], n_chunks);
         if (base < 0 || base > task_capacity || n_chunks > task_capacity - base)
         {
+            // A stale or undersized capacity never drops edges: the chunks that
+            // fit are queued, the rest are scattered by this thread below.
             atomicExch(&status[kStatusOverflowIndex], 1);
-            return;
         }
 
         for (int32_t chunk = 0; chunk < n_chunks; ++chunk)
@@ -368,6 +384,11 @@ namespace
             if (end > row_end)
             {
                 end = row_end;
+            }
+            if (base < 0 || chunk >= task_capacity - base)
+            {
+                ScatterRangeThread<Weighted>(weights, indices, output, begin, end, scale);
+                continue;
             }
             int32_t task = base + chunk;
             task_begin[task] = begin;
@@ -392,7 +413,7 @@ namespace
         const OffsetT *__restrict__ task_end,
         const int32_t *__restrict__ status,
         int task_capacity,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         const OffsetT *__restrict__ indptr,
         const EventT *__restrict__ vector)
     {
@@ -432,7 +453,7 @@ namespace
         const IndexT *__restrict__ indices,
         const OffsetT *__restrict__ indptr,
         const EventT *__restrict__ vector,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         OffsetT *__restrict__ task_begin,
         OffsetT *__restrict__ task_end,
         int32_t *__restrict__ status,
@@ -475,14 +496,17 @@ namespace
         int32_t n_chunks = TaskChunksForRowNnz(nnz, status);
         if (n_chunks <= 0)
         {
+            // Chunk count beyond int32: keep every edge on this thread.
+            ScatterRangeThreadHomo<Weighted>(weights, indices, output, row_begin, row_end, scale);
             return;
         }
 
         int32_t base = atomicAdd(&status[kStatusCountIndex], n_chunks);
         if (base < 0 || base > task_capacity || n_chunks > task_capacity - base)
         {
+            // A stale or undersized capacity never drops edges: the chunks that
+            // fit are queued, the rest are scattered by this thread below.
             atomicExch(&status[kStatusOverflowIndex], 1);
-            return;
         }
 
         for (int32_t chunk = 0; chunk < n_chunks; ++chunk)
@@ -492,6 +516,11 @@ namespace
             if (end > row_end)
             {
                 end = row_end;
+            }
+            if (base < 0 || chunk >= task_capacity - base)
+            {
+                ScatterRangeThreadHomo<Weighted>(weights, indices, output, begin, end, scale);
+                continue;
             }
             int32_t task = base + chunk;
             task_begin[task] = begin;
@@ -516,7 +545,7 @@ namespace
         const OffsetT *__restrict__ task_end,
         const int32_t *__restrict__ status,
         int task_capacity,
-        WeightT *__restrict__ output,
+        HybridOutT<WeightT> *__restrict__ output,
         const OffsetT *__restrict__ indptr,
         const EventT *__restrict__ vector)
     {
@@ -574,7 +603,7 @@ namespace
         const IndexT *indices,
         const OffsetT *indptr,
         const EventT *vector,
-        WeightT *output,
+        HybridOutT<WeightT> *output,
         OffsetT *task_begin,
         OffsetT *task_end,
         int32_t *device_status,
@@ -592,7 +621,7 @@ namespace
         int task_capacity = static_cast<int>(task_capacity_attr);
 
         cudaError_t status_code =
-            cudaMemsetAsync(output, 0, static_cast<size_t>(k) * sizeof(WeightT), stream);
+            cudaMemsetAsync(output, 0, static_cast<size_t>(k) * sizeof(HybridOutT<WeightT>), stream);
         if (status_code != cudaSuccess)
         {
             return InternalCudaError("cudaMemsetAsync(output) failed", status_code);
@@ -659,7 +688,7 @@ namespace
         const IndexT *indices,
         const OffsetT *indptr,
         const EventT *vector,
-        WeightT *output,
+        HybridOutT<WeightT> *output,
         OffsetT *task_begin,
         OffsetT *task_end,
         int32_t *device_status,
@@ -677,7 +706,7 @@ namespace
         int task_capacity = static_cast<int>(task_capacity_attr);
 
         cudaError_t status_code =
-            cudaMemsetAsync(output, 0, static_cast<size_t>(k) * sizeof(WeightT), stream);
+            cudaMemsetAsync(output, 0, static_cast<size_t>(k) * sizeof(HybridOutT<WeightT>), stream);
         if (status_code != cudaSuccess)
         {
             return InternalCudaError("cudaMemsetAsync(output) failed", status_code);
@@ -776,8 +805,8 @@ namespace
                 status_output.dtype() == BE::DType::Int32,
             (std::string(name) + " expects status=s32 and task scratch dtype to match indptr").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            output.dtype() == HybridWeightTraits<WeightT>::dtype,
-            (std::string(name) + " expects matching output dtype").c_str());
+            output.dtype() == HybridWeightTraits<WeightT>::out_dtype,
+            (std::string(name) + " expects a float32 (f16/bf16/f32) or float64 accumulator output").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
             weights.ndim() == 1 && indices.ndim() == 1 &&
                 indptr.ndim() == 1 && vector.ndim() == 1 &&
@@ -804,6 +833,10 @@ namespace
         BE_CSRMV_WAT_HYBRID_CHECK(
             status_scratch.numel() == 2 && status_output.numel() == 2,
             (std::string(name) + " expects status scratch length 2").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            vector.numel() <= static_cast<size_t>(kInt32Max) &&
+                output.numel() <= static_cast<size_t>(kInt32Max),
+            (std::string(name) + " expects row/column counts within int32 range").c_str());
         cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);
         bool ok = true;
         std::string launch_error;
@@ -813,7 +846,7 @@ namespace
                 indices.data_ptr<const IndexT>(),
                 indptr.data_ptr<const OffsetT>(),
                 vector.data_ptr<const EventT>(),
-                output.data_ptr<WeightT>(),
+                output.data_ptr<HybridOutT<WeightT>>(),
                 task_begin_output.data_ptr<OffsetT>(),
                 task_end_output.data_ptr<OffsetT>(),
                 status_output.data_ptr<int32_t>(),
@@ -867,8 +900,8 @@ namespace
                 status_output.dtype() == BE::DType::Int32,
             (std::string(name) + " expects status=s32 and task scratch dtype to match indptr").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            output.dtype() == HybridWeightTraits<WeightT>::dtype,
-            (std::string(name) + " expects matching output dtype").c_str());
+            output.dtype() == HybridWeightTraits<WeightT>::out_dtype,
+            (std::string(name) + " expects a float32 (f16/bf16/f32) or float64 accumulator output").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
             weights.ndim() == 1 && indices.ndim() == 1 &&
                 indptr.ndim() == 1 && vector.ndim() == 1 &&
@@ -892,6 +925,10 @@ namespace
         BE_CSRMV_WAT_HYBRID_CHECK(
             status_scratch.numel() == 2 && status_output.numel() == 2,
             (std::string(name) + " expects status scratch length 2").c_str());
+        BE_CSRMV_WAT_HYBRID_CHECK(
+            vector.numel() <= static_cast<size_t>(kInt32Max) &&
+                output.numel() <= static_cast<size_t>(kInt32Max),
+            (std::string(name) + " expects row/column counts within int32 range").c_str());
         cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);
         bool ok = true;
         std::string launch_error;
@@ -901,7 +938,7 @@ namespace
                 indices.data_ptr<const IndexT>(),
                 indptr.data_ptr<const OffsetT>(),
                 vector.data_ptr<const EventT>(),
-                output.data_ptr<WeightT>(),
+                output.data_ptr<HybridOutT<WeightT>>(),
                 task_begin_output.data_ptr<OffsetT>(),
                 task_end_output.data_ptr<OffsetT>(),
                 status_output.data_ptr<int32_t>(),

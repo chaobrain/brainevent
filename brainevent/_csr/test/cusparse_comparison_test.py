@@ -37,15 +37,9 @@ from brainevent._csr.config import CSRConfig, get_device_info
 
 pytestmark = [requires_cuda, pytest.mark.usefixtures('comparison_x64')]
 
-_HALF_SKIP_REASONS = {
-    'float16': 'FP16 cuSPARSE comparisons await an accuracy policy',
-    'bfloat16': 'No reliable BF16 numerical comparison reference is available',
-}
-_COMPARISON_VALUE_DTYPES = tuple(
-    pytest.param(dtype, marks=pytest.mark.skip(reason=_HALF_SKIP_REASONS[dtype]))
-    if dtype in _HALF_SKIP_REASONS else dtype
-    for dtype in VALUE_DTYPES
-)
+# Half values accumulate in float32 inside every native kernel and are rounded
+# once, so they share the float32-accumulating cuSPARSE oracle.
+_COMPARISON_VALUE_DTYPES = VALUE_DTYPES
 
 
 @lru_cache(maxsize=2)

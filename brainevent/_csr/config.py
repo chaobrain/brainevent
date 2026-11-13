@@ -85,9 +85,59 @@ class CSRDeviceInfo:
             _integer(self.device_id, 'device_id')
 
 
-@lru_cache(maxsize=None)
-def _query_cuda_device_info(device):
-    """Read CUDA launch properties once per device through a small native probe."""
+# CUdevice_attribute ids from cuda.h; the driver API needs no compiler toolchain.
+_CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT = 16
+_CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE = 38
+_CUDA_DRIVER_LIBRARIES = ('libcuda.so.1', 'libcuda.so', 'nvcuda.dll')
+
+
+@lru_cache(maxsize=1)
+def _cuda_driver() -> Any:
+    """Load and initialize the CUDA driver library (cached after success)."""
+    import ctypes
+
+    errors = []
+    for name in _CUDA_DRIVER_LIBRARIES:
+        try:
+            driver = ctypes.CDLL(name)
+        except OSError as exc:
+            errors.append(str(exc))
+            continue
+        status = driver.cuInit(0)
+        if status:
+            raise OSError(f'cuInit failed with CUDA driver error {status}')
+        return driver
+    raise OSError('CUDA driver library not found: ' + '; '.join(errors))
+
+
+def _driver_device_attributes(device: Any) -> tuple[int, int]:
+    """Read ``(SM count, L2 bytes)`` of a JAX CUDA device through the driver API."""
+    import ctypes
+
+    ordinal = getattr(device, 'local_hardware_id', None)
+    if ordinal is None:
+        raise OSError(f'{device} has no local CUDA ordinal')
+    driver = _cuda_driver()
+    handle = ctypes.c_int()
+    status = driver.cuDeviceGet(ctypes.byref(handle), int(ordinal))
+    if status:
+        raise OSError(f'cuDeviceGet({ordinal}) failed with CUDA driver error {status}')
+    values = []
+    for attribute in (_CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, _CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE):
+        value = ctypes.c_int()
+        status = driver.cuDeviceGetAttribute(ctypes.byref(value), attribute, handle)
+        if status:
+            raise OSError(f'cuDeviceGetAttribute({attribute}) failed with CUDA driver error {status}')
+        values.append(int(value.value))
+    return values[0], values[1]
+
+
+def _probe_device_attributes(device: Any) -> tuple[int, int]:
+    """Read ``(SM count, L2 bytes)`` by running a small native kernel on ``device``.
+
+    This fallback compiles ``_support/device_info.cu`` and therefore needs the
+    CUDA toolchain; it runs on the device itself, so no ordinal mapping is assumed.
+    """
     from brainevent._op import load_cuda_file
 
     source = Path(__file__).parent / '_support' / 'device_info.cu'
@@ -103,13 +153,41 @@ def _query_cuda_device_info(device):
         jax.ShapeDtypeStruct((2,), jnp.int32),
     )(dummy)
     sms, l2_bytes = map(int, np.asarray(jax.device_get(info)))
+    return sms, l2_bytes
+
+
+@lru_cache(maxsize=None)
+def _query_cuda_device_info(device: Any) -> CSRDeviceInfo | None:
+    """Read CUDA launch properties once per device, without compiling when possible.
+
+    The CUDA driver API answers directly. Its ordinal is cross-checked against
+    JAX's SM count; on any disagreement or driver failure, a native probe runs
+    on the device. When neither works (e.g. no driver library and no ``nvcc``),
+    return ``None``: the structure stays unprepared and native hybrid MM falls
+    back to the portable scatter instead of failing matrix construction.
+    """
+    from brainevent._error import BrainEventError
+
+    try:
+        sms, l2_bytes = _driver_device_attributes(device)
+        expected = getattr(device, 'core_count', None)
+        if expected is not None and int(expected) != sms:
+            raise OSError(f'driver SM count {sms} disagrees with JAX core_count {expected}')
+    except OSError as exc:
+        _logger.debug('CUDA driver query for %s unavailable (%s); using the native probe', device, exc)
+        try:
+            sms, l2_bytes = _probe_device_attributes(device)
+        except (BrainEventError, OSError, RuntimeError) as probe_exc:
+            _logger.debug('CUDA device probe for %s failed (%s); CSR plans stay unprepared',
+                          device, probe_exc)
+            return None
     return CSRDeviceInfo(
         platform='gpu', device_kind=str(device.device_kind),
         l2_bytes=l2_bytes, sms=sms, device_id=device.id,
     )
 
 
-def get_device_info(*arrays, device=None):
+def get_device_info(*arrays: Any, device: Any = None) -> CSRDeviceInfo | None:
     """Read and cache the preparation device's CUDA launch properties.
 
     Parameters
@@ -124,12 +202,14 @@ def get_device_info(*arrays, device=None):
     -------
     CSRDeviceInfo or None
         The selected CUDA device's SM count and L2 size, or ``None`` without
-        an unambiguous concrete GPU placement.
+        an unambiguous concrete GPU placement or when the properties cannot be
+        read. Arrays replicated or sharded over GPUs of one device kind use
+        the lowest device id (identical SM count and L2 size); mixed device
+        kinds or CPU/GPU mixtures are ambiguous.
 
-    Raises
-    ------
-    ValueError
-        The arrays include multiple GPU placements and no explicit device was supplied.
+    Notes
+    -----
+    The query uses the CUDA driver API and needs no compiler toolchain.
     """
     if device is None:
         devices = set()
@@ -138,13 +218,12 @@ def get_device_info(*arrays, device=None):
                 continue
             if hasattr(array, 'devices'):
                 devices.update(array.devices())
-        if devices and all(d.platform != 'gpu' for d in devices):
+        gpus = [d for d in devices if d.platform == 'gpu']
+        if not gpus or len(gpus) != len(devices):
             return None
-        if len(devices) > 1:
-            raise ValueError('CSR preparation requires a single device; pass device explicitly.')
-        if not devices:
+        if len({str(getattr(d, 'device_kind', '')) for d in gpus}) != 1:
             return None
-        device = next(iter(devices))
+        device = min(gpus, key=lambda d: d.id)
     if device.platform != 'gpu':
         return None
     platform_version = str(getattr(getattr(device, 'client', None), 'platform_version', '')).lower()
@@ -255,11 +334,13 @@ class MMCallPlan:
     group, long_threshold, long_tasks, chunk, task_capacity : int
         Native hybrid MM launch attributes.
     workspace_words, short_rows_size : int
-        Scratch lengths in uint32 and int32 elements, respectively.
+        Scratch lengths in uint32 and int32 elements, respectively. The short-row
+        lists hold one batch group (``chunk * rows``).
     batch : int
         Number of event vectors after batching transformations.
     dtype : numpy.dtype
-        Weight and output dtype.
+        Weight and output dtype. The kernel accumulates in float32 (float64 for
+        float64 weights) and the result is rounded once to this dtype.
     weighted : bool
         Whether the launch uses event amplitudes rather than binary activity.
     """
@@ -416,6 +497,30 @@ class _BenchmarkRecord:
     task_capacity: int | None = None
 
 
+def _array_metadata(value: Any) -> tuple[tuple[int, ...], np.dtype[Any]]:
+    """Shape and dtype of an array-like without copying device arrays to the host."""
+    if hasattr(value, 'shape') and hasattr(value, 'dtype'):
+        return tuple(value.shape), np.dtype(value.dtype)
+    array = np.asarray(value)
+    return array.shape, array.dtype
+
+
+def _bucket(value: int, limit: int) -> int:
+    """Round a capacity statistic up to a power of two, clamped to ``limit``.
+
+    Prepared row statistics are static kernel metadata. Bucketing them lets a
+    redrawn structure with the same shape and nnz reuse compiled executables;
+    they only ever size task queues, so an upper bound stays correct.
+    """
+    value = int(value)
+    return 0 if value <= 0 else min(1 << (value - 1).bit_length(), int(limit))
+
+
+def _max_row_bound(lengths: np.ndarray[Any, Any]) -> int:
+    """Power-of-two bucket of the longest row, at most nnz."""
+    return _bucket(int(lengths.max(initial=0)), int(lengths.sum()))
+
+
 def _structure_plan(lengths: np.ndarray[Any, Any]) -> MMStructurePlan:
     rows = len(lengths)
     eligible = lengths[(lengths > 0) & (lengths <= _MM_TASK_EDGES)]
@@ -423,7 +528,8 @@ def _structure_plan(lengths: np.ndarray[Any, Any]) -> MMStructurePlan:
     group = 4 if quarter <= 4 else 8 if quarter <= 8 else 16 if quarter <= 16 else 32
     threshold = _MM_ITERATIONS * group
     long_rows = lengths > threshold
-    long_tasks = int(((lengths[long_rows] + _MM_TASK_EDGES - 1) // _MM_TASK_EDGES).sum())
+    long_tasks = _bucket(int(((lengths[long_rows] + _MM_TASK_EDGES - 1) // _MM_TASK_EDGES).sum()),
+                         int(lengths.sum()))
     mask = np.zeros((rows + 31) // 32, dtype=np.uint32)
     positions = np.flatnonzero(long_rows)
     np.bitwise_or.at(mask, positions // 32, np.left_shift(np.uint32(1), (positions % 32).astype(np.uint32)))
@@ -437,13 +543,17 @@ def _call_plan(structure: MMStructureSpec, device: CSRDeviceInfo, batch: int,
         return MMCallPlan(structure.rows, structure.cols, structure.nnz, structure.group,
                           structure.long_threshold, structure.long_tasks, 1, 0, 0, 0, batch, dtype, weighted)
     value_bytes = dtype.itemsize
-    fit = (device.l2_bytes // _MM_L2_DIVISOR) // (structure.cols * value_bytes) if structure.cols else batch
+    # Edges accumulate into a float32 (float64 for float64 values) output; size the
+    # L2-resident batch group by that accumulator, not by the storage dtype.
+    out_bytes = max(4, value_bytes)
+    fit = (device.l2_bytes // _MM_L2_DIVISOR) // (structure.cols * out_bytes) if structure.cols else batch
     chunk = max(1, min(fit, batch, _MM_MAX_CHUNK))
     capacity = chunk * structure.long_tasks
     groups = (batch + chunk - 1) // chunk
     queue_bytes = ((capacity * value_bytes + 3) // 4 * 4) if weighted else 0
     workspace_bytes = ((8 * batch + 7) // 8 * 8) + 8 * groups + 12 * capacity + queue_bytes
-    short_rows = batch * structure.rows
+    # Batch groups run in stream order and reuse one group's short-row lists.
+    short_rows = chunk * structure.rows
     if capacity > _INT64_MAX or workspace_bytes > _INT64_MAX or short_rows > _INT64_MAX:
         raise ValueError('MM plan or scratch size exceeds int64 range')
     return MMCallPlan(structure.rows, structure.cols, structure.nnz, structure.group,
@@ -486,6 +596,9 @@ class CSRConfig:
     shape, nnz, primary_max_row_nnz, mirror_max_row_nnz : optional
         Shared structure identity and row statistics in compressed traversal
         order. These values are cleared when the structure is replaced.
+        Prepared longest-row values (and MM task counts) are power-of-two
+        upper bounds, clamped to ``nnz``, so that structures redrawn with the
+        same shape and nnz share compiled executables.
     primary, mirror : MMStructurePlan or None, optional
         MM-specific plans for the original and mirrored compressed layouts.
 
@@ -739,8 +852,10 @@ class CSRConfig:
         """Prepare primary MM statistics and a long-row mask from actual arrays.
 
         Call outside ``jax.jit`` with concrete structure. This method reads
-        the actual row pointers and returns a new snapshot with its primary
-        row statistics, MM geometry and ``long_mask``. It does not query GPU
+        the actual row pointers (never the index values, which would cost an
+        ``nnz``-sized device-to-host copy; matrix constructors validate them
+        when ``check_structure=True``) and returns a new snapshot with its
+        primary row statistics, MM geometry and ``long_mask``. It does not query GPU
         properties: supply previously captured ``device_info`` or retain it
         from this snapshot before using nonempty CUDA hybrid scatter MM.
 
@@ -771,20 +886,21 @@ class CSRConfig:
         rows, cols = (_integer(value, 'shape dimension') for value in shape)
         if max(rows, cols) > _INT32_MAX:
             raise ValueError('MM dimensions exceed int32 range')
-        idx, ptr = np.asarray(indices), np.asarray(indptr)
-        if idx.ndim != 1 or ptr.ndim != 1:
+        # Only the metadata of indices is needed: the plan depends on indptr alone.
+        idx_shape, idx_dtype = _array_metadata(indices)
+        ptr = np.asarray(indptr)
+        if len(idx_shape) != 1 or ptr.ndim != 1:
             raise ValueError('indices and indptr must be one-dimensional')
-        if idx.dtype not in (np.dtype(np.int32), np.dtype(np.int64)) or ptr.dtype not in (np.dtype(np.int32), np.dtype(np.int64)):
+        if idx_dtype not in (np.dtype(np.int32), np.dtype(np.int64)) or ptr.dtype not in (np.dtype(np.int32), np.dtype(np.int64)):
             raise ValueError('indices and indptr must have int32 or int64 dtype')
-        if ptr.size != rows + 1 or ptr[0] != 0 or ptr[-1] != idx.size:
+        nnz = int(idx_shape[0])
+        if ptr.size != rows + 1 or ptr[0] != 0 or ptr[-1] != nnz:
             raise ValueError('indptr must start at zero, match rows, and end at nnz')
         lengths = np.diff(ptr.astype(np.int64))
         if np.any(lengths < 0):
             raise ValueError('indptr must be nondecreasing')
-        if idx.size and (idx.min() < 0 or idx.max() >= cols):
-            raise ValueError('indices are outside the matrix shape')
-        prepared = replace(base, shape=(rows, cols), nnz=int(idx.size),
-                           primary_max_row_nnz=int(lengths.max(initial=0)),
+        prepared = replace(base, shape=(rows, cols), nnz=nnz,
+                           primary_max_row_nnz=_max_row_bound(lengths),
                            primary=_structure_plan(lengths))
         return _place_prepared_masks(prepared, _replicated_cpu_sharding(indices, indptr))
 
@@ -1181,7 +1297,7 @@ def _sync_mirror_config(config: CSRConfig, cache: StructureCache, *,
                 raise ValueError('mirror indptr must be nondecreasing')
             plan = _place_mirror_plan(
                 config, _structure_plan(lengths), device=device)
-            preparation = (plan, int(lengths.max(initial=0)))
+            preparation = (plan, _max_row_bound(lengths))
         cache.mirror_preparation = preparation
 
     plan, maximum = preparation

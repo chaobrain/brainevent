@@ -49,11 +49,35 @@ def _prepared(lengths=(16, 17, 0, 513, 1025), cols=128, **kwargs):
 def test_structure_plan_uses_integer_group_rule_and_exact_long_mask():
     config, indices, indptr = _prepared()
     primary = config.primary
-    assert (config.shape, config.nnz, config.primary_max_row_nnz) == ((5, 128), 1571, 1025)
-    assert (primary.group, primary.long_threshold, primary.long_tasks) == (4, 64, 5)
+    # Row statistics are power-of-two bounds clamped to nnz: 1025 -> 1571 and 5 tasks -> 8.
+    assert (config.shape, config.nnz, config.primary_max_row_nnz) == ((5, 128), 1571, 1571)
+    assert (primary.group, primary.long_threshold, primary.long_tasks) == (4, 64, 8)
     np.testing.assert_array_equal(primary.long_mask, np.array([0b11000], dtype=np.uint32))
     assert config.mirror is None and config.mirror_max_row_nnz is None
     np.testing.assert_array_equal(indptr, [0, 16, 33, 33, 546, 1571])
+
+
+class _DeviceOnlyIndices:
+    """Index metadata whose values must never be copied to the host."""
+
+    ndim = 1
+    dtype = np.dtype(np.int32)
+
+    def __init__(self, size):
+        self.shape = (size,)
+
+    def __array__(self, *args, **kwargs):
+        raise AssertionError('preparation must not copy index values to the host')
+
+
+def test_prepare_structure_reads_indptr_but_not_index_values():
+    expected, indices, indptr = _prepared()
+    config = CSRConfig(device_info=DEVICE).prepare_structure(
+        _DeviceOnlyIndices(indices.size), indptr, shape=expected.shape)
+    assert config.kernel_args()[0] == expected.kernel_args()[0]
+    np.testing.assert_array_equal(config.primary.long_mask, expected.primary.long_mask)
+    with pytest.raises(ValueError, match='end at nnz'):
+        CSRConfig().prepare_structure(_DeviceOnlyIndices(indices.size - 1), indptr, shape=expected.shape)
 
 
 def _mirror_cache(indices, indptr, shape):
@@ -83,7 +107,8 @@ def test_mirror_statistics_are_prepared_once_and_shared_without_recounting(
     prepared = config_mod._sync_mirror_config(
         config, cache, shape=config.shape[::-1])
     assert prepared.primary is config.primary
-    assert prepared.mirror_max_row_nnz == int(lengths.max())
+    assert prepared.mirror_max_row_nnz == config_mod._bucket(int(lengths.max()), config.nnz)
+    assert prepared.mirror_max_row_nnz >= int(lengths.max())
     assert cache.mirror_preparation == (
         prepared.mirror, prepared.mirror_max_row_nnz)
 
@@ -267,22 +292,28 @@ def test_same_shape_and_nnz_different_rows_produce_different_plans():
     second, _, _ = _prepared((1025, 0), cols=2)
     assert first.nnz == second.nnz
     assert first.primary.long_tasks == 2
-    assert second.primary.long_tasks == 3
+    assert second.primary.long_tasks == 4  # three tasks, bucketed to a power of two
     assert first.kernel_args()[0] != second.kernel_args()[0]
 
 
 def test_mm_call_plan_reacts_to_batch_dtype_device_and_weighted_queue():
     config, _, _ = _prepared()
     plan = config.mm_plan(10, np.float32)
-    assert (plan.chunk, plan.task_capacity, plan.short_rows_size) == (2, 10, 50)
-    assert plan.workspace_words == (80 + 5 * 8 + 10 * 12) // 4
+    tasks = config.primary.long_tasks
+    assert tasks == 8  # five tasks, bucketed to a power of two
+    # The short-row lists hold one batch group of chunk * rows entries.
+    assert (plan.chunk, plan.task_capacity, plan.short_rows_size) == (2, 2 * tasks, 10)
+    assert plan.workspace_words == (80 + 5 * 8 + 2 * tasks * 12) // 4
     assert config.mm_plan(10, np.float32) is plan
     wide = config.mm_plan(10, np.float64)
-    assert (wide.chunk, wide.task_capacity) == (1, 5)
+    assert (wide.chunk, wide.task_capacity) == (1, tasks)
+    # Half values accumulate in a float32 output, so they group like float32.
+    for half in (np.float16, jnp.bfloat16):
+        assert config.mm_plan(10, half).chunk == plan.chunk
     one = config.mm_plan(1, np.float32)
-    assert (one.chunk, one.task_capacity) == (1, 5)
+    assert (one.chunk, one.task_capacity) == (1, tasks)
     weighted = config.mm_plan(10, np.float32, weighted=True)
-    assert weighted.workspace_words == plan.workspace_words + 10
+    assert weighted.workspace_words == plan.workspace_words + plan.task_capacity
     smaller = replace(config, device_info=replace(DEVICE, l2_bytes=2048)).mm_plan(10, np.float32)
     assert smaller.chunk == 1
 
@@ -429,12 +460,21 @@ def test_empty_structure_has_valid_empty_or_zero_masks(lengths, cols):
 
 @pytest.mark.parametrize('idx,ptr,shape', [
     ([0], [1, 1], (1, 1)), ([0], [0, 0], (1, 1)),
-    ([0], [0, 2, 1], (2, 1)), ([1], [0, 1], (1, 1)),
-    ([-1], [0, 1], (1, 1)), ([0], [0, 1], (2, 1)),
+    ([0], [0, 2, 1], (2, 1)), ([0], [0, 1], (2, 1)),
 ])
 def test_invalid_structure_rejected_before_preparation(idx, ptr, shape):
     with pytest.raises(ValueError):
         CSRConfig().prepare_structure(np.asarray(idx, np.int32), np.asarray(ptr, np.int32), shape=shape)
+
+
+@pytest.mark.parametrize('idx', [[1], [-1]])
+def test_index_values_are_validated_by_the_matrix_constructor(idx):
+    # Planning reads indptr only; out-of-range index values are the
+    # constructor's job (``check_structure=True``), not the planner's.
+    indices, indptr = np.asarray(idx, np.int32), np.asarray([0, 1], np.int32)
+    CSRConfig().prepare_structure(indices, indptr, shape=(1, 1))
+    with pytest.raises(ValueError, match='index|indices'):
+        brainevent.CSR(np.ones(1, np.float32), indices, indptr, shape=(1, 1), config=CSRConfig())
 
 
 def test_invalid_types_dimensions_and_capacity_overflow():
@@ -595,15 +635,20 @@ int cudaDeviceGetAttribute(int *, int, int);
 namespace hybrid
 ''' + declarations + '\n#include ' + json.dumps(str(root / 'hybrid_batchedv3_spmm_plan.cuh')) + r'''
 int main() {
-    int rows, cols, batch, l2, value_bytes, weighted;
-    while (std::cin >> rows >> cols >> batch >> l2 >> value_bytes >> weighted) {
+    int rows, cols, batch, l2, out_bytes, value_bytes, weighted;
+    int64_t bucketed_tasks;
+    while (std::cin >> rows >> cols >> batch >> l2 >> out_bytes >> value_bytes >> weighted >> bucketed_tasks) {
         std::vector<int64_t> ptr(rows + 1);
         for (auto &value : ptr) std::cin >> value;
         hybrid::Plan plan;
-        if (hybrid::make_plan(ptr.data(), rows, cols, batch, l2, value_bytes, &plan) != cudaSuccess) return 2;
+        // Batch groups are sized by the output (accumulator) element, the queue by the value.
+        if (hybrid::make_plan(ptr.data(), rows, cols, batch, l2, out_bytes, &plan) != cudaSuccess) return 2;
         auto mask = hybrid::long_row_mask(ptr.data(), rows, plan);
-        std::cout << plan.group << ' ' << plan.long_threshold << ' ' << plan.long_tasks << ' '
-                  << plan.chunk << ' ' << plan.task_capacity << ' '
+        std::cout << plan.group << ' ' << plan.long_threshold << ' ' << plan.long_tasks << ' ' << plan.chunk;
+        // Python prepares a power-of-two bound of the exact task count; size scratch from it.
+        plan.long_tasks = bucketed_tasks;
+        plan.task_capacity = plan.chunk * bucketed_tasks;
+        std::cout << ' ' << plan.task_capacity << ' '
                   << hybrid::workspace_bytes(plan, batch, weighted ? value_bytes : 0) / 4;
         for (auto word : mask) std::cout << ' ' << word;
         std::cout << '\n';
@@ -635,14 +680,16 @@ int main() {
             batch = 70000
             config = replace(config, device_info=replace(DEVICE, l2_bytes=2**30))
         plan = config.mm_plan(batch, dtype, weighted)
-        line = [len(lengths), cols, batch, config.device_info.l2_bytes, np.dtype(dtype).itemsize,
-                int(weighted), *ptr]
+        itemsize = np.dtype(dtype).itemsize
+        line = [len(lengths), cols, batch, config.device_info.l2_bytes, max(4, itemsize), itemsize,
+                int(weighted), config.primary.long_tasks, *ptr]
         cases.append((' '.join(map(str, line)), config, plan))
     native = subprocess.run([str(binary)], input='\n'.join(case[0] for case in cases) + '\n',
                             capture_output=True, check=True, text=True)
     for (_, config, plan), line in zip(cases, native.stdout.splitlines(), strict=True):
         numbers = list(map(int, line.split()))
-        assert numbers[:6] == [plan.group, plan.long_threshold, plan.long_tasks,
+        assert config_mod._bucket(numbers[2], config.nnz) == plan.long_tasks >= numbers[2]
+        assert numbers[:6] == [plan.group, plan.long_threshold, numbers[2],
                                plan.chunk, plan.task_capacity, plan.workspace_words]
         np.testing.assert_array_equal(numbers[6:], config.primary.long_mask)
 
@@ -666,11 +713,91 @@ def test_gpu_info_probe_accepts_cpu_shards_without_explicit_device():
 
     assert get_device_info(PlacedArray((cpu0, cpu1))) is None
 
-    class GPUDevice:
-        platform = 'gpu'
 
-    with pytest.raises(ValueError, match='single device'):
-        get_device_info(PlacedArray((GPUDevice(), GPUDevice())))
+class _FakeCudaDevice:
+    platform = 'gpu'
+    client = type('Client', (), {'platform_version': 'cuda 13.0'})()
+
+    def __init__(self, id, device_kind='FAKE_GPU', core_count=None):
+        self.id = self.local_hardware_id = id
+        self.device_kind = device_kind
+        self.core_count = core_count
+
+
+class _PlacedArray:
+    def __init__(self, *devices):
+        self._devices = set(devices)
+
+    def devices(self):
+        return self._devices
+
+
+def test_replicated_same_kind_gpus_prepare_on_the_lowest_device(monkeypatch):
+    queried = []
+    monkeypatch.setattr(config_mod, '_query_cuda_device_info', lambda device: queried.append(device) or 'info')
+    first, second = _FakeCudaDevice(3), _FakeCudaDevice(1)
+    assert get_device_info(_PlacedArray(first, second), _PlacedArray(second)) == 'info'
+    assert queried == [second]
+
+
+@pytest.mark.parametrize('devices', [
+    (_FakeCudaDevice(0, 'GPU_A'), _FakeCudaDevice(1, 'GPU_B')),
+    (_FakeCudaDevice(0), type('CPUDevice', (), {'platform': 'cpu', 'id': 1})()),
+], ids=['mixed_gpu_kinds', 'gpu_and_cpu'])
+def test_ambiguous_placements_leave_the_config_unprepared(monkeypatch, devices):
+    monkeypatch.setattr(config_mod, '_query_cuda_device_info', lambda device: pytest.fail('ambiguous placement queried'))
+    assert get_device_info(_PlacedArray(*devices)) is None
+
+
+def _no_toolchain(*args, **kwargs):
+    from brainevent._error import NvccNotFoundError
+    raise NvccNotFoundError('nvcc is not installed')
+
+
+def test_device_query_without_driver_or_toolchain_leaves_config_unprepared(monkeypatch, caplog):
+    import brainevent._op as op_mod
+
+    def no_driver(device):
+        raise OSError('libcuda.so.1: cannot open shared object file')
+
+    monkeypatch.setattr(config_mod, '_driver_device_attributes', no_driver)
+    monkeypatch.setattr(op_mod, 'load_cuda_file', _no_toolchain)
+    config_mod._query_cuda_device_info.cache_clear()
+    try:
+        with caplog.at_level('DEBUG', logger=config_mod.__name__):
+            assert config_mod._query_cuda_device_info(_FakeCudaDevice(0)) is None
+    finally:
+        config_mod._query_cuda_device_info.cache_clear()
+    assert 'nvcc is not installed' in caplog.text
+
+
+def test_driver_query_mismatching_jax_core_count_uses_native_probe(monkeypatch):
+    monkeypatch.setattr(config_mod, '_driver_device_attributes', lambda device: (80, 4096))
+    monkeypatch.setattr(config_mod, '_probe_device_attributes', lambda device: (82, 8192))
+    config_mod._query_cuda_device_info.cache_clear()
+    try:
+        info = config_mod._query_cuda_device_info(_FakeCudaDevice(0, core_count=82))
+        assert (info.sms, info.l2_bytes, info.device_kind) == (82, 8192, 'FAKE_GPU')
+        info = config_mod._query_cuda_device_info(_FakeCudaDevice(1, core_count=80))
+        assert (info.sms, info.l2_bytes) == (80, 4096)
+    finally:
+        config_mod._query_cuda_device_info.cache_clear()
+
+
+def test_device_query_needs_no_cuda_toolchain(monkeypatch):
+    if jax.default_backend() != 'gpu':
+        pytest.skip('CUDA device query requires a GPU')
+    import brainevent._op as op_mod
+
+    gpu = jax.devices('gpu')[0]
+    monkeypatch.setattr(op_mod, 'load_cuda_file', _no_toolchain)
+    config_mod._query_cuda_device_info.cache_clear()
+    try:
+        info = config_mod.get_device_info(device=gpu)
+    finally:
+        config_mod._query_cuda_device_info.cache_clear()
+    assert info is not None and info.l2_bytes > 0
+    assert info.sms == getattr(gpu, 'core_count', info.sms) > 0
 
 
 # Scheduler validation, compile flags and module identity
@@ -754,7 +881,7 @@ def test_prepared_row_hint_matches_concrete_structure():
     indptr = np.array([0, 129, 129 + 4096, 129 + 4096 + 4097], dtype=np.int64)
     indices = np.zeros(int(indptr[-1]), dtype=np.int32)
     config = CSRConfig().prepare_structure(indices, indptr, shape=(3, 1))
-    assert config.primary_max_row_nnz == 4097
+    assert config.primary_max_row_nnz == 8192  # power-of-two bound of 4097, below nnz
     assert config.mv_capacity(len(indices), 3, config.primary_max_row_nnz) >= _capacity_capacity(indptr, config)
 
 

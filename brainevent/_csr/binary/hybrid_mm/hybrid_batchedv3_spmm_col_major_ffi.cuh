@@ -21,13 +21,16 @@ namespace
       int64_t task_capacity, int64_t expected_sms, int64_t expected_l2_bytes, int64_t stream)
   {
     constexpr BE::DType value_dtype = op_traits::ValueTraits<ValueT>::dtype;
+    // Edges accumulate in OutT (float for half/bfloat16); the caller rounds once to ValueT.
+    using OutT = hybrid::OutT<ValueT>;
+    constexpr BE::DType out_dtype = op_traits::ValueTraits<OutT>::dtype;
     constexpr BE::DType event_dtype = [] {
       if constexpr (Weighted)
         return op_traits::ValueTraits<ValueT>::dtype;
       else
         return op_traits::EventTraits<EventT>::dtype;
     }();
-    BE_CHECK(values.dtype() == value_dtype && output.dtype() == value_dtype &&
+    BE_CHECK(values.dtype() == value_dtype && output.dtype() == out_dtype &&
              events.dtype() == event_dtype && op_traits::is_signed_index(indices.dtype()) &&
              op_traits::is_signed_index(indptr.dtype()) && long_mask.dtype() == BE::DType::UInt32 &&
              workspace.dtype() == BE::DType::UInt32 && short_rows.dtype() == BE::DType::Int32)
@@ -52,8 +55,8 @@ namespace
       return;
     if (rows == 0 || nnz == 0)
     {
-      BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr<ValueT>(), 0,
-                                    static_cast<size_t>(batch) * cols * sizeof(ValueT), cuda_stream));
+      BE_CUDA_CHECK(cudaMemsetAsync(output.data_ptr<OutT>(), 0,
+                                    static_cast<size_t>(batch) * cols * sizeof(OutT), cuda_stream));
       return;
     }
     check_prepared_spmm_device(name, expected_sms, expected_l2_bytes);
@@ -70,7 +73,7 @@ namespace
     plan.nnz = nnz;
     BE_CHECK(static_cast<size_t>(workspace.numel()) * sizeof(uint32_t) >=
                  hybrid::workspace_bytes(plan, static_cast<int>(batch), Weighted ? sizeof(ValueT) : 0) &&
-             static_cast<int64_t>(short_rows.numel()) >= batch * rows)
+             static_cast<int64_t>(short_rows.numel()) >= chunk * rows)
         << name << ": scratch too small";
     BE_DISPATCH_SIGNED_INDEX_PAIR(indices.dtype(), indptr.dtype(), IndexT, OffsetT, {
       if constexpr (Weighted)
@@ -78,7 +81,7 @@ namespace
         BE_CUDA_CHECK((hybrid_col_major::launch_group_zeroed_weighted<ValueT, IndexT, OffsetT>(
             values.data_ptr<const ValueT>(), indices.data_ptr<const IndexT>(), indptr.data_ptr<const OffsetT>(),
             perm.data_ptr<const OffsetT>(), long_mask.data_ptr<const uint32_t>(), events.data_ptr<const ValueT>(),
-            output.data_ptr<ValueT>(), short_rows.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(),
+            output.data_ptr<OutT>(), short_rows.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(),
             static_cast<int>(rows), static_cast<int>(cols), static_cast<int>(batch), plan, cuda_stream)));
       }
       else
@@ -86,7 +89,7 @@ namespace
         BE_CUDA_CHECK((hybrid_col_major::launch_group_zeroed<ValueT, EventT, IndexT, OffsetT>(
             values.data_ptr<const ValueT>(), indices.data_ptr<const IndexT>(), indptr.data_ptr<const OffsetT>(),
             perm.data_ptr<const OffsetT>(), long_mask.data_ptr<const uint32_t>(), events.data_ptr<const EventT>(),
-            output.data_ptr<ValueT>(), short_rows.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(),
+            output.data_ptr<OutT>(), short_rows.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(),
             static_cast<int>(rows), static_cast<int>(cols), static_cast<int>(batch), plan, cuda_stream)));
       }
     });

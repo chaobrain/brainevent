@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._csr.config import CSRConfig
+from brainevent._csr.config import CSRConfig, _bucket
 
 
 def _task_capacity(indices, indptr, max_row_nnz, config=None) -> int:
@@ -48,6 +48,27 @@ def _batch_config_params(args, axes, params):
     return result
 
 
+def _accumulator_info(out_info):
+    """Output metadata of a native hybrid scatter kernel for ``out_info``.
+
+    The hybrid MV/MM kernels add every edge into a float32 output (float64 for
+    float64 values), so half-precision sums are rounded once by the caller
+    instead of once per edge.
+
+    Parameters
+    ----------
+    out_info : jax.ShapeDtypeStruct
+        Logical primitive output.
+
+    Returns
+    -------
+    jax.ShapeDtypeStruct
+        ``out_info`` with its accumulator dtype.
+    """
+    dtype = jnp.float64 if np.dtype(out_info.dtype).itemsize == 8 else jnp.float32
+    return jax.ShapeDtypeStruct(out_info.shape, dtype)
+
+
 def _hybrid_scratch(task_capacity: int, indptr_dtype):
     """Scratch operands and result types of the hybrid CUDA kernels.
 
@@ -69,8 +90,10 @@ def _check_max_row_nnz(max_row_nnz, config=None) -> None:
         return
     if isinstance(max_row_nnz, (bool, np.bool_)) or not isinstance(max_row_nnz, (int, np.integer)) or max_row_nnz < 0:
         raise ValueError('max_row_nnz must be a nonnegative integer')
-    if (config is not None and config.primary_max_row_nnz is not None
-            and max_row_nnz < config.primary_max_row_nnz):
+    # Prepared configs store a power-of-two bucket of the longest row; a hint
+    # whose bucket is smaller is certainly below the longest row.
+    if (config is not None and config.primary_max_row_nnz is not None and config.nnz is not None
+            and _bucket(int(max_row_nnz), config.nnz) < config.primary_max_row_nnz):
         raise ValueError('max_row_nnz is below the longest row in the prepared CSRConfig')
 
 

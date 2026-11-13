@@ -37,6 +37,7 @@ from brainevent._csr._support.binary import (
     _ignore_config_mask,
     _config_from_params,
     _batch_config_params,
+    _accumulator_info,
     _hybrid_scratch,
     _check_max_row_nnz,
     _config_for_call,
@@ -50,6 +51,8 @@ from brainevent._csr.binary.binary import (
     _numba_event_mask,
     _numba_weighted_events,
     _make_hybrid_mm_kernel,
+    _hybrid_mm_needs_fallback,
+    _warn_unprepared_mm,
 )
 from brainevent._csr.float.float import csrmv, csrmm
 from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active
@@ -421,7 +424,7 @@ def _binary_csrmv_indexed_cuda_kernel(
             scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
             math_out = jax.ffi.ffi_call(
                 kernel_name,
-                (out_info, *scratch_info),
+                (_accumulator_info(out_info), *scratch_info),
                 input_output_aliases={4: 1, 5: 2, 6: 3},
             )(
                 weights,
@@ -431,7 +434,7 @@ def _binary_csrmv_indexed_cuda_kernel(
                 *scratch,
                 task_capacity=kwargs['task_capacity'],
             )[0]
-            return (math_out,)
+            return (math_out.astype(out_info.dtype),)
 
     elif transpose:
         _cfg = _config_from_params(kwargs, None)
@@ -453,7 +456,7 @@ def _binary_csrmv_indexed_cuda_kernel(
             scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
             math_out = jax.ffi.ffi_call(
                 kernel_name,
-                (out_info, *scratch_info),
+                (_accumulator_info(out_info), *scratch_info),
                 input_output_aliases={5: 1, 6: 2, 7: 3},
             )(
                 weights,
@@ -464,7 +467,7 @@ def _binary_csrmv_indexed_cuda_kernel(
                 *scratch,
                 task_capacity=kwargs['task_capacity'],
             )[0]
-            return (math_out,)
+            return (math_out.astype(out_info.dtype),)
 
     elif is_homo:
         load_cuda_file(
@@ -1059,6 +1062,10 @@ def _binary_csrmm_indexed_cuda_kernel(
     wt_sfx = dtype_suffix(weight_info.dtype)
 
     if transpose:
+        if _hybrid_mm_needs_fallback(kwargs, vector_info, weight_info):
+            _warn_unprepared_mm('binary_csrmm_indexed')
+            return _ignore_config_mask(_binary_csrmm_indexed_jax_kernel)(
+                weight_info=weight_info, vector_info=vector_info, transpose=True, **kwargs)
         return _make_hybrid_mm_kernel(
             weight_info=weight_info, vector_info=vector_info,
             permuted=True, **kwargs,

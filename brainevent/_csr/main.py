@@ -188,9 +188,11 @@ class CompressedSparseData(DataRepresentation):
 
         self.data = u.math.asarray(data_arr)
         indices_input = u.math.asarray(indices_arg)
-        host_indices = _host_structure_array(indices_arg, indices_input)
+        # Index values are read on the host only to validate them: planning
+        # needs indptr alone, so check_structure=False skips the nnz-sized copy.
+        host_indices = _host_structure_array(indices_arg, indices_input) if check_structure else None
         # ``indices`` are always int32; validate values only when a full
-        # structure check is requested; preparation reuses this host copy.
+        # structure check is requested.
         self.indices = _as_int32_indices(
             indices_input, secondary_dim, context, check_values=check_structure,
             host_indices=host_indices,
@@ -215,9 +217,10 @@ class CompressedSparseData(DataRepresentation):
         super().__init__((self.data, self.indices, self.indptr), shape=shape)
         self._cache = StructureCache()
         host_structure = None
-        if host_indices is not None and host_indptr is not None:
+        if host_indptr is not None:
+            # Preparation reads only indptr values and index metadata.
             host_structure = (
-                host_indices.astype(np.int32, copy=False),
+                self.indices,
                 host_indptr.astype(np.dtype(self.indptr.dtype), copy=False),
             )
         self.config = _prepare_csr_config(

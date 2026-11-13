@@ -12,7 +12,7 @@ namespace hybrid_col_major
 #define DEFINE_COL_MAJOR_WEIGHTED_LAUNCH(NAME, ZERO)                                                           \
   template <class ValueT, class IndexT, class OffsetT>                                                          \
   cudaError_t NAME(const ValueT *values, const IndexT *indices, const OffsetT *row_ptr, const OffsetT *perm,     \
-                   const uint32_t *long_mask, const ValueT *events, ValueT *output, int32_t *short_rows,        \
+                   const uint32_t *long_mask, const ValueT *events, hybrid::OutT<ValueT> *output, int32_t *short_rows,        \
                    void *workspace, int rows, int cols, int batch, const Plan &plan, cudaStream_t stream)      \
   {                                                                                                          \
     return hybrid::launch_impl<ZERO, false, ValueT, ValueT, ValueT, IndexT, OffsetT, true>(                      \
@@ -25,9 +25,9 @@ namespace hybrid_col_major
 
 #define INSTANTIATE_COL_MAJOR_WEIGHTED(V, I, O)                                                                \
   template cudaError_t launch_accumulate_weighted<V, I, O>(const V *, const I *, const O *, const O *,         \
-      const uint32_t *, const V *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);           \
+      const uint32_t *, const V *, hybrid::OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);           \
   template cudaError_t launch_group_zeroed_weighted<V, I, O>(const V *, const I *, const O *, const O *,       \
-      const uint32_t *, const V *, V *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);
+      const uint32_t *, const V *, hybrid::OutT<V> *, int32_t *, void *, int, int, int, const Plan &, cudaStream_t);
 #define INSTANTIATE_COL_MAJOR_WEIGHTED_INDICES(V)     \
   INSTANTIATE_COL_MAJOR_WEIGHTED(V, int32_t, int32_t)  \
   INSTANTIATE_COL_MAJOR_WEIGHTED(V, int32_t, int64_t)  \
