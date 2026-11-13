@@ -100,7 +100,6 @@ def _dispatch_on_platform(
                 local_targets=local_targets, tile_offsets=tile_offsets,
                 tile_width=tile_width, perm=perm, shape=matrix.shape,
                 transpose=transpose, backend='cuda_raw', config=matrix.config,
-                backward_algorithm=matrix.backward_algorithm,
             )
             return output.T if transpose else output
         return jax.lax.cond(

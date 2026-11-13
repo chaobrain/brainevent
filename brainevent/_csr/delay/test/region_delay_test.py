@@ -1995,7 +1995,6 @@ def test_public_delay_exports_share_one_prepared_implementation():
         assert package.csr_delay_deliver_layout_p is brainevent.csr_delay_deliver_layout_p
         for removed in ("CSRDelayLayout", "csr_delay_deliver", "csr_delay_deliver_p"):
             assert not hasattr(package, removed)
-    assert not hasattr(brainevent.CSR, "delay_deliver")
     assert set(brainevent.csr_delay_deliver_layout_p.available_backends("gpu")) == {
         "jax_raw", "cuda_raw",
     }

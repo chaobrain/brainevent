@@ -16,7 +16,7 @@ from brainevent._op import load_cuda_file, load_cuda_inline
 from brainevent._tcsr.binary.combined.planner import tile_schedule
 
 ROOT = Path(__file__).resolve().parent
-COMMON = ROOT / "_common"
+COMMON = ROOT.parents[2] / "include" / "brainevent"
 VALUE_SUFFIX = {jnp.dtype(t): name for t, name in ((jnp.float16, "f16"), (jnp.bfloat16, "bf16"),
                                                   (jnp.float32, "f32"), (jnp.float64, "f64"))}
 VALUE_CODE = {dtype: i for i, dtype in enumerate(VALUE_SUFFIX)}

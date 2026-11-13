@@ -23,8 +23,6 @@ from brainevent._misc import (
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._csr._support.binary import (
-    _validate_backward_algorithm,
-    _weight_gradient_mode,
     _task_capacity,
     _ignore_config_mask,
     _config_from_params,
@@ -54,8 +52,8 @@ __all__ = [
 ]
 
 
-@namescope(name="brainevent.binary_csrmv", static_argnames=("shape", "transpose", "weighted", "max_row_nnz", "backward_algorithm"))
-def _binary_csrmv_jit(data, indices, indptr, v, *, shape, transpose, backend, weighted, backward_algorithm, max_row_nnz, config):
+@namescope(name="brainevent.binary_csrmv", static_argnames=("shape", "transpose", "weighted", "max_row_nnz"))
+def _binary_csrmv_jit(data, indices, indptr, v, *, shape, transpose, backend, weighted, max_row_nnz, config):
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
     res = binary_csrmv_p_call(
@@ -67,7 +65,6 @@ def _binary_csrmv_jit(data, indices, indptr, v, *, shape, transpose, backend, we
         transpose=transpose,
         backend=backend,
         weighted=weighted,
-        backward_algorithm=backward_algorithm,
         max_row_nnz=max_row_nnz, config=config,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
@@ -83,7 +80,6 @@ def binary_csrmv(
     transpose: bool = False,
     backend: Optional[str] = None,
     weighted: bool = False,
-    backward_algorithm: str = "weighted_float",
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
 ) -> Data:
@@ -136,11 +132,6 @@ def binary_csrmv(
         multiply the weights by their value, ``e(v[j]) = v[j]``, so the
         result is the exact product ``A @ v``.  Default is ``False``
         (binary events).
-    backward_algorithm : {"binary", "weighted_float"}, optional
-        Weight cotangent rule for binary events. ``binary`` uses the activity
-        mask; ``weighted_float`` uses the numeric event value while the forward
-        remains binary. Ignored for weighted events. Default is
-        ``"weighted_float"``.
     config : CSRConfig or None, optional
         ``None`` uses fixed MV scheduler defaults and a task-capacity bound
         from static array sizes. Raw calls do not load saved tuning, query
@@ -219,16 +210,15 @@ def binary_csrmv(
         >>> binary_csrmv(data, indices, indptr, v, shape=(2, 3))
         Array([1. , 0.5], dtype=float32)
     """
-    _validate_backward_algorithm(backward_algorithm)
     _check_max_row_nnz(max_row_nnz, config)
     return _binary_csrmv_jit(
         data, indices, indptr, v,
         shape=shape, transpose=transpose, backend=backend, weighted=weighted,
-        backward_algorithm=backward_algorithm, max_row_nnz=max_row_nnz, config=config,
+        max_row_nnz=max_row_nnz, config=config,
     )
 
 
-@namescope(name="brainevent.binary_csrmm", static_argnames=("shape", "transpose", "weighted", "backward_algorithm"))
+@namescope(name="brainevent.binary_csrmm", static_argnames=("shape", "transpose", "weighted"))
 def binary_csrmm(
     data: Data,
     indices: Index,
@@ -239,7 +229,6 @@ def binary_csrmm(
     transpose: bool = False,
     backend: Optional[str] = None,
     weighted: bool = False,
-    backward_algorithm: str = "weighted_float",
     config: Optional[CSRConfig] = None,
 ) -> Data:
     """
@@ -290,11 +279,6 @@ def binary_csrmm(
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value, ``e(B[j, l]) = B[j, l]``, so the result is
         the exact product ``A @ B``.  Default is ``False`` (binary events).
-    backward_algorithm : {"binary", "weighted_float"}, optional
-        Weight cotangent rule for binary events. ``binary`` uses the activity
-        mask; ``weighted_float`` uses the numeric event value without changing
-        the binary forward. Ignored for weighted events. Default is
-        ``"weighted_float"``.
     config : CSRConfig or None, optional
         Required for nonempty CUDA hybrid scatter MM (``transpose=True`` and
         backend resolving to ``'cuda_raw'``, including automatic selection).
@@ -379,7 +363,6 @@ def binary_csrmm(
         Array([[3., 2.],
                [4., 7.]], dtype=float32)
     """
-    _validate_backward_algorithm(backward_algorithm)
     data, unitd = u.split_mantissa_unit(data)
     B, unitb = u.split_mantissa_unit(B)
     res = binary_csrmm_p_call(
@@ -391,7 +374,6 @@ def binary_csrmm(
         transpose=transpose,
         backend=backend,
         weighted=weighted,
-        backward_algorithm=backward_algorithm,
         config=config,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
@@ -892,7 +874,6 @@ def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, long_mask, *, shape, 
         transpose=transpose,
         backend=kwargs['backend'],
         weighted=kwargs.get('weighted', False),
-        backward_algorithm=kwargs.get('backward_algorithm', 'weighted_float'),
         max_row_nnz=kwargs.get('max_row_nnz'),
         config=_config_from_params(kwargs, long_mask),
     )
@@ -915,9 +896,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, long_mask, *, shape
         if type(ct) is ad.Zero:
             ct_values = ad.Zero(data.aval)
         else:
-            mode = _weight_gradient_mode(
-                kwargs.get('weighted', False), kwargs.get('backward_algorithm', 'weighted_float'),
-            )
+            mode = ('weighted' if kwargs.get('weighted', False) else 'binary')
             left, right = (events, ct) if transpose else (ct, events)
             ct_values = _sddmm_dispatch.sddmm(
                 left, right, indices, indptr,
@@ -943,9 +922,6 @@ def _csrmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            backward_algorithm=kwargs.get(
-                'backward_algorithm', 'weighted_float',
-            ),
             config=_config_from_params(kwargs, args[-1]),
         )
         return r, [1]
@@ -1032,7 +1008,6 @@ def binary_csrmv_p_call(
     transpose: bool,
     backend: Optional[str] = None,
     weighted: bool = False,
-    backward_algorithm: str = "weighted_float",
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
 ):
@@ -1071,9 +1046,6 @@ def binary_csrmv_p_call(
     weighted : bool, optional
         Multiply the weights by the event value instead of the activity
         mask (:class:`~brainevent.WeightedArray`).  Default is ``False``.
-    backward_algorithm : {"binary", "weighted_float"}, optional
-        Select binary-mask or value-weighted weight cotangents. Does not
-        change the forward. Default is ``"weighted_float"``.
     config : CSRConfig or None, optional
         ``None`` uses fixed MV scheduler defaults and a task-capacity bound
         from static array sizes. Raw calls do not load saved tuning, query
@@ -1140,7 +1112,6 @@ def binary_csrmv_p_call(
         >>> binary_csrmv_p_call(weights, indices, indptr, vector, shape=(2, 3), transpose=False)[0]
         Array([1. , 0.5], dtype=float32)
     """
-    _validate_backward_algorithm(backward_algorithm)
     assert indptr.ndim == 1, "Indptr must be 1D."
     assert indices.ndim == 1, "Indices must be 1D."
     _check_csr_structure_dtypes(indices, indptr)
@@ -1178,7 +1149,6 @@ def binary_csrmv_p_call(
         transpose=transpose,
         backend=backend,
         weighted=bool(weighted),
-        backward_algorithm=backward_algorithm,
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.
@@ -1635,7 +1605,6 @@ def _csrmm_jvp_data(data_dot, data, indices, indptr, B, long_mask, *, shape, tra
         transpose=transpose,
         backend=kwargs['backend'],
         weighted=kwargs.get('weighted', False),
-        backward_algorithm=kwargs.get('backward_algorithm', 'weighted_float'),
         config=_config_from_params(kwargs, long_mask),
     )
 
@@ -1662,9 +1631,7 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, long_mask, *, shape, tra
         return data, indices, indptr, dB, None
     else:
         B = jnp.asarray(B)
-        mode = _weight_gradient_mode(
-            kwargs.get('weighted', False), kwargs.get('backward_algorithm', 'weighted_float'),
-        )
+        mode = ('weighted' if kwargs.get('weighted', False) else 'binary')
         left, right = (B, ct.T) if transpose else (ct, B.T)
         d_data = _sddmm_dispatch.sddmm(
             left, right, indices, indptr,
@@ -1697,9 +1664,6 @@ def _csrmm_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            backward_algorithm=kwargs.get(
-                'backward_algorithm', 'weighted_float',
-            ),
             config=_config_from_params(kwargs, args[-1]),
         )[0]
         if axes[3] == 2:
@@ -1756,7 +1720,6 @@ def binary_csrmm_p_call(
     transpose: bool,
     backend: Optional[str] = None,
     weighted: bool = False,
-    backward_algorithm: str = "weighted_float",
     config: Optional[CSRConfig] = None,
 ):
     """
@@ -1798,9 +1761,6 @@ def binary_csrmm_p_call(
     weighted : bool, optional
         Multiply the weights by the event value instead of the activity
         mask (:class:`~brainevent.WeightedArray`).  Default is ``False``.
-    backward_algorithm : {"binary", "weighted_float"}, optional
-        Select binary-mask or value-weighted weight cotangents. Does not
-        change the forward. Default is ``"weighted_float"``.
     config : CSRConfig or None, optional
         Required for nonempty CUDA hybrid scatter MM (``transpose=True`` and
         backend resolving to ``'cuda_raw'``, including automatic selection).
@@ -1874,7 +1834,6 @@ def binary_csrmm_p_call(
         Array([[3., 2.],
                [4., 7.]], dtype=float32)
     """
-    _validate_backward_algorithm(backward_algorithm)
     assert indptr.ndim == 1, "Indptr must be 1D."
     assert indices.ndim == 1, "Indices must be 1D."
     _check_csr_structure_dtypes(indices, indptr)
@@ -1914,7 +1873,6 @@ def binary_csrmm_p_call(
         transpose=transpose,
         backend=backend,
         weighted=bool(weighted),
-        backward_algorithm=backward_algorithm,
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.

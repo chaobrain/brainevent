@@ -24,6 +24,10 @@ from brainevent._csr.delay.delay import (
 )
 from brainevent._csr.delay.test._helpers import BACKENDS, GPU
 
+import brainevent as _brainevent
+
+_BE_INCLUDE = str(Path(_brainevent.__file__).resolve().parent / "include")
+
 
 # Primitive binding and abstract contracts
 # ----------------------------------------
@@ -968,13 +972,13 @@ def test_native_interfaces(tmp_path):
     objects = []
     for stem in ("hybrid_delay_spmv_weighted", "hybrid_delay_spmv_binary"):
         obj = tmp_path / (stem + ".o")
-        _native_interfaces_run([nvcc, "-std=c++17", "-O2", "-arch=native", "-DBE_REGION_DELAY_STANDALONE",
+        _native_interfaces_run([nvcc, "-std=c++17", "-I" + _BE_INCLUDE, "-O2", "-arch=native", "-DBE_REGION_DELAY_STANDALONE",
               "-c", str(_native_interfaces_ROOT / "hybrid" / (stem + ".cu")), "-o", str(obj)])
         objects.append(str(obj))
     for weighted_only in (True, False):
         caller = tmp_path / f"caller_{weighted_only}.o"
         flags = ["-DREGION_DELAY_TEST_WEIGHTED_ONLY"] if weighted_only else []
-        _native_interfaces_run([cxx, "-std=c++17", "-O2", "-I" + str(cuda / "include"), *flags,
+        _native_interfaces_run([cxx, "-std=c++17", "-I" + _BE_INCLUDE, "-O2", "-I" + str(cuda / "include"), *flags,
               "-c", str(_native_interfaces_ROOT / "test/native_interfaces.cpp"), "-o", str(caller)])
         executable = tmp_path / f"native_{weighted_only}"
         _native_interfaces_run([nvcc, str(caller), *(objects[:1] if weighted_only else objects), "-o", str(executable)])

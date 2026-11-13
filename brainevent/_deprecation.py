@@ -4,9 +4,9 @@
 
 # -*- coding: utf-8 -*-
 
-"""Backward-compatibility shim for public names retired between v0.0.7 and v0.1.0.
+"""Backward-compatibility shim for retired public names.
 
-Retired names stay *resolvable* so v0.0.7 code keeps importing:
+Retired names (v0.0.7 to v0.1.0, and after v0.4.2) stay *resolvable*:
 
 * renamed names return their replacement and emit a :class:`DeprecationWarning`;
 * names whose underlying functionality was removed raise an :class:`AttributeError`
@@ -85,6 +85,28 @@ DEPRECATED_REMOVED.update({
 DEPRECATED_REMOVED.update({
     'EllLayout': _LAYOUT_MIGRATION,
     'CscLayout': _LAYOUT_MIGRATION,
+})
+
+_HYBRID_CONFIG_MIGRATION = (
+    'HybridConfig and get_hybrid_config were removed after brainevent 0.4.2. '
+    'Use brainevent.CSRConfig for explicit scheduler settings (pass it as '
+    '`config=` to CSR / CSC / FixedNumPer* constructors) and '
+    'brainevent.load_csr_config / brainevent.save_csr_config / '
+    'brainevent.init_csr_config to read, persist or tune the per-device '
+    'configuration.'
+)
+_DELAY_DELIVER_MIGRATION = (
+    'The non-layout delay delivery (csr_delay_deliver / csr_delay_deliver_p / '
+    'CSR.delay_deliver) was removed after brainevent 0.4.2. Build the delay '
+    'layout once with brainevent.CSRDelayLayout.build(...) or '
+    'CSR.delay_layout(delays, n_slots), then deliver each step with '
+    'brainevent.csr_delay_deliver_layout(ring, events, layout, t).'
+)
+DEPRECATED_REMOVED.update({
+    'HybridConfig': _HYBRID_CONFIG_MIGRATION,
+    'get_hybrid_config': _HYBRID_CONFIG_MIGRATION,
+    'csr_delay_deliver': _DELAY_DELIVER_MIGRATION,
+    'csr_delay_deliver_p': _DELAY_DELIVER_MIGRATION,
 })
 
 

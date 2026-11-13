@@ -37,7 +37,7 @@ _I32_MAX = int(np.iinfo(np.int32).max)
 TPR_THRESHOLD = 128
 TASK_NNZ = 4096
 PACKAGE = Path(__file__).resolve().parent
-TRAITS = PACKAGE / "_common" / "op_traits.cuh"
+TRAITS = PACKAGE.parents[1] / "include" / "brainevent" / "op_traits.cuh"
 HEADER = PACKAGE / "hybrid" / "hybrid_delay_spmv.cuh"
 VALUE_SUFFIX = {jnp.dtype(jnp.float16): "f16", jnp.dtype(jnp.bfloat16): "bf16",
                 jnp.dtype(jnp.float32): "f32", jnp.dtype(jnp.float64): "f64"}

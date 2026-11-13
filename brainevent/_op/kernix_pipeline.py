@@ -98,8 +98,9 @@ def _cache_header_paths(toolchain) -> list[str]:
     candidates: list[str] = []
     # All brainevent headers: both the ``brainevent/`` subdir and any top-level
     # headers (cuda_common.h lives one level up).
-    candidates.extend(glob.glob(os.path.join(be_inc, "brainevent", "*.h")))
-    candidates.extend(glob.glob(os.path.join(be_inc, "*.h")))
+    for pattern in ("*.h", "*.cuh"):
+        candidates.extend(glob.glob(os.path.join(be_inc, "brainevent", pattern)))
+        candidates.extend(glob.glob(os.path.join(be_inc, pattern)))
     # jaxlib FFI ABI header.
     candidates.append(os.path.join(toolchain.xla_ffi_include_dir, "xla", "ffi", "api", "ffi.h"))
     return [p for p in candidates if os.path.isfile(p)]

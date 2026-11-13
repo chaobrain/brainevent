@@ -30,14 +30,11 @@ def _isolate_mock_backend_selection():
     jax.clear_caches()
 
 
-def _case(
-    transpose, *, homo=False, backend=None,
-    backward_algorithm='weighted_float',
-):
+def _case(transpose, *, homo=False, backend=None):
     matrix = CSR(
         jnp.array([2.] if homo else [2., -1., 3., 4.], jnp.float32),
         jnp.array([0, 2, 1, 2], jnp.int32), jnp.array([0, 2, 4], jnp.int32),
-        shape=(2, 3), backend=backend, backward_algorithm=backward_algorithm,
+        shape=(2, 3), backend=backend,
     )
     if transpose:
         ptr, idx, cols = matrix.indptr, matrix.indices, matrix.shape[1]
@@ -101,23 +98,21 @@ def test_backend_policy_can_select_parent_on_cuda(monkeypatch, selection):
 
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('homo', [True, False])
-@pytest.mark.parametrize('backward_algorithm', ['binary', 'weighted_float'])
-def test_cuda_dispatch_runs_canonical_forward_and_gradients(transpose, homo, backward_algorithm):
+def test_cuda_dispatch_runs_canonical_forward_and_gradients(transpose, homo):
     try:
         gpu = jax.devices('gpu')[0]
     except RuntimeError:
         pytest.skip('CUDA device required')
     if 'cuda' not in gpu.client.platform_version.lower():
         pytest.skip('CUDA device required')
-    matrix, events, plan = _case(transpose, homo=homo, backward_algorithm=backward_algorithm)
+    matrix, events, plan = _case(transpose, homo=homo)
     fn = jax.jit(lambda w, x: _call(matrix.with_data(w), x, plan, transpose))
     result = fn(matrix.data, events)
     dense = np.asarray(matrix.todense())
     np.testing.assert_allclose(result, (dense.T if transpose else dense) @ (np.asarray(events) != 0))
     grad = jax.jit(jax.grad(lambda w: fn(w, events).sum()))(matrix.data)
-    values = np.asarray(
-        events if backward_algorithm == 'weighted_float' else events != 0
-    ).sum(axis=1)
+    # Binary events: the weight gradient is the exact activity-mask derivative.
+    values = np.asarray(events != 0).sum(axis=1)
     units = np.array([0, 0, 1, 1]) if transpose else np.array([0, 2, 1, 2])
     expected = values[units]
     if homo:

@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0:
 // http://www.apache.org/licenses/LICENSE-2.0
 
-#ifndef DEVING_CUDA_TRAITS_CUH
-#define DEVING_CUDA_TRAITS_CUH
+#ifndef BRAINEVENT_CUDA_TRAITS_CUH
+#define BRAINEVENT_CUDA_TRAITS_CUH
 // CUDA-only scalar operations shared by native launchers and BrainEvent bindings.
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>

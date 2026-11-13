@@ -57,7 +57,7 @@ namespace hybrid
 
 #include "brainevent/common.h"
 #include "cuda_common.h"
-#include "_common/op_traits.cuh"
+#include "brainevent/op_traits.cuh"
 #include "hybrid_batchedv3_spmm_ffi_device.cuh"
 
 namespace

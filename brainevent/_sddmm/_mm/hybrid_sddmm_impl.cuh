@@ -19,7 +19,7 @@
 // short_kernel re-reads events[b, row] from the short list's row; long-row tasks carry their
 // event value in the task value queue Scratch::value, written by compact_kernel.
 #include "hybrid_sddmm.cuh"
-#include "../_common/cuda_traits.cuh"
+#include "brainevent/cuda_traits.cuh"
 
 #include <type_traits>
 

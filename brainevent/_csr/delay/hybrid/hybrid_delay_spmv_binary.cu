@@ -5,7 +5,7 @@
 // Binary region-delay hybrid: nonzero events gate delayed weight delivery.
 #include "hybrid_delay_spmv.cuh"
 #include "hybrid_delay_validation.cuh"
-#include "../_common/cuda_traits.cuh"
+#include "brainevent/cuda_traits.cuh"
 
 #ifndef BE_DELAY_TPR_THRESHOLD
 #define BE_DELAY_TPR_THRESHOLD 128
@@ -236,7 +236,7 @@ namespace region_delay
 #ifndef BE_REGION_DELAY_STANDALONE
 #include "cuda_common.h"
 #include "brainevent/common.h"
-#include "_common/op_traits.cuh"
+#include "brainevent/op_traits.cuh"
 
 namespace region_delay
 {

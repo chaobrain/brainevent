@@ -13,6 +13,7 @@ import importlib
 from pathlib import Path
 
 import brainunit as u
+import brainevent
 import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
@@ -185,21 +186,18 @@ def test_jvp_keeps_numeric_input_tangents(cpu_math_backend, transpose, homo):
 
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('homo', [False, True])
-@pytest.mark.parametrize('algorithm', ['binary', 'weighted_float'])
-def test_vjp_returns_canonical_edge_order_and_homo_sum(cpu_math_backend, transpose, homo,
-                                                     algorithm):
+def test_vjp_returns_canonical_edge_order_and_homo_sum(cpu_math_backend, transpose, homo):
     case = _make_case(transpose, homo)
     shape = (case['shape'][1 if transpose else 0], case['events'].shape[1])
     ct = jnp.arange(np.prod(shape), dtype=jnp.float32).reshape(shape) / 5 + .2
-    loss = lambda w, e: jnp.sum(_invoke(case, weights=w, events=e,
-                                        backward_algorithm=algorithm) * ct)
+    loss = lambda w, e: jnp.sum(_invoke(case, weights=w, events=e) * ct)
     dw, de = jax.grad(loss, argnums=(0, 1))(case['weights'], case['events'])
     rows = np.repeat(np.arange(case['shape'][0]), np.diff(np.asarray(case['indptr'])))
     cols = np.asarray(case['indices'])
     unit, target = (rows, cols) if transpose else (cols, rows)
     events = np.asarray(case['events'])[unit]
-    factor = events if algorithm == 'weighted_float' else events != 0
-    expected = np.sum(np.where(events != 0, factor * np.asarray(ct)[target], 0), axis=1)
+    # Binary events: the weight gradient is the exact activity-mask derivative.
+    expected = np.sum(np.where(events != 0, np.asarray(ct)[target], 0), axis=1)
     _assert_close(dw, expected.sum(keepdims=True) if homo else expected)
     backward_case = dict(case, transpose=not transpose)
     _assert_close(de, _numpy_reference(backward_case, events=ct, binary=False))
@@ -210,8 +208,7 @@ def test_higher_weight_derivatives_match_selected_linear_map(cpu_math_backend, t
     case = _make_case(transpose)
     basis = np.eye(case['weights'].size, dtype=np.float32)
     columns = np.stack([_numpy_reference(case, weights=column).ravel() for column in basis], axis=1)
-    loss = lambda w: jnp.sum(
-        _invoke(case, weights=w, backward_algorithm='binary') ** 2)
+    loss = lambda w: jnp.sum(_invoke(case, weights=w) ** 2)
     hessian = jax.jacfwd(jax.grad(loss))(case['weights'])
     _assert_close(hessian, 2 * columns.T @ columns)
 
@@ -245,12 +242,11 @@ def test_bool_event_gradient_is_float0(cpu_math_backend):
 @requires_gpu
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('homo', [False, True])
-@pytest.mark.parametrize('algorithm', ['binary', 'weighted_float'])
 @pytest.mark.parametrize('dtype', WEIGHT_DTYPES)
-def test_cuda_gradients_and_numeric_input_tangent(transpose, homo, algorithm, dtype):
+def test_cuda_gradients_and_numeric_input_tangent(transpose, homo, dtype):
     with jax_x64_enabled(), jax.default_device(jax.devices('gpu')[0]):
         case = _make_case(transpose, homo, dtype=dtype)
-        fn = lambda w, e: _invoke(case, weights=w, events=e, backward_algorithm=algorithm)
+        fn = lambda w, e: _invoke(case, weights=w, events=e)
         dw, de = jax.jit(jax.grad(lambda w, e: jnp.sum(fn(w, e)), argnums=(0, 1)))(
             case['weights'], case['events'])
         assert dw.dtype == case['weights'].dtype
@@ -258,9 +254,7 @@ def test_cuda_gradients_and_numeric_input_tangent(transpose, homo, algorithm, dt
         rows = np.repeat(np.arange(case['shape'][0]), np.diff(np.asarray(case['indptr'])))
         unit = rows if transpose else np.asarray(case['indices'])
         selected = np.asarray(case['events'])[unit]
-        expected_dw = (
-            selected if algorithm == 'weighted_float' else selected != 0
-        ).sum(axis=1)
+        expected_dw = (selected != 0).sum(axis=1)
         _assert_close(dw, expected_dw.sum(keepdims=True) if homo else expected_dw)
         output_shape = (case['shape'][1 if transpose else 0], case['events'].shape[1])
         _assert_close(de, _numpy_reference(dict(case, transpose=not transpose),
@@ -290,8 +284,9 @@ def test_cuda_batch_one_weight_derivatives_accept_optional_host_config(transpose
         gradient = jax.grad(lambda weights: jnp.sum(fn(weights)))(case['weights'])
         rows = np.repeat(np.arange(case['shape'][0]), np.diff(np.asarray(case['indptr'])))
         unit = rows if transpose else np.asarray(case['indices'])
+        # Binary events: the weight gradient is the exact activity-mask derivative.
         _assert_close(
-            gradient, np.sum(np.asarray(case['events'])[unit], axis=1))
+            gradient, np.sum(np.asarray(case['events'])[unit] != 0, axis=1))
 
 
 def _wide_case(transpose, target, batch, dtype):
@@ -446,7 +441,6 @@ def test_inactive_events_isolate_nonfinite_weights(cpu_math_backend, transpose):
     ('weights', jnp.ones(2, jnp.float32)),
     ('weights', jnp.ones(6, jnp.int32)),
     ('backend', 'jax_raw'),
-    ('backward_algorithm', 'unknown'),
     ('tile_width', 0),
     ('tile_width', 2),
 ])
@@ -493,17 +487,21 @@ def test_scalar_weight_units_and_registered_call(cpu_math_backend):
 
 def test_native_resource_dependencies_are_packaged_locally():
     root = Path(api.__file__).parent / 'combined'
+    include_root = Path(brainevent.__file__).parent / 'include'
     for relative in ('combined_spmm_binary.cu', 'combined_kernels.cuh',
                      'combined_impl.cuh', 'combined_ffi.cuh', 'planner.h',
-                     '_common/cuda_traits.cuh', '_common/op_traits.cuh',
                      'col_major/combined_spmm_col_major_binary.cu',
                      'col_major/combined_col_major.cuh',
                      'col_major/combined_col_major_ffi.cuh'):
         assert (root / relative).is_file(), relative
-    for path in root.rglob('*.cuh'):
+    for relative in ('cuda_traits.cuh', 'op_traits.cuh'):
+        assert (include_root / 'brainevent' / relative).is_file(), relative
+    sources = [*root.rglob('*.cuh'), *root.rglob('*.cu'), *root.rglob('*.h')]
+    for path in sources:
+        if 'test' in path.relative_to(root).parts:
+            continue
         for line in path.read_text().splitlines():
             if line.startswith('#include "'):
                 dependency = line.split('"')[1]
-                include_root = root.parents[2] / 'include'
                 assert any((base / dependency).is_file() for base in (path.parent, include_root)), (
                     path, dependency)

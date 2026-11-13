@@ -792,7 +792,6 @@ class delaycsr(CSR):
             ring=self._empty_ring(self.L), head=0, backend=self.backend,
         )
         result.config = config
-        result.backward_algorithm = self.backward_algorithm
         return result
 
     # Requiring increment delays deliberately excludes the parent's no-delay call.
@@ -898,7 +897,6 @@ class delaycsr(CSR):
             n_slots=slots, sorted_by_delay=False, weighted=self.weighted,
             ring=self._empty_ring(slots), head=0, backend=self.backend,
         )
-        result.backward_algorithm = self.backward_algorithm
         return result
 
     @property

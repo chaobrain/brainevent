@@ -11,6 +11,10 @@ import subprocess
 import jax
 import pytest
 
+import brainevent as _brainevent
+
+_BE_INCLUDE = str(Path(_brainevent.__file__).resolve().parent / "include")
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -26,13 +30,13 @@ def test_native_weighted(tmp_path: Path) -> None:
         pytest.skip('nvcc and g++ required')
     cuda = Path(nvcc).resolve().parents[1]
     caller = tmp_path / 'caller.o'
-    run([cxx, '-std=c++17', '-O2', '-I' + str(cuda / 'include'), '-c',
+    run([cxx, '-std=c++17', "-I" + _BE_INCLUDE, '-O2', '-I' + str(cuda / 'include'), '-c',
          str(ROOT / 'test/native_weighted.cpp'), '-o', str(caller)])
     objects = []
     for source in (ROOT / 'combined_spmm_binary.cu', ROOT / 'combined_spmm_weighted.cu',
                    ROOT / 'col_major/combined_spmm_col_major_binary.cu', ROOT / 'col_major/combined_spmm_col_major_weighted.cu'):
         obj = tmp_path / (source.stem + '.o')
-        run([nvcc, '-std=c++17', '-O2', '-arch=native', '-DBE_SPMM_STANDALONE',
+        run([nvcc, '-std=c++17', "-I" + _BE_INCLUDE, '-O2', '-arch=native', '-DBE_SPMM_STANDALONE',
              '-c', str(source), '-o', str(obj)])
         objects.append(str(obj))
     executable = tmp_path / 'native_weighted'

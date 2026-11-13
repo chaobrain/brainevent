@@ -26,15 +26,15 @@ build-backend = "setuptools.build_meta"
 # Explicitly include nested C++ headers (brainevent/ subdir is 2 levels deep in include/).
 # "py.typed" is the PEP 561 marker that tells downstream type checkers brainevent ships
 # inline type information; it must be bundled in the wheel to have any effect.
-"brainevent" = ["include/brainevent/*.h", "py.typed"]
+"brainevent" = ["include/brainevent/*.h", "include/brainevent/*.cuh", "py.typed"]
 # Combined MM loads the planner and scalar/FFI traits transitively.
-"brainevent._tcsr.binary.combined" = ["*.cu", "*.cuh", "*.h", "_common/*.cuh"]
+"brainevent._tcsr.binary.combined" = ["*.cu", "*.cuh", "*.h"]
 "brainevent._tcsr.binary.combined.col_major" = ["*.cu", "*.cuh"]
 "brainevent._csr.binary.hybrid_mv" = ["*.cu", "*.cuh"]
-"brainevent._csr.binary.hybrid_mm" = ["*.cu", "*.cuh", "_common/*.cuh"]
-"brainevent._csr.delay" = ["hybrid/*.cu", "hybrid/*.cuh", "_common/*.cuh"]
+"brainevent._csr.binary.hybrid_mm" = ["*.cu", "*.cuh"]
+"brainevent._csr.delay" = ["hybrid/*.cu", "hybrid/*.cuh"]
 "brainevent._csr.delay.test" = ["native_interfaces.cpp"]
-"brainevent._sddmm" = ["_common/*.cuh"]
+"brainevent._sddmm" = ["_common/*.cu"]
 "brainevent._sddmm._mv" = ["*.cu", "*.cuh"]
 "brainevent._sddmm._mm" = ["*.cu", "*.cuh"]
 

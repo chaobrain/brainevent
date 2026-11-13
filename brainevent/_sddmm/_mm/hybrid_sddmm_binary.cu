@@ -51,7 +51,7 @@ namespace batched_v3
 // Index dtypes (int32/int64) are dispatched at run time.
 #include "brainevent/common.h"
 #include "cuda_common.h"
-#include "../_common/op_traits.cuh"
+#include "brainevent/op_traits.cuh"
 
 namespace
 {

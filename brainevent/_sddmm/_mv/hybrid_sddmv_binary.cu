@@ -325,7 +325,7 @@ namespace hybrid_sddmv
 #include "cuda_common.h"
 #include "brainevent/common.h"
 #include "brainevent/dtypes.h"
-#include "../_common/op_traits.cuh"
+#include "brainevent/op_traits.cuh"
 #include <cstdio>
 #include <cstdlib>
 

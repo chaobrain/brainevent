@@ -49,11 +49,10 @@ class BinaryArray(EventRepresentation):
     boolean event is active where it is ``True``; a numeric event is active
     where it is non-zero, so negative values and NaN are active and the event
     value itself is never multiplied into the forward result. Pass ``x > 0``
-    explicitly to threshold signed inputs. CSR, CSC and TCSR reverse-mode
-    weight gradients use numeric event values by default
-    (``backward_algorithm='weighted_float'``). Set
-    ``backward_algorithm='binary'`` on the sparse matrix to use the activity
-    mask for its weight gradients.
+    explicitly to threshold signed inputs. Reverse-mode weight gradients use
+    the same activity mask, so they are the exact derivative of the binary
+    forward. Wrap events in :class:`WeightedArray` to multiply by, and
+    differentiate through, their values instead.
 
     The class is registered as a JAX PyTree node, so it is compatible with
     ``jax.jit``, ``jax.grad``, ``jax.vmap``, and other transformations.

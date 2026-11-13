@@ -5,7 +5,7 @@
 #ifndef COMBINED_COL_MAJOR_FFI_CUH
 #define COMBINED_COL_MAJOR_FFI_CUH
 #include "combined_col_major.cuh"
-#include "../_common/op_traits.cuh"
+#include "brainevent/op_traits.cuh"
 namespace
 {
 template <class V, class E, class O, bool Weighted>

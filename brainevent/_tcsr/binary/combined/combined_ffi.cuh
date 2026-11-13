@@ -5,7 +5,7 @@
 #ifndef COMBINED_FFI_CUH
 #define COMBINED_FFI_CUH
 #include "combined_kernels.cuh"
-#include "_common/op_traits.cuh"
+#include "brainevent/op_traits.cuh"
 namespace
 {
   template <class V, class E, class O, bool Homo, bool Weighted>

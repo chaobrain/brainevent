@@ -11,23 +11,6 @@ import numpy as np
 from brainevent._csr.config import CSRConfig
 
 
-BACKWARD_ALGORITHMS = frozenset({'binary', 'weighted_float'})
-
-
-def _validate_backward_algorithm(backward_algorithm: str) -> None:
-    """Validate the weight-gradient rule for CSR event products."""
-    if backward_algorithm not in BACKWARD_ALGORITHMS:
-        raise ValueError(
-            f"Unsupported CSR backward algorithm {backward_algorithm!r}. "
-            "Supported algorithms: binary, weighted_float."
-        )
-
-
-def _weight_gradient_mode(weighted: bool, backward_algorithm: str) -> str:
-    """Select event values or activity masks for weight cotangents."""
-    return 'weighted' if weighted or backward_algorithm == 'weighted_float' else 'binary'
-
-
 def _task_capacity(indices, indptr, max_row_nnz, config=None) -> int:
     """Hybrid task-queue capacity bound from static shapes and a row-length hint."""
     config = CSRConfig() if config is None else config

@@ -2058,8 +2058,10 @@ def test_global_cuda_uses_hybrid_forward_and_weight_gradient(cls, ndim, weighted
     symbol = 'hybrid_sddmv_' if ndim == 1 else 'batched_v3_sddmm'
     assert symbol in lowered_gradient.as_text()
     coo = matrix.tocoo()
+    # Binary events differentiate through their activity mask, weighted ones
+    # through their values: the same factors as the forward product.
     per_input = (
-        values if ndim == 1 else values.sum(axis=1 if cls is be.CSR else 0)
+        factors if ndim == 1 else factors.sum(axis=1 if cls is be.CSR else 0)
     )
     expected_gradient = per_input[coo.col if cls is be.CSR else coo.row]
     np.testing.assert_allclose(lowered_gradient.compile()(matrix.data), expected_gradient,
@@ -2278,7 +2280,6 @@ def test_with_rebuilt_config_returns_matrix_without_mutating_source(
         assert rebuilt.config.mirror is None
         assert rebuilt.config.mirror_max_row_nnz is None
     assert rebuilt.backend == matrix.backend
-    assert rebuilt.backward_algorithm == matrix.backward_algorithm
 
 
 @pytest.mark.parametrize('cls', [CSR, CSC])
@@ -2787,144 +2788,96 @@ def test_empty_csr_cuda_event_products(shape, weighted, homogeneous):
 # Sparse object event-value gradient routing
 # --------------------------------------
 
-_weighted_float_ROWS = np.array([0, 0, 1, 1])
+_GRAD_ROWS = np.array([0, 0, 1, 1])
 
 
-_weighted_float_COLS = np.array([0, 2, 1, 2])
+_GRAD_COLS = np.array([0, 2, 1, 2])
 
 
-_weighted_float_DENSE = np.array(
+_GRAD_DENSE = np.array(
     [[1., 0., 2.], [0., 3., 4.]], dtype=np.float32)
 
 
-def _weighted_float_matrix(algorithm, homogeneous):
+def _grad_matrix(homogeneous):
     data = jnp.array([1.] if homogeneous else [1., 2., 3., 4.], dtype=jnp.float32)
     return CSR(
         data,
-        jnp.array(_weighted_float_COLS, dtype=jnp.int32),
+        jnp.array(_GRAD_COLS, dtype=jnp.int32),
         jnp.array([0, 2, 4], dtype=jnp.int32),
-        shape=(2, 3), backend="jax_raw", backward_algorithm=algorithm,
+        shape=(2, 3), backend="jax_raw",
     )
 
 
-@pytest.mark.parametrize("algorithm", ["binary", "weighted_float"])
+@pytest.mark.parametrize("weighted", [False, True], ids=["binary", "weighted"])
 @pytest.mark.parametrize("homogeneous", [False, True])
 @pytest.mark.parametrize("op", ["right_mv", "left_mv", "right_mm", "left_mm"])
-def test_binary_forward_and_weight_cotangent(algorithm, homogeneous, op):
-    matrix = _weighted_float_matrix(algorithm, homogeneous)
+def test_event_forward_and_weight_cotangent(weighted, homogeneous, op):
+    """BinaryArray uses its activity mask, WeightedArray its values, in both passes."""
+    matrix = _grad_matrix(homogeneous)
+    wrap = WeightedArray if weighted else BinaryArray
     if op == "right_mv":
         x = jnp.array([2., 0., -1.], dtype=jnp.float32)
         ct = jnp.array([5., 7.], dtype=jnp.float32)
-        product = lambda m: m @ BinaryArray(x)
-        factor = np.asarray(x)[_weighted_float_COLS]
-        expected = (
-            _weighted_float_DENSE @ (np.asarray(x) != 0).astype(np.float32)
-        )
+        factor = np.asarray(x)[_GRAD_COLS]
     elif op == "left_mv":
         x = jnp.array([2., -1.], dtype=jnp.float32)
         ct = jnp.array([5., 6., 7.], dtype=jnp.float32)
-        product = lambda m: BinaryArray(x) @ m
-        factor = np.asarray(x)[_weighted_float_ROWS]
-        expected = (
-            (np.asarray(x) != 0).astype(np.float32) @ _weighted_float_DENSE
-        )
+        factor = np.asarray(x)[_GRAD_ROWS]
     elif op == "right_mm":
         x = jnp.array([[2., 0.], [0., 3.], [-1., 2.]], dtype=jnp.float32)
         ct = jnp.array([[5., 6.], [7., 8.]], dtype=jnp.float32)
-        product = lambda m: m @ BinaryArray(x)
-        factor = np.asarray(x)[_weighted_float_COLS]
-        expected = (
-            _weighted_float_DENSE @ (np.asarray(x) != 0).astype(np.float32)
-        )
+        factor = np.asarray(x)[_GRAD_COLS]
     else:
         x = jnp.array([[2., -1.], [0., 3.]], dtype=jnp.float32)
         ct = jnp.array([[5., 6., 7.], [8., 9., 10.]], dtype=jnp.float32)
-        product = lambda m: BinaryArray(x) @ m
-        factor = np.asarray(x)[:, _weighted_float_ROWS]
-        expected = (
-            (np.asarray(x) != 0).astype(np.float32) @ _weighted_float_DENSE
-        )
+        factor = np.asarray(x)[:, _GRAD_ROWS]
+    left = op.startswith("left")
+    product = (lambda m: wrap(x) @ m) if left else (lambda m: m @ wrap(x))
+    values = np.asarray(x) if weighted else (np.asarray(x) != 0).astype(np.float32)
+    dense = _GRAD_DENSE
     if homogeneous:
-        dense = np.zeros_like(_weighted_float_DENSE)
-        dense[_weighted_float_ROWS, _weighted_float_COLS] = 1
-        expected = ((np.asarray(x) != 0).astype(np.float32) @ dense
-                    if op.startswith("left") else dense @ (np.asarray(x) != 0).astype(np.float32))
+        dense = np.zeros_like(_GRAD_DENSE)
+        dense[_GRAD_ROWS, _GRAD_COLS] = 1
+    expected = values @ dense if left else dense @ values
     np.testing.assert_allclose(product(matrix), expected)
-    if algorithm == "binary":
+    if not weighted:
         factor = (factor != 0).astype(np.float32)
     if op == "right_mv":
-        slots = factor * np.asarray(ct)[_weighted_float_ROWS]
+        slots = factor * np.asarray(ct)[_GRAD_ROWS]
     elif op == "left_mv":
-        slots = factor * np.asarray(ct)[_weighted_float_COLS]
+        slots = factor * np.asarray(ct)[_GRAD_COLS]
     elif op == "right_mm":
-        slots = np.sum(factor * np.asarray(ct)[_weighted_float_ROWS], axis=1)
+        slots = np.sum(factor * np.asarray(ct)[_GRAD_ROWS], axis=1)
     else:
-        slots = np.sum(
-            factor * np.asarray(ct)[:, _weighted_float_COLS], axis=0)
+        slots = np.sum(factor * np.asarray(ct)[:, _GRAD_COLS], axis=0)
     expected_grad = np.array([np.sum(slots)], dtype=np.float32) if homogeneous else slots
     actual_grad = jax.grad(lambda data: jnp.vdot(product(matrix.with_data(data)), ct))(matrix.data)
     np.testing.assert_allclose(actual_grad, expected_grad)
 
 
+@pytest.mark.parametrize("weighted", [False, True], ids=["binary", "weighted"])
 @pytest.mark.parametrize("op", ["mv", "mm"])
-def test_weighted_float_indexed_mirror_keeps_weighted_cotangent(
-    monkeypatch, op,
+def test_indexed_mirror_weight_cotangent_follows_event_type(
+    monkeypatch, op, weighted,
 ):
     monkeypatch.setattr(csr_main, "_use_cuda_indexed_binary_route", lambda backend: True)
-    matrix = _weighted_float_matrix(
-        "weighted_float", False).build_weight_indices()
+    matrix = _grad_matrix(False).build_weight_indices()
+    wrap = WeightedArray if weighted else BinaryArray
     x = jnp.array([2., 0., -1.], dtype=jnp.float32)
     if op == "mm":
         x = jnp.stack([x, 2 * x], axis=1)
         ct = jnp.array([[5., 6.], [7., 8.]], dtype=jnp.float32)
-        slots = np.sum(
-            np.asarray(x)[_weighted_float_COLS]
-            * np.asarray(ct)[_weighted_float_ROWS], axis=1)
     else:
         ct = jnp.array([5., 7.], dtype=jnp.float32)
-        slots = (
-            np.asarray(x)[_weighted_float_COLS]
-            * np.asarray(ct)[_weighted_float_ROWS]
-        )
-    product = lambda m: m @ BinaryArray(x)
-    np.testing.assert_allclose(
-        product(matrix), _weighted_float_DENSE @ (np.asarray(x) != 0))
+    values = np.asarray(x) if weighted else (np.asarray(x) != 0).astype(np.float32)
+    if op == "mm":
+        slots = np.sum(values[_GRAD_COLS] * np.asarray(ct)[_GRAD_ROWS], axis=1)
+    else:
+        slots = values[_GRAD_COLS] * np.asarray(ct)[_GRAD_ROWS]
+    product = lambda m: m @ wrap(x)
+    np.testing.assert_allclose(product(matrix), _GRAD_DENSE @ values)
     actual = jax.grad(lambda data: jnp.vdot(product(matrix.with_data(data)), ct))(matrix.data)
     np.testing.assert_allclose(actual, slots)
-
-
-def test_backward_algorithm_lifecycle_and_weighted_override():
-    matrix = _weighted_float_matrix("weighted_float", False)
-    assert matrix.with_data(matrix.data).backward_algorithm == "weighted_float"
-    assert matrix.T.backward_algorithm == "weighted_float"
-    assert matrix.tocsc().backward_algorithm == "weighted_float"
-    assert (
-        jax.tree_util.tree_unflatten(
-            *reversed(jax.tree_util.tree_flatten(matrix))
-        ).backward_algorithm == "weighted_float"
-    )
-    assert CSR.fromdense(
-        jnp.eye(2, dtype=jnp.float32), backend="jax_raw",
-        backward_algorithm="weighted_float",
-    ).backward_algorithm == "weighted_float"
-    with pytest.raises(ValueError, match="backward algorithm"):
-        _weighted_float_matrix("unknown", False)
-
-    x = jnp.array([2., 0., -1.], dtype=jnp.float32)
-    ct = jnp.array([5., 7.], dtype=jnp.float32)
-    product = lambda m: m @ WeightedArray(x)
-    np.testing.assert_allclose(
-        product(_weighted_float_matrix("binary", False)),
-        _weighted_float_DENSE @ np.asarray(x))
-    actual = jax.grad(
-        lambda data: jnp.vdot(
-            product(_weighted_float_matrix("binary", False).with_data(data)),
-            ct,
-        )
-    )(_weighted_float_matrix("binary", False).data)
-    np.testing.assert_allclose(
-        actual, np.asarray(x)[_weighted_float_COLS]
-        * np.asarray(ct)[_weighted_float_ROWS])
 
 
 # Sparse object selection of direct and indexed primitives
@@ -3034,7 +2987,7 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
         raise AssertionError("cuda_raw unfavorable BinaryArray route must use indexed primitive")
 
     def fake_mv_indexed(data, indices, indptr, perm, vector, *, shape, transpose, backend=None, weighted=False,
-                        backward_algorithm="weighted_float", config=None):
+                        config=None):
         calls.append({
             "kind": "mv",
             "shape": shape,
@@ -3048,7 +3001,7 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
         return jnp.zeros((out_size,), dtype=data.dtype)
 
     def fake_mm_indexed(data, indices, indptr, perm, matrix, *, shape, transpose, backend=None, weighted=False,
-                        backward_algorithm="weighted_float", config=None):
+                        config=None):
         calls.append({
             "kind": "mm",
             "shape": shape,

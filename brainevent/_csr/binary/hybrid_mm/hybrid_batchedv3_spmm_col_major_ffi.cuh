@@ -6,7 +6,7 @@
 #define HYBRID_BATCHEDV3_SPMM_COL_MAJOR_FFI_CUH
 
 #include "hybrid_batchedv3_spmm_col_major.cuh"
-#include "_common/op_traits.cuh"
+#include "brainevent/op_traits.cuh"
 #include "hybrid_batchedv3_spmm_ffi_device.cuh"
 #include <limits>
 

@@ -50,6 +50,15 @@ def _source_argument(value: Any, source: Any, name: str) -> Any:
     return value
 
 
+_REMOVED = object()
+_BACKWARD_ALGORITHM_REMOVED = (
+    "TCSR(backward_algorithm=...) was removed. Weight gradients now follow the "
+    "event type: BinaryArray events use their activity mask, and "
+    "brainevent.WeightedArray events use their values. Wrap events in "
+    "WeightedArray to obtain value-weighted gradients (the former 'pp_prop')."
+)
+
+
 def _construction_backend(
     backend: str | None, binary_backend: str | None, inherited: str | None = None,
 ) -> str | None:
@@ -108,7 +117,10 @@ class TCSR(CSR):
     def __init__(
         self, csr: CSR | None = None, *, backend: str | None = None,
         source: CSR | None = None, binary_backend: str | None = None,
+        backward_algorithm: Any = _REMOVED,
     ):
+        if backward_algorithm is not _REMOVED:
+            raise TypeError(_BACKWARD_ALGORITHM_REMOVED)
         csr = _source_argument(csr, source, 'csr')
         if not isinstance(csr, CSR):
             raise TypeError('TCSR requires a CSR source matrix.')
@@ -124,7 +136,7 @@ class TCSR(CSR):
         super().__init__(
             data, indices, csr.indptr, shape=csr.shape,
             backend=backend,
-            backward_algorithm=csr.backward_algorithm, config=csr.config,
+            config=csr.config,
             indptr_dtype=csr.indptr.dtype, device=device,
         )
         self._initialize_primary_tiles()
@@ -176,7 +188,7 @@ class TCSR(CSR):
         result = cls._from_parts(
             csr.data, csr.indices, csr.indptr, shape=csr.shape,
             backend=_construction_backend(backend, binary_backend, csr.backend),
-            backward_algorithm=csr.backward_algorithm, config=csr.config,
+            config=csr.config,
             cache=csr._cache.copy(),
         )
         result._initialize_primary_tiles()
@@ -239,7 +251,7 @@ class TCSR(CSR):
     def fromdense(
         cls, mat: Any = None, *, nse: int | None = None, index_dtype: Any = jnp.int32,
         indptr_dtype: Any = 'auto', backend: str | None = None,
-        backward_algorithm: str = 'weighted_float', precompute_weight_indices: bool = False,
+        precompute_weight_indices: bool = False,
         config: CSRConfig | None = None, device: Any = None,
         source: Any = None, binary_backend: str | None = None,
     ) -> TCSR:
@@ -257,9 +269,6 @@ class TCSR(CSR):
             Row-pointer precision policy.
         backend : str or None, optional
             Compute backend preference.
-        backward_algorithm : {'binary', 'weighted_float'}, optional
-            Public CSR weight-gradient convention. Default ``'weighted_float'``
-            uses event values; ``'binary'`` uses their activity mask.
         precompute_weight_indices : bool, optional
             Build the shared mirror before returning.
         config : CSRConfig or None, optional
@@ -283,7 +292,7 @@ class TCSR(CSR):
         # CSR's factory supplies sorted columns and owns its padding policy.
         csr = CSR.fromdense(
             mat, nse=nse, index_dtype=index_dtype, indptr_dtype=indptr_dtype,
-            backend=backend, backward_algorithm=backward_algorithm,
+            backend=backend,
             precompute_weight_indices=precompute_weight_indices,
             config=config, device=device,
         )
@@ -420,7 +429,7 @@ class TCSR(CSR):
             raise ValueError('transpose must be True, False, or None.')
         result = type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape,
-            backend=self.backend, backward_algorithm=self.backward_algorithm,
+            backend=self.backend,
             config=self.config, cache=self._cache.copy(),
         )
         result._initialize_primary_tiles()
@@ -576,7 +585,7 @@ class TCSR(CSR):
             Reconstructed matrix without running public construction.
         """
         parent_aux, descriptions = aux_data
-        _, _, _, has_mirror, has_diag = parent_aux
+        _, _, has_mirror, has_diag = parent_aux
         parent_size = 4 + 3 * has_mirror + 4 * has_diag
         expected = parent_size + 2 * len(descriptions)
         if len(children) != expected:

@@ -46,7 +46,7 @@
  */
 
 #include "hybrid_sddmv.cuh"
-#include "../_common/cuda_traits.cuh"
+#include "brainevent/cuda_traits.cuh"
 
 #include <limits>
 
@@ -303,7 +303,7 @@ namespace hybrid_sddmv
 #include "cuda_common.h"
 #include "brainevent/common.h"
 #include "brainevent/dtypes.h"
-#include "../_common/op_traits.cuh"
+#include "brainevent/op_traits.cuh"
 
 #ifndef BE_HYBRID_SDDMV_CHECK
 #define BE_HYBRID_SDDMV_CHECK(condition, message)  \

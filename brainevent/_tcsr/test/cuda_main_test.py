@@ -27,13 +27,10 @@ def _cuda_available():
 pytestmark = pytest.mark.skipif(not _cuda_available(), reason='actual CUDA device required')
 
 
-def _matrix(
-    dtype=jnp.float32, mode='hetero', algorithm='weighted_float', *, batch=3,
-):
+def _matrix(dtype=jnp.float32, mode='hetero', *, batch=3):
     values = {'hetero': [1., -2., .5, 3., 4.], 'singleton': [1.5], 'scalar': 1.5}[mode]
     return TCSR(CSR(jnp.asarray(values, dtype), np.array([2, 0, 2, 1, 2], np.int32),
-                    np.array([0, 3, 5], np.int32), shape=(2, 3),
-                    backward_algorithm=algorithm))
+                    np.array([0, 3, 5], np.int32), shape=(2, 3)))
 
 
 def _events(matrix, transpose, batch=3):
@@ -63,22 +60,22 @@ def _dense(matrix):
 
 
 _CASES = [
-    (jnp.float16, True, 'hetero', 'binary'),
-    (jnp.float16, False, 'scalar', 'weighted_float'),
-    (jnp.bfloat16, True, 'singleton', 'weighted_float'),
-    (jnp.bfloat16, False, 'hetero', 'binary'),
-    (jnp.float32, True, 'scalar', 'binary'),
-    (jnp.float32, False, 'singleton', 'weighted_float'),
-    (jnp.float32, False, 'hetero', 'weighted_float'),
-    (jnp.float64, True, 'hetero', 'weighted_float'),
-    (jnp.float64, False, 'scalar', 'binary'),
+    (jnp.float16, True, 'hetero'),
+    (jnp.float16, False, 'scalar'),
+    (jnp.bfloat16, True, 'singleton'),
+    (jnp.bfloat16, False, 'hetero'),
+    (jnp.float32, True, 'scalar'),
+    (jnp.float32, False, 'singleton'),
+    (jnp.float32, False, 'hetero'),
+    (jnp.float64, True, 'hetero'),
+    (jnp.float64, False, 'scalar'),
 ]
 
 
-@pytest.mark.parametrize('dtype,transpose,mode,algorithm', _CASES)
-def test_public_cuda_forward_and_matrix_and_event_cotangents(dtype, transpose, mode, algorithm):
+@pytest.mark.parametrize('dtype,transpose,mode', _CASES)
+def test_public_cuda_forward_and_matrix_and_event_cotangents(dtype, transpose, mode):
     with jax_x64_enabled() if dtype == jnp.float64 else nullcontext():
-        matrix = _matrix(dtype, mode, algorithm)
+        matrix = _matrix(dtype, mode)
         events = _events(matrix, transpose)
         run = jax.jit(lambda m, x: _product(m, x, transpose))
         # The first public mirror call prepares its geometry; subsequent JIT
@@ -99,10 +96,8 @@ def test_public_cuda_forward_and_matrix_and_event_cotangents(dtype, transpose, m
         ))(matrix, events)
         rows = np.repeat(np.arange(matrix.shape[0]), np.diff(np.asarray(matrix.indptr)))
         cols = np.asarray(matrix.indices)
-        activity = (
-            np.asarray(events) if algorithm == 'weighted_float'
-            else np.asarray(events) != 0
-        )
+        # Binary events: the weight gradient is the exact activity-mask derivative.
+        activity = np.asarray(events) != 0
         expected_weights = activity[:, rows].sum(axis=0) if transpose else activity[cols].sum(axis=1)
         if mode != 'hetero':
             expected_weights = np.asarray(expected_weights.sum()).reshape(matrix.data.shape)

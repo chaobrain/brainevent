@@ -468,7 +468,6 @@ def _fresh_state(result, source):
     assert result.config.nnz == result.nse
     assert result.backend == source.backend
     assert result.weighted == source.weighted
-    assert result.backward_algorithm == source.backward_algorithm
 
 
 @pytest.mark.parametrize("index,rows", [
@@ -479,7 +478,6 @@ def _fresh_state(result, source):
 def test_slice_rows_negative_repeated_and_empty_selection(index, rows):
     source = _matrix(shared=True, ring_dtype=np.float16, unit=u.mV,
                      ring_unit=u.mV * u.second)
-    source.backward_algorithm = "weighted_float"
     snapshot = _snapshot(source)
     result = source.slice_rows(index)
     assert result.shape == (len(rows), 3)
@@ -505,7 +503,6 @@ def test_slice_rows_clears_caches_and_prepares_config_from_blank_source():
     source._mirror()
     source._cache.diag_plan = (jnp.zeros(4, jnp.int32),)
     source.config = CSRConfig()
-    source.backward_algorithm = "weighted_float"
     result = source.slice_rows([1, 0])
     _fresh_state(result, source)
     assert result.config.primary is not None
@@ -578,7 +575,6 @@ def test_slice_rows_is_eager_when_row_selection_is_traced():
 
 def test_diag_add_rebuilds_via_init_preserves_edges_and_resets_state(monkeypatch):
     source = _matrix(ring_dtype=np.float16)
-    source.backward_algorithm = "weighted_float"
     source._mirror()
     snapshot = _snapshot(source)
     calls = []

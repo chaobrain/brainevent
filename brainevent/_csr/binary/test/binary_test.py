@@ -387,7 +387,7 @@ def test_binary_csrmv_batching_vector_axis_0_uses_csrmm_fast_path(monkeypatch):
     calls = []
 
     def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend, weighted=False,
-                          backward_algorithm="weighted_float", config=None):
+                          config=None):
         calls.append((w, idx, ptr, b, shape, transpose, backend, config))
         return (math_out,)
 
@@ -422,7 +422,7 @@ def test_binary_csrmv_batching_vector_axis_1_uses_csrmm_fast_path(monkeypatch):
     calls = []
 
     def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend, weighted=False,
-                          backward_algorithm="weighted_float", config=None):
+                          config=None):
         calls.append((w, idx, ptr, b, shape, transpose, backend, config))
         return (math_out,)
 
@@ -1604,7 +1604,7 @@ def test_binary_csrmv_gradients_use_event_mask(backend, homo, transpose):
     def op(d, v):
         return binary_csrmv(
             d, indices, indptr, v, shape=shape, transpose=transpose,
-            backend=backend, backward_algorithm='binary',
+            backend=backend,
             config=prepared_config(indices, indptr, shape))
 
     def dense_op(d, z):
@@ -1627,7 +1627,7 @@ def test_binary_csrmm_gradients_use_event_mask(backend, homo, transpose):
     def op(d, v):
         return binary_csrmm(
             d, indices, indptr, v, shape=shape, transpose=transpose,
-            backend=backend, backward_algorithm='binary',
+            backend=backend,
             config=prepared_config(indices, indptr, shape))
 
     def dense_op(d, z):
@@ -1644,8 +1644,7 @@ def test_issue_198_binary_csr_weight_gradient_regression():
     W = jnp.array([[1., 10.], [100., 0.], [0., 1000.]])
     csr = be.CSR.fromdense(W)
     mk = lambda d: be.CSR(
-        (d, csr.indices, csr.indptr), shape=W.shape,
-        backward_algorithm='binary')
+        (d, csr.indices, csr.indptr), shape=W.shape)
 
     x = jnp.array([0., 2., 1.])
     g = jax.grad(lambda d: (be.BinaryArray(x) @ mk(d)).sum())(csr.data)
@@ -1871,9 +1870,9 @@ def test_binary_csrmv_weighted_default_is_binary():
 
 
 @pytest.mark.parametrize('axis', [0, 1])
-@pytest.mark.parametrize('backward_algorithm', ['binary', 'weighted_float'])
-def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis, backward_algorithm):
-    """The mat-vec batching rule keeps event and gradient modes when lowering to mat-mat."""
+@pytest.mark.parametrize('weighted', [False, True])
+def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis, weighted):
+    """The mat-vec batching rule keeps the event mode when lowering to mat-mat."""
     weights = jnp.array([1.0, 2.0], dtype=jnp.float32)
     indices = jnp.array([0, 1], dtype=jnp.int32)
     indptr = jnp.array([0, 2], dtype=jnp.int32)
@@ -1881,18 +1880,17 @@ def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis, backward_alg
     seen = []
 
     def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend, weighted=False,
-                          backward_algorithm="weighted_float", config=None):
-        seen.append((weighted, backward_algorithm))
+                          config=None):
+        seen.append(weighted)
         return (jnp.ones((1, 2), dtype=jnp.float32),)
 
     monkeypatch.setattr("brainevent._csr.binary.binary.binary_csrmm_p_call", fake_csrmm_p_call)
     axes = (None, None, None, axis, None)
     _csrmv_batching(
         (weights, indices, indptr, vector, jnp.empty(0, jnp.uint32)),
-        axes, shape=(1, 2), transpose=False, backend="jax_raw", weighted=True,
-        backward_algorithm=backward_algorithm,
+        axes, shape=(1, 2), transpose=False, backend="jax_raw", weighted=weighted,
     )
-    assert seen == [(True, backward_algorithm)]
+    assert seen == [weighted]
 
 
 @pytest.mark.slow
@@ -2028,7 +2026,7 @@ def test_binary_csr_homo_weight_cotangent_ignores_nan_on_idle_outputs(backend, t
     def f(d):
         return op(d, jnp.asarray(case.indices), indptr, case.events, shape=shape,
                   transpose=transpose, backend=backend, weighted=case.weighted,
-                  backward_algorithm='binary', config=config)
+                  config=config)
 
     _, vjp = jax.vjp(f, jnp.ones(1, jnp.float32))
     (ct_w,) = vjp(ct)
@@ -2681,6 +2679,9 @@ def test_prepared_config_jvp_and_vjp(indexed, homo, weighted, mm):
     grad_weights, grad_events = jax.jit(gradients)(case.weights, events)
     rows = np.repeat(np.arange(4), np.diff(np.asarray(case.indptr)))
     factors = np.asarray(events)[rows]
+    if not weighted:
+        # Binary events: the weight gradient is the exact mask derivative.
+        factors = (factors != 0).astype(np.float32)
     slot_grads = factors * np.asarray(cotangent)[np.asarray(case.indices)]
     if mm:
         slot_grads = slot_grads.sum(axis=1)
@@ -2917,14 +2918,14 @@ def _sampled_operands(case, transpose, batch, homo=False, backend='jax_raw'):
         call = lambda w: op(
             w, indices, indptr, perm, events, shape=(3, 4), transpose=transpose,
             weighted=case.endswith('weighted'),
-            backward_algorithm='binary', backend=backend)
+            backend=backend)
     else:
         op = _sampled_binary_csr.binary_csrmv if batch is None else _sampled_binary_csr.binary_csrmm
         config = (prepared_config(indices, indptr, (3, 4))
                   if transpose and batch is not None and backend in (None, 'cuda_raw') else None)
         call = lambda w: op(
             w, indices, indptr, events, shape=(3, 4), transpose=transpose,
-            weighted=case == 'weighted', backward_algorithm='binary',
+            weighted=case == 'weighted',
             backend=backend, config=config)
     return call, weights, events, rows, indices, perm
 
@@ -3006,12 +3007,12 @@ def test_event_consumers_preserve_activity_before_narrowing(transpose, batch, we
     if indexed:
         op = _sampled_indexed_csr.binary_csrmv_indexed if batch is None else _sampled_indexed_csr.binary_csrmm_indexed
         call = lambda w: op(w, cols, indptr, perm, events, shape=(3, 4), transpose=transpose,
-                            weighted=weighted, backward_algorithm='binary',
+                            weighted=weighted,
                             backend='jax_raw')
     else:
         op = _sampled_binary_csr.binary_csrmv if batch is None else _sampled_binary_csr.binary_csrmm
         call = lambda w: op(w, cols, indptr, events, shape=(3, 4), transpose=transpose,
-                            weighted=weighted, backward_algorithm='binary',
+                            weighted=weighted,
                             backend='jax_raw')
     actual = jax.jit(lambda w, c: jax.vjp(call, w)[1](c)[0])(weights, ct)
     unit, out = (rows, cols) if transpose else (cols, rows)

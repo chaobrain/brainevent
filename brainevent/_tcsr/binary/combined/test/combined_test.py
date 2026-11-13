@@ -10,6 +10,10 @@ from pathlib import Path
 
 import pytest
 
+import brainevent as _brainevent
+
+_BE_INCLUDE = str(Path(_brainevent.__file__).resolve().parent / "include")
+
 TEST = Path(__file__).resolve().with_name("combined_test.cu")
 
 
@@ -17,7 +21,7 @@ TEST = Path(__file__).resolve().with_name("combined_test.cu")
 def test_combined_matches_cpu_reference(tmp_path: Path) -> None:
     """int32/int64 offsets, tile boundaries, row chunks, long rows, many batches, silent and repeated calls."""
     executable = tmp_path / "combined_test"
-    built = subprocess.run(["nvcc", "-std=c++17", "-O2", "-arch=native", "-DBE_SPMM_STANDALONE", str(TEST), str(TEST.parent.parent / "combined_spmm_binary.cu"),
+    built = subprocess.run(["nvcc", "-std=c++17", "-I" + _BE_INCLUDE, "-O2", "-arch=native", "-DBE_SPMM_STANDALONE", str(TEST), str(TEST.parent.parent / "combined_spmm_binary.cu"),
                             "-o", str(executable)], capture_output=True, text=True, timeout=300)
     assert built.returncode == 0, built.stderr
     run = subprocess.run([str(executable)], capture_output=True, text=True, timeout=300)

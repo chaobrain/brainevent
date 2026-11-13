@@ -2,10 +2,10 @@
 // Licensed under the Apache License, Version 2.0:
 // http://www.apache.org/licenses/LICENSE-2.0
 
-#ifndef BRAINEVENT_CSR_DELAY_OP_TRAITS_CUH
-#define BRAINEVENT_CSR_DELAY_OP_TRAITS_CUH
+#ifndef BRAINEVENT_OP_TRAITS_CUH
+#define BRAINEVENT_OP_TRAITS_CUH
 // BrainEvent dtype mapping; scalar CUDA operations live in cuda_traits.cuh.
-#include "cuda_traits.cuh"
+#include "brainevent/cuda_traits.cuh"
 #include "cuda_common.h"
 #include "brainevent/common.h"
 namespace op_traits {

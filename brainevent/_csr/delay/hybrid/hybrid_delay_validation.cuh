@@ -5,7 +5,7 @@
 #ifndef BRAINEVENT_HYBRID_DELAY_VALIDATION_CUH
 #define BRAINEVENT_HYBRID_DELAY_VALIDATION_CUH
 
-#include "../_common/cuda_traits.cuh"
+#include "brainevent/cuda_traits.cuh"
 #include <initializer_list>
 #include <limits>
 
