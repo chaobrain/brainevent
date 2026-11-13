@@ -122,7 +122,7 @@ def test_sorted_plain_csr_factory_keeps_tiles_and_mirror_lazy(monkeypatch):
     assert result.config.mirror_max_row_nnz is None
     assert result._cache.tile_geometries == {}
     assert result._get_tile_geometry(188, transpose=True, prepare=True) is not None
-    assert source._cache.tile_plans == {}
+    assert source._cache.tile_geometries == {}
 
 
 def test_sorted_factory_carries_stale_mirror_config_into_jit(monkeypatch):
@@ -180,11 +180,11 @@ def test_prepare_binary_mm_builds_only_the_requested_tiles_on_a_copy():
     assert base._cache.mirror is None and base._cache.tile_geometries == {}
     assert result._cache.mirror is not None
     assert [key[0] for key in result._cache.tile_geometries] == [False]
-    assert result._get_binary_mm_plan(3, transpose=False) is not None
-    assert result._get_binary_mm_plan(3, transpose=True) is None
+    assert result._get_tile_geometry(3, transpose=False) is not None
+    assert result._get_tile_geometry(3, transpose=True) is None
     both = base.prepare_binary_mm(65535, dtype=jnp.float64)
-    assert both._get_binary_mm_plan(65535, transpose=True, dtype=jnp.float64) is not None
-    assert both._get_binary_mm_plan(65535, transpose=False, dtype=jnp.float64) is not None
+    assert both._get_tile_geometry(65535, transpose=True, dtype=jnp.float64) is not None
+    assert both._get_tile_geometry(65535, transpose=False, dtype=jnp.float64) is not None
     assert base.prepare_binary_mm(0)._cache.tile_geometries == {}
     with pytest.raises(ValueError, match='transpose'):
         base.prepare_binary_mm(2, transpose='yes')
@@ -204,7 +204,7 @@ def test_data_only_changes_share_geometries_and_obey_dtype_unit_contracts():
     converted = matrix.apply(lambda data: data.astype(jnp.float16) * u.mV)
     assert converted._cache is matrix._cache
     plan = matrix._get_tile_geometry(2, transpose=True, prepare=True)
-    assert converted._get_binary_mm_plan(2, transpose=True) is plan
+    assert converted._get_tile_geometry(2, transpose=True) is plan
     for result in (matrix * 2, matrix / 2, -matrix, matrix.prepare_diag_add(), matrix.with_rebuilt_config()):
         assert type(result) is TCSR and result._cache is matrix._cache
 
@@ -213,15 +213,15 @@ def test_mirror_replacement_invalidates_only_mirror_geometry():
     matrix = _matrix().prepare_binary_mm(2)
     sibling = matrix.with_data(matrix.data * 2)
     preparation = sibling._cache.mirror_preparation
-    primary = matrix._get_binary_mm_plan(2, transpose=True)
-    mirror_plan = matrix._get_binary_mm_plan(2, transpose=False)
+    primary = matrix._get_tile_geometry(2, transpose=True)
+    mirror_plan = matrix._get_tile_geometry(2, transpose=False)
     matrix.set_buffer('csc', tuple(jnp.array(a) for a in matrix.buffers['csc']))
     assert sibling._cache.mirror_preparation is preparation
     assert matrix._cache.mirror_preparation is not preparation
     assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
-    assert matrix._get_binary_mm_plan(2, transpose=True) is primary
-    assert matrix._get_binary_mm_plan(2, transpose=False) is None
-    assert sibling._get_binary_mm_plan(2, transpose=False) is mirror_plan
+    assert matrix._get_tile_geometry(2, transpose=True) is primary
+    assert matrix._get_tile_geometry(2, transpose=False) is None
+    assert sibling._get_tile_geometry(2, transpose=False) is mirror_plan
     rebuilt = matrix._get_tile_geometry(2, transpose=False, prepare=True)
     assert rebuilt is not None and rebuilt is not mirror_plan
 
@@ -270,7 +270,7 @@ def test_jit_scan_and_vmap_preserve_tcsr_and_geometry_payload():
     matrix = _matrix().prepare_binary_mm(2)
     restored = jax.jit(lambda m: m)(matrix)
     assert type(restored) is TCSR
-    assert restored._get_binary_mm_plan(2, transpose=False) is not None
+    assert restored._get_tile_geometry(2, transpose=False) is not None
     carried, outputs = jax.jit(lambda m: jax.lax.scan(
         lambda carry, _: (carry.apply(lambda d: d + 1), carry.data.sum()), m, jnp.arange(3),
     ))(matrix)
@@ -315,7 +315,7 @@ def test_corrupt_geometry_reports_error():
     plan = matrix._get_tile_geometry(2, transpose=True, prepare=True)
     matrix._cache.tile_geometries[plan.key] = replace(plan, tile_width=999)
     with pytest.raises(ValueError, match='geometry|geometr'):
-        matrix._get_binary_mm_plan(2, transpose=True)
+        matrix._get_tile_geometry(2, transpose=True)
 
 
 def test_hot_path_never_sorts_prepares_or_reads_host(monkeypatch):
@@ -343,7 +343,7 @@ def test_invalid_geometry_object_reports_error():
     plan = matrix._get_tile_geometry(2, transpose=True, prepare=True)
     matrix._cache.tile_geometries[plan.key] = object()
     with pytest.raises(ValueError, match='Invalid|invalid'):
-        matrix._get_binary_mm_plan(2, transpose=True)
+        matrix._get_tile_geometry(2, transpose=True)
 
 
 @pytest.mark.parametrize('shape', [(0, 3), (2, 0), (2, 3)])

@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent import BinaryArray
+from brainevent import BinaryArray, TCSR
 from brainevent._csr.main import CSR
 from brainevent._tcsr.binary.combined.planner import tile_schedule
 from brainevent._tcsr.preprocess import build_tile_geometries
@@ -224,3 +224,20 @@ def test_trace_time_resource_decision_traces_only_the_selected_branch(monkeypatc
     text = str(jax.make_jaxpr(lambda x: _call(matrix, x, plan, True))(events))
     assert ('tcsr_launch_supported' in text) == (decision is None)
     assert ('tcsr_combined_binary_csrmm' in text) == (decision is not False)
+
+
+def test_preparing_another_tile_width_does_not_retrace_dispatch(monkeypatch):
+    """Tiles are separate operands, so new widths leave the dispatch program cached."""
+    monkeypatch.setitem(api.csr_binary_csrmm_p._defaults, 'cpu', 'jax_raw')
+    source = CSR(jnp.ones(4, jnp.float32), jnp.array([0, 5, 1, 63], jnp.int32),
+                 jnp.array([0, 2, 4], jnp.int32), shape=(2, 64))
+    matrix = TCSR(source).prepare_binary_mm(2, transpose=True)
+    plan = matrix._get_tile_geometry(2, transpose=True)
+    events = BinaryArray(jnp.ones((2, 2), bool))
+    expected = api.dispatch_binary_mm(matrix, events, transpose=True, plan=plan)
+    cached = api._dispatch_on_platform._cache_size()
+    wider = matrix.prepare_binary_mm(8, transpose=True)
+    assert len(wider._cache.tile_geometries) == 2
+    result = api.dispatch_binary_mm(wider, events, transpose=True, plan=plan)
+    assert api._dispatch_on_platform._cache_size() == cached
+    np.testing.assert_allclose(result, expected)

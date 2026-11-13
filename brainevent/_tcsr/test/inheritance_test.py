@@ -102,12 +102,12 @@ def test_additive_plasticity_keywords_clipping_units_and_tile_lifecycle(on_pre, 
     expected = getattr(reference, name)(**kwargs)
     eager = getattr(tiled, name)(**kwargs)
     assert type(eager) is TCSR and eager._cache is tiled._cache
-    assert eager._cache.tile_plans is tiled._cache.tile_plans
+    assert eager._cache.tile_geometries is tiled._cache.tile_geometries
     _assert_equal(eager.data, expected.data)
     compiled = jax.jit(lambda m: getattr(m, name)(**kwargs))(tiled)
     assert type(compiled) is TCSR
     _assert_equal(compiled.data, expected.data)
-    assert compiled._cache.tile_plans.keys() == tiled._cache.tile_plans.keys()
+    assert compiled._cache.tile_geometries.keys() == tiled._cache.tile_geometries.keys()
     np.testing.assert_array_equal(_values(tiled.data), original)
 
 
@@ -174,7 +174,7 @@ def test_format_conversions_preserve_values_duplicates_units_and_parent_type_con
     physical = tiled.tocsc()
     assert physical.shape == tiled.shape
     _assert_equal(physical.todense(), reference.todense())
-    assert type(physical) is CSC and physical._cache.tile_plans == {}
+    assert type(physical) is CSC and physical._cache.tile_geometries == {}
     coordinates, parent_coordinates = tiled.tocoo(), reference.tocoo()
     assert coordinates.shape == tiled.shape
     assert coordinates.data.size == tiled.nse
@@ -206,7 +206,7 @@ def test_solve_inherits_keywords_units_and_jit_without_requiring_tcsr_override(w
     result = jax.jit(lambda m, b: m.solve(b=b, tol=1e-7, reorder=0))(tiled, rhs)
     _assert_equal(result, expected)
     np.testing.assert_allclose(_values(result), np.linalg.solve(np.asarray(dense), _values(rhs)), rtol=1e-5)
-    assert tiled._cache.tile_plans == {}  # solve never prepares event-MM tiles
+    assert tiled._cache.tile_geometries == {}  # solve never prepares event-MM tiles
 
 
 def test_solve_rejects_invalid_shapes_as_parent():

@@ -2,7 +2,7 @@
 # Licensed under the Apache License, Version 2.0:
 # http://www.apache.org/licenses/LICENSE-2.0
 
-"""Build a plain C++ caller and link the two standalone CUDA objects."""
+"""Build a plain C++ caller and link the self-contained column-major CUDA object."""
 
 from pathlib import Path
 import shutil
@@ -41,12 +41,10 @@ def test_native_col_major(tmp_path: Path) -> None:
     caller = tmp_path / "caller.o"
     run([cxx, "-std=c++17", "-I" + _BE_INCLUDE, "-O2", "-I" + str(cuda / "include"), "-c",
          str(ROOT / "test/native_col_major.cpp"), "-o", str(caller)])
-    objects = []
-    for source in (ROOT.parent / "combined_spmm_binary.cu", ROOT / "combined_spmm_col_major_binary.cu"):
-        obj = tmp_path / (source.stem + ".o")
-        run([nvcc, "-std=c++17", "-I" + _BE_INCLUDE, "-O2", "-arch=native", "-DBE_SPMM_STANDALONE",
-             "-c", str(source), "-o", str(obj)])
-        objects.append(str(obj))
+    # The column-major module is self-contained: it also defines the combined:: API.
+    module = tmp_path / "combined_spmm_col_major_binary.o"
+    run([nvcc, "-std=c++17", "-I" + _BE_INCLUDE, "-O2", "-arch=native",
+         "-c", str(ROOT / "combined_spmm_col_major_binary.cu"), "-o", str(module)])
     executable = tmp_path / "native_col_major"
-    run([nvcc, str(caller), *objects, "-o", str(executable)])
+    run([nvcc, str(caller), str(module), "-o", str(executable)])
     run([str(executable)])

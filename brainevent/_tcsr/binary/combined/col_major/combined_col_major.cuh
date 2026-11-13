@@ -5,7 +5,7 @@
 #ifndef COMBINED_COL_MAJOR_CUH
 #define COMBINED_COL_MAJOR_CUH
 // W(M, N): events[B, N] -> output[B, M], values[perm[e]] in original weight order.
-// Link combined_spmm_col_major_binary.cu and ../combined_spmm_binary.cu with BE_SPMM_STANDALONE.
+// Link combined_spmm_col_major_binary.cu, which also defines the combined:: API.
 #include "../combined_kernels.cuh"
 
 namespace combined_col_major

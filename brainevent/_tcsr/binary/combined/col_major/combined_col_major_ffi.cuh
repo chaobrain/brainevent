@@ -44,22 +44,13 @@ void combined_col_major_ffi(const BE::Tensor &values, const BE::Tensor &local,
            workspace.numel() * sizeof(uint32_t) >= combined::workspace_bytes(rows, batch))
       << "combined col major: invalid metadata or scratch size";
   const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
-  if (offsets.dtype() == BE::DType::Int32)
-  {
-    constexpr auto launch = combined_col_major_launcher<V, E, int32_t>();
+  BE_DISPATCH_SIGNED_INDEX(offsets.dtype(), O, {
+    constexpr auto launch = combined_col_major_launcher<V, E, O>();
     BE_CUDA_CHECK((launch(values.data_ptr<const V>(),
-        local.data_ptr<const uint16_t>(), offsets.data_ptr<const int32_t>(), perm.data_ptr<const int32_t>(),
+        local.data_ptr<const uint16_t>(), offsets.data_ptr<const O>(), perm.data_ptr<const O>(),
         events.data_ptr<const E>(), output.data_ptr<V>(), active.data_ptr<int32_t>(),
         workspace.data_ptr<uint32_t>(), plan, cuda_stream)));
-  }
-  else
-  {
-    constexpr auto launch = combined_col_major_launcher<V, E, int64_t>();
-    BE_CUDA_CHECK((launch(values.data_ptr<const V>(),
-        local.data_ptr<const uint16_t>(), offsets.data_ptr<const int64_t>(), perm.data_ptr<const int64_t>(),
-        events.data_ptr<const E>(), output.data_ptr<V>(), active.data_ptr<int32_t>(),
-        workspace.data_ptr<uint32_t>(), plan, cuda_stream)));
-  }
+  });
 }
 } // namespace
 

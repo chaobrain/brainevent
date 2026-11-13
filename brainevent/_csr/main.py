@@ -39,7 +39,7 @@ from brainevent._csr.binary.binary_indexed import (
 from brainevent._csr.config import (
     CSRConfig, _host_structure_array,
     _prepare_csr_config, _config_for_new_structure,
-    _config_with_mirror, _sync_mirror_config,
+    _bind_mirror_preparation, _rebuild_config, _sync_mirror_config, _with_mirror_buffer,
 )
 from brainevent._csr.diag.diag_add import csr_diag_position, csr_diag_add
 from brainevent._csr.float.float import csrmv, csrmm
@@ -216,18 +216,12 @@ class CompressedSparseData(DataRepresentation):
         self.backend = backend
         super().__init__((self.data, self.indices, self.indptr), shape=shape)
         self._cache = StructureCache()
-        host_structure = None
-        if host_indptr is not None:
-            # Preparation reads only indptr values and index metadata.
-            host_structure = (
-                self.indices,
-                host_indptr.astype(np.dtype(self.indptr.dtype), copy=False),
-            )
+        # Preparation reads only indptr values and index metadata.
         self.config = _prepare_csr_config(
             self.indices, self.indptr, shape=self._storage_shape,
             backend=backend, config=config, device=device,
-            host_structure=host_structure,
-            matrix_metadata={'shape': self._storage_shape, 'nnz': nse},
+            host_indptr=None if host_indptr is None else host_indptr.astype(
+                np.dtype(self.indptr.dtype), copy=False),
         )
         self._ingest_buffers(buffers, device=device)
         if precompute_weight_indices and self._mirror() is None:
@@ -266,22 +260,9 @@ class CompressedSparseData(DataRepresentation):
             if value is None:
                 continue
             if name == self._mirror_key:
-                mirror = tuple(value)
-                config = _config_with_mirror(
-                    self.config, mirror, shape=self._storage_shape[::-1],
-                    device=device,
+                self.config, self._cache = _with_mirror_buffer(
+                    self.config, self._cache, value, shape=self._storage_shape[::-1], device=device,
                 )
-                # Replacing a shared cache in place would leave sibling
-                # matrices with a plan for the previous mirror.
-                cache = self._cache
-                self._cache = cache.copy()
-                self._cache.set_mirror(mirror)
-                if (config.mirror is not None
-                        and config.mirror_max_row_nnz is not None):
-                    self._cache.mirror_preparation = (
-                        config.mirror, config.mirror_max_row_nnz,
-                    )
-                self.config = config
             elif name == 'diag_positions':
                 self._cache.diag_plan = tuple(value)
             else:
@@ -453,21 +434,10 @@ class CompressedSparseData(DataRepresentation):
             >>> rebuilt.data is matrix.data
             True
         """
-        if not is_concrete(self.indices, self.indptr):
-            raise ValueError('with_rebuilt_config requires concrete structure outside jax.jit.')
-        config = _prepare_csr_config(
-            self.indices, self.indptr, shape=self._storage_shape,
-            backend=self.backend, config=self.config, device=device,
-            matrix_metadata={'shape': self._storage_shape, 'nnz': self.indices.shape[0]},
+        config = _rebuild_config(
+            self.config, self.indices, self.indptr, shape=self._storage_shape,
+            backend=self.backend, device=device, mirror=self._cache.mirror,
         )
-        if self._cache.mirror is not None:
-            mirror_indptr, mirror_indices, _ = self._cache.mirror
-            if not is_concrete(mirror_indices, mirror_indptr):
-                raise ValueError('with_rebuilt_config requires a concrete mirror outside jax.jit.')
-            config = _config_with_mirror(
-                config, self._cache.mirror, shape=self._storage_shape[::-1],
-                device=device,
-            )
         return type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape, backend=self.backend,
             cache=self._cache, config=config,
@@ -636,12 +606,8 @@ class CompressedSparseData(DataRepresentation):
         mirror = tuple(children[4:7]) if has_mirror else None
         plan = tuple(children[4 + 3 * has_mirror:]) if has_plan else None
         cache = StructureCache(mirror=mirror, diag_plan=plan)
-        if (has_mirror and isinstance(config, CSRConfig)
-                and config.mirror is not None
-                and config.mirror_max_row_nnz is not None):
-            cache.mirror_preparation = (
-                config.mirror, config.mirror_max_row_nnz,
-            )
+        if has_mirror:
+            _bind_mirror_preparation(cache, config)
         return cls._from_parts(data, indices, indptr, shape=shape, backend=backend,
                                cache=cache, config=config)
 

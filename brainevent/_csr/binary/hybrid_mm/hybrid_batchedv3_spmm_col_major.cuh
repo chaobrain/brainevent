@@ -10,7 +10,7 @@
 // indices[nnz] and perm[nnz]; structural edge j reads values[perm[j]].
 // Values remain in their original CSR order. Plan rows=N, cols=M; build its
 // long mask from the mirror pointers. No weight gather buffer is required.
-// Link the binary and/or weighted .cu; BE_SPMM_STANDALONE omits FFI bindings.
+// Link the binary and/or weighted .cu.
 #include "hybrid_batchedv3_spmm.cuh"
 
 namespace hybrid_col_major

@@ -22,33 +22,33 @@ def _matrix():
 def test_mirror_replacement_keeps_primary_tiles_and_detaches_siblings():
     matrix = _matrix().build_weight_indices()
     primary, mirror_plan = object(), object()
-    matrix._cache.tile_plans.update({(True, 2, 'float32'): primary, (False, 2, 'float32'): mirror_plan})
+    matrix._cache.tile_geometries.update({(True, 2, 'float32'): primary, (False, 2, 'float32'): mirror_plan})
     sibling = matrix.with_data(matrix.data * 2)
     matrix.set_buffer('csc', tuple(jnp.array(a) for a in matrix.buffers['csc']))
-    assert matrix._cache.tile_plans == {(True, 2, 'float32'): primary}
-    assert sibling._cache.tile_plans[(False, 2, 'float32')] is mirror_plan
+    assert matrix._cache.tile_geometries == {(True, 2, 'float32'): primary}
+    assert sibling._cache.tile_geometries[(False, 2, 'float32')] is mirror_plan
 
 
 def test_build_weight_indices_fresh_cache_keeps_primary_tiles(monkeypatch):
     matrix = _matrix()
     primary = object()
-    matrix._cache.tile_plans[(True, 2, 'float32')] = primary
+    matrix._cache.tile_geometries[(True, 2, 'float32')] = primary
     mirror = matrix._weight_indices()
     matrix._cache.mirror = None
     monkeypatch.setattr(CSR, '_mirror', lambda self: None)
     monkeypatch.setattr(CSR, '_weight_indices', lambda self: mirror)
     prepared = matrix.build_weight_indices()
     assert prepared._cache is not matrix._cache
-    assert prepared._cache.tile_plans == matrix._cache.tile_plans
-    assert prepared._cache.tile_plans is not matrix._cache.tile_plans
+    assert prepared._cache.tile_geometries == matrix._cache.tile_geometries
+    assert prepared._cache.tile_geometries is not matrix._cache.tile_geometries
     assert matrix._cache.mirror is None
     assert prepared._cache.mirror is not None
 
 
 def test_diag_add_creates_fresh_cache_without_tiles():
     matrix = _matrix()
-    matrix._cache.tile_plans[(True, 2, 'float32')] = object()
+    matrix._cache.tile_geometries[(True, 2, 'float32')] = object()
     result = matrix.diag_add(jnp.ones(2))
-    assert result._cache.tile_plans == {}
-    assert matrix._cache.tile_plans
+    assert result._cache.tile_geometries == {}
+    assert matrix._cache.tile_geometries
     np.testing.assert_allclose(result.todense(), jnp.array([[1., 1.], [2., 1.]]))

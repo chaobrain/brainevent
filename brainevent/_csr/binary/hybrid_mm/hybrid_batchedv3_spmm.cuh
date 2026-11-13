@@ -5,7 +5,7 @@
 #ifndef HYBRID_BATCHEDV3_SPMM_CUH
 #define HYBRID_BATCHEDV3_SPMM_CUH
 // Public API. Link hybrid_batchedv3_spmm_binary.cu (binary launchers) and/or hybrid_batchedv3_spmm_weighted.cu
-// (weighted launchers). Define BE_SPMM_STANDALONE to omit BrainEvent bindings. Planning and
+// (weighted launchers). Planning and
 // sizing are inline (hybrid_batchedv3_spmm_plan.cuh), so both objects can share one program.
 #include "brainevent/cuda_traits.cuh"
 #include <cstddef>

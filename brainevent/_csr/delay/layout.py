@@ -91,7 +91,7 @@ def _take(data, perm):
     return data[perm]
 
 
-def _to_device(x: Any) -> jax.Array:
+def _to_device(x: Any, owned: bool = False) -> jax.Array:
     """``jnp.asarray(x)``; outside a trace a NumPy array is copied, then ``device_put``.
 
     On JAX 0.12, ``jnp.asarray(ndarray)`` without a dtype compiles one identity XLA
@@ -101,9 +101,10 @@ def _to_device(x: Any) -> jax.Array:
     even with ``may_alias=False`` (#254): without it, a caller who reuses its buffer
     after ``build`` would change the layout. Inside a trace it stays ``jnp.asarray`` (a
     constant), since a traced ``device_put`` would add a copy to the program.
+    ``owned=True`` marks a buffer nobody else holds, which needs no defensive copy.
     """
     if isinstance(x, np.ndarray) and _trace_state_clean is not None and _trace_state_clean():
-        return jax.device_put(np.array(x, copy=True))
+        return jax.device_put(x if owned else np.array(x, copy=True))
     return jnp.asarray(x)
 
 
@@ -385,20 +386,20 @@ class CSRDelayLayout:
             delay_ptr[r0 * n_slots:r1 * n_slots] = seg
 
         # Move each host array to the device and drop it before the next one.
-        indices_j = _to_device(indices_out)
+        indices_j = _to_device(indices_out, owned=True)
         del indices_out
-        delays_j = _to_device(delays_out)
+        delays_j = _to_device(delays_out, owned=True)
         del delays_out
-        perm_j = _to_device(perm)
+        perm_j = _to_device(perm, owned=True)
         del perm
         if np.shape(data_arr)[0] == nse and nse > 1:
             data_arr = _take(data_arr, perm_j)
         return cls(
             data_arr,
             indices_j,
-            _to_device(offsets.astype(ptr_dtype)),
+            _to_device(offsets.astype(ptr_dtype), owned=True),
             delays_j,
-            _to_device(delay_ptr.reshape(n_pre, n_slots)),
+            _to_device(delay_ptr.reshape(n_pre, n_slots), owned=True),
             perm_j,
             shape=(n_pre, n_post),
         )

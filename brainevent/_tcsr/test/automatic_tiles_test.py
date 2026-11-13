@@ -53,7 +53,7 @@ def test_construction_prepares_no_tiles_and_no_mirror():
     assert matrix.config.primary is not None
     assert matrix.config.mirror is None
     for batch in (1, 188, 65535):
-        assert matrix._get_binary_mm_plan(batch, transpose=True) is None
+        assert matrix._get_tile_geometry(batch, transpose=True) is None
 
 
 @pytest.mark.parametrize('side', ['left', 'right'])
@@ -101,9 +101,9 @@ def test_eager_product_prepares_exactly_the_width_it_runs(cuda_reachable):
     width = tile_schedule(3, 2).tile_width
     assert list(matrix._cache.tile_geometries) == [(True, width, np.dtype('int32'))]
     assert matrix._cache.mirror is None
-    first = matrix._get_binary_mm_plan(2, transpose=True)
+    first = matrix._get_tile_geometry(2, transpose=True)
     BinaryArray(events) @ matrix
-    assert matrix._get_binary_mm_plan(2, transpose=True) is first
+    assert matrix._get_tile_geometry(2, transpose=True) is first
     assert len(matrix._cache.tile_geometries) == 1
 
 
@@ -177,7 +177,7 @@ def test_concrete_closure_prepares_while_tracing(cuda_reachable):
     result = jax.jit(lambda x: matrix @ BinaryArray(x))(jnp.ones((3, 2), bool))
     np.testing.assert_array_equal(result, [[3., 3.], [3., 3.]])
     assert matrix._cache.mirror is not None
-    assert matrix._get_binary_mm_plan(2, transpose=False) is not None
+    assert matrix._get_tile_geometry(2, transpose=False) is not None
     assert all(not isinstance(leaf, jax.core.Tracer) for leaf in jax.tree.leaves(matrix))
 
 

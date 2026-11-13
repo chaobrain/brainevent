@@ -2,8 +2,10 @@
 // Licensed under the Apache License, Version 2.0:
 // http://www.apache.org/licenses/LICENSE-2.0
 
-// Column-major binary SpMM wrappers; all computation is shared with combined_spmm_binary.cu.
-#include "combined_col_major.cuh"
+// Column-major binary SpMM FFI entry points. A self-contained module: the shared
+// launchers and kernels come from combined_impl.cuh.
+#include "../combined_impl.cuh"
+#include "combined_col_major_ffi.cuh"
 
 namespace combined_col_major
 {
@@ -35,9 +37,6 @@ INSTANTIATE_COL_MAJOR_OFFSETS(double, float)
 #undef INSTANTIATE_COL_MAJOR
 } // namespace combined_col_major
 
-#ifndef BE_SPMM_STANDALONE
-#include "combined_col_major_ffi.cuh"
-
 #define DEFINE_COL_MAJOR(SUFFIX, V, E) \
   void combined_col_major_binary_hetero##SUFFIX(const BE::Tensor values, const BE::Tensor local_targets, \
       const BE::Tensor tile_offsets, const BE::Tensor perm, const BE::Tensor events, BE::Tensor output, \
@@ -63,4 +62,3 @@ DEFINE_COL_MAJOR(_f64_bool, double, int8_t)
 // @BE combined_col_major_binary_hetero_f64_float
 DEFINE_COL_MAJOR(_f64_float, double, float)
 #undef DEFINE_COL_MAJOR
-#endif

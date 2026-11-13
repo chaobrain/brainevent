@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import ctypes
-import os
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from typing import Any
@@ -18,6 +16,7 @@ from jax._src import core
 from jax.interpreters import ad, batching, mlir
 
 from brainevent._compatible_import import Primitive, apply_primitive, init_zero
+from brainevent._op.cuda_driver import device_attributes
 
 
 #: Oldest compute capability the combined kernels support. f64 tiles use the
@@ -48,46 +47,23 @@ class LaunchResources:
     compute_capability: tuple[int, int]
 
 
-@lru_cache(maxsize=1)
-def _cuda_driver() -> Any:
-    """Load the CUDA driver only when lowering a CUDA computation."""
-    library = ctypes.CDLL('nvcuda.dll' if os.name == 'nt' else 'libcuda.so.1')
-    library.cuInit.argtypes = [ctypes.c_uint]
-    library.cuInit.restype = ctypes.c_int
-    library.cuDeviceGet.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
-    library.cuDeviceGet.restype = ctypes.c_int
-    library.cuDeviceGetAttribute.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int, ctypes.c_int]
-    library.cuDeviceGetAttribute.restype = ctypes.c_int
-    if library.cuInit(0):
-        raise OSError('CUDA driver initialization failed.')
-    return library
+# CUdevice_attribute ids: MAX_THREADS_PER_BLOCK, MAX_SHARED_MEMORY_PER_BLOCK,
+# MAX_SHARED_MEMORY_PER_BLOCK_OPTIN, COMPUTE_CAPABILITY_MAJOR / _MINOR.
+_LAUNCH_ATTRIBUTES = (1, 8, 97, 75, 76)
 
 
 @lru_cache(maxsize=None)
 def _query_launch_resources(device: Any) -> LaunchResources | None:
     """Cache immutable launch attributes using the device's local ordinal."""
-    ordinal = getattr(device, 'local_hardware_id', None)
-    if ordinal is None or getattr(device, 'platform', None) != 'gpu':
+    if getattr(device, 'local_hardware_id', None) is None or getattr(device, 'platform', None) != 'gpu':
         return None
     try:
-        driver = _cuda_driver()
-        cuda_device = ctypes.c_int()
-        if driver.cuDeviceGet(ctypes.byref(cuda_device), int(ordinal)):
-            return None
-        result = []
-        # CUdevice_attribute values from the installed CUDA driver API:
-        # MAX_THREADS_PER_BLOCK, MAX_SHARED_MEMORY_PER_BLOCK, ..._OPTIN, and
-        # COMPUTE_CAPABILITY_MAJOR / _MINOR.
-        for attribute in (1, 8, 97, 75, 76):
-            value = ctypes.c_int()
-            if driver.cuDeviceGetAttribute(ctypes.byref(value), attribute, cuda_device.value):
-                return None
-            result.append(value.value)
-        max_threads, shared_bytes, optin_shared_bytes, major, minor = result
-        return LaunchResources(max_threads, shared_bytes, optin_shared_bytes, (major, minor))
-    except (OSError, AttributeError):
+        max_threads, shared_bytes, optin_shared_bytes, major, minor = device_attributes(
+            device, _LAUNCH_ATTRIBUTES)
+    except OSError:
         # A missing/unsupported driver probe is not evidence that a tile fits.
         return None
+    return LaunchResources(max_threads, shared_bytes, optin_shared_bytes, (major, minor))
 
 
 def _supports(resources: LaunchResources | None, threads: int, shared_bytes: int) -> bool:

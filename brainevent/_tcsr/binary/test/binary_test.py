@@ -47,11 +47,14 @@ def _reference_kernel(*, shape, transpose, **kwargs):
 def cpu_math_backend():
     """Exercise real transformations with temporary CPU mathematical leaves."""
     float_api = importlib.import_module('brainevent._csr.float.float')
+    csr_binary = importlib.import_module('brainevent._csr.binary.binary')
     sampled_mm = importlib.import_module('brainevent._sddmm._mm.sddmm')
     sampled_mv = importlib.import_module('brainevent._sddmm._mv.sddmv')
     aliases = (
         (api.binary_csrmm_p, _reference_kernel),
         (float_api.csrmm_p, float_api._csrmm_jax_kernel),
+        # The shared-weight gradient runs a unit-weight CSR forward on the same backend.
+        (csr_binary.binary_csrmm_p, csr_binary._ignore_config_mask(csr_binary._binary_csrmm_jax_kernel)),
         (sampled_mm.csr_sddmm_p,
          lambda **kw: partial(sampled_mm._jax_kernel, **kw)),
         (sampled_mv.csr_sddmv_p,

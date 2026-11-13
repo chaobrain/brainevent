@@ -37,6 +37,7 @@ __all__ = [
     'active_sum',
     'EventABI',
     'cuda_event_abi',
+    'CUDA_VALUE_DTYPES',
 ]
 
 _DTYPE_SUFFIX = {
@@ -45,6 +46,9 @@ _DTYPE_SUFFIX = {
     np.dtype('float64'): '_f64',
     np.dtype('bfloat16'): '_bf16',
 }
+
+#: Floating value dtypes that have native CUDA kernels (float16, bfloat16, float32, float64).
+CUDA_VALUE_DTYPES = frozenset(_DTYPE_SUFFIX)
 
 
 def dtype_suffix(dtype) -> str:

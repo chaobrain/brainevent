@@ -90,7 +90,7 @@ def test_mirror_alias_uses_common_cache_without_new_storage():
     assert result.has_tcsc_mirror
     assert result.data is matrix.data and result.indices is matrix.indices
     assert result._cache is matrix._cache
-    assert result._get_tile_geometry(2, transpose=True, prepare=True) is matrix._get_binary_mm_plan(2, transpose=True)
+    assert result._get_tile_geometry(2, transpose=True, prepare=True) is matrix._get_tile_geometry(2, transpose=True)
     assert jax.jit(lambda m: m.has_tcsc_mirror)(result)
     assert type(result.T) is CSC and type(result.T.T) is CSR
 

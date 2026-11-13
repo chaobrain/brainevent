@@ -24,10 +24,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._csr.config import CSRConfig, _backend_preference, _structure_device
+from brainevent._csr.config import CSRConfig, _needs_cuda_info, _structure_device
 from brainevent._csr.main import CSC, CSR
 from brainevent._error import PerformanceWarning
 from brainevent._event import as_event_operand
+from brainevent._op.util import CUDA_VALUE_DTYPES
 from brainevent._structure import is_concrete
 from brainevent._tcsr._dispatch import dispatch_binary_mm
 from brainevent._tcsr.binary.combined.planner import INT32_MAX, tile_schedule
@@ -39,8 +40,6 @@ from brainevent._tcsr.preprocess import (
 )
 
 __all__ = ['TCSR']
-
-_VALUE_DTYPES = frozenset(np.dtype(t) for t in (jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64))
 
 
 def _source_argument(value: Any, source: Any, name: str) -> Any:
@@ -178,16 +177,17 @@ class TCSR(CSR):
         data, indices, permutation = sort_csr(csr)
         # Host metadata has no device preference. Use the concrete weights'
         # placement to prepare inherited CUDA MM, following CSR's policy.
-        preferred = _backend_preference('gpu', backend)
-        needs_cuda_info = preferred == 'cuda_raw' or (backend is None and preferred != 'jax_raw')
         device = None
-        if needs_cuda_info and _structure_device(indices) is None:
+        if _needs_cuda_info(backend) and _structure_device(indices) is None:
             device = _structure_device(u.get_mantissa(data))
+        # The source validated (or explicitly trusted) its structure, and sorting
+        # within rows keeps it valid, so skip a second nnz-sized host read.
         super().__init__(
             data, indices, csr.indptr, shape=csr.shape,
             backend=backend,
             config=csr.config,
             indptr_dtype=csr.indptr.dtype, device=device,
+            check_structure=False,
         )
         self._sort_permutation = permutation
 
@@ -485,7 +485,7 @@ class TCSR(CSR):
         never need tiles and return ``None``.
         """
         value_dtype = np.dtype(self.dtype if dtype is None else dtype)
-        if value_dtype not in _VALUE_DTYPES or not 0 < batch <= 65535:
+        if value_dtype not in CUDA_VALUE_DTYPES or not 0 < batch <= 65535:
             return None
         target = self.shape[1] if transpose else self.shape[0]
         schedule = tile_schedule(target, batch, 8 if value_dtype == np.dtype('float64') else 4)
@@ -530,12 +530,6 @@ class TCSR(CSR):
             raise ValueError('TCSR binary MM tile arrays do not match the prepared metadata.')
         return geometry
 
-    def _get_binary_mm_plan(
-        self, batch: int, *, transpose: bool, dtype: Any = None,
-    ) -> TileGeometry | None:
-        """Query existing geometry through the former private batch-plan entry point."""
-        return self._get_tile_geometry(batch, transpose=transpose, dtype=dtype)
-
     def _binary_mm_batch(self, x: Any, weighted: bool, *, transpose: bool) -> int | None:
         """Return the batch of a tile-eligible operand from static metadata only.
 
@@ -549,7 +543,7 @@ class TCSR(CSR):
             return None
         if not 0 < batch <= 65535 or max(self.shape) > INT32_MAX:
             return None
-        if not (np.dtype(self.dtype) in _VALUE_DTYPES
+        if not (np.dtype(self.dtype) in CUDA_VALUE_DTYPES
                 and np.dtype(x.dtype) in (np.dtype('bool'), np.dtype('float32'))
                 and self.indices.ndim == 1 and self.indices.dtype == jnp.int32
                 and np.dtype(self.indptr.dtype) in (np.dtype('int32'), np.dtype('int64'))):
@@ -593,7 +587,7 @@ class TCSR(CSR):
         if event is not None:
             geometry = self._binary_mm_geometry(event[0], event[1], transpose=False)
             if geometry is not None:
-                return self._dispatch_binary_mm(other, transpose=False, plan=geometry)
+                return dispatch_binary_mm(self, other, transpose=False, plan=geometry)
         return super().__matmul__(other)
 
     def __rmatmul__(self, other):
@@ -614,12 +608,8 @@ class TCSR(CSR):
         if event is not None:
             geometry = self._binary_mm_geometry(event[0], event[1], transpose=True)
             if geometry is not None:
-                return self._dispatch_binary_mm(other, transpose=True, plan=geometry)
+                return dispatch_binary_mm(self, other, transpose=True, plan=geometry)
         return super().__rmatmul__(other)
-
-    def _dispatch_binary_mm(self, other: Any, *, transpose: bool, plan: TileGeometry):
-        """Select actual platform/backend resources, preserving the original operand."""
-        return dispatch_binary_mm(self, other, transpose=transpose, plan=plan)
 
     def tree_flatten(self):
         """Flatten CSR payload followed by the dynamic arrays of each tile.

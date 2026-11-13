@@ -16,10 +16,8 @@ from brainevent._tcsr import _resources as api
 @pytest.fixture(autouse=True)
 def _isolate_resource_caches():
     api._query_launch_resources.cache_clear()
-    api._cuda_driver.cache_clear()
     yield
     api._query_launch_resources.cache_clear()
-    api._cuda_driver.cache_clear()
     jax.clear_caches()
 
 
@@ -59,9 +57,9 @@ def test_target_assignment_and_mesh_precede_backend_candidates():
 
 
 def test_unknown_or_cpu_device_does_not_load_driver(monkeypatch):
-    def forbidden():
+    def forbidden(device, attributes):
         raise AssertionError('non-CUDA target loaded the driver')
-    monkeypatch.setattr(api, '_cuda_driver', forbidden)
+    monkeypatch.setattr(api, 'device_attributes', forbidden)
     assert api._query_launch_resources('no ordinal') is None
     class Device:
         local_hardware_id = 0
@@ -69,51 +67,24 @@ def test_unknown_or_cpu_device_does_not_load_driver(monkeypatch):
     assert api._query_launch_resources(Device()) is None
 
 
-@pytest.mark.parametrize('failure', ['device', 'attribute', 'loader', None])
-def test_driver_queries_use_actual_local_ordinal_and_cache(monkeypatch, failure):
+@pytest.mark.parametrize('failure', [True, False])
+def test_driver_queries_are_cached_and_failures_mean_unsupported(monkeypatch, failure):
     calls = []
     class Device:
         local_hardware_id = 7
         platform = 'gpu'
 
-    class Driver:
-        def cuDeviceGet(self, output, ordinal):
-            calls.append(('device', ordinal))
-            output._obj.value = 123
-            return int(failure == 'device')
-        def cuDeviceGetAttribute(self, output, attribute, device):
-            calls.append(('attribute', attribute, device))
-            output._obj.value = {1: 1024, 8: 49152, 97: 98304, 75: 8, 76: 6}[attribute]
-            return int(failure == 'attribute')
-
-    def loader():
-        if failure == 'loader':
+    def query(device, attributes):
+        calls.append(tuple(attributes))
+        if failure:
             raise OSError('driver unavailable')
-        return Driver()
-    monkeypatch.setattr(api, '_cuda_driver', loader)
+        return tuple({1: 1024, 8: 49152, 97: 98304, 75: 8, 76: 6}[a] for a in attributes)
+    monkeypatch.setattr(api, 'device_attributes', query)
     device = Device()
     result = api._query_launch_resources(device)
-    assert result == (api.LaunchResources(1024, 49152, 98304, SM86) if failure is None else None)
+    assert result == (None if failure else api.LaunchResources(1024, 49152, 98304, SM86))
     assert api._query_launch_resources(device) is result
-    assert sum(c[0] == 'device' for c in calls) <= 1
-    if failure is None:
-        assert calls == [('device', 7), *(('attribute', a, 123) for a in (1, 8, 97, 75, 76))]
-
-
-@pytest.mark.parametrize('status', [0, 1])
-def test_driver_loading_and_initialization(monkeypatch, status):
-    class Call:
-        def __call__(self, flags):
-            assert flags == 0
-            return status
-    library = SimpleNamespace(cuInit=Call(), cuDeviceGet=Call(), cuDeviceGetAttribute=Call())
-    monkeypatch.setattr(api.ctypes, 'CDLL', lambda name: library)
-    if status:
-        with pytest.raises(OSError, match='initialization'):
-            api._cuda_driver()
-    else:
-        assert api._cuda_driver() is library
-        assert library.cuDeviceGet.restype is api.ctypes.c_int
+    assert calls == [(1, 8, 97, 75, 76)]
 
 
 def test_cpu_lowering_never_queries_cuda(monkeypatch):

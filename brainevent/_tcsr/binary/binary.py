@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import operator
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
@@ -24,9 +22,10 @@ from brainevent._csr.binary.binary import (
     _csrmm_transpose_rule as _csr_transpose_rule,
 )
 from brainevent._csr.config import CSRConfig
-from brainevent._misc import namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_file, load_cuda_inline
-from brainevent._op.util import cuda_event_abi
+from brainevent._misc import _static_integer, namescope
+from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_file
+from brainevent._op.ffi_naming import source_digest
+from brainevent._op.util import CUDA_VALUE_DTYPES, cuda_event_abi, dtype_suffix
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
 from brainevent._tcsr.binary.combined.planner import INT32_MAX, tile_schedule
@@ -34,11 +33,12 @@ from brainevent._tcsr.binary.combined.planner import INT32_MAX, tile_schedule
 __all__ = ['binary_csrmm', 'binary_csrmm_p_call', 'binary_csrmm_p']
 
 _ROOT = Path(__file__).parent / 'combined'
-_VALUE_TYPES = {
-    np.dtype(jnp.float16): ('f16', 0),
-    np.dtype(jnp.bfloat16): ('bf16', 1),
-    np.dtype(jnp.float32): ('f32', 2),
-    np.dtype(jnp.float64): ('f64', 3),
+# Native ``value_type`` attribute (cuda_traits::ValueType) of each weight dtype.
+_VALUE_TYPE_IDS = {
+    np.dtype(jnp.float16): 0,
+    np.dtype(jnp.bfloat16): 1,
+    np.dtype(jnp.float32): 2,
+    np.dtype(jnp.float64): 3,
 }
 _INDEX_DTYPES = (np.dtype('int32'), np.dtype('int64'))
 
@@ -49,19 +49,6 @@ def _metadata_array(value: Any, name: str) -> jax.Array:
     result = jnp.asarray(value)
     if dtype is not None and np.dtype(dtype) != np.dtype(result.dtype):
         raise ValueError(f'JAX must preserve {name} dtype; enable x64 for int64 metadata.')
-    return result
-
-
-def _static_integer(value: Any, name: str) -> int:
-    """Require a nonnegative static integer rather than a bool or tracer."""
-    if isinstance(value, (bool, np.bool_)):
-        raise ValueError(f'{name} must be a nonnegative integer')
-    try:
-        result = operator.index(value)
-    except TypeError as exc:
-        raise ValueError(f'{name} must be a nonnegative static integer') from exc
-    if result < 0:
-        raise ValueError(f'{name} must be a nonnegative integer')
     return result
 
 
@@ -100,7 +87,7 @@ def _validate_csrmm_call(
         raise ValueError('int32 indptr cannot address more than INT32_MAX edges')
     if weights.ndim != 1 or weights.shape not in ((1,), (nnz,)):
         raise ValueError('weights must be scalar, shape (1,), or shape (nnz,)')
-    if np.dtype(weights.dtype) not in _VALUE_TYPES:
+    if np.dtype(weights.dtype) not in CUDA_VALUE_DTYPES:
         raise TypeError('weights must be float16, bfloat16, float32 or float64')
     if B.ndim != 2:
         raise ValueError('events must be a rank-two NB matrix')
@@ -287,33 +274,24 @@ def _combined_ffi_target(
     weight_dtype: Any, event_dtype: Any, *, transpose: bool, homo: bool,
 ) -> tuple[str, str]:
     """Select a module family and its exact native binary symbol."""
-    value = _VALUE_TYPES[np.dtype(weight_dtype)][0]
-    event = 'bool' if event_dtype == jnp.bool_ else 'float'
+    suffix = dtype_suffix(weight_dtype) + ('_bool' if event_dtype == jnp.bool_ else '_float')
     if homo:
-        return 'direct', f'combined_homo_{value}_{event}'
+        return 'direct', f'combined_homo{suffix}'
     if transpose:
-        return 'direct', f'combined_{value}_{event}'
-    return 'col_major', f'combined_col_major_binary_hetero_{value}_{event}'
+        return 'direct', f'combined{suffix}'
+    return 'col_major', f'combined_col_major_binary_hetero{suffix}'
 
 
 @lru_cache(maxsize=2)
 def _load_combined_cuda(family: str) -> str:
-    """Load a standalone-safe native module with all dependencies in its key."""
+    """Load one self-contained native module, named by the content of its sources."""
     source = _ROOT / 'combined_spmm_binary.cu'
     if family == 'col_major':
         source = _ROOT / 'col_major' / 'combined_spmm_col_major_binary.cu'
-    dependencies = (source, _ROOT / 'combined_spmm_binary.cu',
-                    _ROOT / 'planner.py', _ROOT / 'planner.h', *sorted(_ROOT.rglob('*.cuh')))
-    digest = hashlib.sha256(b''.join(path.read_bytes() for path in dependencies)).hexdigest()[:12]
-    module = f'tcsr_combined_{family}_{digest}'
-    if family == 'direct':
-        load_cuda_file(source, name=module, extra_include_paths=[str(_ROOT)], allow_cuda_graph=False)
-    else:
-        text = ('#define BE_SPMM_STANDALONE\n'
-                f'#include "{_ROOT / "combined_spmm_binary.cu"}"\n'
-                '#undef BE_SPMM_STANDALONE\n' + source.read_text())
-        load_cuda_inline(module, text, extra_include_paths=[str(_ROOT), str(source.parent)],
-                         allow_cuda_graph=False)
+    dependencies = (source, _ROOT / 'planner.py', _ROOT / 'planner.h', *sorted(_ROOT.rglob('*.cuh')))
+    module = f'tcsr_combined_{family}_{source_digest(*dependencies)}'
+    load_cuda_file(source, name=module, extra_include_paths=[str(_ROOT), str(source.parent)],
+                   allow_cuda_graph=False)
     return module
 
 
@@ -356,7 +334,7 @@ def _binary_csrmm_cuda_kernel(
             operands += (perm,)
         output = ffi(
             *operands, abi.prepare(B).T, tile_width=tile_width,
-            value_type=_VALUE_TYPES[np.dtype(weight_info.dtype)][1],
+            value_type=_VALUE_TYPE_IDS[np.dtype(weight_info.dtype)],
         )[0]
         return (match_varying_axes(output.T, weights, indices, indptr, B,
                                    local_targets, tile_offsets, perm),)

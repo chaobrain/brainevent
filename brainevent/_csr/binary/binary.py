@@ -2,8 +2,8 @@
 # Licensed under the Apache License, Version 2.0:
 # http://www.apache.org/licenses/LICENSE-2.0
 
-import hashlib
 import warnings
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -30,21 +30,22 @@ from brainevent._csr._support.binary import (
     _config_from_params,
     _batch_config_params,
     _accumulator_info,
-    _hybrid_scratch,
     _check_max_row_nnz,
     _config_for_call,
+    _event_weight_cotangent,
+    _hybrid_mv_kernel,
 )
 from brainevent._csr.config import (
     CSRConfig,
     get_device_info as _get_csr_device_info,
 )
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._sddmm import dispatch as _sddmm_dispatch
+from brainevent._op.ffi_naming import source_digest
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
 from brainevent._csr.float.float import csrmv, csrmm, csrmv_p, csrmm_p
 from brainevent._op.util import (
-    cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask, select_active,
+    CUDA_VALUE_DTYPES, cuda_event_abi, dtype_suffix, event_active, event_factor, NUMBA_EVENT_FASTMATH, numba_event_mask, select_active,
 )
 
 __all__ = [
@@ -781,49 +782,20 @@ def _binary_csrmv_cuda_kernel(
     wt_sfx = dtype_suffix(weight_info.dtype)
 
     if transpose:
-        _cfg = _config_from_params(kwargs, None)
-        _mode = 'weighted' if kwargs.get('weighted', False) else 'binary'
-        _source_dir = Path(__file__).parent / 'hybrid_mv'
-        _mod = f'csr_hybrid_spmv_{_mode}' + _cfg.module_suffix()
-        load_cuda_file(
-            _source_dir / f'hybrid_spmv_{_mode}.cu',
-            name=_mod,
-            extra_include_paths=[str(_source_dir)],
-            extra_cuda_cflags=_cfg.compile_flags(),
-            allow_cuda_graph=True,
-        )
-        kernel_name = f'{_mod}.binary_csrmv_wat_hybrid{homo_suffix}{wt_sfx}{spk_suffix}'
+        return _hybrid_mv_kernel(kwargs, f'binary_csrmv_wat_hybrid{homo_suffix}{wt_sfx}{spk_suffix}',
+                                 event_abi, permuted=False)
 
-        def kernel(weights, indices, indptr, vector):
-            vector = event_abi.prepare(vector)
-            scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
-            out_info = kwargs['outs'][0]
-            math_out = jax.ffi.ffi_call(
-                kernel_name,
-                (_accumulator_info(out_info), *scratch_info),
-                input_output_aliases={4: 1, 5: 2, 6: 3},
-            )(
-                weights,
-                indices,
-                indptr,
-                vector,
-                *scratch,
-                task_capacity=kwargs['task_capacity'],
-            )[0]
-            return (math_out.astype(out_info.dtype),)
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_csrmv.cu'),
+        name='csr_binary_csrmv',
+    )
+    out_info = kwargs['outs'][0]
+    kernel_name = f'csr_binary_csrmv.binary_csrmv_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
-    else:
-        load_cuda_file(
-            Path(__file__).parent.joinpath('binary_csrmv.cu'),
-            name='csr_binary_csrmv',
-        )
-        out_info = kwargs['outs'][0]
-        kernel_name = f'csr_binary_csrmv.binary_csrmv_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
-
-        def kernel(weights, indices, indptr, vector):
-            vector = event_abi.prepare(vector)
-            math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
-            return (math_out,)
+    def kernel(weights, indices, indptr, vector):
+        vector = event_abi.prepare(vector)
+        math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
+        return (math_out,)
 
     return kernel
 
@@ -896,21 +868,15 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, long_mask, *, shape
                               shape=shape, transpose=not transpose,
                               backend=_grad_backend(kwargs['backend'], csrmv_p))
         return data, indices, indptr, ct_events, None
-    else:
-        if type(ct) is ad.Zero:
-            ct_values = ad.Zero(data.aval)
-        else:
-            mode = ('weighted' if kwargs.get('weighted', False) else 'binary')
-            left, right = (events, ct) if transpose else (ct, events)
-            ct_values = _sddmm_dispatch.sddmm(
-                left, right, indices, indptr,
-                mode=mode, transpose=transpose,
-                backend=_sddmm_dispatch._CSRBackend(binary_csrmv_p, kwargs['backend'], kwargs.get('config_spec')),
-            )
-            if data.aval.shape[0] == 1:  # scalar
-                ct_values = jnp.sum(ct_values).reshape(*data.aval.shape)
-            ct_values = ct_values.astype(data.aval.dtype)
-        return ct_values, indices, indptr, events, None
+    if type(ct) is ad.Zero:
+        return ad.Zero(data.aval), indices, indptr, events, None
+    ct_values = _event_weight_cotangent(
+        ct, data.aval, events, indices, indptr, dict(kwargs, transpose=transpose),
+        primitive=binary_csrmv_p,
+        unit_product=lambda w: _csrmv_jvp_weights(
+            w, data, indices, indptr, events, long_mask, shape=shape, transpose=transpose, **kwargs)[0],
+    )
+    return ct_values, indices, indptr, events, None
 
 
 def _csrmv_batching(args, axes, **kwargs):
@@ -1453,25 +1419,46 @@ def _binary_csrmm_cusparse_kernel(
 
 # Shared hybrid MM CUDA path for ordinary and indexed CSR calls.
 _UNPREPARED_MM_WARNED: set = set()
+_HYBRID_MM_DIR = Path(__file__).parent / 'hybrid_mm'
+
+
+def _hybrid_mm_plan(params, vector_info, weight_info):
+    """Launch plan of a native hybrid scatter MM, derived from static metadata.
+
+    Parameters
+    ----------
+    params : dict
+        Primitive parameters; ``config_spec`` carries the prepared structure.
+    vector_info, weight_info : jax.ShapeDtypeStruct
+        Event matrix ``(n, batch)`` and weight metadata.
+
+    Returns
+    -------
+    MMCallPlan or None
+        ``None`` when the structure or GPU properties were not prepared (for
+        example traced, vmapped over ``indptr``, or ``config=None``) or the
+        value dtype has no native kernel.
+    """
+    spec = params.get('config_spec')
+    if spec is None:
+        return None
+    return CSRConfig.from_kernel_args(spec, None).mm_plan(
+        vector_info.shape[1], weight_info.dtype, params.get('weighted', False))
 
 
 def _hybrid_mm_needs_fallback(kwargs, vector_info, weight_info) -> bool:
     """Whether a native scatter MM lacks the prepared plan the hybrid kernel needs.
 
-    Empty calls never launch the kernel, so they need no plan. Otherwise the
-    hybrid SpMM needs an exact call plan and the preparation GPU's launch
-    properties, which traced, vmapped or ``config=None`` structures lack.
+    Empty calls never launch the kernel, so they need no plan; unsupported
+    value dtypes are left to the adapter's error.
     """
     out_info = kwargs['outs'][0]
     if (not vector_info.shape[1] or not kwargs['indptr_info'].size - 1
             or not out_info.shape[0] or not kwargs['indices_info'].size):
         return False
-    if np.dtype(weight_info.dtype).name not in ('float16', 'bfloat16', 'float32', 'float64'):
-        return False  # let the adapter raise its dtype error
-    spec = kwargs.get('config_spec')
-    device = None if spec is None else spec.device_info
-    return (kwargs.get('call_plan') is None or device is None or device.platform != 'gpu'
-            or device.sms <= 0 or device.l2_bytes <= 0)
+    if np.dtype(weight_info.dtype) not in CUDA_VALUE_DTYPES:
+        return False
+    return _hybrid_mm_plan(kwargs, vector_info, weight_info) is None
 
 
 def _warn_unprepared_mm(primitive: str) -> None:
@@ -1489,7 +1476,18 @@ def _warn_unprepared_mm(primitive: str) -> None:
     )
 
 
-def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
+@lru_cache(maxsize=None)
+def _load_hybrid_mm(layout: str, mode: str) -> str:
+    """Compile and register one hybrid MM module; return its name."""
+    prefix = 'col_major_' if layout == 'col_major' else ''
+    source = _HYBRID_MM_DIR / f'hybrid_batchedv3_spmm_{prefix}{mode}.cu'
+    # Header changes must give the registered FFI target a fresh name.
+    module = f'csr_hybrid_mm_{layout}_{mode}_{source_digest(source, *sorted(_HYBRID_MM_DIR.rglob("*.cuh")))}'
+    load_cuda_file(source, name=module, extra_include_paths=[str(_HYBRID_MM_DIR)], allow_cuda_graph=True)
+    return module
+
+
+def _make_hybrid_mm_kernel(*, config_spec, weight_info, vector_info,
                            indices_info, indptr_info, outs=None, out_info=None,
                            weighted=False, permuted=False, perm_info=None, **kwargs):
     """Lower a prepared hybrid SpMM call to its native BN layout.
@@ -1498,8 +1496,6 @@ def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
     ----------
     config_spec : CSRKernelSpec
         Immutable scheduler, structure and preparation-device metadata.
-    call_plan : MMCallPlan or None
-        Purely derived launch and workspace dimensions for this invocation.
     weight_info, vector_info, indices_info, indptr_info : jax.ShapeDtypeStruct
         Mathematical operand shapes and dtypes.
     outs : sequence of jax.ShapeDtypeStruct or None, optional
@@ -1530,33 +1526,20 @@ def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
     nnz = indices_info.size
     if not batch or not rows or not cols or not nnz:
         return lambda *args: (match_varying_axes(jnp.zeros(out_info.shape, out_info.dtype), *args),)
-    if np.dtype(weight_info.dtype).name not in ('float16', 'bfloat16', 'float32', 'float64'):
+    if np.dtype(weight_info.dtype) not in CUDA_VALUE_DTYPES:
         raise ValueError('Hybrid CSR MM supports only float16, bfloat16, float32, or float64 values.')
-    device = None if config_spec is None else config_spec.device_info
-    if (call_plan is None or device is None or device.platform != 'gpu'
-            or device.sms <= 0 or device.l2_bytes <= 0):
+    params = dict(config_spec=config_spec, weighted=weighted)
+    plan = _hybrid_mm_plan(params, vector_info, weight_info)
+    if plan is None:
         raise ValueError(
             'Hybrid CSR MM requires a complete prepared CSRConfig with structure and GPU device '
             'information. Prepare the config before jax.jit and pass it explicitly.'
         )
-    if (call_plan.rows, call_plan.cols, call_plan.nnz, call_plan.batch) != (rows, cols, nnz, batch):
-        raise ValueError('Hybrid CSR MM plan does not match the operand structure and batch shape.')
-    if np.dtype(call_plan.dtype) != np.dtype(weight_info.dtype):
-        raise ValueError('Hybrid CSR MM plan does not match the value dtype.')
-    config = CSRConfig.from_kernel_args(config_spec, None)
-    expected_plan = config.mm_plan(batch, weight_info.dtype, weighted)
-    if call_plan != expected_plan:
-        raise ValueError('Hybrid CSR MM call plan does not match the prepared config and invocation.')
+    structure = config_spec.structure
+    if (structure.rows, structure.cols, structure.nnz) != (rows, cols, nnz):
+        raise ValueError('Hybrid CSR MM config does not match the operand structure.')
     native_permuted = permuted and weight_info.size != 1
-    root = Path(__file__).parent / 'hybrid_mm'
-    mode = 'weighted' if weighted else 'binary'
-    layout = 'col_major' if native_permuted else 'row'
-    source = root / f'hybrid_batchedv3_spmm_{"col_major_" if native_permuted else ""}{mode}.cu'
-    # Header changes must give the registered FFI target a fresh name.
-    dependencies = (source, *sorted(root.rglob('*.cuh')))
-    digest = hashlib.sha256(b''.join(path.read_bytes() for path in dependencies)).hexdigest()[:12]
-    module = f'csr_hybrid_mm_{layout}_{mode}_{digest}'
-    load_cuda_file(source, name=module, extra_include_paths=[str(root)], allow_cuda_graph=True)
+    module = _load_hybrid_mm('col_major' if native_permuted else 'row', 'weighted' if weighted else 'binary')
     abi = cuda_event_abi(vector_info.dtype, weighted=weighted, value_dtype=weight_info.dtype)
     if native_permuted:
         symbol = 'batched_spmm_v3_col_major_' + ('weighted' if weighted else 'binary') + '_hetero'
@@ -1568,16 +1551,18 @@ def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
         symbol += abi.suffix
     infos = (
         _accumulator_info(jax.ShapeDtypeStruct((batch, cols), out_info.dtype)),
-        jax.ShapeDtypeStruct((call_plan.workspace_words,), jnp.uint32),
-        jax.ShapeDtypeStruct((call_plan.short_rows_size,), jnp.int32),
+        jax.ShapeDtypeStruct((plan.workspace_words,), jnp.uint32),
+        jax.ShapeDtypeStruct((plan.short_rows_size,), jnp.int32),
     )
+    device = config_spec.device_info
     attrs = dict(
-        group=call_plan.group, long_threshold=call_plan.long_threshold,
-        chunk=call_plan.chunk, long_tasks=call_plan.long_tasks,
-        task_capacity=call_plan.task_capacity,
+        group=plan.group, long_threshold=plan.long_threshold,
+        chunk=plan.chunk, long_tasks=plan.long_tasks,
+        task_capacity=plan.task_capacity,
         expected_sms=device.sms, expected_l2_bytes=device.l2_bytes,
     )
     ffi = jax.ffi.ffi_call(module + '.' + symbol, infos, vmap_method='sequential')
+    mask_shape = ((rows + 31) // 32,)
 
     def kernel(*args):
         if permuted:
@@ -1585,7 +1570,8 @@ def _make_hybrid_mm_kernel(*, config_spec, call_plan, weight_info, vector_info,
         else:
             weights, indices, indptr, events, long_mask = args
             perm = None
-        CSRConfig.from_kernel_args(config_spec, long_mask).require_prepared(rows=rows, cols=cols, nnz=nnz)
+        if long_mask.shape != mask_shape or long_mask.dtype != np.uint32:
+            raise ValueError('Hybrid CSR MM long-row mask does not match the prepared structure.')
         operands = (weights, indices, indptr)
         if native_permuted:
             operands += (perm,)
@@ -1674,19 +1660,14 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, long_mask, *, shape, tra
         dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose,
                    backend=_grad_backend(kwargs['backend'], csrmm_p))
         return data, indices, indptr, dB, None
-    else:
-        B = jnp.asarray(B)
-        mode = ('weighted' if kwargs.get('weighted', False) else 'binary')
-        left, right = (B, ct.T) if transpose else (ct, B.T)
-        d_data = _sddmm_dispatch.sddmm(
-            left, right, indices, indptr,
-            mode=mode, transpose=transpose,
-            backend=_sddmm_dispatch._CSRBackend(binary_csrmm_p, kwargs['backend'], kwargs.get('config_spec')),
-        )
-        if data.aval.shape[0] == 1:  # scalar
-            d_data = jnp.sum(d_data).reshape(*data.aval.shape)
-        d_data = d_data.astype(data.aval.dtype)
-        return d_data, indices, indptr, B, None
+    # TCSR reuses this rule without a CSR long-row mask, so it has no CSR forward to rerun.
+    unit_product = None if long_mask is None else (lambda w: _csrmm_jvp_data(
+        w, data, indices, indptr, B, long_mask, shape=shape, transpose=transpose, **kwargs)[0])
+    d_data = _event_weight_cotangent(
+        ct, data.aval, B, indices, indptr, dict(kwargs, transpose=transpose),
+        primitive=binary_csrmm_p, unit_product=unit_product,
+    )
+    return d_data, indices, indptr, B, None
 
 
 def _csrmm_batching(args, axes, **kwargs):
@@ -1903,8 +1884,6 @@ def binary_csrmm_p_call(
     # Call the binary_csrmm_p custom operation to perform the matrix-matrix multiplication.
     config = _config_for_call(config, indices, indptr, shape)
     config_spec, long_mask = config.kernel_args()
-    call_plan = (config.mm_plan(batch=B.shape[1], value_dtype=weights.dtype, weighted=weighted)
-                 if transpose and backend in (None, 'cuda_raw') else None)
     return binary_csrmm_p(
         weights,
         indices,
@@ -1913,7 +1892,6 @@ def binary_csrmm_p_call(
         long_mask,
         outs=[out_info],
         config_spec=config_spec,
-        call_plan=call_plan,
         shape=shape,
         transpose=transpose,
         backend=backend,

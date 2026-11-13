@@ -52,9 +52,16 @@ def reference(events, ct, indices, indptr, *, transpose, weighted):
     return jnp.where(active, value, jnp.zeros_like(value))
 
 
-def check_result(args, *, transpose, weighted, backend=None, config=None):
+def forward_backend(config):
+    """Carry a scheduler snapshot as a CSR consumer does, with automatic selection."""
+    from brainevent._csr.binary.binary import binary_csrmv_p
+    from brainevent._sddmm.dispatch import _CSRBackend
+    return _CSRBackend(binary_csrmv_p, None, config.kernel_args()[0])
+
+
+def check_result(args, *, transpose, weighted, backend=None):
     fn = jax.jit(lambda e, c, i, p: csr_sddmv_dweight(
-        e, c, i, p, transpose=transpose, weighted=weighted, backend=backend, config=config))
+        e, c, i, p, transpose=transpose, weighted=weighted, backend=backend))
     actual = fn(*args)
     expected = reference(*args, transpose=transpose, weighted=weighted)
     assert actual.dtype == expected.dtype
@@ -224,7 +231,7 @@ def test_scheduler_config_is_shared_by_capacity_and_compilation():
     c = jnp.arange(31, dtype=jnp.float32)
     i = jnp.arange(279, dtype=jnp.int32) % 31
     p = jnp.array([0, 129, 279], dtype=jnp.int32)
-    check_result((e, c, i, p), transpose=True, weighted=True, config=config)
+    check_result((e, c, i, p), transpose=True, weighted=True, backend=forward_backend(config))
 
 
 @pytest.mark.usefixtures('enable_x64')
@@ -233,7 +240,7 @@ def test_explicit_scheduler_snapshot_survives_primitive_binding():
     config = CSRConfig(block_size=128, fixed_scatter_blocks=32, tpr_threshold=16, task_nnz=64)
     args = inputs(jnp.float32, jnp.float32, True)
     closed = jax.make_jaxpr(lambda e, c, i, p: csr_sddmv_dweight(
-        e, c, i, p, transpose=True, weighted=True, config=config))(*args)
+        e, c, i, p, transpose=True, weighted=True, backend=forward_backend(config)))(*args)
     def walk(jaxpr):  # the primitive sits inside the custom derivative of native calls
         for eqn in jaxpr.eqns:
             yield eqn

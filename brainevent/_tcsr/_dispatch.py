@@ -54,13 +54,23 @@ def dispatch_binary_mm(matrix: CSR, other: Any, *, transpose: bool, plan: Any) -
     device assignment before selecting native execution; unsupported
     capabilities select the corresponding public CSR operation.
     """
+    # An explicit backend other than CUDA (such as numba) always requests the
+    # ordinary CSR operation; it must not be resolved against the GPU registry
+    # while platform_dependent traces its unselected CUDA branch.
+    if matrix.backend is not None and matrix.backend != 'cuda_raw':
+        return _parent_product(matrix, other, transpose=transpose)
+    # The tile arrays are separate operands, so dispatch on a plain CSR view:
+    # a TCSR's pytree lists every prepared tile width, and preparing a new
+    # width would otherwise retrace every earlier batch size.
+    view = CSR._from_parts(
+        matrix.data, matrix.indices, matrix.indptr, shape=matrix.shape,
+        backend=matrix.backend, config=matrix.config, cache=matrix._cache,
+    )
     # Stage the platform choice even for eager calls. A bare
     # platform_dependent eagerly computes its zero-operand platform index on
     # the default device, which can differ from committed operand placement.
-    if matrix.backend is not None and matrix.backend != 'cuda_raw':
-        return _parent_product(matrix, other, transpose=transpose)
     return _dispatch_on_platform(
-        matrix, other, plan.local_targets, plan.tile_offsets,
+        view, other, plan.local_targets, plan.tile_offsets,
         transpose=transpose, tile_width=plan.tile_width,
     )
 
@@ -73,12 +83,6 @@ def _dispatch_on_platform(
     """Lower a cached dispatch program on the actual operand platform."""
     def inherited(operand):
         return _parent_product(matrix, operand, transpose=transpose)
-
-    # An explicit CPU backend (such as numba) must not be resolved against the
-    # GPU registry while platform_dependent traces its unselected CUDA branch.
-    # Every explicit alternative already requests the ordinary CSR operation.
-    if matrix.backend is not None and matrix.backend != 'cuda_raw':
-        return inherited(other)
 
     def cuda(operand):
         primitive = csr_binary_csrmm_p

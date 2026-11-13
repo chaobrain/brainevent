@@ -41,11 +41,11 @@ def test_csr_gradient_dispatch_preserves_forward_config(monkeypatch, requested):
     config_spec = CSRConfig(tpr_threshold=16, task_nnz=64).kernel_args()[0]
     captured = []
 
-    def sampled(a, b, indices, indptr, **kwargs):
+    def bind_events(events, ct, indices, indptr, **kwargs):
         captured.append(kwargs['config_spec'])
         return jnp.zeros(indices.shape, jnp.float32)
 
-    monkeypatch.setattr(mv, 'sampled', sampled)
+    monkeypatch.setattr(mv, 'bind_events', bind_events)
     source = _CSRBackend(object(), requested, config_spec)
     indices, indptr = jnp.array([0], jnp.int32), jnp.array([0, 1], jnp.int32)
     fn = jax.jit(lambda a, b: dispatch.sddmm(
@@ -62,11 +62,11 @@ def test_csr_gradient_dispatch_preserves_explicit_cusparse(monkeypatch, batch, m
 
     captured = []
 
-    def sampled(a, b, indices, indptr, **kwargs):
-        captured.append(kwargs['backend'])
+    def sampled(a, b, indices, indptr, mode, transpose, backend, **kwargs):
+        captured.append(backend)
         return jnp.full(indices.shape, 7, jnp.float32)
 
-    monkeypatch.setattr(mv if batch == 1 else mm, 'sampled', sampled)
+    monkeypatch.setattr(dispatch, '_sampled', sampled)
     indices = jnp.array([0, 1], jnp.int32)
     indptr = jnp.array([0, 1, 2], jnp.int32)
     source = _CSRBackend(object(), 'cusparse')
@@ -82,11 +82,11 @@ def test_csr_gradient_dispatch_preserves_explicit_cusparse(monkeypatch, batch, m
 def test_dispatch_selects_leaf_by_contraction_size(monkeypatch, batch):
     calls = []
     for name, module in [('mv', mv), ('mm', mm)]:
-        original = module.sampled
+        original = module.float_product
         def record(*args, _name=name, _fn=original, **kwargs):
             calls.append(_name)
             return _fn(*args, **kwargs)
-        monkeypatch.setattr(module, 'sampled', record)
+        monkeypatch.setattr(module, 'float_product', record)
     a = jnp.arange(2 * batch, dtype=jnp.float32).reshape(2, batch)
     b = jnp.arange(batch * 3, dtype=jnp.float32).reshape(batch, 3)
     coordinates = jnp.array([[1, 2], [0, 0], [1, 2]], dtype=jnp.int32)

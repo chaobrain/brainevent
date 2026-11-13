@@ -31,7 +31,7 @@ __all__ = [
 
 def csr_sddmm_dweight(
     events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array,
-    *, transpose: bool, weighted: bool = False, backend: str | None = None, config=None,
+    *, transpose: bool, weighted: bool = False, backend: str | None = None,
 ) -> jax.Array:
     """Compute CSR event weight gradients through batch-based dispatch.
 
@@ -55,9 +55,8 @@ def csr_sddmm_dweight(
         Explicit ``cusparse`` uses cuSPARSE SDDMM on GPU in either direction,
         with exact selection for nonfinite cotangents. Half types compute in
         float32. Every backend is differentiable: native primals take their
-        derivatives from the JAX sampled product.
-    config : CSRConfig or None, optional
-        Explicit scheduler snapshot. Defaults do not read persisted settings.
+        derivatives from the JAX sampled product. CSR consumers pass a
+        ``_CSRBackend`` carrying their forward backend and scheduler snapshot.
 
     Returns
     -------
@@ -76,12 +75,12 @@ def csr_sddmm_dweight(
     else:
         A, B = (events, ct.T) if transpose else (ct, events.T)
     return _dispatch.sddmm(A, B, indices, indptr, mode='weighted' if weighted else 'binary',
-                           transpose=transpose, backend=backend, config=config)
+                           transpose=transpose, backend=backend)
 
 
 def csr_sddmv_dweight(
     events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array,
-    *, transpose: bool, weighted: bool = False, backend: str | None = None, config=None,
+    *, transpose: bool, weighted: bool = False, backend: str | None = None,
 ) -> jax.Array:
     """Vector entry into the unified CSR sampled dispatcher.
 
@@ -97,8 +96,6 @@ def csr_sddmv_dweight(
         Use event amplitudes rather than binary selection.
     backend : str or None, optional
         Leaf backend override, as in :func:`csr_sddmm_dweight`.
-    config : CSRConfig or None, optional
-        Explicit scheduler snapshot, as in :func:`csr_sddmm_dweight`.
 
     Returns
     -------
@@ -108,7 +105,7 @@ def csr_sddmv_dweight(
     if jnp.ndim(events) != 1 or jnp.ndim(ct) != 1:
         raise ValueError('events and ct must be rank 1')
     return csr_sddmm_dweight(events, ct, indices, indptr, transpose=transpose,
-                             weighted=weighted, backend=backend, config=config)
+                             weighted=weighted, backend=backend)
 
 
 # Registry calls also enter the facade, never bypassing batch dispatch.

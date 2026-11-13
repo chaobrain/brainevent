@@ -98,6 +98,48 @@ def test_weight_gradient_follows_event_mode(
     assert seen and set(seen) == {'weighted' if weighted else 'binary'}
 
 
+def _event_backends():
+    return ['jax_raw', None] + (['cuda_raw'] if jax.default_backend() == 'gpu' else [])
+
+
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('matrix', [False, True], ids=['mv', 'mm'])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('indexed', [False, True])
+@pytest.mark.parametrize('backend', _event_backends())
+def test_shared_weight_gradient_matches_dense_and_ignores_idle_nonfinite_cotangent(
+    weighted, matrix, transpose, indexed, backend,
+):
+    """A shared weight takes ``<ct, A_unit @ events>``; a NaN/Inf cotangent on an
+    output that received only inactive events still contributes exactly 0."""
+    op = _low_level_op(matrix, indexed, lowlevel=False)
+    batch = 2 if matrix else 1
+    # Row 0 holds columns {0, 2}, row 1 holds {1, 2}. These events leave one
+    # output idle: row 1 (no transpose) or column 1 (transpose).
+    events = np.array([[2., -3.], [0., 0.]] if transpose else [[2., -3.], [0., 0.], [0., 0.]], np.float32)
+    idle = 1
+    finite = np.array([[5., -2.], [7., 4.], [3., 1.]] if transpose else [[5., -2.], [7., 4.]], np.float32)
+    events, finite = events[:, :batch], finite[:, :batch]
+
+    def gradient(ct):
+        def loss(data):
+            args = (data, _INDICES, _INDPTR) + ((_PERM,) if indexed else ())
+            x = jnp.asarray(events if matrix else events[:, 0])
+            output = op(*args, x, shape=(2, 3), transpose=transpose, backend=backend, weighted=weighted)
+            return jnp.vdot(output, jnp.asarray(ct if matrix else ct[:, 0]))
+        return jax.jit(jax.grad(loss))(jnp.array([1.5], jnp.float32))
+
+    expected = _expected_slot_gradient(events, finite, transpose, weighted, True, indexed)
+    np.testing.assert_allclose(gradient(finite), expected, rtol=1e-6)
+    for bad in (np.nan, np.inf):
+        ct = finite.copy()
+        ct[idle] = bad
+        clean = finite.copy()
+        clean[idle] = 0.
+        expected = _expected_slot_gradient(events, clean, transpose, weighted, True, indexed)
+        np.testing.assert_allclose(gradient(ct), expected, rtol=1e-6)
+
+
 @pytest.mark.parametrize('indexed', [False, True])
 @pytest.mark.parametrize('transpose', [False, True])
 @pytest.mark.parametrize('matrix', [False, True], ids=['mv', 'mm'])

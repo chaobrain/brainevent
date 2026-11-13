@@ -31,16 +31,15 @@ from brainevent._misc import (
     namescope,
 )
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, load_cuda_file
-from brainevent._sddmm import dispatch as _sddmm_dispatch
 from brainevent._csr._support.binary import (
     _task_capacity,
     _ignore_config_mask,
     _config_from_params,
     _batch_config_params,
-    _accumulator_info,
-    _hybrid_scratch,
     _check_max_row_nnz,
     _config_for_call,
+    _event_weight_cotangent,
+    _hybrid_mv_kernel,
 )
 from brainevent._csr.config import CSRConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -406,68 +405,15 @@ def _binary_csrmv_indexed_cuda_kernel(
     wt_sfx = dtype_suffix(weight_info.dtype)
 
     if transpose and is_homo:
-        _cfg = _config_from_params(kwargs, None)
-        _mode = 'weighted' if kwargs.get('weighted', False) else 'binary'
-        _source_dir = Path(__file__).parent / 'hybrid_mv'
-        _mod = f'csr_hybrid_spmv_{_mode}' + _cfg.module_suffix()
-        load_cuda_file(
-            _source_dir / f'hybrid_spmv_{_mode}.cu',
-            name=_mod,
-            extra_include_paths=[str(_source_dir)],
-            extra_cuda_cflags=_cfg.compile_flags(),
-            allow_cuda_graph=True,
-        )
-        kernel_name = f'{_mod}.binary_csrmv_wat_hybrid_homo{wt_sfx}{spk_suffix}'
-
-        def kernel(weights, indices, indptr, perm, vector):
-            vector = event_abi.prepare(vector)
-            scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
-            math_out = jax.ffi.ffi_call(
-                kernel_name,
-                (_accumulator_info(out_info), *scratch_info),
-                input_output_aliases={4: 1, 5: 2, 6: 3},
-            )(
-                weights,
-                indices,
-                indptr,
-                vector,
-                *scratch,
-                task_capacity=kwargs['task_capacity'],
-            )[0]
-            return (math_out.astype(out_info.dtype),)
+        kernel = _hybrid_mv_kernel(kwargs, f'binary_csrmv_wat_hybrid_homo{wt_sfx}{spk_suffix}',
+                                   event_abi, permuted=False)
 
     elif transpose:
-        _cfg = _config_from_params(kwargs, None)
-        _mode = 'weighted' if kwargs.get('weighted', False) else 'binary'
-        _source_dir = Path(__file__).parent / 'hybrid_mv'
-        _mod = f'csr_hybrid_spmv_col_major_{_mode}' + _cfg.module_suffix()
-        load_cuda_file(
-            _source_dir / f'hybrid_spmv_col_major_{_mode}.cu',
-            name=_mod,
-            extra_include_paths=[str(_source_dir)],
-            extra_cuda_cflags=_cfg.compile_flags(),
-            allow_cuda_graph=True,
-        )
-        _event_suffix = '' if kwargs.get('weighted', False) else spk_suffix
-        kernel_name = f'{_mod}.hybrid_spmv_col_major_{_mode}_hetero{wt_sfx}{_event_suffix}'
-
-        def kernel(weights, indices, indptr, perm, vector):
-            vector = event_abi.prepare(vector)
-            scratch, scratch_info = _hybrid_scratch(kwargs['task_capacity'], indptr.dtype)
-            math_out = jax.ffi.ffi_call(
-                kernel_name,
-                (_accumulator_info(out_info), *scratch_info),
-                input_output_aliases={5: 1, 6: 2, 7: 3},
-            )(
-                weights,
-                indices,
-                indptr,
-                perm,
-                vector,
-                *scratch,
-                task_capacity=kwargs['task_capacity'],
-            )[0]
-            return (math_out.astype(out_info.dtype),)
+        weighted = kwargs.get('weighted', False)
+        mode = 'weighted' if weighted else 'binary'
+        event_suffix = '' if weighted else spk_suffix
+        kernel = _hybrid_mv_kernel(kwargs, f'hybrid_spmv_col_major_{mode}_hetero{wt_sfx}{event_suffix}',
+                                   event_abi, permuted=True)
 
     elif is_homo:
         load_cuda_file(
@@ -629,24 +575,16 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, long_mask, *
             # ct_events is dense/float cotangent data, not binary events.
             ct_events = csrmv(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
         return weights, indices, indptr, perm, ct_events, None
-    else:
-        if type(ct) is ad.Zero:
-            ct_w = ad.Zero(weights.aval)
-        else:
-            mode = ('weighted' if kw.get('weighted', False) else 'binary')
-            # Slot k uses weights[perm[k]]. Inactive slots get exactly 0,
-            # even for a NaN/Inf cotangent.
-            left, right = (events, ct) if transpose else (ct, events)
-            per_slot = _sddmm_dispatch.sddmm(
-                left, right, indices, indptr,
-                mode=mode, transpose=transpose,
-                backend=_sddmm_dispatch._CSRBackend(binary_csrmv_indexed_p, kw['backend'], kw.get('config_spec')),
-            )
-            if weights.aval.shape[0] == 1:
-                ct_w = jnp.sum(per_slot).astype(weights.aval.dtype).reshape(*weights.aval.shape)
-            else:
-                ct_w = jnp.zeros(weights.aval.shape, weights.aval.dtype).at[perm].add(per_slot)
-        return ct_w, indices, indptr, perm, events, None
+    if type(ct) is ad.Zero:
+        return ad.Zero(weights.aval), indices, indptr, perm, events, None
+    # Slot k uses weights[perm[k]].
+    ct_w = _event_weight_cotangent(
+        ct, weights.aval, events, indices, indptr, dict(kw, transpose=transpose),
+        primitive=binary_csrmv_indexed_p, perm=perm,
+        unit_product=lambda w: _idx_jvp_weights(
+            w, weights, indices, indptr, perm, events, long_mask, shape=shape, transpose=transpose, **kw)[0],
+    )
+    return ct_w, indices, indptr, perm, events, None
 
 
 def _idx_batching(args, axes, **kwargs):
@@ -1143,13 +1081,10 @@ def binary_csrmm_indexed_p_call(
     )
     config = _config_for_call(config, indices, indptr, shape)
     config_spec, long_mask = config.kernel_args()
-    call_plan = (config.mm_plan(batch=B.shape[1], value_dtype=weights.dtype, weighted=weighted)
-                 if transpose and backend in (None, 'cuda_raw') else None)
     return binary_csrmm_indexed_p(
         weights, indices, indptr, perm, B, long_mask,
         outs=[out_info],
         config_spec=config_spec,
-        call_plan=call_plan,
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -1191,24 +1126,16 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, long_mask, *, 
             w = data if data.shape[0] == 1 else data[perm]
             ct_B = csrmm(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
         return data, indices, indptr, perm, ct_B, None
-    else:
-        if type(ct) is ad.Zero:
-            ct_w = ad.Zero(data.aval)
-        else:
-            # weight at slot k is weights[perm[k]]; scatter the per-slot cotangent
-            # back via perm. Inactive (slot, column) pairs contribute exactly 0.
-            left, right = (B, ct.T) if transpose else (ct, B.T)
-            d_data = _sddmm_dispatch.sddmm(
-                left, right, indices, indptr,
-                mode=('weighted' if kw.get('weighted', False) else 'binary'),
-                transpose=transpose,
-                backend=_sddmm_dispatch._CSRBackend(binary_csrmm_indexed_p, kw['backend'], kw.get('config_spec')),
-            )
-            if data.aval.shape[0] == 1:
-                ct_w = jnp.sum(d_data).astype(data.aval.dtype).reshape(*data.aval.shape)
-            else:
-                ct_w = jnp.zeros(data.aval.shape, data.aval.dtype).at[perm].add(d_data)
-        return ct_w, indices, indptr, perm, B, None
+    if type(ct) is ad.Zero:
+        return ad.Zero(data.aval), indices, indptr, perm, B, None
+    # Slot k uses weights[perm[k]].
+    ct_w = _event_weight_cotangent(
+        ct, data.aval, B, indices, indptr, dict(kw, transpose=transpose),
+        primitive=binary_csrmm_indexed_p, perm=perm,
+        unit_product=lambda w: _csrmm_idx_jvp_data(
+            w, data, indices, indptr, perm, B, long_mask, shape=shape, transpose=transpose, **kw)[0],
+    )
+    return ct_w, indices, indptr, perm, B, None
 
 
 def _csrmm_idx_batching(args, axes, **kwargs):

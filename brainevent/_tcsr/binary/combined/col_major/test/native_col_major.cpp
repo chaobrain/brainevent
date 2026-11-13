@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0:
 // http://www.apache.org/licenses/LICENSE-2.0
 
-// Compile with g++, then link the parent and column-major standalone CUDA objects.
+// Compile with g++, then link the self-contained column-major CUDA object.
 #include "../combined_col_major.cuh"
 
 #include <algorithm>

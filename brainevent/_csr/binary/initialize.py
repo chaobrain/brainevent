@@ -31,6 +31,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from brainevent._error import BrainEventError
+from brainevent._misc import _static_integer
 from brainevent._op import get_cache_dir
 from brainevent._csr.config import _BenchmarkRecord, CSRConfig, MVSchedule
 
@@ -39,7 +40,8 @@ _ENV_OVERRIDE = 'BRAINEVENT_CSR_HYBRID_CONFIG'
 _CONFIG_FIELDS = ('block_size', 'fixed_scatter_blocks', 'tpr_threshold', 'task_nnz')
 
 _CUDA_SOURCE = Path(__file__).parent / "hybrid_mv" / "hybrid_spmv_binary.cu"
-_MODULE_BASE = "csr_hybrid_spmv_binary_tune"
+# The production module name: tuning compiles share its build cache entries.
+_MODULE_BASE = "csr_hybrid_spmv_binary"
 _TARGET_FUNCTION = "binary_csrmv_wat_hybrid_homo_f32_bool"
 _INT32_MAX = int(np.iinfo(np.int32).max)
 _LOG = logging.getLogger(__name__)
@@ -420,16 +422,6 @@ def _write_progress(completed: int, total: int) -> None:
     sys.stderr.flush()
 
 
-def _task_capacity_for_uniform_rows(*, n_rows: int, row_conn: int, config: CSRConfig) -> int:
-    if row_conn <= config.mv.tpr_threshold:
-        return 0
-    chunks_per_row = (row_conn + config.mv.task_nnz - 1) // config.mv.task_nnz
-    capacity = int(n_rows) * int(chunks_per_row)
-    if capacity > _INT32_MAX:
-        raise ValueError("task_capacity exceeds int32 range")
-    return capacity
-
-
 def _make_uniform_csr(*, n_pre: int, n_post: int, conn: int, seed: int):
     if not 1 <= conn <= n_post:
         raise ValueError("conn must be in [1, n_post]")
@@ -495,7 +487,7 @@ def _benchmark_config(
     if steps <= 0:
         raise ValueError("steps must be positive")
 
-    task_capacity = _task_capacity_for_uniform_rows(n_rows=n_pre, row_conn=conn, config=config)
+    task_capacity = config.mv_capacity(n_pre * conn, n_pre, conn)
     task_dtype = jnp.dtype(indptr.dtype)
     task_begin = jnp.empty((task_capacity,), dtype=task_dtype)
     task_end = jnp.empty((task_capacity,), dtype=task_dtype)
@@ -658,9 +650,9 @@ def run_benchmark(
     conn = _density_conn(n_post, density) if density is not None else (2000 if conn is None else operator.index(conn))
     if not 1 <= conn <= n_post:
         raise ValueError('conn must be in [1, n_post]')
-    batch_size, steps, warmup = map(operator.index, (batch_size, steps, warmup))
-    if batch_size <= 0 or steps <= 0 or warmup < 0:
-        raise ValueError('batch_size and steps must be positive; warmup must be nonnegative')
+    batch_size = _static_integer(batch_size, 'batch_size', 1)
+    steps = _static_integer(steps, 'steps', 1)
+    warmup = _static_integer(warmup, 'warmup')
     if not math.isfinite(spike_sparsity) or not 0 <= spike_sparsity <= 1:
         raise ValueError('spike_sparsity must be finite and in [0, 1]')
     candidates = tuple(candidates)

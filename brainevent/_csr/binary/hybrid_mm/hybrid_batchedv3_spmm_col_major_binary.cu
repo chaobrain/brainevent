@@ -45,8 +45,7 @@ namespace hybrid_col_major
 #undef INSTANTIATE_COL_MAJOR_BINARY
 } // namespace hybrid_col_major
 
-#ifndef BE_SPMM_STANDALONE
-#include "hybrid_batchedv3_spmm_col_major_ffi.cuh"
+#include "hybrid_batchedv3_spmm_ffi.cuh"
 
 #define DEFINE_COL_MAJOR_BINARY(SUFFIX, VALUE_T, EVENT_T)                                                        \
   void batched_spmm_v3_col_major_binary_hetero##SUFFIX(                                                         \
@@ -55,8 +54,8 @@ namespace hybrid_col_major
       BE::Tensor short_rows, int64_t group, int64_t long_threshold, int64_t chunk, int64_t long_tasks,          \
       int64_t task_capacity, int64_t expected_sms, int64_t expected_l2_bytes, int64_t stream)                                                                   \
   {                                                                                                           \
-    batched_spmm_v3_col_major_impl<VALUE_T, EVENT_T, false>(                                                    \
-        "batched_spmm_v3_col_major_binary_hetero" #SUFFIX, values, indices, indptr, perm, long_mask, events,   \
+    batched_spmm_v3_ffi<VALUE_T, EVENT_T, false, false, true>(                                                    \
+        "batched_spmm_v3_col_major_binary_hetero" #SUFFIX, values, indices, indptr, &perm, long_mask, events,   \
         output, workspace, short_rows, group, long_threshold, chunk, long_tasks, task_capacity, expected_sms, expected_l2_bytes, stream);       \
   }
 
@@ -77,5 +76,3 @@ DEFINE_COL_MAJOR_BINARY(_f64_bool, double, int8_t)
 // @BE batched_spmm_v3_col_major_binary_hetero_f64_float
 DEFINE_COL_MAJOR_BINARY(_f64_float, double, float)
 #undef DEFINE_COL_MAJOR_BINARY
-
-#endif

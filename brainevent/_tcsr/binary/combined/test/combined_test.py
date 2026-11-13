@@ -35,7 +35,7 @@ def test_combined_matches_cpu_reference(tmp_path: Path) -> None:
     if nvcc is None:
         pytest.skip("requires nvcc")
     executable = tmp_path / "combined_test"
-    built = subprocess.run([nvcc, "-std=c++17", "-I" + _BE_INCLUDE, "-O2", "-arch=native", "-DBE_SPMM_STANDALONE", str(TEST), str(TEST.parent.parent / "combined_spmm_binary.cu"),
+    built = subprocess.run([nvcc, "-std=c++17", "-I" + _BE_INCLUDE, "-O2", "-arch=native", str(TEST), str(TEST.parent.parent / "combined_spmm_binary.cu"),
                             "-o", str(executable)], capture_output=True, text=True, timeout=300)
     assert built.returncode == 0, built.stderr
     run = subprocess.run([str(executable)], capture_output=True, text=True, timeout=300)

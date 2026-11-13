@@ -86,7 +86,7 @@ def test_public_cuda_forward_and_matrix_and_event_cotangents(dtype, transpose, m
         # them as leaves rather than reading traced structure.
         _product(matrix, events, transpose)
         assert (matrix._cache.mirror is not None) == (not transpose)
-        assert matrix._get_binary_mm_plan(events.shape[1], transpose=transpose) is not None
+        assert matrix._get_tile_geometry(events.shape[1], transpose=transpose) is not None
         result = run(matrix, events)
         dense = _dense(matrix)
         expected = (np.asarray(events) != 0) @ dense if transpose else dense @ (np.asarray(events) != 0)
@@ -144,7 +144,7 @@ def test_public_cuda_tail_tiles_and_batched_transform(transpose):
                       shape=(257, 259)))
     events = _events(matrix, transpose)
     _product(matrix, events, transpose)
-    plan = matrix._get_binary_mm_plan(3, transpose=transpose)
+    plan = matrix._get_tile_geometry(3, transpose=transpose)
     assert matrix.shape[1 if transpose else 0] % plan.tile_width
     batched = jnp.stack([events, -events])
     result = jax.jit(jax.vmap(lambda x: _product(matrix, x, transpose)))(batched)

@@ -303,8 +303,7 @@ def test_load_cusparse_links_the_matching_wheel(monkeypatch, tmp_path, major, li
     common = importlib.import_module('brainevent._sddmm._common')
     root = _wheel_tree(tmp_path, 'cu13', 'cusparse')
     captured = {}
-    monkeypatch.setattr(common.importlib.util, 'find_spec',
-                        lambda name: mock.NonCallableMock(submodule_search_locations=[str(root)]))
+    monkeypatch.setattr(common, '_nvidia_roots', lambda: [str(root)])
     monkeypatch.setattr(common, '_jaxlib_cuda_major', lambda: major)
     monkeypatch.setattr(common, 'load_cuda_file', lambda path, **kwargs: captured.update(kwargs, path=path))
     common._load_cusparse.cache_clear()

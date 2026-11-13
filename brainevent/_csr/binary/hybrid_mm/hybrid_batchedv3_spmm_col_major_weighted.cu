@@ -41,8 +41,7 @@ namespace hybrid_col_major
 #undef INSTANTIATE_COL_MAJOR_WEIGHTED
 } // namespace hybrid_col_major
 
-#ifndef BE_SPMM_STANDALONE
-#include "hybrid_batchedv3_spmm_col_major_ffi.cuh"
+#include "hybrid_batchedv3_spmm_ffi.cuh"
 
 #define DEFINE_COL_MAJOR_WEIGHTED(SUFFIX, VALUE_T)                                                             \
   void batched_spmm_v3_col_major_weighted_hetero##SUFFIX(                                                       \
@@ -51,8 +50,8 @@ namespace hybrid_col_major
       BE::Tensor short_rows, int64_t group, int64_t long_threshold, int64_t chunk, int64_t long_tasks,          \
       int64_t task_capacity, int64_t expected_sms, int64_t expected_l2_bytes, int64_t stream)                                                                   \
   {                                                                                                           \
-    batched_spmm_v3_col_major_impl<VALUE_T, VALUE_T, true>(                                                     \
-        "batched_spmm_v3_col_major_weighted_hetero" #SUFFIX, values, indices, indptr, perm, long_mask, events, \
+    batched_spmm_v3_ffi<VALUE_T, VALUE_T, true, false, true>(                                                     \
+        "batched_spmm_v3_col_major_weighted_hetero" #SUFFIX, values, indices, indptr, &perm, long_mask, events, \
         output, workspace, short_rows, group, long_threshold, chunk, long_tasks, task_capacity, expected_sms, expected_l2_bytes, stream);       \
   }
 
@@ -65,4 +64,3 @@ DEFINE_COL_MAJOR_WEIGHTED(_f32, float)
 // @BE batched_spmm_v3_col_major_weighted_hetero_f64
 DEFINE_COL_MAJOR_WEIGHTED(_f64, double)
 #undef DEFINE_COL_MAJOR_WEIGHTED
-#endif

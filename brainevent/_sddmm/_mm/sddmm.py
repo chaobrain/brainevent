@@ -18,7 +18,7 @@ JAX masks each slot's cotangents where its event factor is zero, without a
 branch on global finiteness, and accumulates half-precision batches in float32.
 """
 
-from functools import lru_cache, partial
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -28,17 +28,18 @@ from jax.experimental import sparse
 
 from brainevent._compatible_import import match_varying_axes, varying_axes_of
 from brainevent._misc import _csr_to_coo
-from brainevent._op import XLACustomKernel, load_cuda_file
-from brainevent._op.util import event_active
-from brainevent._sddmm._common import (
-    BINARY_TARGET_SUFFIXES, VALUE_SUFFIXES, Mode, _CSRBackend, check_jax_backend,
-    _cusparse_event_kernel, _cusparse_sampled,
-)
+from brainevent._op import load_cuda_file
+from brainevent._op.util import event_factor
+from brainevent._sddmm import _common
+from brainevent._sddmm._common import native_event_target
 
 
 _DIRECTORY = Path(__file__).parent
+NAME, LABEL = 'SDDMM', 'MM'
 _TASK_NNZ = 512  # batched_v3::kTask, also 16 * the fixed lane group of 32.
 _BATCH_CHUNK = 64
+_MAX_BATCH = 65535
+_INT32_MAX = 2**31 - 1
 
 
 @lru_cache(maxsize=None)
@@ -110,7 +111,7 @@ def _jax_kernel(events: jax.Array, ct: jax.Array, indices: jax.Array,
     else:
         rows, cols = indices[:, 0], indices[:, 1]
     unit, out = (rows, cols) if transpose else (cols, rows)
-    factors = events.astype(ct.dtype) if weighted else event_active(events).astype(ct.dtype)
+    factors = event_factor(events, dtype=ct.dtype, weighted=weighted)
     # CSR coordinates are non-negative: skip the per-slot negative-index wrap.
     wrap = indptr is None
     factor = factors.at[unit, :].get(mode='fill', fill_value=0, wrap_negative_indices=wrap)
@@ -132,100 +133,38 @@ def _cuda_kernel(*, transpose: bool, weighted: bool, ct_info: jax.ShapeDtypeStru
     rows, nnz, batch = indptr_info.size - 1, indices_info.size, ct_info.shape[1]
     if not batch or not nnz:
         return lambda events, ct, indices, indptr: (jnp.zeros(indices.shape, ct.dtype),)
-    if batch > 65535 or ct_info.shape[0] > 2**31 - 1:
+    if not native_dims(ct_info.shape):
         raise ValueError('matrix SDDMM CUDA requires batch <= 65535 and cols <= INT32_MAX')
     dtype = jnp.dtype(ct_info.dtype)
     attrs, infos = _cuda_plan(rows, batch, nnz, dtype, weighted)
     module = _load_hybrid(weighted)
 
     def kernel(events, ct, indices, indptr):
-        if weighted:
-            vector = events.astype(dtype)
-            target = f'{module}.batched_v3_sddmm_weighted_{VALUE_SUFFIXES[dtype]}'
-        else:
-            vector = events
-            if (dtype, jnp.dtype(vector.dtype)) not in BINARY_TARGET_SUFFIXES:
-                vector = event_active(vector)
-            target = f'{module}.batched_v3_sddmm_{BINARY_TARGET_SUFFIXES[(dtype, jnp.dtype(vector.dtype))]}'
+        target, vector = native_event_target(
+            'batched_v3_sddmm_weighted' if weighted else 'batched_v3_sddmm', dtype, events, weighted=weighted)
         mask = _long_mask(indptr) if attrs['long_count'] else jnp.zeros(((rows + 31) // 32,), jnp.uint32)
         out = jax.ffi.ffi_call(
-            target, infos, input_output_aliases={5: 0}, vmap_method='sequential',
+            f'{module}.{target}', infos, input_output_aliases={5: 0}, vmap_method='sequential',
         )(vector.T, ct.T, indices, indptr, mask, jnp.zeros((nnz,), dtype), **attrs)[0]
         return (match_varying_axes(out, events, ct, indices, indptr),)
     return kernel
 
 
-def _auto_gpu_kernel(*, transpose: bool, ct_info: jax.ShapeDtypeStruct, csr_primitive=None, **kwargs: Any):
-    backend = None if csr_primitive is None else csr_primitive._resolve_backend('gpu')
-    if backend == 'cusparse':
-        return _cusparse_event_kernel(transpose=transpose, ct_info=ct_info, **kwargs)
-    native = transpose and ct_info.shape[1] <= 65535 and ct_info.shape[0] <= 2**31 - 1
-    native = native and backend in (None, 'cuda_raw')
-    if native:
-        return _cuda_kernel(transpose=transpose, ct_info=ct_info, **kwargs)
-    return partial(_jax_kernel, transpose=transpose, **kwargs)
+def native_dims(ct_shape: tuple[int, ...]) -> bool:
+    """Whether a ``(cols, batch)`` cotangent fits the native CUDA kernel."""
+    return ct_shape[1] <= _MAX_BATCH and ct_shape[0] <= _INT32_MAX
 
 
-def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | None,
-            *, mode: Mode, transpose: bool, backend: str | None | _CSRBackend) -> jax.Array:
-    """Execute a normalized matrix sampled product.
+def bind_events(events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array, *,
+                config_spec: Any = None, **kwargs: Any) -> jax.Array:
+    """Bind matrix CSR events; the native plan is sized from shapes, not ``config_spec``."""
+    if kwargs['backend'] == 'cuda_raw' and indices.size and not native_dims(ct.shape):
+        raise ValueError('matrix SDDMM CUDA requires batch <= 65535 and cols <= INT32_MAX')
+    return _common.bind_events(csr_sddmm_p, events, ct, indices, indptr, **kwargs)
 
-    Parameters
-    ----------
-    A, B : jax.Array
-        Dense operands of shape ``(rows, batch)`` and ``(batch, cols)``.
-    indices, indptr : jax.Array or None
-        COO coordinates, or CSR columns and row offsets.
-    mode : {'float', 'binary', 'weighted'}
-        Ordinary multiplication or event selection semantics.
-    transpose : bool
-        Events are on the left when true and on the right otherwise.
-    backend : str or None
-        GPU auto uses CUDA for supported transposed CSR events; other cases
-        use JAX. ``jax_raw`` forces JAX in both directions.
-        ``cusparse`` supports CSR products on GPU in both directions and all
-        modes, with float32 computation for half types. COO and patterns with
-        more slots than rows times columns are unsupported. Nonfinite event
-        cotangents use exact JAX selection. Native backends have no AD rules
-        here; :func:`brainevent._sddmm.sddmm` supplies them.
 
-    Returns
-    -------
-    jax.Array
-        One result per physical sparse slot.
-    """
-    check_jax_backend(backend)
-    if backend == 'cusparse':
-        if indptr is None:
-            raise NotImplementedError('cusparse sampled products require CSR indices and indptr')
-        if mode == 'float':
-            return _cusparse_sampled(A, B, indices, indptr, mode=mode, transpose=transpose)
-    # Explicit JAX calls stay differentiable without binding the event primitive.
-    if mode != 'float' and indptr is not None and backend != 'jax_raw':
-        if backend == 'cuda_raw' and not transpose:
-            raise ValueError('cuda_raw SDDMM requires transpose=True; use jax_raw or auto')
-        events, ct = (A, B.T) if transpose else (B.T, A)
-        if backend == 'cuda_raw' and indices.size and (ct.shape[1] > 65535 or ct.shape[0] > 2**31 - 1):
-            raise ValueError('matrix SDDMM CUDA requires batch <= 65535 and cols <= INT32_MAX')
-        source = backend.primitive if isinstance(backend, _CSRBackend) else None
-        return csr_sddmm_p(
-            events, ct, indices, indptr,
-            outs=[jax.ShapeDtypeStruct(indices.shape, ct.dtype)],
-            transpose=transpose, weighted=mode == 'weighted', backend='auto' if source is not None else backend,
-            csr_primitive=source,
-            ct_info=jax.ShapeDtypeStruct(ct.shape, ct.dtype),
-            indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-            indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
-        )[0]
-    if backend == 'cuda_raw':
-        raise NotImplementedError('MM CUDA supports transposed CSR event products; use backend="jax_raw"')
-    if mode != 'float':
-        events, ct = (A, B.T) if transpose else (B.T, A)
-        return _jax_kernel(events, ct, indices, indptr,
-                           transpose=transpose, weighted=mode == 'weighted')[0]
-    if indptr is not None:
-        rows, cols = _csr_to_coo(indices, indptr)
-        indices = jnp.stack([rows, cols], axis=1)
+def float_product(A: jax.Array, B: jax.Array, indices: jax.Array) -> jax.Array:
+    """Sample ``A (rows, batch) @ B (batch, cols)`` at COO coordinates."""
     if varying_axes_of(A, B, indices):
         left = A.at[indices[:, 0], :].get(mode='fill', fill_value=0)
         right = B.at[:, indices[:, 1]].get(mode='fill', fill_value=0)
@@ -238,12 +177,4 @@ def sampled(A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | 
     )
 
 
-csr_sddmm_p = XLACustomKernel('csr_sddmm')
-csr_sddmm_p.def_cuda_raw_kernel(_cuda_kernel)
-csr_sddmm_p.def_kernel('cusparse', 'gpu', _cusparse_event_kernel)
-csr_sddmm_p.def_kernel('auto', 'gpu', _auto_gpu_kernel, asdefault=True)
-for _platform in ('cpu', 'gpu', 'tpu'):
-    csr_sddmm_p.def_kernel('jax_raw', _platform, lambda **kwargs: partial(_jax_kernel, **kwargs))
-for _platform in ('cpu', 'tpu'):
-    csr_sddmm_p.def_kernel('auto', _platform, lambda **kwargs: partial(_jax_kernel, **kwargs))
-csr_sddmm_p.def_tags('csr', 'sddmm')
+csr_sddmm_p = _common.event_primitive('csr_sddmm', 'sddmm', _cuda_kernel, _jax_kernel, native_dims)

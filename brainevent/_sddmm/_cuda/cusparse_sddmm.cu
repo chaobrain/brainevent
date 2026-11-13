@@ -122,9 +122,9 @@ namespace
         // part of XLA's memory accounting, but is usually zero or a few bytes.
         if (workspace_bytes)
             BE_CUDA_CHECK(cudaMallocAsync(&plan.workspace, workspace_bytes, plan.stream));
-        BE_CUSPARSE_CHECK(cusparseSDDMM_preprocess(
-            handle, left_op, right_op, &alpha, plan.left, plan.right, &beta,
-            plan.sampled, cuda_dtype, algorithm, plan.workspace));
+        // cusparseSDDMM_preprocess is optional: it only pays off when its
+        // analysis is reused across calls, and every call here builds fresh
+        // descriptors, so it would add a pass without speeding anything up.
         BE_CUSPARSE_CHECK(cusparseSDDMM(
             handle, left_op, right_op, &alpha, plan.left, plan.right, &beta,
             plan.sampled, cuda_dtype, algorithm, plan.workspace));

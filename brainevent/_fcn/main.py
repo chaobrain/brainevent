@@ -224,13 +224,10 @@ class FixedNumConn(DataRepresentation):
         if host_indices is None and is_concrete(self.indices):
             host_indices = np.asarray(jax.device_get(self.indices))
         _contains_invalid_indices(self.indices, upper_bound=self._a_shape[1], host_indices=host_indices)
-        if host_indices is not None:
-            host_indices = host_indices.astype(np.int32, copy=False)
+        # ``indptr`` is a host array, so preparation reads no device values.
         self.config = _prepare_csr_config(
             flat_indices, indptr, shape=self._a_shape,
             backend=backend, config=config, device=device,
-            host_structure=None if host_indices is None else (host_indices.reshape(-1), indptr),
-            matrix_metadata={'shape': self._a_shape, 'nnz': flat_indices.shape[0]},
         )
         self._ingest_buffers(buffers, device=device)
 
@@ -256,7 +253,7 @@ class FixedNumConn(DataRepresentation):
 
     def _ingest_buffers(self, buffers, *, device=None) -> None:
         """Store the legacy ``'csc'`` mirror and bind its scheduler plan."""
-        from brainevent._csr.config import _config_with_mirror
+        from brainevent._csr.config import _with_mirror_buffer
 
         for name, value in (buffers or {}).items():
             if value is None:
@@ -266,19 +263,9 @@ class FixedNumConn(DataRepresentation):
                     f"{type(self).__name__} does not support buffer {name!r}; the only "
                     f"known buffer is 'csc'."
                 )
-            mirror = tuple(value)
-            config = _config_with_mirror(
-                self.config, mirror, shape=self._a_shape[::-1],
-                device=device,
+            self.config, self._cache = _with_mirror_buffer(
+                self.config, self._cache, value, shape=self._a_shape[::-1], device=device,
             )
-            cache = StructureCache(mirror=mirror)
-            if (config.mirror is not None
-                    and config.mirror_max_row_nnz is not None):
-                cache.mirror_preparation = (
-                    config.mirror, config.mirror_max_row_nnz,
-                )
-            self._cache = cache
-            self.config = config
 
     def register_buffer(self, name, value=None):
         """Store the mirror under its legacy name ``'csc'`` (see :attr:`buffers`)."""
@@ -429,26 +416,13 @@ class FixedNumConn(DataRepresentation):
         ``jax.jit`` after traced structure changes or to prepare plans for a
         target device.
         """
-        if not is_concrete(self.indices):
-            raise ValueError('with_rebuilt_config requires concrete structure outside jax.jit.')
-        from brainevent._csr.config import (
-            _prepare_csr_config, _config_with_mirror,
-        )
+        from brainevent._csr.config import _rebuild_config
 
         flat_indices, indptr = _ell_csr_parts(self.indices)
-        config = _prepare_csr_config(
-            flat_indices, indptr, shape=self._a_shape, backend=self.backend,
-            config=self.config, device=device,
-            matrix_metadata={'shape': self._a_shape, 'nnz': flat_indices.shape[0]},
+        config = _rebuild_config(
+            self.config, flat_indices, indptr, shape=self._a_shape,
+            backend=self.backend, device=device, mirror=self._cache.mirror,
         )
-        if self._cache.mirror is not None:
-            mirror_indptr, mirror_indices, _ = self._cache.mirror
-            if not is_concrete(mirror_indices, mirror_indptr):
-                raise ValueError('with_rebuilt_config requires a concrete mirror outside jax.jit.')
-            config = _config_with_mirror(
-                config, self._cache.mirror, shape=self._a_shape[::-1],
-                device=device,
-            )
         return type(self)._from_parts(
             self.data, self.indices, shape=self.shape, backend=self.backend,
             cache=self._cache, config=config,
@@ -859,15 +833,13 @@ class FixedNumConn(DataRepresentation):
         expected = 3 + 3 * has_mirror
         if len(children) != expected:
             raise ValueError(f'{cls.__name__}.tree_unflatten expects {expected} leaves, got {len(children)}.')
+        from brainevent._csr.config import _bind_mirror_preparation
+
         mirror = tuple(children[3:]) if has_mirror else None
         cache = StructureCache(mirror=mirror)
         config = children[2]
-        if (mirror is not None and isinstance(config, CSRConfig)
-                and config.mirror is not None
-                and config.mirror_max_row_nnz is not None):
-            cache.mirror_preparation = (
-                config.mirror, config.mirror_max_row_nnz,
-            )
+        if mirror is not None:
+            _bind_mirror_preparation(cache, config)
         return cls._from_parts(
             children[0], children[1], shape=shape, backend=backend,
             cache=cache, config=config,

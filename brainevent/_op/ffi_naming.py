@@ -20,12 +20,14 @@ cross-process stability for that kernel only, never correctness).
 
 import hashlib
 import types
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
 
 __all__ = [
     'kernel_content_fingerprint',
+    'source_digest',
 ]
 
 # Cap on the number of bytes of ndarray closure content folded into the
@@ -255,3 +257,22 @@ def kernel_content_fingerprint(kernel: Any, extra: tuple = ()) -> Optional[str]:
         h.update(p)
         h.update(b'\x00')
     return h.hexdigest()[:16]
+
+
+def source_digest(*paths: Path) -> str:
+    """Return a short content hash of source files for a native module name.
+
+    A registered FFI target keeps its name for the life of the process, so a
+    module compiled from changed sources (or headers) needs a fresh name.
+
+    Parameters
+    ----------
+    *paths : pathlib.Path
+        Source and header files, in a deterministic order.
+
+    Returns
+    -------
+    str
+        The first 12 hex digits of the SHA-256 of the concatenated contents.
+    """
+    return hashlib.sha256(b''.join(Path(path).read_bytes() for path in paths)).hexdigest()[:12]

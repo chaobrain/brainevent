@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import operator
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -17,7 +16,9 @@ import jax.numpy as jnp
 import numpy as np
 from jax._src import core
 
-from brainevent._compatible_import import Tracer
+from brainevent._misc import _static_integer
+from brainevent._op.util import CUDA_VALUE_DTYPES
+from brainevent._structure import is_concrete
 from brainevent._tcsr.binary.combined.planner import (
     INT32_MAX,
     TARGET_BLOCKS,
@@ -131,14 +132,7 @@ def geometry_widths(target: int) -> tuple[int, ...]:
     This equals one above TARGET_BLOCKS, so the finite 0..TARGET_BLOCKS range
     includes every possible width, including the special zero-batch widths.
     """
-    if isinstance(target, (bool, np.bool_)):
-        raise ValueError('target must be an integer between 0 and INT32_MAX')
-    try:
-        target = operator.index(target)
-    except TypeError as exc:
-        raise ValueError('target must be an integer between 0 and INT32_MAX') from exc
-    if not 0 <= target <= INT32_MAX:
-        raise ValueError('target must be an integer between 0 and INT32_MAX')
+    target = _static_integer(target, 'target', 0, INT32_MAX)
     return tuple(sorted({tile_schedule(target, batch, size).tile_width
                          for size in (4, 8) for batch in range(TARGET_BLOCKS + 1)}))
 
@@ -195,18 +189,7 @@ def _tile_offsets(idx: np.ndarray, ptr: np.ndarray, target: int, width: int) -> 
 
 def _checked_widths(widths: Any) -> list[int]:
     """Deduplicate static tile widths that fit uint16 local targets."""
-    result = set()
-    for width in widths:
-        if isinstance(width, (bool, np.bool_)):
-            raise ValueError('widths must be positive integers no larger than 65536')
-        try:
-            width = operator.index(width)
-        except TypeError as exc:
-            raise ValueError('widths must be positive integers no larger than 65536') from exc
-        if not 0 < width <= 65536:
-            raise ValueError('widths must be positive integers no larger than 65536')
-        result.add(width)
-    return sorted(result)
+    return sorted({_static_integer(width, 'widths', 1, 65536) for width in widths})
 
 
 def build_tile_geometries(
@@ -258,19 +241,14 @@ def build_tile_geometries(
     # The public compile-time context enables eager constant folding without
     # replacing the active trace in JAX >= 0.9. Concrete closures can prepare
     # their mirror once there; dynamic matrix arguments must never escape.
-    if (any(isinstance(a, Tracer) for a in (indices, indptr))
+    if (not is_concrete(indices, indptr)
             or not (core.trace_ctx.is_top_level() or jax.config.eager_constant_folding)):
         raise ValueError('TCSR geometry preparation must run outside JIT or in explicit compile-time evaluation.')
     if not isinstance(transpose, (bool, np.bool_)):
         raise ValueError('transpose must be True or False')
-    if len(shape) != 2 or any(isinstance(s, (bool, np.bool_)) for s in shape):
+    if len(shape) != 2:
         raise ValueError('shape must contain two nonnegative int32 dimensions')
-    try:
-        shape = operator.index(shape[0]), operator.index(shape[1])
-    except TypeError as exc:
-        raise ValueError('shape must contain two nonnegative int32 dimensions') from exc
-    if any(s < 0 or s > INT32_MAX for s in shape):
-        raise ValueError('shape must contain two nonnegative int32 dimensions')
+    shape = _static_integer(shape[0], 'shape', 0, INT32_MAX), _static_integer(shape[1], 'shape', 0, INT32_MAX)
     source, target = shape if transpose else shape[::-1]
     widths = _checked_widths(geometry_widths(target) if widths is None else widths)
     idx, ptr = (np.asarray(jax.device_get(a)) for a in (indices, indptr))
@@ -316,7 +294,7 @@ def ensure_preparation_context(*arrays: Any) -> None:
     ValueError
         If called while tracing or supplied a traced structure array.
     """
-    if not core.trace_ctx.is_top_level() or any(isinstance(a, Tracer) for a in arrays):
+    if not core.trace_ctx.is_top_level() or not is_concrete(*arrays):
         raise ValueError('TCSR sorting and tile preparation must run outside JIT with concrete structure.')
 
 
@@ -341,17 +319,8 @@ def validate_preparation(batch: Any, value_dtype: Any) -> int:
         Called while tracing, or batch/dtype is unsupported.
     """
     ensure_preparation_context()
-    if isinstance(batch, (bool, np.bool_)):
-        raise ValueError('batch must be a static integer between 0 and 65535')
-    try:
-        batch = operator.index(batch)
-    except TypeError as exc:
-        raise ValueError('batch must be a static integer between 0 and 65535') from exc
-    if not 0 <= batch <= 65535:
-        raise ValueError('invalid dimensions: batch must be between 0 and 65535')
-    if np.dtype(value_dtype) not in tuple(np.dtype(t) for t in (
-        jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64,
-    )):
+    batch = _static_integer(batch, 'batch', 0, 65535)
+    if np.dtype(value_dtype) not in CUDA_VALUE_DTYPES:
         raise ValueError('values must be f16, bf16, f32 or f64')
     return batch
 

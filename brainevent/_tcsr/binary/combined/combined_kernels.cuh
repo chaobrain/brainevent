@@ -4,7 +4,8 @@
 
 #ifndef COMBINED_KERNELS_CUH
 #define COMBINED_KERNELS_CUH
-// CUDA/C++ API. Link combined_spmm_binary.cu; define BE_SPMM_STANDALONE for native-only builds.
+// CUDA/C++ API, defined in combined_impl.cuh. Link combined_spmm_binary.cu (or the
+// self-contained col_major/combined_spmm_col_major_binary.cu).
 #include "brainevent/cuda_traits.cuh"
 #include "planner.h"
 #include <cstddef>

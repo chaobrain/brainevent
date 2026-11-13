@@ -33,13 +33,13 @@ _facade_mm = importlib.import_module('brainevent._sddmm._mm.sddmm')
 def test_registry_calls_adapt_csr_operands_and_select_leaf(monkeypatch, name, batch, transpose, weighted):
     calls = []
     for leaf, module in [('mv', _facade_mv), ('mm', _facade_mm)]:
-        original = module.sampled
+        original = module._jax_kernel
 
         def record(*args, _leaf=leaf, _fn=original, **kwargs):
             calls.append(_leaf)
             return _fn(*args, **kwargs)
 
-        monkeypatch.setattr(module, 'sampled', record)
+        monkeypatch.setattr(module, '_jax_kernel', record)
     indices = jnp.array([2, 0, 1, 1], jnp.int32)
     indptr = jnp.array([0, 2, 2, 4], jnp.int32)
     rows = jnp.array([0, 0, 2, 2], jnp.int32)

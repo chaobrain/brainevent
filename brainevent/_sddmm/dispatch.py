@@ -36,12 +36,13 @@ per-primitive backend choices. TCSR-specific adapters remain separate.
 """
 
 from functools import partial
-from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
 
-from brainevent._sddmm._common import Mode, VALUE_DTYPES, _CSRBackend
+from brainevent._misc import _csr_to_coo
+from brainevent._op.util import CUDA_VALUE_DTYPES
+from brainevent._sddmm._common import Mode, _CSRBackend, _cusparse_sampled, check_jax_backend
 from brainevent._sddmm._mv import sddmv as mv_backend
 from brainevent._sddmm._mm import sddmm as mm_backend
 
@@ -49,7 +50,6 @@ from brainevent._sddmm._mm import sddmm as mm_backend
 def sddmm(
     A: jax.Array, B: jax.Array, indices: jax.Array, indptr: jax.Array | None = None,
     *, mode: Mode = 'float', transpose: bool = True, backend: str | None | _CSRBackend = None,
-    config=None,
 ) -> jax.Array:
     """Sample a dense product through one MV/MM dispatcher.
 
@@ -75,8 +75,11 @@ def sddmm(
         In event modes, ``True`` identifies ``A`` as events and ``B.T`` as
         output cotangents; ``False`` identifies ``B.T`` as events and ``A`` as
         cotangents. It does not transpose the ordinary product ``A @ B``.
-    backend : str or None, optional
-        Forwarded to the selected leaf. ``jax_raw`` executes differentiable
+    backend : str, None or _CSRBackend, optional
+        Forwarded to the selected leaf. A ``_CSRBackend`` carries a CSR
+        consumer's forward backend and scheduler snapshot; ``None`` uses
+        default scheduler constants without reading persisted configuration.
+        ``jax_raw`` executes differentiable
         JAX directly for both CSR and COO inputs in either leaf.
         GPU auto uses hybrid CUDA for supported transposed CSR event products
         in both leaves. Explicit ``cuda_raw`` requires this direction and CSR
@@ -86,10 +89,6 @@ def sddmm(
         more slots than rows times columns are unsupported. Nonfinite event
         cotangents use exact JAX selection; weighted activity is tested after
         casting to the cotangent dtype.
-    config : CSRConfig or None, optional
-        Explicit CSR scheduler snapshot for the vector leaf. ``None`` uses
-        default constants without reading persisted configuration. Matrix
-        sampled products retain their independent plan.
 
     Returns
     -------
@@ -156,30 +155,57 @@ def sddmm(
             raise ValueError('int32 indptr cannot address more than INT32_MAX slots')
     if mode != 'float':
         events, ct = (A, B) if transpose else (B, A)
-        if ct.dtype not in VALUE_DTYPES:
+        if ct.dtype not in CUDA_VALUE_DTYPES:
             raise TypeError('ct must be float16, bfloat16, float32 or float64')
         if not (jnp.issubdtype(events.dtype, jnp.bool_) or jnp.issubdtype(events.dtype, jnp.integer)
                 or jnp.issubdtype(events.dtype, jnp.floating)):
             raise TypeError('events must be boolean, integer or floating')
-    config_spec = None if config is None else config.kernel_args()[0]
     if isinstance(backend, _CSRBackend):
-        if config_spec is not None:
-            backend = replace(backend, config_spec=config_spec)
         return _csr_sampled(A, B, indices, indptr, mode, transpose, backend)
     if indptr is not None and backend != 'jax_raw' and (mode != 'float' or backend == 'cusparse'):
         # This call binds a native primitive or the cuSPARSE FFI.
-        return _native_sampled(A, B, indices, indptr, mode, transpose, backend, config_spec)
-    return _sampled(A, B, indices, indptr, mode, transpose, backend, config_spec=config_spec)
+        return _native_sampled(A, B, indices, indptr, mode, transpose, backend, None)
+    return _sampled(A, B, indices, indptr, mode, transpose, backend)
+
+
+def _leaf(A):
+    """Batch one uses the vector leaf; every other size the matrix leaf."""
+    return mv_backend if A.shape[1] == 1 else mm_backend
 
 
 def _sampled(A, B, indices, indptr, mode, transpose, backend, *, config_spec=None):
-    """Choose the leaf after the dispatcher has normalized the operands."""
-    if A.shape[1] == 1:
-        return mv_backend.sampled(A[:, 0], B[0, :], indices, indptr,
-                                   mode=mode, transpose=transpose, backend=backend,
-                                   config_spec=config_spec)
-    return mm_backend.sampled(A, B, indices, indptr,
-                               mode=mode, transpose=transpose, backend=backend)
+    """Execute a normalized ``A (rows, batch)``, ``B (batch, cols)`` product on its leaf.
+
+    CSR event products bind the leaf primitive unless ``jax_raw`` is explicit,
+    so explicit JAX calls stay differentiable. Other event products run the
+    leaf's JAX kernel; ordinary products sample at COO coordinates.
+    """
+    check_jax_backend(backend)
+    leaf = _leaf(A)
+    if backend == 'cusparse':
+        if indptr is None:
+            raise NotImplementedError('cusparse sampled products require CSR indices and indptr')
+        if mode == 'float':
+            return _cusparse_sampled(A, B, indices, indptr, mode=mode, transpose=transpose)
+    if mode != 'float':
+        events, ct = (A, B.T) if transpose else (B.T, A)
+        if leaf is mv_backend:
+            events, ct = events[:, 0], ct[:, 0]
+        weighted = mode == 'weighted'
+        if indptr is not None and backend != 'jax_raw':
+            if backend == 'cuda_raw' and not transpose:
+                raise ValueError(f'cuda_raw {leaf.NAME} requires transpose=True; use jax_raw or auto')
+            return leaf.bind_events(events, ct, indices, indptr, transpose=transpose,
+                                    weighted=weighted, backend=backend, config_spec=config_spec)
+        if backend != 'cuda_raw':
+            return leaf._jax_kernel(events, ct, indices, indptr, transpose=transpose, weighted=weighted)[0]
+    if backend == 'cuda_raw':
+        raise NotImplementedError(
+            f'{leaf.LABEL} CUDA supports transposed CSR event products; use backend="jax_raw"')
+    if indptr is not None:
+        rows, cols = _csr_to_coo(indices, indptr)
+        indices = jnp.stack([rows, cols], axis=1)
+    return leaf.float_product(A, B, indices)
 
 
 def _csr_sampled(A, B, indices, indptr, mode, transpose, source):
@@ -190,8 +216,7 @@ def _csr_sampled(A, B, indices, indptr, mode, transpose, source):
     Automatic requests resolve the source CSR primitive on the actual lowering
     platform, including its cuSPARSE choice.
     """
-    native = (mode != 'float' and transpose and
-              (A.shape[1] == 1 or (A.shape[1] <= 65535 and B.shape[1] <= 2**31 - 1)))
+    native = mode != 'float' and transpose and _leaf(A).native_dims((B.shape[1], A.shape[1]))
     if source.requested == 'cusparse':
         backend = 'cusparse'
     elif source.requested is None and mode != 'float':
@@ -199,8 +224,7 @@ def _csr_sampled(A, B, indices, indptr, mode, transpose, source):
     elif native and source.requested == 'cuda_raw':
         backend = 'cuda_raw'
     else:
-        return _sampled(A, B, indices, indptr, mode, transpose, 'jax_raw',
-                        config_spec=source.config_spec)
+        return _sampled(A, B, indices, indptr, mode, transpose, 'jax_raw')
     return _native_sampled(A, B, indices, indptr, mode, transpose, backend, source.config_spec)
 
 
@@ -222,8 +246,7 @@ def _native_sampled_jvp(mode, transpose, backend, config_spec, primals, tangents
     A_dot, B_dot, _, _ = tangents
     primal = _native_sampled(A, B, indices, indptr, mode, transpose, backend, config_spec)
     _, tangent = jax.jvp(
-        lambda a, b: _sampled(a, b, indices, indptr, mode, transpose, 'jax_raw',
-                             config_spec=config_spec),
+        lambda a, b: _sampled(a, b, indices, indptr, mode, transpose, 'jax_raw'),
         (A, B), (A_dot, B_dot),
     )
     return primal, tangent

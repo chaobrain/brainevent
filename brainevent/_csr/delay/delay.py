@@ -33,14 +33,15 @@ from jax.interpreters import ad
 from brainevent._misc import _check_csr_cuda_structure_dtypes, _check_csr_structure_dtypes
 from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_file, numba_kernel
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._op.util import cuda_event_abi, dtype_suffix, event_active, numba_event_mask, select_active
+from brainevent._op.util import (
+    CUDA_VALUE_DTYPES, cuda_event_abi, dtype_suffix, event_active, numba_event_mask, select_active,
+)
 
 __all__ = [
     'csr_delay_deliver_layout_p',
     'csr_delay_deliver_layout_p_call',
 ]
 
-_RING_DTYPES = tuple(jnp.dtype(d) for d in (jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64))
 _NUMBA_DTYPES = (jnp.dtype(jnp.float32), jnp.dtype(jnp.float64))
 
 
@@ -382,7 +383,7 @@ def csr_delay_deliver_layout_p_call(
     ring = jnp.asarray(ring)
     if ring.ndim != 2 or ring.shape[1] != n_post:
         raise ValueError(f'ring must have shape (L, {n_post}); got {ring.shape}.')
-    if ring.dtype not in _RING_DTYPES:
+    if ring.dtype not in CUDA_VALUE_DTYPES:
         raise TypeError(f'ring dtype must be float16/bfloat16/float32/float64; got {ring.dtype}.')
     n_slots = ring.shape[0]
 

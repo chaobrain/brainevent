@@ -4,6 +4,7 @@
 
 import functools
 import inspect
+import operator
 from typing import Tuple, NamedTuple, Sequence, Union, Callable, Optional
 
 import brainunit as u
@@ -288,6 +289,43 @@ def _resolve_indptr_dtype(nse, requested="auto"):
     raise ValueError(
         f"indptr_dtype must be 'auto', int32, or int64; got {requested!r}."
     )
+
+
+def _static_integer(value, name: str, minimum: int = 0, maximum: Optional[int] = None) -> int:
+    """Return a static Python integer, rejecting bools, tracers and out-of-range values.
+
+    Parameters
+    ----------
+    value : int-like
+        Value accepted by :func:`operator.index`; ``bool`` is rejected.
+    name : str
+        Name used in error messages.
+    minimum : int, optional
+        Smallest accepted value.
+    maximum : int or None, optional
+        Largest accepted value; ``None`` means unbounded.
+
+    Returns
+    -------
+    int
+        The validated integer.
+
+    Raises
+    ------
+    ValueError
+        ``value`` is a bool, not integer-like, or out of range.
+    """
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f'{name} must be an integer')
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f'{name} must be an integer') from exc
+    if result < minimum:
+        raise ValueError(f'{name} must be >= {minimum}')
+    if maximum is not None and result > maximum:
+        raise ValueError(f'{name} must be <= {maximum}')
+    return result
 
 
 def _require_jax_x64_for_int64(dtype, context):

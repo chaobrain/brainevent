@@ -67,6 +67,8 @@
 #include "cuda_common.h"
 #include "brainevent/common.h"
 #include "brainevent/dtypes.h"
+#include "brainevent/hybrid_mv_schedule.cuh"
+#include "brainevent/op_traits.cuh"
 #include "xla/ffi/api/ffi.h"
 
 #include <cstdio>
@@ -87,137 +89,15 @@ namespace ffi = xla::ffi;
     } while (0)
 #endif
 
-#ifndef BE_HYBRID_BLOCK_SIZE
-#define BE_HYBRID_BLOCK_SIZE 512
-#endif
-
-#ifndef BE_HYBRID_FIXED_SCATTER_BLOCKS
-#define BE_HYBRID_FIXED_SCATTER_BLOCKS 1024
-#endif
-
-#ifndef BE_HYBRID_TPR_THRESHOLD
-#define BE_HYBRID_TPR_THRESHOLD 128
-#endif
-
-#ifndef BE_HYBRID_TASK_NNZ
-#define BE_HYBRID_TASK_NNZ 512
-#endif
-
 namespace
 {
+    using namespace hybrid_mv;
 
-    constexpr int kBlockSize = BE_HYBRID_BLOCK_SIZE;
-    constexpr int kFixedScatterBlocks = BE_HYBRID_FIXED_SCATTER_BLOCKS;
-    constexpr int kTprThreshold = BE_HYBRID_TPR_THRESHOLD;
-    constexpr int kTaskNnz = BE_HYBRID_TASK_NNZ;
-    constexpr int kStatusCountIndex = 0;
-    constexpr int kStatusOverflowIndex = 1;
-    constexpr int64_t kInt32Max = 2147483647LL;
-
-    static_assert(kBlockSize > 0, "BE_HYBRID_BLOCK_SIZE must be positive");
-    static_assert(kBlockSize % 32 == 0, "BE_HYBRID_BLOCK_SIZE must be a multiple of 32");
-    static_assert(kBlockSize <= 1024, "BE_HYBRID_BLOCK_SIZE must not exceed 1024");
-    static_assert(kFixedScatterBlocks > 0, "BE_HYBRID_FIXED_SCATTER_BLOCKS must be positive");
-    static_assert(kTprThreshold >= 0, "BE_HYBRID_TPR_THRESHOLD must be non-negative");
-    static_assert(kTaskNnz > 0, "BE_HYBRID_TASK_NNZ must be positive");
-
+    // Weights are read through op_traits::ValueTraits<WeightT>; every edge adds
+    // into the accumulator HybridOutT (float for f16/bf16, through
+    // op_traits::AccTraits), so the caller rounds each finished sum once.
     template <typename WeightT>
-    struct HybridWeightTraits;
-
-    template <>
-    struct HybridWeightTraits<float>
-    {
-        using AccT = float;
-        static constexpr BE::DType dtype = BE::DType::Float32;
-        static constexpr BE::DType out_dtype = BE::DType::Float32;
-        __device__ static AccT read(float value) { return READ_F32(value); }
-        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f32(addr, value); }
-    };
-
-    template <>
-    struct HybridWeightTraits<double>
-    {
-        using AccT = double;
-        static constexpr BE::DType dtype = BE::DType::Float64;
-        static constexpr BE::DType out_dtype = BE::DType::Float64;
-        __device__ static AccT read(double value) { return READ_F64(value); }
-        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f64(addr, value); }
-    };
-
-    template <>
-    struct HybridWeightTraits<__half>
-    {
-        using AccT = float;
-        static constexpr BE::DType dtype = BE::DType::Float16;
-        static constexpr BE::DType out_dtype = BE::DType::Float32;
-        __device__ static AccT read(__half value) { return READ_F16(value); }
-        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f32(addr, value); }
-    };
-
-    template <>
-    struct HybridWeightTraits<__nv_bfloat16>
-    {
-        using AccT = float;
-        static constexpr BE::DType dtype = BE::DType::BFloat16;
-        static constexpr BE::DType out_dtype = BE::DType::Float32;
-        __device__ static AccT read(__nv_bfloat16 value) { return READ_BF16(value); }
-        __device__ static void atomic_add(AccT *addr, AccT value) { atomic_add_f32(addr, value); }
-    };
-
-    // Output (and accumulator) element type: float for f16/bf16, so each
-    // edge adds in float32 and the caller rounds the sum once.
-    template <typename WeightT>
-    using HybridOutT = typename HybridWeightTraits<WeightT>::AccT;
-
-    template <typename EventT>
-    struct HybridEventTraits;
-
-    template <>
-    struct HybridEventTraits<int8_t>
-    {
-        static constexpr BE::DType dtype = BE::DType::Bool;
-        __device__ static bool active(int8_t value) { return IS_ACTIVE_BOOL(value); }
-    };
-
-    template <>
-    struct HybridEventTraits<float>
-    {
-        static constexpr BE::DType dtype = BE::DType::Float32;
-        __device__ static bool active(float value) { return IS_ACTIVE_FLOAT(value); }
-    };
-
-    // dtype of the event buffer: the binary event type, or the weight dtype for
-    // weighted (``_wv``) kernels, which read the event value as a scale.
-    template <typename WeightT, typename EventT, bool Weighted>
-    struct HybridEventDType
-    {
-        static constexpr BE::DType value = HybridEventTraits<EventT>::dtype;
-    };
-
-    template <typename WeightT, typename EventT>
-    struct HybridEventDType<WeightT, EventT, true>
-    {
-        static constexpr BE::DType value = HybridWeightTraits<WeightT>::dtype;
-    };
-
-    template <typename OffsetT>
-    __device__ __forceinline__ int32_t TaskChunksForRowNnz(
-        OffsetT nnz,
-        int32_t *__restrict__ status)
-    {
-        if (nnz <= static_cast<OffsetT>(kTprThreshold))
-        {
-            return 0;
-        }
-        OffsetT chunks =
-            (nnz + static_cast<OffsetT>(kTaskNnz - 1)) / static_cast<OffsetT>(kTaskNnz);
-        if (static_cast<int64_t>(chunks) > kInt32Max)
-        {
-            atomicExch(&status[kStatusOverflowIndex], 1);
-            return 0;
-        }
-        return static_cast<int32_t>(chunks);
-    }
+    using HybridOutT = op_traits::AccType<WeightT>;
 
     template <bool Weighted, typename WeightT, typename IndexT, typename OffsetT>
     __device__ __forceinline__ void ScatterRange(
@@ -226,10 +106,10 @@ namespace
         HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
-        typename HybridWeightTraits<WeightT>::AccT scale)
+        HybridOutT<WeightT> scale)
     {
-        using WeightTraits = HybridWeightTraits<WeightT>;
-        using AccT = typename WeightTraits::AccT;
+        using WeightTraits = op_traits::ValueTraits<WeightT>;
+        using AccT = HybridOutT<WeightT>;
         for (OffsetT j = begin + static_cast<OffsetT>(threadIdx.x);
              j < end;
              j += static_cast<OffsetT>(blockDim.x))
@@ -240,7 +120,7 @@ namespace
             {
                 w *= scale;
             }
-            WeightTraits::atomic_add(&output[idx], w);
+            op_traits::AccTraits<WeightT>::atomic_add(&output[idx], w);
         }
     }
 
@@ -251,10 +131,10 @@ namespace
         HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
-        typename HybridWeightTraits<WeightT>::AccT scale)
+        HybridOutT<WeightT> scale)
     {
-        using WeightTraits = HybridWeightTraits<WeightT>;
-        using AccT = typename WeightTraits::AccT;
+        using WeightTraits = op_traits::ValueTraits<WeightT>;
+        using AccT = HybridOutT<WeightT>;
         for (OffsetT j = begin; j < end; ++j)
         {
             IndexT idx = __ldg(&indices[j]);
@@ -263,7 +143,7 @@ namespace
             {
                 w *= scale;
             }
-            WeightTraits::atomic_add(&output[idx], w);
+            op_traits::AccTraits<WeightT>::atomic_add(&output[idx], w);
         }
     }
 
@@ -274,10 +154,10 @@ namespace
         HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
-        typename HybridWeightTraits<WeightT>::AccT scale)
+        HybridOutT<WeightT> scale)
     {
-        using WeightTraits = HybridWeightTraits<WeightT>;
-        using AccT = typename WeightTraits::AccT;
+        using WeightTraits = op_traits::ValueTraits<WeightT>;
+        using AccT = HybridOutT<WeightT>;
         AccT w = WeightTraits::read(__ldg(&weights[0]));
         if constexpr (Weighted)
         {
@@ -288,7 +168,7 @@ namespace
              j += static_cast<OffsetT>(blockDim.x))
         {
             IndexT idx = __ldg(&indices[j]);
-            WeightTraits::atomic_add(&output[idx], w);
+            op_traits::AccTraits<WeightT>::atomic_add(&output[idx], w);
         }
     }
 
@@ -299,10 +179,10 @@ namespace
         HybridOutT<WeightT> *__restrict__ output,
         OffsetT begin,
         OffsetT end,
-        typename HybridWeightTraits<WeightT>::AccT scale)
+        HybridOutT<WeightT> scale)
     {
-        using WeightTraits = HybridWeightTraits<WeightT>;
-        using AccT = typename WeightTraits::AccT;
+        using WeightTraits = op_traits::ValueTraits<WeightT>;
+        using AccT = HybridOutT<WeightT>;
         AccT w = WeightTraits::read(__ldg(&weights[0]));
         if constexpr (Weighted)
         {
@@ -311,7 +191,7 @@ namespace
         for (OffsetT j = begin; j < end; ++j)
         {
             IndexT idx = __ldg(&indices[j]);
-            WeightTraits::atomic_add(&output[idx], w);
+            op_traits::AccTraits<WeightT>::atomic_add(&output[idx], w);
         }
     }
 
@@ -329,7 +209,7 @@ namespace
         int task_capacity)
     {
         int row = blockIdx.x * blockDim.x + threadIdx.x;
-        typename HybridWeightTraits<WeightT>::AccT scale = 1;
+        HybridOutT<WeightT> scale = 1;
         if constexpr (Weighted)
         {
             // Weighted events (buffer in the weight dtype): x != 0 is active
@@ -338,7 +218,7 @@ namespace
             {
                 return;
             }
-            scale = HybridWeightTraits<WeightT>::read(__ldg(&vector[row]));
+            scale = op_traits::ValueTraits<WeightT>::read(__ldg(&vector[row]));
             if (scale == 0)
             {
                 return;
@@ -346,7 +226,7 @@ namespace
         }
         else
         {
-            if (row >= m || !HybridEventTraits<EventT>::active(__ldg(&vector[row])))
+            if (row >= m || !op_traits::EventTraits<EventT>::active(__ldg(&vector[row])))
             {
                 return;
             }
@@ -361,7 +241,7 @@ namespace
             return;
         }
 
-        int32_t n_chunks = TaskChunksForRowNnz(nnz, status);
+        int32_t n_chunks = TaskChunks(nnz, status);
         if (n_chunks <= 0)
         {
             // Chunk count beyond int32: keep every edge on this thread.
@@ -426,7 +306,7 @@ namespace
         {
             OffsetT begin = __ldg(&task_begin[task]);
             OffsetT end;
-            typename HybridWeightTraits<WeightT>::AccT scale = 1;
+            HybridOutT<WeightT> scale = 1;
             if constexpr (Weighted)
             {
                 // task_end holds the row of a weighted task (see the extract kernel).
@@ -437,7 +317,7 @@ namespace
                 {
                     end = row_end;
                 }
-                scale = HybridWeightTraits<WeightT>::read(__ldg(&vector[row]));
+                scale = op_traits::ValueTraits<WeightT>::read(__ldg(&vector[row]));
             }
             else
             {
@@ -461,7 +341,7 @@ namespace
         int task_capacity)
     {
         int row = blockIdx.x * blockDim.x + threadIdx.x;
-        typename HybridWeightTraits<WeightT>::AccT scale = 1;
+        HybridOutT<WeightT> scale = 1;
         if constexpr (Weighted)
         {
             // Weighted events (buffer in the weight dtype): x != 0 is active
@@ -470,7 +350,7 @@ namespace
             {
                 return;
             }
-            scale = HybridWeightTraits<WeightT>::read(__ldg(&vector[row]));
+            scale = op_traits::ValueTraits<WeightT>::read(__ldg(&vector[row]));
             if (scale == 0)
             {
                 return;
@@ -478,7 +358,7 @@ namespace
         }
         else
         {
-            if (row >= m || !HybridEventTraits<EventT>::active(__ldg(&vector[row])))
+            if (row >= m || !op_traits::EventTraits<EventT>::active(__ldg(&vector[row])))
             {
                 return;
             }
@@ -493,7 +373,7 @@ namespace
             return;
         }
 
-        int32_t n_chunks = TaskChunksForRowNnz(nnz, status);
+        int32_t n_chunks = TaskChunks(nnz, status);
         if (n_chunks <= 0)
         {
             // Chunk count beyond int32: keep every edge on this thread.
@@ -558,7 +438,7 @@ namespace
         {
             OffsetT begin = __ldg(&task_begin[task]);
             OffsetT end;
-            typename HybridWeightTraits<WeightT>::AccT scale = 1;
+            HybridOutT<WeightT> scale = 1;
             if constexpr (Weighted)
             {
                 // task_end holds the row of a weighted task (see the extract kernel).
@@ -569,7 +449,7 @@ namespace
                 {
                     end = row_end;
                 }
-                scale = HybridWeightTraits<WeightT>::read(__ldg(&vector[row]));
+                scale = op_traits::ValueTraits<WeightT>::read(__ldg(&vector[row]));
             }
             else
             {
@@ -590,11 +470,6 @@ namespace
     static ffi::Error InternalMessage(const char *message)
     {
         return ffi::Error::Internal(message);
-    }
-
-    static bool IsSignedIndexDType(BE::DType dtype)
-    {
-        return dtype == BE::DType::Int32 || dtype == BE::DType::Int64;
     }
 
     template <typename WeightT, typename EventT, typename IndexT, typename OffsetT, bool Weighted>
@@ -785,16 +660,16 @@ namespace
         int64_t stream)
     {
         BE_CSRMV_WAT_HYBRID_CHECK(
-            weights.dtype() == HybridWeightTraits<WeightT>::dtype,
+            weights.dtype() == op_traits::ValueTraits<WeightT>::dtype,
             (std::string(name) + " expects matching weights dtype").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            IsSignedIndexDType(indices.dtype()),
+            op_traits::is_signed_index(indices.dtype()),
             (std::string(name) + " expects indices=s32/s64").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            IsSignedIndexDType(indptr.dtype()),
+            op_traits::is_signed_index(indptr.dtype()),
             (std::string(name) + " expects indptr=s32/s64").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            (vector.dtype() == HybridEventDType<WeightT, EventT, Weighted>::value),
+            (vector.dtype() == op_traits::event_dtype<WeightT, EventT, Weighted>()),
             (std::string(name) + " expects matching vector dtype").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
             task_begin_scratch.dtype() == indptr.dtype() &&
@@ -805,7 +680,7 @@ namespace
                 status_output.dtype() == BE::DType::Int32,
             (std::string(name) + " expects status=s32 and task scratch dtype to match indptr").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            output.dtype() == HybridWeightTraits<WeightT>::out_dtype,
+            output.dtype() == op_traits::AccTraits<WeightT>::dtype,
             (std::string(name) + " expects a float32 (f16/bf16/f32) or float64 accumulator output").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
             weights.ndim() == 1 && indices.ndim() == 1 &&
@@ -880,16 +755,16 @@ namespace
         int64_t stream)
     {
         BE_CSRMV_WAT_HYBRID_CHECK(
-            weights.dtype() == HybridWeightTraits<WeightT>::dtype && weights.numel() == 1,
+            weights.dtype() == op_traits::ValueTraits<WeightT>::dtype && weights.numel() == 1,
             (std::string(name) + " expects matching weights dtype and length 1").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            IsSignedIndexDType(indices.dtype()),
+            op_traits::is_signed_index(indices.dtype()),
             (std::string(name) + " expects indices=s32/s64").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            IsSignedIndexDType(indptr.dtype()),
+            op_traits::is_signed_index(indptr.dtype()),
             (std::string(name) + " expects indptr=s32/s64").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            (vector.dtype() == HybridEventDType<WeightT, EventT, Weighted>::value),
+            (vector.dtype() == op_traits::event_dtype<WeightT, EventT, Weighted>()),
             (std::string(name) + " expects matching vector dtype").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
             task_begin_scratch.dtype() == indptr.dtype() &&
@@ -900,7 +775,7 @@ namespace
                 status_output.dtype() == BE::DType::Int32,
             (std::string(name) + " expects status=s32 and task scratch dtype to match indptr").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
-            output.dtype() == HybridWeightTraits<WeightT>::out_dtype,
+            output.dtype() == op_traits::AccTraits<WeightT>::dtype,
             (std::string(name) + " expects a float32 (f16/bf16/f32) or float64 accumulator output").c_str());
         BE_CSRMV_WAT_HYBRID_CHECK(
             weights.ndim() == 1 && indices.ndim() == 1 &&

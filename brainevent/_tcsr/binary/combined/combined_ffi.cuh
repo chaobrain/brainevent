@@ -41,20 +41,12 @@ namespace
              active.numel() >= batch * rows && workspace.numel() * sizeof(uint32_t) >= combined::workspace_bytes(rows, batch))
         << "combined: invalid metadata or scratch size";
     const auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
-    if (offsets.dtype() == BE::DType::Int32)
-    {
-      constexpr auto launch = combined_launcher<V, E, int32_t, Homo>();
+    BE_DISPATCH_SIGNED_INDEX(offsets.dtype(), O, {
+      constexpr auto launch = combined_launcher<V, E, O, Homo>();
       BE_CUDA_CHECK((launch(values.data_ptr<const V>(), local.data_ptr<const uint16_t>(),
-                            offsets.data_ptr<const int32_t>(), events.data_ptr<const E>(), output.data_ptr<V>(),
+                            offsets.data_ptr<const O>(), events.data_ptr<const E>(), output.data_ptr<V>(),
                             active.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(), plan, cuda_stream)));
-    }
-    else
-    {
-      constexpr auto launch = combined_launcher<V, E, int64_t, Homo>();
-      BE_CUDA_CHECK((launch(values.data_ptr<const V>(), local.data_ptr<const uint16_t>(),
-                            offsets.data_ptr<const int64_t>(), events.data_ptr<const E>(), output.data_ptr<V>(),
-                            active.data_ptr<int32_t>(), workspace.data_ptr<uint32_t>(), plan, cuda_stream)));
-    }
+    });
   }
 }
 #endif

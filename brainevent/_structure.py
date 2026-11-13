@@ -70,34 +70,14 @@ class StructureCache:
         self,
         mirror: Optional[Tuple] = None,
         diag_plan: Optional[Tuple] = None,
-        tile_plans: Optional[Mapping[Tuple, Any]] = None,
         *,
         tile_geometries: Optional[Mapping[Tuple, Any]] = None,
         mirror_preparation: Optional[Tuple[Any, int]] = None,
     ):
-        if tile_plans is not None and tile_geometries is not None:
-            raise ValueError('Supply only tile_geometries or the legacy tile_plans alias.')
         self.mirror = None if mirror is None else tuple(mirror)
         self.mirror_preparation = mirror_preparation
         self.diag_plan = None if diag_plan is None else tuple(diag_plan)
-        entries = tile_geometries if tile_geometries is not None else tile_plans
-        self.tile_geometries = {} if entries is None else dict(entries)
-
-    @property
-    def tile_plans(self) -> dict:
-        """Return the legacy alias for the single tile-geometry dictionary.
-
-        Returns
-        -------
-        dict
-            The same object as :attr:`tile_geometries`; no second storage is
-            maintained for the legacy name.
-        """
-        return self.tile_geometries
-
-    @tile_plans.setter
-    def tile_plans(self, entries: Mapping[Tuple, Any]) -> None:
-        self.tile_geometries = dict(entries)
+        self.tile_geometries = {} if tile_geometries is None else dict(tile_geometries)
 
     def copy(self) -> 'StructureCache':
         """Copy cache containers while sharing immutable plan arrays.

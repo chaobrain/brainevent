@@ -7,6 +7,7 @@
 import hashlib
 import importlib
 from contextlib import contextmanager
+from functools import lru_cache
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ import numpy as np
 import pytest
 
 import brainevent
+import brainevent._csr._support.binary as support_mod
 import brainevent._csr.binary.binary as binary_mod
 import brainevent._csr.binary.binary_indexed as binary_indexed_mod
 from brainevent import BinaryArray, FixedNumPerPre
@@ -70,6 +72,18 @@ def _jax_x64_enabled():
     finally:
         jax.config.update("jax_enable_x64", old_x64)
 
+
+
+def _patch_cuda_loaders(monkeypatch, loader):
+    """Route every CSR binary CUDA loader through ``loader`` with an isolated MM module cache."""
+    for module in (binary_mod, binary_indexed_mod, support_mod):
+        monkeypatch.setattr(module, 'load_cuda_file', loader)
+    monkeypatch.setattr(binary_mod, '_load_hybrid_mm', lru_cache(maxsize=None)(binary_mod._load_hybrid_mm.__wrapped__))
+
+
+def _eqn_plan(eqn):
+    """Hybrid MM launch plan the CUDA lowering derives for a CSR MM equation."""
+    return binary_mod._hybrid_mm_plan(eqn.params, eqn.invars[-2].aval, eqn.invars[0].aval)
 
 def _structure(rng, m, k, nse):
     indices = rng.integers(0, k, size=nse).astype(np.int32)
@@ -370,8 +384,7 @@ def test_binary_csrmm_indexed_p_call_returns_one_output_without_mv_workspace():
 
     eqn = _kernel_eqn(binary_csrmm_indexed_p, call, weights, matrix)
     assert (len(eqn.invars), len(eqn.outvars)) == (6, 1)
-    assert not {'task_capacity', 'max_row_nnz'} & eqn.params.keys()
-    assert eqn.params['call_plan'] is None
+    assert not {'task_capacity', 'max_row_nnz', 'call_plan'} & eqn.params.keys()
 
 
 @pytest.mark.parametrize(
@@ -825,9 +838,8 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
     ffi_calls = []
     load_calls = []
 
-    monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
+    _patch_cuda_loaders(monkeypatch, lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
     monkeypatch.setattr(binary_indexed_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
-    monkeypatch.setattr(binary_mod, 'load_cuda_file', lambda path, name, **kwargs: load_calls.append((path, name, kwargs)))
 
     outs = []
     with jax_x64_enabled():
@@ -843,7 +855,6 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
         common = {
             **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
             'task_capacity': task_capacity, 'config_spec': spec,
-            'call_plan': config.mm_plan(1, jnp.float32),
         }
         mv_outs = [shape_of(jnp.float32)]
         mm_nt_outs = [shape_of(jnp.float32, (1, 1))]
@@ -1154,9 +1165,8 @@ def test_indexed_mm_weighted_heavy_rows_use_row_value(backend, homo):
 def test_indexed_cuda_generators_select_weighted_abi(monkeypatch, homo):
     """Indexed CUDA kernels select weighted exports and cast events to the weight dtype."""
     ffi_calls = []
-    monkeypatch.setattr(binary_indexed_mod, "load_cuda_file", lambda path, name, **kwargs: None)
+    _patch_cuda_loaders(monkeypatch, lambda path, name, **kwargs: None)
     monkeypatch.setattr(binary_indexed_mod.jax.ffi, "ffi_call", recording_ffi_call(ffi_calls))
-    monkeypatch.setattr(binary_mod, 'load_cuda_file', lambda path, name, **kwargs: None)
 
     indices = jnp.array([0, 1], dtype=jnp.int32)
     indptr = jnp.array([0, 2], dtype=jnp.int32)
@@ -1196,7 +1206,7 @@ def test_indexed_cuda_generators_select_weighted_abi(monkeypatch, homo):
             shape_of(jnp.float32, (n_w,)), shape_of(jnp.uint8, ev_shape), transpose,
             **{**cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int32),
                'outs': [shape_of(jnp.float32, out_shape)], 'weighted': True, 'task_capacity': task_capacity,
-               'config_spec': spec, 'call_plan': config.mm_plan(3, jnp.float32, weighted=True)},
+               'config_spec': spec},
         )
         if len(ev_shape) == 2:
             kernel(weights, indices, indptr, perm, events, mask)
@@ -1470,7 +1480,7 @@ def test_public_mm_prepared_config_types_and_long_rows(dtype, indexed, homo, wei
 @pytest.mark.usefixtures('_prepared_enable_x64')
 @pytest.mark.parametrize('indexed', [True])
 @pytest.mark.parametrize('axis', [0, 1])
-def test_mv_vmap_reenters_mm_with_transformed_call_plan(indexed, axis):
+def test_mv_vmap_reenters_mm_with_rederived_plan(indexed, axis):
     case = _prepared_case()
     data = case.events.T if axis == 0 else case.events
     function = jax.vmap(lambda x: _prepared_call(case, case.weights, x, indexed=indexed,
@@ -1479,10 +1489,9 @@ def test_mv_vmap_reenters_mm_with_transformed_call_plan(indexed, axis):
         case, case.weights, x, indexed=indexed, weighted=True,
         config=case.config, backend='cuda_raw'), in_axes=axis)
     graph = jax.make_jaxpr(graph_function)(data)
-    plans = [eqn.params['call_plan'] for eqn in _prepared_equations(graph)
+    plans = [_eqn_plan(eqn) for eqn in _prepared_equations(graph)
              if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
-    assert len(plans) == 1 and plans[0].batch == case.events.shape[1]
-    assert plans[0] == case.config.mm_plan(3, case.weights.dtype, True)
+    assert len(plans) == 1 and plans[0] == case.config.mm_plan(case.events.shape[1], case.weights.dtype, True)
     actual = jax.jit(function)(data)
     np.testing.assert_array_equal(actual, _prepared_reference(case, case.weights, case.events,
                                                     indexed=indexed, weighted=True).T)
@@ -1501,10 +1510,10 @@ def test_mm_vmap_rederives_plan_for_folded_columns(indexed, axis):
         case, case.weights, x, indexed=indexed, weighted=True,
         config=case.config, backend='cuda_raw'), in_axes=axis)
     graph = jax.make_jaxpr(graph_function)(data)
-    plans = [eqn.params['call_plan'] for eqn in _prepared_equations(graph)
+    plans = [_eqn_plan(eqn) for eqn in _prepared_equations(graph)
              if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
     assert len(plans) == 1 and plans[0] == case.config.mm_plan(6, jnp.float32, True)
-    assert case.config.mm_plan(3, jnp.float32, True).batch == 3
+    assert plans[0] != case.config.mm_plan(3, jnp.float32, True)
     expected = np.stack([_prepared_reference(case, case.weights, x, indexed=indexed, weighted=True) for x in original])
     np.testing.assert_array_equal(jax.jit(function)(data), expected)
 
@@ -1521,7 +1530,7 @@ def test_weights_only_vmap_reuses_prepared_structure_in_scan(indexed):
         config=case.config, backend='cuda_raw'))
     graph = jax.make_jaxpr(graph_function)(weights)
     assert any(eqn.primitive.name == 'scan' for eqn in _prepared_equations(graph))
-    plans = [eqn.params['call_plan'] for eqn in _prepared_equations(graph)
+    plans = [_eqn_plan(eqn) for eqn in _prepared_equations(graph)
              if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
     assert plans and all(plan == case.config.mm_plan(3, jnp.float32, True) for plan in plans)
     expected = np.stack([_prepared_reference(case, w, case.events, indexed=indexed, weighted=True) for w in weights])
@@ -1593,7 +1602,6 @@ def test_nonhybrid_pcall_does_not_apply_hybrid_plan_limits(monkeypatch, indexed,
     equations = [eqn for eqn in _prepared_equations(graph)
                  if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
     assert len(equations) == 1
-    assert equations[0].params['call_plan'] is None
     assert graph.out_avals[0].dtype == jnp.dtype(dtype)
     assert graph.out_avals[0].shape == (case.shape[1] if transpose else case.shape[0], batch)
 
@@ -1630,7 +1638,7 @@ def test_structural_vmap_invalidates_exact_plan(indexed):
     graph = jax.make_jaxpr(function)(pointers)
     equations = [eqn for eqn in _prepared_equations(graph)
                  if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
-    assert equations and all(eqn.params['call_plan'] is None for eqn in equations)
+    assert equations and all(_eqn_plan(eqn) is None for eqn in equations)
     assert all(eqn.params['config_spec'].structure is None for eqn in equations)
     expected = np.stack([_prepared_reference(case, case.weights, case.events, indexed=indexed,
                                     weighted=True, indptr=ptr) for ptr in pointers])

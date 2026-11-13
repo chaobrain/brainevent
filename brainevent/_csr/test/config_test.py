@@ -339,10 +339,6 @@ def test_mm_geometry_is_independent_of_persisted_mv_tuning():
     assert default.kernel_args()[0].structure == alternate.kernel_args()[0].structure
     assert default.mm_plan(10, np.float32) == alternate.mm_plan(10, np.float32)
     assert default.compile_flags() != alternate.compile_flags()
-    assert (default.mm_iterations, default.mm_task_edges, default.geometry_version) == (16, 512, 1)
-    for name in ('mm_iterations', 'mm_task_edges', 'geometry_version'):
-        with pytest.raises(AttributeError):
-            setattr(default, name, 123)
 
 
 def test_nested_mv_schedule_preserves_legacy_accessors():
@@ -356,24 +352,26 @@ def test_nested_mv_schedule_preserves_legacy_accessors():
     assert config.mv_capacity(8193, 2) == mv.mv_capacity(8193, 2)
 
 
-def test_call_plan_keeps_weighted_identity_even_without_long_tasks():
+def test_weighted_queue_needs_no_scratch_without_long_tasks():
     config, _, _ = _prepared((1,), cols=1)
     for batch in (0, 2):
         binary = config.mm_plan(batch, np.float32, weighted=False)
         weighted = config.mm_plan(batch, np.float32, weighted=True)
         assert binary.long_tasks == weighted.long_tasks == 0
-        assert binary.workspace_words == weighted.workspace_words
-        assert not binary.weighted and weighted.weighted
-        assert binary != weighted
+        assert binary == weighted
 
-    from brainevent._csr.binary.binary import _make_hybrid_mm_kernel as make_kernel
-    with pytest.raises(ValueError, match='call plan does not match'):
-        make_kernel(config_spec=config.kernel_args()[0], call_plan=binary, weighted=True,
-                    weight_info=jax.ShapeDtypeStruct((1,), jnp.float32),
-                    vector_info=jax.ShapeDtypeStruct((1, 2), jnp.bool_),
-                    indices_info=jax.ShapeDtypeStruct((1,), jnp.int32),
-                    indptr_info=jax.ShapeDtypeStruct((2,), jnp.int32),
-                    out_info=jax.ShapeDtypeStruct((1, 2), jnp.float32))
+
+@pytest.mark.parametrize('rows', [1, 31, 32, 33, 95])
+def test_long_row_mask_matches_bitwise_reference(rows):
+    rng = np.random.default_rng(rows)
+    lengths = rng.integers(0, 200, size=rows)
+    plan = config_mod._structure_plan(lengths)
+    long_rows = np.flatnonzero(lengths > plan.long_threshold)
+    expected = np.zeros((rows + 31) // 32, np.uint32)
+    for row in long_rows:
+        expected[row // 32] |= np.uint32(1) << np.uint32(row % 32)
+    assert plan.long_mask.dtype == np.uint32
+    np.testing.assert_array_equal(plan.long_mask, expected)
 
 
 def test_selected_kernel_roundtrip_and_layout_swap_share_masks():
@@ -501,15 +499,10 @@ def test_missing_preparation_and_mismatching_plan_rejected():
     assert CSRConfig().mm_plan(8, np.float32) is None
     config, _, _ = _prepared()
     assert replace(config, device_info=CSRDeviceInfo('cpu', 'cpu')).mm_plan(8, np.float32) is None
-    with pytest.raises(ValueError, match='prepared'):
-        CSRConfig().require_prepared()
-    with pytest.raises(ValueError, match='rows'):
-        config.require_prepared(rows=6)
     with pytest.raises(ValueError, match='mask'):
-        replace(config, primary=replace(config.primary, long_mask=jnp.empty(2, jnp.uint32))).require_prepared()
+        replace(config, primary=replace(config.primary, long_mask=jnp.empty(2, jnp.uint32))).validate()
     with pytest.raises(ValueError, match='uint32'):
-        replace(config, primary=replace(config.primary, long_mask=jnp.empty(1, jnp.int32))).require_prepared()
-    assert config.require_prepared(rows=5, cols=128, nnz=1571) is config.primary
+        replace(config, primary=replace(config.primary, long_mask=jnp.empty(1, jnp.int32))).validate()
     with pytest.raises(ValueError, match='integer'):
         config.mm_plan(1.5, np.float32)
     with pytest.raises(ValueError, match='int32'):
@@ -545,20 +538,20 @@ def test_invalid_static_metadata_and_oversized_queue_rejected():
         CSRConfig(block_size=True)
     with pytest.raises(ValueError, match='l2_bytes'):
         CSRDeviceInfo('gpu', 'bad', l2_bytes=-1)
-    assert CSRDeviceInfo('gpu', 'test', 4096, 16, 1) == CSRDeviceInfo('gpu', 'test', 4096, 16, 2)
+    assert not CSRDeviceInfo('gpu', 'test').usable
+    assert not CSRDeviceInfo('cpu', 'cpu', 4096, 16).usable
+    assert CSRDeviceInfo('gpu', 'test', 4096, 16).usable
     with pytest.raises(ValueError, match='geometry'):
-        MMStructureSpec(1, 1, 1, 1, 3, 48, 0)
-    with pytest.raises(ValueError, match='geometry'):
-        MMStructureSpec(1, 1, 1, 1, 4, 64, 0, geometry_version=2)
+        MMStructureSpec(1, 1, 1, 1, 3, 0)
+    assert MMStructureSpec(1, 1, 1, 1, 8, 0).long_threshold == 128
     with pytest.raises(ValueError, match='nnz'):
-        MMStructureSpec(1, 1, 1, 2, 4, 64, 0)
+        MMStructureSpec(1, 1, 1, 2, 4, 0)
     with pytest.raises(ValueError, match='nonzero'):
-        MMStructureSpec(0, 1, 1, 1, 4, 64, 0)
+        MMStructureSpec(0, 1, 1, 1, 4, 0)
     with pytest.raises(ValueError, match='int32'):
-        MMStructureSpec(2**31, 1, 0, 0, 4, 64, 0)
+        MMStructureSpec(2**31, 1, 0, 0, 4, 0)
     nnz = 2**63 - 1
-    plan = MMStructurePlan(32, 512, (nnz + 511) // 512,
-                           jnp.array([1], dtype=jnp.uint32))
+    plan = MMStructurePlan(32, (nnz + 511) // 512, jnp.array([1], dtype=jnp.uint32))
     cfg = CSRConfig(device_info=replace(DEVICE, l2_bytes=2**63), shape=(1, 1),
                     nnz=nnz, primary_max_row_nnz=nnz, primary=plan)
     with pytest.raises(ValueError, match='int64'):
@@ -569,7 +562,6 @@ def test_explicit_validation_checks_mirror_stats_without_reading_masks():
     config, _, _ = _prepared()
     assert config.validate() is config
     assert CSRConfig().validate().primary is None
-    assert config.primary.geometry_version == 1
     with pytest.raises(ValueError, match='nnz'):
         replace(config, mirror_max_row_nnz=config.nnz + 1).validate()
 
@@ -911,7 +903,6 @@ def test_device_query_does_not_load_mm_module(monkeypatch):
     info = config_mod.get_device_info(device=gpu)
     assert info is not None
     assert info.device_kind == str(gpu.device_kind)
-    assert info.device_id == gpu.id
     assert info.sms > 0 and info.l2_bytes > 0
 
 
@@ -1017,10 +1008,7 @@ def test_traced_preparation_forwards_static_metadata_without_reading_arrays(monk
 
     @jax.jit
     def prepare(indices, indptr):
-        result = config_mod._prepare_csr_config(
-            indices, indptr, shape=(2, 5), backend='jax_raw',
-            matrix_metadata={'shape': (2, 5), 'nnz': indices.shape[0]},
-        )
+        result = config_mod._prepare_csr_config(indices, indptr, shape=(2, 5), backend='jax_raw')
         assert result.primary is result.mirror is None
         return indices + result.block_size
 
@@ -1029,18 +1017,6 @@ def test_traced_preparation_forwards_static_metadata_without_reading_arrays(monk
     assert len(calls) == 1
     assert calls[0]['matrix_metadata']['shape'] == (2, 5)
     assert calls[0]['matrix_metadata']['nnz'] == 3
-
-
-@pytest.mark.parametrize('metadata', [
-    {'shape': (3, 4), 'nnz': 3},
-    {'shape': (2, 4), 'nnz': 2},
-])
-def test_preparation_rejects_metadata_that_disagrees_with_actual_structure(metadata):
-    with pytest.raises(ValueError):
-        config_mod._prepare_csr_config(
-            np.array([0, 1, 2], np.int32), np.array([0, 1, 3], np.int32),
-            shape=(2, 4), backend='jax_raw', config=CSRConfig(), matrix_metadata=metadata,
-        )
 
 
 @pytest.mark.parametrize('shape', [(0, 5), (2, 0)])
