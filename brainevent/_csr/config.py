@@ -38,6 +38,10 @@ _MM_ITERATIONS = 16
 _MM_TASK_EDGES = 32 * _MM_ITERATIONS
 _MM_L2_DIVISOR = 4
 _MM_MAX_CHUNK = 65535
+# Smallest nonzero all-active long-task bucket. Small task counts fluctuate the
+# most across redraws; a floor keeps them on one static plan for at most
+# 64 * chunk queue entries of scratch (an undersized queue stays correct).
+_MM_MIN_LONG_TASKS = 64
 _MM_GEOMETRY_VERSION = 1
 _logger = logging.getLogger(__name__)
 
@@ -516,6 +520,11 @@ def _bucket(value: int, limit: int) -> int:
     return 0 if value <= 0 else min(1 << (value - 1).bit_length(), int(limit))
 
 
+def _long_task_bucket(tasks: int, nnz: int) -> int:
+    """Static all-active MM task count: zero, or a power of two of at least 64, at most nnz."""
+    return _bucket(max(int(tasks), _MM_MIN_LONG_TASKS) if tasks > 0 else 0, nnz)
+
+
 def _max_row_bound(lengths: np.ndarray[Any, Any]) -> int:
     """Power-of-two bucket of the longest row, at most nnz."""
     return _bucket(int(lengths.max(initial=0)), int(lengths.sum()))
@@ -528,8 +537,8 @@ def _structure_plan(lengths: np.ndarray[Any, Any]) -> MMStructurePlan:
     group = 4 if quarter <= 4 else 8 if quarter <= 8 else 16 if quarter <= 16 else 32
     threshold = _MM_ITERATIONS * group
     long_rows = lengths > threshold
-    long_tasks = _bucket(int(((lengths[long_rows] + _MM_TASK_EDGES - 1) // _MM_TASK_EDGES).sum()),
-                         int(lengths.sum()))
+    long_tasks = _long_task_bucket(int(((lengths[long_rows] + _MM_TASK_EDGES - 1) // _MM_TASK_EDGES).sum()),
+                                   int(lengths.sum()))
     mask = np.zeros((rows + 31) // 32, dtype=np.uint32)
     positions = np.flatnonzero(long_rows)
     np.bitwise_or.at(mask, positions // 32, np.left_shift(np.uint32(1), (positions % 32).astype(np.uint32)))
@@ -596,9 +605,10 @@ class CSRConfig:
     shape, nnz, primary_max_row_nnz, mirror_max_row_nnz : optional
         Shared structure identity and row statistics in compressed traversal
         order. These values are cleared when the structure is replaced.
-        Prepared longest-row values (and MM task counts) are power-of-two
-        upper bounds, clamped to ``nnz``, so that structures redrawn with the
-        same shape and nnz share compiled executables.
+        Prepared longest-row values (and MM task counts, at least 64 when
+        nonzero) are power-of-two upper bounds, clamped to ``nnz``, so that
+        structures redrawn with the same shape and nnz usually share compiled
+        executables.
     primary, mirror : MMStructurePlan or None, optional
         MM-specific plans for the original and mirrored compressed layouts.
 

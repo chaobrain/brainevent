@@ -49,9 +49,10 @@ def _prepared(lengths=(16, 17, 0, 513, 1025), cols=128, **kwargs):
 def test_structure_plan_uses_integer_group_rule_and_exact_long_mask():
     config, indices, indptr = _prepared()
     primary = config.primary
-    # Row statistics are power-of-two bounds clamped to nnz: 1025 -> 1571 and 5 tasks -> 8.
+    # Row statistics are power-of-two bounds clamped to nnz: 1025 -> 1571, and
+    # 5 long-row tasks take the smallest nonzero task bucket, 64.
     assert (config.shape, config.nnz, config.primary_max_row_nnz) == ((5, 128), 1571, 1571)
-    assert (primary.group, primary.long_threshold, primary.long_tasks) == (4, 64, 8)
+    assert (primary.group, primary.long_threshold, primary.long_tasks) == (4, 64, 64)
     np.testing.assert_array_equal(primary.long_mask, np.array([0b11000], dtype=np.uint32))
     assert config.mirror is None and config.mirror_max_row_nnz is None
     np.testing.assert_array_equal(indptr, [0, 16, 33, 33, 546, 1571])
@@ -291,8 +292,9 @@ def test_same_shape_and_nnz_different_rows_produce_different_plans():
     first, _, _ = _prepared((513, 512), cols=2)
     second, _, _ = _prepared((1025, 0), cols=2)
     assert first.nnz == second.nnz
-    assert first.primary.long_tasks == 2
-    assert second.primary.long_tasks == 4  # three tasks, bucketed to a power of two
+    # Two and three tasks share the smallest task bucket; the row bounds differ.
+    assert first.primary.long_tasks == second.primary.long_tasks == 64
+    assert first.primary_max_row_nnz != second.primary_max_row_nnz
     assert first.kernel_args()[0] != second.kernel_args()[0]
 
 
@@ -300,7 +302,7 @@ def test_mm_call_plan_reacts_to_batch_dtype_device_and_weighted_queue():
     config, _, _ = _prepared()
     plan = config.mm_plan(10, np.float32)
     tasks = config.primary.long_tasks
-    assert tasks == 8  # five tasks, bucketed to a power of two
+    assert tasks == config_mod._long_task_bucket(5, config.nnz) == 64
     # The short-row lists hold one batch group of chunk * rows entries.
     assert (plan.chunk, plan.task_capacity, plan.short_rows_size) == (2, 2 * tasks, 10)
     assert plan.workspace_words == (80 + 5 * 8 + 2 * tasks * 12) // 4
@@ -320,10 +322,11 @@ def test_mm_call_plan_reacts_to_batch_dtype_device_and_weighted_queue():
 
 def test_half_weighted_scratch_rounds_odd_queue_to_uint32_alignment():
     config, _, _ = _prepared((513,), cols=1)
-    # No eligible short row: G=32, and a 513-edge row takes two tasks.
-    assert config.primary.long_tasks == 2
+    # No eligible short row: G=32, and a 513-edge row takes two tasks (bucket 64).
+    assert config.primary.long_tasks == 64
     config, _, _ = _prepared((1, 1, 1, 1, 65), cols=1)
-    assert config.primary.long_tasks == 1
+    # Prepared buckets are even; an odd task count must still pad the half queue.
+    config = replace(config, primary=replace(config.primary, long_tasks=1))
     binary = config.mm_plan(1, np.float16)
     weighted = config.mm_plan(1, np.float16, weighted=True)
     assert weighted.workspace_words == binary.workspace_words + 1
@@ -688,7 +691,7 @@ int main() {
                             capture_output=True, check=True, text=True)
     for (_, config, plan), line in zip(cases, native.stdout.splitlines(), strict=True):
         numbers = list(map(int, line.split()))
-        assert config_mod._bucket(numbers[2], config.nnz) == plan.long_tasks >= numbers[2]
+        assert config_mod._long_task_bucket(numbers[2], config.nnz) == plan.long_tasks >= numbers[2]
         assert numbers[:6] == [plan.group, plan.long_threshold, numbers[2],
                                plan.chunk, plan.task_capacity, plan.workspace_words]
         np.testing.assert_array_equal(numbers[6:], config.primary.long_mask)

@@ -3074,6 +3074,33 @@ def test_redrawn_structures_with_equal_shape_and_nnz_share_one_executable(rows, 
     assert product._cache_size() == 1
 
 
+
+def _csr_from_row_lengths(lengths, cols):
+    lengths = np.asarray(lengths)
+    indptr = np.r_[0, np.cumsum(lengths)].astype(np.int32)
+    indices = np.concatenate([np.arange(n) for n in lengths]).astype(np.int32)
+    weights = jnp.ones(int(indptr[-1]), jnp.float32)
+    return CSR((weights, jnp.asarray(indices), jnp.asarray(indptr)), shape=(len(lengths), cols))
+
+
+def test_few_long_rows_share_one_executable_across_task_counts():
+    # Same shape, nnz, lane group (short rows average 8-9 edges) and max-row
+    # bucket (4096), but the long rows split into 7 vs 11 MM tasks of 512
+    # edges. Small task counts fluctuate across redraws; they must not cross
+    # a static bucket boundary and recompile.
+    cols = 4096
+    a = _csr_from_row_lengths([3584] + [8] * 999, cols)                          # 7 tasks
+    b = _csr_from_row_lengths([2560] + [65] * 6 + [9] * 682 + [8] * 311, cols)  # 5 + 6 tasks
+    assert a.nse == b.nse and a.shape == b.shape
+    assert a.config.primary.group == b.config.primary.group
+    assert jax.tree_util.tree_structure(a) == jax.tree_util.tree_structure(b)
+    product = jax.jit(lambda matrix, events: events @ matrix)
+    events = jnp.ones((a.shape[0],), jnp.float32)
+    for matrix in (a, b):
+        expected = np.asarray(events) @ np.asarray(matrix.todense())
+        np.testing.assert_allclose(product(matrix, events), expected, rtol=1e-5)
+    assert product._cache_size() == 1
+
 @pytest.mark.parametrize('check_structure', [False, True])
 def test_construction_copies_index_values_only_to_validate_them(monkeypatch, check_structure):
     copied = []

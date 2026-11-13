@@ -2950,7 +2950,7 @@ def test_csr_consumers_dispatch_slot_gradients(monkeypatch, case, transpose, bat
     jax.clear_caches()
     call, w, events, rows, cols, perm = _sampled_operands(case, transpose, batch, homo)
     ct_shape = (4 if transpose else 3,) + (() if batch is None else (batch,))
-    ct = jnp.asarray(np.resize([2., -.5, 3., 0.], ct_shape))
+    ct = jnp.asarray(np.resize([2., -.5, 3., 0.], ct_shape), jax.eval_shape(call, w).dtype)
     if nonfinite and batch != 0:
         if batch is None:
             ct = ct.at[0].set(jnp.inf).at[1].set(jnp.nan)
@@ -3287,7 +3287,9 @@ def test_native_mm_stale_config_keeps_every_edge(batch, weighted, homo):
     _, stale_indices, stale_indptr, _, shape = _overflow_case(stale, 2048, homo, weighted, batch)
     weights, indices, indptr, events, _ = _overflow_case(current, 2048, homo, weighted, batch)
     config = prepared_config(stale_indices, stale_indptr, shape)
-    assert config.primary.long_tasks == 4
+    # Prepared task counts are bucketed (at least 64); pin the stale count to
+    # the structure's exact four tasks so the current structure overflows it.
+    config = replace(config, primary=replace(config.primary, long_tasks=4))
     kwargs = dict(shape=shape, transpose=True, weighted=weighted)
     actual = binary_csrmm(weights, indices, indptr, events, backend='cuda_raw', config=config, **kwargs)
     expected = binary_csrmm(weights, indices, indptr, events, backend='jax_raw', **kwargs)

@@ -51,8 +51,10 @@ one explicit scheduler configuration (`CSRConfig`) in place of
   `config=None` structure) falls back to the JAX scatter with a one-time
   `PerformanceWarning` instead of failing to lower.
 - Prepared row statistics (`primary_max_row_nnz`, `mirror_max_row_nnz`, MM
-  long-task counts) are power-of-two upper bounds. A structure redrawn with
-  the same shape and nnz reuses compiled executables.
+  long-task counts) are power-of-two upper bounds, and nonzero long-task
+  counts are at least 64. A structure redrawn from the same distribution with
+  the same shape and nnz reuses compiled executables instead of recompiling
+  once per matrix.
 - CSR construction reads GPU SM count and L2 size through the CUDA driver
   API and no longer needs `nvcc`. Placements over several GPUs of one kind
   use the lowest device id. `CSRConfig.prepare_structure` reads `indptr`

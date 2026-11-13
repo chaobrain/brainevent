@@ -48,7 +48,7 @@ def _case(transpose, *, homo=False, backend=None):
     plan = SimpleNamespace(local_targets=p.local_targets,
                            tile_offsets=p.tile_offsets, tile_width=p.tile_width)
     source = matrix.shape[0 if transpose else 1]
-    events = jnp.resize(jnp.array([0., -2., .5, 1., 0., 3.]), (source, 3))
+    events = jnp.resize(jnp.array([0., -2., .5, 1., 0., 3.], jnp.float32), (source, 3))
     return matrix, events, plan
 
 

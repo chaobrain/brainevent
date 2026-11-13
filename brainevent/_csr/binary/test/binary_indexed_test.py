@@ -1735,7 +1735,7 @@ def test_csr_consumers_dispatch_slot_gradients(monkeypatch, case, transpose, bat
     jax.clear_caches()
     call, w, events, rows, cols, perm = _sampled_operands(case, transpose, batch, homo)
     ct_shape = (4 if transpose else 3,) + (() if batch is None else (batch,))
-    ct = jnp.asarray(np.resize([2., -.5, 3., 0.], ct_shape))
+    ct = jnp.asarray(np.resize([2., -.5, 3., 0.], ct_shape), jax.eval_shape(call, w).dtype)
     if nonfinite and batch != 0:
         if batch is None:
             ct = ct.at[0].set(jnp.inf).at[1].set(jnp.nan)
