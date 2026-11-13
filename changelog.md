@@ -7,99 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+The CSR, TCSR, SDDMM and delay code moves into functional subpackages, with
+one explicit scheduler configuration (`CSRConfig`) in place of
+`HybridConfig`. Event weight gradients now follow the event type alone.
 
-- Guard Numba CPU FFI entries in native code during interpreter shutdown.
-  After live outputs finish, wait for callbacks already entering Python and
-  cancel late queued calls before ctypes acquires the GIL. This prevents a
-  Python 3.13 segmentation fault even when the client and callbacks remain
-  alive after their outputs are dropped.
-- Keep registered Numba CPU FFI callbacks alive past module cleanup, alongside
-  the held CPU client. An execution queued after its outputs were dropped
-  could otherwise call a freed ctypes trampoline during interpreter shutdown,
-  causing a native crash such as Windows `0xC0000096` instead of a clean exit.
+### Added
+
+- `CSRConfig` and `MVSchedule` describe the CSR hybrid scheduler; pass
+  `config=` to the CSR, CSC and `FixedNumPer*` constructors.
+  `load_csr_config` and `save_csr_config` read and persist per-device
+  tuning; `init_csr_config` measures it.
+- `TCSR.sort_permutation`: the row-local stable permutation applied at
+  construction (`tcsr.indices == source.indices[p]`), for realigning
+  external per-edge arrays such as delays or edge state. `None` when no edge
+  moved.
+- `BRAINEVENT_FFI_EXIT_TIMEOUT` (seconds, default 30) bounds how long
+  interpreter exit waits for in-flight Numba FFI callbacks, then warns
+  instead of hanging.
 
 ### Changed
 
-- CSR hybrid initialization now searches 48 Cartesian scheduler candidates
-  independently at 3% and 0.3% matrix density and persists both workload
-  winners with their measurement records. `init_csr_config()` returns a
-  per-workload result list instead of one `CSRConfig`. Matrix construction
-  selects tuning from static shape/nnz metadata, with explicit configuration,
-  matching local tuning, other local tuning, and library defaults in that
-  order. Structure preparation and replacement share one binding path.
-- Clarify the existing configuration contract for raw event MM: nonempty
-  CUDA hybrid scatter calls require a configuration prepared for the actual
-  structure and target GPU before the call. `config=None` and a bare
-  `CSRConfig()` do not build the long-row mask or supply an MM plan. The
-  reference and API docstrings distinguish this requirement from automatic
-  preparation during CSR construction and from paths that need no MM plan.
-- CSRConfig prepares only the stored traversal's statistics and MM plan.
-  CSR/CSC and fixed-connection mirror statistics are prepared lazily with
-  the mirror, retained in the configuration, and reused by same-structure
-  objects. `build_weight_indices()` prepares the mirror before JIT;
-  `with_rebuilt_config()` rebuilds mirror parameters only when a mirror
-  already exists. TCSR prepares mirror tiles after the parent's mirror
-  configuration is ready.
-- CSR/CSC/TCSR event products now accept `backward_algorithm="binary"` or
-  `"weighted_float"`, with `"weighted_float"` as the default. Binary event
-  forwards retain their activity-mask semantics, while the default weight
-  gradient uses the original numeric event values through weighted SDDMM.
-  Set `"binary"` to use activity masks for weight gradients. The previous
-  `"bptt"` and `"pp_prop"` parameter values are no longer accepted.
-- Public `TCSR` inherits `CSR` and automatically prepares primary tile
-  geometry when constructed as `TCSR(csr)`. Mirror tiles are prepared lazily
-  after the public CSR mirror becomes available. Public left and right
-  matmul overrides select Binary CUDA MM; other inputs retain the original
-  operand for the corresponding parent operator. Geometry covers every
-  supported batch without explicit `prepare_binary_mm` calls. That method
-  remains an optional compatibility entry point. `.T` returns CSC and
-  `.T.T` returns CSR. Cached actual-target resource checks select the parent
-  path before native execution when a tile cannot launch; portable lowering
-  without a fixed assignment uses all local candidate devices conservatively.
-- TCSR construction and factory names use `csr`, `csc` and `mat`;
-  `source` remains a legacy keyword alias, and `fromcsr` / `fromcsc` are thin
-  conversion factories. `fromdense` accepts the full CSR factory parameter
-  set. `binary_backend` aliases the single `backend` preference and `'jax'`
-  maps to `'jax_raw'`; conflicting explicit choices raise `ValueError`.
-  `materialize_tcsc_mirror()` delegates to `build_weight_indices()` and
-  `has_tcsc_mirror` only queries the public cache. Set existing gradient
-  options on the source CSR or `fromdense`; conversions preserve them.
-- External TCSR per-edge state, including `edge_state`, `delays` and
-  `w_dim_arr`, must follow the newly sorted edge order. `from_sorted_csr`
-  preserves arrays and source configuration, preparing missing primary
-  geometry for concrete new sources. Internal restoration remains host-free. After
-  overriding a JAX/CPU backend preference to `cuda_raw`, explicitly call
-  `with_rebuilt_config()` outside JIT before an inherited MM requiring GPU
-  configuration, or use the ordinary constructor / `fromcsr` to rebind it.
-- CSR delay delivery now uses the prepared `delaycsr(CSR)` implementation.
-  `CSR.delay_layout(delays, n_slots)` returns this object and inherits the
-  source CSR backend. Explicit delay backends are `cuda_raw` and `jax_raw`;
-  `None` selects the platform default. `csr_delay_deliver_layout` still adds
-  to an explicit ring without clearing it. Stateful `forward` and `x @ W`
-  clear the consumed slot through the JAX `clear_head` member.
-- Initialize delay layouts outside JIT with one integer delay per edge.
-  `layout.with_data(weights)` now requires weights in the initialized
-  `layout.data` order, with the same shape and dtype. The prepared interface
-  accepts plain arrays; weighted events and the ring share the weight dtype.
-  Scalar-delay broadcasting, Quantity inputs and mixed weighted dtypes from
-  the previous delay interface are no longer supported.
+- **Event weight gradients follow the event type.** Binary events
+  (`BinaryArray`, raw bool, `weighted=False`) differentiate the weights with
+  the activity mask; `WeightedArray` (`weighted=True`) uses the event
+  values. Each is the exact derivative of its forward, so forward- and
+  reverse-mode agree. TCSR's `backward_algorithm` option is removed (see
+  Removed).
+- `TCSR` is a `CSR` subclass. Its constructor stably sorts each row by
+  column, and `.T` / `.T.T` return CSC / CSR. Tile geometry is built per
+  batch width on the first eager product with that width, and only when the
+  backend can reach CUDA. Construction builds nothing (it used to build
+  about 4.8 GiB per direction at 100k × 100k, 1% density). Inside
+  `jax.jit`, a width that was not prepared uses the parent CSR path with a
+  one-time `PerformanceWarning`. Call
+  `prepare_binary_mm(batch, transpose=..., dtype=...)` or run one eager
+  product to keep the tiled kernel. Tiles need compute capability 6.0+.
+  Factory argument names are `csr`, `csc` and `mat`; `source` and
+  `binary_backend` remain aliases.
+- CSR hybrid MV/MM in float16/bfloat16 accumulate every edge in float32 and
+  round once. bfloat16 sums used to saturate at 256. The raw hybrid FFI
+  output is float32 (float64 for float64 weights).
+- A native transposed binary MM without a prepared plan (traced, vmapped or
+  `config=None` structure) falls back to the JAX scatter with a one-time
+  `PerformanceWarning` instead of failing to lower.
+- Prepared row statistics (`primary_max_row_nnz`, `mirror_max_row_nnz`, MM
+  long-task counts) are power-of-two upper bounds. A structure redrawn with
+  the same shape and nnz reuses compiled executables.
+- CSR construction reads GPU SM count and L2 size through the CUDA driver
+  API and no longer needs `nvcc`. Placements over several GPUs of one kind
+  use the lowest device id. `CSRConfig.prepare_structure` reads `indptr`
+  only, and `check_structure=False` skips copying the indices to the host.
+- Tuning searches 48 scheduler candidates at 3% and 0.3% density, and
+  `init_csr_config()` returns one result per workload. The default scale is
+  50. Matrices without an exact workload match use the nearest tuned
+  workload by density and mean row length. The store is parsed once per
+  file version, saved under a lock with unique temporary files, and a
+  corrupt store is backed up with a warning.
+- `CSRDelayLayout` and `csr_delay_deliver_layout` keep their API.
+  - Delays may be scalar or per edge, in `[0, n_slots)` (was
+    `[1, n_slots)`), and `n_slots >= 1` accepts any integer-like value.
+  - `build` sorts each row by (delay, column) in one vectorized pass and
+    accepts traced weights.
+  - The ring keeps its own dtype and unit. float16/bfloat16 rings on Numba
+    accumulate in float32.
+  - The CUDA kernel adapts threads per work item to segment length (1.3–1.5×
+    faster on short rings). Numba is the CPU default.
+  - `CSR.delay_layout(delays, n_slots)` returns a `CSRDelayLayout`.
+- SDDMM:
+  - Every backend tests weighted event activity after casting to the
+    cotangent dtype, so an event that rounds to zero never multiplies a
+    NaN/Inf cotangent.
+  - Native and cuSPARSE paths are differentiable.
+  - cuSPARSE uses per-thread, per-device handles and the library that
+    matches jaxlib's CUDA major version.
+- The Numba exit gate covers CUDA callbacks as well as CPU callbacks.
+- Built-in CUDA headers live in `brainevent/include/brainevent/`. They are
+  part of the kernel cache key and ship in the wheel.
 
 ### Removed
 
-- The old `CSRDelayLayout`, `CSR.delay_deliver`, `csr_delay_deliver` and
-  `csr_delay_deliver_p` interfaces, along with the old non-layout kernels.
-  Use `CSR.delay_layout` or `delaycsr`, followed by
-  `csr_delay_deliver_layout(ring, events, layout, t)`. Delay delivery has no
-  cuSPARSE or Numba backend.
-- Redundant `brainevent._sddmm` wrappers: `sddmm_indices`,
-  `sddmm_coo_indices`, `sddmm_bcoo`, `csr_sddmv_dweight_binary`, and
-  `csr_sddmv_dweight_weighted`. Use `sddmm(A, B, coordinates)` for an array
-  of sampled values; stack separate row/column coordinates or pass a BCOO
-  pattern's `.indices`. Construct `BCOO((values, coordinates), shape=...)`
-  explicitly when needed. Use `csr_sddmv_dweight(..., weighted=False/True)`
-  for binary/weighted vector gradients. The generic CSR adapters and both
-  primitive `.call()` registrations remain available.
+- `HybridConfig` and `get_hybrid_config`. Use `CSRConfig`,
+  `load_csr_config` / `save_csr_config` and `init_csr_config`. Accessing
+  the old names raises a migration error.
+- The non-layout delay delivery: `csr_delay_deliver`, `csr_delay_deliver_p`
+  and `CSR.delay_deliver`. Build `CSRDelayLayout.build(...)` (or
+  `CSR.delay_layout`) once and call
+  `csr_delay_deliver_layout(ring, events, layout, t)` each step. The old
+  names raise a migration error.
+- TCSR's `backward_algorithm` keyword (`'bptt'` / `'pp_prop'`). Passing it
+  raises a `TypeError`. Wrap events in `WeightedArray` for value gradients.
+- The internal `brainevent._sddmm` wrappers `sddmm_indices`,
+  `sddmm_coo_indices`, `sddmm_bcoo`, `csr_sddmv_dweight_binary` and
+  `csr_sddmv_dweight_weighted`. Use `sddmm(A, B, coordinates)`, or
+  `csr_sddmv_dweight(..., weighted=False/True)` for vector gradients.
+
+### Fixed
+
+- Numba CPU FFI entries are guarded in native code during interpreter
+  shutdown. Once live outputs finish, exit waits for callbacks already
+  entering Python and cancels late queued calls before ctypes takes the GIL.
+  This prevents a Python 3.13 segmentation fault. Registered callbacks stay
+  alive past module cleanup, so an execution queued after its outputs were
+  dropped cannot call a freed trampoline (Windows `0xC0000096`).
+- A stale or undersized CSR hybrid task queue no longer drops edges.
+- The CSR and TCSR hybrid kernels compile for GPUs older than sm_80, using a
+  shuffle fallback for `__reduce_add_sync`.
+- The row-major hybrid MM FFI checks its int32 range. The MM short-row
+  scratch is sized per batch group.
+- The CUDA delay kernel no longer overflows int32 indexing on very long rings.
 
 ## [0.4.2] - 2026-11-09
 

@@ -106,26 +106,22 @@ not scan the structure to create missing statistics.
 Event weight gradients
 ~~~~~~~~~~~~~~~~~~~~~~
 
-CSR and CSC constructors and event multiplication functions accept
-``backward_algorithm='weighted_float'`` (the default) or ``'binary'``.
-TCSR inherits this setting from its source CSR; ``TCSR.fromdense`` also
-accepts it directly.
+The weight gradient of an event product is the exact derivative of its
+forward, so it is decided by the event type alone. A binary event
+(:class:`~brainevent.BinaryArray`, a boolean array, or ``weighted=False``)
+contributes its activity mask: one for any nonzero event and zero otherwise.
+For example, events ``[0., 2., -3.]`` contribute gradient factors
+``[0., 1., 1.]``, matching the binary forward. A
+:class:`~brainevent.WeightedArray` (or ``weighted=True``) multiplies the
+weights by the event values in the forward and contributes those values,
+``[0., 2., -3.]``, to the weight gradient. Wrap events in ``WeightedArray``
+when value-weighted gradients are wanted.
 
-For binary event inputs, ``weighted_float`` uses each event's original
-numeric value when computing weight gradients. ``binary`` uses its activity
-mask, with one for any nonzero event and zero otherwise. For example, events
-``[0., 2., -3.]`` contribute gradient factors ``[0., 2., -3.]`` by default,
-or ``[0., 1., 1.]`` with ``backward_algorithm='binary'``. The forward binary
-product uses the activity mask for either setting. ``WeightedArray`` products
-use numeric event values for both settings.
-
-The default event weight-gradient path enters SDDMM with ``mode='weighted'``;
-ordinary floating-point CSR products use ``mode='float'``. The name
-``weighted_float`` describes gradient semantics and does not force a particular
-floating-point dtype. ``with_data``, format conversions and pytree restoration
-preserve the selected rule. Replace the previous ``'bptt'`` option with
-``'binary'`` and ``'pp_prop'`` with ``'weighted_float'``; the previous parameter
-values are no longer accepted.
+Binary event gradients enter SDDMM with ``mode='binary'``, weighted events
+with ``mode='weighted'``, and ordinary floating-point CSR products with
+``mode='float'``. Inactive events contribute exactly zero, even for NaN or
+infinite cotangents. The former ``backward_algorithm`` option (TCSR's
+``'bptt'``/``'pp_prop'``) was removed; passing it raises a ``TypeError``.
 
 
 TCSR construction and migration
@@ -134,10 +130,10 @@ TCSR construction and migration
 :class:`TCSR` inherits :class:`CSR`. Its ordinary constructor stably sorts
 columns within each row and reorders heterogeneous weights with their edges.
 Duplicate coordinates remain separate edges; scalar and singleton weights
-stay compact. The source CSR is unchanged. Construction automatically prepares
-primary geometry for every supported batch and weight dtype. Mirror geometry
-is prepared lazily after CSR supplies the mirror; no explicit tile preparation
-is required:
+stay compact. The source CSR is unchanged, and the applied row-local
+permutation is available as ``matrix.sort_permutation``. Construction builds no
+tile geometry. Tiles for a batch width are built lazily, on the first eager
+product with that width, and only when the backend can reach CUDA:
 
 .. code-block:: python
 
@@ -158,12 +154,14 @@ Native tiled TCSR MM uses its own prepared tile geometry rather than the
 parent hybrid MM long-row mask. Calls that select the inherited CSR hybrid
 MM route still require its matching prepared structure and GPU information.
 
-Primary geometry is initialized once. The public CSR mirror remains lazy;
-when it becomes available, concrete mirror geometry is prepared once and
-shared by same-structure objects. Traced structures without mirror geometry
-use the parent path without reading host structure. Changing batch does not
-require preparing another plan. ``prepare_binary_mm`` remains an optional
-legacy compatibility method and does not bind geometry to a batch.
+Geometry is built per tile width on first concrete use and shared by
+same-structure objects; the mirror direction is built only after CSR supplies
+its mirror. Inside ``jax.jit`` with the matrix as an argument, the structure is
+traced and cannot be tiled, so a width that was not prepared uses the parent
+CSR path with a one-time :class:`~brainevent.PerformanceWarning`. Call
+``matrix.prepare_binary_mm(batch, transpose=..., dtype=...)`` (or run one
+eager product) before ``jax.jit`` to keep the tiled kernel. Tiles need a GPU
+of compute capability 6.0 or newer.
 
 CUDA selection respects the actual compilation platform and public backend
 preferences. Cached resource checks select the parent route before native
@@ -174,7 +172,7 @@ backend candidates.
 Factory argument names match the public input type: ``csr`` for ``TCSR``,
 ``fromcsr`` and ``from_sorted_csr``; ``csc`` for ``fromcsc``; ``mat`` for
 ``fromdense``. ``fromdense`` retains CSR's ``nse``, ``index_dtype``,
-``indptr_dtype``, ``backend``, ``backward_algorithm``,
+``indptr_dtype``, ``backend``,
 ``precompute_weight_indices``, ``config`` and ``device`` parameters.
 
 .. list-table:: TCSR API migration
@@ -225,14 +223,16 @@ Inherited methods retain their CSR argument names: ``slice_rows(index)``,
 ``dt2t_transposed(y_dim_arr, w_dim_arr)``. The two dt2t methods multiply each
 edge value by its row or column value, respectively, and return values in the
 stored edge order. ``update_on_*``, ``apply_on_*``, ``delay_layout`` and
-``solve`` retain CSR's input restrictions and backend support. Existing
-gradient options are inherited from a CSR source or accepted by ``fromdense``.
+``solve`` retain CSR's input restrictions and backend support. 
 
 External per-edge arrays such as ``edge_state``, ``delays`` and ``w_dim_arr``
 are not reordered by TCSR construction. Align them with the sorted stored
-edge order before passing them to inherited methods. To retain existing
-state, apply the same row-local stable permutation to the source's
-heterogeneous weights and every external per-edge array, then use
+edge order before passing them to inherited methods:
+``edge_state[matrix.sort_permutation]`` (when ``sort_permutation`` is not
+``None``) follows the stored edges, since
+``matrix.indices == source.indices[matrix.sort_permutation]``. To keep a
+custom order instead, apply your own row-local stable permutation to the
+source's heterogeneous weights and every external per-edge array, then use
 ``from_sorted_csr``. Preserve each duplicate edge separately. Old mirror-slot
 state also needs alignment with the new CSC view's canonical storage.
 

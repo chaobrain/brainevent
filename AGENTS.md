@@ -22,7 +22,7 @@ Follow the repository's [CONTRIBUTING.md](CONTRIBUTING.md) when making changes.
 8. Tests should >90% coverage, but focus on meaningful tests that cover edge cases and critical paths, not just trivial lines. 
 9. Typing tests should pass mypy with no errors, but prioritize meaningful type annotations that improve readability and maintainability over exhaustive coverage of every variable.
 10. Support jax version >=0.9.0
-11. Keep the `foo_test.py` suffix style (never the `test_*.py` prefix). For `brainevent/_csr`, `brainevent/_tcsr`, `brainevent/_dense`, `brainevent/_fcn`, `brainevent/_jit_normal`, `brainevent/_jit_scalar`, and `brainevent/_jit_uniform`, place each functional area's tests in its `test/` subdirectory; root-level tests belong in that package's `test/` directory. Other packages keep tests as siblings of the code under test.
+11. Keep the `foo_test.py` suffix style (never the `test_*.py` prefix). For `brainevent/_csr`, `brainevent/_tcsr`, `brainevent/_sddmm`, `brainevent/_dense`, `brainevent/_fcn`, `brainevent/_jit_normal`, `brainevent/_jit_scalar`, and `brainevent/_jit_uniform`, place each functional area's tests in its `test/` subdirectory; root-level tests belong in that package's `test/` directory. Other packages keep tests as siblings of the code under test.
 
 ## Docstring style (NumPy-doc)
 

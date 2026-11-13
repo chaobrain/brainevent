@@ -2,7 +2,8 @@
 
 ## Goal
 
-Implement the latest `_tcsr/dev/README.md`: construct `TCSR(csr)` once, prepare
+Implement the automatic-tile design (the design notes in the untracked `_tcsr/dev/README.md`
+were not committed): construct `TCSR(csr)` once, prepare
 all primary geometry, lazily prepare mirror geometry after CSR supplies its
 mirror, and preserve CSR call and input semantics through public matmul overrides.
 No new pp_prop/BPSA algorithms.
@@ -54,5 +55,5 @@ No new pp_prop/BPSA algorithms.
   doctests pass. CSR/CSC/FixedNum cache regressions: 80 passed, 4 skipped.
 - Single-GPU Compute Sanitizer: two tail-tile/vmap tests passed, process exit
   code 0 and ERROR SUMMARY: 0 errors (`/tmp/tcsr-auto-memcheck.log`).
-- Development documents and the old implementation were moved under
-  `_tcsr/dev` during implementation; documentation follows that location.
+- Development documents and the old implementation were kept in the untracked
+  `_tcsr/dev` directory during implementation and are not part of the repository.
