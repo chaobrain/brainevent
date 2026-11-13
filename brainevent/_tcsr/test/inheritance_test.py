@@ -206,7 +206,7 @@ def test_solve_inherits_keywords_units_and_jit_without_requiring_tcsr_override(w
     result = jax.jit(lambda m, b: m.solve(b=b, tol=1e-7, reorder=0))(tiled, rhs)
     _assert_equal(result, expected)
     np.testing.assert_allclose(_values(result), np.linalg.solve(np.asarray(dense), _values(rhs)), rtol=1e-5)
-    assert tiled._cache.tile_plans
+    assert tiled._cache.tile_plans == {}  # solve never prepares event-MM tiles
 
 
 def test_solve_rejects_invalid_shapes_as_parent():

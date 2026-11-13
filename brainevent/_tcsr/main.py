@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Sorted CSR matrices with automatic primary and lazy mirror MM tiles."""
+"""Sorted CSR matrices with lazily prepared CUDA binary MM tiles."""
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import brainunit as u
@@ -25,15 +26,16 @@ import numpy as np
 
 from brainevent._csr.config import CSRConfig, _backend_preference, _structure_device
 from brainevent._csr.main import CSC, CSR
+from brainevent._error import PerformanceWarning
 from brainevent._event import as_event_operand
 from brainevent._structure import is_concrete
 from brainevent._tcsr._dispatch import dispatch_binary_mm
-from brainevent._tcsr.binary.combined.planner import tile_schedule
+from brainevent._tcsr.binary.combined.planner import INT32_MAX, tile_schedule
 from brainevent._tcsr.preprocess import (
     TileGeometry,
     build_tile_geometries,
-    geometry_widths,
     sort_csr,
+    validate_preparation,
 )
 
 __all__ = ['TCSR']
@@ -57,6 +59,33 @@ _BACKWARD_ALGORITHM_REMOVED = (
     "brainevent.WeightedArray events use their values. Wrap events in "
     "WeightedArray to obtain value-weighted gradients (the former 'pp_prop')."
 )
+
+
+def _cuda_available() -> bool:
+    """Report whether this process has a CUDA backend; never raises."""
+    try:
+        return bool(jax.devices('cuda'))
+    except RuntimeError:
+        return False
+
+
+_UNPREPARED_WARNED: set = set()
+
+
+def _warn_unprepared(shape: tuple[int, int], batch: int, transpose: bool) -> None:
+    """Warn once per structure shape, batch and direction about a traced miss."""
+    key = (shape, batch, transpose)
+    if key in _UNPREPARED_WARNED:
+        return
+    _UNPREPARED_WARNED.add(key)
+    product = 'events @ matrix' if transpose else 'matrix @ events'
+    warnings.warn(
+        f'TCSR {shape}: tiles for `{product}` with batch {batch} are not prepared and the '
+        'matrix structure is traced (for example a jit argument), so the CSR kernel runs '
+        f'instead. Call `matrix = matrix.prepare_binary_mm({batch}, '
+        f'transpose={transpose})` outside jit, or run one eager product first.',
+        PerformanceWarning, stacklevel=4,
+    )
 
 
 def _construction_backend(
@@ -94,10 +123,22 @@ class TCSR(CSR):
     Notes
     -----
     Construction requires concrete structure and does not modify ``csr``.
-    Primary geometry is prepared during construction for all supported MM
-    batches and weight dtypes. Mirror geometry is prepared lazily after the
-    parent provides its mirror. No explicit tile preparation is required.
-    Other products use the inherited CSR implementation.
+    Sorting moves edges; :attr:`sort_permutation` records the move so that
+    per-edge arrays kept in the source order can be realigned.
+
+    Binary event products ``events @ W`` (primary tiles) and ``W @ events``
+    (mirror tiles) use a tiled CUDA kernel when the backend is ``None`` or
+    ``'cuda_raw'`` and a CUDA device is present. Tile geometry depends on the
+    batch size and the accumulator width (8 bytes for float64, else 4), so
+    it is built lazily, for the widths that actually run: on the first eager
+    product of a batch, or at trace time when the matrix is a concrete
+    closure. Each width costs about ``2 * nnz`` bytes plus one offset per row
+    and tile. When the matrix is a traced ``jit`` argument, missing geometry
+    cannot be built; the product then uses the CSR kernel and emits a
+    :class:`~brainevent.PerformanceWarning`. Call :meth:`prepare_binary_mm`
+    outside ``jit`` to avoid that. Other products, and every product on
+    other backends or platforms, use the inherited CSR implementation.
+
     Transposition retains the public CSR contract: ``W.T`` is a CSC and
     ``W.T.T`` is a CSR.
 
@@ -110,9 +151,18 @@ class TCSR(CSR):
         >>> matrix = TCSR(CSR.fromdense(jnp.eye(2), backend='jax_raw'))
         >>> (BinaryArray(jnp.ones((3, 2), dtype=bool)) @ matrix).shape
         (3, 2)
+        >>>
+        >>> source = CSR(jnp.array([1., 2.]), jnp.array([1, 0]), jnp.array([0, 2]), shape=(1, 2))
+        >>> sorted_matrix = TCSR(source)
+        >>> sorted_matrix.sort_permutation
+        array([1, 0])
+        >>> delays = jnp.array([5, 7])  # one value per source edge
+        >>> delays[sorted_matrix.sort_permutation]
+        Array([7, 5], dtype=int32)
     """
 
     __module__ = 'brainevent'
+    _sort_permutation: np.ndarray | None = None
 
     def __init__(
         self, csr: CSR | None = None, *, backend: str | None = None,
@@ -125,7 +175,7 @@ class TCSR(CSR):
         if not isinstance(csr, CSR):
             raise TypeError('TCSR requires a CSR source matrix.')
         backend = _construction_backend(backend, binary_backend, csr.backend)
-        data, indices = sort_csr(csr)
+        data, indices, permutation = sort_csr(csr)
         # Host metadata has no device preference. Use the concrete weights'
         # placement to prepare inherited CUDA MM, following CSR's policy.
         preferred = _backend_preference('gpu', backend)
@@ -139,7 +189,36 @@ class TCSR(CSR):
             config=csr.config,
             indptr_dtype=csr.indptr.dtype, device=device,
         )
-        self._initialize_primary_tiles()
+        self._sort_permutation = permutation
+
+    @property
+    def sort_permutation(self) -> np.ndarray | None:
+        """Source edge slot of each stored edge, recorded when sorting.
+
+        Returns
+        -------
+        numpy.ndarray or None
+            Read-only host integer array ``p`` of length ``nse`` such that
+            ``self.indices == source.indices[p]`` (and likewise for
+            heterogeneous ``data``), where ``source`` is the CSR passed to the
+            constructor. Index any per-edge array that follows the source
+            order, such as delays or edge state, with ``p`` to align it with
+            this matrix. ``None`` means no edge moved: the source rows were
+            already sorted, or this matrix was not produced by sorting (for
+            example :meth:`from_sorted_csr`, value updates or pytree
+            reconstruction, which keep their input's order).
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> from brainevent import CSR, TCSR
+            >>> source = CSR(jnp.array([1., 2.]), jnp.array([1, 0]), jnp.array([0, 2]), shape=(1, 2))
+            >>> TCSR(source).sort_permutation
+            array([1, 0])
+        """
+        return self._sort_permutation
 
     @classmethod
     def from_sorted_csr(
@@ -164,18 +243,14 @@ class TCSR(CSR):
         -------
         TCSR
             A matrix sharing source arrays and configuration with an independent
-            cache container. Valid same-structure geometry is shared; a concrete
-            source with no primary geometry prepares it before returning.
-            The mirror remains lazy.
+            cache container. Valid same-structure geometry is shared; missing
+            tiles and the mirror are prepared lazily.
 
         Notes
         -----
-        Sortedness is trusted; initial primary preparation still reads a new
-        concrete source's structure. Existing complete geometry and internal
-        pytree reconstruction never require host preparation. Traced new
-        structures keep the applicable parent route without preparing tiles.
-        This entry point also preserves the source configuration when
-        overriding ``backend``. After selecting CUDA from a configuration
+        Sortedness is trusted and never checked, so no host read happens here.
+        :attr:`sort_permutation` is ``None``. This entry point also preserves
+        the source configuration when overriding ``backend``. After selecting CUDA from a configuration
         prepared only for JAX, place the matrix on the target GPU and call
         :meth:`with_rebuilt_config` outside JIT before using inherited CUDA
         MM. Its ``device`` parameter selects configuration placement without
@@ -191,7 +266,6 @@ class TCSR(CSR):
             config=csr.config,
             cache=csr._cache.copy(),
         )
-        result._initialize_primary_tiles()
         return result
 
     @classmethod
@@ -283,7 +357,7 @@ class TCSR(CSR):
         Returns
         -------
         TCSR
-            Sorted matrix with primary geometry ready for every supported batch.
+            Sorted matrix; tile geometry is prepared lazily.
         """
         mat = _source_argument(mat, source, 'mat')
         if mat is None:
@@ -332,138 +406,118 @@ class TCSR(CSR):
         Returns
         -------
         TCSR
-            Sorted row selection with new primary geometry and a lazy mirror.
+            Sorted row selection with lazy tiles and a lazy mirror.
         """
         return type(self).from_sorted_csr(super().slice_rows(index))
-
-    def _ensure_tile_geometries(self, indices, indptr, *, transpose: bool) -> None:
-        """Publish one direction's complete geometry without caching tracers."""
-        target = self.shape[1] if transpose else self.shape[0]
-        offset_dtype = np.dtype(indptr.dtype)
-        expected = {(transpose, width, offset_dtype) for width in geometry_widths(target)}
-        existing = {key for key in self._cache.tile_geometries if key[0] == transpose}
-        if existing:
-            if existing != expected:
-                raise ValueError('Incomplete TCSR tile geometry table for its structure.')
-            return
-        if not is_concrete(indices, indptr):
-            return
-        # Like CSR._mirror(), concrete closures can prepare at trace time;
-        # their cache receives eager arrays and cannot leak a tracer.
-        with jax.ensure_compile_time_eval():
-            prepared = build_tile_geometries(
-                indices, indptr, shape=self.shape, transpose=transpose,
-            )
-        if set(prepared) != expected:
-            raise ValueError('TCSR preparation did not produce complete tile geometry.')
-        # All arrays must be built successfully before siblings see new keys.
-        geometries = dict(self._cache.tile_geometries)
-        geometries.update(prepared)
-        self._cache.tile_geometries = geometries
-
-    def _initialize_primary_tiles(self) -> None:
-        """Prepare primary geometry for a concrete new structure."""
-        self._ensure_tile_geometries(self.indices, self.indptr, transpose=True)
-
-    def _mirror(self):
-        """Use CSR's mirror, then lazily prepare its concrete tile geometry."""
-        if self._cache.mirror is None and any(not key[0] for key in self._cache.tile_geometries):
-            raise ValueError('TCSR mirror tiles require their matching mirror structure.')
-        mirror = super()._mirror()
-        if mirror is not None:
-            indptr, indices, _ = mirror
-            self._ensure_tile_geometries(indices, indptr, transpose=False)
-        return mirror
-
-    def diag_add(self, other):
-        """Add the diagonal through CSR and initialize concrete result geometry.
-
-        Parameters
-        ----------
-        other : array_like
-            Diagonal values following the public CSR shape and unit contract.
-
-        Returns
-        -------
-        TCSR
-            New matrix with obsolete tiles discarded. Concrete results carry
-            complete primary geometry; traced results use CSR until geometry
-            is available, without reading traced structure on the host.
-        """
-        result = super().diag_add(other)
-        result._initialize_primary_tiles()
-        return result
 
     def prepare_binary_mm(
         self, batch: int, *, transpose: bool | None = None, dtype: Any = None,
     ) -> TCSR:
-        """Optionally materialize mirror geometry using the legacy preparation API.
+        """Prepare the tiles one batch size needs, for use under ``jit``.
+
+        Eager products prepare their tiles on first use, so this is needed
+        only when the matrix is passed to a ``jit``-compiled function as an
+        argument (its structure is then traced and tiles cannot be built).
 
         Parameters
         ----------
         batch : int
-            Legacy batch argument, validated in the range 0..65535. Geometry
-            already covers every supported batch, so this does not bind it.
+            Event batch size, from 0 to 65535. Zero needs no tiles.
         transpose : bool or None, optional
-            True retains primary geometry; False or None also materializes
-            the public mirror and its geometry on the returned object.
+            ``True`` prepares tiles for ``events @ W`` (primary traversal),
+            ``False`` for ``W @ events`` (builds the mirror), ``None`` both.
         dtype : dtype or None, optional
-            Legacy supported weight dtype argument. Both accumulator families
-            are already covered; this does not change matrix values.
+            Weight dtype the product will use; defaults to ``self.dtype``.
+            float64 selects narrower tiles than the other dtypes.
 
         Returns
         -------
         TCSR
-            Same canonical matrix with an independent cache container. Normal
-            matrix calls do not require this compatibility method.
+            Same matrix with an independent cache container that holds the
+            prepared tiles. The original object is unchanged.
 
         Raises
         ------
         ValueError
-            Called while tracing, or the legacy arguments are unsupported.
-        """
-        from brainevent._tcsr.preprocess import validate_preparation
+            Called while tracing, the structure is traced, or the arguments
+            are unsupported.
 
-        validate_preparation(batch, self.dtype if dtype is None else dtype)
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax
+            >>> import jax.numpy as jnp
+            >>> from brainevent import BinaryArray, TCSR
+            >>> matrix = TCSR.fromdense(jnp.eye(3)).prepare_binary_mm(8, transpose=True)
+            >>> step = jax.jit(lambda m, x: BinaryArray(x) @ m)
+            >>> step(matrix, jnp.ones((8, 3), dtype=bool)).shape
+            (8, 3)
+        """
+        value_dtype = self.dtype if dtype is None else dtype
+        batch = validate_preparation(batch, value_dtype)
         if transpose is not None and not isinstance(transpose, (bool, np.bool_)):
             raise ValueError('transpose must be True, False, or None.')
+        if not is_concrete(self.indices, self.indptr):
+            raise ValueError('prepare_binary_mm requires concrete structure outside JIT.')
         result = type(self)._from_parts(
             self.data, self.indices, self.indptr, shape=self.shape,
             backend=self.backend,
             config=self.config, cache=self._cache.copy(),
         )
-        result._initialize_primary_tiles()
-        if transpose is None or not transpose:
-            if result._mirror() is None:
-                raise ValueError('prepare_binary_mm requires concrete mirror structure outside JIT.')
+        result._sort_permutation = self._sort_permutation
+        directions = (True, False) if transpose is None else (bool(transpose),)
+        for direction in directions:
+            if batch and result._get_tile_geometry(
+                batch, transpose=direction, dtype=value_dtype, prepare=True,
+            ) is None:
+                raise ValueError('prepare_binary_mm requires concrete structure outside JIT.')
         return result
 
     def _get_tile_geometry(
-        self, batch: int, *, transpose: bool, dtype: Any = None,
+        self, batch: int, *, transpose: bool, dtype: Any = None, prepare: bool = False,
     ) -> TileGeometry | None:
-        """Query one schedule's geometry without constructing or reading arrays."""
+        """Return one schedule's geometry, optionally building just that width.
+
+        ``prepare=False`` is a pure query. ``prepare=True`` builds a missing
+        width (and, for ``transpose=False``, the mirror) when the structure is
+        concrete, publishing it to the shared structure cache. Empty batches
+        never need tiles and return ``None``.
+        """
         value_dtype = np.dtype(self.dtype if dtype is None else dtype)
-        if value_dtype not in _VALUE_DTYPES or not 0 <= batch <= 65535:
+        if value_dtype not in _VALUE_DTYPES or not 0 < batch <= 65535:
             return None
         target = self.shape[1] if transpose else self.shape[0]
         schedule = tile_schedule(target, batch, 8 if value_dtype == np.dtype('float64') else 4)
-        mirror = None if transpose else self._cache.mirror
-        if not transpose and mirror is None:
-            if any(not key[0] for key in self._cache.tile_geometries):
-                raise ValueError('TCSR mirror tiles require their matching mirror structure.')
-            return None
         if transpose:
-            pointers = self.indptr
+            pointers, indices = self.indptr, self.indices
         else:
-            assert mirror is not None
-            pointers = mirror[0]
+            mirror = self._cache.mirror
+            if mirror is None:
+                if any(not key[0] for key in self._cache.tile_geometries):
+                    raise ValueError('TCSR mirror tiles require their matching mirror structure.')
+                if not prepare:
+                    return None
+                mirror = self._mirror()
+                if mirror is None:
+                    return None
+            pointers, indices = mirror[0], mirror[1]
         offset_dtype = np.dtype(pointers.dtype)
         key = (transpose, schedule.tile_width, offset_dtype)
         geometry = self._cache.tile_geometries.get(key)
         if geometry is None:
-            if any(key[0] == transpose for key in self._cache.tile_geometries):
-                raise ValueError('Incomplete TCSR tile geometry table for its structure.')
-            return None
+            if not prepare or not is_concrete(indices, pointers):
+                return None
+            # Like CSR._mirror(), a concrete closure may prepare at trace time;
+            # the cache then receives eager arrays and never a tracer.
+            with jax.ensure_compile_time_eval():
+                prepared = build_tile_geometries(
+                    indices, pointers, shape=self.shape, transpose=transpose,
+                    widths=(schedule.tile_width,),
+                )
+            geometry = prepared[key]
+            # Publish a new dict so siblings never observe a partial update.
+            self._cache.tile_geometries = {**self._cache.tile_geometries, key: geometry}
         if not isinstance(geometry, TileGeometry):
             raise ValueError('Invalid TCSR binary MM geometry entry.')
         if (geometry.key != key or geometry.shape != self.shape or geometry.nnz != self.nse):
@@ -479,25 +533,47 @@ class TCSR(CSR):
     def _get_binary_mm_plan(
         self, batch: int, *, transpose: bool, dtype: Any = None,
     ) -> TileGeometry | None:
-        """Query geometry through the former private batch-plan entry point."""
+        """Query existing geometry through the former private batch-plan entry point."""
         return self._get_tile_geometry(batch, transpose=transpose, dtype=dtype)
 
-    def _is_binary_mm_candidate(self, x: Any, weighted: bool, *, transpose: bool) -> bool:
-        """Check cheap static MM conditions before requesting a mirror."""
-        if weighted or x.ndim != 2 or not 0 <= x.shape[1] <= 65535:
-            return False
-        source = self.shape[0] if transpose else self.shape[1]
-        if x.shape[0] != source or max(self.shape) > (1 << 31) - 1:
-            return False
-        return (np.dtype(self.dtype) in _VALUE_DTYPES
+    def _binary_mm_batch(self, x: Any, weighted: bool, *, transpose: bool) -> int | None:
+        """Return the batch of a tile-eligible operand from static metadata only.
+
+        ``x`` keeps its public layout: ``(batch, rows)`` for ``x @ W``
+        (``transpose=True``) and ``(cols, batch)`` for ``W @ x``.
+        """
+        if weighted or x.ndim != 2:
+            return None
+        source, batch = (x.shape[1], x.shape[0]) if transpose else x.shape
+        if source != (self.shape[0] if transpose else self.shape[1]):
+            return None
+        if not 0 < batch <= 65535 or max(self.shape) > INT32_MAX:
+            return None
+        if not (np.dtype(self.dtype) in _VALUE_DTYPES
                 and np.dtype(x.dtype) in (np.dtype('bool'), np.dtype('float32'))
                 and self.indices.ndim == 1 and self.indices.dtype == jnp.int32
-                and np.dtype(self.indptr.dtype) in (np.dtype('int32'), np.dtype('int64')))
+                and np.dtype(self.indptr.dtype) in (np.dtype('int32'), np.dtype('int64'))):
+            return None
+        return int(batch)
 
-    def _can_use_binary_mm(self, x: Any, weighted: bool, *, transpose: bool) -> bool:
-        """Check a candidate's already available geometry without preparing it."""
-        return (self._is_binary_mm_candidate(x, weighted, transpose=transpose)
-                and self._get_tile_geometry(x.shape[1], transpose=transpose) is not None)
+    def _tiles_reachable(self) -> bool:
+        """Whether a product could run the CUDA tiles; checked before any preparation."""
+        if self.backend is not None and self.backend != 'cuda_raw':
+            return False
+        if not _cuda_available():
+            return False
+        device = _structure_device(self.indices)
+        return device is None or getattr(device, 'platform', None) == 'gpu'
+
+    def _binary_mm_geometry(self, x: Any, weighted: bool, *, transpose: bool) -> TileGeometry | None:
+        """Select, lazily preparing, the tiles of an eligible binary product."""
+        batch = self._binary_mm_batch(x, weighted, transpose=transpose)
+        if batch is None or not self._tiles_reachable():
+            return None
+        geometry = self._get_tile_geometry(batch, transpose=transpose, prepare=True)
+        if geometry is None:
+            _warn_unprepared(self.shape, batch, transpose)
+        return geometry
 
     def __matmul__(self, other):
         """Compute ``self @ other`` with automatic binary MM selection.
@@ -515,13 +591,9 @@ class TCSR(CSR):
         """
         event = as_event_operand(other)
         if event is not None:
-            x, weighted = event
-            if self._is_binary_mm_candidate(x, weighted, transpose=False):
-                mirror = self._mirror()
-                if mirror is not None:
-                    geometry = self._get_tile_geometry(x.shape[1], transpose=False)
-                    if geometry is not None:
-                        return self._dispatch_binary_mm(other, transpose=False, plan=geometry)
+            geometry = self._binary_mm_geometry(event[0], event[1], transpose=False)
+            if geometry is not None:
+                return self._dispatch_binary_mm(other, transpose=False, plan=geometry)
         return super().__matmul__(other)
 
     def __rmatmul__(self, other):
@@ -540,12 +612,9 @@ class TCSR(CSR):
         """
         event = as_event_operand(other)
         if event is not None:
-            x, weighted = event
-            if x.ndim == 2:
-                if self._can_use_binary_mm(x.T, weighted, transpose=True):
-                    geometry = self._get_tile_geometry(x.shape[0], transpose=True)
-                    assert geometry is not None
-                    return self._dispatch_binary_mm(other, transpose=True, plan=geometry)
+            geometry = self._binary_mm_geometry(event[0], event[1], transpose=True)
+            if geometry is not None:
+                return self._dispatch_binary_mm(other, transpose=True, plan=geometry)
         return super().__rmatmul__(other)
 
     def _dispatch_binary_mm(self, other: Any, *, transpose: bool, plan: TileGeometry):
@@ -585,11 +654,12 @@ class TCSR(CSR):
             Reconstructed matrix without running public construction.
         """
         parent_aux, descriptions = aux_data
-        _, _, has_mirror, has_diag = parent_aux
-        parent_size = 4 + 3 * has_mirror + 4 * has_diag
-        expected = parent_size + 2 * len(descriptions)
-        if len(children) != expected:
-            raise ValueError(f'TCSR.tree_unflatten expects {expected} leaves, got {len(children)}.')
+        # Tile leaves trail the parent's; the parent validates its own count.
+        parent_size = len(children) - 2 * len(descriptions)
+        if parent_size < 0:
+            raise ValueError(
+                f'TCSR.tree_unflatten expects at least {2 * len(descriptions)} leaves, got {len(children)}.'
+            )
         # Calling the classmethod implementation with cls preserves TCSR
         # while using exactly the parent's storage/placeholder protocol.
         result = CSR.tree_unflatten.__func__(cls, parent_aux, children[:parent_size])

@@ -11,8 +11,12 @@
 // Self-contained: the pieces used from bn_tile (extraction geometry), tile_common
 // (tile helpers), fused_extract (ordered extraction) and short_chain (absolute-offset
 // scatter) form the typed implementation below; short_chain's relative-offset
-// (row_ptr) branch is dropped because combined never uses it. Design history:
-// doc/fused_extract.md and doc/short_chain.md.
+// (row_ptr) branch is dropped because combined never uses it.
+//
+// Architecture: no sm_80-only intrinsic is used directly. The look-back warp sum goes
+// through cuda_traits::warp_reduce_add_u32 (__reduce_add_sync on sm_80+, shuffles
+// below). The Python dispatcher requires compute capability >= 6.0 (native double
+// atomicAdd for f64 tiles) before it selects these kernels.
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -205,7 +209,8 @@ namespace combined
           const unsigned needed = stop == 31 ? kFull : (1U << (stop + 1)) - 1U;
           if (pending & needed)
             continue; // some closer predecessor is still counting
-          prefix += __reduce_add_sync(kFull, lane <= stop ? static_cast<int>(value & 0xffffffffULL) : 0);
+          prefix += static_cast<int>(cuda_traits::warp_reduce_add_u32(
+              lane <= stop ? static_cast<unsigned>(value & 0xffffffffULL) : 0U));
           if (closed)
             break;
           window -= 32;

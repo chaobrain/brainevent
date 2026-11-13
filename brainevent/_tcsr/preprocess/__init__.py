@@ -16,11 +16,10 @@
 
 from brainevent._tcsr.preprocess.preprocess import (
     TileGeometry, build_tile_geometries, geometry_widths,
-    TilePlan, build_binary_mm_plan, ensure_preparation_context, sort_csr, validate_preparation,
+    ensure_preparation_context, sort_csr, validate_preparation,
 )
 
 __all__ = [
     'TileGeometry', 'build_tile_geometries', 'geometry_widths',
-    'TilePlan', 'build_binary_mm_plan', 'ensure_preparation_context',
-    'sort_csr', 'validate_preparation',
+    'ensure_preparation_context', 'sort_csr', 'validate_preparation',
 ]

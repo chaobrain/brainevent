@@ -33,6 +33,9 @@ struct Buffer
     {
         check(values.size() == count, "upload size mismatch");
         if (count) cuda_check(cudaMemcpy(data, values.data(), count * sizeof(T), cudaMemcpyHostToDevice));
+        // A pageable H2D cudaMemcpy may return before its DMA lands, and the kernels run on a
+        // non-blocking stream that does not order after the legacy default stream.
+        cuda_check(cudaDeviceSynchronize());
     }
     std::vector<T> download() const
     {

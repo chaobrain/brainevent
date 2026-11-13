@@ -20,6 +20,12 @@ from jax.interpreters import ad, batching, mlir
 from brainevent._compatible_import import Primitive, apply_primitive, init_zero
 
 
+#: Oldest compute capability the combined kernels support. f64 tiles use the
+#: native double ``atomicAdd`` (sm_60+); sm_80-only warp reductions have a
+#: shuffle fallback, so nothing newer is required.
+MIN_COMPUTE_CAPABILITY = (6, 0)
+
+
 @dataclass(frozen=True)
 class LaunchResources:
     """CUDA launch limits of one concrete device.
@@ -32,11 +38,14 @@ class LaunchResources:
         Shared-memory bytes available without opt-in.
     optin_shared_bytes : int
         Maximum shared-memory bytes available with opt-in.
+    compute_capability : tuple of int
+        ``(major, minor)`` compute capability of the device.
     """
 
     max_threads: int
     shared_bytes: int
     optin_shared_bytes: int
+    compute_capability: tuple[int, int]
 
 
 @lru_cache(maxsize=1)
@@ -67,21 +76,25 @@ def _query_launch_resources(device: Any) -> LaunchResources | None:
             return None
         result = []
         # CUdevice_attribute values from the installed CUDA driver API:
-        # MAX_THREADS_PER_BLOCK, MAX_SHARED_MEMORY_PER_BLOCK, and ..._OPTIN.
-        for attribute in (1, 8, 97):
+        # MAX_THREADS_PER_BLOCK, MAX_SHARED_MEMORY_PER_BLOCK, ..._OPTIN, and
+        # COMPUTE_CAPABILITY_MAJOR / _MINOR.
+        for attribute in (1, 8, 97, 75, 76):
             value = ctypes.c_int()
             if driver.cuDeviceGetAttribute(ctypes.byref(value), attribute, cuda_device.value):
                 return None
             result.append(value.value)
-        return LaunchResources(*result)
+        max_threads, shared_bytes, optin_shared_bytes, major, minor = result
+        return LaunchResources(max_threads, shared_bytes, optin_shared_bytes, (major, minor))
     except (OSError, AttributeError):
         # A missing/unsupported driver probe is not evidence that a tile fits.
         return None
 
 
 def _supports(resources: LaunchResources | None, threads: int, shared_bytes: int) -> bool:
-    """Match the existing native launcher's actual allocation policy."""
+    """Match the native launcher's allocation policy and architecture floor."""
     if resources is None or threads > resources.max_threads:
+        return False
+    if tuple(resources.compute_capability) < MIN_COMPUTE_CAPABILITY:
         return False
     if shared_bytes <= 48 * 1024:
         return shared_bytes <= resources.shared_bytes
@@ -137,6 +150,35 @@ ad.primitive_jvps[_launch_supported_p] = _jvp
 batching.primitive_batchers[_launch_supported_p] = (
     lambda args, axes, **kwargs: (_launch_supported_p.bind(**kwargs), None)
 )
+
+
+def static_launch_supported(*, threads: int, shared_bytes: int) -> bool | None:
+    """Decide a launch at trace time when every possible local target agrees.
+
+    Parameters
+    ----------
+    threads : int
+        Planned threads per scatter block.
+    shared_bytes : int
+        Planned accumulation storage in bytes.
+
+    Returns
+    -------
+    bool or None
+        ``True`` or ``False`` when this single process sees CUDA devices
+        that all give the same answer, so only the selected branch needs to
+        be traced and lowered. ``None`` when the target is unknown at trace
+        time (multiple processes, no local CUDA device, or devices that
+        disagree); use :func:`launch_supported` to decide at lowering time.
+    """
+    if jax.process_count() != 1:
+        return None
+    try:
+        devices = jax.devices('cuda')
+    except RuntimeError:
+        return None
+    verdicts = {_supports(_query_launch_resources(device), threads, shared_bytes) for device in devices}
+    return verdicts.pop() if len(verdicts) == 1 else None
 
 
 def launch_supported(*, threads: int, shared_bytes: int) -> jax.Array:

@@ -17,7 +17,7 @@ from brainevent._csr.binary.binary import binary_csrmm_p as csr_binary_csrmm_p
 from brainevent._csr.binary.binary_indexed import binary_csrmm_indexed_p
 from brainevent._event import as_event_operand
 
-from brainevent._tcsr._resources import launch_supported
+from brainevent._tcsr._resources import launch_supported, static_launch_supported
 from brainevent._tcsr.binary.binary import binary_csrmm
 from brainevent._tcsr.binary.combined.planner import tile_schedule
 
@@ -48,9 +48,11 @@ def dispatch_binary_mm(matrix: CSR, other: Any, *, transpose: bool, plan: Any) -
     -----
     ``platform_dependent`` selects at lowering time, including when the JIT
     compilation platform differs from the Python default device. Tracing the
-    CUDA branch resolves backend names. Resource capabilities are checked
-    for the lowering device assignment before selecting native execution;
-    unsupported capabilities select the corresponding public CSR operation.
+    CUDA branch resolves backend names. When every local CUDA device of a
+    single process gives the same resource verdict, only that branch is
+    traced. Otherwise resource capabilities are checked for the lowering
+    device assignment before selecting native execution; unsupported
+    capabilities select the corresponding public CSR operation.
     """
     # Stage the platform choice even for eager calls. A bare
     # platform_dependent eagerly computes its zero-operand platform index on
@@ -102,6 +104,11 @@ def _dispatch_on_platform(
                 transpose=transpose, backend='cuda_raw', config=matrix.config,
             )
             return output.T if transpose else output
+        # Prefer a trace-time decision: lowering only one branch avoids
+        # compiling (and planning) the CSR fallback when tiles always fit.
+        decision = static_launch_supported(threads=schedule.block_size, shared_bytes=schedule.shared_bytes)
+        if decision is not None:
+            return tiled(operand) if decision else inherited(operand)
         return jax.lax.cond(
             launch_supported(threads=schedule.block_size, shared_bytes=schedule.shared_bytes),
             tiled, inherited, operand,

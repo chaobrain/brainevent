@@ -14,7 +14,8 @@ import pytest
 
 from brainevent import BinaryArray
 from brainevent._csr.main import CSR
-from brainevent._tcsr.binary.combined.jax_ffi import prepare
+from brainevent._tcsr.binary.combined.planner import tile_schedule
+from brainevent._tcsr.preprocess import build_tile_geometries
 
 api = importlib.import_module('brainevent._tcsr._dispatch')
 tiled = importlib.import_module('brainevent._tcsr.binary.binary')
@@ -41,9 +42,11 @@ def _case(transpose, *, homo=False, backend=None):
     else:
         ptr, idx, _ = matrix._mirror()
         cols = matrix.shape[0]
-    p = prepare(np.asarray(ptr), np.asarray(idx), cols, 3)
-    plan = SimpleNamespace(local_targets=jnp.asarray(p.local_targets),
-                           tile_offsets=jnp.asarray(p.tile_offsets), tile_width=p.tile_width)
+    width = tile_schedule(cols, 3).tile_width
+    (p,) = build_tile_geometries(idx, ptr, shape=matrix.shape, transpose=transpose,
+                                 widths=(width,)).values()
+    plan = SimpleNamespace(local_targets=p.local_targets,
+                           tile_offsets=p.tile_offsets, tile_width=p.tile_width)
     source = matrix.shape[0 if transpose else 1]
     events = jnp.resize(jnp.array([0., -2., .5, 1., 0., 3.]), (source, 3))
     return matrix, events, plan
@@ -170,7 +173,7 @@ def test_resource_shortage_executes_original_parent_operator(monkeypatch, transp
         pytest.skip('CUDA device required')
     matrix, events, plan = _case(transpose)
     monkeypatch.setattr(resources, '_query_launch_resources',
-                        lambda device: resources.LaunchResources(0, 0, 0))
+                        lambda device: resources.LaunchResources(0, 0, 0, (0, 0)))
     original = BinaryArray(events.T if transpose else events)
     calls = []
     name = '__rmatmul__' if transpose else '__matmul__'
@@ -210,3 +213,14 @@ def test_explicit_parent_selection_preserves_operand_identity(monkeypatch):
     monkeypatch.setattr(CSR, '__rmatmul__', inherited)
     api.dispatch_binary_mm(matrix, operand, transpose=True, plan=plan)
     assert received == [operand]
+
+
+@pytest.mark.parametrize('decision', [True, False, None])
+def test_trace_time_resource_decision_traces_only_the_selected_branch(monkeypatch, decision):
+    """Known resources select one CUDA branch; only unknown targets stage the runtime check."""
+    matrix, events, plan = _case(True)
+    monkeypatch.setattr(api, 'static_launch_supported', lambda **kwargs: decision)
+    jax.clear_caches()
+    text = str(jax.make_jaxpr(lambda x: _call(matrix, x, plan, True))(events))
+    assert ('tcsr_launch_supported' in text) == (decision is None)
+    assert ('tcsr_combined_binary_csrmm' in text) == (decision is not False)

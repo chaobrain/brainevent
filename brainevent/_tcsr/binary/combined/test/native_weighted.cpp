@@ -26,6 +26,9 @@ template<class T> struct Buffer {
     void upload(const std::vector<T> &values) {
         check(values.size() == size, "upload length");
         if (size) cuda_check(cudaMemcpy(data, values.data(), size * sizeof(T), cudaMemcpyHostToDevice));
+        // A pageable H2D cudaMemcpy may return before its DMA lands, and the kernels run on a
+        // non-blocking stream that does not order after the legacy default stream.
+        cuda_check(cudaDeviceSynchronize());
     }
     std::vector<T> download() const {
         std::vector<T> values(size);

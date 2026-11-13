@@ -48,8 +48,28 @@ def test_constructor_stably_sorts_duplicate_edges_without_mutating_source():
     assert matrix._cache.mirror is None and matrix._cache.diag_plan is None
     assert matrix.config.mirror is None
     assert matrix._cache.mirror_preparation is None
-    assert matrix._cache.tile_geometries and all(k[0] for k in matrix._cache.tile_geometries)
+    assert matrix._cache.tile_geometries == {}
     np.testing.assert_allclose(u.get_mantissa(matrix.todense()), u.get_mantissa(source.todense()))
+    # The recorded permutation realigns per-edge arrays kept in source order.
+    permutation = matrix.sort_permutation
+    np.testing.assert_array_equal(permutation, [1, 2, 0, 4, 3])
+    np.testing.assert_array_equal(np.asarray(source.indices)[permutation], matrix.indices)
+    np.testing.assert_array_equal(u.get_mantissa(source.data)[permutation], u.get_mantissa(matrix.data))
+    assert not permutation.flags.writeable
+
+
+def test_sort_permutation_is_none_when_nothing_moves_or_order_is_inherited():
+    already_sorted = TCSR(CSR(jnp.array([1., 2.]), jnp.array([0, 2], jnp.int32),
+                              jnp.array([0, 1, 2], jnp.int32), shape=(2, 3), backend='jax_raw'))
+    assert already_sorted.sort_permutation is None
+    assert already_sorted.indices is not None and _matrix().sort_permutation is None
+    matrix = TCSR(CSR(jnp.array([1., 2., 3.]), jnp.array([2, 0, 1], jnp.int32),
+                      jnp.array([0, 2, 3], jnp.int32), shape=(2, 3), backend='jax_raw'))
+    np.testing.assert_array_equal(matrix.sort_permutation, [1, 0, 2])
+    assert matrix.prepare_binary_mm(2, transpose=True).sort_permutation is matrix.sort_permutation
+    for derived in (TCSR.from_sorted_csr(matrix), matrix.with_data(matrix.data * 2),
+                    jax.tree.map(lambda a: a, matrix)):
+        assert derived.sort_permutation is None
 
 
 @pytest.mark.parametrize('data', [jnp.array(2.), jnp.array([2.])])
@@ -69,8 +89,8 @@ def test_source_must_be_csr(factory):
 
 
 def test_sorted_existing_tcsr_reuses_geometries_without_host_reads(monkeypatch):
-    source = _matrix().prepare_diag_add()
-    source._mirror()
+    source = _matrix().prepare_diag_add().prepare_binary_mm(2)
+    assert source._cache.tile_geometries
 
     def forbidden(*args, **kwargs):
         raise AssertionError('same-structure trusted assembly must not prepare arrays')
@@ -88,13 +108,20 @@ def test_sorted_existing_tcsr_reuses_geometries_without_host_reads(monkeypatch):
     assert all(result._cache.tile_geometries[k] is p for k, p in source._cache.tile_geometries.items())
 
 
-def test_sorted_plain_csr_factory_prepares_primary_and_keeps_mirror_lazy():
+def test_sorted_plain_csr_factory_keeps_tiles_and_mirror_lazy(monkeypatch):
     source = CSR.fromdense(jnp.array([[1., 0., 2.], [0., 3., 0.]]), backend='jax_raw')
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('trusted sorted input must not be read on the host')
+
+    monkeypatch.setattr(jax, 'device_get', forbidden)
     result = TCSR.from_sorted_csr(source)
+    monkeypatch.undo()
     assert type(result) is TCSR and result._cache.mirror is None
     assert result.config.mirror is None
     assert result.config.mirror_max_row_nnz is None
-    assert result._get_binary_mm_plan(188, transpose=True) is not None
+    assert result._cache.tile_geometries == {}
+    assert result._get_tile_geometry(188, transpose=True, prepare=True) is not None
     assert source._cache.tile_plans == {}
 
 
@@ -136,26 +163,35 @@ def test_dense_factory_row_slice_diagonal_and_transpose_types():
     sliced = matrix.slice_rows([1, 0, 1])
     assert type(sliced) is TCSR and sliced.shape == (3, 3)
     assert sliced._cache is not matrix._cache
-    assert sliced._get_binary_mm_plan(2, transpose=True) is not None
+    assert sliced._cache.tile_geometries == {}
+    assert sliced._get_tile_geometry(2, transpose=True, prepare=True) is not None
     assert not any(not k[0] for k in sliced._cache.tile_geometries)
     np.testing.assert_array_equal(sliced.todense(), dense[jnp.array([1, 0, 1])])
     augmented = matrix.diag_add(jnp.ones(2))
     assert type(augmented) is TCSR and augmented._cache is not matrix._cache
-    assert augmented._get_binary_mm_plan(2, transpose=True) is not None
+    assert augmented._get_tile_geometry(2, transpose=True, prepare=True) is not None
     np.testing.assert_array_equal(augmented.todense(), dense.at[0, 0].add(1).at[1, 1].add(1))
     assert type(matrix.T) is CSC and type(matrix.T.T) is CSR
 
 
-def test_optional_prepare_compatibility_is_not_batch_specific():
+def test_prepare_binary_mm_builds_only_the_requested_tiles_on_a_copy():
     base = _matrix()
-    primary = dict(base._cache.tile_geometries)
     result = base.prepare_binary_mm(3, transpose=False)
-    assert base._cache.mirror is None
+    assert base._cache.mirror is None and base._cache.tile_geometries == {}
     assert result._cache.mirror is not None
-    for key, geometry in primary.items():
-        assert result._cache.tile_geometries[key] is geometry
-    assert result._get_binary_mm_plan(4, transpose=False) is not None
-    assert result._get_binary_mm_plan(65535, transpose=True, dtype=jnp.float64) is not None
+    assert [key[0] for key in result._cache.tile_geometries] == [False]
+    assert result._get_binary_mm_plan(3, transpose=False) is not None
+    assert result._get_binary_mm_plan(3, transpose=True) is None
+    both = base.prepare_binary_mm(65535, dtype=jnp.float64)
+    assert both._get_binary_mm_plan(65535, transpose=True, dtype=jnp.float64) is not None
+    assert both._get_binary_mm_plan(65535, transpose=False, dtype=jnp.float64) is not None
+    assert base.prepare_binary_mm(0)._cache.tile_geometries == {}
+    with pytest.raises(ValueError, match='transpose'):
+        base.prepare_binary_mm(2, transpose='yes')
+    with pytest.raises(ValueError):
+        base.prepare_binary_mm(65536)
+    with pytest.raises(ValueError):
+        jax.jit(lambda m: m.prepare_binary_mm(2).data)(base)
 
 
 def test_data_only_changes_share_geometries_and_obey_dtype_unit_contracts():
@@ -167,14 +203,14 @@ def test_data_only_changes_share_geometries_and_obey_dtype_unit_contracts():
             matrix.with_data(incompatible)
     converted = matrix.apply(lambda data: data.astype(jnp.float16) * u.mV)
     assert converted._cache is matrix._cache
-    assert converted._get_binary_mm_plan(2, transpose=True) is not None
+    plan = matrix._get_tile_geometry(2, transpose=True, prepare=True)
+    assert converted._get_binary_mm_plan(2, transpose=True) is plan
     for result in (matrix * 2, matrix / 2, -matrix, matrix.prepare_diag_add(), matrix.with_rebuilt_config()):
         assert type(result) is TCSR and result._cache is matrix._cache
 
 
 def test_mirror_replacement_invalidates_only_mirror_geometry():
-    matrix = _matrix()
-    matrix._mirror()
+    matrix = _matrix().prepare_binary_mm(2)
     sibling = matrix.with_data(matrix.data * 2)
     preparation = sibling._cache.mirror_preparation
     primary = matrix._get_binary_mm_plan(2, transpose=True)
@@ -186,14 +222,13 @@ def test_mirror_replacement_invalidates_only_mirror_geometry():
     assert matrix._get_binary_mm_plan(2, transpose=True) is primary
     assert matrix._get_binary_mm_plan(2, transpose=False) is None
     assert sibling._get_binary_mm_plan(2, transpose=False) is mirror_plan
-    matrix._mirror()
-    assert matrix._get_binary_mm_plan(2, transpose=False) is not None
-    assert matrix._get_binary_mm_plan(2, transpose=False) is not mirror_plan
+    rebuilt = matrix._get_tile_geometry(2, transpose=False, prepare=True)
+    assert rebuilt is not None and rebuilt is not mirror_plan
 
 
 def test_pytree_roundtrip_is_hashable_and_restores_all_geometries():
-    matrix = _matrix().prepare_diag_add()
-    matrix._mirror()
+    matrix = _matrix().prepare_diag_add().prepare_binary_mm(2)
+    assert len(matrix._cache.tile_geometries) == 2
     children, aux = matrix.tree_flatten()
     hash(aux)
     restored = TCSR.tree_unflatten(aux, children)
@@ -212,8 +247,7 @@ def test_pytree_roundtrip_is_hashable_and_restores_all_geometries():
 
 
 def test_pytree_placeholder_and_float0_restoration_never_prepares(monkeypatch):
-    matrix = _matrix().prepare_diag_add()
-    matrix._mirror()
+    matrix = _matrix().prepare_diag_add().prepare_binary_mm(2)
 
     def forbidden(*args, **kwargs):
         raise AssertionError('pytree reconstruction must not prepare or inspect arrays')
@@ -223,6 +257,7 @@ def test_pytree_placeholder_and_float0_restoration_never_prepares(monkeypatch):
     monkeypatch.setattr(jax, 'device_get', forbidden)
     empty = jax.tree.map(lambda _: None, matrix)
     assert empty.data is None and empty.indices is None
+    assert len(empty._cache.tile_geometries) == 2
     assert all(p.local_targets is None and p.tile_offsets is None for p in empty._cache.tile_geometries.values())
     differential = jax.tree.map(lambda a: np.zeros(a.shape, dtype=jax.dtypes.float0), matrix)
     assert differential.indices.dtype == jax.dtypes.float0
@@ -232,8 +267,7 @@ def test_pytree_placeholder_and_float0_restoration_never_prepares(monkeypatch):
 
 
 def test_jit_scan_and_vmap_preserve_tcsr_and_geometry_payload():
-    matrix = _matrix()
-    matrix._mirror()
+    matrix = _matrix().prepare_binary_mm(2)
     restored = jax.jit(lambda m: m)(matrix)
     assert type(restored) is TCSR
     assert restored._get_binary_mm_plan(2, transpose=False) is not None
@@ -252,12 +286,13 @@ def test_jit_scan_and_vmap_preserve_tcsr_and_geometry_payload():
 
 @pytest.mark.parametrize('homo', [False, True])
 def test_matrix_parameter_gradient_preserves_canonical_order_and_float0(homo):
-    matrix = _matrix(data=jnp.array([2.]) if homo else None)
+    matrix = _matrix(data=jnp.array([2.]) if homo else None).prepare_binary_mm(2)
     events = BinaryArray(jnp.array([[True, False], [True, True]]))
     gradient = jax.jit(jax.grad(lambda m: (events @ m).sum(), allow_int=True))(matrix)
     assert type(gradient) is TCSR
     np.testing.assert_allclose(gradient.data, [5.] if homo else [2., 2., 1.])
     assert gradient.indices.dtype == gradient.indptr.dtype == jax.dtypes.float0
+    assert gradient._cache.tile_geometries
     assert all(p.local_targets.dtype == jax.dtypes.float0 for p in gradient._cache.tile_geometries.values())
 
 
@@ -277,15 +312,16 @@ def test_cpu_event_numeric_mv_and_weighted_products_follow_csr():
 
 def test_corrupt_geometry_reports_error():
     matrix = _matrix()
-    plan = matrix._get_binary_mm_plan(2, transpose=True)
+    plan = matrix._get_tile_geometry(2, transpose=True, prepare=True)
     matrix._cache.tile_geometries[plan.key] = replace(plan, tile_width=999)
     with pytest.raises(ValueError, match='geometry|geometr'):
         matrix._get_binary_mm_plan(2, transpose=True)
 
 
 def test_hot_path_never_sorts_prepares_or_reads_host(monkeypatch):
-    matrix = _matrix()
-    matrix._mirror()
+    matrix = _matrix(backend=None).prepare_binary_mm(2)
+    monkeypatch.setattr(tcsr_main, '_cuda_available', lambda: True)
+    monkeypatch.setattr(tcsr_main, '_structure_device', lambda indices: None)
     left = jnp.array([[True, False], [True, True]])
     right = jnp.array([[True, False], [False, True], [True, True]])
     expected_left, expected_right = left @ matrix.todense(), matrix.todense() @ right
@@ -304,7 +340,7 @@ def test_hot_path_never_sorts_prepares_or_reads_host(monkeypatch):
 
 def test_invalid_geometry_object_reports_error():
     matrix = _matrix()
-    plan = matrix._get_binary_mm_plan(2, transpose=True)
+    plan = matrix._get_tile_geometry(2, transpose=True, prepare=True)
     matrix._cache.tile_geometries[plan.key] = object()
     with pytest.raises(ValueError, match='Invalid|invalid'):
         matrix._get_binary_mm_plan(2, transpose=True)
@@ -319,3 +355,20 @@ def test_empty_dimensions_edges_and_batches_follow_inherited_csr(shape, batch):
     assert matrix.nse == 0
     np.testing.assert_array_equal(left @ matrix, jnp.zeros((batch, shape[1])))
     np.testing.assert_array_equal(matrix @ right, jnp.zeros((shape[0], batch)))
+
+
+def test_unflatten_tolerates_a_changed_parent_leaf_layout(monkeypatch):
+    """Tile leaves trail the parent's, so TCSR never hard-codes the CSR aux layout."""
+    matrix = _matrix().prepare_binary_mm(2, transpose=True)
+    children, (parent_aux, descriptions) = matrix.tree_flatten()
+    seen = []
+    original = CSR.tree_unflatten.__func__
+
+    def parent(cls, aux, leaves):
+        seen.append(len(leaves))
+        return original(cls, aux, leaves)
+
+    monkeypatch.setattr(CSR, 'tree_unflatten', classmethod(parent))
+    restored = TCSR.tree_unflatten((parent_aux, descriptions), children)
+    assert seen == [len(children) - 2 * len(descriptions)]
+    assert restored._cache.tile_geometries.keys() == matrix._cache.tile_geometries.keys()

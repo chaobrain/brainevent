@@ -12,6 +12,7 @@ import jax
 import pytest
 
 import brainevent as _brainevent
+from brainevent._op.kernix_toolchain import _select_nvcc
 
 _BE_INCLUDE = str(Path(_brainevent.__file__).resolve().parent / "include")
 
@@ -23,9 +24,17 @@ def run(command: list[str]) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.skipif(jax.devices()[0].platform != 'gpu', reason='CUDA device required')
+def _has_cuda_gpu() -> bool:
+    try:
+        return bool(jax.devices('cuda'))
+    except RuntimeError:
+        return False
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not _has_cuda_gpu(), reason='CUDA device required')
 def test_native_weighted(tmp_path: Path) -> None:
-    nvcc, cxx = shutil.which('nvcc'), shutil.which('g++')
+    nvcc, cxx = _select_nvcc()[0], shutil.which('g++')
     if nvcc is None or cxx is None:
         pytest.skip('nvcc and g++ required')
     cuda = Path(nvcc).resolve().parents[1]

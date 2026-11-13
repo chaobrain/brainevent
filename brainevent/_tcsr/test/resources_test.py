@@ -23,13 +23,22 @@ def _isolate_resource_caches():
     jax.clear_caches()
 
 
+SM86 = (8, 6)
+
+
 @pytest.mark.parametrize('resources,threads,shared,expected', [
     (None, 256, 4, False),
-    (api.LaunchResources(128, 49152, 98304), 256, 4, False),
-    (api.LaunchResources(1024, 49152, 0), 1024, 49152, True),
-    (api.LaunchResources(1024, 16384, 98304), 256, 32768, False),
-    (api.LaunchResources(1024, 49152, 65536), 512, 65536, False),
-    (api.LaunchResources(1024, 49152, 98304), 512, 65536, True),
+    (api.LaunchResources(128, 49152, 98304, SM86), 256, 4, False),
+    (api.LaunchResources(1024, 49152, 0, SM86), 1024, 49152, True),
+    (api.LaunchResources(1024, 16384, 98304, SM86), 256, 32768, False),
+    (api.LaunchResources(1024, 49152, 65536, SM86), 512, 65536, False),
+    (api.LaunchResources(1024, 49152, 98304, SM86), 512, 65536, True),
+    # The architecture floor: f64 tiles need the native double atomicAdd.
+    (api.LaunchResources(1024, 49152, 49152, (5, 2)), 256, 4, False),
+    (api.LaunchResources(1024, 49152, 49152, (6, 0)), 256, 4, True),
+    # Turing: pre-sm_80 (shuffle fallback) and a 64 KiB opt-in ceiling.
+    (api.LaunchResources(1024, 49152, 65536, (7, 5)), 256, 32768, True),
+    (api.LaunchResources(1024, 49152, 65536, (7, 5)), 512, 65536, False),
 ])
 def test_limits_match_actual_native_allocation(resources, threads, shared, expected):
     assert api._supports(resources, threads, shared) is expected
@@ -74,7 +83,7 @@ def test_driver_queries_use_actual_local_ordinal_and_cache(monkeypatch, failure)
             return int(failure == 'device')
         def cuDeviceGetAttribute(self, output, attribute, device):
             calls.append(('attribute', attribute, device))
-            output._obj.value = {1: 1024, 8: 49152, 97: 98304}[attribute]
+            output._obj.value = {1: 1024, 8: 49152, 97: 98304, 75: 8, 76: 6}[attribute]
             return int(failure == 'attribute')
 
     def loader():
@@ -84,11 +93,11 @@ def test_driver_queries_use_actual_local_ordinal_and_cache(monkeypatch, failure)
     monkeypatch.setattr(api, '_cuda_driver', loader)
     device = Device()
     result = api._query_launch_resources(device)
-    assert result == (api.LaunchResources(1024, 49152, 98304) if failure is None else None)
+    assert result == (api.LaunchResources(1024, 49152, 98304, SM86) if failure is None else None)
     assert api._query_launch_resources(device) is result
     assert sum(c[0] == 'device' for c in calls) <= 1
     if failure is None:
-        assert calls == [('device', 7), ('attribute', 1, 123), ('attribute', 8, 123), ('attribute', 97, 123)]
+        assert calls == [('device', 7), *(('attribute', a, 123) for a in (1, 8, 97, 75, 76))]
 
 
 @pytest.mark.parametrize('status', [0, 1])
@@ -126,7 +135,7 @@ def test_cuda_lowering_uses_target_device_and_folds_resources(monkeypatch):
     queried = []
     def query(device):
         queried.append(device)
-        return api.LaunchResources(1024, 49152, 65536)
+        return api.LaunchResources(1024, 49152, 65536, SM86)
     monkeypatch.setattr(api, '_query_launch_resources', query)
     run = jax.jit(lambda: api.launch_supported(threads=512, shared_bytes=65536), device=gpu)
     assert not bool(run())
@@ -144,8 +153,34 @@ def test_cuda_lowering_with_assignment_checks_only_that_target(monkeypatch):
     queried = []
     def query(device):
         queried.append(device)
-        return api.LaunchResources(1024, 49152, 98304)
+        return api.LaunchResources(1024, 49152, 98304, SM86)
     monkeypatch.setattr(api, '_query_launch_resources', query)
     monkeypatch.setattr(api.mlir, 'ir_constant', lambda value: bool(value))
     assert api._lower_cuda(context, threads=512, shared_bytes=65536) == [True]
     assert queried == ['actual3']
+
+
+def test_static_decision_requires_one_process_and_agreeing_local_cuda_devices(monkeypatch):
+    fits = api.LaunchResources(1024, 49152, 98304, SM86)
+    small = api.LaunchResources(1024, 49152, 65536, SM86)
+    table = {}
+    monkeypatch.setattr(api, '_query_launch_resources', lambda device: table[device])
+
+    def devices(kind):
+        assert kind == 'cuda'
+        if not table:
+            raise RuntimeError('no CUDA backend')
+        return list(table)
+
+    monkeypatch.setattr(api.jax, 'devices', devices)
+    decide = lambda: api.static_launch_supported(threads=512, shared_bytes=65536)
+    assert decide() is None
+    table.update(gpu0=fits, gpu1=fits)
+    assert decide() is True
+    table.update(gpu0=small, gpu1=small)
+    assert decide() is False
+    table.update(gpu1=fits)
+    assert decide() is None
+    table.update(gpu0=fits)
+    monkeypatch.setattr(api.jax, 'process_count', lambda: 2)
+    assert decide() is None

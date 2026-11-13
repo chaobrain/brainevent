@@ -46,7 +46,7 @@ def test_compatibility_factories_preserve_values_and_parent_configuration(name, 
     assert type(result) is TCSR
     assert result.backend == source.backend
     assert result.config.tpr_threshold == source.config.tpr_threshold
-    assert result._cache.tile_geometries and all(key[0] for key in result._cache.tile_geometries)
+    assert result._cache.tile_geometries == {}  # tiles are prepared lazily
     np.testing.assert_array_equal(u.get_mantissa(result.todense()), u.get_mantissa(source.todense()))
     np.testing.assert_array_equal(result.indices, [0, 2, 1])
     assert u.get_unit(result.data) == u.mV
@@ -90,7 +90,7 @@ def test_mirror_alias_uses_common_cache_without_new_storage():
     assert result.has_tcsc_mirror
     assert result.data is matrix.data and result.indices is matrix.indices
     assert result._cache is matrix._cache
-    assert result._get_binary_mm_plan(2, transpose=True) is matrix._get_binary_mm_plan(2, transpose=True)
+    assert result._get_tile_geometry(2, transpose=True, prepare=True) is matrix._get_binary_mm_plan(2, transpose=True)
     assert jax.jit(lambda m: m.has_tcsc_mirror)(result)
     assert type(result.T) is CSC and type(result.T.T) is CSR
 
@@ -142,17 +142,19 @@ def test_checked_factories_prepare_inherited_mm_for_backend_override(factory_nam
     factory = TCSR if factory_name == 'constructor' else getattr(TCSR, factory_name)
     matrix = factory(argument, binary_backend='cuda_raw')
     assert matrix.config.device_info is not None
-    assert matrix._cache.tile_geometries and all(key[0] for key in matrix._cache.tile_geometries)
+    assert matrix._cache.tile_geometries == {}  # prepared by the first product
     events = jnp.array([[True, False], [True, True]])
     np.testing.assert_allclose(
         u.get_mantissa(BinaryArray(events) @ matrix),
         np.asarray(events) @ np.asarray(u.get_mantissa(source.todense())),
     )
+    assert [key[0] for key in matrix._cache.tile_geometries] == [True]
     right = jnp.array([[True, False], [False, True], [True, True]])
     np.testing.assert_allclose(
         u.get_mantissa(matrix @ BinaryArray(right)),
         np.asarray(u.get_mantissa(source.todense())) @ np.asarray(right),
     )
+    assert sorted(key[0] for key in matrix._cache.tile_geometries) == [False, True]
 
 
 def test_trusted_backend_override_can_explicitly_rebuild_parent_configuration():

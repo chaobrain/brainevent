@@ -2,7 +2,9 @@
 # Licensed under the Apache License, Version 2.0:
 # http://www.apache.org/licenses/LICENSE-2.0
 
-"""Automatic primary geometry and parent-owned lazy mirror preparation."""
+"""Lazy per-width tile geometry, mirror preparation and backend gating."""
+
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -10,114 +12,171 @@ import numpy as np
 import pytest
 
 from brainevent import BinaryArray, BitPackedBinary, CompactBinary, CSR, TCSR, WeightedArray
-from brainevent._csr import config as csr_config
+from brainevent._error import PerformanceWarning
 from brainevent._tcsr import main as tcsr_main
+from brainevent._tcsr.binary.combined.planner import tile_schedule
 
 
-def _matrix():
+@pytest.fixture(autouse=True)
+def _fresh_warning_registry():
+    tcsr_main._UNPREPARED_WARNED.clear()
+    yield
+    tcsr_main._UNPREPARED_WARNED.clear()
+
+
+@pytest.fixture
+def cuda_reachable(monkeypatch):
+    """Let CPU tests exercise the CUDA-only preparation path; dispatch still lowers for CPU."""
+    monkeypatch.setattr(tcsr_main, '_cuda_available', lambda: True)
+    monkeypatch.setattr(tcsr_main, '_structure_device', lambda indices: None)
+
+
+def _matrix(backend='jax_raw'):
     return TCSR(CSR(
         jnp.array([1., 2., 3.], jnp.float32),
         jnp.array([0, 2, 1], jnp.int32), jnp.array([0, 2, 3], jnp.int32),
-        shape=(2, 3), backend='jax_raw',
+        shape=(2, 3), backend=backend,
     ))
 
 
-def test_construction_prepares_all_primary_batches_without_building_mirror():
+def _forbid(monkeypatch, *targets):
+    def forbidden(*args, **kwargs):
+        raise AssertionError('unexpected host preparation')
+    for owner, name in targets:
+        monkeypatch.setattr(owner, name, forbidden)
+
+
+def test_construction_prepares_no_tiles_and_no_mirror():
     matrix = _matrix()
-    assert matrix._cache.tile_geometries
-    assert all(key[0] for key in matrix._cache.tile_geometries)
+    assert matrix._cache.tile_geometries == {}
     assert matrix._cache.mirror is None
     assert matrix.config.primary is not None
     assert matrix.config.mirror is None
-    assert matrix.config.mirror_max_row_nnz is None
-    assert matrix._cache.mirror_preparation is None
-    for batch in (0, 1, 187, 188, 189, 65535):
-        for dtype in (jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64):
-            assert matrix._get_binary_mm_plan(batch, transpose=True, dtype=dtype) is not None
+    for batch in (1, 188, 65535):
+        assert matrix._get_binary_mm_plan(batch, transpose=True) is None
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+def test_parent_backends_never_build_mirror_or_tiles(monkeypatch, side):
+    """A product on a non-CUDA backend must not pay for the mirror or tile memory."""
+    matrix = _matrix('jax_raw')
+    _forbid(monkeypatch, (tcsr_main, 'build_tile_geometries'))
+    events = jnp.array([[True, False, True], [False, True, True]])
+    if side == 'left':
+        result = BinaryArray(events.T[:2]) @ matrix
+        expected = events.T[:2] @ matrix.todense()
+    else:
+        result = matrix @ BinaryArray(events.T)
+        expected = matrix.todense() @ events.T
+    np.testing.assert_allclose(result, expected)
+    assert matrix._cache.mirror is None
+    assert matrix._cache.tile_geometries == {}
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+def test_default_backend_without_cuda_builds_nothing(monkeypatch, side):
+    matrix = _matrix(None)
+    monkeypatch.setattr(tcsr_main, '_cuda_available', lambda: False)
+    _forbid(monkeypatch, (tcsr_main, 'build_tile_geometries'))
+    if side == 'left':
+        BinaryArray(jnp.ones((2, 2), bool)) @ matrix
+    else:
+        matrix @ BinaryArray(jnp.ones((3, 2), bool))
+    assert matrix._cache.mirror is None and matrix._cache.tile_geometries == {}
+
+
+def test_cpu_committed_structure_builds_nothing_even_with_cuda(monkeypatch):
+    matrix = jax.device_put(_matrix(None), jax.devices('cpu')[0])
+    monkeypatch.setattr(tcsr_main, '_cuda_available', lambda: True)
+    _forbid(monkeypatch, (tcsr_main, 'build_tile_geometries'))
+    assert next(iter(matrix.indices.devices())).platform == 'cpu'
+    BinaryArray(jax.device_put(jnp.ones((2, 2), bool), jax.devices('cpu')[0])) @ matrix
+    assert matrix._cache.tile_geometries == {}
+
+
+def test_eager_product_prepares_exactly_the_width_it_runs(cuda_reachable):
+    matrix = _matrix(None)
+    events = jnp.array([[True, False], [True, True]])
+    np.testing.assert_allclose(BinaryArray(events) @ matrix, events @ matrix.todense())
+    width = tile_schedule(3, 2).tile_width
+    assert list(matrix._cache.tile_geometries) == [(True, width, np.dtype('int32'))]
+    assert matrix._cache.mirror is None
+    first = matrix._get_binary_mm_plan(2, transpose=True)
+    BinaryArray(events) @ matrix
+    assert matrix._get_binary_mm_plan(2, transpose=True) is first
+    assert len(matrix._cache.tile_geometries) == 1
+
+
+def test_right_product_prepares_mirror_and_one_mirror_width(cuda_reachable):
+    matrix = _matrix(None)
+    events = jnp.array([[True, False], [False, True], [True, True]])
+    np.testing.assert_allclose(matrix @ BinaryArray(events), matrix.todense() @ events)
+    assert matrix._cache.mirror is not None
+    keys = list(matrix._cache.tile_geometries)
+    assert keys == [(False, tile_schedule(2, 2).tile_width, np.dtype('int32'))]
+
+
+def test_lazy_prepare_covers_every_batch_and_accumulator_width():
+    matrix = TCSR(CSR(
+        jnp.array([1., 2., 3.], jnp.float32),
+        jnp.array([0, 100, 24575], jnp.int32), jnp.array([0, 2, 3], jnp.int32),
+        shape=(2, 24576), backend='jax_raw',
+    ))
+    widths = set()
+    for batch in (1, 187, 188, 189, 65535):
+        for dtype, accumulator_bytes in ((jnp.float32, 4), (jnp.float64, 8)):
+            plan = matrix._get_tile_geometry(batch, transpose=True, dtype=dtype, prepare=True)
+            assert plan.tile_width == tile_schedule(24576, batch, accumulator_bytes).tile_width
+            assert matrix._cache.tile_geometries[plan.key] is plan
+            widths.add(plan.tile_width)
+    # Only the widths that ran exist; same-width batches share one geometry.
+    assert {key[1] for key in matrix._cache.tile_geometries} == widths
+    assert matrix._get_tile_geometry(0, transpose=True, prepare=True) is None
     assert matrix._cache.mirror is None
 
 
-def test_mirror_hook_runs_after_parent_and_prepares_once_for_all_batches(monkeypatch):
-    matrix = _matrix()
-    real = tcsr_main.build_tile_geometries
-    calls = []
-
-    def prepare(indices, indptr, **kwargs):
-        assert matrix._cache.mirror is not None
-        assert matrix.config.mirror is not None
-        assert matrix.config.mirror_max_row_nnz == 1
-        assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
-        assert matrix._cache.mirror_preparation[1] == 1
-        calls.append(kwargs['transpose'])
-        return real(indices, indptr, **kwargs)
-
-    monkeypatch.setattr(tcsr_main, 'build_tile_geometries', prepare)
-    mirror = matrix._mirror()
-    assert mirror is matrix._cache.mirror
-    assert calls == [False]
-    original = dict(matrix._cache.tile_geometries)
-    for batch in (0, 1, 187, 188, 189, 65535):
-        for dtype in (jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64):
-            assert matrix._get_binary_mm_plan(batch, transpose=False, dtype=dtype) is not None
-        assert matrix._mirror() is mirror
-    assert calls == [False]
-    assert all(matrix._cache.tile_geometries[k] is geometry for k, geometry in original.items())
-
-
-def test_existing_parent_mirror_without_tiles_gets_lazy_tiles():
-    matrix = _matrix()
-    mirror = CSR._mirror(matrix)
-    assert mirror is not None
-    assert not any(not key[0] for key in matrix._cache.tile_geometries)
-    assert matrix._mirror() is mirror
-    assert any(not key[0] for key in matrix._cache.tile_geometries)
-
-
-def test_shared_values_reuse_first_mirror_geometry_initialization(monkeypatch):
+def test_shared_values_reuse_lazily_prepared_geometry(monkeypatch):
     matrix = _matrix()
     sibling = matrix.with_data(matrix.data * 2)
-    matrix._mirror()
-    assert sibling.config.mirror is None
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError('same-structure siblings must share mirror preparation')
-
-    monkeypatch.setattr(tcsr_main, 'build_tile_geometries', forbidden)
-    monkeypatch.setattr(csr_config, '_structure_plan', forbidden)
-    assert sibling._mirror() is matrix._cache.mirror
+    plan = matrix._get_tile_geometry(2, transpose=False, prepare=True)
+    _forbid(monkeypatch, (tcsr_main, 'build_tile_geometries'))
     assert sibling._cache is matrix._cache
-    assert sibling.config.mirror is matrix.config.mirror
-    assert (
-        sibling.config.mirror_max_row_nnz == matrix.config.mirror_max_row_nnz
-    )
-    assert sibling._get_binary_mm_plan(65535, transpose=False) is matrix._get_binary_mm_plan(65535, transpose=False)
+    assert sibling._get_tile_geometry(2, transpose=False, prepare=True) is plan
 
 
-def test_traced_matrix_without_mirror_uses_parent_without_host_preparation(monkeypatch):
-    matrix = _matrix()
+def test_traced_unprepared_matrix_warns_and_uses_parent(monkeypatch, cuda_reachable):
+    matrix = _matrix(None)
     expected = np.asarray(matrix.todense()) @ np.ones((3, 2), bool)
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError('traced missing mirror must not prepare on the host')
-
-    monkeypatch.setattr(tcsr_main, 'build_tile_geometries', forbidden)
-    monkeypatch.setattr(jax, 'device_get', forbidden)
-    result = jax.jit(lambda m, x: m @ BinaryArray(x))(matrix, jnp.ones((3, 2), bool))
+    _forbid(monkeypatch, (tcsr_main, 'build_tile_geometries'), (jax, 'device_get'))
+    run = jax.jit(lambda m, x: m @ BinaryArray(x))
+    with pytest.warns(PerformanceWarning, match='prepare_binary_mm'):
+        result = run(matrix, jnp.ones((3, 2), bool))
     np.testing.assert_array_equal(result, expected)
     assert matrix._cache.mirror is None
+    # The warning is emitted once per shape, batch and direction.
+    jax.clear_caches()
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', PerformanceWarning)
+        run(matrix, jnp.ones((3, 2), bool))
 
 
-def test_concrete_structure_closure_can_prepare_first_mirror_while_tracing():
-    matrix = _matrix()
-    def run(x):
-        matrix._mirror()
-        return matrix @ BinaryArray(x)
+def test_prepared_matrix_runs_under_jit_without_host_work(monkeypatch, cuda_reachable):
+    matrix = _matrix(None).prepare_binary_mm(2)
+    _forbid(monkeypatch, (tcsr_main, 'build_tile_geometries'), (jax, 'device_get'))
+    left, right = jnp.ones((2, 2), bool), jnp.ones((3, 2), bool)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', PerformanceWarning)
+        actual = jax.jit(lambda m, l, r: (BinaryArray(l) @ m, m @ BinaryArray(r)))(matrix, left, right)
+    dense = np.asarray(matrix.todense())
+    np.testing.assert_allclose(actual[0], left @ dense)
+    np.testing.assert_allclose(actual[1], dense @ right)
 
-    result = jax.jit(run)(jnp.ones((3, 2), bool))
+
+def test_concrete_closure_prepares_while_tracing(cuda_reachable):
+    matrix = _matrix(None)
+    result = jax.jit(lambda x: matrix @ BinaryArray(x))(jnp.ones((3, 2), bool))
     np.testing.assert_array_equal(result, [[3., 3.], [3., 3.]])
     assert matrix._cache.mirror is not None
-    assert matrix.config.mirror is not None
-    assert matrix.config.mirror_max_row_nnz == 1
     assert matrix._get_binary_mm_plan(2, transpose=False) is not None
     assert all(not isinstance(leaf, jax.core.Tracer) for leaf in jax.tree.leaves(matrix))
 
@@ -168,27 +227,9 @@ def test_stored_event_product_is_parent_owned():
     assert TCSR._stored_event_product is CSR._stored_event_product
 
 
-def test_wide_primary_has_geometry_for_distinct_batch_and_accumulator_widths():
-    matrix = TCSR(CSR(
-        jnp.array([1., 2., 3.], jnp.float32),
-        jnp.array([0, 100, 24575], jnp.int32), jnp.array([0, 2, 3], jnp.int32),
-        shape=(2, 24576), backend='jax_raw',
-    ))
-    from brainevent._tcsr.binary.combined.planner import tile_schedule
-    geometries = dict(matrix._cache.tile_geometries)
-    for batch in (0, 1, 187, 188, 189, 65535):
-        for dtype, accumulator_bytes in ((jnp.float32, 4), (jnp.float64, 8)):
-            plan = matrix._get_binary_mm_plan(batch, transpose=True, dtype=dtype)
-            assert plan.tile_width == tile_schedule(24576, batch, accumulator_bytes).tile_width
-            assert matrix._cache.tile_geometries[plan.key] is plan
-    assert len(geometries) > 2
-    assert matrix._cache.mirror is None
-    assert matrix._cache.tile_geometries.keys() == geometries.keys()
-
-
-def test_failed_mirror_preparation_does_not_publish_partial_geometries(monkeypatch):
+def test_failed_tile_preparation_does_not_publish_partial_geometries(monkeypatch):
     matrix = _matrix()
-    primary = dict(matrix._cache.tile_geometries)
+    primary = matrix._get_tile_geometry(2, transpose=True, prepare=True)
     real = tcsr_main.build_tile_geometries
 
     def fail(*args, **kwargs):
@@ -197,19 +238,16 @@ def test_failed_mirror_preparation_does_not_publish_partial_geometries(monkeypat
 
     monkeypatch.setattr(tcsr_main, 'build_tile_geometries', fail)
     with pytest.raises(RuntimeError, match='injected'):
-        matrix._mirror()
+        matrix._get_tile_geometry(2, transpose=False, prepare=True)
     assert matrix._cache.mirror is not None
     assert matrix.config.mirror is not None
-    assert matrix._cache.mirror_preparation[0] is matrix.config.mirror
-    assert matrix._cache.tile_geometries.keys() == primary.keys()
-    assert all(matrix._cache.tile_geometries[key] is geometry for key, geometry in primary.items())
+    assert list(matrix._cache.tile_geometries.values()) == [primary]
     monkeypatch.setattr(tcsr_main, 'build_tile_geometries', real)
-    matrix._mirror()
-    assert matrix._get_binary_mm_plan(2, transpose=False) is not None
+    assert matrix._get_tile_geometry(2, transpose=False, prepare=True) is not None
 
 
 def test_orphaned_mirror_geometry_errors_before_parent_can_replace_it():
-    matrix = _matrix().build_weight_indices()
+    matrix = _matrix().prepare_binary_mm(2, transpose=False)
     matrix._cache.mirror = None
     with pytest.raises(ValueError, match='matching mirror'):
-        matrix @ BinaryArray(jnp.ones((3, 2), bool))
+        matrix._get_tile_geometry(2, transpose=False, prepare=True)

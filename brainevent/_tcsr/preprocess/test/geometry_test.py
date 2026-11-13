@@ -2,7 +2,7 @@
 # Licensed under the Apache License, Version 2.0:
 # http://www.apache.org/licenses/LICENSE-2.0
 
-"""Complete automatic tile geometry, independent of batch and weight dtype."""
+"""Tile geometry per width, independent of batch and weight dtype."""
 
 from dataclasses import FrozenInstanceError
 
@@ -14,6 +14,7 @@ import pytest
 from brainevent._test_util import jax_x64_enabled
 from brainevent._tcsr.binary.combined.planner import INT32_MAX, tile_schedule
 from brainevent._tcsr.preprocess import TileGeometry, build_tile_geometries, geometry_widths
+from brainevent._tcsr.preprocess import preprocess as preprocess_module
 
 
 def _geometries(**updates):
@@ -132,6 +133,10 @@ def test_tiles_are_placed_with_committed_structure():
     ({'indices': np.array([-1, 2, 2, 1], np.int32)}, ValueError, 'range'),
     ({'indices': np.array([0, 2, 3, 1], np.int32)}, ValueError, 'range'),
     ({'indices': np.array([2, 0, 2, 1], np.int32)}, ValueError, 'sorted'),
+    ({'widths': (0,)}, ValueError, 'widths'),
+    ({'widths': (65537,)}, ValueError, 'widths'),
+    ({'widths': (True,)}, ValueError, 'widths'),
+    ({'widths': (2.5,)}, ValueError, 'widths'),
 ])
 def test_invalid_geometry_inputs(updates, error, message):
     with pytest.raises(error, match=message):
@@ -178,3 +183,38 @@ def test_explicit_int64_offsets_cannot_be_silently_narrowed(monkeypatch):
         monkeypatch.setattr(preprocess.jax, 'device_put', narrow)
         with pytest.raises(ValueError, match='preserve int64'):
             _geometries(indptr=np.array([0, 3, 4], np.int64))
+
+
+def _reference_offsets(idx, ptr, target, width):
+    """The original per-row searchsorted construction."""
+    tiles = (target + width - 1) // width
+    bounds = np.arange(tiles + 1, dtype=np.int64) * width
+    return np.stack([b + np.searchsorted(idx[b:e], bounds) for b, e in zip(ptr[:-1], ptr[1:])]
+                    or [np.empty(tiles + 1, np.int64)])[:ptr.size - 1]
+
+
+@pytest.mark.parametrize('block', [None, 1, 5])
+@pytest.mark.parametrize('seed', range(3))
+def test_vectorized_offsets_match_per_row_reference(monkeypatch, block, seed):
+    """Empty rows, duplicates and tile boundaries, with and without row blocking."""
+    if block is not None:
+        monkeypatch.setattr(preprocess_module, '_OFFSET_BLOCK', block)
+    rng = np.random.default_rng(seed)
+    target, rows = 97, 13
+    lengths = rng.integers(0, 9, size=rows)
+    ptr = np.r_[0, np.cumsum(lengths)].astype(np.int32)
+    idx = np.concatenate([np.sort(rng.integers(0, target, size=n)) for n in lengths]).astype(np.int32)
+    widths = (1, 7, 32, 96, 97, 128)
+    geometries = build_tile_geometries(idx, ptr, shape=(rows, target), transpose=True, widths=widths)
+    assert sorted(key[1] for key in geometries) == list(widths)
+    for (_, width, _), geometry in geometries.items():
+        tiles = (target + width - 1) // width
+        offsets = np.asarray(geometry.tile_offsets).reshape(rows, tiles + 1)
+        np.testing.assert_array_equal(offsets, _reference_offsets(idx, ptr, target, width))
+        np.testing.assert_array_equal(geometry.local_targets, idx % width)
+
+
+def test_requested_widths_are_deduplicated_and_only_those_are_built():
+    geometries = _geometries(widths=[3, 1, 3, np.int64(1)])
+    assert sorted(geometries) == [(True, 1, np.dtype('int32')), (True, 3, np.dtype('int32'))]
+    assert len(_geometries()) == len(geometry_widths(3))
