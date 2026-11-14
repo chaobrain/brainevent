@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import brainstate
@@ -1998,6 +1999,43 @@ def test_deterministic_gpu_ops_keep_the_default_off_the_mirror(monkeypatch, back
     matrix @ be.BinaryArray(jnp.ones((3, 2)))
     assert calls == [(indexed, indexed, backend, False)] * 2
     assert (matrix._cache.mirror is not None) == indexed
+
+
+@pytest.mark.usefixtures('_backend_restore_global_backends')
+@pytest.mark.parametrize('cls', [be.CSR, be.CSC])
+@pytest.mark.parametrize('backend,global_backend,warns', [
+    (None, None, False),
+    (None, 'jax_raw', False),
+    (None, 'cuda_raw', True),
+    ('cuda_raw', None, True),
+], ids=['default', 'global_jax', 'global_cuda', 'object_cuda'])
+def test_traced_structure_warns_only_when_the_mirror_scatter_was_requested(
+    monkeypatch, cls, backend, global_backend, warns,
+):
+    # A structure built inside jit carries no mirror, so the unfavorable product
+    # gathers. The GPU default merely prefers the scatter, and gathering is what it
+    # did before routing by CUDA availability, so it stays quiet; an explicit or
+    # global cuda_raw choice asked for the scatter and is told once.
+    import brainevent._structure as structure
+    monkeypatch.setattr(csr_main, '_cuda_available', lambda: True)
+    monkeypatch.setattr(structure, '_WARNED', set())
+    be.config.set_backend('gpu', global_backend)
+    source = cls.fromdense(jnp.array([[1., 0., 2.], [0., 3., 4.]]))
+    calls = _backend_spy_products(monkeypatch)
+    size = source.shape[1] if cls is be.CSR else source.shape[0]
+
+    def product(data, indices, indptr, values):
+        matrix = cls((data, indices, indptr), shape=source.shape, backend=backend)
+        return _backend_product(matrix, values, False)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        for batch in (None, 4, 2):  # three distinct traces: one MV, two MMs
+            shape = (size,) if batch is None else ((size, batch) if cls is be.CSR else (batch, size))
+            jax.make_jaxpr(product)(source.data, source.indices, source.indptr, jnp.ones(shape))
+    performance = [w for w in caught if issubclass(w.category, be.PerformanceWarning)]
+    assert len(performance) == int(warns)
+    assert [indexed for indexed, *_ in calls] == [False] * 3
 
 
 @pytest.mark.usefixtures('_backend_restore_global_backends')

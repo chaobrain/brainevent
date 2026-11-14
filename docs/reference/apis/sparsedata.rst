@@ -52,7 +52,10 @@ run the same native kernel; their ``config`` only selects tuning. See
 :doc:`utilities`.
 
 The mirror (the other compression of the structure) is built on first
-concrete use and shared by same-structure objects. Use
+concrete use and shared by same-structure objects. A structure built inside
+``jax.jit`` from traced arrays has none, so ``W @ events`` gathers instead of
+scattering; this warns once only when ``cuda_raw`` was chosen explicitly or
+globally. Use
 ``build_weight_indices()`` before passing a matrix as a JIT argument when its
 operations need the mirror. A CSR or CSC constructor's
 ``precompute_weight_indices=True`` option also builds it eagerly:

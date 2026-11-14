@@ -16,7 +16,8 @@ one explicit scheduler configuration (`CSRConfig`) in place of
 - `CSRConfig` and `MVSchedule` describe the CSR hybrid scheduler; pass
   `config=` to the CSR, CSC and `FixedNumPer*` constructors.
   `load_csr_config` and `save_csr_config` read and persist per-device
-  tuning; `init_csr_config` measures it.
+  tuning; `init_csr_config` measures it. Configs are hashable and compare
+  equal when their schedulers are equal (benchmark records are ignored).
 - `XLACustomKernel.resolve_backend(platform, requested=None)` reports the
   backend a primitive would lower with, without warnings or errors
   (`None` when lowering would fail).
@@ -57,12 +58,17 @@ one explicit scheduler configuration (`CSRConfig`) in place of
   long-row mask from `indptr` on each call. Matrices built inside `jax.jit`
   from traced arrays, built on the CPU, or used through `vmap` of MV run it
   natively, and redrawn structures of equal shape share one executable.
+  Its short-row scratch holds at most one entry per stored edge (or 4 MiB),
+  so a tall matrix with few output columns splits a large batch into more
+  chunks instead of reserving `batch * rows` entries.
   Matrix construction reads no structure statistics and queries no GPU;
   `check_structure=False` skips every host read of the structure.
 - With no backend chosen on a process with a CUDA device, CSR and CSC
   `W @ events` scatter over the mirror with the indexed CUDA kernel (the GPU
   default), as an explicit or global `cuda_raw` already did. Under
   `--xla_gpu_deterministic_ops` and on CPU-only processes the gather is kept.
+  A structure built inside `jax.jit` has no mirror and gathers; that warns
+  once only when `cuda_raw` was chosen explicitly or globally.
 - `CompactBinary` preprocessing follows the usual backend resolution
   (`set_backend`, the per-primitive default and the deterministic-ops flag)
   on the platform it lowers for, instead of picking `cuda_raw` from the

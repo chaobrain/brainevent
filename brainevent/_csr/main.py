@@ -441,7 +441,9 @@ class CompressedSparseData(DataRepresentation):
         the active events over the stored rows. ``S @ x`` gathers, except on
         ``cuda_raw``, which scatters over the cached mirror layout instead.
         Without a mirror and with a traced structure that falls back to the
-        gather, with a one-time :class:`brainevent.PerformanceWarning`.
+        gather. Only an explicit or global ``cuda_raw`` choice, which asked
+        for the scatter, gets a one-time :class:`brainevent.PerformanceWarning`;
+        the unconfigured CUDA default gathers quietly.
         """
         shape = self._storage_shape
         matrix = x.ndim == 2
@@ -450,7 +452,7 @@ class CompressedSparseData(DataRepresentation):
         mirror = None
         if not transpose and native:
             mirror = self._mirror()
-            if mirror is None:
+            if mirror is None and _backend_preference('gpu', self.backend) is not None:
                 warn_mirror_fallback(type(self).__name__, 'the unfavorable event product')
         if mirror is None:
             primary = binary_csrmm if matrix else binary_csrmv

@@ -219,6 +219,32 @@ def test_mm_plan_chunk_is_capped_at_the_native_group_limit():
     assert plan.workspace_words * 4 == binary
 
 
+SHORT_ROWS_FLOOR = 1 << 20  # int32 entries (4 MiB)
+
+
+@pytest.mark.parametrize('rows, cols, nnz, batch', [
+    (1_000_000, 10, 10_000_000, 1024),  # tall and narrow: the L2 rule alone gives chunk 1024
+    (20_000, 8, 20_000, 256),
+    (10_000_000, 2, 1_000_000, 4096),  # fewer edges than rows: one batch per group
+])
+def test_mm_plan_short_rows_never_exceed_the_index_array(rows, cols, nnz, batch):
+    plan = _plan(rows, cols, nnz, batch, l2_bytes=6 << 20)
+    assert plan.short_rows_size == plan.chunk * rows
+    assert plan.short_rows_size <= max(nnz, SHORT_ROWS_FLOOR, rows)
+    assert plan.chunk == max(1, max(nnz, SHORT_ROWS_FLOOR) // rows)
+    assert plan.task_capacity == plan.chunk * plan.long_tasks
+
+
+@pytest.mark.parametrize('rows, cols, nnz', [
+    (4000, 4000, 320_000), (20_000, 20_000, 4_000_000), (100_000, 100_000, 10_000_000),
+    (10_000, 200_000, 10_000_000),
+])
+def test_short_row_bound_leaves_the_benchmarked_shapes_on_the_l2_rule(rows, cols, nnz):
+    for batch in (1, 8, 64, 256):
+        fit = ((6 << 20) // 4) // (cols * 4)
+        assert _plan(rows, cols, nnz, batch, l2_bytes=6 << 20).chunk == max(1, min(fit, batch))
+
+
 @pytest.mark.parametrize('dtype', [np.float16, jnp.bfloat16, np.float32, np.float64])
 @pytest.mark.parametrize('batch', [1, 5, 300])
 def test_mm_plan_workspace_matches_the_native_layout(dtype, batch):

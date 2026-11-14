@@ -118,10 +118,21 @@ def test_config_pytree_has_no_leaves_and_its_schedule_is_the_treedef():
     assert tree == jax.tree_util.tree_structure(CSRConfig(mv=MVSchedule(256, 2048, 256, 1024)))
     for other in (CSRConfig(), CSRConfig(256, 2048, 256, 512)):
         assert tree != jax.tree_util.tree_structure(other)
-    # Configs are unhashable; identity is carried by the hashable aux data.
-    with pytest.raises(TypeError):
-        hash(config)
     assert hash(aux) == hash(_ConfigAux(MVSchedule(256, 2048, 256, 1024), ()))
+
+
+def test_configs_compare_and_hash_by_their_schedule():
+    record = _BenchmarkRecord(CSRConfig(128), 2.0, 10.0, 4)
+    config = CSRConfig(256)
+    same = CSRConfig(mv=MVSchedule(256, 1024, 128, 512), benchmark_records=(record,))
+    # Benchmark records are diagnostics: they change neither equality nor hash.
+    assert config == same and hash(config) == hash(same)
+    assert config != CSRConfig(512) and config != config.mv
+    assert CSRConfig() == CSRConfig() and len({CSRConfig(), CSRConfig(), config, same}) == 2
+    # A config can key a dict or a static jit argument.
+    compiled = jax.jit(lambda cfg, x: x + cfg.block_size, static_argnums=0)
+    assert int(compiled(config, 1)) == int(compiled(same, 1)) == 257
+    assert compiled._cache_size() == 1
 
 
 def test_benchmark_records_do_not_change_pytree_identity():

@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, ClassVar, Sequence
+from typing import Any, Sequence
 
 import jax
 import numpy as np
@@ -34,6 +34,9 @@ _MM_ITERATIONS = 16
 _MM_TASK_EDGES = 32 * _MM_ITERATIONS
 _MM_L2_DIVISOR = 4
 _MM_MAX_CHUNK = 65535
+# The int32 short-row lists of one chunk hold at most this many entries or one
+# per stored edge, whichever is larger (4 MiB, the G4 scratch allowance).
+_MM_SHORT_ROWS_FLOOR = 1 << 20
 _logger = logging.getLogger(__name__)
 
 
@@ -153,7 +156,7 @@ class _ConfigAux:
 
 
 @jax.tree_util.register_pytree_node_class
-@dataclass(frozen=True, eq=False, init=False)
+@dataclass(frozen=True, init=False)
 class CSRConfig:
     """Persisted MV scheduler tuning for CSR event kernels.
 
@@ -175,7 +178,9 @@ class CSRConfig:
     -----
     This object is a pytree without array leaves. Its scheduler is part of
     the tree structure, so two matrices compile the same executable when
-    their configs hold the same scheduler.
+    their configs hold the same scheduler. For the same reason two configs
+    are equal, and hash equally, when their schedulers are equal; benchmark
+    records are diagnostics and are ignored.
 
     Examples
     --------
@@ -188,7 +193,6 @@ class CSRConfig:
 
     mv: MVSchedule = field(default_factory=MVSchedule)
     benchmark_records: tuple[_BenchmarkRecord, ...] = field(default=(), compare=False, repr=False)
-    __hash__: ClassVar[Any] = None
 
     def __init__(
         self,
@@ -415,6 +419,15 @@ def _mm_plan(rows: int, cols: int, nnz: int, batch: int, dtype: Any,
         The launch plan. Its task queue holds every long-row task of any
         structure with these shapes, ``ceil(nnz / 512)`` plus one per
         possible long row, so it never overflows.
+
+    Notes
+    -----
+    The batch chunk keeps one chunk of output columns in a quarter of L2, and
+    is further limited so that the chunk's short-row lists (``chunk * rows``
+    int32 entries) hold no more entries than the matrix has edges, or 4 MiB
+    when that is larger. Without the second limit a tall matrix with few
+    output columns would get one chunk for the whole batch and short-row
+    scratch of ``batch * rows`` entries, several times the event input.
     """
     # Compute with Python ints: NumPy integer shapes would overflow silently.
     rows, cols, nnz, batch = (_integer(value, name) for name, value in (
@@ -430,7 +443,8 @@ def _mm_plan(rows: int, cols: int, nnz: int, batch: int, dtype: Any,
     value_bytes = np.dtype(dtype).itemsize
     # One chunk of accumulator columns should stay resident in a quarter of L2.
     fit = (l2_bytes // _MM_L2_DIVISOR) // (cols * max(4, value_bytes))
-    chunk = max(1, min(fit, batch, _MM_MAX_CHUNK))
+    short_rows_fit = max(nnz, _MM_SHORT_ROWS_FLOOR) // rows
+    chunk = max(1, min(fit, short_rows_fit, batch, _MM_MAX_CHUNK))
     capacity = chunk * long_tasks
     groups = -(-batch // chunk)
     queue_bytes = ((capacity * value_bytes + 3) // 4 * 4) if weighted else 0
