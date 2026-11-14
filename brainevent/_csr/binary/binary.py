@@ -2,7 +2,6 @@
 # Licensed under the Apache License, Version 2.0:
 # http://www.apache.org/licenses/LICENSE-2.0
 
-import warnings
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -14,31 +13,27 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._compatible_import import match_varying_axes
-from brainevent._error import PerformanceWarning
 from brainevent._misc import (
     _check_csr_cuda_structure_dtypes,
     _check_csr_structure_dtypes,
     _cusparse_accepts_nse,
     _cusparse_product,
+    _long_row_mask,
     namescope,
 )
 from brainevent._op import load_cuda_file
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._csr._support.binary import (
     _task_capacity,
-    _ignore_config_mask,
     _config_from_params,
-    _batch_config_params,
     _accumulator_info,
     _check_max_row_nnz,
     _config_for_call,
     _event_weight_cotangent,
     _hybrid_mv_kernel,
 )
-from brainevent._csr.config import (
-    CSRConfig,
-    get_device_info as _get_csr_device_info,
-)
+from brainevent._csr.config import CSRConfig, _mm_plan
+from brainevent._op.lowering_target import cuda_l2_bytes
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._op.ffi_naming import source_digest
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -137,19 +132,13 @@ def binary_csrmv(
         result is the exact product ``A @ v``.  Default is ``False``
         (binary events).
     config : CSRConfig or None, optional
-        ``None`` uses fixed MV scheduler defaults and a task-capacity bound
-        from static array sizes. Raw calls do not load saved tuning, query
-        GPU properties, scan the structure, or build a long-row mask.
-        Ordinary MV needs no preparation. If ``vmap`` turns this call into
-        nonempty CUDA hybrid scatter MM, pass a matching prepared config
-        with the target GPU information before the call or JIT; see
-        :func:`binary_csrmm`.
+        MV scheduler tuning. ``None`` uses the default scheduler; raw calls
+        never load saved tuning. Any config works for any structure.
     max_row_nnz : int or None, optional
-        Optional trusted row-length bound for the MV task queue. A prepared
-        config supplies its exact maximum; otherwise ``None`` uses a capacity
-        bound from array sizes. This argument never scans ``indptr``. When
-        supplying a bound without prepared statistics, the caller must ensure
-        it covers every row.
+        Optional trusted bound on the longest row, used to size the
+        ``cuda_raw`` MV task queue. ``None`` uses a bound from array sizes.
+        This argument never scans ``indptr``; the caller must ensure the
+        bound covers every row.
 
     Returns
     -------
@@ -214,7 +203,7 @@ def binary_csrmv(
         >>> binary_csrmv(data, indices, indptr, v, shape=(2, 3))
         Array([1. , 0.5], dtype=float32)
     """
-    _check_max_row_nnz(max_row_nnz, config)
+    _check_max_row_nnz(max_row_nnz)
     return _binary_csrmv_jit(
         data, indices, indptr, v,
         shape=shape, transpose=transpose, backend=backend, weighted=weighted,
@@ -238,11 +227,6 @@ def binary_csrmm(
     """
     Product of a CSR sparse matrix and a dense matrix using event-driven
     (binary) computation.
-
-    Nonempty CUDA hybrid scatter MM requires a matching prepared ``config``
-    before this call or JIT. This applies when ``transpose=True`` and the
-    backend resolves to ``'cuda_raw'``, including automatic selection.
-    ``config=None`` and bare ``CSRConfig()`` cannot run that path.
 
     Computes ``C = A @ B`` (or ``C = A.T @ B`` when ``transpose=True``)
     where ``A`` is stored in Compressed Sparse Row format and ``B`` is a
@@ -284,26 +268,17 @@ def binary_csrmm(
         weights by their value, ``e(B[j, l]) = B[j, l]``, so the result is
         the exact product ``A @ B``.  Default is ``False`` (binary events).
     config : CSRConfig or None, optional
-        Required for nonempty CUDA hybrid scatter MM (``transpose=True`` and
-        backend resolving to ``'cuda_raw'``, including automatic selection).
-        Prepare and pass a snapshot matching this traversal's structure and
-        long-row mask, with real target GPU information, before calling this
-        function or entering ``jax.jit``. ``None`` and bare ``CSRConfig()``
-        are insufficient: raw calls never load saved tuning, query GPU
-        properties, scan the structure, or build a mask. Gather MM
-        (``transpose=False``), other backends, and empty products can omit it.
+        Scheduler tuning. ``None`` uses the default scheduler; raw calls never
+        load saved tuning. The CUDA hybrid scatter MM (``transpose=True``) is
+        planned from static shapes and the target GPU when it is lowered, so
+        any config works for any structure, including one built inside
+        ``jax.jit``.
 
     Returns
     -------
     C : jax.Array or brainunit.Quantity
         Result matrix.  Shape ``(shape[1], cols)`` when ``transpose=True``
         or ``(shape[0], cols)`` when ``transpose=False``.
-
-    Raises
-    ------
-    KernelCompilationError
-        A nonempty CUDA hybrid scatter MM call reaches kernel construction
-        without a complete prepared config for the structure and target GPU.
 
     See Also
     --------
@@ -312,8 +287,6 @@ def binary_csrmm(
 
     Notes
     -----
-    See :ref:`csr-mm-configuration` for configuration preparation steps.
-
     The operation is *event-driven*: entries of ``B`` that are inactive
     (``False`` or ``0``; negative values and NaN are active) are skipped, so
     they contribute exactly ``0`` on every backend even against NaN/+-Inf
@@ -350,9 +323,6 @@ def binary_csrmm(
 
     Examples
     --------
-    This example uses gather MM (``transpose=False``), which needs no
-    prepared MM config.
-
     .. code-block:: python
 
         >>> import jax.numpy as jnp
@@ -832,7 +802,7 @@ def _grad_backend(backend, primitive):
     return None
 
 
-def _csrmv_jvp_v(v_dot, data, indices, indptr, v, long_mask, *, shape, transpose, **kwargs):
+def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
     # The float primitive needs a weight-dtype tangent (numba has no float16).
     return [
         csrmv(data, indices, indptr, v_dot.astype(data.dtype), shape=shape, transpose=transpose,
@@ -840,7 +810,7 @@ def _csrmv_jvp_v(v_dot, data, indices, indptr, v, long_mask, *, shape, transpose
     ]
 
 
-def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, long_mask, *, shape, transpose, **kwargs):
+def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
     return binary_csrmv_p_call(
         data_dot,
         indices,
@@ -851,11 +821,11 @@ def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, long_mask, *, shape, 
         backend=kwargs['backend'],
         weighted=kwargs.get('weighted', False),
         max_row_nnz=kwargs.get('max_row_nnz'),
-        config=_config_from_params(kwargs, long_mask),
+        config=_config_from_params(kwargs),
     )
 
 
-def _csrmv_transpose_rule(ct, data, indices, indptr, events, long_mask, *, shape, transpose, **kwargs):
+def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose, **kwargs):
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr):
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
@@ -867,21 +837,21 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, long_mask, *, shape
             ct_events = csrmv(data, indices, indptr, ct,
                               shape=shape, transpose=not transpose,
                               backend=_grad_backend(kwargs['backend'], csrmv_p))
-        return data, indices, indptr, ct_events, None
+        return data, indices, indptr, ct_events
     if type(ct) is ad.Zero:
-        return ad.Zero(data.aval), indices, indptr, events, None
+        return ad.Zero(data.aval), indices, indptr, events
     ct_values = _event_weight_cotangent(
         ct, data.aval, events, indices, indptr, dict(kwargs, transpose=transpose),
         primitive=binary_csrmv_p,
         unit_product=lambda w: _csrmv_jvp_weights(
-            w, data, indices, indptr, events, long_mask, shape=shape, transpose=transpose, **kwargs)[0],
+            w, data, indices, indptr, events, shape=shape, transpose=transpose, **kwargs)[0],
     )
-    return ct_values, indices, indptr, events, None
+    return ct_values, indices, indptr, events
 
 
 def _csrmv_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if axes in ((None, None, None, 0, None), (None, None, None, 1, None)):
+    if axes in ((None, None, None, 0), (None, None, None, 1)):
         assert args[3].ndim == 2, 'Batching requires 2D input.'
         r = binary_csrmm_p_call(
             args[0],
@@ -892,11 +862,10 @@ def _csrmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            config=_config_from_params(kwargs, args[-1]),
+            config=_config_from_params(kwargs),
         )
         return r, [1]
 
-    kwargs = _batch_config_params(args, axes, kwargs)
     return general_batching_rule(binary_csrmv_p, args, axes, **kwargs)
 
 
@@ -1017,13 +986,8 @@ def binary_csrmv_p_call(
         Multiply the weights by the event value instead of the activity
         mask (:class:`~brainevent.WeightedArray`).  Default is ``False``.
     config : CSRConfig or None, optional
-        ``None`` uses fixed MV scheduler defaults and a task-capacity bound
-        from static array sizes. Raw calls do not load saved tuning, query
-        GPU properties, scan the structure, or build a long-row mask.
-        Ordinary MV needs no preparation. If ``vmap`` turns this call into
-        nonempty CUDA hybrid scatter MM, pass a matching prepared config
-        with the target GPU information before the call or JIT; see
-        :func:`binary_csrmm`.
+        MV scheduler tuning. ``None`` uses the default scheduler; raw calls
+        never load saved tuning. Any config works for any structure.
     max_row_nnz : int or None, optional
         Upper bound on the longest row of ``indptr``, used to size the
         ``cuda_raw`` hybrid task queue (see :func:`binary_csrmv`).
@@ -1105,16 +1069,14 @@ def binary_csrmv_p_call(
     )
 
     # Call the binary_csrmv_p custom operation to perform the matrix-vector multiplication.
-    config = _config_for_call(config, indices, indptr, shape)
-    config_spec, long_mask = config.kernel_args()
+    config = _config_for_call(config)
     return binary_csrmv_p(
         weights,
         indices,
         indptr,
         vector,
-        long_mask,
         outs=[out_info],
-        config_spec=config_spec,
+        config_spec=config.mv,
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -1157,13 +1119,13 @@ See Also
 binary_csrmv : High-level user-facing function wrapper.
 """
 )
-binary_csrmv_p.def_numba_kernel(_ignore_config_mask(_csrmv_numba_kernel))
-binary_csrmv_p.def_cuda_raw_kernel(_ignore_config_mask(_binary_csrmv_cuda_kernel), asdefault=True)
-binary_csrmv_p.def_kernel('jax_raw', 'cpu', _ignore_config_mask(_binary_csrmv_jax_kernel))
-binary_csrmv_p.def_kernel('jax_raw', 'gpu', _ignore_config_mask(_binary_csrmv_jax_kernel))
-binary_csrmv_p.def_kernel('jax_raw', 'tpu', _ignore_config_mask(_binary_csrmv_jax_kernel))
-binary_csrmv_p.def_kernel('cusparse', 'gpu', _ignore_config_mask(_binary_csrmv_cusparse_kernel))
-binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v, None)
+binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
+binary_csrmv_p.def_cuda_raw_kernel(_binary_csrmv_cuda_kernel, asdefault=True)
+binary_csrmv_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_jax_kernel)
+binary_csrmv_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_jax_kernel)
+binary_csrmv_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_jax_kernel)
+binary_csrmv_p.def_kernel('cusparse', 'gpu', _binary_csrmv_cusparse_kernel)
+binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
 binary_csrmv_p.def_call(binary_csrmv_p_call)
@@ -1418,62 +1380,7 @@ def _binary_csrmm_cusparse_kernel(
 
 
 # Shared hybrid MM CUDA path for ordinary and indexed CSR calls.
-_UNPREPARED_MM_WARNED: set = set()
 _HYBRID_MM_DIR = Path(__file__).parent / 'hybrid_mm'
-
-
-def _hybrid_mm_plan(params, vector_info, weight_info):
-    """Launch plan of a native hybrid scatter MM, derived from static metadata.
-
-    Parameters
-    ----------
-    params : dict
-        Primitive parameters; ``config_spec`` carries the prepared structure.
-    vector_info, weight_info : jax.ShapeDtypeStruct
-        Event matrix ``(n, batch)`` and weight metadata.
-
-    Returns
-    -------
-    MMCallPlan or None
-        ``None`` when the structure or GPU properties were not prepared (for
-        example traced, vmapped over ``indptr``, or ``config=None``) or the
-        value dtype has no native kernel.
-    """
-    spec = params.get('config_spec')
-    if spec is None:
-        return None
-    return CSRConfig.from_kernel_args(spec, None).mm_plan(
-        vector_info.shape[1], weight_info.dtype, params.get('weighted', False))
-
-
-def _hybrid_mm_needs_fallback(kwargs, vector_info, weight_info) -> bool:
-    """Whether a native scatter MM lacks the prepared plan the hybrid kernel needs.
-
-    Empty calls never launch the kernel, so they need no plan; unsupported
-    value dtypes are left to the adapter's error.
-    """
-    out_info = kwargs['outs'][0]
-    if (not vector_info.shape[1] or not kwargs['indptr_info'].size - 1
-            or not out_info.shape[0] or not kwargs['indices_info'].size):
-        return False
-    if np.dtype(weight_info.dtype) not in CUDA_VALUE_DTYPES:
-        return False
-    return _hybrid_mm_plan(kwargs, vector_info, weight_info) is None
-
-
-def _warn_unprepared_mm(primitive: str) -> None:
-    """Warn once per primitive that native scatter MM uses the portable path."""
-    if primitive in _UNPREPARED_MM_WARNED:
-        return
-    _UNPREPARED_MM_WARNED.add(primitive)
-    warnings.warn(
-        f"{primitive}: the native CUDA scatter MM has no prepared CSRConfig plan for this "
-        "structure (it is traced, vmapped, or config=None), so it uses the portable JAX "
-        "scatter. Construct the sparse matrix (or call CSRConfig.prepare_structure) outside "
-        "jax.jit and pass its config to use the native kernel.",
-        PerformanceWarning,
-        stacklevel=2,
-    )
 
 
 @lru_cache(maxsize=None)
@@ -1487,39 +1394,36 @@ def _load_hybrid_mm(layout: str, mode: str) -> str:
     return module
 
 
-def _make_hybrid_mm_kernel(*, config_spec, weight_info, vector_info,
-                           indices_info, indptr_info, outs=None, out_info=None,
-                           weighted=False, permuted=False, perm_info=None, **kwargs):
-    """Lower a prepared hybrid SpMM call to its native BN layout.
+def _make_hybrid_mm_kernel(*, weight_info, vector_info, indices_info, indptr_info,
+                           outs=None, out_info=None, weighted=False, permuted=False,
+                           target_devices=(), **kwargs):
+    """Lower a hybrid scatter SpMM call to its native batch-major layout.
+
+    The launch is planned from static shapes and the L2 size of the target
+    devices; the long-row mask is computed from ``indptr`` inside the lowered
+    program. No structure statistics or prepared state are needed.
 
     Parameters
     ----------
-    config_spec : CSRKernelSpec
-        Immutable scheduler, structure and preparation-device metadata.
     weight_info, vector_info, indices_info, indptr_info : jax.ShapeDtypeStruct
         Mathematical operand shapes and dtypes.
     outs : sequence of jax.ShapeDtypeStruct or None, optional
         Primitive output metadata, used when ``out_info`` is omitted.
     out_info : jax.ShapeDtypeStruct or None, optional
-        Logical NB output shape and dtype.
+        Logical output ``(cols, batch)`` shape and dtype.
     weighted : bool, optional
         Multiply weights by active event amplitudes.
     permuted : bool, optional
         The returned callable receives an additional weight permutation.
-    perm_info : jax.ShapeDtypeStruct or None, optional
-        Permutation operand metadata for indexed callers.
+    target_devices : sequence of jax.Device, optional
+        Devices the lowering targets; their smallest L2 sizes the batch chunk.
     **kwargs
         Additional primitive metadata ignored by this adapter.
 
     Returns
     -------
     callable
-        A kernel receiving math operands and a final prepared long-row mask.
-
-    Raises
-    ------
-    ValueError
-        A nonempty hybrid call lacks matching structure or device preparation.
+        ``kernel(weights, indices, indptr, [perm,] events)``.
     """
     out_info = out_info if out_info is not None else outs[0]
     batch, rows, cols = vector_info.shape[1], indptr_info.size - 1, out_info.shape[0]
@@ -1528,16 +1432,8 @@ def _make_hybrid_mm_kernel(*, config_spec, weight_info, vector_info,
         return lambda *args: (match_varying_axes(jnp.zeros(out_info.shape, out_info.dtype), *args),)
     if np.dtype(weight_info.dtype) not in CUDA_VALUE_DTYPES:
         raise ValueError('Hybrid CSR MM supports only float16, bfloat16, float32, or float64 values.')
-    params = dict(config_spec=config_spec, weighted=weighted)
-    plan = _hybrid_mm_plan(params, vector_info, weight_info)
-    if plan is None:
-        raise ValueError(
-            'Hybrid CSR MM requires a complete prepared CSRConfig with structure and GPU device '
-            'information. Prepare the config before jax.jit and pass it explicitly.'
-        )
-    structure = config_spec.structure
-    if (structure.rows, structure.cols, structure.nnz) != (rows, cols, nnz):
-        raise ValueError('Hybrid CSR MM config does not match the operand structure.')
+    plan = _mm_plan(rows, cols, nnz, batch, np.dtype(weight_info.dtype), bool(weighted),
+                    cuda_l2_bytes(target_devices))
     native_permuted = permuted and weight_info.size != 1
     module = _load_hybrid_mm('col_major' if native_permuted else 'row', 'weighted' if weighted else 'binary')
     abi = cuda_event_abi(vector_info.dtype, weighted=weighted, value_dtype=weight_info.dtype)
@@ -1554,28 +1450,23 @@ def _make_hybrid_mm_kernel(*, config_spec, weight_info, vector_info,
         jax.ShapeDtypeStruct((plan.workspace_words,), jnp.uint32),
         jax.ShapeDtypeStruct((plan.short_rows_size,), jnp.int32),
     )
-    device = config_spec.device_info
     attrs = dict(
         group=plan.group, long_threshold=plan.long_threshold,
-        chunk=plan.chunk, long_tasks=plan.long_tasks,
-        task_capacity=plan.task_capacity,
-        expected_sms=device.sms, expected_l2_bytes=device.l2_bytes,
+        chunk=plan.chunk, long_tasks=plan.long_tasks, task_capacity=plan.task_capacity,
     )
     ffi = jax.ffi.ffi_call(module + '.' + symbol, infos, vmap_method='sequential')
-    mask_shape = ((rows + 31) // 32,)
 
     def kernel(*args):
         if permuted:
-            weights, indices, indptr, perm, events, long_mask = args
+            weights, indices, indptr, perm, events = args
         else:
-            weights, indices, indptr, events, long_mask = args
+            weights, indices, indptr, events = args
             perm = None
-        if long_mask.shape != mask_shape or long_mask.dtype != np.uint32:
-            raise ValueError('Hybrid CSR MM long-row mask does not match the prepared structure.')
         operands = (weights, indices, indptr)
         if native_permuted:
             operands += (perm,)
-        output = ffi(*operands, long_mask, abi.prepare(events).T, **attrs)[0]
+        mask = _long_row_mask(indptr, plan.long_threshold)
+        output = ffi(*operands, mask, abi.prepare(events).T, **attrs)[0]
         return (match_varying_axes(output.T.astype(out_info.dtype), *args),)
 
     return kernel
@@ -1585,6 +1476,7 @@ def _binary_csrmm_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
+    target_devices=(),
     **kwargs,
 ):
     _check_csr_cuda_structure_dtypes(kwargs['indices_info'], kwargs['indptr_info'])
@@ -1602,13 +1494,9 @@ def _binary_csrmm_cuda_kernel(
     homo_suffix = '_homo' if is_homo else '_hetero'
 
     if transpose:
-        if _hybrid_mm_needs_fallback(kwargs, vector_info, weight_info):
-            _warn_unprepared_mm('binary_csrmm')
-            return _ignore_config_mask(_binary_csrmm_jax_kernel)(
-                weight_info=weight_info, vector_info=vector_info, transpose=True, **kwargs)
         return _make_hybrid_mm_kernel(
             weight_info=weight_info, vector_info=vector_info,
-            permuted=False, **kwargs,
+            permuted=False, target_devices=target_devices, **kwargs,
         )
 
     load_cuda_file(
@@ -1618,7 +1506,7 @@ def _binary_csrmm_cuda_kernel(
     out_info = kwargs['outs'][0]
     kernel_name = f'csr_binary_csrmm.binary_csrmm_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
-    def kernel(weights, indices, indptr, B, long_mask):
+    def kernel(weights, indices, indptr, B):
         B = event_abi.prepare(B)
         math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
         return (math_out,)
@@ -1626,7 +1514,7 @@ def _binary_csrmm_cuda_kernel(
     return kernel
 
 
-def _csrmm_jvp_data(data_dot, data, indices, indptr, B, long_mask, *, shape, transpose, **kwargs):
+def _csrmm_jvp_data(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
     return binary_csrmm_p_call(
         data_dot,
         indices,
@@ -1636,43 +1524,44 @@ def _csrmm_jvp_data(data_dot, data, indices, indptr, B, long_mask, *, shape, tra
         transpose=transpose,
         backend=kwargs['backend'],
         weighted=kwargs.get('weighted', False),
-        config=_config_from_params(kwargs, long_mask),
+        config=_config_from_params(kwargs),
     )
 
 
-def _csrmm_jvp_B(B_dot, data, indices, indptr, B, long_mask, *, shape, transpose, **kwargs):
+def _csrmm_jvp_B(B_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
     return [
         csrmm(data, indices, indptr, B_dot.astype(data.dtype), shape=shape, transpose=transpose,
               backend=_grad_backend(kwargs['backend'], csrmm_p))
     ]
 
 
-def _csrmm_transpose_rule(ct, data, indices, indptr, B, long_mask, *, shape, transpose, **kwargs):
+def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose,
+                          rerun_forward=True, **kwargs):
     assert not ad.is_undefined_primal(indices)
     assert not ad.is_undefined_primal(indptr)
 
     ct = ct[0]
     if type(ct) is ad.Zero:
         if ad.is_undefined_primal(B):
-            return data, indices, indptr, ad.Zero(B.aval), None
-        return ad.Zero(data.aval), indices, indptr, B, None
+            return data, indices, indptr, ad.Zero(B.aval)
+        return ad.Zero(data.aval), indices, indptr, B
     if ad.is_undefined_primal(B):
         dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose,
                    backend=_grad_backend(kwargs['backend'], csrmm_p))
-        return data, indices, indptr, dB, None
-    # TCSR reuses this rule without a CSR long-row mask, so it has no CSR forward to rerun.
-    unit_product = None if long_mask is None else (lambda w: _csrmm_jvp_data(
-        w, data, indices, indptr, B, long_mask, shape=shape, transpose=transpose, **kwargs)[0])
+        return data, indices, indptr, dB
+    # TCSR reuses this rule with its own backends, so it cannot rerun the CSR forward.
+    unit_product = None if not rerun_forward else (lambda w: _csrmm_jvp_data(
+        w, data, indices, indptr, B, shape=shape, transpose=transpose, **kwargs)[0])
     d_data = _event_weight_cotangent(
         ct, data.aval, B, indices, indptr, dict(kwargs, transpose=transpose),
         primitive=binary_csrmm_p, unit_product=unit_product,
     )
-    return d_data, indices, indptr, B, None
+    return d_data, indices, indptr, B
 
 
 def _csrmm_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if axes[:3] == (None, None, None) and axes[3] in (0, 1, 2) and axes[-1] is None:
+    if axes[:3] == (None, None, None) and axes[3] in (0, 1, 2):
         assert args[3].ndim == 3, 'Batching requires 3D input.'
         # Fold the batch into the event columns: ``B`` becomes ``(m, batch * n)``.
         if axes[3] == 0:
@@ -1690,7 +1579,7 @@ def _csrmm_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            config=_config_from_params(kwargs, args[-1]),
+            config=_config_from_params(kwargs),
         )[0]
         if axes[3] == 2:
             n, batch_size = args[3].shape[1:]
@@ -1698,7 +1587,6 @@ def _csrmm_batching(args, axes, **kwargs):
         batch_size = args[3].shape[axes[3]]
         return [r.reshape(r.shape[0], batch_size, -1)], [1]
 
-    kwargs = _batch_config_params(args, axes, kwargs)
     return general_batching_rule(binary_csrmm_p, args, axes, **kwargs)
 
 
@@ -1722,10 +1610,7 @@ def _binary_csrmm_benchmark_data(*, platform):
                         f"{'homo' if homo else 'hetero'},"
                         f"{'bool' if bool_event else 'float'}")
                 indices = jnp.asarray(indices)
-                config = CSRConfig().prepare_structure(
-                    indices, indptr, shape=(n_pre, n_post),
-                    device_info=_get_csr_device_info(indices, indptr) if platform == 'gpu' else None,
-                )
+                config = CSRConfig()
                 configs.append(
                     BenchmarkConfig(
                         name,
@@ -1751,10 +1636,6 @@ def binary_csrmm_p_call(
     """
     Low-level primitive call for event-driven CSR matrix--matrix
     multiplication.
-
-    The prepared-config requirement of :func:`binary_csrmm` also applies
-    here: nonempty CUDA hybrid scatter MM cannot run with ``config=None``
-    or bare ``CSRConfig()``.
 
     Prepares inputs, validates shapes and dtypes, and dispatches the
     ``binary_csrmm_p`` XLA custom kernel to compute ``C = A @ B`` (or
@@ -1788,14 +1669,11 @@ def binary_csrmm_p_call(
         Multiply the weights by the event value instead of the activity
         mask (:class:`~brainevent.WeightedArray`).  Default is ``False``.
     config : CSRConfig or None, optional
-        Required for nonempty CUDA hybrid scatter MM (``transpose=True`` and
-        backend resolving to ``'cuda_raw'``, including automatic selection).
-        Prepare and pass a snapshot matching this traversal's structure and
-        long-row mask, with real target GPU information, before calling this
-        function or entering ``jax.jit``. ``None`` and bare ``CSRConfig()``
-        are insufficient: raw calls never load saved tuning, query GPU
-        properties, scan the structure, or build a mask. Gather MM
-        (``transpose=False``), other backends, and empty products can omit it.
+        Scheduler tuning. ``None`` uses the default scheduler; raw calls never
+        load saved tuning. The CUDA hybrid scatter MM (``transpose=True``) is
+        planned from static shapes and the target GPU when it is lowered, so
+        any config works for any structure, including one built inside
+        ``jax.jit``.
 
     Returns
     -------
@@ -1816,9 +1694,6 @@ def binary_csrmm_p_call(
     AssertionError
         If there is a shape mismatch between ``B`` and the sparse
         matrix ``shape`` (considering the ``transpose`` flag).
-    KernelCompilationError
-        A nonempty CUDA hybrid scatter MM call reaches kernel construction
-        without a complete prepared config for the structure and target GPU.
 
     See Also
     --------
@@ -1843,9 +1718,6 @@ def binary_csrmm_p_call(
 
     Examples
     --------
-    This example uses gather MM (``transpose=False``), which needs no
-    prepared MM config.
-
     .. code-block:: python
 
         >>> import jax.numpy as jnp
@@ -1882,16 +1754,14 @@ def binary_csrmm_p_call(
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
     )
     # Call the binary_csrmm_p custom operation to perform the matrix-matrix multiplication.
-    config = _config_for_call(config, indices, indptr, shape)
-    config_spec, long_mask = config.kernel_args()
+    config = _config_for_call(config)
     return binary_csrmm_p(
         weights,
         indices,
         indptr,
         B,
-        long_mask,
         outs=[out_info],
-        config_spec=config_spec,
+        config_spec=config.mv,
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -1911,11 +1781,6 @@ binary_csrmm_p = XLACustomKernel(
     'binary_csrmm',
     doc="""
 Low-level XLA custom-kernel primitive for ``binary_csrmm``.
-
-Nonempty CUDA hybrid scatter MM requires a matching prepared config with
-structure, long-row mask, and target GPU information before the call or JIT;
-``None`` and bare ``CSRConfig()`` are insufficient. See :func:`binary_csrmm`
-for the config contract, including gather, backend, and empty-product exceptions.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR sparse matrix-matrix multiplication
 operation to registered backends (``numba``, ``cuda_raw``, ``cusparse``, ``jax_raw``),
@@ -1937,13 +1802,13 @@ See Also
 binary_csrmm : High-level user-facing function wrapper.
 """
 )
-binary_csrmm_p.def_numba_kernel(_ignore_config_mask(_csrmm_numba_kernel))
+binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
 binary_csrmm_p.def_cuda_raw_kernel(_binary_csrmm_cuda_kernel, asdefault=True)
-binary_csrmm_p.def_kernel('jax_raw', 'cpu', _ignore_config_mask(_binary_csrmm_jax_kernel))
-binary_csrmm_p.def_kernel('jax_raw', 'gpu', _ignore_config_mask(_binary_csrmm_jax_kernel))
-binary_csrmm_p.def_kernel('jax_raw', 'tpu', _ignore_config_mask(_binary_csrmm_jax_kernel))
-binary_csrmm_p.def_kernel('cusparse', 'gpu', _ignore_config_mask(_binary_csrmm_cusparse_kernel))
-binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B, None)
+binary_csrmm_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_jax_kernel)
+binary_csrmm_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_jax_kernel)
+binary_csrmm_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_jax_kernel)
+binary_csrmm_p.def_kernel('cusparse', 'gpu', _binary_csrmm_cusparse_kernel)
+binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)
 binary_csrmm_p.def_call(binary_csrmm_p_call)

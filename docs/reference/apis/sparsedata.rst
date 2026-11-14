@@ -34,73 +34,39 @@ CSR / CSC / TCSR
 Configuration and mirror preparation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-With concrete structure, CSR, CSC and the fixed-connection formats prepare
-configuration statistics and an MM structure plan for their stored traversal
-during construction. ``CSR(..., config=None)`` selects saved scheduler tuning
-once from the target GPU and the matrix's stored shape and edge count, then
-prepares the actual structure. Selection uses an explicit configuration or
+``CSR(..., config=None)`` selects saved scheduler tuning once, during
+construction, from the device kind holding the structure and the matrix's
+stored shape and edge count. Selection uses an explicit configuration or
 environment override first, followed by a matching local workload, another
 valid local configuration for the same GPU, and finally library defaults.
-Passing ``config=CSRConfig()`` explicitly uses scheduler defaults and still
-prepares the structure. Matrix operations pass the selected configuration
-to their raw CSR operators automatically.
+Passing ``config=CSRConfig()`` explicitly uses scheduler defaults. Matrix
+operations pass the selected configuration to their raw CSR operators
+automatically.
 
-Matching uses static metadata and does not read device arrays to calculate
-density. A traced matrix can retain its selected scheduler snapshot without
-preparing a structure plan. Local tuning records never supply another
-matrix's masks or workspace capacity; those belong to the actual structure.
+Matching uses static metadata and reads no device arrays, so a matrix built
+from traced arrays inside ``jax.jit`` selects its tuning the same way. The
+configuration describes no structure: the CUDA hybrid MM is planned from
+static shapes and the target GPU when it is lowered, and builds its long-row
+mask on every call. Raw calls such as ``binary_csrmm(..., config=None)``
+run the same native kernel; their ``config`` only selects tuning. See
+:doc:`utilities`.
 
-``CSRConfig()`` alone has no prepared MM plan or long-row mask. Raw calls
-such as ``binary_csrmm(..., config=None)`` do not load tuning, inspect the
-structure or capture GPU information. Before a nonempty CUDA hybrid scatter
-MM call, pass a configuration already prepared for the actual sparse arrays
-and target GPU, for example ``config=matrix.config``. Other backends, empty
-operations and CUDA gather paths have different requirements; see
-:doc:`utilities` for the full contract.
-
-``CSRConfig.prepare_structure()`` reads concrete row pointers outside JIT
-and returns a new snapshot with statistics and a real long-row mask for only
-the supplied traversal. It does not query a GPU; device information must
-already be captured or supplied. CPU preparation can provide the mask while
-leaving GPU information unset. Until a mirror is prepared, ``config.mirror``
-and ``config.mirror_max_row_nnz`` are ``None``.
-
-The first concrete mirror request prepares its statistics and MM plan from
-the mirror row pointers, then retains them in the configuration and shared
-structure cache. Later mirror requests and same-structure objects reuse this
-preparation. TCSR inherits this lifecycle: CSR prepares the mirror and its
-configuration before TCSR prepares mirror tiles.
-
-Use ``build_weight_indices()`` before passing a matrix as a JIT argument
-when its operations need the mirror. A CSR or CSC constructor's
-``precompute_weight_indices=True`` option also prepares it eagerly:
+The mirror (the other compression of the structure) is built on first
+concrete use and shared by same-structure objects. Use
+``build_weight_indices()`` before passing a matrix as a JIT argument when its
+operations need the mirror. A CSR or CSC constructor's
+``precompute_weight_indices=True`` option also builds it eagerly:
 
 .. code-block:: python
 
    >>> import jax.numpy as jnp
-   >>> from brainevent import CSR, CSRConfig
-   >>> matrix = CSR.fromdense(
-   ...     jnp.array([[1., 0.], [2., 3.]]),
-   ...     backend='jax_raw', config=CSRConfig())
-   >>> matrix.config.mirror_max_row_nnz is None
-   True
+   >>> from brainevent import CSR
+   >>> matrix = CSR.fromdense(jnp.array([[1., 0.], [2., 3.]]))
+   >>> 'csc' in matrix.buffers
+   False
    >>> matrix = matrix.build_weight_indices()
-   >>> matrix.config.mirror_max_row_nnz
-   2
-
-A mirror created from traced structure can carry arrays without statistics.
-MM then uses an applicable fallback; call ``build_weight_indices()`` outside
-JIT to fill in the missing statistics and plan.
-
-``with_rebuilt_config()`` returns a new matrix with freshly prepared
-configuration. It rebuilds mirror parameters only if the mirror already
-exists. Its ``device`` argument controls plan placement without moving the
-matrix arrays, including the placement of a subsequently prepared mirror
-mask. Replacing the structure or mirror invalidates its previous preparation.
-Earlier configuration references remain immutable snapshots; existing
-same-structure objects receive cached mirror parameters when they next
-request the mirror or are packed as pytrees. Packing and reconstruction do
-not scan the structure to create missing statistics.
+   >>> 'csc' in matrix.buffers
+   True
 
 
 Event weight gradients
@@ -150,9 +116,8 @@ inputs, supported actual-target resources and available matching geometry.
 MV, WeightedArray and ordinary numerical inputs use the corresponding parent
 operator. Binary event wrappers accepted by CSR need no changes.
 
-Native tiled TCSR MM uses its own prepared tile geometry rather than the
-parent hybrid MM long-row mask. Calls that select the inherited CSR hybrid
-MM route still require its matching prepared structure and GPU information.
+Native tiled TCSR MM uses its own prepared tile geometry. Calls that select
+the inherited CSR hybrid MM route need no preparation.
 
 Geometry is built per tile width on first concrete use and shared by
 same-structure objects; the mirror direction is built only after CSR supplies
@@ -207,16 +172,7 @@ Factory argument names match the public input type: ``csr`` for ``TCSR``,
 ``from_sorted_csr`` shares the source ``CSRConfig`` even when its ``backend``
 preference is overridden. It skips sorting; a concrete source without primary
 geometry prepares it. Internal pytree restoration and reuse of complete
-same-structure geometry do not read host structure. This factory does not
-implicitly rebuild device configuration. When switching a configuration without GPU
-device information to ``cuda_raw``, first place the matrix arrays on the
-target GPU, then call ``matrix.with_rebuilt_config(device=target_device)``
-outside JIT before using a parent MM path that requires GPU configuration,
-including a fallback with no matching tile plan. ``device`` can be omitted
-when structure placement already identifies the target GPU. Rebuilding
-configuration does not move matrix or tile arrays. Use ``TCSR(csr, backend=...)`` or
-``TCSR.fromcsr(csr, backend=...)`` when configuration should be rebound during
-construction.
+same-structure geometry do not read host structure.
 
 Inherited methods retain their CSR argument names: ``slice_rows(index)``,
 ``with_data(data)``, ``apply(fn)``, ``dt2t(y_dim_arr, w_dim_arr)`` and

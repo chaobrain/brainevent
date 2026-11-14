@@ -68,6 +68,14 @@ from brainevent._csr.binary.binary import _load_hybrid_mm  # noqa: E402
 from brainevent._op.util import cuda_event_abi, dtype_suffix  # noqa: E402
 from brainevent._sddmm._mm.sddmm import _cuda_plan as _sddmm_cuda_plan  # noqa: E402
 
+try:  # The shape-only plan; absent from the prepared-plan baseline.
+    from brainevent._csr.config import _mm_plan  # noqa: E402
+    from brainevent._op.lowering_target import cuda_l2_bytes  # noqa: E402
+except ImportError:
+    _mm_plan = cuda_l2_bytes = None
+# The baseline's FFI also declares the prepared-device check attributes.
+_DEVICE_CHECK_ATTRS = {} if _mm_plan is not None else dict(expected_sms=0, expected_l2_bytes=0)
+
 TASK_EDGES = 512  # edges per long-row task (native kTaskEdges)
 ITERATIONS = 16  # long_threshold = ITERATIONS * group
 L2_DIVISOR = 4
@@ -216,7 +224,7 @@ def static_mm(weights, indices, indptr, events, mask=None, *, cols, group, long_
     out = jax.ffi.ffi_call(f'{module}.{symbol}', infos, vmap_method='sequential')(
         weights, indices, indptr, mask, abi.prepare(events).T,
         group=group, long_threshold=ITERATIONS * group, chunk=chunk, long_tasks=long_tasks,
-        task_capacity=capacity, expected_sms=0, expected_l2_bytes=0)[0]
+        task_capacity=capacity, **_DEVICE_CHECK_ATTRS)[0]
     return out.T.astype(vdtype)
 
 
@@ -314,7 +322,14 @@ def static_product(rows, cols, nnz, batch, dtype, weighted, l2_bytes, *, group=N
 
 
 def prepared_plan(matrix, batch, dtype, weighted):
-    plan = matrix.config.mm_plan(batch, dtype, weighted)
+    """The plan variant P runs: prepared on the baseline, shape-only afterwards."""
+    if _mm_plan is not None:
+        rows, cols = matrix.shape
+        if not (rows and cols and batch and matrix.nse):
+            return None
+        plan = _mm_plan(rows, cols, matrix.nse, batch, np.dtype(dtype), bool(weighted), gpu_l2_bytes())
+    else:
+        plan = matrix.config.mm_plan(batch, dtype, weighted)
     if plan is None:
         return None
     return dict(group=plan.group, long_tasks=plan.long_tasks, chunk=plan.chunk,
@@ -327,6 +342,8 @@ def prepared_plan(matrix, batch, dtype, weighted):
 # ---------------------------------------------------------------------------
 
 def gpu_l2_bytes():
+    if cuda_l2_bytes is not None:
+        return cuda_l2_bytes(jax.devices('gpu'))
     from brainevent._csr.config import get_device_info
     info = get_device_info(device=jax.devices('gpu')[0])
     return info.l2_bytes if info is not None else 6 << 20
@@ -751,12 +768,31 @@ def report(rows, full=False):
 
 
 def compare(base, new):
+    """Per-variant new/base median time, and the new run's T/P (the jit-built route)."""
     def index(rows):
         return {(r['size'], r['dist'], r['mode'], r['batch'], r['activity'], r['variant']): r
                 for r in rows if r['kind'] == 'time'}
+
+    def cell(keys, num, den):
+        ratios = [num[k]['median_us'] / den[k]['median_us'] for k in keys]
+        return f'{_geomean(ratios):.3f} ({len(ratios)})' if ratios else '-'
+
     a, b = index(base), index(new)
-    ratios = [b[k]['median_us'] / a[k]['median_us'] for k in a.keys() & b.keys()]
-    return f'## new/base median time: geomean {_geomean(ratios):.3f} over {len(ratios)} cases'
+    shared = a.keys() & b.keys()
+    lines = ['## New vs base: median time ratio, geomean (cases)',
+             '| variant | batch >= 8 | batch 1 |', '|---|---|---|']
+    for variant in ('P', 'T', 'J', 'S', 'S0'):
+        keys = [k for k in shared if k[-1] == variant]
+        if keys:
+            lines.append(f'| {variant} | {cell([k for k in keys if k[3] >= 8], b, a)} '
+                         f'| {cell([k for k in keys if k[3] == 1], b, a)} |')
+    pairs = {k[:-1]: k for k in b if k[-1] == 'P'}
+    t_over_p = [b[k]['median_us'] / b[pairs[k[:-1]]]['median_us']
+                for k in b if k[-1] == 'T' and k[:-1] in pairs and k[3] >= 8]
+    if t_over_p:
+        lines.append(f'\nNew T/P (batch >= 8): geomean {_geomean(t_over_p):.3f}, '
+                     f'max {max(t_over_p):.3f} over {len(t_over_p)} cases')
+    return '\n'.join(lines)
 
 
 def cmd_report(args):

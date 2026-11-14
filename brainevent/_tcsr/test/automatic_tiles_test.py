@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from brainevent import BinaryArray, BitPackedBinary, CompactBinary, CSR, TCSR, WeightedArray
+from brainevent._csr import main as csr_main
 from brainevent._error import PerformanceWarning
 from brainevent._tcsr import main as tcsr_main
 from brainevent._tcsr.binary.combined.planner import tile_schedule
@@ -46,12 +47,14 @@ def _forbid(monkeypatch, *targets):
         monkeypatch.setattr(owner, name, forbidden)
 
 
-def test_construction_prepares_no_tiles_and_no_mirror():
+def test_construction_prepares_no_tiles_and_no_mirror(monkeypatch):
+    _forbid(monkeypatch, (tcsr_main, 'build_tile_geometries'))
     matrix = _matrix()
     assert matrix._cache.tile_geometries == {}
     assert matrix._cache.mirror is None
-    assert matrix.config.primary is not None
-    assert matrix.config.mirror is None
+    # The config holds no structure state, so it adds no pytree leaves.
+    assert jax.tree.leaves(matrix.config) == []
+    assert len(jax.tree.leaves(matrix)) == 3
     for batch in (1, 188, 65535):
         assert matrix._get_tile_geometry(batch, transpose=True) is None
 
@@ -76,7 +79,9 @@ def test_parent_backends_never_build_mirror_or_tiles(monkeypatch, side):
 @pytest.mark.parametrize('side', ['left', 'right'])
 def test_default_backend_without_cuda_builds_nothing(monkeypatch, side):
     matrix = _matrix(None)
+    # Both TCSR tiles and the inherited CSR mirror route ask whether CUDA exists.
     monkeypatch.setattr(tcsr_main, '_cuda_available', lambda: False)
+    monkeypatch.setattr(csr_main, '_cuda_available', lambda: False)
     _forbid(monkeypatch, (tcsr_main, 'build_tile_geometries'))
     if side == 'left':
         BinaryArray(jnp.ones((2, 2), bool)) @ matrix
@@ -239,8 +244,8 @@ def test_failed_tile_preparation_does_not_publish_partial_geometries(monkeypatch
     monkeypatch.setattr(tcsr_main, 'build_tile_geometries', fail)
     with pytest.raises(RuntimeError, match='injected'):
         matrix._get_tile_geometry(2, transpose=False, prepare=True)
+    # The mirror was built before the failure and stays cached.
     assert matrix._cache.mirror is not None
-    assert matrix.config.mirror is not None
     assert list(matrix._cache.tile_geometries.values()) == [primary]
     monkeypatch.setattr(tcsr_main, 'build_tile_geometries', real)
     assert matrix._get_tile_geometry(2, transpose=False, prepare=True) is not None

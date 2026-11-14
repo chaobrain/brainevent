@@ -7,9 +7,9 @@
 import hashlib
 import importlib
 import re
+import warnings
 from contextlib import contextmanager
 from functools import lru_cache
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,7 +24,6 @@ import brainevent
 import brainevent._csr._support.binary as support_mod
 import brainevent._csr.binary.binary as binary_mod
 import brainevent._csr.binary.binary_indexed as binary_indexed_mod
-import brainevent._csr.config as config_mod
 from brainevent._csr.test._test_util import (
     EVENT_DTYPE_NAMES,
     EVENT_KINDS,
@@ -43,7 +42,6 @@ from brainevent._csr.test._test_util import (
     inactive_nonfinite_case,
     int64_structure,
     matrix_csr,
-    prepared_config,
     random_csr_numpy,
     recording_ffi_call,
     requires_gpu_backend,
@@ -67,8 +65,10 @@ from brainevent._csr.binary.binary import (
     binary_csrmv_p_call,
 )
 from brainevent._csr.binary.binary_indexed import binary_csrmm_indexed_p_call, binary_csrmv_indexed_p_call
-from brainevent._csr.config import CSRConfig, CSRDeviceInfo, get_device_info
+from brainevent._csr.config import CSRConfig, MVSchedule, _mm_plan
+from brainevent._misc import _long_row_mask
 from brainevent._op import load_cuda_file
+from brainevent._op.lowering_target import DEFAULT_L2_BYTES
 from brainevent._test_util import check_event_op_grads, jax_x64_enabled, requires_gpu, with_jax_x64
 
 
@@ -102,9 +102,20 @@ def _patch_cuda_loaders(monkeypatch, loader):
     monkeypatch.setattr(binary_mod, '_load_hybrid_mm', lru_cache(maxsize=None)(binary_mod._load_hybrid_mm.__wrapped__))
 
 
-def _eqn_plan(eqn):
-    """Hybrid MM launch plan the CUDA lowering derives for a CSR MM equation."""
-    return binary_mod._hybrid_mm_plan(eqn.params, eqn.invars[-2].aval, eqn.invars[0].aval)
+def _mm_eqn_shapes(eqn):
+    """``(rows, cols, nnz, batch)`` from which the CUDA lowering plans a CSR MM equation."""
+    indices, indptr, events = eqn.invars[1].aval, eqn.invars[2].aval, eqn.invars[-1].aval
+    return indptr.shape[0] - 1, eqn.outvars[0].aval.shape[0], indices.shape[0], events.shape[1]
+
+
+_HYBRID_MM_TARGET = 'batched_spmm_v3'
+
+
+def _hybrid_mm_targets(function, *args):
+    """Custom-call targets of the native hybrid scatter MM in the compiled ``function``."""
+    text = jax.jit(function).lower(*args).compile().as_text()
+    return [t for t in re.findall(r'custom_call_target="([^"]+)"', text) if _HYBRID_MM_TARGET in t]
+
 
 def _require_implementations(implementations, op_name: str):
     if not implementations:
@@ -144,7 +155,7 @@ def _vector_csr_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=True,
         backend=implementation,
-        config=prepared_config(indices, indptr, shape),
+        config=CSRConfig(),
     )
 
 
@@ -157,7 +168,7 @@ def _csr_vector_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=False,
         backend=implementation,
-        config=prepared_config(indices, indptr, shape),
+        config=CSRConfig(),
     )
 
 
@@ -171,7 +182,7 @@ def _matrix_csr_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=True,
         backend=implementation,
-    config=prepared_config(indices, indptr, shape)).T
+    config=CSRConfig()).T
 
 
 def _csr_matrix_api(x, data, indices, indptr, shape, implementation):
@@ -183,7 +194,7 @@ def _csr_matrix_api(x, data, indices, indptr, shape, implementation):
         shape=shape,
         transpose=False,
         backend=implementation,
-        config=prepared_config(indices, indptr, shape),
+        config=CSRConfig(),
     )
 
 
@@ -291,7 +302,7 @@ def _nonfinite_mv(case, shape, transpose, backend):
         jnp.asarray(case.data), jnp.asarray(case.indices), indptr, case.events,
         shape=shape,
         transpose=transpose, backend=backend, weighted=case.weighted,
-        config=prepared_config(case.indices, case.indptr, shape),
+        config=CSRConfig(),
     )
 
 
@@ -301,7 +312,7 @@ def _nonfinite_mm(case, shape, transpose, backend):
         jnp.asarray(case.data), jnp.asarray(case.indices), indptr, case.events,
         shape=shape,
         transpose=transpose, backend=backend, weighted=case.weighted,
-        config=prepared_config(case.indices, case.indptr, shape),
+        config=CSRConfig(),
     )
 
 
@@ -336,7 +347,9 @@ def test_binary_csrmv_p_call_returns_one_output_and_static_task_capacity(hint):
     np.testing.assert_allclose(np.asarray(out[0]), expected)
 
     eqn = _kernel_eqn(binary_csrmv_p, call, weights, vector)
-    assert (len(eqn.invars), len(eqn.outvars)) == (5, 1)
+    # Math operands only: the long-row mask is no longer an operand.
+    assert (len(eqn.invars), len(eqn.outvars)) == (4, 1)
+    assert eqn.params['config_spec'] == MVSchedule()
     _assert_task_capacity_param(eqn, indptr, max_row_nnz)
 
 
@@ -357,8 +370,28 @@ def test_binary_csrmm_p_call_returns_one_output_without_mv_workspace():
     np.testing.assert_allclose(np.asarray(out[0]), expected)
 
     eqn = _kernel_eqn(binary_csrmm_p, call, weights, matrix)
-    assert (len(eqn.invars), len(eqn.outvars)) == (5, 1)
+    # Math operands only; the MM plan comes from shapes at lowering, not from params.
+    assert (len(eqn.invars), len(eqn.outvars)) == (4, 1)
     assert not {'task_capacity', 'max_row_nnz', 'call_plan'} & eqn.params.keys()
+    assert eqn.params['config_spec'] == MVSchedule()
+
+
+@pytest.mark.parametrize('primitive', ['mv', 'mm'])
+def test_p_call_binds_the_config_scheduler_without_structure_state(primitive):
+    # Any config works for any structure: its scheduler is the only bound state.
+    indices, indptr, heavy = _heavy_row_structure()
+    weights = jnp.ones(indices.shape, jnp.float32)
+    events = jnp.array([True, True]) if primitive == 'mv' else jnp.ones((2, 3), bool)
+    config = CSRConfig(block_size=128, tpr_threshold=16, task_nnz=64)
+    p_call, prim = ((binary_csrmv_p_call, binary_csrmv_p) if primitive == 'mv'
+                    else (binary_csrmm_p_call, binary_csrmm_p))
+    eqn = _kernel_eqn(prim, lambda w, v: p_call(
+        w, indices, indptr, v, shape=(2, heavy), transpose=True, backend='jax_raw', config=config),
+        weights, events)
+    assert eqn.params['config_spec'] == config.mv
+    with pytest.raises(TypeError, match='CSRConfig'):
+        p_call(weights, indices, indptr, events, shape=(2, heavy), transpose=True,
+               backend='jax_raw', config=config.mv)
 
 
 @pytest.mark.slow
@@ -411,8 +444,8 @@ def test_binary_csrmv_batching_vector_axis_0_uses_csrmm_fast_path(monkeypatch):
     )
 
     out, out_axes = _csrmv_batching(
-        (weights, indices, indptr, vector, jnp.empty(0, jnp.uint32)),
-        (None, None, None, 0, None),
+        (weights, indices, indptr, vector),
+        (None, None, None, 0),
         shape=(1, 2),
         transpose=False,
         backend="jax_raw",
@@ -446,8 +479,8 @@ def test_binary_csrmv_batching_vector_axis_1_uses_csrmm_fast_path(monkeypatch):
     )
 
     out, out_axes = _csrmv_batching(
-        (weights, indices, indptr, vector, jnp.empty(0, jnp.uint32)),
-        (None, None, None, 1, None),
+        (weights, indices, indptr, vector),
+        (None, None, None, 1),
         shape=(1, 2),
         transpose=False,
         backend="jax_raw",
@@ -475,7 +508,7 @@ def test_binary_csrmv_accepts_int32_indices_with_int64_indptr_on_jax_raw():
             events,
             shape=(2, 3),
             backend='jax_raw',
-            config=prepared_config(indices, indptr, (2, 3)),
+            config=CSRConfig(),
         )
 
         assert jnp.allclose(got, jnp.array([3.0, 4.0], dtype=jnp.float32))
@@ -497,7 +530,7 @@ def test_binary_csrmv_rejects_int64_indices_with_int32_indptr():
                 events,
                 shape=(1, 2),
                 backend='jax_raw',
-                config=prepared_config(indices, indptr, (1, 2)),
+                config=CSRConfig(),
             )
 
 
@@ -509,7 +542,7 @@ def test_binary_csrmm_accepts_int32_indices_with_int64_indptr_on_jax_raw():
         indptr = jnp.array([0, 2, 4], dtype=jnp.int64)
         events = jnp.array([[True, False], [False, True], [True, True]])
 
-        got = binary_csrmm(weights, indices, indptr, events, shape=(2, 3), backend='jax_raw', config=prepared_config(indices, indptr, (2, 3)))
+        got = binary_csrmm(weights, indices, indptr, events, shape=(2, 3), backend='jax_raw', config=CSRConfig())
         expected = jnp.array([[3.0, 2.0], [4.0, 7.0]], dtype=jnp.float32)
 
         assert jnp.allclose(got, expected)
@@ -1077,7 +1110,7 @@ class TestBatchingMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         for implementation in CSRMM_IMPLEMENTATIONS:
             self._implementation = implementation
-            # Traced indices have no prepared plan: native MM uses the portable fallback.
+            # Traced indices still lower the native MM: its plan needs only shapes.
             res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
             assert jnp.all(res)
 
@@ -1158,7 +1191,7 @@ class TestBatchingMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         for implementation in CSRMM_IMPLEMENTATIONS:
             self._implementation = implementation
-            # Traced indices have no prepared plan: native MM uses the portable fallback.
+            # Traced indices still lower the native MM: its plan needs only shapes.
             r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
@@ -1235,7 +1268,7 @@ class TestBatchingMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         for implementation in CSRMM_IMPLEMENTATIONS:
             self._implementation = implementation
-            # Traced indices have no prepared plan: native MM uses the portable fallback.
+            # Traced indices still lower the native MM: its plan needs only shapes.
             r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
@@ -1320,19 +1353,16 @@ def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatc
             **{**common, 'outs': [shape_of(jnp.float32, (1, 1))]},
         )
         mm_nt_out = mm_nt_kernel(
-            jnp.array([2.0, 3.0], dtype=jnp.float32), indices, indptr, jnp.array([[True], [False]]), jnp.empty(0, jnp.uint32),
+            jnp.array([2.0, 3.0], dtype=jnp.float32), indices, indptr, jnp.array([[True], [False]]),
         )
 
-        cfg = CSRConfig().prepare_structure(indices, indptr, shape=(1, 2),
-            device_info=CSRDeviceInfo('gpu', 'test', 4 * 1024**2, 8))
-        spec, mask = cfg.kernel_args()
+        # The scatter MM needs no prepared config: its plan comes from shapes.
         mm_t_kernel = binary_mod._binary_csrmm_cuda_kernel(
             shape_of(jnp.float32, (2,)), shape_of(jnp.float32, (1, 1)), True,
-            **{**common, 'outs': [shape_of(jnp.float32, (2, 1))],
-               'config_spec': spec},
+            **{**common, 'outs': [shape_of(jnp.float32, (2, 1))]},
         )
         mm_t_out = mm_t_kernel(jnp.array([2.0, 3.0], jnp.float32), indices, indptr,
-                              jnp.array([[1.0]], jnp.float32), mask)
+                               jnp.array([[1.0]], jnp.float32))
 
     assert [strip_hybrid_suffix(name) for _, name, _ in load_calls] == [
         'csr_binary_csrmv',
@@ -1354,8 +1384,14 @@ def test_binary_cuda_generators_accept_int64_indptr_without_real_cuda(monkeypatc
     # Direct kernels take the four math operands; hybrid ones add their own scratch.
     assert len(ffi_calls[0][3]) == 4 and len(ffi_calls[2][3]) == 4
     _assert_hybrid_scratch_call(ffi_calls[1], 4, task_capacity, jnp.int64)
-    assert ffi_calls[3][3][3].dtype == jnp.uint32
-    assert ffi_calls[3][4]["expected_sms"] == 8
+    # The hybrid MM builds its long-row mask from indptr and gets only plan attributes.
+    plan = _mm_plan(1, 2, 2, 1, np.dtype(np.float32), False, DEFAULT_L2_BYTES)
+    mm_args, mm_attrs = ffi_calls[3][3], ffi_calls[3][4]
+    assert len(mm_args) == 5 and mm_args[2].dtype == jnp.int64
+    np.testing.assert_array_equal(mm_args[3], _long_row_mask(indptr, plan.long_threshold))
+    assert mm_args[3].dtype == jnp.uint32
+    assert mm_attrs == dict(group=plan.group, long_threshold=plan.long_threshold, chunk=plan.chunk,
+                            long_tasks=plan.long_tasks, task_capacity=plan.task_capacity)
 
 
 @requires_gpu_backend
@@ -1369,9 +1405,9 @@ def test_binary_csrmv_cuda_accepts_int64_indptr(transpose, homo):
     vector = jnp.array([True, False], dtype=jnp.bool_) if transpose else jnp.array([True, False, True])
 
     got = binary_csrmv(data, indices, indptr64, vector, shape=(2, 3), transpose=transpose,
-                       backend='cuda_raw', config=prepared_config(indices, indptr64, (2, 3)))
+                       backend='cuda_raw', config=CSRConfig())
     expected = binary_csrmv(data, indices, indptr32, vector, shape=(2, 3), transpose=transpose,
-                            backend='jax_raw', config=prepared_config(indices, indptr32, (2, 3)))
+                            backend='jax_raw', config=CSRConfig())
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -1391,9 +1427,9 @@ def test_binary_csrmm_cuda_accepts_int64_indptr(transpose, homo):
     )
 
     got = binary_csrmm(data, indices, indptr64, matrix, shape=(2, 3), transpose=transpose,
-                       backend='cuda_raw', config=prepared_config(indices, indptr64, (2, 3)))
+                       backend='cuda_raw', config=CSRConfig())
     expected = binary_csrmm(data, indices, indptr32, matrix, shape=(2, 3), transpose=transpose,
-                            backend='jax_raw', config=prepared_config(indices, indptr32, (2, 3)))
+                            backend='jax_raw', config=CSRConfig())
 
     assert jnp.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
@@ -1416,7 +1452,7 @@ def test_binary_csrmm_cuda_normalizes_numeric_events_to_bool_abi(event_dtype):
             shape=(2, 3),
             transpose=True,
             backend="cuda_raw",
-            config=prepared_config(indices, indptr, (2, 3)),
+            config=CSRConfig(),
         )
         expected = binary_csrmm(
             data,
@@ -1426,7 +1462,7 @@ def test_binary_csrmm_cuda_normalizes_numeric_events_to_bool_abi(event_dtype):
             shape=(2, 3),
             transpose=True,
             backend="jax_raw",
-            config=prepared_config(indices, indptr, (2, 3)),
+            config=CSRConfig(),
         )
 
     np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-5)
@@ -1550,7 +1586,7 @@ def test_binary_csrmv_event_is_active_iff_nonzero(backend, dtype_name, homo, tra
         got = binary_csrmv(
             data, indices, indptr, x, shape=(_ACT_M, _ACT_K), transpose=transpose,
             backend=backend,
-            config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)),
+            config=CSRConfig(),
         )
         mask = event_mask(x)
         expected = mask @ dense if transpose else dense @ mask
@@ -1570,7 +1606,7 @@ def test_binary_csrmm_event_is_active_iff_nonzero(backend, dtype_name, homo, tra
         got = binary_csrmm(
             data, indices, indptr, B, shape=(_ACT_M, _ACT_K), transpose=transpose,
             backend=backend,
-            config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)),
+            config=CSRConfig(),
         )
         mask = event_mask(B)
         expected = dense.T @ mask if transpose else dense @ mask
@@ -1585,7 +1621,7 @@ def test_binary_csrmv_nan_event_is_active(backend):
     got = binary_csrmv(
         data, indices, indptr, x, shape=(_ACT_M, _ACT_K), transpose=True,
         backend=backend,
-        config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)),
+        config=CSRConfig(),
     )
     np.testing.assert_allclose(np.asarray(got, dtype=np.float64), event_mask(x) @ dense, rtol=1e-5, atol=1e-5)
 
@@ -1604,7 +1640,7 @@ def test_binary_csrmv_gradients_use_event_mask(backend, homo, transpose):
         return binary_csrmv(
             d, indices, indptr, v, shape=shape, transpose=transpose,
             backend=backend,
-            config=prepared_config(indices, indptr, shape))
+            config=CSRConfig())
 
     def dense_op(d, z):
         W = _dense_from_data(d, indices, indptr, shape)
@@ -1627,7 +1663,7 @@ def test_binary_csrmm_gradients_use_event_mask(backend, homo, transpose):
         return binary_csrmm(
             d, indices, indptr, v, shape=shape, transpose=transpose,
             backend=backend,
-            config=prepared_config(indices, indptr, shape))
+            config=CSRConfig())
 
     def dense_op(d, z):
         W = _dense_from_data(d, indices, indptr, shape)
@@ -1702,7 +1738,7 @@ def test_binary_csrmv_weighted_matches_dense_and_grads(backend, dtype_name, homo
 
         def op(d, v):
             return binary_csrmv(d, indices, indptr, v, shape=shape, transpose=transpose, backend=backend,
-                                weighted=True, config=prepared_config(indices, indptr, shape))
+                                weighted=True, config=CSRConfig())
 
         def dense_op(d, z):
             # Events are cast to the weight dtype (the kernels' compute dtype).
@@ -1728,7 +1764,7 @@ def test_binary_csrmm_weighted_matches_dense_and_grads(backend, dtype_name, homo
 
         def op(d, v):
             return binary_csrmm(d, indices, indptr, v, shape=shape, transpose=transpose, backend=backend,
-                                weighted=True, config=prepared_config(indices, indptr, shape))
+                                weighted=True, config=CSRConfig())
 
         def dense_op(d, z):
             W = _dense_from_data(d, indices, indptr, shape)
@@ -1751,7 +1787,7 @@ def test_binary_csrmv_weighted_vmap_over_events_matches_dense(backend, homo, tra
 
     f = jax.vmap(lambda v: binary_csrmv(data, indices, indptr, v, shape=shape, transpose=transpose,
                                         backend=backend,
-                                        weighted=True, config=prepared_config(indices, indptr, shape)))
+                                        weighted=True, config=CSRConfig()))
     got = np.asarray(f(xs), dtype=np.float64)
     xs64 = np.asarray(xs, dtype=np.float64)
     expected = xs64 @ dense if transpose else xs64 @ dense.T
@@ -1772,7 +1808,7 @@ def test_binary_csrmv_weighted_heavy_rows_use_row_value(backend, homo):
     x = jnp.array([2.0, 0.0, -1.0, 0.5, 3.0, 0.0], dtype=jnp.float32)
     indptr = jnp.asarray(indptr)
     got = binary_csrmv(jnp.asarray(data), jnp.asarray(indices), indptr, x, shape=(m, k), transpose=True,
-                       backend=backend, weighted=True, config=prepared_config(jnp.asarray(indices), indptr, (m, k)))
+                       backend=backend, weighted=True, config=CSRConfig())
     np.testing.assert_allclose(np.asarray(got, np.float64), np.asarray(x, np.float64) @ dense,
                                rtol=1e-4, atol=1e-3)
 
@@ -1790,7 +1826,7 @@ def test_binary_csrmm_weighted_heavy_rows_use_row_value(backend, homo):
     B = jnp.array([[2.0, 0.0], [0.0, -1.0], [-1.0, 0.5], [0.5, 0.0], [0.0, 3.0]], dtype=jnp.float32)
     indptr = jnp.asarray(indptr)
     got = binary_csrmm(jnp.asarray(data), jnp.asarray(indices), indptr, B, shape=(m, k), transpose=True,
-                       backend=backend, weighted=True, config=prepared_config(jnp.asarray(indices), indptr, (m, k)))
+                       backend=backend, weighted=True, config=CSRConfig())
     np.testing.assert_allclose(np.asarray(got, np.float64), dense.T @ np.asarray(B, np.float64),
                                rtol=1e-4, atol=1e-3)
 
@@ -1820,20 +1856,16 @@ def test_binary_cuda_generators_select_weighted_abi(monkeypatch, weight_dtype, h
         (binary_mod._binary_csrmm_cuda_kernel, (1, 3), True, (2, 3),
          f'csr_hybrid_mm_row_weighted.batched_spmm_v3_weighted{"_homo" if homo else ""}{sfx}'),
     ]
-    cfg = CSRConfig().prepare_structure(indices, indptr, shape=(1, 2),
-        device_info=CSRDeviceInfo('gpu', 'test', 4 * 1024**2, 8))
-    spec, mask = cfg.kernel_args()
     for factory, ev_shape, transpose, out_shape, expected_name in cases:
         ffi_calls.clear()
         events = jnp.full(ev_shape, -3, dtype=jnp.int8)
         kernel = factory(
             shape_of(weight_dtype, (n_w,)), shape_of(jnp.int8, ev_shape), transpose,
             **{**cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int32),
-               'outs': [shape_of(weight_dtype, out_shape)], 'weighted': True, 'task_capacity': task_capacity,
-               'config_spec': spec},
+               'outs': [shape_of(weight_dtype, out_shape)], 'weighted': True, 'task_capacity': task_capacity},
         )
         is_mm = len(ev_shape) == 2
-        kernel(weights, indices, indptr, events, *([mask] if is_mm else []))
+        kernel(weights, indices, indptr, events)
         assert len(ffi_calls) == 1
         name, _, _, args, _ = ffi_calls[0]
         assert strip_hybrid_suffix(name) == expected_name
@@ -1847,7 +1879,7 @@ def test_binary_csrmv_weighted_integer_events_have_zero_cotangent():
     data, indices, indptr, _ = _activity_operands(False, seed=9)
     x = event_values('int8', _ACT_K, seed=9)
     f = lambda d, v: binary_csrmv(d, indices, indptr, v, shape=(_ACT_M, _ACT_K), backend='jax_raw',
-                                  weighted=True, config=prepared_config(indices, indptr, (_ACT_M, _ACT_K))).sum()
+                                  weighted=True, config=CSRConfig()).sum()
     g_d, g_x = jax.grad(f, argnums=(0, 1), allow_int=True)(data, x)
     assert g_x.dtype == jax.dtypes.float0
     W = np.asarray(_dense_from_data(data, indices, indptr, (_ACT_M, _ACT_K)))
@@ -1860,9 +1892,9 @@ def test_binary_csrmv_weighted_default_is_binary():
     """``weighted`` defaults to ``False``: values are binarised."""
     data, indices, indptr, dense = _activity_operands(False, seed=10)
     x = event_values('float32', _ACT_K, seed=10)
-    binary = binary_csrmv(data, indices, indptr, x, shape=(_ACT_M, _ACT_K), backend='jax_raw', config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
+    binary = binary_csrmv(data, indices, indptr, x, shape=(_ACT_M, _ACT_K), backend='jax_raw', config=CSRConfig())
     weighted = binary_csrmv(data, indices, indptr, x, shape=(_ACT_M, _ACT_K), backend='jax_raw',
-                            weighted=True, config=prepared_config(indices, indptr, (_ACT_M, _ACT_K)))
+                            weighted=True, config=CSRConfig())
     np.testing.assert_allclose(np.asarray(binary, np.float64), dense @ event_mask(x), rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(np.asarray(weighted, np.float64), dense @ np.asarray(x, np.float64),
                                rtol=1e-5, atol=1e-5)
@@ -1884,9 +1916,9 @@ def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis, weighted):
         return (jnp.ones((1, 2), dtype=jnp.float32),)
 
     monkeypatch.setattr("brainevent._csr.binary.binary.binary_csrmm_p_call", fake_csrmm_p_call)
-    axes = (None, None, None, axis, None)
+    axes = (None, None, None, axis)
     _csrmv_batching(
-        (weights, indices, indptr, vector, jnp.empty(0, jnp.uint32)),
+        (weights, indices, indptr, vector),
         axes, shape=(1, 2), transpose=False, backend="jax_raw", weighted=weighted,
     )
     assert seen == [weighted]
@@ -1987,7 +2019,7 @@ def test_binary_csr_weight_cotangent_of_inactive_entries_is_exact_zero(backend, 
     data = np.where(np.isfinite(case.data), case.data, 1.0).astype(np.float32)
     indptr = jnp.asarray(case.indptr)
     op = binary_csrmm if mm else binary_csrmv
-    config = prepared_config(case.indices, case.indptr, shape)
+    config = CSRConfig()
 
     def f(d):
         return op(d, jnp.asarray(case.indices), indptr, case.events, shape=shape,
@@ -2020,7 +2052,7 @@ def test_binary_csr_homo_weight_cotangent_ignores_nan_on_idle_outputs(backend, t
     ct, expected = homo_ct_case(case, transpose)
     indptr = jnp.asarray(case.indptr)
     op = binary_csrmm if mm else binary_csrmv
-    config = prepared_config(case.indices, case.indptr, shape)
+    config = CSRConfig()
 
     def f(d):
         return op(d, jnp.asarray(case.indices), indptr, case.events, shape=shape,
@@ -2058,7 +2090,7 @@ def test_binary_csrmm_weight_cotangent_isolated_per_event_column(backend, transp
 
     def f(d):
         return binary_csrmm(d, jnp.asarray(case.indices), indptr, case.events, shape=shape,
-                            transpose=transpose, backend=backend, weighted=True, config=prepared_config(case.indices, case.indptr, shape))
+                            transpose=transpose, backend=backend, weighted=True, config=CSRConfig())
 
     _, vjp = jax.vjp(f, jnp.asarray(data))
     (ct_w,) = vjp(jnp.asarray(ct))
@@ -2075,14 +2107,32 @@ def test_csrmm_transpose_rule_symbolic_zero_cotangent(undefined):
     indptr = jnp.asarray([0, 2, 3], jnp.int32)
     B = jnp.ones((3, 4), jnp.bool_)
     ct = [ad.Zero(jax.core.ShapedArray((2, 4), jnp.float32))]
-    args = [data, indices, indptr, B, jnp.empty(0, jnp.uint32)]
+    args = [data, indices, indptr, B]
     position = 3 if undefined == 'B' else 0
     args[position] = ad.UndefinedPrimal(jax.core.ShapedArray(args[position].shape, args[position].dtype))
     out = binary_mod._csrmm_transpose_rule(ct, *args, shape=(2, 3), transpose=False, backend=None)
-    assert len(out) == 5
-    assert out[-1] is None
+    # One cotangent per operand: there is no trailing mask operand.
+    assert len(out) == 4
     assert type(out[position]) is ad.Zero
     assert out[position].aval.shape == args[position].aval.shape
+
+
+@pytest.mark.parametrize('undefined', ['events', 'data'])
+def test_csrmv_transpose_rule_symbolic_zero_cotangent(undefined):
+    from jax.interpreters import ad
+    data = jnp.asarray([1.0, 2.0, 3.0], jnp.float32)
+    indices = jnp.asarray([0, 2, 1], jnp.int32)
+    indptr = jnp.asarray([0, 2, 3], jnp.int32)
+    events = jnp.ones((3,), jnp.bool_)
+    ct = [ad.Zero(jax.core.ShapedArray((2,), jnp.float32))]
+    args = [data, indices, indptr, events]
+    position = 3 if undefined == 'events' else 0
+    args[position] = ad.UndefinedPrimal(jax.core.ShapedArray(args[position].shape, args[position].dtype))
+    out = binary_mod._csrmv_transpose_rule(ct, *args, shape=(2, 3), transpose=False, backend=None)
+    assert len(out) == 4
+    assert type(out[position]) is ad.Zero
+    assert out[position].aval.shape == args[position].aval.shape
+    assert out[1] is indices and out[2] is indptr
 
 
 @pytest.mark.parametrize('backend', CSRMV_IMPLEMENTATIONS)
@@ -2101,7 +2151,7 @@ def test_repeated_entries_add(backend, homo, transpose, weighted, m, k, nse):
             continue
         out = fn(data, indices, indptr, jnp.asarray(x, jnp.float32), shape=(m, k),
                  transpose=transpose, backend=backend, weighted=weighted,
-                     config=prepared_config(indices, indptr, (m, k)),
+                     config=CSRConfig(),
                  )
         events = x if weighted else (x != 0)
         assert np.allclose(np.asarray(out), op @ events, rtol=1e-4, atol=1e-4), (fn.__name__, backend)
@@ -2176,33 +2226,29 @@ def test_binary_hybrid_cuda_exports_use_csr_abi_names():
         assert exported == symbols, filename
 
 
-# Prepared hybrid matrix adapter
-# ------------------------------
+# Shape-planned hybrid matrix adapter
+# -----------------------------------
 
-def _mm_adapter_prepared(*, weighted=False, homo=False):
+def _mm_adapter_case(*, weighted=False, homo=False):
     indices = jnp.array([0, 2, 1], jnp.int32)
     indptr = jnp.array([0, 2, 3], jnp.int32)
-    device = CSRDeviceInfo('gpu', 'TEST_GPU', l2_bytes=4096, sms=8)
-    config = CSRConfig(device_info=device).prepare_structure(indices, indptr, shape=(2, 3))
-    spec, mask = config.kernel_args()
     weights = jnp.ones((1 if homo else 3,), jnp.float32)
     events = jnp.array([[1, 0], [-2, 3]], jnp.float32)
     kwargs = dict(
-        config_spec=spec,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(events.shape, events.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         out_info=jax.ShapeDtypeStruct((3, 2), weights.dtype), weighted=weighted,
     )
-    return kwargs, (weights, indices, indptr, events, mask)
+    return kwargs, (weights, indices, indptr, events)
 
 
 @pytest.mark.parametrize('weighted', [False, True])
 @pytest.mark.parametrize('permuted,homo', [(False, False), (False, True), (True, False), (True, True)])
 def test_adapter_preserves_layout_dtype_and_plan(monkeypatch, weighted, permuted, homo):
-    params, args = _mm_adapter_prepared(weighted=weighted, homo=homo)
-    modules, calls = [], []
+    params, args = _mm_adapter_case(weighted=weighted, homo=homo)
+    modules, calls, queried = [], [], []
 
     def load_module(source, name, **kwargs):
         modules.append((source, name, kwargs))
@@ -2213,15 +2259,25 @@ def test_adapter_preserves_layout_dtype_and_plan(monkeypatch, weighted, permuted
             return (jnp.arange(6, dtype=jnp.float32).reshape(2, 3),)
         return call
 
+    def l2_bytes(devices):
+        queried.append(tuple(devices))
+        return 4096
+
     _patch_cuda_loaders(monkeypatch, load_module)
     monkeypatch.setattr(jax.ffi, 'ffi_call', ffi_call)
-    kernel = binary_mod._make_hybrid_mm_kernel(**params, permuted=permuted)
+    monkeypatch.setattr(binary_mod, 'cuda_l2_bytes', l2_bytes)
+    devices = ('target-device',)
+    kernel = binary_mod._make_hybrid_mm_kernel(**params, permuted=permuted, target_devices=devices)
     if permuted:
         args = (*args[:3], jnp.array([2, 0, 1], jnp.int32), *args[3:])
     actual, = kernel(*args)
     np.testing.assert_array_equal(actual, np.arange(6, dtype=np.float32).reshape(2, 3).T)
     target, infos, operands, attrs = calls[0]
-    np.testing.assert_array_equal(operands[-1], args[-2].T)
+    # Native batch-major events, preceded by a mask built from indptr in the lowering.
+    np.testing.assert_array_equal(operands[-1], args[-1].T)
+    plan = _mm_plan(2, 3, 3, 2, np.dtype(np.float32), weighted, 4096)
+    np.testing.assert_array_equal(operands[-2], _long_row_mask(args[2], plan.long_threshold))
+    assert operands[-2].dtype == jnp.uint32
     assert len(modules) == 1
     source, module, load_kwargs = modules[0]
     mode = 'weighted' if weighted else 'binary'
@@ -2232,68 +2288,60 @@ def test_adapter_preserves_layout_dtype_and_plan(monkeypatch, weighted, permuted
     assert target.startswith(module + '.')
     assert len(operands) == (6 if permuted and not homo else 5)
     assert ('_homo' in target) == homo
-    plan = CSRConfig.from_kernel_args(params['config_spec'], None).mm_plan(2, jnp.float32, weighted)
+    # The plan reads the lowering's target devices; no other attribute reaches the FFI.
+    assert queried == [devices]
     assert infos[1].shape == (plan.workspace_words,)
-    assert attrs['task_capacity'] == plan.task_capacity
-    assert attrs['expected_sms'] == 8
-    assert attrs['expected_l2_bytes'] == 4096
+    assert infos[2].shape == (plan.short_rows_size,)
+    assert attrs == dict(group=plan.group, long_threshold=plan.long_threshold, chunk=plan.chunk,
+                         long_tasks=plan.long_tasks, task_capacity=plan.task_capacity)
 
 
-def test_adapter_requires_complete_plan_and_matching_shape(monkeypatch):
+@pytest.mark.parametrize('dtype', [jnp.float8_e4m3fn, jnp.int32])
+def test_adapter_rejects_unsupported_value_dtype_before_compilation(monkeypatch, dtype):
     _patch_cuda_loaders(monkeypatch, lambda *args, **kwargs: pytest.fail('must reject before compilation'))
-    params, _ = _mm_adapter_prepared()
-    with pytest.raises(ValueError, match='complete prepared CSRConfig'):
-        binary_mod._make_hybrid_mm_kernel(**dict(params, config_spec=None))
-    unprepared = replace(params['config_spec'], device_info=CSRDeviceInfo('gpu', 'TEST_GPU'))
-    with pytest.raises(ValueError, match='complete prepared CSRConfig'):
-        binary_mod._make_hybrid_mm_kernel(**dict(params, config_spec=unprepared))
-    with pytest.raises(ValueError, match='operand structure'):
-        binary_mod._make_hybrid_mm_kernel(**dict(params, indices_info=jax.ShapeDtypeStruct((4,), jnp.int32)))
+    params, _ = _mm_adapter_case()
+    with pytest.raises(ValueError, match='supports only'):
+        binary_mod._make_hybrid_mm_kernel(**dict(params, weight_info=jax.ShapeDtypeStruct((3,), dtype)))
 
 
-def test_empty_adapter_does_not_require_preparation_or_cuda(monkeypatch):
+@pytest.mark.parametrize('empty', ['nnz', 'batch', 'rows'])
+def test_empty_adapter_needs_no_cuda(monkeypatch, empty):
     _patch_cuda_loaders(monkeypatch, lambda *args, **kwargs: pytest.fail('empty operation must not compile'))
-    params, args = _mm_adapter_prepared()
-    kernel = binary_mod._make_hybrid_mm_kernel(**dict(
-        params, config_spec=None,
-        indices_info=jax.ShapeDtypeStruct((0,), jnp.int32),
-    ))
-    np.testing.assert_array_equal(kernel(*args)[0], np.zeros((3, 2)))
-
-
-@pytest.mark.parametrize('mask', [np.zeros(0, np.uint32), np.zeros(1, np.int32)])
-def test_adapter_rejects_mismatched_mask_before_ffi(monkeypatch, mask):
-    params, args = _mm_adapter_prepared()
-    _patch_cuda_loaders(monkeypatch, lambda *args, **kwargs: None)
-
-    def ffi_call(*args, **kwargs):
-        return lambda *args, **kwargs: pytest.fail('invalid prepared mask must not reach FFI')
-
-    monkeypatch.setattr(jax.ffi, 'ffi_call', ffi_call)
+    monkeypatch.setattr(binary_mod, 'cuda_l2_bytes', lambda devices: pytest.fail('empty operation needs no plan'))
+    params, args = _mm_adapter_case()
+    weights, indices, indptr, events = args
+    if empty == 'nnz':
+        params['indices_info'] = jax.ShapeDtypeStruct((0,), jnp.int32)
+        out_shape = (3, 2)
+    elif empty == 'batch':
+        events = events[:, :0]
+        params['vector_info'] = jax.ShapeDtypeStruct(events.shape, events.dtype)
+        params['out_info'] = jax.ShapeDtypeStruct((3, 0), jnp.float32)
+        out_shape = (3, 0)
+    else:
+        indptr, events = indptr[:1], events[:0]
+        params['indptr_info'] = jax.ShapeDtypeStruct(indptr.shape, indptr.dtype)
+        params['vector_info'] = jax.ShapeDtypeStruct(events.shape, events.dtype)
+        out_shape = (3, 2)
     kernel = binary_mod._make_hybrid_mm_kernel(**params)
-    with pytest.raises(ValueError, match='long-row mask'):
-        kernel(*args[:-1], jnp.asarray(mask))
+    np.testing.assert_array_equal(kernel(weights, indices, indptr, events)[0], np.zeros(out_shape))
 
 
 @pytest.mark.parametrize('weighted', [False, True])
 @pytest.mark.parametrize('permuted,homo', [(False, False), (False, True), (True, False)])
-def test_prepared_adapter_cuda_repeated_calls(weighted, permuted, homo):
+def test_adapter_cuda_repeated_calls(weighted, permuted, homo):
     if jax.default_backend() != 'gpu':
         pytest.skip('CUDA execution requires a GPU')
     lengths = np.array([0, 3, 65, 513], np.int32)
     offsets = np.r_[0, np.cumsum(lengths)].astype(np.int32)
     indices_np = np.arange(int(offsets[-1]), dtype=np.int32) % 7
     indices, indptr = jnp.asarray(indices_np), jnp.asarray(offsets)
-    device_info = config_mod.get_device_info(indices, indptr)
-    config = CSRConfig(device_info=device_info).prepare_structure(indices, indptr, shape=(4, 7))
-    spec, mask = config.kernel_args()
     weights = jnp.ones((1 if homo else indices.size,), jnp.float32) / 8
     if not homo:
         weights *= jnp.arange(indices.size) % 3 - 1
     events = jnp.array([[0, 1, -2], [1, 0, 2], [-2, 1, 0], [1, 0, -1]], jnp.float32)
     perm = jnp.arange(indices.size - 1, -1, -1, dtype=jnp.int32)
     params = dict(
-        config_spec=spec,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(events.shape, events.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
@@ -2305,7 +2353,7 @@ def test_prepared_adapter_cuda_repeated_calls(weighted, permuted, homo):
     edge_rows = np.repeat(np.arange(4), lengths)
     for active in (True, False, True):
         current = events if active else jnp.zeros_like(events)
-        operands = (weights, indices, indptr) + ((perm,) if permuted else ()) + (current, mask)
+        operands = (weights, indices, indptr) + ((perm,) if permuted else ()) + (current,)
         actual, = kernel(*operands)
         factors = np.asarray(current)[edge_rows]
         if not weighted:
@@ -2314,18 +2362,6 @@ def test_prepared_adapter_cuda_repeated_calls(weighted, permuted, homo):
         expected = np.zeros((7, 3), np.float32)
         np.add.at(expected, indices_np, factors * values[:, None])
         np.testing.assert_array_equal(actual, expected)
-
-
-def test_cuda_rejects_plan_prepared_for_other_device():
-    if jax.default_backend() != 'gpu':
-        pytest.skip('CUDA execution requires a GPU')
-    params, args = _mm_adapter_prepared()
-    actual_device = config_mod.get_device_info(*args)
-    wrong_device = replace(actual_device, sms=actual_device.sms + 1)
-    params['config_spec'] = replace(params['config_spec'], device_info=wrong_device)
-    kernel = jax.jit(binary_mod._make_hybrid_mm_kernel(**params))
-    with pytest.raises(Exception, match='prepared CSRConfig device does not match'):
-        jax.block_until_ready(kernel(*args))
 
 
 # Native vector scratch reuse
@@ -2427,7 +2463,7 @@ def test_hybrid_mm_ffi_short_long_rows_and_repeated_calls(permuted, homo, weight
 
     Three batches in groups of two exercise scratch reuse between groups;
     alternating active and silent calls checks the output overwrite contract.
-    This direct FFI test does not depend on the future library plan adapter.
+    This direct FFI test does not depend on the library plan adapter.
     """
     if jax.default_backend() != 'gpu':
         pytest.skip('CUDA execution requires a GPU')
@@ -2472,9 +2508,9 @@ def test_hybrid_mm_ffi_short_long_rows_and_repeated_calls(permuted, homo, weight
         ffi = jax.ffi.ffi_call(name + '.' + symbol, outputs)
 
         def call(values, events):
+            # Plan attributes only: the FFI no longer checks a prepared device.
             return ffi(values, *structure, events, group=4, long_threshold=64,
-                       chunk=chunk, long_tasks=6, task_capacity=capacity,
-                       expected_sms=0, expected_l2_bytes=0)[0]
+                       chunk=chunk, long_tasks=6, task_capacity=capacity)[0]
 
         call = jax.jit(call)
         events = np.array([[0, -2, 0.5, 1, 0], [1, 0, 1, -2, 0.5],
@@ -2503,29 +2539,33 @@ def test_hybrid_mm_ffi_short_long_rows_and_repeated_calls(permuted, homo, weight
             np.testing.assert_array_equal(np.asarray(result, np.float64), expected)
 
 
-# Prepared configurations through JIT, vmap and autodiff
-# ------------------------------------------------------
+# Shape-planned configurations through JIT, vmap and autodiff
+# -----------------------------------------------------------
+
+_MM_PRIMITIVES = ('binary_csrmm', 'binary_csrmm_indexed')
+
 
 @pytest.fixture(autouse=False)
-def _prepared_enable_x64():
+def _plan_enable_x64():
     with jax_x64_enabled():
         yield
 
 
-def _prepared_backend():
+def _native_backend():
     return 'cuda_raw' if jax.default_backend() == 'gpu' else 'jax_raw'
 
 
-def _prepared_case(dtype=jnp.float32, *, homo=False):
+def _on_gpu():
+    return jax.default_backend() == 'gpu'
+
+
+def _plan_case(dtype=jnp.float32, *, homo=False):
     lengths = np.array([0, 3, 9, 513], np.int32)
     ptr = np.r_[0, np.cumsum(lengths)].astype(np.int32)
     idx = (np.arange(int(ptr[-1]), dtype=np.int32) * 7) % 9
     indices, indptr = jnp.asarray(idx), jnp.asarray(ptr)
-    device = get_device_info(indices, indptr)
-    # CPU tests inspect the pure launch plan without lowering a CUDA kernel.
-    device = device or CSRDeviceInfo('gpu', 'PLAN_TEST', l2_bytes=4096, sms=8)
-    config = CSRConfig(tpr_threshold=16, task_nnz=64, device_info=device).prepare_structure(
-        indices, indptr, shape=(4, 9))
+    # A tuned MV scheduler: the config holds no structure or device state.
+    config = CSRConfig(tpr_threshold=16, task_nnz=64)
     values = np.ones(1) / 16 if homo else (np.arange(idx.size) % 3 - 1) / 16
     events = jnp.asarray([[0, 1, -2], [1, 0, 2], [-2, 1, 0], [1, 0, -1]], dtype)
     return SimpleNamespace(
@@ -2535,8 +2575,8 @@ def _prepared_case(dtype=jnp.float32, *, homo=False):
     )
 
 
-def _prepared_call(case, weights, events, *, indexed=False, weighted=False, config=None,
-          backend=None, indptr=None, public=False):
+def _plan_call(case, weights, events, *, indexed=False, weighted=False, config=None,
+               backend=None, indptr=None, public=False):
     mm = events.ndim == 2
     if public:
         function = (brainevent.binary_csrmm_indexed if mm else brainevent.binary_csrmv_indexed) if indexed else (
@@ -2548,11 +2588,11 @@ def _prepared_call(case, weights, events, *, indexed=False, weighted=False, conf
     if indexed:
         operands += (case.perm,)
     result = function(*operands, events, shape=case.shape, transpose=True,
-                      weighted=weighted, backend=backend or _prepared_backend(), config=config)
+                      weighted=weighted, backend=backend or _native_backend(), config=config)
     return result if public else result[0]
 
 
-def _prepared_reference(case, weights, events, *, indexed=False, weighted=False, indptr=None):
+def _plan_reference(case, weights, events, *, indexed=False, weighted=False, indptr=None):
     ptr = np.asarray(case.indptr if indptr is None else indptr)
     rows = np.repeat(np.arange(case.shape[0]), np.diff(ptr))
     values = np.asarray(weights, np.float64)
@@ -2569,108 +2609,131 @@ def _prepared_reference(case, weights, events, *, indexed=False, weighted=False,
     return np.asarray(jnp.asarray(output, weights.dtype), np.float64)
 
 
-def _prepared_equations(value):
+def _equations(value):
     if hasattr(value, 'eqns'):
         for equation in value.eqns:
             yield equation
-            yield from _prepared_equations(equation.params)
+            yield from _equations(equation.params)
     elif hasattr(value, 'jaxpr'):
-        yield from _prepared_equations(value.jaxpr)
+        yield from _equations(value.jaxpr)
     elif isinstance(value, dict):
         for child in value.values():
-            yield from _prepared_equations(child)
+            yield from _equations(child)
     elif isinstance(value, (tuple, list)):
         for child in value:
-            yield from _prepared_equations(child)
+            yield from _equations(child)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
+def _mm_equations(graph):
+    return [eqn for eqn in _equations(graph) if eqn.primitive.name in _MM_PRIMITIVES]
+
+
+@pytest.fixture
+def _mm_plans(monkeypatch):
+    """Record every hybrid MM plan made while lowering, starting from cold caches."""
+    plans = []
+    original = binary_mod._mm_plan
+
+    def record(*args):
+        plan = original(*args)
+        plans.append((args, plan))
+        return plan
+
+    monkeypatch.setattr(binary_mod, '_mm_plan', record)
+    jax.clear_caches()
+    yield plans
+    # Executables lowered with a patched plan must not serve later tests.
+    jax.clear_caches()
+
+
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('dtype', [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64])
 @pytest.mark.parametrize('indexed,homo', [(False, False), (False, True)])
 @pytest.mark.parametrize('weighted', [False, True])
-def test_public_mm_prepared_config_types_and_long_rows(dtype, indexed, homo, weighted):
-    case = _prepared_case(dtype, homo=homo)
-    function = jax.jit(lambda w, x, config: _prepared_call(
+def test_public_mm_config_types_and_long_rows(dtype, indexed, homo, weighted):
+    case = _plan_case(dtype, homo=homo)
+    # The config is a leafless pytree, so it can be a jit argument.
+    function = jax.jit(lambda w, x, config: _plan_call(
         case, w, x, indexed=indexed, weighted=weighted, config=config, public=True))
     for events in (case.events, jnp.zeros_like(case.events)):
         actual = function(case.weights, events, case.config)
-        expected = _prepared_reference(case, case.weights, events, indexed=indexed, weighted=weighted)
+        expected = _plan_reference(case, case.weights, events, indexed=indexed, weighted=weighted)
         np.testing.assert_array_equal(np.asarray(actual, np.float64), expected)
+    if _on_gpu():
+        assert _hybrid_mm_targets(lambda w, x: _plan_call(
+            case, w, x, indexed=indexed, weighted=weighted, config=case.config, public=True),
+            case.weights, case.events)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('indexed', [False])
 @pytest.mark.parametrize('axis', [0, 1])
-def test_mv_vmap_reenters_mm_with_rederived_plan(indexed, axis):
-    case = _prepared_case()
+def test_mv_vmap_reenters_mm_planned_from_the_vmapped_batch(_mm_plans, indexed, axis):
+    case = _plan_case()
     data = case.events.T if axis == 0 else case.events
-    function = jax.vmap(lambda x: _prepared_call(case, case.weights, x, indexed=indexed,
-                                      weighted=True, config=case.config), in_axes=axis)
-    graph_function = jax.vmap(lambda x: _prepared_call(
-        case, case.weights, x, indexed=indexed, weighted=True,
-        config=case.config, backend='cuda_raw'), in_axes=axis)
-    graph = jax.make_jaxpr(graph_function)(data)
-    plans = [_eqn_plan(eqn) for eqn in _prepared_equations(graph)
-             if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
-    assert len(plans) == 1 and plans[0] == case.config.mm_plan(case.events.shape[1], case.weights.dtype, True)
+    function = jax.vmap(lambda x: _plan_call(case, case.weights, x, indexed=indexed,
+                                             weighted=True, config=case.config), in_axes=axis)
+    (eqn,) = _mm_equations(jax.make_jaxpr(function)(data))
+    assert _mm_eqn_shapes(eqn) == (4, 9, case.indices.size, case.events.shape[1])
+    assert eqn.params['config_spec'] == case.config.mv
     actual = jax.jit(function)(data)
-    np.testing.assert_array_equal(actual, _prepared_reference(case, case.weights, case.events,
-                                                    indexed=indexed, weighted=True).T)
+    np.testing.assert_array_equal(actual, _plan_reference(case, case.weights, case.events,
+                                                          indexed=indexed, weighted=True).T)
+    if _on_gpu():
+        assert [args[:4] for args, _ in _mm_plans] == [(4, 9, case.indices.size, case.events.shape[1])]
+        assert _hybrid_mm_targets(function, data)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('indexed', [False])
 @pytest.mark.parametrize('axis', [0, 1, 2])
-def test_mm_vmap_rederives_plan_for_folded_columns(indexed, axis):
-    case = _prepared_case()
+def test_mm_vmap_plans_the_folded_columns(_mm_plans, indexed, axis):
+    case = _plan_case()
     original = jnp.stack([case.events, case.events * 2])
     data = jnp.moveaxis(original, 0, axis)
-    function = jax.vmap(lambda x: _prepared_call(case, case.weights, x, indexed=indexed,
-                                      weighted=True, config=case.config), in_axes=axis)
-    graph_function = jax.vmap(lambda x: _prepared_call(
-        case, case.weights, x, indexed=indexed, weighted=True,
-        config=case.config, backend='cuda_raw'), in_axes=axis)
-    graph = jax.make_jaxpr(graph_function)(data)
-    plans = [_eqn_plan(eqn) for eqn in _prepared_equations(graph)
-             if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
-    assert len(plans) == 1 and plans[0] == case.config.mm_plan(6, jnp.float32, True)
-    assert plans[0] != case.config.mm_plan(3, jnp.float32, True)
-    expected = np.stack([_prepared_reference(case, case.weights, x, indexed=indexed, weighted=True) for x in original])
+    function = jax.vmap(lambda x: _plan_call(case, case.weights, x, indexed=indexed,
+                                             weighted=True, config=case.config), in_axes=axis)
+    (eqn,) = _mm_equations(jax.make_jaxpr(function)(data))
+    # Two batches of three columns fold into one six-column product.
+    assert _mm_eqn_shapes(eqn) == (4, 9, case.indices.size, 6)
+    expected = np.stack([_plan_reference(case, case.weights, x, indexed=indexed, weighted=True) for x in original])
     np.testing.assert_array_equal(jax.jit(function)(data), expected)
+    if _on_gpu():
+        (args, plan), = _mm_plans
+        assert args[:4] == (4, 9, case.indices.size, 6)
+        assert plan == _mm_plan(4, 9, case.indices.size, 6, np.dtype(np.float32), True, args[-1])
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('indexed', [False])
-def test_weights_only_vmap_reuses_prepared_structure_in_scan(indexed):
-    case = _prepared_case()
+def test_weights_only_vmap_reuses_the_structure_in_scan(indexed):
+    case = _plan_case()
     weights = jnp.stack([case.weights, case.weights * 2])
-    function = jax.vmap(lambda w: _prepared_call(case, w, case.events, indexed=indexed,
-                                      weighted=True, config=case.config))
-    graph_function = jax.vmap(lambda w: _prepared_call(
-        case, w, case.events, indexed=indexed, weighted=True,
-        config=case.config, backend='cuda_raw'))
-    graph = jax.make_jaxpr(graph_function)(weights)
-    assert any(eqn.primitive.name == 'scan' for eqn in _prepared_equations(graph))
-    plans = [_eqn_plan(eqn) for eqn in _prepared_equations(graph)
-             if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
-    assert plans and all(plan == case.config.mm_plan(3, jnp.float32, True) for plan in plans)
-    expected = np.stack([_prepared_reference(case, w, case.events, indexed=indexed, weighted=True) for w in weights])
+    function = jax.vmap(lambda w: _plan_call(case, w, case.events, indexed=indexed,
+                                             weighted=True, config=case.config))
+    graph = jax.make_jaxpr(function)(weights)
+    assert any(eqn.primitive.name == 'scan' for eqn in _equations(graph))
+    equations = _mm_equations(graph)
+    assert equations and all(_mm_eqn_shapes(eqn) == (4, 9, case.indices.size, 3) for eqn in equations)
+    expected = np.stack([_plan_reference(case, w, case.events, indexed=indexed, weighted=True) for w in weights])
     np.testing.assert_array_equal(jax.jit(function)(weights), expected)
+    if _on_gpu():
+        assert _hybrid_mm_targets(function, weights)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('indexed,homo', [(False, False), (False, True)])
 @pytest.mark.parametrize('weighted', [False, True])
 @pytest.mark.parametrize('mm', [False, True])
-def test_prepared_config_jvp_and_vjp(indexed, homo, weighted, mm):
-    case = _prepared_case(homo=homo)
+def test_config_jvp_and_vjp(indexed, homo, weighted, mm):
+    case = _plan_case(homo=homo)
     events = case.events if mm else case.events[:, 0]
-    function = lambda w, x: _prepared_call(case, w, x, indexed=indexed, weighted=weighted, config=case.config)
+    function = lambda w, x: _plan_call(case, w, x, indexed=indexed, weighted=weighted, config=case.config)
     dweights, devents = jnp.ones_like(case.weights) / 16, jnp.ones_like(events) / 4
     actual, tangent = jax.jit(lambda w, x: jax.jvp(function, (w, x), (dweights, devents)))(case.weights, events)
-    expected = _prepared_reference(case, case.weights, events, indexed=indexed, weighted=weighted)
-    expected_tangent = (_prepared_reference(case, dweights, events, indexed=indexed, weighted=weighted)
-                        + _prepared_reference(case, case.weights, devents, indexed=indexed, weighted=True))
+    expected = _plan_reference(case, case.weights, events, indexed=indexed, weighted=weighted)
+    expected_tangent = (_plan_reference(case, dweights, events, indexed=indexed, weighted=weighted)
+                        + _plan_reference(case, case.weights, devents, indexed=indexed, weighted=True))
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_allclose(tangent, expected_tangent, rtol=2e-6, atol=2e-6)
 
@@ -2700,68 +2763,73 @@ def test_prepared_config_jvp_and_vjp(indexed, homo, weighted, mm):
     np.testing.assert_allclose(grad_events, dense @ np.asarray(cotangent), rtol=2e-6, atol=2e-6)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
-def test_config_is_safe_as_scan_carry_and_in_independent_jits():
-    case = _prepared_case()
-    original_spec = case.config.kernel_args()[0]
+@pytest.mark.usefixtures('_plan_enable_x64')
+def test_config_is_a_leafless_scan_carry_and_serves_independent_jits():
+    case = _plan_case()
+    assert jax.tree.leaves(case.config) == []
     def scan(config, events):
         def body(carry, event):
             weights, snapshot = carry
-            value = _prepared_call(case, weights, event, weighted=True, config=snapshot)
+            value = _plan_call(case, weights, event, weighted=True, config=snapshot)
             return (weights * 2, snapshot), value
         return jax.lax.scan(body, (case.weights, config), events)
     data = jnp.stack([case.events, case.events * 2])
     seven_columns = jnp.concatenate([case.events, case.events, case.events[:, :1]], axis=1)
     with jax.checking_leaks():
         (weights, config), values = jax.jit(scan)(case.config, data)
-        fn1 = jax.jit(lambda cfg, x: _prepared_call(case, case.weights, x, weighted=True, config=cfg))
-        fn2 = jax.jit(lambda cfg, x: _prepared_call(case, case.weights, x, weighted=True, config=cfg))
+        fn1 = jax.jit(lambda cfg, x: _plan_call(case, case.weights, x, weighted=True, config=cfg))
+        fn2 = jax.jit(lambda cfg, x: _plan_call(case, case.weights, x, weighted=True, config=cfg))
         first = fn1(case.config, case.events[:, :2])
         second = fn2(case.config, seven_columns)
         jax.block_until_ready((values, first, second))
-    assert case.config.kernel_args()[0] == config.kernel_args()[0] == original_spec
+    assert isinstance(config, CSRConfig) and config.mv == case.config.mv
     np.testing.assert_array_equal(weights, case.weights * 4)
     np.testing.assert_array_equal(values, np.stack([
-        _prepared_reference(case, case.weights, data[0], weighted=True),
-        _prepared_reference(case, case.weights * 2, data[1], weighted=True),
+        _plan_reference(case, case.weights, data[0], weighted=True),
+        _plan_reference(case, case.weights * 2, data[1], weighted=True),
     ]))
-    np.testing.assert_array_equal(first, _prepared_reference(case, case.weights, case.events[:, :2], weighted=True))
-    np.testing.assert_array_equal(second, _prepared_reference(case, case.weights, seven_columns, weighted=True))
+    np.testing.assert_array_equal(first, _plan_reference(case, case.weights, case.events[:, :2], weighted=True))
+    np.testing.assert_array_equal(second, _plan_reference(case, case.weights, seven_columns, weighted=True))
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
-def test_raw_calls_do_not_load_or_prepare_implicit_config(monkeypatch):
-    case = _prepared_case()
+@pytest.mark.usefixtures('_plan_enable_x64')
+def test_raw_calls_do_not_load_implicit_config(monkeypatch):
+    case = _plan_case()
     def forbidden(*args, **kwargs):
-        raise AssertionError('raw operators must not load persistence or prepare structure')
+        raise AssertionError('raw operators must not load persisted tuning')
     monkeypatch.setattr(initialize, 'load_csr_config', forbidden)
-    monkeypatch.setattr(CSRConfig, 'prepare_structure', forbidden)
-    # Native MV uses constant defaults. Portable MM needs no prepared plan.
-    mv = jax.jit(lambda x: _prepared_call(case, case.weights, x, config=None))(case.events[:, 0])
-    mm = jax.jit(lambda x: _prepared_call(case, case.weights, x, config=None, backend='jax_raw'))(case.events)
-    np.testing.assert_array_equal(mv, _prepared_reference(case, case.weights, case.events[:, 0]))
-    np.testing.assert_array_equal(mm, _prepared_reference(case, case.weights, case.events))
+    # Native MV and native scatter MM both run from defaults with config=None.
+    mv = jax.jit(lambda x: _plan_call(case, case.weights, x, config=None))(case.events[:, 0])
+    mm_fn = lambda x: _plan_call(case, case.weights, x, config=None)
+    mm = jax.jit(mm_fn)(case.events)
+    np.testing.assert_array_equal(mv, _plan_reference(case, case.weights, case.events[:, 0]))
+    np.testing.assert_array_equal(mm, _plan_reference(case, case.weights, case.events))
+    if _on_gpu():
+        assert _hybrid_mm_targets(mm_fn, case.events)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
-def test_auto_hybrid_guard_does_not_block_native_gather():
-    case = _prepared_case()
-    function = jax.jit(lambda x: binary_csrmm_p_call(
+@pytest.mark.usefixtures('_plan_enable_x64')
+def test_automatic_backend_runs_scatter_and_gather_without_config():
+    case = _plan_case()
+    scatter_fn = lambda x: binary_csrmm_p_call(
         case.weights, case.indices, case.indptr, x, shape=case.shape,
-        transpose=True, backend=None, config=None)[0])
-    # On GPU the unprepared native scatter MM falls back to the portable path.
-    np.testing.assert_array_equal(function(case.events), _prepared_reference(case, case.weights, case.events))
+        transpose=True, backend=None, config=None)[0]
+    np.testing.assert_array_equal(jax.jit(scatter_fn)(case.events),
+                                  _plan_reference(case, case.weights, case.events))
+    if _on_gpu():
+        # The automatic GPU choice reaches the native scatter MM without a config.
+        assert _hybrid_mm_targets(scatter_fn, case.events)
     x = jnp.asarray(np.resize([-2., 0., 1.], (case.shape[1], 2)), jnp.float32)
     gather = jax.jit(lambda value: binary_csrmm_p_call(
         case.weights, case.indices, case.indptr, value, shape=case.shape,
-        transpose=False, backend=_prepared_backend(), weighted=True, config=None)[0])
+        transpose=False, backend=_native_backend(), weighted=True, config=None)[0])
     rows = np.repeat(np.arange(case.shape[0]), np.diff(np.asarray(case.indptr)))
     dense = np.zeros(case.shape, np.float32)
     np.add.at(dense, (rows, np.asarray(case.indices)), np.asarray(case.weights))
     np.testing.assert_array_equal(gather(x), dense @ np.asarray(x))
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('indexed', [False])
 @pytest.mark.parametrize('backend,transpose,dtype,batch', [
     ('jax_raw', True, jnp.float8_e4m3fn, 3),
@@ -2770,107 +2838,92 @@ def test_auto_hybrid_guard_does_not_block_native_gather():
     ('cuda_raw', False, jnp.float32, 2**31),
 ])
 def test_nonhybrid_pcall_does_not_apply_hybrid_plan_limits(monkeypatch, indexed, backend, transpose, dtype, batch):
-    """Abstract tracing needs no allocation and must not apply an unrelated plan's limits."""
-    case = _prepared_case(dtype)
+    """Abstract tracing needs no allocation and must not apply the hybrid plan's limits."""
+    case = _plan_case(dtype)
     def forbidden(*args, **kwargs):
         raise AssertionError('nonhybrid MM must not derive a hybrid call plan')
-    monkeypatch.setattr(CSRConfig, 'mm_plan', forbidden)
+    monkeypatch.setattr(binary_mod, '_mm_plan', forbidden)
     function = binary_csrmm_indexed_p_call if indexed else binary_csrmm_p_call
     operands = (case.weights, case.indices, case.indptr) + ((case.perm,) if indexed else ())
     rows = case.shape[0] if transpose else case.shape[1]
     graph = jax.make_jaxpr(lambda x: function(
         *operands, x, shape=case.shape, transpose=transpose, backend=backend,
         config=case.config)[0])(jax.ShapeDtypeStruct((rows, batch), dtype))
-    equations = [eqn for eqn in _prepared_equations(graph)
-                 if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
-    assert len(equations) == 1
+    assert len(_mm_equations(graph)) == 1
     assert graph.out_avals[0].dtype == jnp.dtype(dtype)
     assert graph.out_avals[0].shape == (case.shape[1] if transpose else case.shape[0], batch)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('indexed', [False])
 @pytest.mark.parametrize('transpose', [False, True])
-def test_prepared_float8_mm_remains_available_on_jax_backend(indexed, transpose):
+def test_float8_mm_remains_available_on_jax_backend(indexed, transpose):
     indices, indptr = jnp.array([0, 2], jnp.int32), jnp.array([0, 1, 2], jnp.int32)
     weights = jnp.array([1, 2], jnp.float8_e4m3fn)
     perm = jnp.array([1, 0], jnp.int32)
-    config = CSRConfig(device_info=CSRDeviceInfo('gpu', 'PLAN_TEST', 4096, 8)).prepare_structure(
-        indices, indptr, shape=(2, 3))
     events = jnp.array([[1, 0], [0, 1]] if transpose else [[1, 0], [0, 0], [0, 1]], jnp.float8_e4m3fn)
     function = binary_csrmm_indexed_p_call if indexed else binary_csrmm_p_call
     operands = (weights, indices, indptr) + ((perm,) if indexed else ())
     actual = jax.jit(lambda x: function(
-        *operands, x, shape=(2, 3), transpose=transpose, backend='jax_raw', config=config)[0])(events)
+        *operands, x, shape=(2, 3), transpose=transpose, backend='jax_raw', config=CSRConfig())[0])(events)
     a, b = (2, 1) if indexed else (1, 2)
     expected = [[a, 0], [0, 0], [0, b]] if transpose else [[a, 0], [0, b]]
     assert actual.dtype == jnp.dtype(jnp.float8_e4m3fn)
     np.testing.assert_array_equal(np.asarray(actual, np.float32), expected)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('indexed', [False])
-def test_structural_vmap_invalidates_exact_plan(indexed):
-    case = _prepared_case()
+def test_structural_vmap_matches_each_structure(indexed):
+    # Mapping indptr changes the row lengths per batch element; the plan only
+    # depends on shapes, so the config is bound unchanged and every structure
+    # gets its own long-row mask.
+    case = _plan_case()
     other = jnp.array([0, 0, 300, 400, case.indices.size], jnp.int32)
     pointers = jnp.stack([case.indptr, other])
-    function = jax.vmap(lambda ptr: _prepared_call(
+    function = jax.vmap(lambda ptr: _plan_call(
         case, case.weights, case.events, indexed=indexed, weighted=True,
         config=case.config, indptr=ptr, backend='jax_raw'))
-    graph = jax.make_jaxpr(function)(pointers)
-    equations = [eqn for eqn in _prepared_equations(graph)
-                 if eqn.primitive.name in ('binary_csrmm', 'binary_csrmm_indexed')]
-    assert equations and all(_eqn_plan(eqn) is None for eqn in equations)
-    assert all(eqn.params['config_spec'].structure is None for eqn in equations)
-    expected = np.stack([_prepared_reference(case, case.weights, case.events, indexed=indexed,
-                                    weighted=True, indptr=ptr) for ptr in pointers])
+    equations = _mm_equations(jax.make_jaxpr(function)(pointers))
+    assert equations and all(eqn.params['config_spec'] == case.config.mv for eqn in equations)
+    expected = np.stack([_plan_reference(case, case.weights, case.events, indexed=indexed,
+                                         weighted=True, indptr=ptr) for ptr in pointers])
     np.testing.assert_array_equal(jax.jit(function)(pointers), expected)
-    if jax.default_backend() == 'gpu':
-        native = jax.vmap(lambda ptr: _prepared_call(
+    if _on_gpu():
+        native = jax.vmap(lambda ptr: _plan_call(
             case, case.weights, case.events, indexed=indexed, config=case.config, indptr=ptr))
-        binary = np.stack([_prepared_reference(case, case.weights, case.events, indexed=indexed,
-                                               indptr=ptr) for ptr in pointers])
+        binary = np.stack([_plan_reference(case, case.weights, case.events, indexed=indexed,
+                                           indptr=ptr) for ptr in pointers])
         np.testing.assert_array_equal(jax.jit(native)(pointers), binary)
+        assert _hybrid_mm_targets(native, pointers)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('indexed', [False])
-def test_native_unprepared_mm_and_mv_vmap_use_portable_fallback(indexed, monkeypatch):
-    if jax.default_backend() != 'gpu':
+def test_native_mm_without_prepared_config_lowers_natively_without_warning(indexed):
+    # Formerly a config=None scatter MM fell back to the JAX scatter with a
+    # PerformanceWarning; any config now lowers the native kernel silently.
+    if not _on_gpu():
         pytest.skip('actual hybrid lowering requires GPU')
-    case = _prepared_case()
-    expected = _prepared_reference(case, case.weights, case.events, indexed=indexed)
-    for config in (None, CSRConfig(device_info=case.config.device_info),
-                   replace(case.config, device_info=None)):
-        function = lambda x: _prepared_call(case, case.weights, x, indexed=indexed, config=config)
-        jax.clear_caches()  # the warning is raised once, while lowering
-        monkeypatch.setattr(binary_mod, '_UNPREPARED_MM_WARNED', set())
-        with pytest.warns(brainevent.PerformanceWarning, match='no prepared CSRConfig'):
+    case = _plan_case()
+    expected = _plan_reference(case, case.weights, case.events, indexed=indexed)
+    for config in (None, CSRConfig(), CSRConfig(block_size=128)):
+        function = lambda x: _plan_call(case, case.weights, x, indexed=indexed, config=config)
+        jax.clear_caches()  # a warning would be raised while lowering
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
             np.testing.assert_array_equal(jax.jit(function)(case.events), expected)
-        batched = jax.jit(jax.vmap(function))(case.events.T)
+            assert _hybrid_mm_targets(function, case.events)
+            batched = jax.jit(jax.vmap(function))(case.events.T)
+            assert _hybrid_mm_targets(jax.vmap(function), case.events.T)
+        assert not [w for w in caught if issubclass(w.category, brainevent.PerformanceWarning)]
         np.testing.assert_array_equal(np.asarray(batched).T, expected)
 
 
-@pytest.mark.usefixtures('_prepared_enable_x64')
-def test_direct_native_primitive_rejects_mismatched_structure():
-    if jax.default_backend() != 'gpu':
-        pytest.skip('actual hybrid lowering requires GPU')
-    case = _prepared_case()
-    graph = jax.make_jaxpr(lambda w, x: _prepared_call(case, w, x, config=case.config))(case.weights, case.events)
-    eqn = next(e for e in _prepared_equations(graph) if e.primitive is binary_csrmm_p.primitive)
-    params = dict(eqn.params)
-    structure = params['config_spec'].structure
-    params['config_spec'] = replace(params['config_spec'], structure=replace(structure, cols=structure.cols + 1))
-    mask = case.config.kernel_args()[1]
-    function = jax.jit(lambda w, x: binary_csrmm_p(w, case.indices, case.indptr, x, mask, **params)[0])
-    with pytest.raises(brainevent.KernelCompilationError, match='operand structure'):
-        function(case.weights, case.events)
-
-
-@pytest.mark.usefixtures('_prepared_enable_x64')
+@pytest.mark.usefixtures('_plan_enable_x64')
 @pytest.mark.parametrize('empty', ['nnz', 'batch'])
-def test_empty_mm_bypasses_preparation_and_cuda_loader(monkeypatch, empty):
-    case = _prepared_case()
+def test_empty_mm_bypasses_the_cuda_loader(monkeypatch, empty):
+    case = _plan_case()
     if empty == 'nnz':
         case.indices = jnp.empty((0,), jnp.int32)
         case.indptr = jnp.zeros((case.shape[0] + 1,), jnp.int32)
@@ -2880,7 +2933,7 @@ def test_empty_mm_bypasses_preparation_and_cuda_loader(monkeypatch, empty):
     def forbidden(*args, **kwargs):
         raise AssertionError('empty hybrid MM must not load CUDA sources')
     _patch_cuda_loaders(monkeypatch, forbidden)
-    actual = jax.jit(lambda x: _prepared_call(case, case.weights, x, config=None))(case.events)
+    actual = jax.jit(lambda x: _plan_call(case, case.weights, x, config=None))(case.events)
     np.testing.assert_array_equal(actual, np.zeros((case.shape[1], case.events.shape[1])))
 
 
@@ -2924,12 +2977,10 @@ def _sampled_operands(case, transpose, batch, homo=False, backend='jax_raw'):
             backend=backend)
     else:
         op = _sampled_binary_csr.binary_csrmv if batch is None else _sampled_binary_csr.binary_csrmm
-        config = (prepared_config(indices, indptr, (3, 4))
-                  if transpose and batch is not None and backend in (None, 'cuda_raw') else None)
         call = lambda w: op(
             w, indices, indptr, events, shape=(3, 4), transpose=transpose,
             weighted=case == 'weighted',
-            backend=backend, config=config)
+            backend=backend)
     return call, weights, events, rows, indices, perm
 
 
@@ -3249,7 +3300,7 @@ def test_native_half_scatter_accumulates_in_float32(dtype_name, homo, weighted, 
     operation = binary_csrmm if matrix else binary_csrmv
     actual = operation(weights, indices, indptr, events, shape=shape, transpose=True,
                        weighted=weighted, backend='cuda_raw',
-                       config=prepared_config(indices, indptr, shape))
+                       config=CSRConfig())
     assert actual.dtype == weights.dtype
     expected = np.full(actual.shape, rows, np.float32)
     np.testing.assert_array_equal(np.asarray(actual, np.float32), expected)
@@ -3292,18 +3343,150 @@ def test_native_mv_understated_row_hint_keeps_every_edge(hint, weighted, homo):
 @pytest.mark.parametrize('batch', [1, 3])
 @pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
 @pytest.mark.parametrize('homo', [False, True], ids=['hetero', 'homo'])
-def test_native_mm_stale_config_keeps_every_edge(batch, weighted, homo):
-    # The stale plan marks rows 0..3 long with one task each (4 tasks); the
-    # current structure has the same dimensions but needs 4 + 1 + 1 + 1 tasks.
-    stale = np.r_[[512] * 4, [1] * 1000]
-    current = np.r_[[2045, 1, 1, 1], [1] * 1000]
-    _, stale_indices, stale_indptr, _, shape = _overflow_case(stale, 2048, homo, weighted, batch)
-    weights, indices, indptr, events, _ = _overflow_case(current, 2048, homo, weighted, batch)
-    config = prepared_config(stale_indices, stale_indptr, shape)
-    # Prepared task counts are bucketed (at least 64); pin the stale count to
-    # the structure's exact four tasks so the current structure overflows it.
-    config = replace(config, primary=replace(config.primary, long_tasks=4))
-    kwargs = dict(shape=shape, transpose=True, weighted=weighted)
-    actual = binary_csrmm(weights, indices, indptr, events, backend='cuda_raw', config=config, **kwargs)
-    expected = binary_csrmm(weights, indices, indptr, events, backend='jax_raw', **kwargs)
-    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+def test_native_mm_queue_holds_every_structure_of_one_shape(batch, weighted, homo):
+    # One executable serves every structure with these shapes, so its task
+    # queue must hold the worst case: four 512-edge rows, one 2045-edge hub,
+    # and as many rows just past the long threshold (64 here) as nnz allows.
+    lengths = {
+        'four_long': np.r_[[512] * 4, [1] * 1000],
+        'hub': np.r_[[2045, 1, 1, 1], [1] * 1000],
+        'many_just_long': np.r_[[65] * 46, [1] * 58, [0] * 900],
+    }
+    assert len({(len(v), int(v.sum())) for v in lengths.values()}) == 1
+    plan = _mm_plan(1004, 2048, 3048, batch, np.dtype(np.float32), weighted, DEFAULT_L2_BYTES)
+    assert plan.long_threshold == 64
+    kwargs = dict(shape=(1004, 2048), transpose=True, weighted=weighted)
+    native = jax.jit(lambda w, i, p, e: binary_csrmm(w, i, p, e, backend='cuda_raw', **kwargs))
+    for name, current in lengths.items():
+        weights, indices, indptr, events, _ = _overflow_case(current, 2048, homo, weighted, batch)
+        expected = binary_csrmm(weights, indices, indptr, events, backend='jax_raw', **kwargs)
+        np.testing.assert_allclose(native(weights, indices, indptr, events), expected,
+                                   rtol=1e-6, atol=1e-6, err_msg=name)
+    assert native._cache_size() == 1
+    assert _hybrid_mm_targets(native, weights, indices, indptr, events)
+
+
+# Shape-planned native scatter MM on skewed structures
+# ----------------------------------------------------
+
+_SKEWED_COLS = 1031
+
+
+def _skewed_lengths(kind):
+    """Row lengths whose long rows stress one part of the native schedule."""
+    if kind == 'hub':
+        # One row of six 512-edge tasks among unit rows.
+        return np.r_[3000, np.ones(256, np.int64)]
+    if kind == 'just_above_threshold':
+        # Every fourth row is one edge past the long threshold; the rest are empty.
+        return np.tile([0, 0, 0, 65], 50)
+    if kind == 'task_boundaries':
+        # Short at the threshold, long one past it, and 512-edge task edges.
+        return np.r_[64, 65, 512, 513, 1024, 1025, np.zeros(300, np.int64)]
+    if kind == 'all_long':
+        return np.full(40, 600)
+    assert kind == 'trailing_empty'
+    return np.r_[np.zeros(100, np.int64), 700, 3, np.zeros(97, np.int64)]
+
+
+def _skewed_case(kind, variant, weighted, dtype, batch=5, seed=0):
+    """Exact-arithmetic operands: weights are multiples of 1/8, events of 1/2."""
+    rng = np.random.default_rng(seed)
+    lengths = np.asarray(_skewed_lengths(kind), np.int64)
+    rows, nnz = lengths.size, int(lengths.sum())
+    edge_rows = np.repeat(np.arange(rows), lengths)
+    indices = (np.arange(nnz) * 7 + edge_rows * 3) % _SKEWED_COLS
+    indptr = np.r_[0, np.cumsum(lengths)]
+    perm = rng.permutation(nnz)
+    if variant == 'homo':
+        weights, slot_weights = np.array([0.25]), np.full(nnz, 0.25)
+    else:
+        weights = (rng.integers(-4, 5, nnz) / 8).astype(np.float64)
+        slot_weights = weights[perm] if variant == 'indexed' else weights
+    if weighted:
+        events = rng.choice([-2., -1., 0., 0., 0.5, 1., 2.], (rows, batch))
+        factors = events[edge_rows]
+    else:
+        events = rng.random((rows, batch)) < 0.6
+        factors = events[edge_rows].astype(np.float64)
+    expected = np.zeros((_SKEWED_COLS, batch))
+    np.add.at(expected, indices, factors * slot_weights[:, None])
+    operands = (jnp.asarray(weights, dtype), jnp.asarray(indices, jnp.int32), jnp.asarray(indptr, jnp.int32))
+    if variant == 'indexed':
+        operands += (jnp.asarray(perm, jnp.int32),)
+    events = jnp.asarray(events, dtype if weighted else jnp.bool_)
+    # The kernel accumulates exactly in float32/float64 and rounds once.
+    expected = np.asarray(jnp.asarray(expected, dtype), np.float64)
+    return lengths, operands, events, expected
+
+
+def _skewed_call(variant, weighted):
+    function = binary_csrmm_indexed_p_call if variant == 'indexed' else binary_csrmm_p_call
+
+    def call(*operands):
+        *structure, events = operands
+        return function(*structure, events, shape=(events.shape[0], _SKEWED_COLS), transpose=True,
+                        weighted=weighted, backend='cuda_raw')[0]
+
+    return call
+
+
+def _check_skewed(kind, variant, weighted, dtype, batch=5):
+    lengths, operands, events, expected = _skewed_case(kind, variant, weighted, dtype, batch)
+    plan = _mm_plan(lengths.size, _SKEWED_COLS, int(lengths.sum()), batch, np.dtype(dtype),
+                    weighted, DEFAULT_L2_BYTES)
+    # Guard the case against plan changes: it must contain long rows.
+    assert (lengths > plan.long_threshold).any()
+    call = _skewed_call(variant, weighted)
+    # The structure is traced, as for a matrix built inside jax.jit.
+    actual = jax.jit(call)(*operands, events)
+    assert actual.dtype == jnp.dtype(dtype)
+    np.testing.assert_array_equal(np.asarray(actual, np.float64), expected)
+    assert _hybrid_mm_targets(call, *operands, events)
+    return lengths, plan
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('variant', ['hetero', 'homo', 'indexed'])
+@pytest.mark.parametrize('kind', ['hub', 'just_above_threshold', 'task_boundaries', 'all_long', 'trailing_empty'])
+def test_native_mm_skewed_rows_match_dense(kind, variant, weighted):
+    lengths, plan = _check_skewed(kind, variant, weighted, jnp.float32)
+    if kind == 'just_above_threshold':
+        assert (lengths == plan.long_threshold + 1).sum() == 50
+    if kind == 'task_boundaries':
+        assert plan.long_threshold == 64
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('variant', ['hetero', 'homo', 'indexed'])
+@pytest.mark.parametrize('dtype', [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64])
+def test_native_mm_value_dtypes_on_skewed_rows(dtype, variant, weighted):
+    with jax_x64_enabled():
+        _check_skewed('task_boundaries', variant, weighted, dtype)
+
+
+@requires_gpu_backend
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('variant', ['hetero', 'homo', 'indexed'])
+@pytest.mark.parametrize('batch', [7, 9])
+def test_native_mm_chunks_a_batch_larger_than_the_l2_chunk(monkeypatch, _mm_plans, batch, variant, weighted):
+    # An L2 that fits two accumulator columns splits the batch into chunks of
+    # two, with a partial last chunk; the result must not depend on it.
+    queried = []
+
+    def small_l2(devices):
+        queried.append(tuple(devices))
+        return 4 * (_SKEWED_COLS * 4) * 2
+
+    monkeypatch.setattr(binary_mod, 'cuda_l2_bytes', small_l2)
+    lengths, operands, events, expected = _skewed_case('hub', variant, weighted, jnp.float32, batch)
+    actual = jax.jit(_skewed_call(variant, weighted))(*operands, events)
+    np.testing.assert_array_equal(np.asarray(actual, np.float64), expected)
+    (args, plan), = _mm_plans
+    assert args[:4] == (lengths.size, _SKEWED_COLS, int(lengths.sum()), batch)
+    assert plan.chunk == 2 and batch % plan.chunk
+    assert plan.task_capacity == plan.chunk * plan.long_tasks
+    # The L2 size is read from the devices the lowering targets.
+    assert queried and all(devices and all(d.platform == 'gpu' for d in devices) for devices in queried)

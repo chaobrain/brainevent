@@ -19,15 +19,15 @@ from __future__ import annotations
 import warnings
 from typing import Any
 
-import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._csr.config import CSRConfig, _needs_cuda_info, _structure_device
+from brainevent._csr.config import CSRConfig, _structure_device
 from brainevent._csr.main import CSC, CSR
 from brainevent._error import PerformanceWarning
 from brainevent._event import as_event_operand
+from brainevent._op.lowering_target import cuda_available as _cuda_available
 from brainevent._op.util import CUDA_VALUE_DTYPES
 from brainevent._structure import is_concrete
 from brainevent._tcsr._dispatch import dispatch_binary_mm
@@ -58,14 +58,6 @@ _BACKWARD_ALGORITHM_REMOVED = (
     "brainevent.WeightedArray events use their values. Wrap events in "
     "WeightedArray to obtain value-weighted gradients (the former 'pp_prop')."
 )
-
-
-def _cuda_available() -> bool:
-    """Report whether this process has a CUDA backend; never raises."""
-    try:
-        return bool(jax.devices('cuda'))
-    except RuntimeError:
-        return False
 
 
 _UNPREPARED_WARNED: set = set()
@@ -175,18 +167,13 @@ class TCSR(CSR):
             raise TypeError('TCSR requires a CSR source matrix.')
         backend = _construction_backend(backend, binary_backend, csr.backend)
         data, indices, permutation = sort_csr(csr)
-        # Host metadata has no device preference. Use the concrete weights'
-        # placement to prepare inherited CUDA MM, following CSR's policy.
-        device = None
-        if _needs_cuda_info(backend) and _structure_device(indices) is None:
-            device = _structure_device(u.get_mantissa(data))
         # The source validated (or explicitly trusted) its structure, and sorting
         # within rows keeps it valid, so skip a second nnz-sized host read.
         super().__init__(
             data, indices, csr.indptr, shape=csr.shape,
             backend=backend,
             config=csr.config,
-            indptr_dtype=csr.indptr.dtype, device=device,
+            indptr_dtype=csr.indptr.dtype,
             check_structure=False,
         )
         self._sort_permutation = permutation
@@ -250,12 +237,7 @@ class TCSR(CSR):
         -----
         Sortedness is trusted and never checked, so no host read happens here.
         :attr:`sort_permutation` is ``None``. This entry point also preserves
-        the source configuration when overriding ``backend``. After selecting CUDA from a configuration
-        prepared only for JAX, place the matrix on the target GPU and call
-        :meth:`with_rebuilt_config` outside JIT before using inherited CUDA
-        MM. Its ``device`` parameter selects configuration placement without
-        moving the matrix arrays. :meth:`fromcsr` prepares configuration for
-        its requested backend during construction.
+        the source configuration when overriding ``backend``.
         """
         csr = _source_argument(csr, source, 'csr')
         if not isinstance(csr, CSR):
@@ -289,7 +271,7 @@ class TCSR(CSR):
         Returns
         -------
         TCSR
-            Sorted matrix with freshly bound structure configuration.
+            Sorted matrix sharing the source configuration.
         """
         return cls(csr, backend=backend, source=source, binary_backend=binary_backend)
 
@@ -326,7 +308,7 @@ class TCSR(CSR):
         cls, mat: Any = None, *, nse: int | None = None, index_dtype: Any = jnp.int32,
         indptr_dtype: Any = 'auto', backend: str | None = None,
         precompute_weight_indices: bool = False,
-        config: CSRConfig | None = None, device: Any = None,
+        config: CSRConfig | None = None,
         source: Any = None, binary_backend: str | None = None,
     ) -> TCSR:
         """Create a sorted TCSR through the public CSR dense factory.
@@ -347,8 +329,6 @@ class TCSR(CSR):
             Build the shared mirror before returning.
         config : CSRConfig or None, optional
             CSR scheduler parameters.
-        device : jax.Device or None, optional
-            Device used to prepare CSR configuration.
         source : array_like or brainunit.Quantity, optional
             Legacy alias for ``mat``; supply only one dense source argument.
         binary_backend : str or None, optional
@@ -368,7 +348,7 @@ class TCSR(CSR):
             mat, nse=nse, index_dtype=index_dtype, indptr_dtype=indptr_dtype,
             backend=backend,
             precompute_weight_indices=precompute_weight_indices,
-            config=config, device=device,
+            config=config,
         )
         return cls.from_sorted_csr(csr)
 

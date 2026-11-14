@@ -21,21 +21,18 @@ __all__ = [
     'CompactBinary',
 ]
 
-COMPACT_BINARY_PREPROCESS_BACKEND = 'cuda_raw'
+#: Backend forced on compact preprocessing when the default platform has it.
+#: ``None`` (the default) follows the usual resolution at lowering:
+#: :func:`brainevent.config.set_backend`, the per-primitive default and, on
+#: GPU, the deterministic-ops flag.
+COMPACT_BINARY_PREPROCESS_BACKEND = None
 
 
 def _preferred_compact_backend(primitive):
-    """Prefer a configurable helper backend for compact preprocessing."""
-    available = primitive.available_backends(jax.default_backend())
+    """The configured preprocessing backend if the default platform has it, else ``None``."""
     backend = COMPACT_BINARY_PREPROCESS_BACKEND
-    if backend in available:
+    if backend is not None and backend in primitive.available_backends(jax.default_backend()):
         return backend
-    if 'jax_raw' in available:
-        return 'jax_raw'
-    if 'cuda_raw' in available:
-        return 'cuda_raw'
-    if 'numba' in available:
-        return 'numba'
     return None
 
 @register_pytree_node_class

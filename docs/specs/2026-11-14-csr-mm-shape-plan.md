@@ -197,3 +197,9 @@ Other measurements:
   was originally tuned on a larger-L2 GPU.
 - **Mirror memory.** Route changes under D9 may build the mirror lazily, which
   costs 2·nnz extra index words.
+- **MV task queue without row statistics** (found while implementing D6).
+  Matrices no longer record their longest row, so a raw or matrix MV sizes its
+  task queue from the static worst case. A nonzero queue always launches the
+  second scatter kernel: S/indegree MV goes from 10.2 to 11.9 µs, and the
+  other measured MV cases are unchanged. Callers that know the bound can still
+  pass `max_row_nnz=`.

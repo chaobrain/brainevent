@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from brainevent._csr.config import MVSchedule
 from brainevent._sddmm import csr_sddmm_dweight, csr_sddmm_p, csr_sddmv_dweight, csr_sddmv_p
 from brainevent._test_util import jax_x64_enabled
 
@@ -56,7 +57,17 @@ def forward_backend(config):
     """Carry a scheduler snapshot as a CSR consumer does, with automatic selection."""
     from brainevent._csr.binary.binary import binary_csrmv_p
     from brainevent._sddmm.dispatch import _CSRBackend
-    return _CSRBackend(binary_csrmv_p, None, config.kernel_args()[0])
+    return _CSRBackend(binary_csrmv_p, None, config.mv)
+
+
+def _walk(jaxpr):
+    """Every equation of ``jaxpr``, including those of nested jaxprs."""
+    for eqn in jaxpr.eqns:
+        yield eqn
+        for value in eqn.params.values():
+            inner = getattr(value, 'jaxpr', value)
+            if hasattr(inner, 'eqns'):
+                yield from _walk(inner)
 
 
 def check_result(args, *, transpose, weighted, backend=None):
@@ -241,40 +252,53 @@ def test_explicit_scheduler_snapshot_survives_primitive_binding():
     args = inputs(jnp.float32, jnp.float32, True)
     closed = jax.make_jaxpr(lambda e, c, i, p: csr_sddmv_dweight(
         e, c, i, p, transpose=True, weighted=True, backend=forward_backend(config)))(*args)
-    def walk(jaxpr):  # the primitive sits inside the custom derivative of native calls
-        for eqn in jaxpr.eqns:
-            yield eqn
-            for value in eqn.params.values():
-                inner = getattr(value, 'jaxpr', value)
-                if hasattr(inner, 'eqns'):
-                    yield from walk(inner)
-
-    equation = next(eqn for eqn in walk(closed.jaxpr) if eqn.primitive is csr_sddmv_p.primitive)
+    # The primitive sits inside the custom derivative of native calls.
+    equation = next(eqn for eqn in _walk(closed.jaxpr) if eqn.primitive is csr_sddmv_p.primitive)
     spec = equation.params['config_spec']
-    assert spec == config.kernel_args()[0]
+    assert isinstance(spec, MVSchedule)
+    assert spec == config.mv
     assert spec.mv_capacity(279, 2) > CSRConfig().mv_capacity(279, 2)
 
 
 @pytest.mark.usefixtures('enable_x64')
-def test_module_cache_ignores_matrix_geometry_and_device(monkeypatch, request):
-    from brainevent._csr.config import CSRConfig, CSRDeviceInfo
-    config = CSRConfig(tpr_threshold=16, task_nnz=64).prepare_structure(
-        jnp.array([0, 1], jnp.int32), jnp.array([0, 2], jnp.int32), shape=(1, 2))
-    spec = config.kernel_args()[0]
+@pytest.mark.parametrize('backend', [None, 'auto', 'jax_raw'])
+def test_direct_call_binds_the_default_scheduler(backend):
+    # A call without a CSR consumer has no tuning to forward: it binds the
+    # unpersisted default scheduler, never a structure- or device-specific one.
+    args = inputs(jnp.float32, jnp.float32, True)
+    closed = jax.make_jaxpr(lambda e, c, i, p: csr_sddmv_dweight(
+        e, c, i, p, transpose=True, weighted=True, backend=backend))(*args)
+    equations = [eqn for eqn in _walk(closed.jaxpr) if eqn.primitive is csr_sddmv_p.primitive]
+    if backend == 'jax_raw':
+        # Explicit JAX runs the leaf's JAX kernel without binding the primitive.
+        assert not equations
+        return
+    (equation,) = equations
+    assert equation.params['config_spec'] == MVSchedule()
+    assert equation.params['backend'] == 'auto'
+    assert equation.params['csr_primitive'] is None
+
+
+@pytest.mark.usefixtures('enable_x64')
+def test_module_cache_is_keyed_by_the_scheduler_only(monkeypatch, request):
+    # The scheduler is the whole compile key: equal schedules from separately
+    # built configs share one module, and any scheduler change recompiles.
+    from brainevent._csr.config import CSRConfig
     calls = []
     monkeypatch.setattr(sddmv, 'load_cuda_file', lambda *args, **kwargs: calls.append(kwargs))
-    sddmv._load_hybrid_cached.cache_clear()
-    request.addfinalizer(sddmv._load_hybrid_cached.cache_clear)
-    first = sddmv._load_hybrid(False, spec)
-    for size in range(1, 10):
-        other = replace(spec, structure=replace(spec.structure, cols=100 + size),
-                        device_info=CSRDeviceInfo('gpu', str(size), 1024 * size, size))
-        assert sddmv._load_hybrid(False, other) == first
+    sddmv._load_hybrid.cache_clear()
+    request.addfinalizer(sddmv._load_hybrid.cache_clear)
+    schedule = MVSchedule(tpr_threshold=16, task_nnz=64)
+    first = sddmv._load_hybrid(False, schedule)
+    for _ in range(9):
+        assert sddmv._load_hybrid(False, CSRConfig(tpr_threshold=16, task_nnz=64).mv) == first
     assert len(calls) == 1
-    assert sddmv._load_hybrid_cached.cache_info().currsize == 1
-    assert sddmv._load_hybrid(False, replace(spec, task_nnz=128)) != first
-    assert len(calls) == 2
-    assert sddmv._load_hybrid_cached.cache_parameters()['maxsize'] == 128
+    assert sddmv._load_hybrid.cache_info().currsize == 1
+    assert sddmv._load_hybrid(False, replace(schedule, task_nnz=128)) != first
+    assert sddmv._load_hybrid(True, schedule) != first
+    assert len(calls) == 3
+    assert calls[0]['extra_cuda_cflags'] == schedule.compile_flags()
+    assert sddmv._load_hybrid.cache_parameters()['maxsize'] == 128
 
 
 @pytest.mark.usefixtures('enable_x64')

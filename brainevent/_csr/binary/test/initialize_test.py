@@ -5,9 +5,11 @@
 """Tests for ``brainevent/_csr/binary/initialize.py``, grouped by behavior."""
 
 import json
+import re
 import sys
 import types
 from itertools import product
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -15,7 +17,7 @@ import pytest
 import brainevent
 from brainevent._csr.binary import initialize
 from brainevent._csr.binary.initialize import load_csr_config, save_csr_config
-from brainevent._csr.config import CSRConfig, CSRDeviceInfo, _BenchmarkRecord
+from brainevent._csr.config import CSRConfig, _BenchmarkRecord
 
 
 # Configuration persistence, initialization and benchmarking
@@ -41,10 +43,13 @@ def _restore_cache_dir():
 
 @pytest.mark.usefixtures('_restore_cache_dir')
 def test_default_config_matches_cu_defaults():
-    default_spec = CSRConfig().kernel_args()[0]
-    assert default_spec == CSRConfig(512, 1024, 128, 512).kernel_args()[0]
-    assert any(candidate.kernel_args()[0] == default_spec
-               for candidate in initialize.DEFAULT_CANDIDATES)
+    header = Path(brainevent.__file__).parent / 'include' / 'brainevent' / 'hybrid_mv_schedule.cuh'
+    defines = dict(re.findall(r'#define BE_HYBRID_(\w+) (\d+)', header.read_text()))
+    default = CSRConfig()
+    assert default.mv == CSRConfig(512, 1024, 128, 512).mv
+    assert (default.block_size, default.fixed_scatter_blocks, default.tpr_threshold, default.task_nnz) == tuple(
+        int(defines[name]) for name in ('BLOCK_SIZE', 'FIXED_SCATTER_BLOCKS', 'TPR_THRESHOLD', 'TASK_NNZ'))
+    assert any(candidate.mv == default.mv for candidate in initialize.DEFAULT_CANDIDATES)
 
 
 @pytest.mark.usefixtures('_restore_cache_dir')
@@ -87,11 +92,11 @@ def test_save_and_reload_round_trip(monkeypatch, tmp_path):
     initialize.save_csr_config(cfg, device_kind="TEST_GPU")
 
     monkeypatch.setattr(initialize, "_current_device_kind", lambda: "TEST_GPU")
-    assert initialize.load_csr_config().kernel_args()[0] == cfg.kernel_args()[0]
+    assert initialize.load_csr_config().mv == cfg.mv
 
     # A different device falls back to defaults.
     monkeypatch.setattr(initialize, "_current_device_kind", lambda: "OTHER_GPU")
-    assert initialize.load_csr_config().kernel_args()[0] == CSRConfig().kernel_args()[0]
+    assert initialize.load_csr_config().mv == CSRConfig().mv
 
 
 @pytest.mark.usefixtures('_restore_cache_dir')
@@ -410,17 +415,6 @@ def test_gpu_smoke_runs_two_small_configs_when_gpu_is_available():
 # Persisted schema, environment overrides and recovery
 # ----------------------------------------------------
 
-_persistence_DEVICE = CSRDeviceInfo('gpu', 'TEST_GPU', l2_bytes=4096, sms=16)
-
-
-def _persistence_prepared(lengths=(16, 17, 0, 513, 1025), cols=128, **kwargs):
-    indptr = np.concatenate(([0], np.cumsum(lengths))).astype(np.int64)
-    indices = (np.arange(indptr[-1]) % cols).astype(np.int32)
-    config = CSRConfig(device_info=_persistence_DEVICE, **kwargs).prepare_structure(
-        indices, indptr, shape=(len(lengths), cols))
-    return config, indices, indptr
-
-
 @pytest.fixture
 def _persistence_isolated_store(monkeypatch, tmp_path):
     old = brainevent.get_cache_dir()
@@ -432,8 +426,8 @@ def _persistence_isolated_store(monkeypatch, tmp_path):
         brainevent.set_cache_dir(old)
 
 
-def test_persistence_keeps_old_schema_and_excludes_runtime_plans(_persistence_isolated_store):
-    config, _, _ = _persistence_prepared(block_size=128)
+def test_persistence_keeps_old_schema_of_scheduler_fields_and_records(_persistence_isolated_store):
+    config = CSRConfig(block_size=128)
     record = _BenchmarkRecord(config, 4.0, 20.0, 10)
     path = save_csr_config(config, 'TEST_GPU', [record])
     save_csr_config(CSRConfig(512), 'OTHER_GPU')
@@ -442,10 +436,13 @@ def test_persistence_keeps_old_schema_and_excludes_runtime_plans(_persistence_is
     assert set(stored['TEST_GPU']) == {'block_size', 'fixed_scatter_blocks', 'tpr_threshold',
                                        'task_nnz', 'benchmark_records'}
     assert path.name == 'csr_hybrid_config.json'
+    assert stored['TEST_GPU']['benchmark_records'] == [{
+        'config': {'block_size': 128, 'fixed_scatter_blocks': 1024, 'tpr_threshold': 128, 'task_nnz': 512},
+        'elapsed_ms': 4.0, 'per_call_us': 20.0, 'task_capacity': 10}]
     loaded = load_csr_config('TEST_GPU')
-    assert loaded.block_size == 128
-    assert loaded.primary is loaded.mirror is loaded.device_info is None
+    assert loaded.mv == config.mv
     assert loaded.benchmark_records[0].elapsed_ms == 4.0
+    assert loaded.benchmark_records[0].config.mv == config.mv
 
 
 def test_load_returns_fresh_snapshots_and_respects_environment(_persistence_isolated_store, monkeypatch):
@@ -459,14 +456,14 @@ def test_load_returns_fresh_snapshots_and_respects_environment(_persistence_isol
     assert load_csr_config('TEST_GPU').task_nnz == 512
     monkeypatch.delenv('BRAINEVENT_CSR_HYBRID_CONFIG')
     path.write_text('corrupt')
-    assert load_csr_config('TEST_GPU').kernel_args()[0] == CSRConfig().kernel_args()[0]
-    assert load_csr_config('MISSING').kernel_args()[0] == CSRConfig().kernel_args()[0]
+    assert load_csr_config('TEST_GPU').mv == CSRConfig().mv
+    assert load_csr_config('MISSING').mv == CSRConfig().mv
 
 
 def test_persistence_recovers_invalid_store_but_rejects_invalid_override(_persistence_isolated_store, monkeypatch):
     path = _persistence_isolated_store / 'csr_hybrid_config.json'
     path.write_text('[]')
-    assert load_csr_config('TEST_GPU').kernel_args()[0] == CSRConfig().kernel_args()[0]
+    assert load_csr_config('TEST_GPU').mv == CSRConfig().mv
     with pytest.warns(UserWarning, match='corrupt'):
         save_csr_config(CSRConfig(), 'TEST_GPU')
     path.write_text('broken')

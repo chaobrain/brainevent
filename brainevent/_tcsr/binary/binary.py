@@ -21,9 +21,9 @@ from brainevent._csr.binary.binary import (
     _csrmm_jvp_B as _csr_jvp_B,
     _csrmm_transpose_rule as _csr_transpose_rule,
 )
-from brainevent._csr.config import CSRConfig
+from brainevent._csr.config import CSRConfig, _config_from_spec
 from brainevent._misc import _static_integer, namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, load_cuda_file
+from brainevent._op import XLACustomKernel, load_cuda_file
 from brainevent._op.ffi_naming import source_digest
 from brainevent._op.util import CUDA_VALUE_DTYPES, cuda_event_abi, dtype_suffix
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -255,9 +255,7 @@ def binary_csrmm_p_call(
         weights, indices, indptr, B, local_targets, tile_offsets, permutation,
         shape=shape, transpose=transpose, tile_width=tile_width,
     )
-    config_spec = None
-    if config is not None:
-        config_spec, _ = _config_for_call(config, indices, indptr, shape).kernel_args()
+    config_spec = None if config is None else _config_for_call(config).mv
     target = shape[1] if transpose else shape[0]
     operands = (weights, indices, indptr, B, local_targets, tile_offsets, permutation)
     return tuple(binary_csrmm_p(
@@ -347,7 +345,7 @@ def _csrmm_jvp_data(
     *, shape, transpose, tile_width, config_spec=None, **kwargs,
 ):
     """Reuse the tiled forward for the linear contribution of the weights."""
-    config = None if config_spec is None else CSRConfig.from_kernel_args(config_spec, None)
+    config = None if config_spec is None else _config_from_spec(config_spec)
     return binary_csrmm_p_call(
         data_dot, indices, indptr, B, local_targets=local_targets, tile_offsets=tile_offsets,
         tile_width=tile_width, perm=perm, shape=shape, transpose=transpose,
@@ -360,7 +358,7 @@ def _csrmm_jvp_B(
     *, shape, transpose, **kwargs,
 ):
     """Delegate numerical input tangents to the canonical CSR rule."""
-    return _csr_jvp_B(B_dot, data, indices, indptr, B, None,
+    return _csr_jvp_B(B_dot, data, indices, indptr, B,
                       shape=shape, transpose=transpose, backend='cuda_raw')
 
 
@@ -370,17 +368,10 @@ def _csrmm_transpose_rule(
 ):
     """Adapt canonical CSR cotangents and mark all tile operands nondifferentiable."""
     result = _csr_transpose_rule(
-        ct, data, indices, indptr, B, None, shape=shape, transpose=transpose,
-        backend='cuda_raw', config_spec=config_spec, weighted=False,
+        ct, data, indices, indptr, B, shape=shape, transpose=transpose,
+        backend='cuda_raw', config_spec=config_spec, weighted=False, rerun_forward=False,
     )
     return (*result[:4], None, None, None)
-
-
-def _csrmm_batching(args, axes, **kwargs):
-    """Scan outer mapped axes without changing the prepared inner batch."""
-    if axes[1] is not None or axes[2] is not None:
-        kwargs = dict(kwargs, config_spec=None)
-    return general_batching_rule(binary_csrmm_p.primitive, args, axes, **kwargs)
 
 
 binary_csrmm_p = XLACustomKernel(
@@ -390,6 +381,5 @@ binary_csrmm_p = XLACustomKernel(
 binary_csrmm_p.def_cuda_raw_kernel(_binary_csrmm_cuda_kernel, asdefault=True)
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B, None, None, None)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
-binary_csrmm_p.def_batching_rule(_csrmm_batching)
 binary_csrmm_p.def_call(binary_csrmm_p_call)
 binary_csrmm_p.def_tags('tcsr', 'binary', 'mm')

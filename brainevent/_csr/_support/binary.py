@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._csr.config import CSRConfig, _bucket
+from brainevent._csr.config import CSRConfig, _config_from_spec
 from brainevent._misc import _static_integer
 from brainevent._op import load_cuda_file
 from brainevent._sddmm import csr_sddmm_dweight
@@ -22,38 +22,12 @@ _HYBRID_MV_DIR = Path(__file__).parents[1] / 'binary' / 'hybrid_mv'
 def _task_capacity(indices, indptr, max_row_nnz, config=None) -> int:
     """Hybrid task-queue capacity bound from static shapes and a row-length hint."""
     config = CSRConfig() if config is None else config
-    if config.primary_max_row_nnz is not None:
-        max_row_nnz = config.primary_max_row_nnz
     return config.mv_capacity(indices.shape[0], indptr.shape[0] - 1, max_row_nnz)
 
 
-def _ignore_config_mask(generator):
-    """Adapt a backend that does not consume the final structural mask operand."""
-    def generate(**kwargs):
-        kernel = generator(**kwargs)
-        return lambda *args: kernel(*args[:-1])
-    return generate
-
-
-def _config_from_params(params, mask):
-    """Restore the selected configuration without reading arrays or persistence."""
-    spec = params.get('config_spec')
-    return CSRConfig() if spec is None else CSRConfig.from_kernel_args(spec, mask)
-
-
-def _batch_config_params(args, axes, params):
-    """Invalidate a shared exact plan when indptr or its mask is mapped."""
-    if axes[2] is None and axes[-1] is None:
-        return params
-    config = _config_from_params(params, args[-1]).parameter_snapshot()
-    spec, _ = config.kernel_args()
-    result = dict(params, config_spec=spec)
-    if 'max_row_nnz' in params:
-        result['max_row_nnz'] = None
-    if 'task_capacity' in params:
-        result['task_capacity'] = config.mv_capacity(params['indices_info'].size,
-                                                     params['indptr_info'].size - 1)
-    return result
+def _config_from_params(params):
+    """The configuration selected by a primitive's ``config_spec`` parameter."""
+    return _config_from_spec(params.get('config_spec'))
 
 
 def _accumulator_info(out_info):
@@ -92,28 +66,17 @@ def _hybrid_scratch(task_capacity: int, indptr_dtype):
     return tuple(jnp.empty(info.shape, info.dtype) for info in infos), infos
 
 
-def _check_max_row_nnz(max_row_nnz, config=None) -> None:
+def _check_max_row_nnz(max_row_nnz) -> None:
     """Validate a scalar hint without inspecting compressed arrays."""
-    if max_row_nnz is None:
-        return
-    max_row_nnz = _static_integer(max_row_nnz, 'max_row_nnz')
-    # Prepared configs store a power-of-two bucket of the longest row; a hint
-    # whose bucket is smaller is certainly below the longest row.
-    if (config is not None and config.primary_max_row_nnz is not None and config.nnz is not None
-            and _bucket(max_row_nnz, config.nnz) < config.primary_max_row_nnz):
-        raise ValueError('max_row_nnz is below the longest row in the prepared CSRConfig')
+    if max_row_nnz is not None:
+        _static_integer(max_row_nnz, 'max_row_nnz')
 
 
-def _config_for_call(config, indices, indptr, shape):
-    """Validate a supplied structural descriptor using only static dimensions."""
+def _config_for_call(config):
+    """A raw call's configuration: ``config`` itself, or the default scheduler."""
     config = CSRConfig() if config is None else config
     if not isinstance(config, CSRConfig):
         raise TypeError('config must be a CSRConfig or None')
-    if config.primary is not None and (
-        config.shape != tuple(shape)
-        or config.nnz != indices.size or config.shape[0] + 1 != indptr.size
-    ):
-        raise ValueError('CSRConfig does not match the current CSR dimensions; prepare the config for this structure.')
     return config
 
 
@@ -138,7 +101,7 @@ def _hybrid_mv_kernel(kwargs, symbol: str, event_abi, *, permuted: bool):
         ``kernel(weights, indices, indptr, [perm,] vector)``. A ``perm``
         operand is ignored unless ``permuted``.
     """
-    schedule = _config_from_params(kwargs, None).mv
+    schedule = _config_from_params(kwargs).mv
     mode = 'weighted' if kwargs.get('weighted', False) else 'binary'
     stem = f'hybrid_spmv_col_major_{mode}' if permuted else f'hybrid_spmv_{mode}'
     module = f'csr_{stem}{schedule.module_suffix()}'
