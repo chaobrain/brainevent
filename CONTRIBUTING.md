@@ -160,14 +160,51 @@ change in the right place:
 
 ## Code style
 
+- **Internal imports**: use absolute imports rooted at `brainevent` for all
+  package-internal dependencies, including package initializers, tests,
+  `TYPE_CHECKING` blocks and lazy imports inside functions. For example, use
+  `from brainevent._sddmm import dispatch` instead of a relative import.
+  Preserve aliases and keep imports lazy where required.
 - **Docstrings**: all public classes, methods, and functions use
   [NumPy-style docstrings](https://numpydoc.readthedocs.io/en/latest/format.html),
   with sections in the canonical order: Short summary, Extended summary, Parameters,
   Returns/Yields, Raises, See Also, Notes, References, Examples. Wrap example code in a
   `.. code-block:: python` directive, prefix input lines with `>>>`, and make examples
   self-contained (include the imports).
-- **License header**: every new source file starts with the Apache-2.0 header used
-  throughout the codebase.
+- **License header**: use the full Apache-2.0 header below for `main.py` and
+  `__init__.py`, and the short header below for all other source files. Keep
+  existing copyright years and any applicable third-party notices. Use the
+  appropriate comment syntax for the language (for example, `//` for C++ and
+  CUDA). Keep any required shebang or encoding declaration in its valid position.
+
+  Full header:
+
+  ```python
+  # Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+  #
+  # Licensed under the Apache License, Version 2.0 (the "License");
+  # you may not use this file except in compliance with the License.
+  # You may obtain a copy of the License at
+  #
+  #     http://www.apache.org/licenses/LICENSE-2.0
+  #
+  # Unless required by applicable law or agreed to in writing, software
+  # distributed under the License is distributed on an "AS IS" BASIS,
+  # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  # See the License for the specific language governing permissions and
+  # limitations under the License.
+  ```
+
+  Short header:
+
+  ```python
+  # Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+  # Licensed under the Apache License, Version 2.0:
+  # http://www.apache.org/licenses/LICENSE-2.0
+  ```
+
+  For a new file, use the appropriate copyright year and holder. See the
+  repository's [LICENSE](LICENSE) for the complete license terms.
 - **Linting**: `flake8` plus end-of-file / trailing-whitespace / debug-statement hooks
   run through `pre-commit`. Run them across the tree with:
 

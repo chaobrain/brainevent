@@ -11,14 +11,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
 
-from .binary import binary_jitnmv, binary_jitnmv_p, binary_jitnmm, binary_jitnmm_p
-from .csr import jitn_to_csr, jitn_csr_count_p
-from .float import jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p
-from .main import JITCNormalR, JITCNormalC
-from .dt2t import jitnmv_dt2t
+from brainevent._jit_normal.binary import (
+    binary_jitnmv,
+    binary_jitnmv_p,
+    binary_jitnmm,
+    binary_jitnmm_p,
+)
+from brainevent._jit_normal.csr import jitn_to_csr, jitn_csr_count_p
+from brainevent._jit_normal.float import (
+    jitn,
+    jitn_p,
+    jitnmv,
+    jitnmv_p,
+    jitnmm,
+    jitnmm_p,
+)
+from brainevent._jit_normal.main import JITCNormalR, JITCNormalC
+from brainevent._jit_normal.dt2t import jitnmv_dt2t
 
 __all__ = [
     'JITCNormalR', 'JITCNormalC',

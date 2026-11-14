@@ -1,18 +1,7 @@
 # -*- coding: utf-8 -*-
 # Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
 
 """Content-derived naming for XLA FFI targets.
 
@@ -31,12 +20,14 @@ cross-process stability for that kernel only, never correctness).
 
 import hashlib
 import types
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
 
 __all__ = [
     'kernel_content_fingerprint',
+    'source_digest',
 ]
 
 # Cap on the number of bytes of ndarray closure content folded into the
@@ -266,3 +257,22 @@ def kernel_content_fingerprint(kernel: Any, extra: tuple = ()) -> Optional[str]:
         h.update(p)
         h.update(b'\x00')
     return h.hexdigest()[:16]
+
+
+def source_digest(*paths: Path) -> str:
+    """Return a short content hash of source files for a native module name.
+
+    A registered FFI target keeps its name for the life of the process, so a
+    module compiled from changed sources (or headers) needs a fresh name.
+
+    Parameters
+    ----------
+    *paths : pathlib.Path
+        Source and header files, in a deterministic order.
+
+    Returns
+    -------
+    str
+        The first 12 hex digits of the SHA-256 of the concatenated contents.
+    """
+    return hashlib.sha256(b''.join(Path(path).read_bytes() for path in paths)).hexdigest()[:12]

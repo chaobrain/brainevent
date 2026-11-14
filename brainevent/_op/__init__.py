@@ -11,11 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
-from .kernix_codegen import normalize_tokens
-from .kernix_compiler import CompilerBackend, CUDABackend, CPPBackend, HIPBackend
-from .kernix_pipeline import (
+from brainevent._op.kernix_codegen import normalize_tokens
+from brainevent._op.kernix_compiler import (
+    CompilerBackend,
+    CUDABackend,
+    CPPBackend,
+    HIPBackend,
+)
+from brainevent._op.kernix_pipeline import (
     load_cuda_inline,
     load_cuda_file,
     load_cuda_dir,
@@ -26,13 +30,30 @@ from .kernix_pipeline import (
     clear_cache,
     print_diagnostics,
 )
-from .kernix_runtime import CompiledModule, register_ffi_target, list_registered_targets
-from .kernix_toolchain import so_ext
-from .benchmark import BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function
-from .main import XLACustomKernel, KernelEntry
-from .numba_cuda_ffi import numba_cuda_kernel, numba_cuda_callable
-from .numba_ffi import numba_kernel
-from .util import defjvp, general_batching_rule, jaxinfo_to_warpinfo, jaxtype_to_warptype
+from brainevent._op.kernix_runtime import (
+    CompiledModule,
+    register_ffi_target,
+    list_registered_targets,
+)
+from brainevent._op.kernix_toolchain import so_ext
+from brainevent._op.benchmark import (
+    BenchmarkConfig,
+    BenchmarkRecord,
+    BenchmarkResult,
+    benchmark_function,
+)
+from brainevent._op.main import XLACustomKernel, KernelEntry
+from brainevent._op.numba_cuda_ffi import (
+    numba_cuda_kernel,
+    numba_cuda_callable,
+)
+from brainevent._op.numba_ffi import numba_kernel
+from brainevent._op.util import (
+    defjvp,
+    general_batching_rule,
+    jaxinfo_to_warpinfo,
+    jaxtype_to_warptype,
+)
 
 __all__ = [
     'XLACustomKernel', 'KernelEntry',

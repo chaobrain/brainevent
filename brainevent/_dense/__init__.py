@@ -11,17 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
-from .binary import (
+from brainevent._dense.binary import (
     binary_densemv, binary_densemv_p, binary_densemv_p_call,
     binary_densemm, binary_densemm_p, binary_densemm_p_call,
 )
-from .plasticity_binary import (
+from brainevent._dense.plasticity import (
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
 )
-from .main import Dense
+from brainevent._dense.main import Dense
 
 __all__ = [
     'Dense',

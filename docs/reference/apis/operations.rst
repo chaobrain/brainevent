@@ -11,6 +11,19 @@ CSR Operations
 
 Binary matrix-vector / matrix-matrix multiplication.
 
+.. important::
+
+   Raw ``binary_csrmm`` and ``binary_csrmm_indexed`` calls need an explicit
+   prepared ``config`` to use the native CUDA hybrid scatter MM
+   (``transpose=True``, backend resolving to ``cuda_raw``). Construct it for
+   the actual structure and target GPU outside ``jax.jit``, before calling
+   MM. Omitting ``config`` or passing ``None`` or a bare ``CSRConfig()``
+   leaves that call unprepared: it runs the portable JAX scatter instead and
+   warns once with ``PerformanceWarning``.
+   The raw functions do not build a long-row mask automatically. See
+   :ref:`csr-mm-configuration` for preparation and the exceptions for gather
+   calls, other backends and empty operations.
+
 .. autosummary::
    :toctree: generated/
 
@@ -69,15 +82,33 @@ Row slicing.
 
 Per-edge-delay spike delivery into an arrival ring.
 
+Build a :class:`CSRDelayLayout` once, outside the timed loop, with
+``CSRDelayLayout.build(...)`` or ``CSR.delay_layout(delays, n_slots)``. It
+sorts every row by (delay, column), validates the structure and delays once,
+and records where each delay segment starts. ``csr_delay_deliver_layout``
+then adds one step's events into an explicit ``(n_slots, n_post)`` ring:
+an event of row ``i`` at step ``t`` over an edge of delay ``d`` lands in slot
+``(t + d) % n_slots``. Delivery is pure: it returns the updated ring, never
+clears a slot, and keeps no state on the layout, so reading and clearing the
+current slot (and advancing time) stay with the caller.
+
+Delays lie in ``[0, n_slots)`` and may be one integer for all edges or one
+per edge. The layout stores weights in its own edge order; ``with_data`` and
+``original_data`` convert from and to the original edge order through
+``perm``. The raw constructor accepts prepared arrays, including traced ones
+inside ``jax.jit``. The ring keeps its dtype and unit. Binary events add the
+weight for every nonzero event; weighted events (``WeightedArray`` or
+``weighted=True``) multiply it by the event value. On the GPU the default
+backend is a delay-major CUDA kernel, on the CPU an event-driven Numba kernel;
+``jax_raw`` is available everywhere. Delivery supports JIT, ``vmap``,
+``shard_map``, forward- and reverse-mode differentiation.
+
 .. autosummary::
    :toctree: generated/
 
-   csr_delay_deliver
-   csr_delay_deliver_p
    CSRDelayLayout
    csr_delay_deliver_layout
    csr_delay_deliver_layout_p
-
 
 Dense Operations
 ----------------

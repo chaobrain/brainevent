@@ -1,17 +1,6 @@
 # Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
 
 # -*- coding: utf-8 -*-
 
@@ -27,7 +16,7 @@ from jax.interpreters import ad
 from brainevent._compatible_import import Primitive, init_zero
 
 if TYPE_CHECKING:
-    from .main import XLACustomKernel
+    from brainevent._op.main import XLACustomKernel
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -48,6 +37,7 @@ __all__ = [
     'active_sum',
     'EventABI',
     'cuda_event_abi',
+    'CUDA_VALUE_DTYPES',
 ]
 
 _DTYPE_SUFFIX = {
@@ -56,6 +46,9 @@ _DTYPE_SUFFIX = {
     np.dtype('float64'): '_f64',
     np.dtype('bfloat16'): '_bf16',
 }
+
+#: Floating value dtypes that have native CUDA kernels (float16, bfloat16, float32, float64).
+CUDA_VALUE_DTYPES = frozenset(_DTYPE_SUFFIX)
 
 
 def dtype_suffix(dtype) -> str:
@@ -561,7 +554,7 @@ def defjvp(primitive: Union[Primitive, 'XLACustomKernel'], *jvp_rules: Optional[
         >>> defjvp(my_prim, jvp_rule_input0, jvp_rule_input1)
     """
     # Import XLACustomKernel locally to avoid circular dependencies.
-    from .main import XLACustomKernel
+    from brainevent._op.main import XLACustomKernel
 
     # If the input is an XLACustomKernel, extract the underlying JAX primitive.
     if isinstance(primitive, XLACustomKernel):

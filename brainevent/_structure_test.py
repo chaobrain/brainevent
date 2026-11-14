@@ -1,27 +1,15 @@
 # Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
 
 import warnings
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 from brainevent._error import PerformanceWarning
-from brainevent._structure import StructureCache, is_concrete, nnz_hint, warn_mirror_fallback
+from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
 
 
 def test_is_concrete_flags_tracers_only():
@@ -31,31 +19,27 @@ def test_is_concrete_flags_tracers_only():
     assert seen == [False]
 
 
-@pytest.mark.parametrize('indptr, hint', [
-    ([0], 0),                 # no rows
-    ([0, 0, 0], 0),           # only empty rows
-    ([0, 1], 1),
-    ([0, 3, 3, 5], 4),        # longest row 3 -> 4
-    ([0, 4], 4),              # powers of two stay put
-    ([0, 5, 10], 8),
-    ([0, 129], 256),
-])
-def test_nnz_hint_is_the_power_of_two_ceiling_of_the_longest_line(indptr, hint):
-    assert nnz_hint(np.asarray(indptr)) == hint
+def test_structure_cache_set_mirror_does_not_read_array_values():
+    class NoHostRead:
+        def __array__(self, *args, **kwargs):
+            raise AssertionError('storing a mirror must not scan its values')
 
-
-def test_nnz_hint_is_unknown_for_a_traced_indptr():
-    seen = []
-    jax.jit(lambda p: seen.append(nnz_hint(p)) or p)(jnp.asarray([0, 2, 3]))
-    assert seen == [None]
-
-
-def test_structure_cache_set_mirror_records_its_hint():
-    cache = StructureCache(primary_hint=2)
-    mirror = cache.set_mirror([np.asarray([0, 3, 4]), np.arange(4), np.arange(4)])
+    cache = StructureCache()
+    mirror = cache.set_mirror([NoHostRead(), NoHostRead(), NoHostRead()])
     assert isinstance(mirror, tuple) and cache.mirror is mirror
-    assert cache.mirror_hint == 4
-    assert cache.primary_hint == 2 and cache.diag_plan is None
+    assert cache.diag_plan is None
+
+
+def test_mirror_preparation_is_shared_by_copies_and_invalidated_on_replacement(
+):
+    preparation = (object(), 7)
+    mirror = (object(), object(), object())
+    cache = StructureCache(mirror=mirror, mirror_preparation=preparation)
+    copied = cache.copy()
+    assert copied.mirror_preparation is cache.mirror_preparation is preparation
+    copied.set_mirror((object(), object(), object()))
+    assert copied.mirror_preparation is None
+    assert cache.mirror_preparation is preparation
 
 
 def test_warn_mirror_fallback_warns_once_per_owner_and_operation():
@@ -68,3 +52,18 @@ def test_warn_mirror_fallback_warns_once_per_owner_and_operation():
     perf = [w for w in caught if issubclass(w.category, PerformanceWarning)]
     assert len(perf) == 2
     assert 'build_weight_indices' in str(perf[0].message)
+
+
+def test_tile_geometry_containers_are_copied_and_mirror_replacement_is_selective():
+    primary, mirror = object(), object()
+    entries = {(True, 32, np.dtype('int32')): primary,
+               (False, 32, np.dtype('int32')): mirror}
+    cache = StructureCache(tile_geometries=entries)
+    assert cache.tile_geometries is not entries
+    copied = cache.copy()
+    assert copied is not cache
+    assert copied.tile_geometries is not cache.tile_geometries
+    assert copied.tile_geometries[(True, 32, np.dtype('int32'))] is primary
+    copied.set_mirror((None, None, None))
+    assert copied.tile_geometries == {(True, 32, np.dtype('int32')): primary}
+    assert cache.tile_geometries == entries

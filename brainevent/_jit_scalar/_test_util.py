@@ -1,3 +1,7 @@
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
+
 """Pure-numpy reference implementation of the scalar-weight JITC connectivity.
 
 Self-contained on purpose: each ``_jit_*`` package carries its own copy of the

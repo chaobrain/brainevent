@@ -1,17 +1,6 @@
 # Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
 
 import contextlib
 import ctypes
@@ -25,8 +14,8 @@ import jax
 import numpy as np
 
 from brainevent._error import KernelRegistrationError
-from .ffi_naming import kernel_content_fingerprint
-from .numba_ffi import (
+from brainevent._op.ffi_naming import kernel_content_fingerprint
+from brainevent._op.numba_ffi import (
     XLA_FFI_API_MAJOR,
     XLA_FFI_API_MINOR,
     XLA_FFI_Error_Code,
@@ -41,8 +30,9 @@ from .numba_ffi import (
     _normalize_shapes_and_dtypes,
     _warn_if_untested_jax,
     _register_exit_guard,
+    _guard_ffi_callback,
 )
-from .util import OutType, abstract_arguments
+from brainevent._op.util import OutType, abstract_arguments
 
 __all__ = [
     'numba_cuda_kernel',
@@ -449,12 +439,15 @@ class NumbaCudaFfiHandler:
 
         # Create the ctypes callback - must be stored as an attribute to prevent GC
         self._callback = _CUDA_FFI_CALLBACK_TYPE(self._ffi_callback)
-        # The target calls into Python: wait for in-flight executions at exit.
+        # The target calls into Python: wait for in-flight executions at exit,
+        # and register the native gate, which rejects late executions before
+        # they reach the ctypes trampoline (and retains the trampoline).
         _register_exit_guard()
+        self._callback_address = _guard_ffi_callback(self._callback)
 
         # Register as an FFI target for CUDA platform
         _warn_if_untested_jax()
-        capsule = jax.ffi.pycapsule(ctypes.cast(self._callback, c_void_p).value)
+        capsule = jax.ffi.pycapsule(self._callback_address)
         jax.ffi.register_ffi_target(name, capsule, platform="CUDA")
 
         # Self-pin (F7): XLA now holds a raw function pointer into
@@ -1190,10 +1183,13 @@ class NumbaCudaCallableHandler:
 
         # Create the ctypes callback -- must be kept alive to prevent GC
         self._callback = _CUDA_CALLABLE_CALLBACK_TYPE(self._ffi_callback)
+        # As for NumbaCudaFfiHandler: exit guard plus native gate.
+        _register_exit_guard()
+        self._callback_address = _guard_ffi_callback(self._callback)
 
         # Register as an FFI target for CUDA platform
         _warn_if_untested_jax()
-        capsule = jax.ffi.pycapsule(ctypes.cast(self._callback, c_void_p).value)
+        capsule = jax.ffi.pycapsule(self._callback_address)
         jax.ffi.register_ffi_target(name, capsule, platform="CUDA")
 
         # Self-pin (F7): XLA now holds a raw function pointer into
