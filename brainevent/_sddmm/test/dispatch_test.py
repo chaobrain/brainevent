@@ -38,7 +38,7 @@ def test_csr_gradient_dispatch_preserves_forward_config(monkeypatch, requested):
     """Explicit CUDA must retain the snapshot when backend metadata is unwrapped."""
     from brainevent._csr.config import CSRConfig
     from brainevent._sddmm._common import _CSRBackend
-    config_spec = CSRConfig(tpr_threshold=16, task_nnz=64).kernel_args()[0]
+    config_spec = CSRConfig(tpr_threshold=16, task_nnz=64).mv
     captured = []
 
     def bind_events(events, ct, indices, indptr, **kwargs):
@@ -177,6 +177,63 @@ def test_csr_singleton_matrices_and_vector_wrappers_share_native_routing(transpo
         np.testing.assert_array_equal(fn(e[:, None], c[:, None]), expected)
         ir = str(fn.lower(e[:, None], c[:, None]).compiler_ir())
         assert ('hybrid_sddmv' in ir) == (transpose and jax.default_backend() == 'gpu')
+
+
+def _leaf_equations(jaxpr, primitive):
+    """Every ``primitive`` equation of ``jaxpr``, including nested jaxprs."""
+    for eqn in jaxpr.eqns:
+        if eqn.primitive is primitive.primitive:
+            yield eqn
+        for value in eqn.params.values():
+            inner = getattr(value, 'jaxpr', value)
+            if hasattr(inner, 'eqns'):
+                yield from _leaf_equations(inner, primitive)
+
+
+@pytest.mark.parametrize('batch', [1, 3])
+@pytest.mark.parametrize('transpose', [False, True])
+def test_unspecified_event_backend_binds_auto(batch, transpose):
+    # With no backend, the leaf binds ``auto`` with no source CSR primitive:
+    # the lowering resolves the leaf's own global choice as a preference, so a
+    # global ``cuda_raw`` cannot force an untransposed product onto CUDA.
+    a, b = jnp.ones((2, batch), jnp.float32), jnp.ones((batch, 3), jnp.float32)
+    i, p = jnp.array([2, 0], jnp.int32), jnp.array([0, 1, 2], jnp.int32)
+    closed = jax.make_jaxpr(lambda x, y: sddmm(
+        x, y, i, p, mode='weighted', transpose=transpose, backend=None))(a, b)
+    leaf = (mv if batch == 1 else mm)
+    primitive = leaf.csr_sddmv_p if batch == 1 else leaf.csr_sddmm_p
+    (equation,) = _leaf_equations(closed.jaxpr, primitive)
+    assert equation.params['backend'] == 'auto'
+    assert equation.params['csr_primitive'] is None
+
+
+@pytest.mark.skipif(jax.default_backend() != 'gpu', reason='GPU backend resolution needs a GPU')
+@pytest.mark.parametrize('batch', [1, 3])
+@pytest.mark.parametrize('transpose', [False, True])
+@pytest.mark.parametrize('global_backend', ['cuda_raw', 'jax_raw', 'cusparse'])
+def test_global_backend_is_a_preference_for_direct_event_calls(batch, transpose, global_backend):
+    import brainevent
+    rng = np.random.default_rng(batch)
+    rows, cols = 5, 7
+    lengths = np.array([0, 3, 1, 7, 2])
+    p = jnp.asarray(np.r_[0, np.cumsum(lengths)], jnp.int32)
+    i = jnp.asarray(np.concatenate([np.sort(rng.choice(cols, n, replace=False)) for n in lengths]), jnp.int32)
+    # A is (rows, batch) and B is (batch, cols); the events are A when transposed.
+    a = jnp.asarray(rng.integers(-2, 3, (rows, batch)), jnp.float32)
+    b = jnp.asarray(rng.integers(-2, 3, (batch, cols)), jnp.float32)
+    expected = sddmm(a, b, i, p, mode='weighted', transpose=transpose, backend='jax_raw')
+    previous = brainevent.config.get_backend('gpu')
+    brainevent.config.set_backend('gpu', global_backend)
+    try:
+        fn = jax.jit(lambda x, y: sddmm(x, y, i, p, mode='weighted', transpose=transpose))
+        actual = fn(a, b)
+        ir = fn.lower(a, b).as_text()
+    finally:
+        brainevent.config.set_backend('gpu', previous)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+    native = 'hybrid_sddmv_' if batch == 1 else 'batched_v3_sddmm_'
+    assert (native in ir) == (global_backend == 'cuda_raw' and transpose)
+    assert ('cusparse_sddmm_' in ir) == (global_backend == 'cusparse')
 
 
 @pytest.mark.parametrize('batch', [1, 2])

@@ -806,22 +806,6 @@ def homo_ct_case(case, transpose):
     return jnp.asarray(ct), terms.sum()
 
 
-def prepared_config(indices, indptr, shape):
-    """Prepare concrete test structure for raw hybrid operator calls."""
-    from brainevent._csr.config import CSRConfig
-    from brainevent._csr.config import get_device_info
-
-    if (isinstance(indices, jax.core.Tracer)
-            or isinstance(indptr, jax.core.Tracer)):
-        return CSRConfig()
-    with jax.ensure_compile_time_eval():
-        indices, indptr = jnp.asarray(indices), jnp.asarray(indptr)
-        return CSRConfig().prepare_structure(
-            indices, indptr, shape=shape,
-            device_info=get_device_info(indices, indptr),
-        )
-
-
 # ---------------------------------------------------------------------------
 # Fixed 1k CUDA/cuSPARSE comparison inputs, references and diagnostics.
 # ---------------------------------------------------------------------------

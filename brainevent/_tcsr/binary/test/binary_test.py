@@ -20,6 +20,7 @@ from jax.interpreters import ad
 import numpy as np
 import pytest
 
+from brainevent._csr.config import CSRConfig
 from brainevent._test_util import jax_x64_enabled, requires_gpu
 
 
@@ -47,14 +48,11 @@ def _reference_kernel(*, shape, transpose, **kwargs):
 def cpu_math_backend():
     """Exercise real transformations with temporary CPU mathematical leaves."""
     float_api = importlib.import_module('brainevent._csr.float.float')
-    csr_binary = importlib.import_module('brainevent._csr.binary.binary')
     sampled_mm = importlib.import_module('brainevent._sddmm._mm.sddmm')
     sampled_mv = importlib.import_module('brainevent._sddmm._mv.sddmv')
     aliases = (
         (api.binary_csrmm_p, _reference_kernel),
         (float_api.csrmm_p, float_api._csrmm_jax_kernel),
-        # The shared-weight gradient runs a unit-weight CSR forward on the same backend.
-        (csr_binary.binary_csrmm_p, csr_binary._ignore_config_mask(csr_binary._binary_csrmm_jax_kernel)),
         (sampled_mm.csr_sddmm_p,
          lambda **kw: partial(sampled_mm._jax_kernel, **kw)),
         (sampled_mv.csr_sddmv_p,
@@ -134,6 +132,17 @@ def _numpy_reference(case, events=None, weights=None, binary=True):
     return output
 
 
+def _equations(jaxpr):
+    """Every equation of a jaxpr, including those of nested sub-jaxprs."""
+    for eqn in jaxpr.eqns:
+        yield eqn
+        for value in eqn.params.values():
+            for item in value if isinstance(value, (tuple, list)) else (value,):
+                inner = getattr(item, 'jaxpr', item)
+                if hasattr(inner, 'eqns'):
+                    yield from _equations(inner)
+
+
 def _assert_close(actual, expected):
     dtype = jnp.asarray(actual).dtype
     tolerance = .025 if dtype == jnp.bfloat16 else (.003 if dtype == jnp.float16 else 2e-5)
@@ -180,8 +189,8 @@ def test_jvp_keeps_numeric_input_tangents(cpu_math_backend, transpose, homo):
     _, tangent = jax.jvp(fn, (case['weights'], case['events']), (dw, de))
     expected = _numpy_reference(case, weights=dw) + _numpy_reference(case, events=de, binary=False)
     _assert_close(tangent, expected)
-    # The weight tangent must retain the new primitive, rather than switch to
-    # the prepared-hybrid CSR forward and silently acquire another plan.
+    # The weight tangent must retain the tiled primitive rather than switch to
+    # the hybrid CSR forward, which would ignore the tile operands.
     graph = jax.make_jaxpr(lambda w, d: jax.jvp(
         lambda x: _invoke(case, weights=x, _lowlevel=True), (w,), (d,))[1])(case['weights'], dw)
     assert any(eqn.primitive is api.binary_csrmm_p.primitive for eqn in graph.jaxpr.eqns)
@@ -204,6 +213,40 @@ def test_vjp_returns_canonical_edge_order_and_homo_sum(cpu_math_backend, transpo
     _assert_close(dw, expected.sum(keepdims=True) if homo else expected)
     backward_case = dict(case, transpose=not transpose)
     _assert_close(de, _numpy_reference(backward_case, events=ct, binary=False))
+
+
+@pytest.mark.parametrize('transpose', [True, False])
+def test_shared_weight_gradient_sums_slots_without_a_csr_forward(transpose):
+    csr_binary = importlib.import_module('brainevent._csr.binary.binary')
+    case = _make_case(transpose, homo=True)
+    graph = jax.make_jaxpr(jax.grad(lambda w: jnp.sum(_invoke(case, weights=w))))(case['weights'])
+    primitives = {eqn.primitive for eqn in _equations(graph.jaxpr)}
+    # The CSR forward has no tile operands, so the tiled transpose rule must
+    # not rerun it; the shared cotangent sums the per-slot cotangents instead.
+    assert api.binary_csrmm_p.primitive in primitives
+    assert csr_binary.binary_csrmm_p.primitive not in primitives
+
+
+@pytest.mark.parametrize('transpose', [True, False])
+def test_config_reaches_forward_tangent_and_batched_calls_as_mv_schedule(transpose):
+    case = _make_case(transpose)
+    config = CSRConfig(tpr_threshold=5)
+
+    def specs(fn, *args):
+        graph = jax.make_jaxpr(fn)(*args)
+        return [eqn.params['config_spec'] for eqn in _equations(graph.jaxpr)
+                if eqn.primitive is api.binary_csrmm_p.primitive]
+
+    assert specs(lambda w: _invoke(case, weights=w), case['weights']) == [None]
+    run = lambda w: _invoke(case, weights=w, config=config)
+    assert specs(run, case['weights']) == [config.mv]
+    tangent = jnp.ones_like(case['weights'])
+    assert specs(lambda w, d: jax.jvp(run, (w,), (d,)), case['weights'], tangent) == [config.mv] * 2
+    # Batching over structures keeps the schedule, which holds no structure state.
+    keys = ('indices', 'indptr', 'tile_offsets')
+    stacked = [jnp.stack([case[key]] * 2) for key in keys]
+    batched = jax.vmap(lambda *arrays: _invoke(case, config=config, **dict(zip(keys, arrays))))
+    assert specs(batched, *stacked) == [config.mv]
 
 
 @pytest.mark.parametrize('transpose', [True, False])
@@ -269,17 +312,11 @@ def test_cuda_gradients_and_numeric_input_tangent(transpose, homo, dtype):
 
 @requires_gpu
 @pytest.mark.parametrize('transpose', [True, False])
-@pytest.mark.parametrize('prepared', [False, True])
-def test_cuda_batch_one_weight_derivatives_accept_optional_host_config(transpose, prepared):
-    from brainevent._csr.config import CSRConfig
-
+@pytest.mark.parametrize('config', [None, CSRConfig(), CSRConfig(tpr_threshold=5)],
+                         ids=['none', 'default', 'tuned'])
+def test_cuda_batch_one_weight_derivatives_accept_optional_host_config(transpose, config):
     with jax.default_device(jax.devices('gpu')[0]):
         case = _make_case(transpose, batch=1)
-        config = CSRConfig()
-        if prepared:
-            config = config.prepare_structure(np.asarray(case['indices']), np.asarray(case['indptr']),
-                                              shape=case['shape'])
-        assert config.device_info is None  # A prepared hybrid GPU plan is unnecessary.
         fn = lambda weights: _invoke(case, weights=weights, config=config)
         tangent = jnp.arange(case['weights'].size, dtype=jnp.float32) / 5 + .2
         _, derivative = jax.jvp(fn, (case['weights'],), (tangent,))
@@ -336,7 +373,7 @@ def test_cuda_vmap_keeps_inner_batch_tile_plan(transpose):
 
 
 @pytest.mark.parametrize('transpose', [True, False])
-def test_vmap_and_nested_vmap_preserve_prepared_inner_batch(cpu_math_backend, transpose):
+def test_vmap_and_nested_vmap_preserve_inner_batch(cpu_math_backend, transpose):
     case = _make_case(transpose, batch=2)
     events = jnp.stack((case['events'], -case['events'], jnp.zeros_like(case['events'])))
     weights = jnp.stack((case['weights'], case['weights'] * 2, case['weights'] * -1))
@@ -350,7 +387,8 @@ def test_vmap_and_nested_vmap_preserve_prepared_inner_batch(cpu_math_backend, tr
 
 
 @pytest.mark.parametrize('transpose', [True, False])
-def test_vmap_pairs_each_canonical_structure_with_its_plan(cpu_math_backend, transpose):
+@pytest.mark.parametrize('config', [None, CSRConfig(tpr_threshold=5)], ids=['none', 'tuned'])
+def test_vmap_pairs_each_canonical_structure_with_its_plan(cpu_math_backend, transpose, config):
     first = _make_case(transpose)
     second = _make_case(transpose, indices=[0, 1, 4, 0, 0, 3])
     cases = (first, second)
@@ -360,7 +398,7 @@ def test_vmap_pairs_each_canonical_structure_with_its_plan(cpu_math_backend, tra
                               for case in cases])
     def run(weights, indices, indptr, events, local, offsets, perm):
         return _invoke(first, weights=weights, indices=indices, indptr=indptr, events=events,
-                       local_targets=local, tile_offsets=offsets, perm=perm)
+                       local_targets=local, tile_offsets=offsets, perm=perm, config=config)
     result = jax.jit(jax.vmap(run))(*arrays, permutations)
     for i, case in enumerate(cases):
         _assert_close(result[i], _numpy_reference(case))

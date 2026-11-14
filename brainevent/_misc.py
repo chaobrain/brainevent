@@ -410,6 +410,31 @@ def _as_indptr(indptr, nse, indptr_dtype, context):
     return arr.astype(target)
 
 
+def _check_mirror(mirror, *, shape, nnz):
+    """Validate a supplied mirror ``(indptr, indices, perm)``: the CSR of compressed ``shape``.
+
+    Applies :func:`_check_compressed_structure` (row pointers are read only
+    when concrete; index values never) and requires ``indices`` and ``perm``
+    to hold one entry per stored edge of the primary layout.
+
+    Returns
+    -------
+    tuple
+        The mirror as a tuple of its three arrays.
+    """
+    mirror = tuple(mirror)
+    if len(mirror) != 3:
+        raise ValueError(f"a mirror is (indptr, indices, perm); got {len(mirror)} arrays.")
+    indptr, indices, perm = mirror
+    if np.shape(indices) != (nnz,) or np.shape(perm) != (nnz,):
+        raise ValueError(
+            f"mirror indices and perm must each have shape ({nnz},); got "
+            f"{np.shape(indices)} and {np.shape(perm)}."
+        )
+    _check_compressed_structure(indices, indptr, shape, format="csr", check_values=True)
+    return mirror
+
+
 def _check_compressed_structure(indices, indptr, shape, format="csr", check_values=True, *, host_indptr=None):
     """Validate CSR/CSC structural invariants.
 
@@ -577,6 +602,28 @@ def _csr_to_coo(
         Column indices in COO format (identical to *indices*).
     """
     return jnp.cumsum(jnp.zeros_like(indices).at[indptr].add(1)) - 1, indices
+
+
+def _long_row_mask(indptr: jax.Array, threshold: int) -> jax.Array:
+    """Pack ``row length > threshold`` into the native hybrid kernels' uint32 mask.
+
+    Parameters
+    ----------
+    indptr : jax.Array
+        CSR row offsets, ``(rows + 1,)``.
+    threshold : int
+        Longest row that is still scheduled as short.
+
+    Returns
+    -------
+    jax.Array
+        ``uint32[ceil(rows / 32)]``; bit ``r % 32`` of word ``r // 32`` marks row ``r``.
+    """
+    rows = indptr.shape[0] - 1
+    bits = (jnp.diff(indptr) > threshold).astype(jnp.uint32)
+    bits = jnp.pad(bits, (0, -rows % 32)).reshape((-1, 32))
+    # Distinct powers of two: the sum is their bitwise OR.
+    return jnp.sum(bits << jnp.arange(32, dtype=jnp.uint32), axis=1, dtype=jnp.uint32)
 
 
 _CSR_SIGNED_INDEX_DTYPES = (jnp.dtype(jnp.int32), jnp.dtype(jnp.int64))

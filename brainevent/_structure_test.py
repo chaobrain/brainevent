@@ -7,6 +7,7 @@ import warnings
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from brainevent._error import PerformanceWarning
 from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
@@ -30,16 +31,24 @@ def test_structure_cache_set_mirror_does_not_read_array_values():
     assert cache.diag_plan is None
 
 
-def test_mirror_preparation_is_shared_by_copies_and_invalidated_on_replacement(
-):
-    preparation = (object(), 7)
+def test_copies_share_structure_until_the_mirror_is_replaced():
     mirror = (object(), object(), object())
-    cache = StructureCache(mirror=mirror, mirror_preparation=preparation)
+    diag_plan = (object(), object())
+    cache = StructureCache(mirror=mirror, diag_plan=diag_plan)
     copied = cache.copy()
-    assert copied.mirror_preparation is cache.mirror_preparation is preparation
-    copied.set_mirror((object(), object(), object()))
-    assert copied.mirror_preparation is None
-    assert cache.mirror_preparation is preparation
+    assert copied.mirror is cache.mirror and copied.diag_plan is cache.diag_plan
+    replacement = copied.set_mirror([object(), object(), object()])
+    assert copied.mirror is replacement and replacement is not mirror
+    # Replacing the copy's mirror neither touches the source nor the diag plan.
+    assert cache.mirror is not replacement and cache.mirror == mirror
+    assert copied.diag_plan is cache.diag_plan
+
+
+def test_structure_cache_holds_no_mm_preparation():
+    # The hybrid MM is planned from shapes at lowering; no mirror plan is cached.
+    assert set(StructureCache.__slots__) == {'mirror', 'diag_plan', 'tile_geometries'}
+    with pytest.raises(TypeError):
+        StructureCache(mirror_preparation=(object(), 7))
 
 
 def test_warn_mirror_fallback_warns_once_per_owner_and_operation():

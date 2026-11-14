@@ -2,13 +2,13 @@
 # Licensed under the Apache License, Version 2.0:
 # http://www.apache.org/licenses/LICENSE-2.0
 
-"""Tests for ``brainevent/_csr/config.py``, grouped by behavior."""
+"""Tests for ``brainevent/_csr/config.py``, grouped by behavior.
+
+The shape-only hybrid MM plan (``_mm_plan``) is tested in ``mm_plan_test.py``.
+"""
 
 import json
-import shutil
-import subprocess
 from dataclasses import replace
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -16,332 +16,22 @@ import numpy as np
 import pytest
 
 import brainevent
-import brainevent._csr.binary.binary as binary_mod
 import brainevent._csr.config as config_mod
 from brainevent._csr.binary.initialize import load_csr_config, save_csr_config
 from brainevent._csr.config import (
     CSRConfig,
-    CSRDeviceInfo,
-    MMStructurePlan,
-    MMStructureSpec,
     MVSchedule,
     _BenchmarkRecord,
-    _call_plan,
-    get_device_info,
+    _ConfigAux,
+    _config_from_spec,
+    _select_config,
 )
-from brainevent._structure import StructureCache
 
 
-# Structure plans, scheduling snapshots and validation
-# ----------------------------------------------------
+# MV scheduler parameters and accessors
+# -------------------------------------
 
-DEVICE = CSRDeviceInfo('gpu', 'TEST_GPU', l2_bytes=4096, sms=16)
-
-
-def _prepared(lengths=(16, 17, 0, 513, 1025), cols=128, **kwargs):
-    indptr = np.concatenate(([0], np.cumsum(lengths))).astype(np.int64)
-    indices = (np.arange(indptr[-1]) % cols).astype(np.int32)
-    config = CSRConfig(device_info=DEVICE, **kwargs).prepare_structure(
-        indices, indptr, shape=(len(lengths), cols))
-    return config, indices, indptr
-
-
-def test_structure_plan_uses_integer_group_rule_and_exact_long_mask():
-    config, indices, indptr = _prepared()
-    primary = config.primary
-    # Row statistics are power-of-two bounds clamped to nnz: 1025 -> 1571, and
-    # 5 long-row tasks take the smallest nonzero task bucket, 64.
-    assert (config.shape, config.nnz, config.primary_max_row_nnz) == ((5, 128), 1571, 1571)
-    assert (primary.group, primary.long_threshold, primary.long_tasks) == (4, 64, 64)
-    np.testing.assert_array_equal(primary.long_mask, np.array([0b11000], dtype=np.uint32))
-    assert config.mirror is None and config.mirror_max_row_nnz is None
-    np.testing.assert_array_equal(indptr, [0, 16, 33, 33, 546, 1571])
-
-
-class _DeviceOnlyIndices:
-    """Index metadata whose values must never be copied to the host."""
-
-    ndim = 1
-    dtype = np.dtype(np.int32)
-
-    def __init__(self, size):
-        self.shape = (size,)
-
-    def __array__(self, *args, **kwargs):
-        raise AssertionError('preparation must not copy index values to the host')
-
-
-def test_prepare_structure_reads_indptr_but_not_index_values():
-    expected, indices, indptr = _prepared()
-    config = CSRConfig(device_info=DEVICE).prepare_structure(
-        _DeviceOnlyIndices(indices.size), indptr, shape=expected.shape)
-    assert config.kernel_args()[0] == expected.kernel_args()[0]
-    np.testing.assert_array_equal(config.primary.long_mask, expected.primary.long_mask)
-    with pytest.raises(ValueError, match='end at nnz'):
-        CSRConfig().prepare_structure(_DeviceOnlyIndices(indices.size - 1), indptr, shape=expected.shape)
-
-
-def _mirror_cache(indices, indptr, shape):
-    from brainevent._misc import csr_to_csc_index
-
-    return StructureCache(
-        mirror=csr_to_csc_index(indptr, indices, shape=shape))
-
-
-def test_primary_preparation_does_not_count_columns(monkeypatch):
-    def no_count(*args, **kwargs):
-        raise AssertionError(
-            'primary preparation must not compute mirror statistics')
-
-    monkeypatch.setattr(config_mod.np, 'bincount', no_count)
-    config, _, _ = _prepared()
-    assert config.primary is not None
-    assert config.mirror is config.mirror_max_row_nnz is None
-
-
-def test_mirror_statistics_are_prepared_once_and_shared_without_recounting(
-    monkeypatch,
-):
-    config, indices, indptr = _prepared()
-    cache = _mirror_cache(indices, indptr, config.shape)
-    lengths = np.diff(np.asarray(cache.mirror[0]))
-    prepared = config_mod._sync_mirror_config(
-        config, cache, shape=config.shape[::-1])
-    assert prepared.primary is config.primary
-    assert prepared.mirror_max_row_nnz == config_mod._bucket(int(lengths.max()), config.nnz)
-    assert prepared.mirror_max_row_nnz >= int(lengths.max())
-    assert cache.mirror_preparation == (
-        prepared.mirror, prepared.mirror_max_row_nnz)
-
-    def no_plan(*args, **kwargs):
-        raise AssertionError('mirror statistics must be reused')
-
-    monkeypatch.setattr(config_mod, '_structure_plan', no_plan)
-    sibling = config_mod._sync_mirror_config(
-        config, cache, shape=config.shape[::-1], prepare=False)
-    assert sibling.mirror is prepared.mirror
-    assert config_mod._sync_mirror_config(
-        prepared, cache, shape=config.shape[::-1]) is prepared
-    assert config.mirror is None
-
-
-def test_mirror_sync_only_reads_pointers_and_preserves_existing_plan(
-    monkeypatch,
-):
-    config, indices, indptr = _prepared()
-    cache = _mirror_cache(indices, indptr, config.shape)
-
-    class NoHostRead:
-        shape = indices.shape
-        dtype = np.dtype(np.int32)
-
-        def __array__(self, *args, **kwargs):
-            raise AssertionError(
-                'mirror statistics need only the compressed pointers')
-
-    cache.mirror = (cache.mirror[0], NoHostRead(), NoHostRead())
-    prepared = config_mod._sync_mirror_config(
-        config, cache, shape=config.shape[::-1])
-    assert prepared.mirror is not None
-    alternate = replace(
-        prepared.mirror, long_mask=jnp.array(prepared.mirror.long_mask))
-    independent = replace(prepared, mirror=alternate)
-    assert config_mod._sync_mirror_config(
-        independent, cache, shape=config.shape[::-1]) is independent
-
-
-def test_mirror_sync_without_preparation_preserves_an_incomplete_snapshot(
-    monkeypatch,
-):
-    config, indices, indptr = _prepared()
-    cache = _mirror_cache(indices, indptr, config.shape)
-
-    def no_plan(*args, **kwargs):
-        raise AssertionError('packing must not create a plan')
-
-    monkeypatch.setattr(config_mod, '_structure_plan', no_plan)
-    assert config_mod._sync_mirror_config(
-        config, cache, shape=config.shape[::-1], prepare=False) is config
-    assert cache.mirror_preparation is None
-
-
-def test_mirror_sync_recovers_structure_identity_from_cached_preparation():
-    config, indices, indptr = _prepared()
-    cache = _mirror_cache(indices, indptr, config.shape)
-    prepared = config_mod._sync_mirror_config(
-        config, cache, shape=config.shape[::-1])
-    restored = config_mod._sync_mirror_config(
-        config.parameter_snapshot(), cache, shape=config.shape[::-1],
-        prepare=False)
-    assert restored.shape == config.shape and restored.nnz == config.nnz
-    assert restored.mirror is prepared.mirror
-    assert restored.validate() is restored
-
-
-def test_traced_mirror_without_metadata_is_not_scanned():
-    config, indices, indptr = _prepared()
-    mirror = _mirror_cache(indices, indptr, config.shape).mirror
-
-    @jax.jit
-    def run(ptr, idx, perm):
-        cache = StructureCache(mirror=(ptr, idx, perm))
-        result = config_mod._sync_mirror_config(
-            config, cache, shape=config.shape[::-1])
-        assert result is config and cache.mirror_preparation is None
-        return ptr
-
-    np.testing.assert_array_equal(run(*mirror), mirror[0])
-
-
-@pytest.mark.parametrize('pointer', [
-    None, jax.ShapeDtypeStruct((129,), np.int32),
-    np.zeros(129, dtype=jax.dtypes.float0),
-])
-def test_mirror_sync_does_not_scan_placeholder_pointers(pointer):
-    config, indices, _ = _prepared()
-    cache = StructureCache(mirror=(pointer, indices, None))
-    assert config_mod._sync_mirror_config(
-        config, cache, shape=config.shape[::-1]) is config
-    assert cache.mirror_preparation is None
-
-
-def test_known_mirror_plan_seeds_cache_without_reading_structure(monkeypatch):
-    config, indices, indptr = _prepared()
-    cache = _mirror_cache(indices, indptr, config.shape)
-    prepared = config_mod._sync_mirror_config(
-        config, cache, shape=config.shape[::-1])
-    cache.mirror_preparation = None
-
-    def no_plan(*args, **kwargs):
-        raise AssertionError('a known reverse-layout plan must be reused')
-
-    monkeypatch.setattr(config_mod, '_structure_plan', no_plan)
-    assert config_mod._sync_mirror_config(
-        prepared, cache, shape=config.shape[::-1], prepare=False) is prepared
-    assert cache.mirror_preparation[0] is prepared.mirror
-
-
-@pytest.mark.parametrize('pointers', [
-    np.zeros((2, 2), np.int32), np.zeros(3, np.int32),
-    np.array([1, 1, 2], np.int32), np.array([0, 0, 1], np.int32),
-    np.array([0, 3, 2], np.int32),
-])
-def test_invalid_mirror_pointers_do_not_publish_preparation(pointers):
-    config = CSRConfig().prepare_structure(
-        np.array([0, 1], np.int32), np.array([0, 2], np.int32), shape=(1, 2))
-    cache = StructureCache(mirror=(pointers, np.array([0, 0], np.int32), None))
-    with pytest.raises(ValueError, match='mirror indptr'):
-        config_mod._sync_mirror_config(config, cache, shape=(2, 1))
-    assert cache.mirror_preparation is None
-    assert config.mirror is None
-
-
-def test_failed_mirror_plan_preparation_does_not_publish_metadata(monkeypatch):
-    config, indices, indptr = _prepared()
-    cache = _mirror_cache(indices, indptr, config.shape)
-
-    def fail(*args, **kwargs):
-        raise RuntimeError('injected preparation failure')
-
-    monkeypatch.setattr(config_mod, '_structure_plan', fail)
-    with pytest.raises(RuntimeError, match='injected'):
-        config_mod._sync_mirror_config(config, cache, shape=config.shape[::-1])
-    assert cache.mirror_preparation is None and config.mirror is None
-
-
-def test_mirror_sync_without_cached_mirror_does_not_prepare():
-    config, _, _ = _prepared()
-    assert config_mod._sync_mirror_config(
-        config, StructureCache(), shape=config.shape[::-1]) is config
-
-
-def test_concrete_mirror_preparation_under_trace_does_not_cache_tracers():
-    config, indices, indptr = _prepared()
-    cache = _mirror_cache(indices, indptr, config.shape)
-
-    @jax.jit
-    def run(snapshot):
-        return config_mod._sync_mirror_config(
-            snapshot, cache, shape=config.shape[::-1]).mirror.long_mask
-
-    result = run(config)
-    assert not isinstance(
-        cache.mirror_preparation[0].long_mask, jax.core.Tracer)
-    np.testing.assert_array_equal(
-        result, cache.mirror_preparation[0].long_mask)
-
-
-def test_existing_traced_mirror_mask_does_not_escape_into_shared_cache():
-    config, indices, indptr = _prepared()
-    cache = _mirror_cache(indices, indptr, config.shape)
-    prepared = config_mod._sync_mirror_config(
-        config, cache, shape=config.shape[::-1])
-    cache.mirror_preparation = None
-
-    @jax.jit
-    def run(snapshot):
-        return config_mod._sync_mirror_config(
-            snapshot, cache, shape=config.shape[::-1],
-            prepare=False).mirror.long_mask
-
-    np.testing.assert_array_equal(run(prepared), prepared.mirror.long_mask)
-    assert cache.mirror_preparation is None
-
-
-def test_same_shape_and_nnz_different_rows_produce_different_plans():
-    first, _, _ = _prepared((513, 512), cols=2)
-    second, _, _ = _prepared((1025, 0), cols=2)
-    assert first.nnz == second.nnz
-    # Two and three tasks share the smallest task bucket; the row bounds differ.
-    assert first.primary.long_tasks == second.primary.long_tasks == 64
-    assert first.primary_max_row_nnz != second.primary_max_row_nnz
-    assert first.kernel_args()[0] != second.kernel_args()[0]
-
-
-def test_mm_call_plan_reacts_to_batch_dtype_device_and_weighted_queue():
-    config, _, _ = _prepared()
-    plan = config.mm_plan(10, np.float32)
-    tasks = config.primary.long_tasks
-    assert tasks == config_mod._long_task_bucket(5, config.nnz) == 64
-    # The short-row lists hold one batch group of chunk * rows entries.
-    assert (plan.chunk, plan.task_capacity, plan.short_rows_size) == (2, 2 * tasks, 10)
-    assert plan.workspace_words == (80 + 5 * 8 + 2 * tasks * 12) // 4
-    assert config.mm_plan(10, np.float32) is plan
-    wide = config.mm_plan(10, np.float64)
-    assert (wide.chunk, wide.task_capacity) == (1, tasks)
-    # Half values accumulate in a float32 output, so they group like float32.
-    for half in (np.float16, jnp.bfloat16):
-        assert config.mm_plan(10, half).chunk == plan.chunk
-    one = config.mm_plan(1, np.float32)
-    assert (one.chunk, one.task_capacity) == (1, tasks)
-    weighted = config.mm_plan(10, np.float32, weighted=True)
-    assert weighted.workspace_words == plan.workspace_words + plan.task_capacity
-    smaller = replace(config, device_info=replace(DEVICE, l2_bytes=2048)).mm_plan(10, np.float32)
-    assert smaller.chunk == 1
-
-
-def test_half_weighted_scratch_rounds_odd_queue_to_uint32_alignment():
-    config, _, _ = _prepared((513,), cols=1)
-    # No eligible short row: G=32, and a 513-edge row takes two tasks (bucket 64).
-    assert config.primary.long_tasks == 64
-    config, _, _ = _prepared((1, 1, 1, 1, 65), cols=1)
-    # Prepared buckets are even; an odd task count must still pad the half queue.
-    config = replace(config, primary=replace(config.primary, long_tasks=1))
-    binary = config.mm_plan(1, np.float16)
-    weighted = config.mm_plan(1, np.float16, weighted=True)
-    assert weighted.workspace_words == binary.workspace_words + 1
-
-
-def test_mm_geometry_is_independent_of_persisted_mv_tuning():
-    default, indices, indptr = _prepared()
-    alternate = CSRConfig(128, 1024, 0, 1, device_info=DEVICE).prepare_structure(
-        indices, indptr, shape=(5, 128))
-    assert default.kernel_args()[0].structure == alternate.kernel_args()[0].structure
-    assert default.mm_plan(10, np.float32) == alternate.mm_plan(10, np.float32)
-    assert default.compile_flags() != alternate.compile_flags()
-
-
-def test_nested_mv_schedule_preserves_legacy_accessors():
+def test_nested_mv_schedule_preserves_flat_accessors():
     mv = MVSchedule(512, 1024, 256, 8192)
     config = CSRConfig(mv=mv)
     assert brainevent.MVSchedule is MVSchedule
@@ -349,473 +39,48 @@ def test_nested_mv_schedule_preserves_legacy_accessors():
     assert (config.block_size, config.fixed_scatter_blocks,
             config.tpr_threshold, config.task_nnz) == (512, 1024, 256, 8192)
     assert config.compile_flags() == mv.compile_flags()
+    assert config.module_suffix() == mv.module_suffix()
     assert config.mv_capacity(8193, 2) == mv.mv_capacity(8193, 2)
 
 
-def test_weighted_queue_needs_no_scratch_without_long_tasks():
-    config, _, _ = _prepared((1,), cols=1)
-    for batch in (0, 2):
-        binary = config.mm_plan(batch, np.float32, weighted=False)
-        weighted = config.mm_plan(batch, np.float32, weighted=True)
-        assert binary.long_tasks == weighted.long_tasks == 0
-        assert binary == weighted
+def test_flat_parameters_default_individually_and_cannot_mix_with_mv():
+    assert CSRConfig().mv == MVSchedule() == MVSchedule(512, 1024, 128, 512)
+    assert CSRConfig(block_size=256).mv == MVSchedule(256, 1024, 128, 512)
+    assert CSRConfig(task_nnz=4096).mv == MVSchedule(512, 1024, 128, 4096)
+    with pytest.raises(ValueError, match='cannot be combined'):
+        CSRConfig(256, mv=MVSchedule())
+    with pytest.raises(TypeError, match='MVSchedule'):
+        CSRConfig(mv=(512, 1024, 128, 512))
 
 
-@pytest.mark.parametrize('rows', [1, 31, 32, 33, 95])
-def test_long_row_mask_matches_bitwise_reference(rows):
-    rng = np.random.default_rng(rows)
-    lengths = rng.integers(0, 200, size=rows)
-    plan = config_mod._structure_plan(lengths)
-    long_rows = np.flatnonzero(lengths > plan.long_threshold)
-    expected = np.zeros((rows + 31) // 32, np.uint32)
-    for row in long_rows:
-        expected[row // 32] |= np.uint32(1) << np.uint32(row % 32)
-    assert plan.long_mask.dtype == np.uint32
-    np.testing.assert_array_equal(plan.long_mask, expected)
+def test_config_from_spec_restores_a_primitive_parameter():
+    assert _config_from_spec(None).mv == CSRConfig().mv
+    spec = MVSchedule(256, 2048, 256, 1024)
+    assert _config_from_spec(spec).mv is spec
 
 
-def test_selected_kernel_roundtrip_and_layout_swap_share_masks():
-    config, indices, indptr = _prepared()
-    config = config_mod._sync_mirror_config(
-        config, _mirror_cache(indices, indptr, config.shape),
-        shape=config.shape[::-1])
-    spec, mask = config.kernel_args('mirror')
-    restored = CSRConfig.from_kernel_args(spec, mask)
-    assert restored.kernel_args()[0].structure == spec.structure
-    assert restored.primary.long_mask is config.mirror.long_mask
-    assert restored.device_info is config.device_info
-    assert restored.mirror is None
-    swapped = config.swap_layouts()
-    assert swapped.primary is config.mirror and swapped.mirror is config.primary
-    assert swapped.swap_layouts().primary is config.primary
-    bare = config.parameter_snapshot()
-    assert bare.primary is None and bare.mirror is None and bare.device_info is DEVICE
-    assert hash(spec) == hash(config.kernel_args('mirror')[0])
-    assert restored is not config and restored != config
-    with pytest.raises(TypeError):
-        hash(config)
-    with pytest.raises(ValueError, match='layout'):
-        config.kernel_args('invalid')
-
-
-@pytest.mark.parametrize('with_mirror', [False, True])
-def test_config_pytree_uses_mask_leaves_and_survives_jit_scan(with_mirror):
-    config, indices, indptr = _prepared()
-    if with_mirror:
-        config = config_mod._sync_mirror_config(
-            config, _mirror_cache(indices, indptr, config.shape),
-            shape=config.shape[::-1])
-    leaves, tree = jax.tree_util.tree_flatten(config)
-    assert len(leaves) == 1 + int(with_mirror)
-    restored = jax.tree_util.tree_unflatten(tree, leaves)
-    assert restored.kernel_args()[0] == config.kernel_args()[0]
-    np.testing.assert_array_equal(restored.primary.long_mask, config.primary.long_mask)
-
-    @jax.jit
-    def run(cfg):
-        def body(carry, unused):
-            return carry, jnp.sum(carry.primary.long_mask)
-        return jax.lax.scan(body, cfg, None, length=3)
-
-    result, values = run(config)
-    np.testing.assert_array_equal(values, [24, 24, 24])
-    assert result.kernel_args()[0].structure == config.kernel_args()[0].structure
-
-
-def test_traced_structure_is_not_scanned_or_implicitly_prepared():
-    config, indices, indptr = _prepared()
-
-    @jax.jit
-    def check(idx, ptr):
-        empty = config.prepare_structure(idx, ptr, shape=(5, 128))
-        assert empty.primary is None and empty.mirror is None
-        assert empty.device_info is DEVICE
-        return empty.kernel_args()[1]
-
-    assert check(indices, indptr).shape == (0,)
-
-
-def test_benchmark_diagnostics_do_not_change_kernel_or_pytree_identity():
-    config, _, _ = _prepared()
-    record = _BenchmarkRecord(CSRConfig(128, 1024, 256, 512), 2.0, 10.0, 4)
-    with_records = replace(config, benchmark_records=(record,))
-    assert with_records.kernel_args()[0] == config.kernel_args()[0]
-    assert jax.tree_util.tree_structure(config) == jax.tree_util.tree_structure(with_records)
-    assert '2.000 ms (10.000 us/call)' in str(with_records)
-    assert 'task_capacity=4' in str(with_records)
-
-
-@pytest.mark.parametrize('lengths,cols', [((), 0), ((0, 0), 0), ((0, 0), 3)])
-def test_empty_structure_has_valid_empty_or_zero_masks(lengths, cols):
-    ptr = np.zeros(len(lengths) + 1, dtype=np.int32)
-    config = CSRConfig(device_info=DEVICE).prepare_structure(
-        np.empty(0, dtype=np.int32), ptr, shape=(len(lengths), cols))
-    assert config.nnz == config.primary.long_tasks == 0
-    assert config.mirror is None
-    cache = _mirror_cache(np.empty(0, np.int32), ptr, config.shape)
-    prepared = config_mod._sync_mirror_config(
-        config, cache, shape=config.shape[::-1])
-    assert prepared.mirror.long_tasks == prepared.mirror_max_row_nnz == 0
-    assert config.mm_plan(0, np.float32).task_capacity == 0
-
-
-@pytest.mark.parametrize('idx,ptr,shape', [
-    ([0], [1, 1], (1, 1)), ([0], [0, 0], (1, 1)),
-    ([0], [0, 2, 1], (2, 1)), ([0], [0, 1], (2, 1)),
-])
-def test_invalid_structure_rejected_before_preparation(idx, ptr, shape):
-    with pytest.raises(ValueError):
-        CSRConfig().prepare_structure(np.asarray(idx, np.int32), np.asarray(ptr, np.int32), shape=shape)
-
-
-@pytest.mark.parametrize('idx', [[1], [-1]])
-def test_index_values_are_validated_by_the_matrix_constructor(idx):
-    # Planning reads indptr only; out-of-range index values are the
-    # constructor's job (``check_structure=True``), not the planner's.
-    indices, indptr = np.asarray(idx, np.int32), np.asarray([0, 1], np.int32)
-    CSRConfig().prepare_structure(indices, indptr, shape=(1, 1))
-    with pytest.raises(ValueError, match='index|indices'):
-        brainevent.CSR(np.ones(1, np.float32), indices, indptr, shape=(1, 1), config=CSRConfig())
-
-
-def test_invalid_types_dimensions_and_capacity_overflow():
-    with pytest.raises(ValueError, match='dtype'):
-        CSRConfig().prepare_structure(np.array([], float), np.array([0]), shape=(0, 0))
-    with pytest.raises(ValueError, match='one-dimensional'):
-        CSRConfig().prepare_structure(np.zeros((1, 1), np.int32), np.array([0, 1]), shape=(1, 1))
-    with pytest.raises(ValueError, match='two dimensions'):
-        CSRConfig().prepare_structure(np.array([], np.int32), np.array([0]), shape=(0,))
-    with pytest.raises(ValueError, match='int32'):
-        CSRConfig().prepare_structure(np.array([], np.int32), np.array([0]), shape=(0, 2**31))
-    with pytest.raises(ValueError, match='integer'):
-        CSRConfig(block_size=256.0)
-    with pytest.raises(ValueError, match='int32'):
-        CSRConfig(tpr_threshold=0, task_nnz=1).mv_capacity(2**31, 1)
-    with pytest.raises(ValueError):
-        CSRConfig().mv_capacity(-1, 1)
-
-
-def test_missing_preparation_and_mismatching_plan_rejected():
-    assert CSRConfig().mm_plan(8, np.float32) is None
-    config, _, _ = _prepared()
-    assert replace(config, device_info=CSRDeviceInfo('cpu', 'cpu')).mm_plan(8, np.float32) is None
-    with pytest.raises(ValueError, match='mask'):
-        replace(config, primary=replace(config.primary, long_mask=jnp.empty(2, jnp.uint32))).validate()
-    with pytest.raises(ValueError, match='uint32'):
-        replace(config, primary=replace(config.primary, long_mask=jnp.empty(1, jnp.int32))).validate()
-    with pytest.raises(ValueError, match='integer'):
-        config.mm_plan(1.5, np.float32)
-    with pytest.raises(ValueError, match='int32'):
-        config.mm_plan(2**31, np.float32)
-    assert config.mm_plan(1, np.int32) is None
-
-
-def test_scalar_plan_cache_is_bounded():
-    config, _, _ = _prepared()
-    for batch in range(1, 280):
-        config.mm_plan(batch, np.float32)
-    assert _call_plan.cache_info().currsize <= 256
-
-
-def test_incomplete_snapshots_roundtrip_without_creating_plan_arrays():
-    config, indices, indptr = _prepared()
-    config = config_mod._sync_mirror_config(
-        config, _mirror_cache(indices, indptr, config.shape),
-        shape=config.shape[::-1])
-    for snapshot in (CSRConfig(), replace(config, primary=None), replace(config, mirror=None)):
-        leaves, tree = jax.tree_util.tree_flatten(snapshot)
-        restored = jax.tree_util.tree_unflatten(tree, leaves)
-        assert (restored.primary is None) == (snapshot.primary is None)
-        assert (restored.mirror is None) == (snapshot.mirror is None)
-        assert restored.device_info == snapshot.device_info
-    spec, empty = CSRConfig().kernel_args()
-    assert empty.shape == (0,) and empty.dtype == np.uint32
-    assert CSRConfig.from_kernel_args(spec, empty).primary is None
-
-
-def test_invalid_static_metadata_and_oversized_queue_rejected():
-    with pytest.raises(ValueError, match='integer'):
-        CSRConfig(block_size=True)
-    with pytest.raises(ValueError, match='l2_bytes'):
-        CSRDeviceInfo('gpu', 'bad', l2_bytes=-1)
-    assert not CSRDeviceInfo('gpu', 'test').usable
-    assert not CSRDeviceInfo('cpu', 'cpu', 4096, 16).usable
-    assert CSRDeviceInfo('gpu', 'test', 4096, 16).usable
-    with pytest.raises(ValueError, match='geometry'):
-        MMStructureSpec(1, 1, 1, 1, 3, 0)
-    assert MMStructureSpec(1, 1, 1, 1, 8, 0).long_threshold == 128
-    with pytest.raises(ValueError, match='nnz'):
-        MMStructureSpec(1, 1, 1, 2, 4, 0)
-    with pytest.raises(ValueError, match='nonzero'):
-        MMStructureSpec(0, 1, 1, 1, 4, 0)
-    with pytest.raises(ValueError, match='int32'):
-        MMStructureSpec(2**31, 1, 0, 0, 4, 0)
-    nnz = 2**63 - 1
-    plan = MMStructurePlan(32, (nnz + 511) // 512, jnp.array([1], dtype=jnp.uint32))
-    cfg = CSRConfig(device_info=replace(DEVICE, l2_bytes=2**63), shape=(1, 1),
-                    nnz=nnz, primary_max_row_nnz=nnz, primary=plan)
-    with pytest.raises(ValueError, match='int64'):
-        cfg.mm_plan(65535, np.float32)
-
-
-def test_explicit_validation_checks_mirror_stats_without_reading_masks():
-    config, _, _ = _prepared()
-    assert config.validate() is config
-    assert CSRConfig().validate().primary is None
-    with pytest.raises(ValueError, match='nnz'):
-        replace(config, mirror_max_row_nnz=config.nnz + 1).validate()
-
-    @jax.jit
-    def validate_mask(mask):
-        selected = CSRConfig.from_kernel_args(config.kernel_args()[0], mask)
-        return selected.validate().primary.long_mask
-
-    np.testing.assert_array_equal(validate_mask(config.primary.long_mask), config.primary.long_mask)
-
-
-def test_old_configuration_exports_are_removed():
-    for name in ('HybridConfig', 'get_hybrid_config'):
-        assert not hasattr(brainevent, name)
-    assert brainevent.CSRConfig is CSRConfig
-    assert brainevent.load_csr_config is load_csr_config
-    assert brainevent.save_csr_config is save_csr_config
-
-
-@pytest.mark.parametrize('prepared', [False, True])
-def test_nonhybrid_mm_keeps_jax_supported_float8_dtype(prepared):
-    indices = jnp.array([0, 1], dtype=jnp.int32)
-    indptr = jnp.array([0, 1, 2], dtype=jnp.int32)
-    config = (CSRConfig(device_info=DEVICE).prepare_structure(indices, indptr, shape=(2, 2))
-              if prepared else None)
-    values = jnp.array([1, 2], dtype=jnp.float8_e4m3fn)
-    events = jnp.ones((2, 2), dtype=jnp.bool_)
-    result = brainevent.binary_csrmm(values, indices, indptr, events, shape=(2, 2),
-                                     backend='jax_raw', config=config)
-    assert result.dtype == values.dtype
-    np.testing.assert_array_equal(result.astype(jnp.float32), [[1, 1], [2, 2]])
-    assert CSRConfig().mm_plan(2, values.dtype) is None
-
-
-def test_hybrid_mm_unsupported_dtype_error_precedes_missing_preparation():
-    from brainevent._csr.binary.binary import _make_hybrid_mm_kernel as make_kernel
-
-    with pytest.raises(ValueError, match='supports only float16'):
-        make_kernel(config_spec=None, call_plan=None,
-                    weight_info=jax.ShapeDtypeStruct((2,), jnp.float8_e4m3fn),
-                    vector_info=jax.ShapeDtypeStruct((2, 2), jnp.bool_),
-                    indices_info=jax.ShapeDtypeStruct((2,), jnp.int32),
-                    indptr_info=jax.ShapeDtypeStruct((3,), jnp.int32),
-                    out_info=jax.ShapeDtypeStruct((2, 2), jnp.float8_e4m3fn))
-
-
-def test_mm_plan_matches_native_host_planner_and_workspace(tmp_path):
-    """Compare against the packaged C++ formulas, including odd half queues."""
-    compiler = shutil.which('c++')
-    if compiler is None:
-        pytest.skip('C++ compiler unavailable for native planner parity')
-    root = Path(__file__).parents[1] / 'binary' / 'hybrid_mm'
-    declarations = (root / 'hybrid_batchedv3_spmm.cuh').read_text().split('namespace hybrid', 1)[1]
-    declarations = declarations.split('// device_info,', 1)[0]
-    source = r'''
-#include <iostream>
-#include <cstdint>
-#include <vector>
-#define __host__
-#define __device__
-using cudaError_t = int;
-constexpr int cudaSuccess = 0, cudaErrorInvalidValue = 1;
-constexpr int cudaDevAttrMultiProcessorCount = 0, cudaDevAttrL2CacheSize = 1;
-int cudaGetDevice(int *);
-int cudaDeviceGetAttribute(int *, int, int);
-namespace hybrid
-''' + declarations + '\n#include ' + json.dumps(str(root / 'hybrid_batchedv3_spmm_plan.cuh')) + r'''
-int main() {
-    int rows, cols, batch, l2, out_bytes, value_bytes, weighted;
-    int64_t bucketed_tasks;
-    while (std::cin >> rows >> cols >> batch >> l2 >> out_bytes >> value_bytes >> weighted >> bucketed_tasks) {
-        std::vector<int64_t> ptr(rows + 1);
-        for (auto &value : ptr) std::cin >> value;
-        hybrid::Plan plan;
-        // Batch groups are sized by the output (accumulator) element, the queue by the value.
-        if (hybrid::make_plan(ptr.data(), rows, cols, batch, l2, out_bytes, &plan) != cudaSuccess) return 2;
-        auto mask = hybrid::long_row_mask(ptr.data(), rows, plan);
-        std::cout << plan.group << ' ' << plan.long_threshold << ' ' << plan.long_tasks << ' ' << plan.chunk;
-        // Python prepares a power-of-two bound of the exact task count; size scratch from it.
-        plan.long_tasks = bucketed_tasks;
-        plan.task_capacity = plan.chunk * bucketed_tasks;
-        std::cout << ' ' << plan.task_capacity << ' '
-                  << hybrid::workspace_bytes(plan, batch, weighted ? value_bytes : 0) / 4;
-        for (auto word : mask) std::cout << ' ' << word;
-        std::cout << '\n';
-    }
-}
-'''
-    cpp, binary = tmp_path / 'plan.cpp', tmp_path / 'plan'
-    cpp.write_text(source)
-    subprocess.run([compiler, '-std=c++17', '-O2', str(cpp), '-o', str(binary)], check=True,
-                   capture_output=True, text=True)
-    rng = np.random.default_rng(4)
-    cases = []
-    golden_lengths = [
-        [1, 1, 1, 1, 65], [16, 17, 513], [17, 18, 513], [32, 33, 513],
-        [33, 34, 513], [64, 65, 513], [65, 66, 513], [0, 513, 1024, 1025],
-        [512, 513], [1] * 32 + [65], [1] * 64 + [65], [1025],
-    ]
-    for i in range(36 + len(golden_lengths)):
-        lengths = rng.integers(0, 1400, size=int(rng.integers(1, 80)))
-        if i < len(golden_lengths):
-            lengths = np.array(golden_lengths[i])
-        cols, batch = int(rng.integers(1, 256)), int(rng.integers(1, 128))
-        dtype = (np.float16, np.float32, np.float64)[i % 3]
-        weighted = bool(i % 2)
-        if i == 0:
-            cols, batch, weighted = 128, 1, True
-        config, _, ptr = _prepared(lengths, cols=cols)
-        if i == 11:
-            batch = 70000
-            config = replace(config, device_info=replace(DEVICE, l2_bytes=2**30))
-        plan = config.mm_plan(batch, dtype, weighted)
-        itemsize = np.dtype(dtype).itemsize
-        line = [len(lengths), cols, batch, config.device_info.l2_bytes, max(4, itemsize), itemsize,
-                int(weighted), config.primary.long_tasks, *ptr]
-        cases.append((' '.join(map(str, line)), config, plan))
-    native = subprocess.run([str(binary)], input='\n'.join(case[0] for case in cases) + '\n',
-                            capture_output=True, check=True, text=True)
-    for (_, config, plan), line in zip(cases, native.stdout.splitlines(), strict=True):
-        numbers = list(map(int, line.split()))
-        assert config_mod._long_task_bucket(numbers[2], config.nnz) == plan.long_tasks >= numbers[2]
-        assert numbers[:6] == [plan.group, plan.long_threshold, numbers[2],
-                               plan.chunk, plan.task_capacity, plan.workspace_words]
-        np.testing.assert_array_equal(numbers[6:], config.primary.long_mask)
-
-
-# Device information and shard validation
-# ---------------------------------------
-
-def test_gpu_info_probe_accepts_cpu_shards_without_explicit_device():
-    class CPUDevice:
-        platform = 'cpu'
-
-    cpu0 = CPUDevice()
-    cpu1 = CPUDevice()
-
-    class PlacedArray:
-        def __init__(self, devices):
-            self._devices = devices
-
-        def devices(self):
-            return self._devices
-
-    assert get_device_info(PlacedArray((cpu0, cpu1))) is None
-
-
-class _FakeCudaDevice:
-    platform = 'gpu'
-    client = type('Client', (), {'platform_version': 'cuda 13.0'})()
-
-    def __init__(self, id, device_kind='FAKE_GPU', core_count=None):
-        self.id = self.local_hardware_id = id
-        self.device_kind = device_kind
-        self.core_count = core_count
-
-
-class _PlacedArray:
-    def __init__(self, *devices):
-        self._devices = set(devices)
-
-    def devices(self):
-        return self._devices
-
-
-def test_replicated_same_kind_gpus_prepare_on_the_lowest_device(monkeypatch):
-    queried = []
-    monkeypatch.setattr(config_mod, '_query_cuda_device_info', lambda device: queried.append(device) or 'info')
-    first, second = _FakeCudaDevice(3), _FakeCudaDevice(1)
-    assert get_device_info(_PlacedArray(first, second), _PlacedArray(second)) == 'info'
-    assert queried == [second]
-
-
-@pytest.mark.parametrize('devices', [
-    (_FakeCudaDevice(0, 'GPU_A'), _FakeCudaDevice(1, 'GPU_B')),
-    (_FakeCudaDevice(0), type('CPUDevice', (), {'platform': 'cpu', 'id': 1})()),
-], ids=['mixed_gpu_kinds', 'gpu_and_cpu'])
-def test_ambiguous_placements_leave_the_config_unprepared(monkeypatch, devices):
-    monkeypatch.setattr(config_mod, '_query_cuda_device_info', lambda device: pytest.fail('ambiguous placement queried'))
-    assert get_device_info(_PlacedArray(*devices)) is None
-
-
-def _no_toolchain(*args, **kwargs):
-    from brainevent._error import NvccNotFoundError
-    raise NvccNotFoundError('nvcc is not installed')
-
-
-def test_device_query_without_driver_or_toolchain_leaves_config_unprepared(monkeypatch, caplog):
-    import brainevent._op as op_mod
-
-    def no_driver(device):
-        raise OSError('libcuda.so.1: cannot open shared object file')
-
-    monkeypatch.setattr(config_mod, '_driver_device_attributes', no_driver)
-    monkeypatch.setattr(op_mod, 'load_cuda_file', _no_toolchain)
-    config_mod._query_cuda_device_info.cache_clear()
-    try:
-        with caplog.at_level('DEBUG', logger=config_mod.__name__):
-            assert config_mod._query_cuda_device_info(_FakeCudaDevice(0)) is None
-    finally:
-        config_mod._query_cuda_device_info.cache_clear()
-    assert 'nvcc is not installed' in caplog.text
-
-
-def test_driver_query_mismatching_jax_core_count_uses_native_probe(monkeypatch):
-    monkeypatch.setattr(config_mod, '_driver_device_attributes', lambda device: (80, 4096))
-    monkeypatch.setattr(config_mod, '_probe_device_attributes', lambda device: (82, 8192))
-    config_mod._query_cuda_device_info.cache_clear()
-    try:
-        info = config_mod._query_cuda_device_info(_FakeCudaDevice(0, core_count=82))
-        assert (info.sms, info.l2_bytes, info.device_kind) == (82, 8192, 'FAKE_GPU')
-        info = config_mod._query_cuda_device_info(_FakeCudaDevice(1, core_count=80))
-        assert (info.sms, info.l2_bytes) == (80, 4096)
-    finally:
-        config_mod._query_cuda_device_info.cache_clear()
-
-
-def test_device_query_needs_no_cuda_toolchain(monkeypatch):
-    if jax.default_backend() != 'gpu':
-        pytest.skip('CUDA device query requires a GPU')
-    import brainevent._op as op_mod
-
-    gpu = jax.devices('gpu')[0]
-    monkeypatch.setattr(op_mod, 'load_cuda_file', _no_toolchain)
-    config_mod._query_cuda_device_info.cache_clear()
-    try:
-        info = config_mod.get_device_info(device=gpu)
-    finally:
-        config_mod._query_cuda_device_info.cache_clear()
-    assert info is not None and info.l2_bytes > 0
-    assert info.sms == getattr(gpu, 'core_count', info.sms) > 0
-
-
-# Scheduler validation, compile flags and module identity
-# -------------------------------------------------------
-
-@pytest.fixture(autouse=False)
-def _scheduler_restore_cache_dir():
-    cache_dir = brainevent.get_cache_dir()
-    try:
-        yield
-    finally:
-        brainevent.set_cache_dir(cache_dir)
-
-
-@pytest.mark.usefixtures('_scheduler_restore_cache_dir')
 def test_validate_config_rejects_invalid_scheduler_values():
     for values in ((250, 2048, 128, 4096), (1056, 2048, 128, 4096),
                    (256, 0, 128, 4096), (256, 2048, -1, 4096), (256, 2048, 128, 0)):
         with pytest.raises(ValueError):
             CSRConfig(*values)
+        with pytest.raises(ValueError):
+            MVSchedule(*values)
+    for bad in (256.0, True, '256'):
+        with pytest.raises(ValueError, match='integer'):
+            CSRConfig(block_size=bad)
 
 
-@pytest.mark.usefixtures('_scheduler_restore_cache_dir')
+def test_explicit_validation_returns_the_config_and_rechecks_the_schedule():
+    config = CSRConfig(256)
+    assert config.validate() is config
+    # MVSchedule validates on construction; ``validate`` catches a bypassed one.
+    schedule = MVSchedule()
+    object.__setattr__(schedule, 'block_size', 100)
+    with pytest.raises(ValueError, match='block_size'):
+        CSRConfig(mv=schedule).validate()
+
+
 def test_compile_flags_map_config_to_cuda_defines():
     flags = CSRConfig(512, 4096, 256, 8192).compile_flags()
     assert flags == [
@@ -826,18 +91,131 @@ def test_compile_flags_map_config_to_cuda_defines():
     ]
 
 
-@pytest.mark.usefixtures('_scheduler_restore_cache_dir')
 def test_module_suffix_is_config_specific():
     a = CSRConfig(256, 2048, 128, 4096).module_suffix()
     b = CSRConfig(512, 2048, 128, 4096).module_suffix()
     assert a == "_b256_s2048_t128_n4096"
     assert a != b
+    # Every field takes part in the module identity.
+    suffixes = {CSRConfig(*values).module_suffix() for values in (
+        (256, 2048, 128, 4096), (256, 1024, 128, 4096), (256, 2048, 256, 4096), (256, 2048, 128, 512))}
+    assert len(suffixes) == 4
 
 
-# Task-capacity bounds and row-length hints
-# -----------------------------------------
+# Pytree identity and diagnostics
+# -------------------------------
 
-def _capacity_capacity(indptr, config):
+def test_config_pytree_has_no_leaves_and_its_schedule_is_the_treedef():
+    config = CSRConfig(256, 2048, 256, 1024)
+    leaves, tree = jax.tree_util.tree_flatten(config)
+    assert leaves == []
+    children, aux = config.tree_flatten()
+    assert children == () and aux == _ConfigAux(config.mv, ())
+    restored = jax.tree_util.tree_unflatten(tree, leaves)
+    assert isinstance(restored, CSRConfig) and restored is not config
+    assert restored.mv == config.mv
+    # Equal schedules give equal treedefs; any scheduler field changes it.
+    assert tree == jax.tree_util.tree_structure(CSRConfig(mv=MVSchedule(256, 2048, 256, 1024)))
+    for other in (CSRConfig(), CSRConfig(256, 2048, 256, 512)):
+        assert tree != jax.tree_util.tree_structure(other)
+    assert hash(aux) == hash(_ConfigAux(MVSchedule(256, 2048, 256, 1024), ()))
+
+
+def test_configs_compare_and_hash_by_their_schedule():
+    record = _BenchmarkRecord(CSRConfig(128), 2.0, 10.0, 4)
+    config = CSRConfig(256)
+    same = CSRConfig(mv=MVSchedule(256, 1024, 128, 512), benchmark_records=(record,))
+    # Benchmark records are diagnostics: they change neither equality nor hash.
+    assert config == same and hash(config) == hash(same)
+    assert config != CSRConfig(512) and config != config.mv
+    assert CSRConfig() == CSRConfig() and len({CSRConfig(), CSRConfig(), config, same}) == 2
+    # A config can key a dict or a static jit argument.
+    compiled = jax.jit(lambda cfg, x: x + cfg.block_size, static_argnums=0)
+    assert int(compiled(config, 1)) == int(compiled(same, 1)) == 257
+    assert compiled._cache_size() == 1
+
+
+def test_benchmark_records_do_not_change_pytree_identity():
+    config = CSRConfig(256)
+    record = _BenchmarkRecord(CSRConfig(128, 1024, 256, 512), 2.0, 10.0, 4)
+    with_records = replace(config, benchmark_records=(record,))
+    assert with_records.mv == config.mv
+    assert jax.tree_util.tree_structure(config) == jax.tree_util.tree_structure(with_records)
+    aux, aux_records = config.tree_flatten()[1], with_records.tree_flatten()[1]
+    assert aux == aux_records and hash(aux) == hash(aux_records)
+    # The records still travel through a flatten / unflatten round trip.
+    leaves, tree = jax.tree_util.tree_flatten(with_records)
+    assert jax.tree_util.tree_unflatten(tree, leaves).benchmark_records == (record,)
+
+
+def test_benchmark_records_render_in_str():
+    config = CSRConfig(256)
+    assert str(config) == ('CSRConfig(block_size=256, fixed_scatter_blocks=1024, '
+                           'tpr_threshold=128, task_nnz=512)')
+    records = (_BenchmarkRecord(CSRConfig(128, 1024, 256, 512), 2.0, 10.0, 4),
+               _BenchmarkRecord(CSRConfig(512), 3.5, 17.25))
+    lines = str(replace(config, benchmark_records=records)).splitlines()
+    assert lines[0] == str(config) and lines[1] == 'benchmark results:'
+    assert lines[2].startswith('  1. CSRConfig(block_size=128,')
+    assert '2.000 ms (10.000 us/call)' in lines[2] and lines[2].endswith('task_capacity=4')
+    assert '3.500 ms (17.250 us/call)' in lines[3] and 'task_capacity' not in lines[3]
+
+
+def test_config_is_a_jit_argument_and_scan_carry_keyed_by_its_schedule():
+    traces = []
+
+    @jax.jit
+    def run(cfg, x):
+        traces.append(cfg.mv)
+
+        def body(carry, unused):
+            return carry, carry.block_size
+
+        final, sizes = jax.lax.scan(body, cfg, None, length=3)
+        return final, x + sizes
+
+    final, values = run(CSRConfig(256), jnp.zeros(3, jnp.int32))
+    np.testing.assert_array_equal(values, [256, 256, 256])
+    assert isinstance(final, CSRConfig) and final.mv == CSRConfig(256).mv
+    # An equal schedule (even with diagnostics) reuses the executable; another one retraces.
+    run(CSRConfig(256, benchmark_records=(_BenchmarkRecord(CSRConfig(), 1.0, 1.0),)), jnp.zeros(3, jnp.int32))
+    assert traces == [CSRConfig(256).mv]
+    run(CSRConfig(512), jnp.zeros(3, jnp.int32))
+    assert traces == [CSRConfig(256).mv, CSRConfig(512).mv]
+
+
+def test_matrices_of_any_structure_share_the_config_treedef():
+    # Same shape and nnz, different rows: no structure state reaches the treedef.
+    first = brainevent.CSR((np.ones(4, np.float32), np.array([0, 1, 2, 3], np.int32),
+                            np.array([0, 4, 4], np.int32)), shape=(2, 4))
+    second = brainevent.CSR((np.ones(4, np.float32), np.array([0, 1, 2, 3], np.int32),
+                             np.array([0, 1, 4], np.int32)), shape=(2, 4))
+    assert jax.tree_util.tree_structure(first.config) == jax.tree_util.tree_structure(second.config)
+    assert jax.tree_util.tree_leaves(first.config) == []
+
+
+def test_removed_mm_planning_surface_stays_removed():
+    for name in ('HybridConfig', 'get_hybrid_config', 'MMStructureSpec', 'MMStructurePlan',
+                 'MMCallPlan', 'CSRKernelSpec', 'CSRDeviceInfo', 'get_device_info'):
+        assert not hasattr(brainevent, name), name
+    for name in ('MMStructureSpec', 'MMStructurePlan', 'MMCallPlan', 'CSRKernelSpec',
+                 'CSRDeviceInfo', 'get_device_info', '_prepare_csr_config', '_sync_mirror_config',
+                 '_config_for_new_structure', '_structure_plan', '_call_plan', '_bucket'):
+        assert not hasattr(config_mod, name), name
+    for name in ('prepare_structure', 'mm_plan', 'kernel_args', 'from_kernel_args', 'swap_layouts',
+                 'parameter_snapshot', 'primary', 'mirror', 'device_info', 'shape'):
+        assert not hasattr(CSRConfig(), name), name
+    for cls in (brainevent.CSR, brainevent.CSC, brainevent.FixedNumPerPre, brainevent.FixedNumPerPost):
+        assert not hasattr(cls, 'with_rebuilt_config'), cls
+    assert brainevent.CSRConfig is CSRConfig
+    assert brainevent.load_csr_config is load_csr_config
+    assert brainevent.save_csr_config is save_csr_config
+
+
+# MV task-capacity bounds and row-length hints
+# --------------------------------------------
+
+def _exact_mv_capacity(indptr, config):
     lengths = np.diff(indptr)
     heavy = lengths > config.tpr_threshold
     return int(((lengths[heavy] + config.task_nnz - 1) // config.task_nnz).sum())
@@ -856,7 +234,7 @@ def test_capacity_bound_is_never_below_the_exact_capacity(config):
             lengths[rng.integers(n_rows)] = int(rng.integers(0, 20000))
         indptr = np.concatenate([[0], np.cumsum(lengths)])
         nse = int(indptr[-1])
-        exact = _capacity_capacity(indptr, config)
+        exact = _exact_mv_capacity(indptr, config)
         assert config.mv_capacity(nse, n_rows) >= exact
         assert config.mv_capacity(nse, n_rows, int(np.diff(indptr).max(initial=0))) >= exact
 
@@ -870,62 +248,124 @@ def test_capacity_bound_uses_the_row_length_hint():
     assert config.mv_capacity(10, 0) == 0
     # A single 9000-long row needs ceil(9000 / task_nnz) chunks.
     assert config.mv_capacity(9000, 1, max_row_nnz=9000) == (9000 + config.task_nnz - 1) // config.task_nnz
-
-
-def test_prepared_row_hint_matches_concrete_structure():
+    # Exact hint for rows 129, 4096 and 4097 long.
     indptr = np.array([0, 129, 129 + 4096, 129 + 4096 + 4097], dtype=np.int64)
-    indices = np.zeros(int(indptr[-1]), dtype=np.int32)
-    config = CSRConfig().prepare_structure(indices, indptr, shape=(3, 1))
-    assert config.primary_max_row_nnz == 8192  # power-of-two bound of 4097, below nnz
-    assert config.mv_capacity(len(indices), 3, config.primary_max_row_nnz) >= _capacity_capacity(indptr, config)
+    assert config.mv_capacity(int(indptr[-1]), 3, 4097) >= _exact_mv_capacity(indptr, config)
 
 
-# Device preparation and native query isolation
+def test_capacity_rejects_invalid_counts_and_int32_overflow():
+    with pytest.raises(ValueError, match='int32'):
+        CSRConfig(tpr_threshold=0, task_nnz=1).mv_capacity(2**31, 1)
+    with pytest.raises(ValueError):
+        CSRConfig().mv_capacity(-1, 1)
+    with pytest.raises(ValueError, match='integer'):
+        CSRConfig().mv_capacity(1.5, 1)
+    with pytest.raises(ValueError, match='max_row_nnz'):
+        CSRConfig().mv_capacity(10, 1, max_row_nnz=-1)
+
+
+# Native kernel adapters that do not need a GPU
 # ---------------------------------------------
 
-def test_cpu_preparation_does_not_load_cuda(monkeypatch):
-    monkeypatch.setattr(config_mod, '_query_cuda_device_info', lambda *args: pytest.fail('CPU preparation must not query CUDA'))
-    cpu = jax.devices('cpu')[0]
-    assert config_mod.get_device_info(device=cpu) is None
-    assert config_mod.get_device_info(np.arange(3)) is None
-    assert config_mod.get_device_info() is None
+@pytest.mark.parametrize('config', [None, CSRConfig()])
+def test_nonhybrid_mm_keeps_jax_supported_float8_dtype(config):
+    indices = jnp.array([0, 1], dtype=jnp.int32)
+    indptr = jnp.array([0, 1, 2], dtype=jnp.int32)
+    values = jnp.array([1, 2], dtype=jnp.float8_e4m3fn)
+    events = jnp.ones((2, 2), dtype=jnp.bool_)
+    result = brainevent.binary_csrmm(values, indices, indptr, events, shape=(2, 2),
+                                     backend='jax_raw', config=config)
+    assert result.dtype == values.dtype
+    np.testing.assert_array_equal(result.astype(jnp.float32), [[1, 1], [2, 2]])
 
 
-def test_device_query_does_not_load_mm_module(monkeypatch):
-    if jax.default_backend() != 'gpu':
-        pytest.skip('CUDA device query requires a GPU')
-    gpu = jax.devices('gpu')[0]
-    config_mod._query_cuda_device_info.cache_clear()
-    monkeypatch.setattr(
-        binary_mod, 'load_cuda_file',
-        lambda *args, **kwargs: pytest.fail('device query must not load the MM module'),
-    )
-    info = config_mod.get_device_info(device=gpu)
-    assert info is not None
-    assert info.device_kind == str(gpu.device_kind)
-    assert info.sms > 0 and info.l2_bytes > 0
+def test_hybrid_mm_rejects_unsupported_dtype_before_planning(monkeypatch):
+    import brainevent._csr.binary.binary as binary_mod
+
+    monkeypatch.setattr(binary_mod, '_mm_plan', lambda *args: pytest.fail('planned an unsupported dtype'))
+    with pytest.raises(ValueError, match='supports only float16'):
+        binary_mod._make_hybrid_mm_kernel(
+            config_spec=None,
+            weight_info=jax.ShapeDtypeStruct((2,), jnp.float8_e4m3fn),
+            vector_info=jax.ShapeDtypeStruct((2, 2), jnp.bool_),
+            indices_info=jax.ShapeDtypeStruct((2,), jnp.int32),
+            indptr_info=jax.ShapeDtypeStruct((3,), jnp.int32),
+            out_info=jax.ShapeDtypeStruct((2, 2), jnp.float8_e4m3fn))
 
 
-@pytest.mark.parametrize('platform_version', ['ROCm 7.0', 'Metal', ''])
-def test_non_cuda_gpu_preparation_does_not_query_cuda(monkeypatch, platform_version):
-    from types import SimpleNamespace
-    device = SimpleNamespace(platform='gpu', client=SimpleNamespace(platform_version=platform_version))
-    monkeypatch.setattr(config_mod, '_query_cuda_device_info', lambda *args: pytest.fail('non-CUDA device query'))
-    assert config_mod.get_device_info(device=device) is None
+@pytest.mark.parametrize('idx', [[1], [-1]])
+def test_explicit_config_does_not_skip_index_validation(idx):
+    indices, indptr = np.asarray(idx, np.int32), np.asarray([0, 1], np.int32)
+    with pytest.raises(ValueError, match='index|indices'):
+        brainevent.CSR(np.ones(1, np.float32), indices, indptr, shape=(1, 1), config=CSRConfig())
 
 
-# Workload-aware selection during matrix preparation
+# Placement metadata read during matrix construction
 # --------------------------------------------------
 
-@pytest.fixture
-def _preparation_store(monkeypatch, tmp_path):
-    from brainevent._csr.binary import initialize
+class _FakeDevice:
+    def __init__(self, kind):
+        self.device_kind = kind
 
+
+class _PlacedArray:
+    def __init__(self, *devices):
+        self._devices = set(devices)
+
+    def devices(self):
+        return self._devices
+
+
+def test_structure_device_and_kind_of_concrete_arrays():
+    cpu = jax.devices('cpu')[0]
+    placed = jax.device_put(jnp.arange(3), cpu)
+    assert config_mod._structure_device(placed) == cpu
+    assert config_mod._device_kind(placed) == cpu.device_kind
+    # Host arrays carry no placement.
+    assert config_mod._structure_device(np.arange(3)) is None
+    assert config_mod._device_kind(np.arange(3)) is None
+    a, b = _FakeDevice('GPU_A'), _FakeDevice('GPU_A')
+    # Replicated over same-kind devices: no single device, but one kind.
+    assert config_mod._structure_device(_PlacedArray(a, b)) is None
+    assert config_mod._device_kind(_PlacedArray(a, b)) == 'GPU_A'
+    assert config_mod._device_kind(_PlacedArray(a, _FakeDevice('GPU_B'))) is None
+
+
+def test_structure_device_and_kind_of_tracers_are_unknown():
+    seen = []
+
+    @jax.jit
+    def probe(x):
+        seen.append((config_mod._structure_device(x), config_mod._device_kind(x)))
+        return x
+
+    probe(jnp.arange(3))
+    assert seen == [(None, None)]
+
+
+def test_host_structure_array_reuses_host_input_and_skips_tracers(monkeypatch):
+    host = np.arange(4, dtype=np.int32)
+    assert config_mod._host_structure_array(host, jnp.asarray(host)) is host
+    listed = config_mod._host_structure_array([0, 1, 2], jnp.arange(3))
+    np.testing.assert_array_equal(listed, [0, 1, 2])
+    device = jnp.arange(5)
+    np.testing.assert_array_equal(config_mod._host_structure_array(device, device), np.arange(5))
+
+    monkeypatch.setattr(jax, 'device_get', lambda *args: pytest.fail('a tracer must not be read'))
+    seen = []
+    jax.jit(lambda x: seen.append(config_mod._host_structure_array(x, x)) or x)(jnp.arange(3))
+    assert seen == [None]
+
+
+# Persisted tuning selection during matrix construction
+# -----------------------------------------------------
+
+@pytest.fixture
+def _selection_store(monkeypatch, tmp_path):
     previous = brainevent.get_cache_dir()
     monkeypatch.delenv('BRAINEVENT_CSR_HYBRID_CONFIG', raising=False)
-    monkeypatch.setattr(initialize, '_current_device_kind', lambda: 'TEST_GPU')
-    # Exercise persisted selection with CPU arrays and no device-property query.
-    monkeypatch.setattr(config_mod, '_structure_device', lambda *args, **kwargs: None)
+    # Exercise persisted GPU selection with CPU arrays.
+    monkeypatch.setattr(config_mod, '_device_kind', lambda indices: 'TEST_GPU')
     brainevent.set_cache_dir(str(tmp_path))
     try:
         yield tmp_path
@@ -934,7 +374,7 @@ def _preparation_store(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('cls', [brainevent.CSR, brainevent.CSC])
-def test_construction_selects_both_densities_in_storage_direction(_preparation_store, cls):
+def test_construction_selects_both_densities_in_storage_direction(_selection_store, cls):
     shape = (2, 1000)
     choices = ((60, CSRConfig(256, 512, 128, 1024)),
                (6, CSRConfig(512, 2048, 256, 4096)))
@@ -948,13 +388,10 @@ def test_construction_selects_both_densities_in_storage_direction(_preparation_s
         matrix = cls((np.ones(nnz, np.float32), indices, pointers),
                      shape=public_shape, backend='jax_raw')
         assert matrix.config.mv == expected.mv
-        assert matrix.config.shape == shape
-        assert matrix.config.nnz == nnz
-        assert matrix.config.primary is not None
 
 
 @pytest.mark.parametrize('cls', [brainevent.FixedNumPerPre, brainevent.FixedNumPerPost])
-def test_fixed_connections_select_using_flattened_edge_count(_preparation_store, cls):
+def test_fixed_connections_select_using_flattened_edge_count(_selection_store, cls):
     shape = (2, 1000)
     wrong_count = CSRConfig(512, 512, 128, 512)
     expected = CSRConfig(256, 2048, 256, 4096)
@@ -965,13 +402,24 @@ def test_fixed_connections_select_using_flattened_edge_count(_preparation_store,
                  np.array([[0, 1, 2], [3, 4, 5]], np.int32),
                  shape=public_shape, backend='jax_raw')
     assert matrix.config.mv == expected.mv
-    assert matrix.config.shape == shape
-    assert matrix.config.nnz == 6
 
 
-def test_explicit_preparation_config_beats_environment_and_local_store(
-    _preparation_store, monkeypatch,
-):
+def test_selection_is_keyed_by_the_structure_device_kind(monkeypatch, tmp_path):
+    previous = brainevent.get_cache_dir()
+    monkeypatch.delenv('BRAINEVENT_CSR_HYBRID_CONFIG', raising=False)
+    brainevent.set_cache_dir(str(tmp_path))
+    try:
+        cpu = jax.devices('cpu')[0]
+        metadata = {'shape': (2, 4), 'nnz': 3}
+        save_csr_config(CSRConfig(256), cpu.device_kind, matrix_metadata=metadata)
+        save_csr_config(CSRConfig(128), 'OTHER_GPU', matrix_metadata=metadata)
+        indices = jax.device_put(jnp.array([0, 1, 2], jnp.int32), cpu)
+        assert _select_config(indices, shape=(2, 4)).mv == CSRConfig(256).mv
+    finally:
+        brainevent.set_cache_dir(previous)
+
+
+def test_explicit_config_beats_environment_and_local_store(_selection_store, monkeypatch):
     from brainevent._csr.binary import initialize
 
     save_csr_config(CSRConfig(512), 'TEST_GPU',
@@ -986,11 +434,16 @@ def test_explicit_preparation_config_beats_environment_and_local_store(
     matrix = brainevent.CSR((np.ones(3, np.float32), np.array([0, 1, 2], np.int32),
                             np.array([0, 1, 3], np.int32)),
                             shape=(2, 4), backend='jax_raw', config=explicit)
-    assert matrix.config.mv == explicit.mv
-    assert matrix.config.primary is not None
+    assert matrix.config is explicit
+    assert _select_config(matrix.indices, shape=(2, 4), config=explicit) is explicit
 
 
-def test_traced_preparation_forwards_static_metadata_without_reading_arrays(monkeypatch):
+def test_select_config_rejects_a_non_config():
+    with pytest.raises(TypeError, match='CSRConfig'):
+        _select_config(np.arange(3), shape=(2, 4), config=MVSchedule())
+
+
+def test_traced_selection_forwards_static_metadata_without_reading_arrays(monkeypatch):
     from brainevent._csr.binary import initialize
 
     calls = []
@@ -1003,26 +456,20 @@ def test_traced_preparation_forwards_static_metadata_without_reading_arrays(monk
     monkeypatch.setattr(initialize, 'load_csr_config', load)
     monkeypatch.setattr(jax, 'device_get',
                         lambda *args, **kwargs: pytest.fail('metadata must not read tracer arrays'))
-    monkeypatch.setattr(CSRConfig, 'prepare_structure',
-                        lambda *args, **kwargs: pytest.fail('traced structure cannot be prepared'))
 
     @jax.jit
-    def prepare(indices, indptr):
-        result = config_mod._prepare_csr_config(indices, indptr, shape=(2, 5), backend='jax_raw')
-        assert result.primary is result.mirror is None
-        return indices + result.block_size
+    def build(data, indices, indptr):
+        matrix = brainevent.CSR((data, indices, indptr), shape=(2, 5), backend='jax_raw')
+        assert matrix.config is expected
+        return indices + matrix.config.block_size
 
-    actual = prepare(jnp.array([0, 1, 2], jnp.int32), jnp.array([0, 1, 3], jnp.int32))
+    actual = build(jnp.ones(3), jnp.array([0, 1, 2], jnp.int32), jnp.array([0, 1, 3], jnp.int32))
     np.testing.assert_array_equal(actual, np.array([256, 257, 258]))
-    assert len(calls) == 1
-    assert calls[0]['matrix_metadata']['shape'] == (2, 5)
-    assert calls[0]['matrix_metadata']['nnz'] == 3
+    assert calls == [{'device_kind': None, 'matrix_metadata': {'shape': (2, 5), 'nnz': 3}}]
 
 
 @pytest.mark.parametrize('shape', [(0, 5), (2, 0)])
-def test_empty_preparation_infers_static_metadata_and_preserves_selected_parameters(
-    monkeypatch, shape,
-):
+def test_empty_selection_uses_static_metadata(monkeypatch, shape):
     from brainevent._csr.binary import initialize
 
     expected = CSRConfig(256, 512, 128, 1024)
@@ -1033,17 +480,14 @@ def test_empty_preparation_infers_static_metadata_and_preserves_selected_paramet
         return expected
 
     monkeypatch.setattr(initialize, 'load_csr_config', load)
-    result = config_mod._prepare_csr_config(
-        np.empty(0, np.int32), np.zeros(shape[0] + 1, np.int32),
-        shape=shape, backend='jax_raw',
-    )
-    assert result.mv == expected.mv
-    assert result.shape == shape and result.nnz == 0
-    assert calls[0]['matrix_metadata']['shape'] == shape
-    assert calls[0]['matrix_metadata']['nnz'] == 0
+    assert _select_config(np.empty(0, np.int32), shape=shape) is expected
+    assert calls == [{'device_kind': None, 'matrix_metadata': {'shape': shape, 'nnz': 0}}]
+    matrix = brainevent.CSR((np.ones(0, np.float32), np.empty(0, np.int32),
+                             np.zeros(shape[0] + 1, np.int32)), shape=shape, backend='jax_raw')
+    assert matrix.config is expected
 
 
-def test_rebuild_keeps_matched_snapshot_after_persisted_winner_changes(_preparation_store):
+def test_existing_matrix_keeps_its_snapshot_after_persisted_winner_changes(_selection_store):
     metadata = {'shape': (2, 4), 'nnz': 3}
     original = CSRConfig(256, 512, 128, 1024)
     replacement = CSRConfig(512, 2048, 256, 4096)
@@ -1053,9 +497,9 @@ def test_rebuild_keeps_matched_snapshot_after_persisted_winner_changes(_preparat
     matrix = brainevent.CSR(parts, shape=(2, 4), backend='jax_raw')
     save_csr_config(replacement, 'TEST_GPU', matrix_metadata=metadata)
 
-    rebuilt = matrix.with_rebuilt_config()
     fresh = brainevent.CSR(parts, shape=(2, 4), backend='jax_raw')
-    assert matrix.config.mv == rebuilt.config.mv == original.mv
+    assert matrix.config.mv == original.mv
     assert fresh.config.mv == replacement.mv
-    assert rebuilt.config.primary is not matrix.config.primary
-    assert rebuilt.indices is matrix.indices and rebuilt.indptr is matrix.indptr
+    # Structure-preserving derivations and pytree round trips keep the snapshot.
+    assert matrix.with_data(np.zeros(3, np.float32)).config is matrix.config
+    assert jax.tree_util.tree_map(lambda x: x, matrix).config.mv == original.mv

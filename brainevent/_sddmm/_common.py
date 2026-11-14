@@ -20,7 +20,7 @@ from brainevent._op.kernix_toolchain import nvidia_wheel_library
 from brainevent._op.util import CUDA_VALUE_DTYPES, cuda_event_abi, dtype_suffix, event_factor
 
 if TYPE_CHECKING:
-    from brainevent._csr.config import CSRKernelSpec
+    from brainevent._csr.config import MVSchedule
 
 Mode = Literal['float', 'binary', 'weighted']
 _INT32_MAX = 2**31 - 1
@@ -35,7 +35,7 @@ class _CSRBackend:
 
     primitive: 'XLACustomKernel'
     requested: str | None
-    config_spec: 'CSRKernelSpec | None' = None
+    config_spec: 'MVSchedule | None' = None
 
 
 def native_event_target(prefix: str, value_dtype, events: jax.Array, *,
@@ -62,15 +62,18 @@ def bind_events(primitive: XLACustomKernel, events: jax.Array, ct: jax.Array, in
                 backend: 'str | None | _CSRBackend', **params) -> jax.Array:
     """Bind normalized CSR events to a leaf primitive; validation belongs to the dispatcher.
 
-    A :class:`_CSRBackend` source binds ``auto``, which resolves the source
-    CSR primitive's backend on the actual lowering platform.
+    A :class:`_CSRBackend` source or no backend binds ``auto``, which
+    resolves the source CSR primitive's backend, or else this primitive's
+    global choice, on the actual lowering platform. A global choice is thus
+    a preference: unlike an explicit ``cuda_raw``, it never sends an
+    untransposed product to the transposed-only CUDA kernel.
     """
     source = backend.primitive if isinstance(backend, _CSRBackend) else None
     return primitive(
         events, ct, indices, indptr,
         outs=[jax.ShapeDtypeStruct(indices.shape, ct.dtype)],
         transpose=transpose, weighted=weighted,
-        backend='auto' if source is not None else backend, csr_primitive=source,
+        backend='auto' if source is not None or backend is None else backend, csr_primitive=source,
         ct_info=jax.ShapeDtypeStruct(ct.shape, ct.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
@@ -82,18 +85,20 @@ def event_primitive(name: str, tag: str, cuda_kernel: Callable, jax_kernel: Call
                     native_dims: Callable[[tuple[int, ...]], bool]) -> XLACustomKernel:
     """Register a leaf's CSR event primitive with its JAX, CUDA and cuSPARSE kernels.
 
-    GPU ``auto`` uses cuSPARSE when the source CSR primitive selects it, CUDA
-    for transposed products whose cotangent shape fits ``native_dims`` and
-    JAX otherwise. CPU and TPU always use JAX.
+    GPU ``auto`` follows the source CSR primitive's GPU backend, or for a
+    direct call this primitive's global choice: cuSPARSE when that selects
+    it, CUDA for transposed products whose cotangent shape fits
+    ``native_dims``, and JAX otherwise (including a ``jax_raw`` choice and
+    the deterministic-ops flag). CPU and TPU always use JAX.
     """
     def jax_generator(**kwargs):
         return partial(jax_kernel, **kwargs)
 
     def auto_gpu(*, transpose: bool, csr_primitive=None, **kwargs):
-        backend = None if csr_primitive is None else csr_primitive._resolve_backend('gpu')
+        backend = (primitive if csr_primitive is None else csr_primitive).resolve_backend('gpu')
         if backend == 'cusparse':
             return _cusparse_event_kernel(transpose=transpose, **kwargs)
-        if transpose and backend in (None, 'cuda_raw') and native_dims(kwargs['ct_info'].shape):
+        if transpose and backend in ('auto', 'cuda_raw') and native_dims(kwargs['ct_info'].shape):
             return cuda_kernel(transpose=transpose, **kwargs)
         return partial(jax_kernel, transpose=transpose, **kwargs)
 

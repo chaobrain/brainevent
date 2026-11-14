@@ -56,20 +56,16 @@ from brainevent._sddmm import _common
 from brainevent._sddmm._common import native_event_target
 
 if TYPE_CHECKING:
-    from brainevent._csr.config import CSRKernelSpec, MVSchedule
+    from brainevent._csr.config import MVSchedule
 
 
 _DIRECTORY = Path(__file__).parent
 NAME, LABEL = 'SDDMV', 'MV'
 
 
-def _load_hybrid(weighted: bool, config_spec: CSRKernelSpec) -> str:
-    """Share compiled modules across structures with the same scheduler."""
-    return _load_hybrid_cached(bool(weighted), config_spec.mv)
-
-
 @lru_cache(maxsize=128)
-def _load_hybrid_cached(weighted: bool, schedule: MVSchedule) -> str:
+def _load_hybrid(weighted: bool, schedule: MVSchedule) -> str:
+    """Share compiled modules across structures with the same scheduler."""
     kind = 'weighted' if weighted else 'binary'
     name = f'csr_sddmv_hybrid_{kind}' + schedule.module_suffix()
     load_cuda_file(
@@ -119,7 +115,7 @@ def _masked_product(factor: jax.Array, ct: jax.Array) -> jax.Array:
     return factor * jnp.where((factor != 0) | jnp.isfinite(ct), ct, jnp.zeros_like(ct))
 
 
-def _cuda_kernel(*, transpose: bool, weighted: bool, config_spec: CSRKernelSpec,
+def _cuda_kernel(*, transpose: bool, weighted: bool, config_spec: MVSchedule,
                  ct_info: jax.ShapeDtypeStruct, indices_info: jax.ShapeDtypeStruct,
                  indptr_info: jax.ShapeDtypeStruct, **kwargs: Any):
     if not transpose:
@@ -128,7 +124,7 @@ def _cuda_kernel(*, transpose: bool, weighted: bool, config_spec: CSRKernelSpec,
     if not nnz:
         return lambda events, ct, indices, indptr: (jnp.zeros((0,), ct.dtype),)
     capacity = config_spec.mv_capacity(nnz, rows)
-    module = _load_hybrid(weighted, config_spec)
+    module = _load_hybrid(bool(weighted), config_spec)
     value_dtype, offset_dtype = jnp.dtype(ct_info.dtype), jnp.dtype(indptr_info.dtype)
     infos = [
         jax.ShapeDtypeStruct((nnz,), value_dtype),  # dW
@@ -162,11 +158,11 @@ def native_dims(ct_shape: tuple[int, ...]) -> bool:
 
 
 def bind_events(events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array, *,
-                config_spec: CSRKernelSpec | None = None, **kwargs: Any) -> jax.Array:
+                config_spec: MVSchedule | None = None, **kwargs: Any) -> jax.Array:
     """Bind rank-one CSR events, defaulting to the unpersisted scheduler constants."""
     if config_spec is None:
-        from brainevent._csr.config import CSRConfig
-        config_spec = CSRConfig().kernel_args()[0]
+        from brainevent._csr.config import MVSchedule
+        config_spec = MVSchedule()
     return _common.bind_events(csr_sddmv_p, events, ct, indices, indptr,
                                config_spec=config_spec, **kwargs)
 

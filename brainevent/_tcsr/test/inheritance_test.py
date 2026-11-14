@@ -44,7 +44,7 @@ def test_inherited_keyword_names_defaults_and_call_kinds_match_csr():
     names = (
         'dt2t', 'dt2t_transposed', 'update_on_pre', 'update_on_post',
         'apply_on_pre', 'apply_on_post', 'solve', 'with_data', 'apply',
-        'build_weight_indices', 'with_rebuilt_config', 'prepare_diag_add',
+        'build_weight_indices', 'prepare_diag_add',
         'diag_add', 'transpose', 'tocsr', 'tocsc', 'tocoo', 'sum',
     )
     for name in names:
@@ -53,6 +53,12 @@ def test_inherited_keyword_names_defaults_and_call_kinds_match_csr():
                          for p in inspect.signature(getattr(cls, name)).parameters.values())
 
         assert contract(TCSR) == contract(CSR), name
+    # Configuration is planned at lowering, so no factory takes a device and
+    # no matrix rebuilds its configuration.
+    for cls in (CSR, CSC, TCSR):
+        assert not hasattr(cls, 'with_rebuilt_config'), cls
+        for factory in (cls.__init__, cls.fromdense):
+            assert 'device' not in inspect.signature(factory).parameters, (cls, factory)
 
 
 @pytest.mark.parametrize('transpose', [False, True])

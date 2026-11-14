@@ -937,7 +937,7 @@ def test_fcn_pytree_roundtrip_carries_mirror_leaves():
     dat = jnp.asarray(rng.random((6, 3)) + 0.5, dtype=jnp.float32)
     m = brainevent.FixedNumPerPre(dat, idx, shape=(6, 5), precompute_weight_indices=True)
     leaves, treedef = jax.tree_util.tree_flatten(m)
-    assert len(leaves) == 7  # data, indices, two plan masks and three mirror arrays
+    assert len(leaves) == 5  # data, indices and three mirror arrays; the config has none
     m2 = jax.tree_util.tree_unflatten(treedef, leaves)
     assert jnp.allclose(m2.data, m.data)
     assert jnp.array_equal(m2.indices, m.indices)
