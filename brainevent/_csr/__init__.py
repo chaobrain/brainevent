@@ -23,7 +23,7 @@ from brainevent._csr.binary.binary_indexed import (
     binary_csrmv_indexed, binary_csrmv_indexed_p,
     binary_csrmm_indexed, binary_csrmm_indexed_p,
 )
-from brainevent._csr.config import CSRConfig, MVSchedule
+from brainevent._csr.config import CSRConfig
 from brainevent._csr.binary.initialize import (
     init_csr_config,
     load_csr_config,
@@ -69,5 +69,5 @@ __all__ = [
     'csr_apply_on_pre', 'csr_apply_on_post',
     'csr_slice_rows', 'csr_slice_rows_p',
     'CSRDelayLayout', 'csr_delay_deliver_layout', 'csr_delay_deliver_layout_p',
-    'CSRConfig', 'MVSchedule', 'load_csr_config', 'save_csr_config', 'init_csr_config',
+    'CSRConfig', 'load_csr_config', 'save_csr_config', 'init_csr_config',
 ]

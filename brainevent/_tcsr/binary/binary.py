@@ -255,7 +255,7 @@ def binary_csrmm_p_call(
         weights, indices, indptr, B, local_targets, tile_offsets, permutation,
         shape=shape, transpose=transpose, tile_width=tile_width,
     )
-    config_spec = None if config is None else _config_for_call(config).mv
+    config_spec = None if config is None else _config_for_call(config)
     target = shape[1] if transpose else shape[0]
     operands = (weights, indices, indptr, B, local_targets, tile_offsets, permutation)
     return tuple(binary_csrmm_p(

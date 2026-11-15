@@ -139,7 +139,7 @@ def _hybrid_mv_kernel(kwargs, symbol: str, event_abi, *, permuted: bool):
         ``kernel(weights, indices, indptr, [perm,] vector)``. A ``perm``
         operand is ignored unless ``permuted``.
     """
-    schedule = _config_from_params(kwargs).mv
+    schedule = _config_from_params(kwargs)
     mode = 'weighted' if kwargs.get('weighted', False) else 'binary'
     stem = f'hybrid_spmv_col_major_{mode}' if permuted else f'hybrid_spmv_{mode}'
     module = f'csr_{stem}{schedule.module_suffix()}'

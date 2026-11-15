@@ -13,11 +13,14 @@ one explicit scheduler configuration (`CSRConfig`) in place of
 
 ### Added
 
-- `CSRConfig` and `MVSchedule` describe the CSR hybrid scheduler; pass
+- `CSRConfig` describes the CSR hybrid scheduler; pass
   `config=` to the CSR, CSC and `FixedNumPer*` constructors.
   `load_csr_config` and `save_csr_config` read and persist per-device
   tuning; `init_csr_config` measures it. Configs are hashable and compare
   equal when their schedulers are equal (benchmark records are ignored).
+  Its four MV fields are flat, and five keyword-only MM policies control
+  chunk selection. `to_dict` / `from_dict` serialize these nine fields,
+  defaulting missing MM fields when reading older configurations.
 - `XLACustomKernel.resolve_backend(platform, requested=None)` reports the
   backend a primitive would lower with, without warnings or errors
   (`None` when lowering would fail).
@@ -31,6 +34,13 @@ one explicit scheduler configuration (`CSRConfig`) in place of
 
 ### Changed
 
+- CSR scheduling uses one immutable `CSRConfig` for MV and hybrid MM.
+  The separate `MVSchedule` and private plan/record/auxiliary classes are
+  removed; `config.mv.field` becomes `config.field`. `config.mm_plan(...)`
+  returns a fresh seven-field dictionary, and benchmark records use dictionaries.
+  The default formulas, fixed MM geometry, dynamic mask lifetime and TCSR
+  tile algorithm are unchanged. Policy fields participate in JIT identity;
+  benchmark diagnostics do not.
 - **Event weight gradients follow the event type.** Binary events
   (`BinaryArray`, raw bool, `weighted=False`) differentiate the weights with
   the activity mask; `WeightedArray` (`weighted=True`) uses the event

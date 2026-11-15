@@ -139,8 +139,8 @@ def binary_csrmv_indexed(
         (:class:`~brainevent.WeightedArray`): active entries multiply the
         weights by their value instead of by ``1``.  Default ``False``.
     config : CSRConfig or None, optional
-        MV scheduler tuning. ``None`` uses the default scheduler; raw calls
-        never load saved tuning. Any config works for any structure.
+        MV tuning and the MM policy used when batching. ``None`` uses defaults;
+        raw calls never load saved tuning. Any config works for any structure.
     max_row_nnz : int or None, optional
         Trusted bound on the longest row, used to size the MV task queue.
         This argument never scans the structure; see
@@ -478,8 +478,8 @@ def binary_csrmv_indexed_p_call(
         Multiply the weights by the event value instead of the activity
         mask.  Default ``False``.
     config : CSRConfig or None, optional
-        MV scheduler tuning. ``None`` uses the default scheduler; raw calls
-        never load saved tuning. Any config works for any structure.
+        MV tuning and the MM policy used when batching. ``None`` uses defaults;
+        raw calls never load saved tuning. Any config works for any structure.
     max_row_nnz : int or None, optional
         Upper bound on the longest row of ``indptr`` (hybrid task queue size).
     long_mask : jax.Array or None, optional
@@ -523,7 +523,7 @@ def binary_csrmv_indexed_p_call(
         vector,
         long_mask,
         outs=[out_info],
-        config_spec=config.mv,
+        config_spec=config,
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -1069,7 +1069,7 @@ def binary_csrmm_indexed_p_call(
     return binary_csrmm_indexed_p(
         weights, indices, indptr, perm, B, long_mask,
         outs=[out_info],
-        config_spec=config.mv,
+        config_spec=config,
         shape=shape,
         transpose=transpose,
         backend=backend,

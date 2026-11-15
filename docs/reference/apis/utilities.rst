@@ -42,10 +42,43 @@ GPU/TPU Random Number Generator
 CSR Configuration and Planning
 ------------------------------
 
-``CSRConfig`` holds the tuning parameters of the hybrid CSR scheduler (an
-``MVSchedule``) and, optionally, the benchmark records that chose them. It
-describes no particular sparse structure, so one configuration fits every
-matrix, and it adds no leaves to a matrix's pytree.
+``CSRConfig`` holds the four MV scheduler constants and five MM chunk
+policies directly. It describes no particular sparse structure, so one
+configuration fits every matrix, and it adds no leaves to a matrix's pytree.
+All nine scheduling fields participate in equality, hashing and JIT identity;
+benchmark records are dictionaries excluded from that identity.
+
+The existing positional fields remain ``block_size=512``,
+``fixed_scatter_blocks=1024``, ``tpr_threshold=128`` and ``task_nnz=512``.
+The MM policies are keyword-only:
+
+.. list-table:: MM chunk policies
+   :header-rows: 1
+   :widths: 35 20 45
+
+   * - Field
+     - Default
+     - Meaning
+   * - ``mm_l2_divisor``
+     - ``4``
+     - L2 divisor for the compact output chunk.
+   * - ``mm_sparse_l2_divisor``
+     - ``2``
+     - L2 divisor for four-lane schedules on large caches.
+   * - ``mm_sparse_l2_min_bytes``
+     - ``32 << 20``
+     - Minimum L2 size for the sparse allowance, in bytes.
+   * - ``mm_short_rows_floor``
+     - ``1 << 20``
+     - Minimum short-list allowance, in int32 entries.
+   * - ``mm_max_chunk``
+     - ``65535``
+     - Maximum batches per chunk, in ``[1, 65535]``.
+
+``config.to_dict()`` serializes these nine fields; ``CSRConfig.from_dict``
+restores them and defaults missing fields, including MM policies omitted by
+older four-field configuration files. Resolved launch plans and structure
+masks are not serialized with the configuration.
 
 ``CSR(..., config=None)`` loads the persisted tuning for the matrix's shape,
 stored-edge count and device kind once, during construction. An explicit
@@ -62,7 +95,8 @@ plus the L2 cache size of the target GPU. Matrix objects provide their cached
 long-row mask as a dynamic operand; raw calls that omit ``long_mask`` derive
 it from ``indptr`` automatically. A matrix built eagerly, on the CPU or
 inside ``jax.jit``, and a ``vmap`` of MV, therefore all run the same native
-kernel, and structures of equal shape share one compiled program.
+kernel. Structures with equal shapes and the same scheduling policies share
+one compiled program.
 
 The output batch chunk uses a quarter of L2, or half for the four-lane
 schedule on devices with at least 32 MiB L2. Short-row lists share that byte
@@ -71,7 +105,19 @@ whichever is larger; at least one batch always fits. This avoids tiny launch
 groups on large sparse matrices while bounding short-list scratch for tall, narrow
 outputs. The long-row classification and the K1/K2/K3 execution remain the
 same. A larger chunk is chosen only when it removes launch groups;
-otherwise the smaller, fixed-allowance chunk is retained.
+otherwise the smaller, fixed-allowance chunk is retained. These are the
+default policies; customizing a divisor, allowance or chunk cap changes the
+chunk calculation without changing the lane group or long-row threshold.
+The MM geometry remains fixed at 16 iterations and 512 edges per long task.
+
+``config.mm_plan(rows, cols, nnz, batch, dtype, weighted, l2_bytes)`` returns
+a fresh dictionary with ``group``, ``long_threshold``, ``long_tasks``,
+``chunk``, ``task_capacity``, ``workspace_words`` and ``short_rows_size``.
+It derives these values from the call metadata at lowering and does not
+store them on the config. Modifying a returned dictionary cannot change a
+later plan. ``CSRConfig.mm_group(rows, nnz)`` and
+``CSRConfig.mm_threshold(rows, nnz)`` expose the shared row classification
+used by both mask construction and lowering.
 
 Raw functions such as ``binary_csrmm`` receive arrays, not a CSR object.
 Their ``config=None`` uses the default scheduler constants and never loads
@@ -106,7 +152,6 @@ which shrinks its task queue.
    :template: classtemplate.rst
 
    CSRConfig
-   MVSchedule
 
 .. autosummary::
    :toctree: generated/
@@ -124,7 +169,8 @@ float32 binary SpMV kernel. Its default search is the Cartesian product of
 ``block_size=(512, 256)``, ``fixed_scatter_blocks=(512, 1024, 2048)``,
 ``tpr_threshold=(128, 256)`` and ``task_nnz=(512, 1024, 2048, 4096)``:
 48 candidates for each of matrix densities 3% and 0.3%, at the same shape.
-Event activity remains a separate setting, defaulting to 0.4%.
+Event activity remains a separate setting, defaulting to 0.4%. Initialization
+continues to tune MV candidates; it does not search the MM policies.
 
 Initialization returns a list of workload results. Each result includes
 ``metadata``, ``best_config``, ``records`` and ``status``; an unsuccessful

@@ -35,7 +35,7 @@ from brainevent._csr._support.binary import (
     _ignore_long_mask,
     _precheck_long_mask,
 )
-from brainevent._csr.config import CSRConfig, _mm_plan
+from brainevent._csr.config import CSRConfig
 from brainevent._op.lowering_target import cuda_l2_bytes
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._op.ffi_naming import source_digest
@@ -137,8 +137,8 @@ def binary_csrmv(
         result is the exact product ``A @ v``.  Default is ``False``
         (binary events).
     config : CSRConfig or None, optional
-        MV scheduler tuning. ``None`` uses the default scheduler; raw calls
-        never load saved tuning. Any config works for any structure.
+        MV tuning and the MM policy used when batching. ``None`` uses defaults;
+        raw calls never load saved tuning. Any config works for any structure.
     max_row_nnz : int or None, optional
         Optional trusted bound on the longest row, used to size the
         ``cuda_raw`` MV task queue. ``None`` uses a bound from array sizes.
@@ -1007,8 +1007,8 @@ def binary_csrmv_p_call(
         Multiply the weights by the event value instead of the activity
         mask (:class:`~brainevent.WeightedArray`).  Default is ``False``.
     config : CSRConfig or None, optional
-        MV scheduler tuning. ``None`` uses the default scheduler; raw calls
-        never load saved tuning. Any config works for any structure.
+        MV tuning and the MM policy used when batching. ``None`` uses defaults;
+        raw calls never load saved tuning. Any config works for any structure.
     max_row_nnz : int or None, optional
         Upper bound on the longest row of ``indptr``, used to size the
         ``cuda_raw`` hybrid task queue (see :func:`binary_csrmv`).
@@ -1102,7 +1102,7 @@ def binary_csrmv_p_call(
         vector,
         long_mask,
         outs=[out_info],
-        config_spec=config.mv,
+        config_spec=config,
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -1425,9 +1425,9 @@ def _make_hybrid_mm_kernel(*, weight_info, vector_info, indices_info, indptr_inf
                            target_devices=(), **kwargs):
     """Lower a hybrid scatter SpMM call to its native batch-major layout.
 
-    The launch is planned from static shapes and the L2 size of the target
-    devices. A supplied dynamic long-row mask is reused; raw calls without one
-    compute it from ``indptr`` inside the lowered program.
+    The launch follows the config's MM policy, static shapes and the L2 size
+    of the target devices. A supplied dynamic long-row mask is reused; raw
+    calls without one compute it from ``indptr`` inside the lowered program.
 
     Parameters
     ----------
@@ -1444,7 +1444,7 @@ def _make_hybrid_mm_kernel(*, weight_info, vector_info, indices_info, indptr_inf
     target_devices : sequence of jax.Device, optional
         Devices the lowering targets; their smallest L2 sizes the batch chunk.
     **kwargs
-        Additional primitive metadata ignored by this adapter.
+        Additional primitive metadata, including the ``config_spec`` policy.
 
     Returns
     -------
@@ -1458,8 +1458,9 @@ def _make_hybrid_mm_kernel(*, weight_info, vector_info, indices_info, indptr_inf
         return lambda *args: (match_varying_axes(jnp.zeros(out_info.shape, out_info.dtype), *args),)
     if np.dtype(weight_info.dtype) not in CUDA_VALUE_DTYPES:
         raise ValueError('Hybrid CSR MM supports only float16, bfloat16, float32, or float64 values.')
-    plan = _mm_plan(rows, cols, nnz, batch, np.dtype(weight_info.dtype), bool(weighted),
-                    cuda_l2_bytes(target_devices))
+    config = _config_from_params(kwargs)
+    plan = config.mm_plan(rows, cols, nnz, batch, np.dtype(weight_info.dtype), bool(weighted),
+                          cuda_l2_bytes(target_devices))
     native_permuted = permuted and weight_info.size != 1
     module = _load_hybrid_mm('col_major' if native_permuted else 'row', 'weighted' if weighted else 'binary')
     abi = cuda_event_abi(vector_info.dtype, weighted=weighted, value_dtype=weight_info.dtype)
@@ -1473,12 +1474,12 @@ def _make_hybrid_mm_kernel(*, weight_info, vector_info, indices_info, indptr_inf
         symbol += abi.suffix
     infos = (
         _accumulator_info(jax.ShapeDtypeStruct((batch, cols), out_info.dtype)),
-        jax.ShapeDtypeStruct((plan.workspace_words,), jnp.uint32),
-        jax.ShapeDtypeStruct((plan.short_rows_size,), jnp.int32),
+        jax.ShapeDtypeStruct((plan['workspace_words'],), jnp.uint32),
+        jax.ShapeDtypeStruct((plan['short_rows_size'],), jnp.int32),
     )
     attrs = dict(
-        group=plan.group, long_threshold=plan.long_threshold,
-        chunk=plan.chunk, long_tasks=plan.long_tasks, task_capacity=plan.task_capacity,
+        group=plan['group'], long_threshold=plan['long_threshold'],
+        chunk=plan['chunk'], long_tasks=plan['long_tasks'], task_capacity=plan['task_capacity'],
     )
     ffi = jax.ffi.ffi_call(module + '.' + symbol, infos, vmap_method='sequential')
 
@@ -1495,7 +1496,7 @@ def _make_hybrid_mm_kernel(*, weight_info, vector_info, indices_info, indptr_inf
         operands = (weights, indices, indptr)
         if native_permuted:
             operands += (perm,)
-        mask = long_mask if long_mask is not None and long_mask.size else _long_row_mask(indptr, plan.long_threshold)
+        mask = long_mask if long_mask is not None and long_mask.size else _long_row_mask(indptr, plan['long_threshold'])
         output = ffi(*operands, mask, abi.prepare(events).T, **attrs)[0]
         return (match_varying_axes(output.T.astype(out_info.dtype), *args),)
 
@@ -1800,7 +1801,7 @@ def binary_csrmm_p_call(
         B,
         long_mask,
         outs=[out_info],
-        config_spec=config.mv,
+        config_spec=config,
         shape=shape,
         transpose=transpose,
         backend=backend,

@@ -49,11 +49,11 @@ def _mm_mask_for_structure(indptr, nnz: int):
     import jax
 
     # config imports this module, so keep these imports out of module setup.
-    from brainevent._csr.config import _mm_group
+    from brainevent._csr.config import CSRConfig
     from brainevent._misc import _long_row_mask
 
     rows = indptr.shape[0] - 1
-    threshold = 16 * _mm_group(rows, nnz)
+    threshold = CSRConfig.mm_threshold(rows, nnz)
     if is_concrete(indptr):
         # A closed-over concrete structure may be used during another trace.
         # Its shared cache must contain a real array rather than a tracer.

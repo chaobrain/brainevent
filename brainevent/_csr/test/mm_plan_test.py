@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent._csr.config import _MMPlan, _mm_group, _mm_plan
+from brainevent._csr.config import CSRConfig
 from brainevent._misc import _long_row_mask
 
 TASK_EDGES = 512  # 32 lanes x 16 iterations: edges per long-row task
@@ -28,14 +28,71 @@ INT64_MAX = int(np.iinfo(np.int64).max)
 L2 = 4 << 20
 
 
-def _plan(rows, cols, nnz, batch=8, dtype=np.float32, weighted=False, l2_bytes=L2):
-    return _mm_plan(rows, cols, nnz, batch, np.dtype(dtype), weighted, l2_bytes)
+def _plan(rows, cols, nnz, batch=8, dtype=np.float32, weighted=False, l2_bytes=L2, *, config=None):
+    config = CSRConfig() if config is None else config
+    return config.mm_plan(rows, cols, nnz, batch, np.dtype(dtype), weighted, l2_bytes)
 
 
 def _expected_group(mean):
     """Spec D3, independently: a quarter of min(mean, 512), rounded up to 4, 8, 16 or 32."""
     quarter = -(-min(mean, 512) // 4)
     return next((group for group in (4, 8, 16, 32) if quarter <= group), 32)
+
+
+def _default_plan_reference(rows, cols, nnz, batch, dtype, weighted, l2):
+    """Independent default formulas from the pushed pre-unification implementation."""
+    group = _expected_group(nnz // rows if rows else 0)
+    threshold = 16 * group
+    if not all((rows, cols, nnz, batch)):
+        return dict(group=group, long_threshold=threshold, long_tasks=0, chunk=1,
+                    task_capacity=0, workspace_words=0, short_rows_size=0)
+    tasks = (nnz + 511) // 512 + min(rows, nnz // (threshold + 1))
+    value_bytes = np.dtype(dtype).itemsize
+    output_bytes = cols * max(4, value_bytes)
+    compact = max(1, min((l2 // 4) // output_bytes, max(nnz, 1 << 20) // rows, batch, 65535))
+    budget = l2 // (2 if group == 4 and l2 >= 32 << 20 else 4)
+    chunk = max(1, min(budget // output_bytes, max(nnz, 1 << 20, budget // 4) // rows, batch, 65535))
+    groups = (batch + chunk - 1) // chunk
+    if groups == (batch + compact - 1) // compact:
+        chunk = compact
+    capacity = chunk * tasks
+    queue = ((capacity * value_bytes + 3) // 4 * 4) if weighted else 0
+    return dict(group=group, long_threshold=threshold, long_tasks=tasks, chunk=chunk,
+                task_capacity=capacity, workspace_words=(8 * batch + 8 * groups + 12 * capacity + queue) // 4,
+                short_rows_size=chunk * rows)
+
+
+def test_unified_default_plan_preserves_all_previous_formulas():
+    rng = np.random.default_rng(20261115)
+    cases = [(0, 0, 0, 0), (10, 20, 0, 8), (1000000, 10, 1000000, 1024),
+             (1000000, 1000000, 1000000, 128), (4, 1, 2048, 70000)]
+    cases += [(int(rng.integers(1, 10000)), int(rng.integers(1, 200000)),
+               int(rng.integers(1, 20000000)), int(rng.integers(1, 1000))) for _ in range(100)]
+    for rows, cols, nnz, batch in cases:
+        for dtype in (np.float16, np.float32, np.float64):
+            for weighted in (False, True):
+                for l2 in (4 << 20, 32 << 20, 128 << 20):
+                    assert _plan(rows, cols, nnz, batch, dtype, weighted, l2) == \
+                        _default_plan_reference(rows, cols, nnz, batch, dtype, weighted, l2)
+
+
+@pytest.mark.parametrize('config,shape,l2,expected_chunk', [
+    (CSRConfig(mm_l2_divisor=8), (100, 1000, 8000, 1000), 4 << 20, 131),
+    (CSRConfig(mm_sparse_l2_divisor=8), (100000, 100000, 300000, 128), 128 << 20, 41),
+    (CSRConfig(mm_sparse_l2_min_bytes=256 << 20), (100000, 100000, 300000, 128), 128 << 20, 83),
+    (CSRConfig(mm_sparse_l2_min_bytes=0), (100, 1000, 100, 1000), 4 << 20, 524),
+    (CSRConfig(mm_short_rows_floor=4000000), (1000000, 10, 1000000, 1024), 4 << 20, 4),
+    (CSRConfig(mm_max_chunk=3), (100, 1000, 8000, 128), 128 << 20, 3),
+])
+def test_each_mm_policy_changes_the_resolved_chunk(config, shape, l2, expected_chunk):
+    plan = _plan(*shape, l2_bytes=l2, config=config)
+    assert plan['chunk'] == expected_chunk
+    default = _plan(*shape, l2_bytes=l2)
+    assert plan['chunk'] != default['chunk']
+    assert plan['group'] == default['group']
+    assert plan['long_threshold'] == config.mm_threshold(shape[0], shape[2]) == default['long_threshold']
+    assert plan['long_tasks'] == default['long_tasks']
+    assert plan['task_capacity'] == plan['chunk'] * plan['long_tasks']
 
 
 # Lane group (D3)
@@ -51,15 +108,15 @@ def test_mm_group_boundaries_follow_the_mean_row_length(mean, group):
     rows = 10
     # Floor division: up to rows - 1 extra edges keep the same mean.
     for nnz in (mean * rows, mean * rows + rows - 1):
-        assert _mm_group(rows, nnz) == group
+        assert CSRConfig.mm_group(rows, nnz) == group
         plan = _plan(rows, 7, nnz)
-        assert (plan.group, plan.long_threshold) == (group, 16 * group)
+        assert (plan['group'], plan['long_threshold']) == (group, 16 * group)
 
 
 def test_mm_group_matches_the_spec_rule_for_every_mean():
     for mean in range(0, 3000):
-        assert _mm_group(3, 3 * mean + 2) == _expected_group(mean), mean
-    assert _mm_group(0, 0) == 4
+        assert CSRConfig.mm_group(3, 3 * mean + 2) == _expected_group(mean), mean
+    assert CSRConfig.mm_group(0, 0) == 4
 
 
 # Long-task capacity (D4)
@@ -72,10 +129,10 @@ def _kernel_task_demand(lengths, plan, active):
     tasks; all batches of one chunk share one queue of ``task_capacity``.
     """
     lengths = np.asarray(lengths, np.int64)
-    tasks = np.where(lengths > plan.long_threshold, -(-lengths // TASK_EDGES), 0)
+    tasks = np.where(lengths > plan['long_threshold'], -(-lengths // TASK_EDGES), 0)
     per_batch = active.astype(np.int64) @ tasks
-    groups = -(-active.shape[0] // plan.chunk)
-    return max(int(per_batch[g * plan.chunk:(g + 1) * plan.chunk].sum()) for g in range(groups))
+    groups = -(-active.shape[0] // plan['chunk'])
+    return max(int(per_batch[g * plan['chunk']:(g + 1) * plan['chunk']].sum()) for g in range(groups))
 
 
 def _fill(rows, nnz, lengths):
@@ -128,15 +185,15 @@ def test_mm_plan_long_tasks_bound_every_structure_with_these_shapes(rows):
         nnz = max(1, int(rows * mean))
         for batch in (1, 3, 64):
             plan = _plan(rows, 97, nnz, batch, l2_bytes=97 * 4 * 4 * 2)  # chunk 2 when batch >= 2
-            structures = _adversarial_structures(rows, nnz, plan.long_threshold, rng)
+            structures = _adversarial_structures(rows, nnz, plan['long_threshold'], rng)
             for name, lengths in structures.items():
                 assert lengths.shape == (rows,) and lengths.sum() == nnz and lengths.min() >= 0, name
-                exact = int(np.where(lengths > plan.long_threshold, -(-lengths // TASK_EDGES), 0).sum())
-                assert exact <= plan.long_tasks, (rows, nnz, name)
+                exact = int(np.where(lengths > plan['long_threshold'], -(-lengths // TASK_EDGES), 0).sum())
+                assert exact <= plan['long_tasks'], (rows, nnz, name)
                 active = np.ones((batch, rows), bool)
-                assert _kernel_task_demand(lengths, plan, active) <= plan.task_capacity
+                assert _kernel_task_demand(lengths, plan, active) <= plan['task_capacity']
                 sparse = rng.random((batch, rows)) < 0.3
-                assert _kernel_task_demand(lengths, plan, sparse) <= plan.task_capacity
+                assert _kernel_task_demand(lengths, plan, sparse) <= plan['task_capacity']
 
 
 def test_mm_plan_long_tasks_bound_random_row_lengths():
@@ -154,15 +211,15 @@ def test_mm_plan_long_tasks_bound_random_row_lengths():
         plan = _plan(rows, int(rng.integers(1, 3000)), nnz, batch)
         active = rng.random((batch, rows)) < rng.random()
         active[0] = True
-        assert _kernel_task_demand(lengths, plan, active) <= plan.task_capacity
-        assert int(np.where(lengths > plan.long_threshold, -(-lengths // TASK_EDGES), 0).sum()) <= plan.long_tasks
+        assert _kernel_task_demand(lengths, plan, active) <= plan['task_capacity']
+        assert int(np.where(lengths > plan['long_threshold'], -(-lengths // TASK_EDGES), 0).sum()) <= plan['long_tasks']
 
 
 @pytest.mark.parametrize('rows, nnz', [(1, 1), (1, 513), (64, 512), (64, 64 * 65), (1000, 300_000), (10, 10 ** 6)])
 def test_mm_plan_capacity_is_tight_on_adversarial_structures(rows, nnz):
     """Each term of the bound is reached: one hub row, and many just-long rows."""
     plan = _plan(rows, 64, nnz)
-    threshold = plan.long_threshold
+    threshold = plan['long_threshold']
     tasks_of = lambda lengths: int(np.where(lengths > threshold, -(-lengths // TASK_EDGES), 0).sum())
     hub = np.zeros(rows, np.int64)
     hub[0] = nnz
@@ -170,12 +227,12 @@ def test_mm_plan_capacity_is_tight_on_adversarial_structures(rows, nnz):
     count = min(rows, nnz // (threshold + 1))
     just_long = _fill(rows, nnz, np.full(count, threshold + 1))
     just_long_tasks = tasks_of(just_long)
-    assert plan.long_tasks == -(-nnz // TASK_EDGES) + count
-    assert max(hub_tasks, just_long_tasks) <= plan.long_tasks
+    assert plan['long_tasks'] == -(-nnz // TASK_EDGES) + count
+    assert max(hub_tasks, just_long_tasks) <= plan['long_tasks']
     if nnz > threshold:
         assert hub_tasks == -(-nnz // TASK_EDGES)  # the ceil(nnz / 512) term alone
     assert just_long_tasks >= count  # every just-long row needs at least one task
-    assert plan.long_tasks <= hub_tasks + just_long_tasks + 1
+    assert plan['long_tasks'] <= hub_tasks + just_long_tasks + 1
 
 
 def test_mm_plan_mask_and_capacity_cover_the_kernel_on_device_masks():
@@ -183,13 +240,13 @@ def test_mm_plan_mask_and_capacity_cover_the_kernel_on_device_masks():
     rng = np.random.default_rng(7)
     for rows, nnz in ((33, 33 * 70), (95, 4000), (64, 64 * 17)):
         plan = _plan(rows, 50, nnz, batch=5)
-        for lengths in _adversarial_structures(rows, nnz, plan.long_threshold, rng).values():
+        for lengths in _adversarial_structures(rows, nnz, plan['long_threshold'], rng).values():
             indptr = jnp.asarray(np.concatenate([[0], np.cumsum(lengths)]).astype(np.int32))
-            mask = np.asarray(_long_row_mask(indptr, plan.long_threshold))
+            mask = np.asarray(_long_row_mask(indptr, plan['long_threshold']))
             bits = np.unpackbits(mask.view(np.uint8), bitorder='little')[:rows].astype(bool)
-            np.testing.assert_array_equal(bits, lengths > plan.long_threshold)
+            np.testing.assert_array_equal(bits, lengths > plan['long_threshold'])
             tasks = int((-(-lengths[bits] // TASK_EDGES)).sum())
-            assert plan.chunk * tasks <= plan.task_capacity
+            assert plan['chunk'] * tasks <= plan['task_capacity']
 
 
 # Batch chunk and scratch sizes (D5)
@@ -201,22 +258,22 @@ def test_mm_plan_mask_and_capacity_cover_the_kernel_on_device_masks():
 def test_mm_plan_chunk_keeps_one_output_chunk_in_a_quarter_of_l2(dtype, element_bytes):
     cols = 1000
     fit = (L2 // 4) // (cols * element_bytes)  # half values accumulate in float32
-    assert _plan(10, cols, 100, batch=1000, dtype=dtype).chunk == fit
-    assert _plan(10, cols, 100, batch=fit - 1, dtype=dtype).chunk == fit - 1
-    assert _plan(10, cols, 100, batch=1, dtype=dtype).chunk == 1
+    assert _plan(10, cols, 100, batch=1000, dtype=dtype)['chunk'] == fit
+    assert _plan(10, cols, 100, batch=fit - 1, dtype=dtype)['chunk'] == fit - 1
+    assert _plan(10, cols, 100, batch=1, dtype=dtype)['chunk'] == 1
     # A smaller L2 gives a smaller chunk; a row wider than a quarter of L2 still gets one batch.
-    assert _plan(10, cols, 100, batch=1000, dtype=dtype, l2_bytes=L2 // 2).chunk == fit // 2
-    assert _plan(10, L2, 100, batch=1000, dtype=dtype).chunk == 1
+    assert _plan(10, cols, 100, batch=1000, dtype=dtype, l2_bytes=L2 // 2)['chunk'] == fit // 2
+    assert _plan(10, L2, 100, batch=1000, dtype=dtype)['chunk'] == 1
 
 
 def test_mm_plan_chunk_is_capped_at_the_native_group_limit():
     plan = _plan(4, 1, 2048, batch=70_000, l2_bytes=1 << 30)
-    assert plan.chunk == 65535
-    assert plan.task_capacity == 65535 * plan.long_tasks
-    assert plan.short_rows_size == 65535 * 4
+    assert plan['chunk'] == 65535
+    assert plan['task_capacity'] == 65535 * plan['long_tasks']
+    assert plan['short_rows_size'] == 65535 * 4
     # Two batch groups, each with one 8-byte task counter.
-    binary = 8 * 70_000 + 8 * 2 + 12 * plan.task_capacity
-    assert plan.workspace_words * 4 == binary
+    binary = 8 * 70_000 + 8 * 2 + 12 * plan['task_capacity']
+    assert plan['workspace_words'] * 4 == binary
 
 
 SHORT_ROWS_FLOOR = 1 << 20  # int32 entries (4 MiB)
@@ -229,10 +286,10 @@ SHORT_ROWS_FLOOR = 1 << 20  # int32 entries (4 MiB)
 ])
 def test_mm_plan_short_rows_never_exceed_the_index_array(rows, cols, nnz, batch):
     plan = _plan(rows, cols, nnz, batch, l2_bytes=6 << 20)
-    assert plan.short_rows_size == plan.chunk * rows
-    assert plan.short_rows_size <= max(nnz, SHORT_ROWS_FLOOR, rows)
-    assert plan.chunk == max(1, max(nnz, SHORT_ROWS_FLOOR) // rows)
-    assert plan.task_capacity == plan.chunk * plan.long_tasks
+    assert plan['short_rows_size'] == plan['chunk'] * rows
+    assert plan['short_rows_size'] <= max(nnz, SHORT_ROWS_FLOOR, rows)
+    assert plan['chunk'] == max(1, max(nnz, SHORT_ROWS_FLOOR) // rows)
+    assert plan['task_capacity'] == plan['chunk'] * plan['long_tasks']
 
 
 @pytest.mark.parametrize('rows, cols, nnz', [
@@ -242,7 +299,7 @@ def test_mm_plan_short_rows_never_exceed_the_index_array(rows, cols, nnz, batch)
 def test_short_row_bound_leaves_the_benchmarked_shapes_on_the_l2_rule(rows, cols, nnz):
     for batch in (1, 8, 64, 256):
         fit = ((6 << 20) // 4) // (cols * 4)
-        assert _plan(rows, cols, nnz, batch, l2_bytes=6 << 20).chunk == max(1, min(fit, batch))
+        assert _plan(rows, cols, nnz, batch, l2_bytes=6 << 20)['chunk'] == max(1, min(fit, batch))
 
 
 @pytest.mark.parametrize('rows, cols, nnz, dtype, expected', [
@@ -260,22 +317,22 @@ def test_large_l2_sparse_rows_keep_enough_batch_parallelism(rows, cols, nnz, dty
     # 128 groups. Cache-sized lists keep many batches in each launch instead.
     l2 = 128 << 20
     plan = _plan(rows, cols, nnz, batch=128, dtype=dtype, l2_bytes=l2)
-    assert plan.chunk == expected
-    assert plan.short_rows_size * 4 <= max(nnz * 4, l2 // 2)
-    assert plan.task_capacity == plan.chunk * plan.long_tasks
+    assert plan['chunk'] == expected
+    assert plan['short_rows_size'] * 4 <= max(nnz * 4, l2 // 2)
+    assert plan['task_capacity'] == plan['chunk'] * plan['long_tasks']
 
 
 def test_large_l2_dense_rows_keep_the_quarter_cache_chunk():
     plan = _plan(800_000, 800_000, 1_920_000_000, batch=256, l2_bytes=128 << 20)
-    assert (plan.group, plan.long_threshold, plan.chunk) == (32, 512, 10)
+    assert (plan['group'], plan['long_threshold'], plan['chunk']) == (32, 512, 10)
 
 
 def test_tall_sparse_output_keeps_a_cache_bounded_short_list():
     rows, l2 = 1_000_000, 128 << 20
     plan = _plan(rows, 10, rows, batch=1024, l2_bytes=l2)
-    assert plan.chunk == 16
-    assert plan.short_rows_size * 4 <= l2 // 2
-    assert plan.short_rows_size < rows * 1024
+    assert plan['chunk'] == 16
+    assert plan['short_rows_size'] * 4 <= l2 // 2
+    assert plan['short_rows_size'] < rows * 1024
 
 
 @pytest.mark.parametrize('dtype', [np.float16, jnp.bfloat16, np.float32, np.float64])
@@ -286,16 +343,16 @@ def test_mm_plan_workspace_matches_the_native_layout(dtype, batch):
         binary = _plan(rows, cols, nnz, batch, dtype, weighted=False)
         weighted = _plan(rows, cols, nnz, batch, dtype, weighted=True)
         # The value queue is the only difference between the two layouts.
-        assert (binary.group, binary.long_threshold, binary.long_tasks, binary.chunk,
-                binary.task_capacity, binary.short_rows_size) == \
-               (weighted.group, weighted.long_threshold, weighted.long_tasks, weighted.chunk,
-                weighted.task_capacity, weighted.short_rows_size)
-        groups = -(-batch // binary.chunk)
-        layout = 8 * batch + 8 * groups + 12 * binary.task_capacity
-        assert binary.workspace_words * 4 == layout
-        queue = -(-binary.task_capacity * value_bytes // 4) * 4
-        assert weighted.workspace_words * 4 == layout + queue
-        assert binary.short_rows_size == binary.chunk * rows
+        assert (binary['group'], binary['long_threshold'], binary['long_tasks'], binary['chunk'],
+                binary['task_capacity'], binary['short_rows_size']) == \
+               (weighted['group'], weighted['long_threshold'], weighted['long_tasks'], weighted['chunk'],
+                weighted['task_capacity'], weighted['short_rows_size'])
+        groups = -(-batch // binary['chunk'])
+        layout = 8 * batch + 8 * groups + 12 * binary['task_capacity']
+        assert binary['workspace_words'] * 4 == layout
+        queue = -(-binary['task_capacity'] * value_bytes // 4) * 4
+        assert weighted['workspace_words'] * 4 == layout + queue
+        assert binary['short_rows_size'] == binary['chunk'] * rows
 
 
 @pytest.mark.parametrize('dtype', [np.float16, jnp.bfloat16])
@@ -304,9 +361,9 @@ def test_half_weighted_queue_pads_an_odd_capacity_to_uint32(dtype):
     for chunk in (1, 3, 5):
         binary = _plan(1, 1, 1, batch=chunk, dtype=dtype)
         weighted = _plan(1, 1, 1, batch=chunk, dtype=dtype, weighted=True)
-        assert binary.task_capacity == chunk
+        assert binary['task_capacity'] == chunk
         # chunk half values take ceil(2 * chunk / 4) uint32 words.
-        assert weighted.workspace_words - binary.workspace_words == (2 * chunk + 3) // 4
+        assert weighted['workspace_words'] - binary['workspace_words'] == (2 * chunk + 3) // 4
 
 
 @pytest.mark.parametrize('rows, cols, nnz, batch', [
@@ -316,8 +373,9 @@ def test_empty_mm_plan_reserves_no_scratch(rows, cols, nnz, batch):
     for weighted in (False, True):
         for dtype in (np.float16, np.float64):
             plan = _plan(rows, cols, nnz, batch, dtype, weighted)
-            group = _mm_group(rows, nnz)
-            assert plan == _MMPlan(group, 16 * group, 0, 1, 0, 0, 0)
+            group = CSRConfig.mm_group(rows, nnz)
+            assert plan == dict(group=group, long_threshold=16 * group, long_tasks=0, chunk=1,
+                                task_capacity=0, workspace_words=0, short_rows_size=0)
 
 
 def test_mm_plan_satisfies_the_native_attribute_checks():
@@ -330,25 +388,27 @@ def test_mm_plan_satisfies_the_native_attribute_checks():
         dtype = (np.float16, np.float32, np.float64)[int(rng.integers(3))]
         plan = _plan(rows, cols, nnz, batch, dtype, bool(rng.integers(2)),
                      int(rng.choice([1 << 20, 6 << 20, 96 << 20])))
-        assert plan.group in (4, 8, 16, 32) and plan.long_threshold == 16 * plan.group
-        assert 1 <= plan.chunk <= min(batch, 65535)
-        assert 0 < plan.long_tasks <= INT64_MAX // plan.chunk
-        assert plan.task_capacity == plan.chunk * plan.long_tasks
-        assert plan.short_rows_size == plan.chunk * rows
+        assert plan['group'] in (4, 8, 16, 32) and plan['long_threshold'] == 16 * plan['group']
+        assert 1 <= plan['chunk'] <= min(batch, 65535)
+        assert 0 < plan['long_tasks'] <= INT64_MAX // plan['chunk']
+        assert plan['task_capacity'] == plan['chunk'] * plan['long_tasks']
+        assert plan['short_rows_size'] == plan['chunk'] * rows
 
 
 # Identity, caching and validation
 # --------------------------------
 
-def test_mm_plan_is_cached_per_shape_and_bounded():
-    _mm_plan.cache_clear()
+def test_mm_plan_returns_fresh_dicts_without_exposing_cached_state():
     first = _plan(10, 20, 30, 4)
-    assert _plan(10, 20, 30, 4) is first
-    assert _mm_plan.cache_info().hits == 1
-    assert _plan(10, 20, 30, 4, weighted=True) is not first
-    for batch in range(1, 300):
-        _plan(10, 20, 30, batch)
-    assert _mm_plan.cache_info().currsize <= 256
+    expected = first.copy()
+    first['chunk'] = -1
+    first['extra'] = 'caller-owned value'
+    second = _plan(10, 20, 30, 4)
+    assert isinstance(second, dict) and second == expected and second is not first
+    # Different signatures and policy values cannot contaminate each other.
+    weighted = _plan(10, 20, 30, 4, weighted=True)
+    assert weighted['workspace_words'] > second['workspace_words']
+    assert _plan(10, 20, 30, 4) == expected
 
 
 @pytest.mark.parametrize('kwargs, match', [
@@ -441,10 +501,10 @@ def test_mm_plan_matches_the_native_sizing_and_mask(tmp_path):
         elif i in (9, 10):
             cols, batch, l2 = 1_000_000, 128, 128 << 20
             dtype = np.float32 if i == 9 else np.float64
-        plan = _mm_plan(rows, cols, nnz, batch, np.dtype(dtype), weighted, l2)
+        plan = CSRConfig().mm_plan(rows, cols, nnz, batch, np.dtype(dtype), weighted, l2)
         itemsize = np.dtype(dtype).itemsize
-        line = [rows, batch, plan.chunk, itemsize, int(weighted), nnz,
-                plan.long_threshold, plan.long_tasks, *indptr]
+        line = [rows, batch, plan['chunk'], itemsize, int(weighted), nnz,
+                plan['long_threshold'], plan['long_tasks'], *indptr]
         cases.append((' '.join(map(str, line)), plan, indptr))
     native = subprocess.run([str(binary)], input='\n'.join(case[0] for case in cases) + '\n',
                             capture_output=True, check=True, text=True)
@@ -452,18 +512,16 @@ def test_mm_plan_matches_the_native_sizing_and_mask(tmp_path):
     assert len(outputs) == len(cases)
     for (_, plan, indptr), line in zip(cases, outputs):
         numbers = list(map(int, line.split()))
-        assert numbers[:3] == [plan.group, plan.chunk, plan.workspace_words]
-        mask = _long_row_mask(jnp.asarray(indptr.astype(np.int32)), plan.long_threshold)
+        assert numbers[:3] == [plan['group'], plan['chunk'], plan['workspace_words']]
+        mask = _long_row_mask(jnp.asarray(indptr.astype(np.int32)), plan['long_threshold'])
         np.testing.assert_array_equal(numbers[3:], np.asarray(mask))
 
 
 def test_mm_plan_computes_with_python_integers():
     """NumPy integer shapes plan like Python ints, without fixed-width overflow."""
     shapes = (100_000, 1, 10**6, 65535)
-    _mm_plan.cache_clear()  # equal NumPy and Python keys would share one cache entry
     with warnings.catch_warnings():
         warnings.simplefilter('error')
-        planned = _mm_plan(*map(np.int32, shapes), np.dtype(np.float32), False, np.int64(1 << 30))
-    _mm_plan.cache_clear()
-    assert planned == _mm_plan(*shapes, np.dtype(np.float32), False, 1 << 30)
-    assert all(type(value) is int for value in vars(planned).values())
+        planned = CSRConfig().mm_plan(*map(np.int32, shapes), np.dtype(np.float32), False, np.int64(1 << 30))
+    assert planned == CSRConfig().mm_plan(*shapes, np.dtype(np.float32), False, 1 << 30)
+    assert all(type(value) is int for value in planned.values())

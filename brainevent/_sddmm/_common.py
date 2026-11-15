@@ -20,7 +20,7 @@ from brainevent._op.kernix_toolchain import nvidia_wheel_library
 from brainevent._op.util import CUDA_VALUE_DTYPES, cuda_event_abi, dtype_suffix, event_factor
 
 if TYPE_CHECKING:
-    from brainevent._csr.config import MVSchedule
+    from brainevent._csr.config import CSRConfig
 
 Mode = Literal['float', 'binary', 'weighted']
 _INT32_MAX = 2**31 - 1
@@ -35,7 +35,7 @@ class _CSRBackend:
 
     primitive: 'XLACustomKernel'
     requested: str | None
-    config_spec: 'MVSchedule | None' = None
+    config_spec: 'CSRConfig | None' = None
 
 
 def native_event_target(prefix: str, value_dtype, events: jax.Array, *,

@@ -56,7 +56,7 @@ from brainevent._sddmm import _common
 from brainevent._sddmm._common import native_event_target
 
 if TYPE_CHECKING:
-    from brainevent._csr.config import MVSchedule
+    from brainevent._csr.config import CSRConfig
 
 
 _DIRECTORY = Path(__file__).parent
@@ -64,7 +64,7 @@ NAME, LABEL = 'SDDMV', 'MV'
 
 
 @lru_cache(maxsize=128)
-def _load_hybrid(weighted: bool, schedule: MVSchedule) -> str:
+def _load_hybrid(weighted: bool, schedule: CSRConfig) -> str:
     """Share compiled modules across structures with the same scheduler."""
     kind = 'weighted' if weighted else 'binary'
     name = f'csr_sddmv_hybrid_{kind}' + schedule.module_suffix()
@@ -115,7 +115,7 @@ def _masked_product(factor: jax.Array, ct: jax.Array) -> jax.Array:
     return factor * jnp.where((factor != 0) | jnp.isfinite(ct), ct, jnp.zeros_like(ct))
 
 
-def _cuda_kernel(*, transpose: bool, weighted: bool, config_spec: MVSchedule,
+def _cuda_kernel(*, transpose: bool, weighted: bool, config_spec: CSRConfig,
                  ct_info: jax.ShapeDtypeStruct, indices_info: jax.ShapeDtypeStruct,
                  indptr_info: jax.ShapeDtypeStruct, **kwargs: Any):
     if not transpose:
@@ -158,11 +158,11 @@ def native_dims(ct_shape: tuple[int, ...]) -> bool:
 
 
 def bind_events(events: jax.Array, ct: jax.Array, indices: jax.Array, indptr: jax.Array, *,
-                config_spec: MVSchedule | None = None, **kwargs: Any) -> jax.Array:
+                config_spec: CSRConfig | None = None, **kwargs: Any) -> jax.Array:
     """Bind rank-one CSR events, defaulting to the unpersisted scheduler constants."""
     if config_spec is None:
-        from brainevent._csr.config import MVSchedule
-        config_spec = MVSchedule()
+        from brainevent._csr.config import CSRConfig
+        config_spec = CSRConfig()
     return _common.bind_events(csr_sddmv_p, events, ct, indices, indptr,
                                config_spec=config_spec, **kwargs)
 

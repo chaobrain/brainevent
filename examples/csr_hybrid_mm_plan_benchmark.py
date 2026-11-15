@@ -18,11 +18,11 @@
 Measures the transposed binary event product ``W.T @ events`` (events
 ``(rows, batch)``) with the native hybrid batched SpMM. Variants:
 
-- ``P``: today's prepared path. The matrix is built eagerly on the GPU, so its
-  ``CSRConfig`` carries host row statistics, a long-row mask and GPU properties.
+- ``P``: the current object path. The matrix is built eagerly on the GPU and
+  reuses its automatic structure-mask cache. Its config holds scheduling policies.
 - ``J``: ``backend='jax_raw'`` (the portable JAX scatter).
 - ``T``: the matrix is built inside ``jax.jit`` from traced arrays and used as
-  ``BinaryArray(events.T) @ M``, as brainspike does. Today this takes ``J``'s route.
+  ``BinaryArray(events.T) @ M``, as brainspike does. It lowers to the native kernel.
 - ``S``: prototype shape-only plan calling the same native kernel. The lane
   group, task-queue capacity and batch chunk come from static shapes only;
   the long-row mask is computed in JAX on every call.
@@ -31,9 +31,10 @@ Measures the transposed binary event product ``W.T @ events`` (events
 Each timing compiles one straight-line program of eight products, each on
 its own pre-generated event matrix (so XLA cannot merge them), enqueues enough
 programs for about 50 ms, and reports the median and p10/p90 time per product.
-Structure-only work such as S's mask is shared by the eight products, as it is
-hoisted from a simulation loop over fixed connectivity; ``S0`` and the mask
-record bound it. Other records: compile
+The compiler may share structure-only work such as S's mask between the eight
+products; ``S0`` and the mask record expose its cost. This straight-line timing
+does not establish whether a mask builder is hoisted from a simulation loop.
+Other records: compile
 counts over redrawn structures, which kernel each construction path lowers
 to, mask cost, scratch sizes and the matrix SDDMM gradient scratch.
 
@@ -68,13 +69,7 @@ from brainevent._csr.binary.binary import _load_hybrid_mm  # noqa: E402
 from brainevent._op.util import cuda_event_abi, dtype_suffix  # noqa: E402
 from brainevent._sddmm._mm.sddmm import _cuda_plan as _sddmm_cuda_plan  # noqa: E402
 
-try:  # The shape-only plan; absent from the prepared-plan baseline.
-    from brainevent._csr.config import _mm_plan  # noqa: E402
-    from brainevent._op.lowering_target import cuda_l2_bytes  # noqa: E402
-except ImportError:
-    _mm_plan = cuda_l2_bytes = None
-# The baseline's FFI also declares the prepared-device check attributes.
-_DEVICE_CHECK_ATTRS = {} if _mm_plan is not None else dict(expected_sms=0, expected_l2_bytes=0)
+from brainevent._op.lowering_target import cuda_l2_bytes  # noqa: E402
 
 TASK_EDGES = 512  # edges per long-row task (native kTaskEdges)
 ITERATIONS = 16  # long_threshold = ITERATIONS * group
@@ -224,7 +219,7 @@ def static_mm(weights, indices, indptr, events, mask=None, *, cols, group, long_
     out = jax.ffi.ffi_call(f'{module}.{symbol}', infos, vmap_method='sequential')(
         weights, indices, indptr, mask, abi.prepare(events).T,
         group=group, long_threshold=ITERATIONS * group, chunk=chunk, long_tasks=long_tasks,
-        task_capacity=capacity, **_DEVICE_CHECK_ATTRS)[0]
+        task_capacity=capacity)[0]
     return out.T.astype(vdtype)
 
 
@@ -322,19 +317,14 @@ def static_product(rows, cols, nnz, batch, dtype, weighted, l2_bytes, *, group=N
 
 
 def prepared_plan(matrix, batch, dtype, weighted):
-    """The plan variant P runs: prepared on the baseline, shape-only afterwards."""
-    if _mm_plan is not None:
-        rows, cols = matrix.shape
-        if not (rows and cols and batch and matrix.nse):
-            return None
-        plan = _mm_plan(rows, cols, matrix.nse, batch, np.dtype(dtype), bool(weighted), gpu_l2_bytes())
-    else:
-        plan = matrix.config.mm_plan(batch, dtype, weighted)
-    if plan is None:
+    """The shape-only plan variant P runs with the matrix's scheduling policies."""
+    rows, cols = matrix.shape
+    if not (rows and cols and batch and matrix.nse):
         return None
-    return dict(group=plan.group, long_tasks=plan.long_tasks, chunk=plan.chunk,
-                task_capacity=plan.task_capacity,
-                scratch_bytes=4 * plan.workspace_words + 4 * plan.short_rows_size)
+    plan = matrix.config.mm_plan(rows, cols, matrix.nse, batch, np.dtype(dtype), bool(weighted), gpu_l2_bytes())
+    return dict(group=plan['group'], long_tasks=plan['long_tasks'], chunk=plan['chunk'],
+                task_capacity=plan['task_capacity'],
+                scratch_bytes=4 * plan['workspace_words'] + 4 * plan['short_rows_size'])
 
 
 # ---------------------------------------------------------------------------
@@ -342,11 +332,7 @@ def prepared_plan(matrix, batch, dtype, weighted):
 # ---------------------------------------------------------------------------
 
 def gpu_l2_bytes():
-    if cuda_l2_bytes is not None:
-        return cuda_l2_bytes(jax.devices('gpu'))
-    from brainevent._csr.config import get_device_info
-    info = get_device_info(device=jax.devices('gpu')[0])
-    return info.l2_bytes if info is not None else 6 << 20
+    return cuda_l2_bytes(jax.devices('gpu'))
 
 
 def load_case(size, dist, seed=0):

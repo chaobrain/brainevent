@@ -55,7 +55,7 @@ from brainevent._csr.binary.binary_indexed import (
     binary_csrmv_indexed_p,
     binary_csrmv_indexed_p_call,
 )
-from brainevent._csr.config import CSRConfig, MVSchedule, _mm_plan
+from brainevent._csr.config import CSRConfig
 from brainevent._misc import _long_row_mask
 from brainevent._op import load_cuda_file
 from brainevent._op.lowering_target import DEFAULT_L2_BYTES
@@ -306,7 +306,7 @@ def test_binary_csrmv_indexed_p_call_returns_one_output_and_static_task_capacity
     eqn = _kernel_eqn(binary_csrmv_indexed_p, call, weights, vector)
     # Five math operands followed by the optional classification-mask operand.
     assert (len(eqn.invars), len(eqn.outvars)) == (6, 1)
-    assert eqn.params['config_spec'] == MVSchedule()
+    assert eqn.params['config_spec'] == CSRConfig()
     _assert_task_capacity_param(eqn, indptr, max_row_nnz)
 
 
@@ -320,7 +320,7 @@ def test_binary_csrmv_indexed_batching_folds_vectors_into_matmat():
     out, out_dims = _idx_batching(
         (weights, indices, indptr, perm, vectors, jnp.empty((0,), jnp.uint32)),
         (None, None, None, None, 0, None),
-        config_spec=CSRConfig().mv,
+        config_spec=CSRConfig(),
         outs=[jax.ShapeDtypeStruct((1,), weights.dtype)],
         shape=(1, 2),
         transpose=False,
@@ -397,7 +397,7 @@ def test_binary_csrmm_indexed_p_call_returns_one_output_without_mv_workspace():
     # The mask is an array operand; the MM plan still comes from shapes at lowering.
     assert (len(eqn.invars), len(eqn.outvars)) == (6, 1)
     assert not {'task_capacity', 'max_row_nnz', 'call_plan'} & eqn.params.keys()
-    assert eqn.params['config_spec'] == MVSchedule()
+    assert eqn.params['config_spec'] == CSRConfig()
 
 
 @pytest.mark.parametrize(
@@ -423,7 +423,7 @@ def test_binary_csrmm_indexed_batching_folds_batch_into_columns(
     out, out_dims = _csrmm_idx_batching(
         (weights, indices, indptr, perm, matrices, jnp.empty((0,), jnp.uint32)),
         (None, None, None, None, batch_axis, None),
-        config_spec=CSRConfig().mv,
+        config_spec=CSRConfig(),
         outs=[jax.ShapeDtypeStruct((1, 2), weights.dtype)],
         shape=(1, 2),
         transpose=False,
@@ -861,7 +861,7 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
         task_capacity = binary_indexed_mod._task_capacity(indices, indptr, None)
         common = {
             **cuda_kwargs(indices_dtype=jnp.int32, indptr_dtype=jnp.int64),
-            'task_capacity': task_capacity, 'config_spec': CSRConfig().mv,
+            'task_capacity': task_capacity, 'config_spec': CSRConfig(),
         }
         mv_outs = [shape_of(jnp.float32)]
         mm_nt_outs = [shape_of(jnp.float32, (1, 1))]
@@ -952,18 +952,18 @@ def test_binary_indexed_cuda_generators_accept_int64_indptr_without_real_cuda(mo
     for i, n_math in ((1, 5), (2, 4)):
         _assert_hybrid_scratch_call(ffi_calls[i], n_math, task_capacity, jnp.int64)
     # The hybrid MM builds its long-row mask from indptr and gets only plan attributes.
-    plan = _mm_plan(1, 2, 2, 1, np.dtype(np.float32), False, DEFAULT_L2_BYTES)
+    plan = CSRConfig().mm_plan(1, 2, 2, 1, np.dtype(np.float32), False, DEFAULT_L2_BYTES)
     for i, mask_index in ((4, 4), (5, 3)):
         _, out_info, _, args, attributes = ffi_calls[i]
         assert args[2].dtype == jnp.int64
         assert args[mask_index].dtype == jnp.uint32
-        np.testing.assert_array_equal(args[mask_index], _long_row_mask(indptr, plan.long_threshold))
+        np.testing.assert_array_equal(args[mask_index], _long_row_mask(indptr, plan['long_threshold']))
         assert args[-1].shape == (1, 1)
         assert out_info[0].shape == (1, 2)  # native BN; wrapper returns NB
-        assert out_info[1].shape == (plan.workspace_words,) and out_info[1].dtype == jnp.uint32
-        assert out_info[2].shape == (plan.short_rows_size,) and out_info[2].dtype == jnp.int32
-        assert attributes == dict(group=plan.group, long_threshold=plan.long_threshold, chunk=plan.chunk,
-                                  long_tasks=plan.long_tasks, task_capacity=plan.task_capacity)
+        assert out_info[1].shape == (plan['workspace_words'],) and out_info[1].dtype == jnp.uint32
+        assert out_info[2].shape == (plan['short_rows_size'],) and out_info[2].dtype == jnp.int32
+        assert attributes == dict(group=plan['group'], long_threshold=plan['long_threshold'], chunk=plan['chunk'],
+                                  long_tasks=plan['long_tasks'], task_capacity=plan['task_capacity'])
 
 
 @requires_gpu_backend
@@ -1410,7 +1410,7 @@ def _plan_case(dtype=jnp.float32, *, homo=False):
     idx = (np.arange(int(ptr[-1]), dtype=np.int32) * 7) % 9
     indices, indptr = jnp.asarray(idx), jnp.asarray(ptr)
     # A tuned MV scheduler: the config holds no structure or device state.
-    config = CSRConfig(tpr_threshold=16, task_nnz=64)
+    config = CSRConfig(tpr_threshold=16, task_nnz=64, mm_max_chunk=2)
     values = np.ones(1) / 16 if homo else (np.arange(idx.size) % 3 - 1) / 16
     events = jnp.asarray([[0, 1, -2], [1, 0, 2], [-2, 1, 0], [1, 0, -1]], dtype)
     return SimpleNamespace(
@@ -1477,14 +1477,14 @@ def _mm_equations(graph):
 def _mm_plans(monkeypatch):
     """Record every hybrid MM plan made while lowering, starting from cold caches."""
     plans = []
-    original = binary_mod._mm_plan
+    original = CSRConfig.mm_plan
 
-    def record(*args):
-        plan = original(*args)
+    def record(config, *args):
+        plan = original(config, *args)
         plans.append((args, plan))
         return plan
 
-    monkeypatch.setattr(binary_mod, '_mm_plan', record)
+    monkeypatch.setattr(CSRConfig, 'mm_plan', record)
     jax.clear_caches()
     yield plans
     # Executables lowered with a patched plan must not serve later tests.
@@ -1520,7 +1520,7 @@ def test_mv_vmap_reenters_mm_planned_from_the_vmapped_batch(_mm_plans, indexed, 
                                              weighted=True, config=case.config), in_axes=axis)
     (eqn,) = _mm_equations(jax.make_jaxpr(function)(data))
     assert _mm_eqn_shapes(eqn) == (4, 9, case.indices.size, case.events.shape[1])
-    assert eqn.params['config_spec'] == case.config.mv
+    assert eqn.params['config_spec'] == case.config
     actual = jax.jit(function)(data)
     np.testing.assert_array_equal(actual, _plan_reference(case, case.weights, case.events,
                                                           indexed=indexed, weighted=True).T)
@@ -1546,7 +1546,7 @@ def test_mm_vmap_plans_the_folded_columns(_mm_plans, indexed, axis):
     if _on_gpu():
         (args, plan), = _mm_plans
         assert args[:4] == (4, 9, case.indices.size, 6)
-        assert plan == _mm_plan(4, 9, case.indices.size, 6, np.dtype(np.float32), True, args[-1])
+        assert plan == case.config.mm_plan(4, 9, case.indices.size, 6, np.dtype(np.float32), True, args[-1])
 
 
 @pytest.mark.usefixtures('_plan_enable_x64')
@@ -1621,7 +1621,7 @@ def test_nonhybrid_pcall_does_not_apply_hybrid_plan_limits(monkeypatch, indexed,
     case = _plan_case(dtype)
     def forbidden(*args, **kwargs):
         raise AssertionError('nonhybrid MM must not derive a hybrid call plan')
-    monkeypatch.setattr(binary_mod, '_mm_plan', forbidden)
+    monkeypatch.setattr(CSRConfig, 'mm_plan', forbidden)
     function = binary_csrmm_indexed_p_call if indexed else binary_csrmm_p_call
     operands = (case.weights, case.indices, case.indptr) + ((case.perm,) if indexed else ())
     rows = case.shape[0] if transpose else case.shape[1]
@@ -1664,7 +1664,7 @@ def test_structural_vmap_matches_each_structure(indexed):
         case, case.weights, case.events, indexed=indexed, weighted=True,
         config=case.config, indptr=ptr, backend='jax_raw'))
     equations = _mm_equations(jax.make_jaxpr(function)(pointers))
-    assert equations and all(eqn.params['config_spec'] == case.config.mv for eqn in equations)
+    assert equations and all(eqn.params['config_spec'] == case.config for eqn in equations)
     expected = np.stack([_plan_reference(case, case.weights, case.events, indexed=indexed,
                                          weighted=True, indptr=ptr) for ptr in pointers])
     np.testing.assert_array_equal(jax.jit(function)(pointers), expected)

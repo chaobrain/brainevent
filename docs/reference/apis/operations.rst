@@ -22,7 +22,8 @@ Binary matrix-vector / matrix-matrix multiplication.
    event MV/MM functions accept an optional ``long_mask`` array. When it is
    omitted, native MM computes it automatically. A matrix created before a
    time-step loop reuses its mask; recreating it inside the loop rebuilds it.
-   ``config`` only selects scheduler tuning; see :ref:`csr-mm-configuration`.
+   ``config`` holds MV scheduler constants and MM chunk policies; resolved
+   plans remain local to lowering. See :ref:`csr-mm-configuration`.
 
 .. autosummary::
    :toctree: generated/

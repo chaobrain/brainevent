@@ -228,9 +228,9 @@ def test_shared_weight_gradient_sums_slots_without_a_csr_forward(transpose):
 
 
 @pytest.mark.parametrize('transpose', [True, False])
-def test_config_reaches_forward_tangent_and_batched_calls_as_mv_schedule(transpose):
+def test_config_reaches_forward_tangent_and_batched_calls(transpose):
     case = _make_case(transpose)
-    config = CSRConfig(tpr_threshold=5)
+    config = CSRConfig(tpr_threshold=5, mm_max_chunk=2)
 
     def specs(fn, *args):
         graph = jax.make_jaxpr(fn)(*args)
@@ -239,14 +239,14 @@ def test_config_reaches_forward_tangent_and_batched_calls_as_mv_schedule(transpo
 
     assert specs(lambda w: _invoke(case, weights=w), case['weights']) == [None]
     run = lambda w: _invoke(case, weights=w, config=config)
-    assert specs(run, case['weights']) == [config.mv]
+    assert specs(run, case['weights']) == [config]
     tangent = jnp.ones_like(case['weights'])
-    assert specs(lambda w, d: jax.jvp(run, (w,), (d,)), case['weights'], tangent) == [config.mv] * 2
+    assert specs(lambda w, d: jax.jvp(run, (w,), (d,)), case['weights'], tangent) == [config] * 2
     # Batching over structures keeps the schedule, which holds no structure state.
     keys = ('indices', 'indptr', 'tile_offsets')
     stacked = [jnp.stack([case[key]] * 2) for key in keys]
     batched = jax.vmap(lambda *arrays: _invoke(case, config=config, **dict(zip(keys, arrays))))
-    assert specs(batched, *stacked) == [config.mv]
+    assert specs(batched, *stacked) == [config]
 
 
 @pytest.mark.parametrize('transpose', [True, False])

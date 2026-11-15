@@ -13,6 +13,7 @@ import pytest
 
 import brainevent
 from brainevent import BinaryArray, CSR
+from brainevent._csr.config import CSRConfig
 from brainevent._test_util import requires_gpu
 
 from brainevent import WeightedArray
@@ -209,7 +210,6 @@ def test_vmapped_mv_handles_extreme_row_layouts(monkeypatch, layout, route, weig
 def test_tall_narrow_output_runs_in_short_row_bounded_chunks():
     # The L2 output rule alone would keep all batches together. Short-list
     # scratch must remain bounded by the cache budget rather than batch*rows.
-    from brainevent._csr.config import _mm_plan
     from brainevent._op.lowering_target import cuda_l2_bytes
     rows, cols = 20_000, 8
     l2 = cuda_l2_bytes(jax.devices('gpu'))
@@ -219,9 +219,9 @@ def test_tall_narrow_output_runs_in_short_row_bounded_chunks():
     indptr = jnp.arange(rows + 1, dtype=jnp.int32)
     indices = jnp.asarray(rng.integers(0, cols, rows, dtype=np.int32))
     weights = jnp.asarray(rng.normal(size=rows).astype(np.float32))
-    plan = _mm_plan(rows, cols, rows, batch, np.dtype(np.float32), False, l2)
-    assert 1 < plan.chunk < batch
-    assert plan.short_rows_size <= allowance
+    plan = CSRConfig().mm_plan(rows, cols, rows, batch, np.dtype(np.float32), False, l2)
+    assert 1 < plan['chunk'] < batch
+    assert plan['short_rows_size'] <= allowance
     events = jnp.asarray(rng.random((rows, batch)) < 0.1)
     out = jax.jit(lambda w, i, p, e: BinaryArray(e.T) @ CSR((w, i, p), shape=(rows, cols)))(
         weights, indices, indptr, events)
@@ -262,10 +262,11 @@ def _long_mask_scan(matrix, events, *, weighted=False, vmapped=False):
 
 @requires_gpu
 @pytest.mark.parametrize('weighted,vmapped', [(False, False), (True, False), (False, True)])
-def test_cached_matrix_scan_has_no_mask_builder(weighted, vmapped):
+@pytest.mark.parametrize('config', [CSRConfig(), CSRConfig(mm_max_chunk=1)], ids=['default', 'one_batch_chunks'])
+def test_cached_matrix_scan_has_no_mask_builder(weighted, vmapped, config):
     arrays, events, dense = _long_mask_scan_inputs()
     values = events.astype(jnp.float32) * 0.5 if weighted else events
-    matrix = CSR(arrays, shape=dense.shape, backend='cuda_raw')
+    matrix = CSR(arrays, shape=dense.shape, backend='cuda_raw', config=config)
     fn = jax.jit(lambda m, e: _long_mask_scan(m, e, weighted=weighted, vmapped=vmapped))
     compiled = fn.lower(matrix, values).compile()
     hlo = compiled.as_text()
@@ -273,6 +274,8 @@ def test_cached_matrix_scan_has_no_mask_builder(weighted, vmapped):
     # Mask construction packs uint32 bits with a shift. Output reductions are
     # float32 and remain valid; the entire cached executable needs no bit pack.
     assert 'shift-left(' not in hlo
+    chunks = set(map(int, re.findall(r'chunk = (\d+) : i64', hlo)))
+    assert chunks == {min(values.shape[1], config.mm_max_chunk)}
     factors = np.asarray(values, np.float32) if weighted else np.asarray(values != 0, np.float32)
     np.testing.assert_allclose(compiled(matrix, values), np.sum(factors @ (dense * 2)), rtol=1e-5)
 

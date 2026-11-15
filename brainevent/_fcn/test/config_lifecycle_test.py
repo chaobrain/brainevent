@@ -100,7 +100,7 @@ def test_fcn_pytree_round_trip_restores_mirror_and_config_without_preparing(monk
     assert type(restored) is cls
     assert restored._cache is not sibling._cache
     assert all(new is old for new, old in zip(restored._cache.mirror, mirror, strict=True))
-    assert restored.config.mv == matrix.config.mv
+    assert restored.config == matrix.config
     assert jax.tree_util.tree_structure(restored) == tree
     np.testing.assert_array_equal(restored.todense(), sibling.todense())
     children, aux = sibling.tree_flatten()
@@ -108,7 +108,7 @@ def test_fcn_pytree_round_trip_restores_mirror_and_config_without_preparing(monk
         cls.tree_unflatten(aux, children[:-1])
     result = jax.jit(lambda value: value.with_data(value.data * 2))(restored)
     np.testing.assert_array_equal(result.data, restored.data * 2)
-    assert result.config.mv == matrix.config.mv
+    assert result.config == matrix.config
     for new, old in zip(result._cache.mirror, mirror, strict=True):
         np.testing.assert_array_equal(new, old)
 
@@ -177,7 +177,7 @@ def test_fcn_traced_carried_mirror_takes_indexed_route_for_every_backend(monkeyp
 
     def indexed(name):
         def record(*args, config, **kwargs):
-            calls.append((name, kwargs['backend'], config.mv))
+            calls.append((name, kwargs['backend'], config))
             return jnp.zeros((2, 2), dtype=jnp.float32)
         return record
 
@@ -193,7 +193,7 @@ def test_fcn_traced_carried_mirror_takes_indexed_route_for_every_backend(monkeyp
     events = jnp.ones((3, 2), dtype=jnp.bool_)
     jax.jit(lambda value: (value._binary_matvec(events[:, 0], transpose_W=transpose),
                            value._binary_matmat(events, transpose_W=transpose)))(matrix)
-    schedule = matrix.config.mv
+    schedule = matrix.config
     assert calls == [('mv', backend, schedule), ('mm', backend, schedule)]
 
 
@@ -268,7 +268,7 @@ def test_fcn_config_shares_and_survives_jit_without_reading_persistence(monkeypa
     assert matrix.with_data(matrix.data * 2).config is matrix.config
     result = jax.jit(lambda value: value.with_data(value.data * 2))(matrix)
     assert type(result) is cls
-    assert result.config.mv == matrix.config.mv
+    assert result.config == matrix.config
     assert result.config.tpr_threshold == 5
     np.testing.assert_array_equal(result.data, matrix.data * 2)
     converted = matrix.tocsr()
@@ -328,7 +328,7 @@ def test_fcn_slices_keep_config(monkeypatch, cls):
     if cls is FixedNumPerPre:
         traced = jax.jit(lambda value: value.slice_rows(jnp.array([1])))(matrix)
         assert type(traced) is FixedNumPerPre
-        assert traced.config.mv == matrix.config.mv
+        assert traced.config == matrix.config
         np.testing.assert_allclose(traced.todense(), matrix.todense()[1:2])
 
 

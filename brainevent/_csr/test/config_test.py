@@ -4,7 +4,7 @@
 
 """Tests for ``brainevent/_csr/config.py``, grouped by behavior.
 
-The shape-only hybrid MM plan (``_mm_plan``) is tested in ``mm_plan_test.py``.
+The shape-only hybrid MM plan is tested in ``mm_plan_test.py``.
 """
 
 import json
@@ -20,9 +20,6 @@ import brainevent._csr.config as config_mod
 from brainevent._csr.binary.initialize import load_csr_config, save_csr_config
 from brainevent._csr.config import (
     CSRConfig,
-    MVSchedule,
-    _BenchmarkRecord,
-    _ConfigAux,
     _config_from_spec,
     _select_config,
 )
@@ -31,32 +28,29 @@ from brainevent._csr.config import (
 # MV scheduler parameters and accessors
 # -------------------------------------
 
-def test_nested_mv_schedule_preserves_flat_accessors():
-    mv = MVSchedule(512, 1024, 256, 8192)
-    config = CSRConfig(mv=mv)
-    assert brainevent.MVSchedule is MVSchedule
-    assert config.mv is mv
+def test_one_config_owns_mv_fields_and_mm_policy():
+    config = CSRConfig(512, 1024, 256, 8192, mm_l2_divisor=8)
     assert (config.block_size, config.fixed_scatter_blocks,
             config.tpr_threshold, config.task_nnz) == (512, 1024, 256, 8192)
-    assert config.compile_flags() == mv.compile_flags()
-    assert config.module_suffix() == mv.module_suffix()
-    assert config.mv_capacity(8193, 2) == mv.mv_capacity(8193, 2)
+    assert config.mm_l2_divisor == 8
+    assert config.module_suffix() == '_b512_s1024_t256_n8192'
+    assert not hasattr(config, 'mv')
 
 
-def test_flat_parameters_default_individually_and_cannot_mix_with_mv():
-    assert CSRConfig().mv == MVSchedule() == MVSchedule(512, 1024, 128, 512)
-    assert CSRConfig(block_size=256).mv == MVSchedule(256, 1024, 128, 512)
-    assert CSRConfig(task_nnz=4096).mv == MVSchedule(512, 1024, 128, 4096)
-    with pytest.raises(ValueError, match='cannot be combined'):
-        CSRConfig(256, mv=MVSchedule())
-    with pytest.raises(TypeError, match='MVSchedule'):
+def test_flat_parameters_default_individually_and_mm_policies_are_keyword_only():
+    assert CSRConfig() == CSRConfig(512, 1024, 128, 512)
+    assert CSRConfig(block_size=256) == CSRConfig(256, 1024, 128, 512)
+    assert CSRConfig(task_nnz=4096) == CSRConfig(512, 1024, 128, 4096)
+    with pytest.raises(TypeError):
+        CSRConfig(256, 1024, 128, 512, 8)
+    with pytest.raises(TypeError):
         CSRConfig(mv=(512, 1024, 128, 512))
 
 
 def test_config_from_spec_restores_a_primitive_parameter():
-    assert _config_from_spec(None).mv == CSRConfig().mv
-    spec = MVSchedule(256, 2048, 256, 1024)
-    assert _config_from_spec(spec).mv is spec
+    assert _config_from_spec(None) == CSRConfig()
+    spec = CSRConfig(256, 2048, 256, 1024, mm_max_chunk=7)
+    assert _config_from_spec(spec) is spec
 
 
 def test_validate_config_rejects_invalid_scheduler_values():
@@ -64,8 +58,6 @@ def test_validate_config_rejects_invalid_scheduler_values():
                    (256, 0, 128, 4096), (256, 2048, -1, 4096), (256, 2048, 128, 0)):
         with pytest.raises(ValueError):
             CSRConfig(*values)
-        with pytest.raises(ValueError):
-            MVSchedule(*values)
     for bad in (256.0, True, '256'):
         with pytest.raises(ValueError, match='integer'):
             CSRConfig(block_size=bad)
@@ -74,11 +66,37 @@ def test_validate_config_rejects_invalid_scheduler_values():
 def test_explicit_validation_returns_the_config_and_rechecks_the_schedule():
     config = CSRConfig(256)
     assert config.validate() is config
-    # MVSchedule validates on construction; ``validate`` catches a bypassed one.
-    schedule = MVSchedule()
-    object.__setattr__(schedule, 'block_size', 100)
+    # Validation catches a field changed through a bypass of immutability.
+    object.__setattr__(config, 'block_size', 100)
     with pytest.raises(ValueError, match='block_size'):
-        CSRConfig(mv=schedule).validate()
+        config.validate()
+
+
+@pytest.mark.parametrize('field,bad', [
+    ('mm_l2_divisor', 0), ('mm_sparse_l2_divisor', 0),
+    ('mm_sparse_l2_min_bytes', -1), ('mm_short_rows_floor', 0),
+    ('mm_max_chunk', 0), ('mm_max_chunk', 65536),
+    ('mm_l2_divisor', True), ('mm_short_rows_floor', 1.5),
+])
+def test_mm_policy_rejects_invalid_values(field, bad):
+    with pytest.raises(ValueError, match=field):
+        CSRConfig(**{field: bad})
+
+
+def test_flat_serialization_round_trips_nine_fields_and_defaults_legacy_mv_fields():
+    config = CSRConfig(256, 2048, 256, 1024, mm_l2_divisor=8, mm_sparse_l2_divisor=3,
+                       mm_sparse_l2_min_bytes=0, mm_short_rows_floor=17, mm_max_chunk=7)
+    encoded = config.to_dict()
+    assert set(encoded) == {
+        'block_size', 'fixed_scatter_blocks', 'tpr_threshold', 'task_nnz',
+        'mm_l2_divisor', 'mm_sparse_l2_divisor', 'mm_sparse_l2_min_bytes',
+        'mm_short_rows_floor', 'mm_max_chunk',
+    }
+    assert CSRConfig.from_dict(json.loads(json.dumps(encoded))) == config
+    encoded['mm_max_chunk'] = 2
+    assert config.mm_max_chunk == 7
+    legacy = dict(block_size=256, fixed_scatter_blocks=2048, tpr_threshold=256, task_nnz=1024)
+    assert CSRConfig.from_dict(legacy) == CSRConfig(256, 2048, 256, 1024)
 
 
 def test_compile_flags_map_config_to_cuda_defines():
@@ -96,7 +114,7 @@ def test_module_suffix_is_config_specific():
     b = CSRConfig(512, 2048, 128, 4096).module_suffix()
     assert a == "_b256_s2048_t128_n4096"
     assert a != b
-    # Every field takes part in the module identity.
+    # Every MV compiler field takes part in the CUDA module identity.
     suffixes = {CSRConfig(*values).module_suffix() for values in (
         (256, 2048, 128, 4096), (256, 1024, 128, 4096), (256, 2048, 256, 4096), (256, 2048, 128, 512))}
     assert len(suffixes) == 4
@@ -110,24 +128,23 @@ def test_config_pytree_has_no_leaves_and_its_schedule_is_the_treedef():
     leaves, tree = jax.tree_util.tree_flatten(config)
     assert leaves == []
     children, aux = config.tree_flatten()
-    assert children == () and aux == _ConfigAux(config.mv, ())
+    assert children == () and aux is config
     restored = jax.tree_util.tree_unflatten(tree, leaves)
-    assert isinstance(restored, CSRConfig) and restored is not config
-    assert restored.mv == config.mv
+    assert isinstance(restored, CSRConfig) and restored == config
     # Equal schedules give equal treedefs; any scheduler field changes it.
-    assert tree == jax.tree_util.tree_structure(CSRConfig(mv=MVSchedule(256, 2048, 256, 1024)))
-    for other in (CSRConfig(), CSRConfig(256, 2048, 256, 512)):
+    assert tree == jax.tree_util.tree_structure(CSRConfig(256, 2048, 256, 1024))
+    for other in (CSRConfig(), CSRConfig(256, 2048, 256, 512), replace(config, mm_max_chunk=8)):
         assert tree != jax.tree_util.tree_structure(other)
-    assert hash(aux) == hash(_ConfigAux(MVSchedule(256, 2048, 256, 1024), ()))
+    assert hash(aux) == hash(CSRConfig(256, 2048, 256, 1024))
 
 
 def test_configs_compare_and_hash_by_their_schedule():
-    record = _BenchmarkRecord(CSRConfig(128), 2.0, 10.0, 4)
+    record = dict(config=CSRConfig(128), elapsed_ms=2.0, per_call_us=10.0, task_capacity=4)
     config = CSRConfig(256)
-    same = CSRConfig(mv=MVSchedule(256, 1024, 128, 512), benchmark_records=(record,))
+    same = CSRConfig(256, 1024, 128, 512, benchmark_records=(record,))
     # Benchmark records are diagnostics: they change neither equality nor hash.
     assert config == same and hash(config) == hash(same)
-    assert config != CSRConfig(512) and config != config.mv
+    assert config != CSRConfig(512) and config != replace(config, mm_l2_divisor=8)
     assert CSRConfig() == CSRConfig() and len({CSRConfig(), CSRConfig(), config, same}) == 2
     # A config can key a dict or a static jit argument.
     compiled = jax.jit(lambda cfg, x: x + cfg.block_size, static_argnums=0)
@@ -137,9 +154,9 @@ def test_configs_compare_and_hash_by_their_schedule():
 
 def test_benchmark_records_do_not_change_pytree_identity():
     config = CSRConfig(256)
-    record = _BenchmarkRecord(CSRConfig(128, 1024, 256, 512), 2.0, 10.0, 4)
+    record = dict(config=CSRConfig(128, 1024, 256, 512), elapsed_ms=2.0, per_call_us=10.0, task_capacity=4)
     with_records = replace(config, benchmark_records=(record,))
-    assert with_records.mv == config.mv
+    assert with_records == config
     assert jax.tree_util.tree_structure(config) == jax.tree_util.tree_structure(with_records)
     aux, aux_records = config.tree_flatten()[1], with_records.tree_flatten()[1]
     assert aux == aux_records and hash(aux) == hash(aux_records)
@@ -148,12 +165,24 @@ def test_benchmark_records_do_not_change_pytree_identity():
     assert jax.tree_util.tree_unflatten(tree, leaves).benchmark_records == (record,)
 
 
+def test_constructor_copies_record_mappings_and_nested_config_parameters():
+    candidate = CSRConfig(128, mm_max_chunk=8).to_dict()
+    record = dict(config=candidate, elapsed_ms=2.0, per_call_us=10.0, task_capacity=4)
+    config = CSRConfig(256, benchmark_records=(record,))
+    record['elapsed_ms'] = 99.0
+    candidate['mm_max_chunk'] = 1
+    assert config.benchmark_records[0]['elapsed_ms'] == 2.0
+    assert config.benchmark_records[0]['config']['mm_max_chunk'] == 8
+    assert config == CSRConfig(256) and hash(config) == hash(CSRConfig(256))
+    assert config.to_dict() == CSRConfig(256).to_dict()
+
+
 def test_benchmark_records_render_in_str():
     config = CSRConfig(256)
-    assert str(config) == ('CSRConfig(block_size=256, fixed_scatter_blocks=1024, '
-                           'tpr_threshold=128, task_nnz=512)')
-    records = (_BenchmarkRecord(CSRConfig(128, 1024, 256, 512), 2.0, 10.0, 4),
-               _BenchmarkRecord(CSRConfig(512), 3.5, 17.25))
+    assert str(config) == repr(config)
+    assert 'mm_l2_divisor=4' in str(config) and 'mm_max_chunk=65535' in str(config)
+    records = (dict(config=CSRConfig(128, 1024, 256, 512), elapsed_ms=2.0, per_call_us=10.0, task_capacity=4),
+               dict(config=CSRConfig(512), elapsed_ms=3.5, per_call_us=17.25))
     lines = str(replace(config, benchmark_records=records)).splitlines()
     assert lines[0] == str(config) and lines[1] == 'benchmark results:'
     assert lines[2].startswith('  1. CSRConfig(block_size=128,')
@@ -166,7 +195,7 @@ def test_config_is_a_jit_argument_and_scan_carry_keyed_by_its_schedule():
 
     @jax.jit
     def run(cfg, x):
-        traces.append(cfg.mv)
+        traces.append(cfg)
 
         def body(carry, unused):
             return carry, carry.block_size
@@ -176,12 +205,13 @@ def test_config_is_a_jit_argument_and_scan_carry_keyed_by_its_schedule():
 
     final, values = run(CSRConfig(256), jnp.zeros(3, jnp.int32))
     np.testing.assert_array_equal(values, [256, 256, 256])
-    assert isinstance(final, CSRConfig) and final.mv == CSRConfig(256).mv
+    assert isinstance(final, CSRConfig) and final == CSRConfig(256)
     # An equal schedule (even with diagnostics) reuses the executable; another one retraces.
-    run(CSRConfig(256, benchmark_records=(_BenchmarkRecord(CSRConfig(), 1.0, 1.0),)), jnp.zeros(3, jnp.int32))
-    assert traces == [CSRConfig(256).mv]
+    run(CSRConfig(256, benchmark_records=(dict(config=CSRConfig(), elapsed_ms=1.0, per_call_us=1.0),)),
+        jnp.zeros(3, jnp.int32))
+    assert traces == [CSRConfig(256)]
     run(CSRConfig(512), jnp.zeros(3, jnp.int32))
-    assert traces == [CSRConfig(256).mv, CSRConfig(512).mv]
+    assert traces == [CSRConfig(256), CSRConfig(512)]
 
 
 def test_matrices_of_any_structure_share_the_config_treedef():
@@ -196,14 +226,15 @@ def test_matrices_of_any_structure_share_the_config_treedef():
 
 def test_removed_mm_planning_surface_stays_removed():
     for name in ('HybridConfig', 'get_hybrid_config', 'MMStructureSpec', 'MMStructurePlan',
-                 'MMCallPlan', 'CSRKernelSpec', 'CSRDeviceInfo', 'get_device_info'):
+                 'MMCallPlan', 'CSRKernelSpec', 'CSRDeviceInfo', 'get_device_info', 'MVSchedule'):
         assert not hasattr(brainevent, name), name
     for name in ('MMStructureSpec', 'MMStructurePlan', 'MMCallPlan', 'CSRKernelSpec',
                  'CSRDeviceInfo', 'get_device_info', '_prepare_csr_config', '_sync_mirror_config',
-                 '_config_for_new_structure', '_structure_plan', '_call_plan', '_bucket'):
+                 '_config_for_new_structure', '_structure_plan', '_call_plan', '_bucket',
+                 'MVSchedule', '_MMPlan', '_BenchmarkRecord', '_ConfigAux', '_mm_plan', '_mm_group'):
         assert not hasattr(config_mod, name), name
-    for name in ('prepare_structure', 'mm_plan', 'kernel_args', 'from_kernel_args', 'swap_layouts',
-                 'parameter_snapshot', 'primary', 'mirror', 'device_info', 'shape'):
+    for name in ('prepare_structure', 'kernel_args', 'from_kernel_args', 'swap_layouts',
+                 'parameter_snapshot', 'primary', 'mirror', 'device_info', 'shape', 'mv'):
         assert not hasattr(CSRConfig(), name), name
     for cls in (brainevent.CSR, brainevent.CSC, brainevent.FixedNumPerPre, brainevent.FixedNumPerPost):
         assert not hasattr(cls, 'with_rebuilt_config'), cls
@@ -282,7 +313,7 @@ def test_nonhybrid_mm_keeps_jax_supported_float8_dtype(config):
 def test_hybrid_mm_rejects_unsupported_dtype_before_planning(monkeypatch):
     import brainevent._csr.binary.binary as binary_mod
 
-    monkeypatch.setattr(binary_mod, '_mm_plan', lambda *args: pytest.fail('planned an unsupported dtype'))
+    monkeypatch.setattr(CSRConfig, 'mm_plan', lambda *args, **kwargs: pytest.fail('planned an unsupported dtype'))
     with pytest.raises(ValueError, match='supports only float16'):
         binary_mod._make_hybrid_mm_kernel(
             config_spec=None,
@@ -376,8 +407,8 @@ def _selection_store(monkeypatch, tmp_path):
 @pytest.mark.parametrize('cls', [brainevent.CSR, brainevent.CSC])
 def test_construction_selects_both_densities_in_storage_direction(_selection_store, cls):
     shape = (2, 1000)
-    choices = ((60, CSRConfig(256, 512, 128, 1024)),
-               (6, CSRConfig(512, 2048, 256, 4096)))
+    choices = ((60, CSRConfig(256, 512, 128, 1024, mm_l2_divisor=8)),
+               (6, CSRConfig(512, 2048, 256, 4096, mm_max_chunk=3)))
     for nnz, config in choices:
         save_csr_config(config, 'TEST_GPU', matrix_metadata={'shape': shape, 'nnz': nnz})
 
@@ -387,7 +418,7 @@ def test_construction_selects_both_densities_in_storage_direction(_selection_sto
         public_shape = shape if cls is brainevent.CSR else shape[::-1]
         matrix = cls((np.ones(nnz, np.float32), indices, pointers),
                      shape=public_shape, backend='jax_raw')
-        assert matrix.config.mv == expected.mv
+        assert matrix.config == expected
 
 
 @pytest.mark.parametrize('cls', [brainevent.FixedNumPerPre, brainevent.FixedNumPerPost])
@@ -401,7 +432,7 @@ def test_fixed_connections_select_using_flattened_edge_count(_selection_store, c
     matrix = cls(np.ones((2, 3), np.float32),
                  np.array([[0, 1, 2], [3, 4, 5]], np.int32),
                  shape=public_shape, backend='jax_raw')
-    assert matrix.config.mv == expected.mv
+    assert matrix.config == expected
 
 
 def test_selection_is_keyed_by_the_structure_device_kind(monkeypatch, tmp_path):
@@ -414,7 +445,7 @@ def test_selection_is_keyed_by_the_structure_device_kind(monkeypatch, tmp_path):
         save_csr_config(CSRConfig(256), cpu.device_kind, matrix_metadata=metadata)
         save_csr_config(CSRConfig(128), 'OTHER_GPU', matrix_metadata=metadata)
         indices = jax.device_put(jnp.array([0, 1, 2], jnp.int32), cpu)
-        assert _select_config(indices, shape=(2, 4)).mv == CSRConfig(256).mv
+        assert _select_config(indices, shape=(2, 4)) == CSRConfig(256)
     finally:
         brainevent.set_cache_dir(previous)
 
@@ -440,7 +471,7 @@ def test_explicit_config_beats_environment_and_local_store(_selection_store, mon
 
 def test_select_config_rejects_a_non_config():
     with pytest.raises(TypeError, match='CSRConfig'):
-        _select_config(np.arange(3), shape=(2, 4), config=MVSchedule())
+        _select_config(np.arange(3), shape=(2, 4), config=object())
 
 
 def test_traced_selection_forwards_static_metadata_without_reading_arrays(monkeypatch):
@@ -498,8 +529,8 @@ def test_existing_matrix_keeps_its_snapshot_after_persisted_winner_changes(_sele
     save_csr_config(replacement, 'TEST_GPU', matrix_metadata=metadata)
 
     fresh = brainevent.CSR(parts, shape=(2, 4), backend='jax_raw')
-    assert matrix.config.mv == original.mv
-    assert fresh.config.mv == replacement.mv
+    assert matrix.config == original
+    assert fresh.config == replacement
     # Structure-preserving derivations and pytree round trips keep the snapshot.
     assert matrix.with_data(np.zeros(3, np.float32)).config is matrix.config
-    assert jax.tree_util.tree_map(lambda x: x, matrix).config.mv == original.mv
+    assert jax.tree_util.tree_map(lambda x: x, matrix).config == original

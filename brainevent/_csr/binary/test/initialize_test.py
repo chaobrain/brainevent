@@ -17,7 +17,7 @@ import pytest
 import brainevent
 from brainevent._csr.binary import initialize
 from brainevent._csr.binary.initialize import load_csr_config, save_csr_config
-from brainevent._csr.config import CSRConfig, _BenchmarkRecord
+from brainevent._csr.config import CSRConfig
 
 
 # Configuration persistence, initialization and benchmarking
@@ -46,10 +46,10 @@ def test_default_config_matches_cu_defaults():
     header = Path(brainevent.__file__).parent / 'include' / 'brainevent' / 'hybrid_mv_schedule.cuh'
     defines = dict(re.findall(r'#define BE_HYBRID_(\w+) (\d+)', header.read_text()))
     default = CSRConfig()
-    assert default.mv == CSRConfig(512, 1024, 128, 512).mv
+    assert default == CSRConfig(512, 1024, 128, 512)
     assert (default.block_size, default.fixed_scatter_blocks, default.tpr_threshold, default.task_nnz) == tuple(
         int(defines[name]) for name in ('BLOCK_SIZE', 'FIXED_SCATTER_BLOCKS', 'TPR_THRESHOLD', 'TASK_NNZ'))
-    assert any(candidate.mv == default.mv for candidate in initialize.DEFAULT_CANDIDATES)
+    assert any(candidate == default for candidate in initialize.DEFAULT_CANDIDATES)
 
 
 @pytest.mark.usefixtures('_restore_cache_dir')
@@ -92,11 +92,11 @@ def test_save_and_reload_round_trip(monkeypatch, tmp_path):
     initialize.save_csr_config(cfg, device_kind="TEST_GPU")
 
     monkeypatch.setattr(initialize, "_current_device_kind", lambda: "TEST_GPU")
-    assert initialize.load_csr_config().mv == cfg.mv
+    assert initialize.load_csr_config() == cfg
 
     # A different device falls back to defaults.
     monkeypatch.setattr(initialize, "_current_device_kind", lambda: "OTHER_GPU")
-    assert initialize.load_csr_config().mv == CSRConfig().mv
+    assert initialize.load_csr_config() == CSRConfig()
 
 
 @pytest.mark.usefixtures('_restore_cache_dir')
@@ -335,7 +335,7 @@ def test_init_csr_config_does_not_print_benchmark_details(monkeypatch, capsys):
     results = initialize.init_csr_config(save=False)
     assert len(results) == 2
     assert [item["metadata"]["requested_density"] for item in results] == [0.03, 0.003]
-    assert all(item["best_config"].mv == cfg.mv for item in results)
+    assert all(item["best_config"] == cfg for item in results)
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -369,7 +369,7 @@ def test_init_csr_config_saves_records_for_load_csr_config_print(monkeypatch, tm
     )
 
     results = initialize.init_csr_config(n_pre=100, n_post=1000)
-    assert all(item["best_config"].mv == best.mv for item in results)
+    assert all(item["best_config"] == best for item in results)
     assert capsys.readouterr().out == ""
 
     output = str(initialize.load_csr_config(matrix_metadata=results[0]["metadata"]))
@@ -426,23 +426,89 @@ def _persistence_isolated_store(monkeypatch, tmp_path):
         brainevent.set_cache_dir(old)
 
 
-def test_persistence_keeps_old_schema_of_scheduler_fields_and_records(_persistence_isolated_store):
+def test_persistence_keeps_flat_policy_schema_and_dictionary_records(_persistence_isolated_store):
     config = CSRConfig(block_size=128)
-    record = _BenchmarkRecord(config, 4.0, 20.0, 10)
+    record = dict(config=config, elapsed_ms=4.0, per_call_us=20.0, task_capacity=10)
     path = save_csr_config(config, 'TEST_GPU', [record])
     save_csr_config(CSRConfig(512), 'OTHER_GPU')
     stored = json.loads(path.read_text())
     assert set(stored) == {'TEST_GPU', 'OTHER_GPU'}
-    assert set(stored['TEST_GPU']) == {'block_size', 'fixed_scatter_blocks', 'tpr_threshold',
-                                       'task_nnz', 'benchmark_records'}
+    assert set(stored['TEST_GPU']) == set(config.to_dict()) | {'benchmark_records'}
     assert path.name == 'csr_hybrid_config.json'
     assert stored['TEST_GPU']['benchmark_records'] == [{
-        'config': {'block_size': 128, 'fixed_scatter_blocks': 1024, 'tpr_threshold': 128, 'task_nnz': 512},
+        'config': config.to_dict(),
         'elapsed_ms': 4.0, 'per_call_us': 20.0, 'task_capacity': 10}]
     loaded = load_csr_config('TEST_GPU')
-    assert loaded.mv == config.mv
-    assert loaded.benchmark_records[0].elapsed_ms == 4.0
-    assert loaded.benchmark_records[0].config.mv == config.mv
+    assert loaded == config
+    assert loaded.benchmark_records[0]['elapsed_ms'] == 4.0
+    assert loaded.benchmark_records[0]['config'] == config
+
+
+def test_legacy_four_field_store_and_override_default_mm_policy(_persistence_isolated_store, monkeypatch):
+    policy = dict(block_size=256, fixed_scatter_blocks=2048, tpr_threshold=256, task_nnz=4096)
+    path = _persistence_isolated_store / initialize.CONFIG_FILENAME
+    path.write_text(json.dumps({'TEST_GPU': policy}))
+    expected = CSRConfig(**policy)
+    assert load_csr_config('TEST_GPU') == expected
+    assert load_csr_config('TEST_GPU').mm_max_chunk == 65535
+    monkeypatch.setenv(initialize._ENV_OVERRIDE, json.dumps(policy))
+    assert load_csr_config('TEST_GPU') == expected
+
+
+@pytest.mark.parametrize('workload', [False, True], ids=['fallback', 'workload'])
+@pytest.mark.parametrize('mapping_record', [False, True], ids=['config_record', 'mapping_record'])
+def test_mm_policy_and_dictionary_records_roundtrip(
+    _persistence_isolated_store, monkeypatch, workload, mapping_record,
+):
+    policy = CSRConfig(256, 2048, 256, 4096, mm_l2_divisor=8, mm_sparse_l2_divisor=4,
+                       mm_sparse_l2_min_bytes=64 << 20, mm_short_rows_floor=2 << 20, mm_max_chunk=17)
+    candidate = CSRConfig(128, mm_max_chunk=9, mm_short_rows_floor=3 << 20)
+    record = dict(config=candidate.to_dict() if mapping_record else candidate, elapsed_ms=4.0,
+                  per_call_us=20.0, task_capacity=10, status='ok', checked=True)
+    config = CSRConfig(**policy.to_dict(), benchmark_records=(record,))
+    metadata = _metadata() if workload else None
+    path = save_csr_config(config, 'TEST_GPU', matrix_metadata=metadata)
+    stored = json.loads(path.read_text())['TEST_GPU']
+    entry = next(iter(stored['workloads'].values())) if workload else stored
+    assert (entry['best_config'] if workload else {k: entry[k] for k in policy.to_dict()}) == policy.to_dict()
+    assert entry['benchmark_records'][0]['config'] == candidate.to_dict()
+    loaded = load_csr_config('TEST_GPU', matrix_metadata=metadata)
+    assert loaded == policy
+    assert loaded.benchmark_records[0] == {**record, 'config': candidate}
+    monkeypatch.setenv(initialize._ENV_OVERRIDE, json.dumps(policy.to_dict()))
+    assert load_csr_config('TEST_GPU', matrix_metadata=metadata) == policy
+
+
+def test_partial_mv_policy_remains_invalid_in_store_and_override(_persistence_isolated_store, monkeypatch):
+    partial = dict(block_size=256, fixed_scatter_blocks=2048, tpr_threshold=256, mm_max_chunk=17)
+    path = _persistence_isolated_store / initialize.CONFIG_FILENAME
+    path.write_text(json.dumps({'TEST_GPU': partial}))
+    assert load_csr_config('TEST_GPU') == CSRConfig()
+    monkeypatch.setenv(initialize._ENV_OVERRIDE, json.dumps(partial))
+    with pytest.raises(KeyError, match='task_nnz'):
+        load_csr_config('TEST_GPU')
+
+
+@pytest.mark.parametrize('field', initialize._CONFIG_FIELDS)
+def test_null_mv_field_remains_invalid_in_store_and_override(_persistence_isolated_store, monkeypatch, field):
+    policy = dict(block_size=256, fixed_scatter_blocks=2048, tpr_threshold=256, task_nnz=4096,
+                  mm_max_chunk=17)
+    policy[field] = None
+    path = _persistence_isolated_store / initialize.CONFIG_FILENAME
+    path.write_text(json.dumps({'TEST_GPU': policy}))
+    assert load_csr_config('TEST_GPU') == CSRConfig()
+    monkeypatch.setenv(initialize._ENV_OVERRIDE, json.dumps(policy))
+    with pytest.raises(ValueError, match=field):
+        load_csr_config('TEST_GPU')
+
+
+def test_only_unified_config_is_exported():
+    import importlib
+
+    for name in ('brainevent', 'brainevent._csr', 'brainevent._csr.binary'):
+        module = importlib.import_module(name)
+        assert module.CSRConfig is CSRConfig
+        assert not hasattr(module, 'MVSchedule')
 
 
 def test_load_returns_fresh_snapshots_and_respects_environment(_persistence_isolated_store, monkeypatch):
@@ -456,14 +522,14 @@ def test_load_returns_fresh_snapshots_and_respects_environment(_persistence_isol
     assert load_csr_config('TEST_GPU').task_nnz == 512
     monkeypatch.delenv('BRAINEVENT_CSR_HYBRID_CONFIG')
     path.write_text('corrupt')
-    assert load_csr_config('TEST_GPU').mv == CSRConfig().mv
-    assert load_csr_config('MISSING').mv == CSRConfig().mv
+    assert load_csr_config('TEST_GPU') == CSRConfig()
+    assert load_csr_config('MISSING') == CSRConfig()
 
 
 def test_persistence_recovers_invalid_store_but_rejects_invalid_override(_persistence_isolated_store, monkeypatch):
     path = _persistence_isolated_store / 'csr_hybrid_config.json'
     path.write_text('[]')
-    assert load_csr_config('TEST_GPU').mv == CSRConfig().mv
+    assert load_csr_config('TEST_GPU') == CSRConfig()
     with pytest.warns(UserWarning, match='corrupt'):
         save_csr_config(CSRConfig(), 'TEST_GPU')
     path.write_text('broken')
@@ -497,11 +563,11 @@ def test_workload_roundtrips_keep_both_winners_legacy_fallback_and_other_devices
                              (another_size, _metadata(rows=40))):
         save_csr_config(config, 'TEST_GPU', [_timing(config)], matrix_metadata=metadata)
 
-    assert load_csr_config('TEST_GPU').mv == legacy.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == dense.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(conn=3)).mv == sparse.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40)).mv == another_size.mv
-    assert load_csr_config('OTHER_GPU').mv == CSRConfig(128, 4096).mv
+    assert load_csr_config('TEST_GPU') == legacy
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()) == dense
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(conn=3)) == sparse
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40)) == another_size
+    assert load_csr_config('OTHER_GPU') == CSRConfig(128, 4096)
 
     replacement = CSRConfig(256, 1024, 256, 4096)
     save_csr_config(replacement, 'TEST_GPU', [_timing(replacement, 2.0)],
@@ -509,11 +575,11 @@ def test_workload_roundtrips_keep_both_winners_legacy_fallback_and_other_devices
     stored = json.loads(path.read_text())
     assert len(stored['TEST_GPU']['workloads']) == 3
     assert stored['TEST_GPU']['block_size'] == 128
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == replacement.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(conn=3)).mv == sparse.mv
-    assert load_csr_config('OTHER_GPU').mv == CSRConfig(128, 4096).mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()) == replacement
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(conn=3)) == sparse
+    assert load_csr_config('OTHER_GPU') == CSRConfig(128, 4096)
     record = load_csr_config('TEST_GPU', matrix_metadata=_metadata()).benchmark_records[0]
-    assert record.elapsed_ms == 2.0
+    assert record['elapsed_ms'] == 2.0
 
 
 def test_loader_uses_environment_exact_legacy_other_then_builtin(
@@ -527,26 +593,26 @@ def test_loader_uses_environment_exact_legacy_other_then_builtin(
     monkeypatch.setenv(initialize._ENV_OVERRIDE, json.dumps({
         name: getattr(explicit, name) for name in initialize._CONFIG_FIELDS
     }))
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == explicit.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()) == explicit
     monkeypatch.delenv(initialize._ENV_OVERRIDE)
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == matched.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=99)).mv == legacy.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()) == matched
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=99)) == legacy
 
     stored = json.loads(path.read_text())
     for workload in stored['TEST_GPU']['workloads'].values():
         if workload['metadata']['nnz'] == _metadata()['nnz']:
             workload['best_config']['block_size'] = 0
     path.write_text(json.dumps(stored))
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == legacy.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()) == legacy
 
     for name in initialize._CONFIG_FIELDS:
         stored['TEST_GPU'].pop(name)
     path.write_text(json.dumps(stored))
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == other.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()) == other
     stored['TEST_GPU']['workloads'].clear()
     path.write_text(json.dumps(stored))
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()).mv == CSRConfig().mv
-    assert load_csr_config('MISSING_GPU', matrix_metadata=_metadata()).mv == CSRConfig().mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()) == CSRConfig()
+    assert load_csr_config('MISSING_GPU', matrix_metadata=_metadata()) == CSRConfig()
 
 
 @pytest.mark.parametrize('metadata', [None, {}, {'shape': (20, 1000)},
@@ -557,12 +623,12 @@ def test_nonmatching_fallback_is_deterministic_without_complete_metadata(
     dense, sparse = CSRConfig(256), CSRConfig(512, 512)
     path = save_csr_config(dense, 'TEST_GPU', matrix_metadata=_metadata())
     save_csr_config(sparse, 'TEST_GPU', matrix_metadata=_metadata(conn=3))
-    assert load_csr_config('TEST_GPU', matrix_metadata=metadata).mv == sparse.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=metadata) == sparse
     stored = json.loads(path.read_text())
     workloads = stored['TEST_GPU']['workloads']
     stored['TEST_GPU']['workloads'] = dict(reversed(list(workloads.items())))
     path.write_text(json.dumps(stored))
-    assert load_csr_config('TEST_GPU', matrix_metadata=metadata).mv == sparse.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=metadata) == sparse
 
 
 def test_invalid_diagnostic_records_do_not_discard_valid_workload_parameters(
@@ -575,7 +641,7 @@ def test_invalid_diagnostic_records_do_not_discard_valid_workload_parameters(
     workload['benchmark_records'] = [{'config': {'block_size': 'broken'}}]
     path.write_text(json.dumps(stored))
     loaded = load_csr_config('TEST_GPU', matrix_metadata=_metadata())
-    assert loaded.mv == config.mv
+    assert loaded == config
     assert loaded.benchmark_records == ()
 
 
@@ -596,8 +662,8 @@ def test_init_measures_all_candidates_separately_and_can_select_different_winner
     assert all(tuple(call['candidates']) == initialize.DEFAULT_CANDIDATES for call in calls)
     assert [item['metadata']['conn'] for item in results] == [30, 3]
     assert [item['metadata']['nnz'] for item in results] == [3000, 300]
-    assert [item['best_config'].mv for item in results] == [
-        initialize.DEFAULT_CANDIDATES[0].mv, initialize.DEFAULT_CANDIDATES[-1].mv]
+    assert [item['best_config'] for item in results] == [
+        initialize.DEFAULT_CANDIDATES[0], initialize.DEFAULT_CANDIDATES[-1]]
     assert all(len(item['records']) == 48 and item['status'] == 'ok' for item in results)
 
 
@@ -617,9 +683,9 @@ def test_init_failed_density_keeps_previous_workload_and_saves_successful_one(
     assert results[0]['status'] == 'error'
     assert results[0]['best_config'] is None
     assert 'memory' in results[0]['error']
-    assert results[1]['best_config'].mv == new_sparse.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=100)).mv == old_dense.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=100, conn=3)).mv == new_sparse.mv
+    assert results[1]['best_config'] == new_sparse
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=100)) == old_dense
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=100, conn=3)) == new_sparse
 
 
 def test_rounded_densities_keep_independent_records_even_with_the_same_winner(
@@ -655,7 +721,7 @@ def test_all_failed_candidates_leave_the_previous_workload_intact(
                                          densities=(.03,), candidates=(candidate,))
     assert results[0]['status'] == 'error' and results[0]['best_config'] is None
     assert results[0]['records'][0]['error'] == 'task queue overflowed'
-    assert load_csr_config('TEST_GPU', matrix_metadata=metadata).mv == previous.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=metadata) == previous
 
 
 @pytest.mark.parametrize('kwargs', [
@@ -716,7 +782,7 @@ def test_missing_x64_marks_only_large_density_failed_and_continues(monkeypatch):
     assert calls == [.03, .003]
     assert results[0]['status'] == 'error' and results[0]['best_config'] is None
     assert 'x64' in results[0]['error']
-    assert results[1]['status'] == 'ok' and results[1]['best_config'].mv == winner.mv
+    assert results[1]['status'] == 'ok' and results[1]['best_config'] == winner
 
 
 def test_failed_candidate_is_recorded_without_discarding_successful_candidate(monkeypatch):
@@ -752,7 +818,7 @@ def test_large_workspace_candidate_does_not_prevent_smaller_candidate_from_runni
     measured = []
 
     def measure(config, **kwargs):
-        measured.append(config.mv)
+        measured.append(config)
         if config is large:
             raise MemoryError('candidate task workspace exceeds remaining memory')
         return _timing(config)
@@ -761,7 +827,7 @@ def test_large_workspace_candidate_does_not_prevent_smaller_candidate_from_runni
     records = initialize.run_benchmark(n_pre=4, n_post=1000, conn=1000,
                                        batch_size=2, candidates=(large, small),
                                        steps=1, warmup=0, show_progress=False)
-    assert measured == [large.mv, small.mv]
+    assert measured == [large, small]
     assert records[0]['config'] is small and records[0]['status'] == 'ok'
     assert records[1]['config'] is large and records[1]['status'] == 'error'
 
@@ -858,19 +924,19 @@ def test_nonexact_workload_uses_nearest_mean_row_length(_persistence_isolated_st
     save_csr_config(dense, 'TEST_GPU', matrix_metadata=_metadata(conn=30))
     save_csr_config(sparse, 'TEST_GPU', matrix_metadata=_metadata(conn=3))
     # 25 edges per row is nearest to 30 (log scale); 4 edges per row to 3.
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40, cols=2000, conn=25)).mv == dense.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=10, conn=4)).mv == sparse.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata={'shape': (20, 1000), 'nnz': 999}).mv == dense.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40, cols=2000, conn=25)) == dense
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=10, conn=4)) == sparse
+    assert load_csr_config('TEST_GPU', matrix_metadata={'shape': (20, 1000), 'nnz': 999}) == dense
     # Equal row lengths (30 edges): the nearer density decides.
     wide = CSRConfig(512, 1024)
     save_csr_config(wide, 'TEST_GPU', matrix_metadata=_metadata(cols=10000, conn=30))
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40, cols=2000, conn=30)).mv == dense.mv
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40, cols=20000, conn=30)).mv == wide.mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40, cols=2000, conn=30)) == dense
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=40, cols=20000, conn=30)) == wide
     # An explicit device fallback still takes precedence over a nearest workload.
     legacy = CSRConfig(128)
     save_csr_config(legacy, 'TEST_GPU')
-    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=10, conn=4)).mv == legacy.mv
-    assert load_csr_config('OTHER_GPU', matrix_metadata=_metadata(conn=30)).mv == CSRConfig().mv
+    assert load_csr_config('TEST_GPU', matrix_metadata=_metadata(rows=10, conn=4)) == legacy
+    assert load_csr_config('OTHER_GPU', matrix_metadata=_metadata(conn=30)) == CSRConfig()
 
 
 def test_compilation_failure_marks_only_that_candidate_failed(monkeypatch):
@@ -921,7 +987,7 @@ def test_load_resolves_saved_workloads_once_until_the_store_changes(_persistence
         load_csr_config('TEST_GPU', matrix_metadata=metadata)
     assert len(built) == count
     assert load_csr_config('TEST_GPU', matrix_metadata=_metadata()) is first
-    assert first.block_size == 256 and first.benchmark_records[0].config.block_size == 512
+    assert first.block_size == 256 and first.benchmark_records[0]['config'].block_size == 512
     assert load_csr_config('OTHER_GPU').block_size == CSRConfig().block_size
 
     save_csr_config(CSRConfig(512), 'TEST_GPU', matrix_metadata=_metadata())

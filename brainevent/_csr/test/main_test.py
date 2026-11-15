@@ -2176,7 +2176,7 @@ def test_pytree_round_trip_carries_shared_mirror_and_config_adds_no_leaves(monke
 
     restored = jax.jit(lambda value: value)(sibling)
     assert builds == []
-    assert restored.config.mv == sibling.config.mv
+    assert restored.config == sibling.config
     for got, want in zip(restored.buffers[key], matrix.buffers[key]):
         np.testing.assert_array_equal(got, want)
     mapped = jax.tree.map(lambda _: None, sibling)
@@ -2246,7 +2246,7 @@ def test_config_snapshot_is_loaded_once_and_survives_reconstruction(monkeypatch,
     assert matrix.T.config is matrix.config
     transformed = jax.jit(lambda value: value.with_data(value.data * 2))(matrix)
     np.testing.assert_array_equal(transformed.data, matrix.data * 2)
-    assert transformed.config.mv == snapshot.mv
+    assert transformed.config == snapshot
     leaves = jax.tree.leaves(matrix)
     assert len(leaves) == 4
     assert leaves[1] is matrix.indices and leaves[2] is matrix.indptr
@@ -2307,7 +2307,7 @@ def test_from_parts_and_unflatten_never_load_tuning(monkeypatch, cls):
         None, None, None, shape=matrix.shape, config=matrix.config,
     )
     assert reconstructed.config is matrix.config
-    assert cls._from_parts(None, None, None, shape=matrix.shape).config.mv == CSRConfig().mv
+    assert cls._from_parts(None, None, None, shape=matrix.shape).config == CSRConfig()
     mapped = jax.tree.map(lambda _: None, matrix)
     assert mapped.indices is None
     assert mapped.config.tpr_threshold == 5
@@ -2325,7 +2325,7 @@ def test_format_conversion_keeps_config_without_reloading(monkeypatch, cls):
     assert converted.config is matrix.config
     np.testing.assert_allclose(converted.todense(), matrix.todense())
     traced = jax.jit(convert)(matrix)
-    assert traced.config.mv == matrix.config.mv
+    assert traced.config == matrix.config
     np.testing.assert_allclose(traced.todense(), matrix.todense())
 
 
@@ -2347,7 +2347,7 @@ def test_structure_changing_operations_keep_config(monkeypatch, cls):
     assert eager.nse == 4
     assert eager.config is square.config
     traced = jax.jit(lambda value: value.diag_add(jnp.ones(2)))(prepared)
-    assert traced.config.mv == square.config.mv
+    assert traced.config == square.config
     for result in (eager, traced):
         np.testing.assert_allclose(result.todense(), dense + jnp.eye(2))
 

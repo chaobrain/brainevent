@@ -141,7 +141,7 @@ def test_sorted_factory_carries_a_sibling_mirror_into_jit_without_host_reads(mon
     monkeypatch.setattr(jax, 'device_get', forbidden)
     restored = jax.jit(lambda m: m)(result)
     assert type(restored) is TCSR
-    assert restored.config.mv == source.config.mv
+    assert restored.config == source.config
     for actual, expected in zip(restored._cache.mirror, mirror, strict=True):
         np.testing.assert_array_equal(actual, expected)
     events = BinaryArray(jnp.array([[True, False], [False, True], [True, True]]))
@@ -236,7 +236,7 @@ def test_pytree_roundtrip_is_hashable_and_restores_all_geometries():
     assert type(restored) is TCSR and restored._cache is not matrix._cache
     assert restored._cache.tile_geometries.keys() == matrix._cache.tile_geometries.keys()
     assert all(new is old for new, old in zip(restored._cache.mirror, matrix._cache.mirror, strict=True))
-    assert restored.config.mv == matrix.config.mv
+    assert restored.config == matrix.config
     assert jax.tree.leaves(restored.config) == []
     for key, plan in matrix._cache.tile_geometries.items():
         assert restored._cache.tile_geometries[key].local_targets is plan.local_targets

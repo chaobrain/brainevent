@@ -38,7 +38,7 @@ def test_csr_gradient_dispatch_preserves_forward_config(monkeypatch, requested):
     """Explicit CUDA must retain the snapshot when backend metadata is unwrapped."""
     from brainevent._csr.config import CSRConfig
     from brainevent._sddmm._common import _CSRBackend
-    config_spec = CSRConfig(tpr_threshold=16, task_nnz=64).mv
+    config_spec = CSRConfig(tpr_threshold=16, task_nnz=64, mm_max_chunk=2)
     captured = []
 
     def bind_events(events, ct, indices, indptr, **kwargs):
