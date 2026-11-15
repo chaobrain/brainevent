@@ -40,7 +40,7 @@ one explicit scheduler configuration (`CSRConfig`) in place of
 - `TCSR` is a `CSR` subclass. Its constructor stably sorts each row by
   column, and `.T` / `.T.T` return CSC / CSR. Tile geometry is built per
   batch width on the first eager product with that width, and only when the
-  backend can reach CUDA. Construction builds nothing (it used to build
+  backend can reach CUDA. Construction builds no tiles (it used to build
   about 4.8 GiB per direction at 100k × 100k, 1% density). Inside
   `jax.jit`, a width that was not prepared uses the parent CSR path with a
   one-time `PerformanceWarning`. Call
@@ -54,13 +54,21 @@ one explicit scheduler configuration (`CSRConfig`) in place of
 - The CUDA hybrid scatter MM (`binary_csrmm` / `binary_csrmm_indexed` with
   `transpose=True`) is a batched kernel planned when the call is lowered,
   from static shapes (rows, columns, stored edges, batch, value dtype, event
-  mode) and the smallest L2 cache among the target GPUs. It builds its
-  long-row mask from `indptr` on each call. Matrices built inside `jax.jit`
+  mode) and the smallest L2 cache among the target GPUs. CSR/CSC construction
+  automatically builds a packed long-row mask, carried as a dynamic pytree
+  leaf and shared by weight-only updates and transpose views. Mirror layouts
+  carry their own mask, including the FixedNum indexed path. Raw event MV/MM
+  interfaces accept optional `long_mask=`; omitted masks are constructed
+  automatically when the native MM needs them. Matrices built inside `jax.jit`
   from traced arrays, built on the CPU, or used through `vmap` of MV run it
   natively, and redrawn structures of equal shape share one executable.
-  Its short-row scratch holds at most one entry per stored edge (or 4 MiB),
-  so a tall matrix with few output columns splits a large batch into more
-  chunks instead of reserving `batch * rows` entries.
+  Its short-row scratch is bounded by the larger of one int32 entry per
+  stored edge, 4 MiB and the output chunk's L2 budget (or one batch when
+  larger). The four-lane schedule uses half of L2 on GPUs with at least
+  32 MiB L2; other schedules keep the quarter-L2 rule. Large sparse matrices
+  retain more batches per launch while bounding short-list growth for tall,
+  narrow outputs. The larger allowance applies only when it reduces the
+  number of launch groups.
   Matrix construction reads no structure statistics and queries no GPU;
   `check_structure=False` skips every host read of the structure.
 - With no backend chosen on a process with a CUDA device, CSR and CSC

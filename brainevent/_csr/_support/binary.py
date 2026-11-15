@@ -19,6 +19,44 @@ from brainevent._sddmm import dispatch as _sddmm_dispatch
 _HYBRID_MV_DIR = Path(__file__).parents[1] / 'binary' / 'hybrid_mv'
 
 
+def _precheck_long_mask(arguments):
+    """Check an explicit mask's dtype before JIT may narrow uint64 inputs."""
+    mask = arguments.get('long_mask')
+    dtype = getattr(mask, 'dtype', None)
+    if dtype is not None and np.dtype(dtype) != np.dtype('uint32'):
+        raise TypeError('long_mask must have uint32 dtype')
+
+
+def _long_mask_operand(long_mask, *, rows):
+    """Validate a dynamic packed mask, or represent automatic construction.
+
+    An empty uint32 operand is the internal sentinel used by raw calls. The
+    native MM lowerer constructs its mask when this sentinel reaches it; MV
+    and non-hybrid backends do not need to construct an unused mask.
+    """
+    if long_mask is None:
+        return jnp.empty((0,), dtype=jnp.uint32)
+    # Reject an explicitly wider integer dtype before JAX can narrow it when
+    # x64 is disabled; cached masks have one fixed uint32 ABI.
+    dtype = getattr(long_mask, 'dtype', None)
+    if dtype is not None and np.dtype(dtype) != np.dtype('uint32'):
+        raise TypeError('long_mask must have uint32 dtype')
+    mask = jnp.asarray(long_mask)
+    if mask.dtype != jnp.uint32:
+        raise TypeError('long_mask must have uint32 dtype')
+    if mask.ndim != 1 or mask.shape not in ((0,), ((rows + 31) // 32,)):
+        raise ValueError('long_mask must have shape (ceil(rows / 32),)')
+    return mask
+
+
+def _ignore_long_mask(generator):
+    """Adapt a backend that does not consume the final structural mask."""
+    def generate(**kwargs):
+        kernel = generator(**kwargs)
+        return lambda *args: kernel(*args[:-1])
+    return generate
+
+
 def _task_capacity(indices, indptr, max_row_nnz, config=None) -> int:
     """Hybrid task-queue capacity bound from static shapes and a row-length hint."""
     config = CSRConfig() if config is None else config

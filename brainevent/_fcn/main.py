@@ -30,7 +30,7 @@ from brainevent._csr.config import CSRConfig
 from brainevent._csr.plasticity.plasticity_binary import update_csr_on_binary_post, _update_csr_on_binary_post_masked
 from brainevent._csr.slice.slice import csr_slice_rows
 from brainevent._data import DataRepresentation
-from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
+from brainevent._structure import StructureCache, _mm_mask_for_structure, is_concrete, warn_mirror_fallback
 from brainevent._event.dispatch import as_event_operand
 from brainevent._misc import (
     _coo_todense, COOInfo, fixed_conn_num_csc_structure,
@@ -322,7 +322,7 @@ class FixedNumConn(DataRepresentation):
                 mirror = fixed_conn_num_csc_structure(
                     self.indices, shape=self._a_shape,
                 )
-            cache.set_mirror(mirror)
+                cache.set_mirror(mirror)
         return cache.mirror
 
     def _weight_indices(self):
@@ -388,6 +388,7 @@ class FixedNumConn(DataRepresentation):
             self.data.reshape(-1), csc_indices, csc_indptr, perm, s,
             shape=a_shape[::-1], transpose=True, backend=self.backend,
             weighted=weighted, config=self.config,
+            long_mask=self._cache.mirror_mm_mask,
         )
 
     def _binary_matmat(self, matrix, transpose_W: bool, weighted: bool = False):
@@ -413,6 +414,7 @@ class FixedNumConn(DataRepresentation):
             self.data.reshape(-1), csc_indices, csc_indptr, perm, matrix,
             shape=a_shape[::-1], transpose=True, backend=self.backend,
             weighted=weighted, config=self.config,
+            long_mask=self._cache.mirror_mm_mask,
         )
 
     def _float_matvec(self, vector, transpose_W: bool, data):
@@ -637,6 +639,7 @@ class FixedNumConn(DataRepresentation):
         else:
             data = self.data.reshape(-1)[order]
         return CSR._from_parts(data, indices, indptr, shape=self.shape, backend=self.backend,
+                               cache=StructureCache(primary_mm_mask=_mm_mask_for_structure(indptr, indices.size)),
                                config=self.config)
 
     def tocsc(self):
@@ -739,8 +742,8 @@ class FixedNumConn(DataRepresentation):
     # ------------------------------------------------------------------ #
 
     def tree_flatten(self):
-        """Flatten into children ``(data, indices, config, *mirror)``."""
-        mirror = self._cache.mirror or ()
+        """Flatten data and structure, including a cached mirror and its MM mask."""
+        mirror = () if self._cache.mirror is None else (*self._cache.mirror, self._cache.mirror_mm_mask)
         aux = (self.shape, self.backend, bool(mirror))
         return (self.data, self.indices, self.config, *mirror), aux
 
@@ -748,13 +751,14 @@ class FixedNumConn(DataRepresentation):
     def tree_unflatten(cls, aux_data, children):
         """Reconstruct without validation (leaves may be tracers or placeholders)."""
         shape, backend, has_mirror = aux_data
-        expected = 3 + 3 * has_mirror
+        expected = 3 + 4 * has_mirror
         if len(children) != expected:
             raise ValueError(f'{cls.__name__}.tree_unflatten expects {expected} leaves, got {len(children)}.')
-        mirror = tuple(children[3:]) if has_mirror else None
+        mirror = tuple(children[3:6]) if has_mirror else None
+        mirror_mm_mask = children[6] if has_mirror else None
         return cls._from_parts(
             children[0], children[1], shape=shape, backend=backend,
-            cache=StructureCache(mirror=mirror), config=children[2],
+            cache=StructureCache(mirror=mirror, mirror_mm_mask=mirror_mm_mask), config=children[2],
         )
 
     # ------------------------------------------------------------------ #

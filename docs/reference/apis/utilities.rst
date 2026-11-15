@@ -58,10 +58,20 @@ The native CUDA hybrid scatter MM of ``binary_csrmm`` and
 ``binary_csrmm_indexed`` (``transpose=True`` with a backend resolving to
 ``cuda_raw``) is planned when the call is lowered. The plan uses static
 shapes only (rows, columns, stored edges, batch, value dtype and event mode)
-plus the L2 cache size of the target GPU. The kernel derives its long-row
-mask from ``indptr`` on every call. A matrix built eagerly, on the CPU or
+plus the L2 cache size of the target GPU. Matrix objects provide their cached
+long-row mask as a dynamic operand; raw calls that omit ``long_mask`` derive
+it from ``indptr`` automatically. A matrix built eagerly, on the CPU or
 inside ``jax.jit``, and a ``vmap`` of MV, therefore all run the same native
 kernel, and structures of equal shape share one compiled program.
+
+The output batch chunk uses a quarter of L2, or half for the four-lane
+schedule on devices with at least 32 MiB L2. Short-row lists share that byte
+budget, with a minimum allowance of 4 MiB or one int32 entry per stored edge,
+whichever is larger; at least one batch always fits. This avoids tiny launch
+groups on large sparse matrices while bounding short-list scratch for tall, narrow
+outputs. The long-row classification and the K1/K2/K3 execution remain the
+same. A larger chunk is chosen only when it removes launch groups;
+otherwise the smaller, fixed-allowance chunk is retained.
 
 Raw functions such as ``binary_csrmm`` receive arrays, not a CSR object.
 Their ``config=None`` uses the default scheduler constants and never loads

@@ -38,6 +38,9 @@ from brainevent._csr._support.binary import (
     _config_for_call,
     _event_weight_cotangent,
     _hybrid_mv_kernel,
+    _ignore_long_mask,
+    _long_mask_operand,
+    _precheck_long_mask,
 )
 from brainevent._csr.config import CSRConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -60,8 +63,10 @@ __all__ = [
 ]
 
 
-@namescope(name="brainevent.binary_csrmv_indexed", static_argnames=("shape", "transpose", "weighted", "max_row_nnz"))
-def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpose, backend, weighted, max_row_nnz, config):
+@namescope(name="brainevent.binary_csrmv_indexed",
+           static_argnames=("shape", "transpose", "weighted", "max_row_nnz"), precheck=_precheck_long_mask)
+def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpose, backend, weighted,
+                             max_row_nnz, config, long_mask=None):
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
     res = binary_csrmv_indexed_p_call(
@@ -74,7 +79,7 @@ def _binary_csrmv_indexed_jit(data, indices, indptr, perm, v, *, shape, transpos
         transpose=transpose,
         backend=backend,
         weighted=weighted,
-        max_row_nnz=max_row_nnz, config=config,
+        max_row_nnz=max_row_nnz, config=config, long_mask=long_mask,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
 
@@ -92,6 +97,7 @@ def binary_csrmv_indexed(
     weighted: bool = False,
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
+    long_mask=None,
 ) -> Data:
     """Event-driven CSR matrix-vector product with a fused weight gather index.
 
@@ -139,6 +145,10 @@ def binary_csrmv_indexed(
         Trusted bound on the longest row, used to size the MV task queue.
         This argument never scans the structure; see
         :func:`brainevent.binary_csrmv`.
+    long_mask : jax.Array or None, optional
+        Packed uint32 long-row classification for this traversal. Carried
+        through batching into hybrid MM; ``None`` computes it automatically
+        when the product lowers to hybrid MM.
 
     Returns
     -------
@@ -153,7 +163,7 @@ def binary_csrmv_indexed(
     return _binary_csrmv_indexed_jit(
         data, indices, indptr, perm, v,
         shape=shape, transpose=transpose, backend=backend, weighted=weighted,
-        max_row_nnz=max_row_nnz, config=config,
+        max_row_nnz=max_row_nnz, config=config, long_mask=long_mask,
     )
 
 
@@ -446,6 +456,7 @@ def binary_csrmv_indexed_p_call(
     weighted: bool = False,
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
+    long_mask=None,
 ):
     """Low-level primitive call for fused indexed event-driven CSR mat-vec.
 
@@ -471,6 +482,9 @@ def binary_csrmv_indexed_p_call(
         never load saved tuning. Any config works for any structure.
     max_row_nnz : int or None, optional
         Upper bound on the longest row of ``indptr`` (hybrid task queue size).
+    long_mask : jax.Array or None, optional
+        Packed uint32 long-row classification, carried through MV batching.
+        ``None`` lets a resulting hybrid MM compute its mask automatically.
 
     Returns
     -------
@@ -500,12 +514,14 @@ def binary_csrmv_indexed_p_call(
         jax.ShapeDtypeStruct([shape[0]], weights.dtype)
     )
     config = _config_for_call(config)
+    long_mask = _long_mask_operand(long_mask, rows=indptr.size - 1)
     return binary_csrmv_indexed_p(
         weights,
         indices,
         indptr,
         perm,
         vector,
+        long_mask,
         outs=[out_info],
         config_spec=config.mv,
         shape=shape,
@@ -525,13 +541,13 @@ def binary_csrmv_indexed_p_call(
 # --------------------------------------------------------------------------- #
 # autodiff rules
 # --------------------------------------------------------------------------- #
-def _idx_jvp_v(v_dot, weights, indices, indptr, perm, v, *, shape, transpose, **kw):
+def _idx_jvp_v(v_dot, weights, indices, indptr, perm, v, long_mask, *, shape, transpose, **kw):
     w = weights if weights.shape[0] == 1 else weights[perm]
     # v_dot is a dense/float tangent, so this intentionally uses float csrmv.
     return [csrmv(w, indices, indptr, v_dot.astype(w.dtype), shape=shape, transpose=transpose, backend=kw['backend'])]
 
 
-def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, *, shape, transpose, **kw):
+def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, long_mask, *, shape, transpose, **kw):
     return binary_csrmv_indexed_p_call(
         w_dot,
         indices,
@@ -544,10 +560,11 @@ def _idx_jvp_weights(w_dot, weights, indices, indptr, perm, v, *, shape, transpo
         weighted=kw.get('weighted', False),
         max_row_nnz=kw.get('max_row_nnz'),
         config=_config_from_params(kw),
+        long_mask=long_mask,
     )
 
 
-def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, *, shape, transpose, **kw):
+def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, long_mask, *, shape, transpose, **kw):
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr) or ad.is_undefined_primal(perm):
         raise ValueError("Cannot transpose with respect to sparse structure / perm.")
     ct = ct[0]
@@ -558,22 +575,22 @@ def _idx_transpose_rule(ct, weights, indices, indptr, perm, events, *, shape, tr
             w = weights if weights.shape[0] == 1 else weights[perm]
             # ct_events is dense/float cotangent data, not binary events.
             ct_events = csrmv(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
-        return weights, indices, indptr, perm, ct_events
+        return weights, indices, indptr, perm, ct_events, None
     if type(ct) is ad.Zero:
-        return ad.Zero(weights.aval), indices, indptr, perm, events
+        return ad.Zero(weights.aval), indices, indptr, perm, events, None
     # Slot k uses weights[perm[k]].
     ct_w = _event_weight_cotangent(
         ct, weights.aval, events, indices, indptr, dict(kw, transpose=transpose),
         primitive=binary_csrmv_indexed_p, perm=perm,
         unit_product=lambda w: _idx_jvp_weights(
-            w, weights, indices, indptr, perm, events, shape=shape, transpose=transpose, **kw)[0],
+            w, weights, indices, indptr, perm, events, long_mask, shape=shape, transpose=transpose, **kw)[0],
     )
-    return ct_w, indices, indptr, perm, events
+    return ct_w, indices, indptr, perm, events, None
 
 
 def _idx_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if axes in ((None, None, None, None, 0), (None, None, None, None, 1)):
+    if axes in ((None, None, None, None, 0, None), (None, None, None, None, 1, None)):
         assert args[4].ndim == 2, f'Batching axis {axes[4]} requires 2D input.'
         r = binary_csrmm_indexed_p_call(
             args[0],
@@ -586,6 +603,7 @@ def _idx_batching(args, axes, **kwargs):
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
             config=_config_from_params(kwargs),
+            long_mask=args[-1],
         )
         return r, [1]
 
@@ -604,12 +622,12 @@ backends: ``numba`` (CPU), ``jax_raw`` (CPU/GPU/TPU), and ``cuda_raw`` (CUDA
 warp kernels in ``binary_csrmv.cu`` / ``binary_indexed_csrmv.cu``).
 """,
 )
-binary_csrmv_indexed_p.def_numba_kernel(_csrmv_indexed_numba_kernel)
-binary_csrmv_indexed_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_indexed_jax_kernel)
-binary_csrmv_indexed_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_indexed_jax_kernel)
-binary_csrmv_indexed_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_indexed_jax_kernel)
-binary_csrmv_indexed_p.def_cuda_raw_kernel(_binary_csrmv_indexed_cuda_kernel, asdefault=True)
-binary_csrmv_indexed_p.def_jvp_rule2(_idx_jvp_weights, None, None, None, _idx_jvp_v)
+binary_csrmv_indexed_p.def_numba_kernel(_ignore_long_mask(_csrmv_indexed_numba_kernel))
+binary_csrmv_indexed_p.def_kernel('jax_raw', 'cpu', _ignore_long_mask(_binary_csrmv_indexed_jax_kernel))
+binary_csrmv_indexed_p.def_kernel('jax_raw', 'gpu', _ignore_long_mask(_binary_csrmv_indexed_jax_kernel))
+binary_csrmv_indexed_p.def_kernel('jax_raw', 'tpu', _ignore_long_mask(_binary_csrmv_indexed_jax_kernel))
+binary_csrmv_indexed_p.def_cuda_raw_kernel(_ignore_long_mask(_binary_csrmv_indexed_cuda_kernel), asdefault=True)
+binary_csrmv_indexed_p.def_jvp_rule2(_idx_jvp_weights, None, None, None, _idx_jvp_v, None)
 binary_csrmv_indexed_p.def_transpose_rule(_idx_transpose_rule)
 binary_csrmv_indexed_p.def_batching_rule(_idx_batching)
 binary_csrmv_indexed_p.def_call(binary_csrmv_indexed_p_call)
@@ -621,7 +639,8 @@ binary_csrmv_indexed_p.def_tags('csr', 'binary', 'indexed')
 # =========================================================================== #
 
 
-@namescope(name="brainevent.binary_csrmm_indexed", static_argnames=("shape", "transpose", "weighted"))
+@namescope(name="brainevent.binary_csrmm_indexed", static_argnames=("shape", "transpose", "weighted"),
+           precheck=_precheck_long_mask)
 def binary_csrmm_indexed(
     data: Data,
     indices: Index,
@@ -634,6 +653,7 @@ def binary_csrmm_indexed(
     backend: Optional[str] = None,
     weighted: bool = False,
     config: Optional[CSRConfig] = None,
+    long_mask=None,
 ) -> Data:
     """Event-driven CSR matrix-matrix product with a fused weight gather index.
 
@@ -679,6 +699,9 @@ def binary_csrmm_indexed(
         planned from static shapes and the target GPU when it is lowered, so
         any config works for any structure, including one built inside
         ``jax.jit``.
+    long_mask : jax.Array or None, optional
+        Packed uint32 long-row classification for this traversal. ``None``
+        computes the mask automatically in the CUDA hybrid MM callable.
 
     Returns
     -------
@@ -697,7 +720,7 @@ def binary_csrmm_indexed(
     res = binary_csrmm_indexed_p_call(
         data, indices, indptr, perm, B,
         shape=shape, transpose=transpose, backend=backend, weighted=weighted,
-        config=config,
+        config=config, long_mask=long_mask,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -979,7 +1002,7 @@ def _binary_csrmm_indexed_cuda_kernel(
         )
         kernel_name = f'csr_binary_csrmm.binary_csrmm_nt_auto_homo{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, B):
+        def kernel(weights, indices, indptr, perm, B, long_mask=None):
             B = event_abi.prepare(B)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
             return (math_out,)
@@ -991,7 +1014,7 @@ def _binary_csrmm_indexed_cuda_kernel(
         )
         kernel_name = f'csr_binary_indexed_csrmm.binary_csrmm_nt_auto_perm_hetero{wt_sfx}{spk_suffix}'
 
-        def kernel(weights, indices, indptr, perm, B):
+        def kernel(weights, indices, indptr, perm, B, long_mask=None):
             B = event_abi.prepare(B)
             math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, perm, B)
             return (math_out,)
@@ -1011,6 +1034,7 @@ def binary_csrmm_indexed_p_call(
     backend: Optional[str] = None,
     weighted: bool = False,
     config: Optional[CSRConfig] = None,
+    long_mask=None,
 ):
     """Low-level primitive call for fused indexed event-driven CSR matmat.
 
@@ -1041,8 +1065,9 @@ def binary_csrmm_indexed_p_call(
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
     )
     config = _config_for_call(config)
+    long_mask = _long_mask_operand(long_mask, rows=indptr.size - 1)
     return binary_csrmm_indexed_p(
-        weights, indices, indptr, perm, B,
+        weights, indices, indptr, perm, B, long_mask,
         outs=[out_info],
         config_spec=config.mv,
         shape=shape,
@@ -1060,22 +1085,23 @@ def binary_csrmm_indexed_p_call(
 # --------------------------------------------------------------------------- #
 # autodiff rules
 # --------------------------------------------------------------------------- #
-def _csrmm_idx_jvp_data(data_dot, data, indices, indptr, perm, B, *, shape, transpose, **kw):
+def _csrmm_idx_jvp_data(data_dot, data, indices, indptr, perm, B, long_mask, *, shape, transpose, **kw):
     # Linear in weights (events fixed): re-enter the indexed primitive.
     return binary_csrmm_indexed_p_call(
         data_dot, indices, indptr, perm, B, shape=shape, transpose=transpose, backend=kw['backend'],
         weighted=kw.get('weighted', False),
         config=_config_from_params(kw),
+        long_mask=long_mask,
     )
 
 
-def _csrmm_idx_jvp_B(B_dot, data, indices, indptr, perm, B, *, shape, transpose, **kw):
+def _csrmm_idx_jvp_B(B_dot, data, indices, indptr, perm, B, long_mask, *, shape, transpose, **kw):
     # Event indicator is a step; surrogate tangent routes through float csrmm.
     w = data if data.shape[0] == 1 else data[perm]
     return [csrmm(w, indices, indptr, B_dot.astype(w.dtype), shape=shape, transpose=transpose, backend=kw['backend'])]
 
 
-def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, *, shape, transpose, **kw):
+def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, long_mask, *, shape, transpose, **kw):
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr) or ad.is_undefined_primal(perm):
         raise ValueError("Cannot transpose with respect to sparse structure / perm.")
     ct = ct[0]
@@ -1085,22 +1111,22 @@ def _csrmm_idx_transpose_rule(ct, data, indices, indptr, perm, B, *, shape, tran
         else:
             w = data if data.shape[0] == 1 else data[perm]
             ct_B = csrmm(w, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kw['backend'])
-        return data, indices, indptr, perm, ct_B
+        return data, indices, indptr, perm, ct_B, None
     if type(ct) is ad.Zero:
-        return ad.Zero(data.aval), indices, indptr, perm, B
+        return ad.Zero(data.aval), indices, indptr, perm, B, None
     # Slot k uses weights[perm[k]].
     ct_w = _event_weight_cotangent(
         ct, data.aval, B, indices, indptr, dict(kw, transpose=transpose),
         primitive=binary_csrmm_indexed_p, perm=perm,
         unit_product=lambda w: _csrmm_idx_jvp_data(
-            w, data, indices, indptr, perm, B, shape=shape, transpose=transpose, **kw)[0],
+            w, data, indices, indptr, perm, B, long_mask, shape=shape, transpose=transpose, **kw)[0],
     )
-    return ct_w, indices, indptr, perm, B
+    return ct_w, indices, indptr, perm, B, None
 
 
 def _csrmm_idx_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if axes[:4] == (None, None, None, None) and axes[4] in (0, 1, 2):
+    if axes[:4] == (None, None, None, None) and axes[4] in (0, 1, 2) and axes[-1] is None:
         assert args[4].ndim == 3, f'Batching axis {axes[4]} requires 3D input.'
         if axes[4] == 0:
             batch_size, m, n = args[4].shape
@@ -1122,6 +1148,7 @@ def _csrmm_idx_batching(args, axes, **kwargs):
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
             config=_config_from_params(kwargs),
+            long_mask=args[-1],
         )[0]
         if axes[4] == 2:
             return [jnp.reshape(r, [r.shape[0], n, batch_size])], [2]
@@ -1140,12 +1167,12 @@ weights are read through a permutation ``perm`` (structural slot ``j`` uses
 ``weights[perm[j]]``).  Homogeneous weights ignore ``perm``.
 """,
 )
-binary_csrmm_indexed_p.def_numba_kernel(_csrmm_indexed_numba_kernel)
-binary_csrmm_indexed_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_indexed_jax_kernel)
-binary_csrmm_indexed_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_indexed_jax_kernel)
-binary_csrmm_indexed_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_indexed_jax_kernel)
+binary_csrmm_indexed_p.def_numba_kernel(_ignore_long_mask(_csrmm_indexed_numba_kernel))
+binary_csrmm_indexed_p.def_kernel('jax_raw', 'cpu', _ignore_long_mask(_binary_csrmm_indexed_jax_kernel))
+binary_csrmm_indexed_p.def_kernel('jax_raw', 'gpu', _ignore_long_mask(_binary_csrmm_indexed_jax_kernel))
+binary_csrmm_indexed_p.def_kernel('jax_raw', 'tpu', _ignore_long_mask(_binary_csrmm_indexed_jax_kernel))
 binary_csrmm_indexed_p.def_cuda_raw_kernel(_binary_csrmm_indexed_cuda_kernel, asdefault=True)
-binary_csrmm_indexed_p.def_jvp_rule2(_csrmm_idx_jvp_data, None, None, None, _csrmm_idx_jvp_B)
+binary_csrmm_indexed_p.def_jvp_rule2(_csrmm_idx_jvp_data, None, None, None, _csrmm_idx_jvp_B, None)
 binary_csrmm_indexed_p.def_transpose_rule(_csrmm_idx_transpose_rule)
 binary_csrmm_indexed_p.def_batching_rule(_csrmm_idx_batching)
 binary_csrmm_indexed_p.def_call(binary_csrmm_indexed_p_call)

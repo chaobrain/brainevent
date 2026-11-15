@@ -43,6 +43,8 @@ from brainevent._csr.config import CSRConfig
 from brainevent._misc import csc_to_csr_index, csr_to_csc_index
 from brainevent._test_util import check_event_op_grads, jax_x64_enabled
 
+from brainevent._structure import _mm_mask_for_structure
+
 
 # Sparse objects, conversions, arithmetic and JAX transformations
 # ---------------------------------------------------------------
@@ -2166,9 +2168,11 @@ def test_pytree_round_trip_carries_shared_mirror_and_config_adds_no_leaves(monke
 
     leaves = jax.tree.leaves(sibling)
     assert jax.tree.leaves(sibling.config) == []
-    # data, indices, indptr and the three mirror arrays; nothing from config.
-    assert len(leaves) == 6
-    assert all(a is b for a, b in zip(leaves[3:], matrix.buffers[key]))
+    # data, indices, indptr, the primary mask, and mirror arrays plus its mask.
+    assert len(leaves) == 8
+    assert leaves[3] is matrix._cache.primary_mm_mask
+    assert all(a is b for a, b in zip(leaves[4:7], matrix.buffers[key]))
+    assert leaves[7] is matrix._cache.mirror_mm_mask
 
     restored = jax.jit(lambda value: value)(sibling)
     assert builds == []
@@ -2244,7 +2248,7 @@ def test_config_snapshot_is_loaded_once_and_survives_reconstruction(monkeypatch,
     np.testing.assert_array_equal(transformed.data, matrix.data * 2)
     assert transformed.config.mv == snapshot.mv
     leaves = jax.tree.leaves(matrix)
-    assert len(leaves) == 3
+    assert len(leaves) == 4
     assert leaves[1] is matrix.indices and leaves[2] is matrix.indptr
 
 
@@ -2920,7 +2924,7 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
         raise AssertionError("cuda_raw unfavorable BinaryArray route must use indexed primitive")
 
     def fake_mv_indexed(data, indices, indptr, perm, vector, *, shape, transpose, backend=None, weighted=False,
-                        config=None):
+                        config=None, long_mask=None):
         calls.append({
             "kind": "mv",
             "shape": shape,
@@ -2934,7 +2938,7 @@ def test_cuda_raw_unfavorable_binary_routes_use_indexed_mirror(monkeypatch):
         return jnp.zeros((out_size,), dtype=data.dtype)
 
     def fake_mm_indexed(data, indices, indptr, perm, matrix, *, shape, transpose, backend=None, weighted=False,
-                        config=None):
+                        config=None, long_mask=None):
         calls.append({
             "kind": "mm",
             "shape": shape,
@@ -3034,3 +3038,102 @@ def test_few_long_rows_share_one_executable_across_task_counts():
         expected = np.asarray(events, np.float32) @ np.asarray(matrix.todense())
         np.testing.assert_allclose(product(matrix, events), expected, rtol=1e-5)
     assert product._cache_size() == 1
+
+
+# Reusable hybrid-MM structure masks.
+
+def _long_mask_cache_matrix(cls=CSR, long_row=0):
+    lengths = np.full(64, 2, np.int32)
+    lengths[long_row] = 600
+    indptr = np.r_[0, lengths.cumsum()].astype(np.int32)
+    indices = np.concatenate([np.arange(n) for n in lengths]).astype(np.int32)
+    shape = (64, 700) if cls is CSR else (700, 64)
+    return cls((jnp.ones(len(indices)), jnp.asarray(indices), jnp.asarray(indptr)),
+               shape=shape, backend='jax_raw')
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_constructor_builds_packed_mask_and_structure_preserving_copies_share_it(cls):
+    matrix = _long_mask_cache_matrix(cls, long_row=33)
+    mask = matrix._cache.primary_mm_mask
+    np.testing.assert_array_equal(mask, np.array([0, 2], np.uint32))
+    assert mask.dtype == jnp.uint32
+    for sibling in (matrix.with_data(matrix.data * 2), matrix.apply(lambda data: data * 3), matrix.T):
+        assert sibling._cache is matrix._cache
+        assert sibling._cache.primary_mm_mask is mask
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_mask_round_trip_restores_leaves_without_computing(monkeypatch, cls):
+    matrix = _long_mask_cache_matrix(cls).build_weight_indices()
+    leaves, tree = jax.tree.flatten(matrix)
+    assert any(leaf is matrix._cache.primary_mm_mask for leaf in leaves)
+    assert any(leaf is matrix._cache.mirror_mm_mask for leaf in leaves)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('pytree reconstruction must reuse masks')
+
+    monkeypatch.setattr('brainevent._structure._mm_mask_for_structure', forbidden)
+    monkeypatch.setattr('brainevent._csr.main._mm_mask_for_structure', forbidden)
+    restored = jax.tree.unflatten(tree, leaves)
+    assert restored._cache.primary_mm_mask is matrix._cache.primary_mm_mask
+    assert restored._cache.mirror_mm_mask is matrix._cache.mirror_mm_mask
+    abstract = jax.tree.map(lambda _: None, matrix)
+    assert abstract._cache.primary_mm_mask is None
+    assert abstract._cache.mirror_mm_mask is None
+
+
+def test_redrawn_structures_change_mask_without_recompiling():
+    product = jax.jit(lambda matrix, events: BinaryArray(events) @ matrix)
+    events = jnp.arange(64) % 5 == 0
+    a, b = _long_mask_cache_matrix(long_row=0), _long_mask_cache_matrix(long_row=33)
+    np.testing.assert_array_equal(a._cache.primary_mm_mask, [1, 0])
+    np.testing.assert_array_equal(b._cache.primary_mm_mask, [0, 2])
+    for matrix in (a, b, a):
+        expected = np.asarray(events, np.float32) @ np.asarray(matrix.todense())
+        np.testing.assert_allclose(product(matrix, events), expected)
+    assert product._cache_size() == 1
+
+
+def test_weights_only_scan_carries_mask_without_building_it_again(monkeypatch):
+    matrix = _long_mask_cache_matrix()
+    expected_mask = np.asarray(matrix._cache.primary_mm_mask)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('a weights-only scan must retain its structure mask')
+
+    monkeypatch.setattr('brainevent._structure._mm_mask_for_structure', forbidden)
+    monkeypatch.setattr('brainevent._csr.main._mm_mask_for_structure', forbidden)
+
+    @jax.jit
+    def run(value, events):
+        def step(carry, unused):
+            result = BinaryArray(events) @ carry
+            return carry.with_data(carry.data + 1), result
+        return jax.lax.scan(step, value, None, length=3)
+
+    result, outputs = run(matrix, jnp.ones(64, bool))
+    np.testing.assert_array_equal(result._cache.primary_mm_mask, expected_mask)
+    expected = np.asarray(matrix.todense()).sum(axis=0)
+    np.testing.assert_allclose(outputs, np.arange(1, 4)[:, None] * expected)
+
+
+@pytest.mark.parametrize('cls', [CSR, CSC])
+def test_new_structures_receive_matching_primary_masks(cls):
+    matrix = _long_mask_cache_matrix(cls)
+    converted = matrix.tocsc() if cls is CSR else matrix.tocsr()
+    for value in (converted, matrix.slice_rows([0, 2, 3]), matrix.diag_add(jnp.ones(min(matrix.shape)))):
+        assert value._cache is not matrix._cache
+        assert value._cache.primary_mm_mask is not None
+        np.testing.assert_array_equal(value._cache.primary_mm_mask,
+                                      _mm_mask_for_structure(value.indptr, value.nse))
+
+
+def test_traced_constructor_returns_mask_as_an_array_leaf():
+    matrix = _long_mask_cache_matrix()
+    build = jax.jit(lambda data, indices, indptr: CSR(
+        (data, indices, indptr), shape=matrix.shape, backend='jax_raw', check_structure=False,
+    ))
+    traced = build(matrix.data, matrix.indices, matrix.indptr)
+    np.testing.assert_array_equal(traced._cache.primary_mm_mask, matrix._cache.primary_mm_mask)
+    assert jax.tree.structure(traced) == jax.tree.structure(matrix)

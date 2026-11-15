@@ -85,7 +85,7 @@ def _patch_cuda_loaders(monkeypatch, loader):
 
 def _mm_eqn_shapes(eqn):
     """``(rows, cols, nnz, batch)`` from which the CUDA lowering plans a CSR MM equation."""
-    indices, indptr, events = eqn.invars[1].aval, eqn.invars[2].aval, eqn.invars[-1].aval
+    indices, indptr, events = eqn.invars[1].aval, eqn.invars[2].aval, eqn.invars[4].aval
     return indptr.shape[0] - 1, eqn.outvars[0].aval.shape[0], indices.shape[0], events.shape[1]
 
 
@@ -304,8 +304,8 @@ def test_binary_csrmv_indexed_p_call_returns_one_output_and_static_task_capacity
     np.testing.assert_allclose(np.asarray(out[0]), np.asarray(ref))
 
     eqn = _kernel_eqn(binary_csrmv_indexed_p, call, weights, vector)
-    # Math operands only (weights, indices, indptr, perm, vector): no mask operand.
-    assert (len(eqn.invars), len(eqn.outvars)) == (5, 1)
+    # Five math operands followed by the optional classification-mask operand.
+    assert (len(eqn.invars), len(eqn.outvars)) == (6, 1)
     assert eqn.params['config_spec'] == MVSchedule()
     _assert_task_capacity_param(eqn, indptr, max_row_nnz)
 
@@ -318,8 +318,8 @@ def test_binary_csrmv_indexed_batching_folds_vectors_into_matmat():
     vectors = jnp.array([[True, False], [False, True]], dtype=jnp.bool_)
 
     out, out_dims = _idx_batching(
-        (weights, indices, indptr, perm, vectors),
-        (None, None, None, None, 0),
+        (weights, indices, indptr, perm, vectors, jnp.empty((0,), jnp.uint32)),
+        (None, None, None, None, 0, None),
         config_spec=CSRConfig().mv,
         outs=[jax.ShapeDtypeStruct((1,), weights.dtype)],
         shape=(1, 2),
@@ -394,8 +394,8 @@ def test_binary_csrmm_indexed_p_call_returns_one_output_without_mv_workspace():
     np.testing.assert_allclose(np.asarray(out[0]), np.asarray(ref))
 
     eqn = _kernel_eqn(binary_csrmm_indexed_p, call, weights, matrix)
-    # Math operands only; the MM plan comes from shapes at lowering, not from params.
-    assert (len(eqn.invars), len(eqn.outvars)) == (5, 1)
+    # The mask is an array operand; the MM plan still comes from shapes at lowering.
+    assert (len(eqn.invars), len(eqn.outvars)) == (6, 1)
     assert not {'task_capacity', 'max_row_nnz', 'call_plan'} & eqn.params.keys()
     assert eqn.params['config_spec'] == MVSchedule()
 
@@ -421,8 +421,8 @@ def test_binary_csrmm_indexed_batching_folds_batch_into_columns(
     matrices = jnp.arange(np.prod(input_shape)).reshape(input_shape) % 2 == 0
 
     out, out_dims = _csrmm_idx_batching(
-        (weights, indices, indptr, perm, matrices),
-        (None, None, None, None, batch_axis),
+        (weights, indices, indptr, perm, matrices, jnp.empty((0,), jnp.uint32)),
+        (None, None, None, None, batch_axis, None),
         config_spec=CSRConfig().mv,
         outs=[jax.ShapeDtypeStruct((1, 2), weights.dtype)],
         shape=(1, 2),
@@ -2005,3 +2005,121 @@ def test_native_half_indexed_scatter_accumulates_in_float32(dtype_name, fan_in, 
     assert actual.dtype == weights.dtype
     np.testing.assert_array_equal(np.asarray(actual, np.float32),
                                   np.full(actual.shape, fan_in, np.float32))
+
+
+# Reusable hybrid-MM structure masks.
+
+def _long_mask_indexed_case():
+    weights = jnp.arange(1, 10, dtype=jnp.float32)
+    indices = jnp.array([0, 3, 1, 2, 4, 0, 1, 3, 4], dtype=jnp.int32)
+    indptr = jnp.array([0, 2, 2, 5, 9], dtype=jnp.int32)
+    perm = jnp.arange(8, -1, -1, dtype=jnp.int32)
+    mask = jnp.zeros((1,), dtype=jnp.uint32)
+    dense = jnp.zeros((4, 5), dtype=jnp.float32).at[
+        jnp.repeat(jnp.arange(4), jnp.diff(indptr), total_repeat_length=9), indices
+    ].add(weights[perm])
+    return weights, indices, indptr, perm, mask, dense
+
+
+def _long_mask_indexed_mm_equations(jaxpr):
+    for equation in getattr(jaxpr, 'jaxpr', jaxpr).eqns:
+        if equation.primitive.name == 'binary_csrmm_indexed':
+            yield equation
+        nested = equation.params.get('jaxpr')
+        if nested is not None:
+            yield from _long_mask_indexed_mm_equations(nested)
+
+
+@pytest.mark.parametrize('matrix', [False, True], ids=['mv', 'mm'])
+@pytest.mark.parametrize('transpose', [False, True], ids=['gather', 'scatter'])
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+@pytest.mark.parametrize('supplied', [False, True], ids=['automatic', 'carried'])
+def test_indexed_mask_preserves_event_products(matrix, transpose, weighted, supplied):
+    weights, indices, indptr, perm, mask, dense = _long_mask_indexed_case()
+    size = 4 if transpose else 5
+    events = (jnp.arange(size * (3 if matrix else 1), dtype=jnp.float32) % 5 - 2)
+    events = events.reshape((size, 3)) if matrix else events
+    product = binary_csrmm_indexed if matrix else binary_csrmv_indexed
+    result = product(
+        weights, indices, indptr, perm, events, shape=(4, 5), transpose=transpose,
+        weighted=weighted, backend='jax_raw', long_mask=mask if supplied else None,
+    )
+    expected = (dense.T if transpose else dense) @ (events if weighted else (events != 0))
+    np.testing.assert_allclose(result, expected)
+
+
+@pytest.mark.parametrize('matrix', [False, True], ids=['mv_to_mm', 'mm'])
+def test_indexed_vmap_preserves_supplied_mask(matrix):
+    weights, indices, indptr, perm, mask, _ = _long_mask_indexed_case()
+    events = (jnp.arange(24, dtype=jnp.float32).reshape(2, 4, 3) % 5 - 2)
+    events = events if matrix else events[:, :, 0]
+    product = binary_csrmm_indexed if matrix else binary_csrmv_indexed
+
+    def one(values):
+        return product(weights, indices, indptr, perm, values, shape=(4, 5), transpose=True,
+                       backend='jax_raw', long_mask=mask)
+
+    actual = jax.jit(jax.vmap(one))(events)
+    expected = jnp.stack([one(values) for values in events])
+    np.testing.assert_allclose(actual, expected)
+    equations = list(_long_mask_indexed_mm_equations(jax.make_jaxpr(jax.vmap(one))(events)))
+    assert len(equations) == 1
+    assert equations[0].invars[-1].aval.shape == mask.shape
+    assert equations[0].invars[-1].aval.dtype == jnp.uint32
+
+
+@pytest.mark.parametrize('matrix', [False, True], ids=['mv', 'mm'])
+def test_indexed_weight_grad_and_jvp_preserve_supplied_mask(matrix):
+    weights, indices, indptr, perm, mask, _ = _long_mask_indexed_case()
+    events = jnp.array([1., 0., -2., 3.], dtype=jnp.float32)
+    events = jnp.stack((events, events[::-1]), axis=1) if matrix else events
+    product = binary_csrmm_indexed if matrix else binary_csrmv_indexed
+
+    def loss(values, supplied):
+        return product(values, indices, indptr, perm, events, shape=(4, 5), transpose=True,
+                       backend='jax_raw', weighted=True, long_mask=supplied).sum()
+
+    expected = jax.grad(lambda values: loss(values, None))(weights)
+    actual = jax.jit(jax.grad(lambda values: loss(values, mask)))(weights)
+    np.testing.assert_allclose(actual, expected)
+    _, tangent = jax.jvp(lambda values: loss(values, mask), (weights,), (jnp.ones_like(weights),))
+    np.testing.assert_allclose(tangent, expected.sum())
+
+
+@pytest.mark.parametrize('matrix', [False, True], ids=['mv', 'mm'])
+@pytest.mark.parametrize('mask', [jnp.zeros((2,), jnp.uint32), jnp.zeros((1,), jnp.int32),
+                                 np.zeros((1,), np.uint64)])
+def test_indexed_raw_calls_validate_supplied_mask(matrix, mask):
+    weights, indices, indptr, perm, _, _ = _long_mask_indexed_case()
+    product = binary_csrmm_indexed if matrix else binary_csrmv_indexed
+    events = jnp.ones((4, 2) if matrix else (4,))
+    with pytest.raises((TypeError, ValueError), match='long_mask'):
+        product(weights, indices, indptr, perm, events, shape=(4, 5), transpose=True,
+                backend='jax_raw', long_mask=mask)
+
+
+@requires_gpu
+@pytest.mark.parametrize('weighted', [False, True], ids=['binary', 'weighted'])
+def test_native_indexed_mm_and_vmapped_mv_use_supplied_mask(monkeypatch, weighted):
+    import brainevent._csr.binary.binary as binary_module
+
+    lengths = np.r_[449, np.ones(63, dtype=np.int32)]
+    indptr = jnp.asarray(np.r_[0, np.cumsum(lengths)], dtype=jnp.int32)
+    indices = jnp.asarray(np.concatenate([np.arange(length) for length in lengths]), dtype=jnp.int32)
+    weights = jnp.arange(1, 513, dtype=jnp.float32)
+    perm = jnp.arange(511, -1, -1, dtype=jnp.int32)
+    mask = jnp.array([1, 0], dtype=jnp.uint32)
+    events = (jnp.arange(64 * 3, dtype=jnp.float32).reshape(64, 3) % 5 - 2)
+    kwargs = dict(shape=(64, 600), transpose=True, backend='cuda_raw', weighted=weighted)
+    expected = binary_csrmm_indexed(weights, indices, indptr, perm, events, **kwargs)
+
+    def unexpected_rebuild(*args, **kwargs):
+        raise AssertionError('a supplied mask must bypass runtime classification')
+
+    monkeypatch.setattr(binary_module, '_long_row_mask', unexpected_rebuild)
+    actual = binary_csrmm_indexed(weights, indices, indptr, perm, events, long_mask=mask, **kwargs)
+    vmapped = jax.jit(jax.vmap(lambda values: binary_csrmv_indexed(
+        weights, indices, indptr, perm, values, long_mask=mask, **kwargs,
+    )))(events.T)
+    np.testing.assert_allclose(actual, expected)
+    np.testing.assert_allclose(vmapped.T, expected)

@@ -31,6 +31,9 @@ from brainevent._csr._support.binary import (
     _config_for_call,
     _event_weight_cotangent,
     _hybrid_mv_kernel,
+    _long_mask_operand,
+    _ignore_long_mask,
+    _precheck_long_mask,
 )
 from brainevent._csr.config import CSRConfig, _mm_plan
 from brainevent._op.lowering_target import cuda_l2_bytes
@@ -51,8 +54,9 @@ __all__ = [
 ]
 
 
-@namescope(name="brainevent.binary_csrmv", static_argnames=("shape", "transpose", "weighted", "max_row_nnz"))
-def _binary_csrmv_jit(data, indices, indptr, v, *, shape, transpose, backend, weighted, max_row_nnz, config):
+@namescope(name="brainevent.binary_csrmv", static_argnames=("shape", "transpose", "weighted", "max_row_nnz"),
+           precheck=_precheck_long_mask)
+def _binary_csrmv_jit(data, indices, indptr, v, *, shape, transpose, backend, weighted, max_row_nnz, config, long_mask):
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
     res = binary_csrmv_p_call(
@@ -64,7 +68,7 @@ def _binary_csrmv_jit(data, indices, indptr, v, *, shape, transpose, backend, we
         transpose=transpose,
         backend=backend,
         weighted=weighted,
-        max_row_nnz=max_row_nnz, config=config,
+        max_row_nnz=max_row_nnz, config=config, long_mask=long_mask,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
 
@@ -81,6 +85,7 @@ def binary_csrmv(
     weighted: bool = False,
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
+    long_mask: Optional[jax.Array] = None,
 ) -> Data:
     """
     Product of a CSR sparse matrix and a dense vector using event-driven
@@ -139,6 +144,11 @@ def binary_csrmv(
         ``cuda_raw`` MV task queue. ``None`` uses a bound from array sizes.
         This argument never scans ``indptr``; the caller must ensure the
         bound covers every row.
+
+    long_mask : jax.Array or None, optional
+        Packed uint32 long-row mask for the shape-selected hybrid MM threshold.
+        ``None`` constructs it automatically when native MM needs it. Matrices
+        provide their cached mask; MV carries it for batching into MM.
 
     Returns
     -------
@@ -207,11 +217,12 @@ def binary_csrmv(
     return _binary_csrmv_jit(
         data, indices, indptr, v,
         shape=shape, transpose=transpose, backend=backend, weighted=weighted,
-        max_row_nnz=max_row_nnz, config=config,
+        max_row_nnz=max_row_nnz, config=config, long_mask=long_mask,
     )
 
 
-@namescope(name="brainevent.binary_csrmm", static_argnames=("shape", "transpose", "weighted"))
+@namescope(name="brainevent.binary_csrmm", static_argnames=("shape", "transpose", "weighted"),
+           precheck=_precheck_long_mask)
 def binary_csrmm(
     data: Data,
     indices: Index,
@@ -223,6 +234,7 @@ def binary_csrmm(
     backend: Optional[str] = None,
     weighted: bool = False,
     config: Optional[CSRConfig] = None,
+    long_mask: Optional[jax.Array] = None,
 ) -> Data:
     """
     Product of a CSR sparse matrix and a dense matrix using event-driven
@@ -273,6 +285,11 @@ def binary_csrmm(
         planned from static shapes and the target GPU when it is lowered, so
         any config works for any structure, including one built inside
         ``jax.jit``.
+
+    long_mask : jax.Array or None, optional
+        Packed uint32 long-row mask for the shape-selected hybrid MM threshold.
+        ``None`` constructs it automatically when native MM needs it. Matrices
+        provide their cached mask; MV carries it for batching into MM.
 
     Returns
     -------
@@ -348,7 +365,7 @@ def binary_csrmm(
         transpose=transpose,
         backend=backend,
         weighted=weighted,
-        config=config,
+        config=config, long_mask=long_mask,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -802,7 +819,7 @@ def _grad_backend(backend, primitive):
     return None
 
 
-def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
+def _csrmv_jvp_v(v_dot, data, indices, indptr, v, long_mask=None, *, shape, transpose, **kwargs):
     # The float primitive needs a weight-dtype tangent (numba has no float16).
     return [
         csrmv(data, indices, indptr, v_dot.astype(data.dtype), shape=shape, transpose=transpose,
@@ -810,7 +827,7 @@ def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs)
     ]
 
 
-def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
+def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, long_mask=None, *, shape, transpose, **kwargs):
     return binary_csrmv_p_call(
         data_dot,
         indices,
@@ -821,11 +838,14 @@ def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, 
         backend=kwargs['backend'],
         weighted=kwargs.get('weighted', False),
         max_row_nnz=kwargs.get('max_row_nnz'),
-        config=_config_from_params(kwargs),
+        config=_config_from_params(kwargs), long_mask=long_mask,
     )
 
 
-def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose, **kwargs):
+def _csrmv_transpose_rule(ct, data, indices, indptr, events, long_mask=None, *, shape, transpose, **kwargs):
+    def result(*values):
+        return (*values, None) if long_mask is not None else values
+
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr):
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
@@ -837,21 +857,21 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose
             ct_events = csrmv(data, indices, indptr, ct,
                               shape=shape, transpose=not transpose,
                               backend=_grad_backend(kwargs['backend'], csrmv_p))
-        return data, indices, indptr, ct_events
+        return result(data, indices, indptr, ct_events)
     if type(ct) is ad.Zero:
-        return ad.Zero(data.aval), indices, indptr, events
+        return result(ad.Zero(data.aval), indices, indptr, events)
     ct_values = _event_weight_cotangent(
         ct, data.aval, events, indices, indptr, dict(kwargs, transpose=transpose),
         primitive=binary_csrmv_p,
         unit_product=lambda w: _csrmv_jvp_weights(
-            w, data, indices, indptr, events, shape=shape, transpose=transpose, **kwargs)[0],
+            w, data, indices, indptr, events, long_mask, shape=shape, transpose=transpose, **kwargs)[0],
     )
-    return ct_values, indices, indptr, events
+    return result(ct_values, indices, indptr, events)
 
 
 def _csrmv_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if axes in ((None, None, None, 0), (None, None, None, 1)):
+    if axes in ((None, None, None, 0, None), (None, None, None, 1, None)):
         assert args[3].ndim == 2, 'Batching requires 2D input.'
         r = binary_csrmm_p_call(
             args[0],
@@ -862,7 +882,7 @@ def _csrmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            config=_config_from_params(kwargs),
+            config=_config_from_params(kwargs), long_mask=args[4],
         )
         return r, [1]
 
@@ -949,6 +969,7 @@ def binary_csrmv_p_call(
     weighted: bool = False,
     max_row_nnz: Optional[int] = None,
     config: Optional[CSRConfig] = None,
+    long_mask: Optional[jax.Array] = None,
 ):
     """
     Low-level primitive call for event-driven CSR matrix--vector
@@ -991,6 +1012,9 @@ def binary_csrmv_p_call(
     max_row_nnz : int or None, optional
         Upper bound on the longest row of ``indptr``, used to size the
         ``cuda_raw`` hybrid task queue (see :func:`binary_csrmv`).
+
+    long_mask : jax.Array or None, optional
+        Packed uint32 structural mask, or ``None`` for automatic construction.
 
     Returns
     -------
@@ -1070,11 +1094,13 @@ def binary_csrmv_p_call(
 
     # Call the binary_csrmv_p custom operation to perform the matrix-vector multiplication.
     config = _config_for_call(config)
+    long_mask = _long_mask_operand(long_mask, rows=indptr.size - 1)
     return binary_csrmv_p(
         weights,
         indices,
         indptr,
         vector,
+        long_mask,
         outs=[out_info],
         config_spec=config.mv,
         shape=shape,
@@ -1119,13 +1145,13 @@ See Also
 binary_csrmv : High-level user-facing function wrapper.
 """
 )
-binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
-binary_csrmv_p.def_cuda_raw_kernel(_binary_csrmv_cuda_kernel, asdefault=True)
-binary_csrmv_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_jax_kernel)
-binary_csrmv_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_jax_kernel)
-binary_csrmv_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_jax_kernel)
-binary_csrmv_p.def_kernel('cusparse', 'gpu', _binary_csrmv_cusparse_kernel)
-binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
+binary_csrmv_p.def_numba_kernel(_ignore_long_mask(_csrmv_numba_kernel))
+binary_csrmv_p.def_cuda_raw_kernel(_ignore_long_mask(_binary_csrmv_cuda_kernel), asdefault=True)
+binary_csrmv_p.def_kernel('jax_raw', 'cpu', _ignore_long_mask(_binary_csrmv_jax_kernel))
+binary_csrmv_p.def_kernel('jax_raw', 'gpu', _ignore_long_mask(_binary_csrmv_jax_kernel))
+binary_csrmv_p.def_kernel('jax_raw', 'tpu', _ignore_long_mask(_binary_csrmv_jax_kernel))
+binary_csrmv_p.def_kernel('cusparse', 'gpu', _ignore_long_mask(_binary_csrmv_cusparse_kernel))
+binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v, None)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
 binary_csrmv_p.def_call(binary_csrmv_p_call)
@@ -1400,8 +1426,8 @@ def _make_hybrid_mm_kernel(*, weight_info, vector_info, indices_info, indptr_inf
     """Lower a hybrid scatter SpMM call to its native batch-major layout.
 
     The launch is planned from static shapes and the L2 size of the target
-    devices; the long-row mask is computed from ``indptr`` inside the lowered
-    program. No structure statistics or prepared state are needed.
+    devices. A supplied dynamic long-row mask is reused; raw calls without one
+    compute it from ``indptr`` inside the lowered program.
 
     Parameters
     ----------
@@ -1423,7 +1449,7 @@ def _make_hybrid_mm_kernel(*, weight_info, vector_info, indices_info, indptr_inf
     Returns
     -------
     callable
-        ``kernel(weights, indices, indptr, [perm,] events)``.
+        ``kernel(weights, indices, indptr, [perm,] events, long_mask)``.
     """
     out_info = out_info if out_info is not None else outs[0]
     batch, rows, cols = vector_info.shape[1], indptr_info.size - 1, out_info.shape[0]
@@ -1457,15 +1483,19 @@ def _make_hybrid_mm_kernel(*, weight_info, vector_info, indices_info, indptr_inf
     ffi = jax.ffi.ffi_call(module + '.' + symbol, infos, vmap_method='sequential')
 
     def kernel(*args):
+        # Direct adapter callers may omit the optional structural operand.
+        has_mask = len(args) == (6 if permuted else 5)
+        long_mask = args[-1] if has_mask else None
+        math_args = args[:-1] if has_mask else args
         if permuted:
-            weights, indices, indptr, perm, events = args
+            weights, indices, indptr, perm, events = math_args
         else:
-            weights, indices, indptr, events = args
+            weights, indices, indptr, events = math_args
             perm = None
         operands = (weights, indices, indptr)
         if native_permuted:
             operands += (perm,)
-        mask = _long_row_mask(indptr, plan.long_threshold)
+        mask = long_mask if long_mask is not None and long_mask.size else _long_row_mask(indptr, plan.long_threshold)
         output = ffi(*operands, mask, abi.prepare(events).T, **attrs)[0]
         return (match_varying_axes(output.T.astype(out_info.dtype), *args),)
 
@@ -1506,7 +1536,7 @@ def _binary_csrmm_cuda_kernel(
     out_info = kwargs['outs'][0]
     kernel_name = f'csr_binary_csrmm.binary_csrmm_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
-    def kernel(weights, indices, indptr, B):
+    def kernel(weights, indices, indptr, B, long_mask=None):
         B = event_abi.prepare(B)
         math_out = jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
         return (math_out,)
@@ -1514,7 +1544,7 @@ def _binary_csrmm_cuda_kernel(
     return kernel
 
 
-def _csrmm_jvp_data(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
+def _csrmm_jvp_data(data_dot, data, indices, indptr, B, long_mask=None, *, shape, transpose, **kwargs):
     return binary_csrmm_p_call(
         data_dot,
         indices,
@@ -1524,44 +1554,47 @@ def _csrmm_jvp_data(data_dot, data, indices, indptr, B, *, shape, transpose, **k
         transpose=transpose,
         backend=kwargs['backend'],
         weighted=kwargs.get('weighted', False),
-        config=_config_from_params(kwargs),
+        config=_config_from_params(kwargs), long_mask=long_mask,
     )
 
 
-def _csrmm_jvp_B(B_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
+def _csrmm_jvp_B(B_dot, data, indices, indptr, B, long_mask=None, *, shape, transpose, **kwargs):
     return [
         csrmm(data, indices, indptr, B_dot.astype(data.dtype), shape=shape, transpose=transpose,
               backend=_grad_backend(kwargs['backend'], csrmm_p))
     ]
 
 
-def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose,
+def _csrmm_transpose_rule(ct, data, indices, indptr, B, long_mask=None, *, shape, transpose,
                           rerun_forward=True, **kwargs):
+    def result(*values):
+        return (*values, None) if long_mask is not None else values
+
     assert not ad.is_undefined_primal(indices)
     assert not ad.is_undefined_primal(indptr)
 
     ct = ct[0]
     if type(ct) is ad.Zero:
         if ad.is_undefined_primal(B):
-            return data, indices, indptr, ad.Zero(B.aval)
-        return ad.Zero(data.aval), indices, indptr, B
+            return result(data, indices, indptr, ad.Zero(B.aval))
+        return result(ad.Zero(data.aval), indices, indptr, B)
     if ad.is_undefined_primal(B):
         dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose,
                    backend=_grad_backend(kwargs['backend'], csrmm_p))
-        return data, indices, indptr, dB
+        return result(data, indices, indptr, dB)
     # TCSR reuses this rule with its own backends, so it cannot rerun the CSR forward.
     unit_product = None if not rerun_forward else (lambda w: _csrmm_jvp_data(
-        w, data, indices, indptr, B, shape=shape, transpose=transpose, **kwargs)[0])
+        w, data, indices, indptr, B, long_mask, shape=shape, transpose=transpose, **kwargs)[0])
     d_data = _event_weight_cotangent(
         ct, data.aval, B, indices, indptr, dict(kwargs, transpose=transpose),
         primitive=binary_csrmm_p, unit_product=unit_product,
     )
-    return d_data, indices, indptr, B
+    return result(d_data, indices, indptr, B)
 
 
 def _csrmm_batching(args, axes, **kwargs):
     axes = tuple(axes)
-    if axes[:3] == (None, None, None) and axes[3] in (0, 1, 2):
+    if axes[:3] == (None, None, None) and axes[3] in (0, 1, 2) and axes[4] is None:
         assert args[3].ndim == 3, 'Batching requires 3D input.'
         # Fold the batch into the event columns: ``B`` becomes ``(m, batch * n)``.
         if axes[3] == 0:
@@ -1579,7 +1612,7 @@ def _csrmm_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
             weighted=kwargs.get('weighted', False),
-            config=_config_from_params(kwargs),
+            config=_config_from_params(kwargs), long_mask=args[4],
         )[0]
         if axes[3] == 2:
             n, batch_size = args[3].shape[1:]
@@ -1632,6 +1665,7 @@ def binary_csrmm_p_call(
     backend: Optional[str] = None,
     weighted: bool = False,
     config: Optional[CSRConfig] = None,
+    long_mask: Optional[jax.Array] = None,
 ):
     """
     Low-level primitive call for event-driven CSR matrix--matrix
@@ -1674,6 +1708,9 @@ def binary_csrmm_p_call(
         planned from static shapes and the target GPU when it is lowered, so
         any config works for any structure, including one built inside
         ``jax.jit``.
+
+    long_mask : jax.Array or None, optional
+        Packed uint32 structural mask, or ``None`` for automatic construction.
 
     Returns
     -------
@@ -1755,11 +1792,13 @@ def binary_csrmm_p_call(
     )
     # Call the binary_csrmm_p custom operation to perform the matrix-matrix multiplication.
     config = _config_for_call(config)
+    long_mask = _long_mask_operand(long_mask, rows=indptr.size - 1)
     return binary_csrmm_p(
         weights,
         indices,
         indptr,
         B,
+        long_mask,
         outs=[out_info],
         config_spec=config.mv,
         shape=shape,
@@ -1802,13 +1841,13 @@ See Also
 binary_csrmm : High-level user-facing function wrapper.
 """
 )
-binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
+binary_csrmm_p.def_numba_kernel(_ignore_long_mask(_csrmm_numba_kernel))
 binary_csrmm_p.def_cuda_raw_kernel(_binary_csrmm_cuda_kernel, asdefault=True)
-binary_csrmm_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_jax_kernel)
-binary_csrmm_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_jax_kernel)
-binary_csrmm_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_jax_kernel)
-binary_csrmm_p.def_kernel('cusparse', 'gpu', _binary_csrmm_cusparse_kernel)
-binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
+binary_csrmm_p.def_kernel('jax_raw', 'cpu', _ignore_long_mask(_binary_csrmm_jax_kernel))
+binary_csrmm_p.def_kernel('jax_raw', 'gpu', _ignore_long_mask(_binary_csrmm_jax_kernel))
+binary_csrmm_p.def_kernel('jax_raw', 'tpu', _ignore_long_mask(_binary_csrmm_jax_kernel))
+binary_csrmm_p.def_kernel('cusparse', 'gpu', _ignore_long_mask(_binary_csrmm_cusparse_kernel))
+binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B, None)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)
 binary_csrmm_p.def_call(binary_csrmm_p_call)

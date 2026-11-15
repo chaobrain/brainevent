@@ -16,6 +16,8 @@ from brainevent import FixedNumPerPre, FixedNumPerPost, PerformanceWarning
 from brainevent._csr.config import CSRConfig
 from brainevent._test_util import requires_gpu
 
+from brainevent._structure import _mm_mask_for_structure
+
 
 def _matrix(cls, backend='jax_raw'):
     shape = (2, 3) if cls is FixedNumPerPre else (3, 2)
@@ -92,8 +94,8 @@ def test_fcn_pytree_round_trip_restores_mirror_and_config_without_preparing(monk
     _forbid(monkeypatch, initialize, 'load_csr_config', 'pytree reconstruction must not select a config')
     _forbid(monkeypatch, main, 'fixed_conn_num_csc_structure', 'pytree reconstruction must reuse the mirror')
     leaves, tree = jax.tree_util.tree_flatten(sibling)
-    # data, indices and the three mirror arrays; the config has no leaves.
-    assert len(leaves) == 5
+    # data, indices, three mirror arrays and their mask; config has no leaves.
+    assert len(leaves) == 6
     restored = jax.tree_util.tree_unflatten(tree, leaves)
     assert type(restored) is cls
     assert restored._cache is not sibling._cache
@@ -328,3 +330,44 @@ def test_fcn_slices_keep_config(monkeypatch, cls):
         assert type(traced) is FixedNumPerPre
         assert traced.config.mv == matrix.config.mv
         np.testing.assert_allclose(traced.todense(), matrix.todense()[1:2])
+
+
+# Reusable mirror masks.
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+def test_mirror_mask_is_shared_and_carried_as_a_leaf(monkeypatch, cls):
+    shape = (70, 7) if cls is FixedNumPerPre else (7, 70)
+    matrix = cls(jnp.ones((70, 1)), jnp.zeros((70, 1), jnp.int32),
+                 shape=shape, backend='jax_raw')
+    assert matrix._cache.mirror_mm_mask is None
+    sibling = matrix.with_data(matrix.data * 2)
+    matrix.build_weight_indices()
+    mask = matrix._cache.mirror_mm_mask
+    # The first mirror row has 70 edges; mean degree is 10, so G=4/T=64.
+    np.testing.assert_array_equal(mask, [1])
+    assert sibling._cache.mirror_mm_mask is mask
+    assert matrix.T._cache.mirror_mm_mask is mask
+    leaves, tree = jax.tree.flatten(matrix)
+    assert any(leaf is mask for leaf in leaves)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('restoring a FixedNum object must not rebuild its mirror mask')
+
+    monkeypatch.setattr('brainevent._structure._mm_mask_for_structure', forbidden)
+    monkeypatch.setattr('brainevent._fcn.main._mm_mask_for_structure', forbidden)
+    restored = jax.tree.unflatten(tree, leaves)
+    assert restored._cache.mirror_mm_mask is mask
+    abstract = jax.tree.map(lambda _: None, matrix)
+    assert abstract._cache.mirror_mm_mask is None
+
+
+@pytest.mark.parametrize('cls', [FixedNumPerPre, FixedNumPerPost])
+def test_fcn_csr_conversion_initializes_primary_mask(cls):
+    shape = (2, 3) if cls is FixedNumPerPre else (3, 2)
+    matrix = cls(jnp.ones((2, 2)), jnp.array([[0, 2], [1, 2]], jnp.int32),
+                 shape=shape, backend='jax_raw')
+    converted = matrix.tocsr()
+    assert converted._cache.primary_mm_mask is not None
+    np.testing.assert_array_equal(converted._cache.primary_mm_mask,
+                                  _mm_mask_for_structure(converted.indptr, converted.nse))
+    np.testing.assert_array_equal(converted.todense(), matrix.todense())

@@ -71,6 +71,8 @@ from brainevent._op import load_cuda_file
 from brainevent._op.lowering_target import DEFAULT_L2_BYTES
 from brainevent._test_util import check_event_op_grads, jax_x64_enabled, requires_gpu, with_jax_x64
 
+from brainevent._csr.config import _mm_group
+
 
 # Direct CSR vector and matrix event primitives
 # ---------------------------------------------
@@ -104,7 +106,7 @@ def _patch_cuda_loaders(monkeypatch, loader):
 
 def _mm_eqn_shapes(eqn):
     """``(rows, cols, nnz, batch)`` from which the CUDA lowering plans a CSR MM equation."""
-    indices, indptr, events = eqn.invars[1].aval, eqn.invars[2].aval, eqn.invars[-1].aval
+    indices, indptr, events = eqn.invars[1].aval, eqn.invars[2].aval, eqn.invars[-2].aval
     return indptr.shape[0] - 1, eqn.outvars[0].aval.shape[0], indices.shape[0], events.shape[1]
 
 
@@ -347,8 +349,8 @@ def test_binary_csrmv_p_call_returns_one_output_and_static_task_capacity(hint):
     np.testing.assert_allclose(np.asarray(out[0]), expected)
 
     eqn = _kernel_eqn(binary_csrmv_p, call, weights, vector)
-    # Math operands only: the long-row mask is no longer an operand.
-    assert (len(eqn.invars), len(eqn.outvars)) == (4, 1)
+    # Four math operands and the optional packed structural mask.
+    assert (len(eqn.invars), len(eqn.outvars)) == (5, 1)
     assert eqn.params['config_spec'] == MVSchedule()
     _assert_task_capacity_param(eqn, indptr, max_row_nnz)
 
@@ -370,8 +372,8 @@ def test_binary_csrmm_p_call_returns_one_output_without_mv_workspace():
     np.testing.assert_allclose(np.asarray(out[0]), expected)
 
     eqn = _kernel_eqn(binary_csrmm_p, call, weights, matrix)
-    # Math operands only; the MM plan comes from shapes at lowering, not from params.
-    assert (len(eqn.invars), len(eqn.outvars)) == (4, 1)
+    # Four math operands plus mask; the MM plan comes from shapes at lowering.
+    assert (len(eqn.invars), len(eqn.outvars)) == (5, 1)
     assert not {'task_capacity', 'max_row_nnz', 'call_plan'} & eqn.params.keys()
     assert eqn.params['config_spec'] == MVSchedule()
 
@@ -434,7 +436,7 @@ def test_binary_csrmv_batching_vector_axis_0_uses_csrmm_fast_path(monkeypatch):
     calls = []
 
     def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend, weighted=False,
-                          config=None):
+                          config=None, long_mask=None):
         calls.append((w, idx, ptr, b, shape, transpose, backend, config))
         return (math_out,)
 
@@ -444,8 +446,8 @@ def test_binary_csrmv_batching_vector_axis_0_uses_csrmm_fast_path(monkeypatch):
     )
 
     out, out_axes = _csrmv_batching(
-        (weights, indices, indptr, vector),
-        (None, None, None, 0),
+        (weights, indices, indptr, vector, jnp.empty((0,), jnp.uint32)),
+        (None, None, None, 0, None),
         shape=(1, 2),
         transpose=False,
         backend="jax_raw",
@@ -469,7 +471,7 @@ def test_binary_csrmv_batching_vector_axis_1_uses_csrmm_fast_path(monkeypatch):
     calls = []
 
     def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend, weighted=False,
-                          config=None):
+                          config=None, long_mask=None):
         calls.append((w, idx, ptr, b, shape, transpose, backend, config))
         return (math_out,)
 
@@ -479,8 +481,8 @@ def test_binary_csrmv_batching_vector_axis_1_uses_csrmm_fast_path(monkeypatch):
     )
 
     out, out_axes = _csrmv_batching(
-        (weights, indices, indptr, vector),
-        (None, None, None, 1),
+        (weights, indices, indptr, vector, jnp.empty((0,), jnp.uint32)),
+        (None, None, None, 1, None),
         shape=(1, 2),
         transpose=False,
         backend="jax_raw",
@@ -1911,14 +1913,14 @@ def test_binary_csrmv_batching_forwards_weighted(monkeypatch, axis, weighted):
     seen = []
 
     def fake_csrmm_p_call(w, idx, ptr, b, *, shape, transpose, backend, weighted=False,
-                          config=None):
+                          config=None, long_mask=None):
         seen.append(weighted)
         return (jnp.ones((1, 2), dtype=jnp.float32),)
 
     monkeypatch.setattr("brainevent._csr.binary.binary.binary_csrmm_p_call", fake_csrmm_p_call)
-    axes = (None, None, None, axis)
+    axes = (None, None, None, axis, None)
     _csrmv_batching(
-        (weights, indices, indptr, vector),
+        (weights, indices, indptr, vector, jnp.empty((0,), jnp.uint32)),
         axes, shape=(1, 2), transpose=False, backend="jax_raw", weighted=weighted,
     )
     assert seen == [weighted]
@@ -3490,3 +3492,68 @@ def test_native_mm_chunks_a_batch_larger_than_the_l2_chunk(monkeypatch, _mm_plan
     assert plan.task_capacity == plan.chunk * plan.long_tasks
     # The L2 size is read from the devices the lowering targets.
     assert queried and all(devices and all(d.platform == 'gpu' for d in devices) for devices in queried)
+
+
+# Reusable hybrid-MM structure masks.
+
+_LONG_MASK_ROWS, _LONG_MASK_COLS = 8, 128
+
+
+def _long_mask_case():
+    lengths = np.array([100, 0, 1, 2, 0, 1, 0, 0], np.int32)
+    p = jnp.asarray(np.r_[0, np.cumsum(lengths)].astype(np.int32))
+    i = jnp.asarray(np.concatenate([np.arange(n) for n in lengths]).astype(np.int32))
+    w = jnp.linspace(.1, .9, i.size, dtype=jnp.float32)
+    e = jnp.asarray(np.random.default_rng(4).random((_LONG_MASK_ROWS, 3)) > .5)
+    m = _long_row_mask(p, 16 * _mm_group(_LONG_MASK_ROWS, i.size))
+    return w, i, p, e, m, np.repeat(np.arange(_LONG_MASK_ROWS), lengths)
+
+
+@pytest.mark.parametrize('backend', ['jax_raw', 'numba'])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_explicit_mask_preserves_cpu_forward_vmap_and_weight_derivatives(backend, weighted):
+    if backend == 'numba':
+        pytest.importorskip('numba')
+    w, i, p, e, mask, rows = _long_mask_case()
+    if weighted:
+        e = jnp.where(e, jnp.arange(e.size, dtype=jnp.float32).reshape(e.shape) / 10, 0)
+    kwargs = dict(shape=(_LONG_MASK_ROWS, _LONG_MASK_COLS), transpose=True, backend=backend, weighted=weighted)
+    f = lambda weights, events: binary_csrmm(weights, i, p, events, long_mask=mask, **kwargs)
+    ref = lambda weights: jnp.zeros((_LONG_MASK_ROWS, _LONG_MASK_COLS), jnp.float32).at[rows, i].add(weights).T @ e.astype(jnp.float32)
+    np.testing.assert_allclose(f(w, e), ref(w), rtol=2e-5, atol=2e-5)
+    np.testing.assert_allclose(binary_csrmm(w, i, p, e, **kwargs), f(w, e), rtol=2e-5, atol=2e-5)
+    mv = jax.vmap(lambda v: binary_csrmv(w, i, p, v, long_mask=mask, **kwargs), in_axes=1, out_axes=1)
+    np.testing.assert_allclose(mv(e), f(w, e), rtol=2e-5, atol=2e-5)
+    stacked = jnp.stack([e, jnp.roll(e, 1, axis=0)])
+    np.testing.assert_allclose(jax.vmap(lambda x: f(w, x))(stacked), jnp.stack([f(w, x) for x in stacked]), rtol=2e-5, atol=2e-5)
+    np.testing.assert_allclose(jax.grad(lambda x: f(x, e).sum())(w), jax.grad(lambda x: ref(x).sum())(w), rtol=2e-5, atol=2e-5)
+    _, tangent = jax.jvp(lambda x: f(x, e), (w,), (jnp.ones_like(w),))
+    np.testing.assert_allclose(tangent, ref(jnp.ones_like(w)), rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.parametrize('mask', [
+    jnp.zeros(1, jnp.int32), np.zeros(1, np.uint64),
+    jnp.zeros((1, 1), jnp.uint32), jnp.zeros(2, jnp.uint32),
+])
+def test_explicit_mask_validates_dtype_and_shape(mask):
+    w, i, p, e, _, _ = _long_mask_case()
+    with pytest.raises((TypeError, ValueError), match='long_mask'):
+        binary_csrmm(w, i, p, e, shape=(_LONG_MASK_ROWS, _LONG_MASK_COLS), transpose=True, backend='jax_raw', long_mask=mask)
+
+
+@requires_gpu
+@pytest.mark.parametrize('weighted', [False, True])
+def test_supplied_mask_reaches_native_mm_and_vmap_without_rebuilding(weighted):
+    w, i, p, e, mask, _ = _long_mask_case()
+    if weighted:
+        e = e.astype(jnp.float32) * .7
+    kwargs = dict(shape=(_LONG_MASK_ROWS, _LONG_MASK_COLS), transpose=True, backend='cuda_raw', weighted=weighted)
+    supplied = jax.jit(lambda w, i, p, m, e: binary_csrmm(w, i, p, e, long_mask=m, **kwargs))
+    fallback = jax.jit(lambda w, i, p, e: binary_csrmm(w, i, p, e, **kwargs))
+    compiled = supplied.lower(w, i, p, mask, e).compile()
+    hlo = compiled.as_text()
+    assert 'csr_hybrid_mm' in hlo
+    assert 'jit(diff)' not in hlo
+    np.testing.assert_allclose(compiled(w, i, p, mask, e), fallback(w, i, p, e), rtol=2e-5, atol=2e-5)
+    vmapped = jax.jit(jax.vmap(lambda v: binary_csrmv(w, i, p, v, long_mask=mask, **kwargs), in_axes=1, out_axes=1))
+    np.testing.assert_allclose(vmapped(e), compiled(w, i, p, mask, e), rtol=2e-5, atol=2e-5)

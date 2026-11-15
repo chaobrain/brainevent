@@ -17,6 +17,11 @@ Binary matrix-vector / matrix-matrix multiplication.
    ``binary_csrmm_indexed`` (``transpose=True``, backend resolving to
    ``cuda_raw``) needs no preparation: it is planned from static shapes and
    the target GPU when the call is lowered, including inside ``jax.jit``.
+   CSR/CSC objects automatically cache their long-row mask as a dynamic
+   pytree leaf; weight-only updates and transpose views share it. The raw
+   event MV/MM functions accept an optional ``long_mask`` array. When it is
+   omitted, native MM computes it automatically. A matrix created before a
+   time-step loop reuses its mask; recreating it inside the loop rebuilds it.
    ``config`` only selects scheduler tuning; see :ref:`csr-mm-configuration`.
 
 .. autosummary::

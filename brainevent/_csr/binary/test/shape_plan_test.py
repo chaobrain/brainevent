@@ -15,6 +15,8 @@ import brainevent
 from brainevent import BinaryArray, CSR
 from brainevent._test_util import requires_gpu
 
+from brainevent import WeightedArray
+
 ROWS, COLS = 64, 600
 # Same shape and nnz (512); the row-length statistics differ.
 UNIFORM = np.full(ROWS, 8)
@@ -205,20 +207,103 @@ def test_vmapped_mv_handles_extreme_row_layouts(monkeypatch, layout, route, weig
 
 @requires_gpu
 def test_tall_narrow_output_runs_in_short_row_bounded_chunks():
-    # 20000 rows into 8 outputs: the L2 rule alone would put all 256 batches in
-    # one chunk, with 5.1M short-row entries; the bound keeps them near nnz.
+    # The L2 output rule alone would keep all batches together. Short-list
+    # scratch must remain bounded by the cache budget rather than batch*rows.
     from brainevent._csr.config import _mm_plan
     from brainevent._op.lowering_target import cuda_l2_bytes
-    rows, cols, batch = 20_000, 8, 256
+    rows, cols = 20_000, 8
+    l2 = cuda_l2_bytes(jax.devices('gpu'))
+    allowance = max(rows, 1 << 20, l2 // 8)
+    batch = max(1024, allowance // rows + 1)
     rng = np.random.default_rng(5)
     indptr = jnp.arange(rows + 1, dtype=jnp.int32)
     indices = jnp.asarray(rng.integers(0, cols, rows, dtype=np.int32))
     weights = jnp.asarray(rng.normal(size=rows).astype(np.float32))
-    plan = _mm_plan(rows, cols, rows, batch, np.dtype(np.float32), False, cuda_l2_bytes(jax.devices('gpu')))
-    assert 1 < plan.chunk < batch and plan.short_rows_size <= 1 << 20
+    plan = _mm_plan(rows, cols, rows, batch, np.dtype(np.float32), False, l2)
+    assert 1 < plan.chunk < batch
+    assert plan.short_rows_size <= allowance
     events = jnp.asarray(rng.random((rows, batch)) < 0.1)
     out = jax.jit(lambda w, i, p, e: BinaryArray(e.T) @ CSR((w, i, p), shape=(rows, cols)))(
         weights, indices, indptr, events)
     dense = np.zeros((rows, cols), np.float32)
     np.add.at(dense, (np.arange(rows), np.asarray(indices)), np.asarray(weights))
     np.testing.assert_allclose(out, np.asarray(events, np.float32).T @ dense, rtol=1e-4, atol=1e-4)
+
+
+# Reusable hybrid-MM structure masks.
+
+def _long_mask_scan_inputs():
+    rows, cols, batch, steps = 96, 128, 4, 5
+    lengths = np.full(rows, 2, np.int32)
+    lengths[0], lengths[1] = 65, 0
+    indptr = np.r_[0, np.cumsum(lengths)].astype(np.int32)
+    indices = np.concatenate([np.arange(n, dtype=np.int32) for n in lengths])
+    weights = np.full(indices.size, 0.125, np.float32)
+    events = np.random.default_rng(7).random((steps, batch, rows)) < 0.25
+    dense = np.zeros((rows, cols), np.float32)
+    np.add.at(dense, (np.repeat(np.arange(rows), lengths), indices), weights)
+    return tuple(jnp.asarray(x) for x in (weights, indices, indptr)), jnp.asarray(events), dense
+
+
+def _long_mask_scan(matrix, events, *, weighted=False, vmapped=False):
+    event_type = WeightedArray if weighted else BinaryArray
+
+    def step(total, values):
+        # with_data must preserve the structure cache even inside scan.
+        current = matrix.with_data(matrix.data * jnp.float32(2))
+        if vmapped:
+            out = jax.vmap(lambda v: event_type(v) @ current)(values)
+        else:
+            out = event_type(values) @ current
+        return total + jnp.sum(out), None
+
+    return jax.lax.scan(step, jnp.float32(0), events)[0]
+
+
+@requires_gpu
+@pytest.mark.parametrize('weighted,vmapped', [(False, False), (True, False), (False, True)])
+def test_cached_matrix_scan_has_no_mask_builder(weighted, vmapped):
+    arrays, events, dense = _long_mask_scan_inputs()
+    values = events.astype(jnp.float32) * 0.5 if weighted else events
+    matrix = CSR(arrays, shape=dense.shape, backend='cuda_raw')
+    fn = jax.jit(lambda m, e: _long_mask_scan(m, e, weighted=weighted, vmapped=vmapped))
+    compiled = fn.lower(matrix, values).compile()
+    hlo = compiled.as_text()
+    assert 'csr_hybrid_mm' in hlo
+    # Mask construction packs uint32 bits with a shift. Output reductions are
+    # float32 and remain valid; the entire cached executable needs no bit pack.
+    assert 'shift-left(' not in hlo
+    factors = np.asarray(values, np.float32) if weighted else np.asarray(values != 0, np.float32)
+    np.testing.assert_allclose(compiled(matrix, values), np.sum(factors @ (dense * 2)), rtol=1e-5)
+
+
+@requires_gpu
+def test_jit_created_matrix_builds_mask_before_scan():
+    arrays, events, dense = _long_mask_scan_inputs()
+
+    def simulate(weights, indices, indptr, values):
+        matrix = CSR((weights, indices, indptr), shape=dense.shape, backend='cuda_raw')
+        return _long_mask_scan(matrix, values)
+
+    compiled = jax.jit(simulate).lower(*arrays, events).compile()
+    hlo = compiled.as_text()
+    assert 'csr_hybrid_mm' in hlo
+    # Find the computation which packs the bits, and ensure its call is not
+    # inside a while body. Do not rely on unstable XLA fusion names.
+    computations = {}
+    current = None
+    for line in hlo.splitlines():
+        if (line.startswith('%') or line.startswith('ENTRY ')) and line.endswith('{'):
+            current = line.split(' (', 1)[0].removeprefix('ENTRY ')
+            computations[current] = []
+        elif current is not None:
+            computations[current].append(line)
+    mask_functions = {name for name, lines in computations.items() if any('shift-left(' in line for line in lines)}
+    assert mask_functions
+    bodies = set(re.findall(r'body=(%[\w.]+)', hlo))
+    assert bodies
+    for body in bodies:
+        text = '\n'.join(computations[body])
+        assert 'shift-left(' not in text
+        assert not any(f'calls={name},' in text for name in mask_functions)
+    np.testing.assert_allclose(compiled(*arrays, events), np.sum(np.asarray(events, np.float32) @ (dense * 2)), rtol=1e-5)

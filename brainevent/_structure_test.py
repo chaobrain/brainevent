@@ -44,11 +44,32 @@ def test_copies_share_structure_until_the_mirror_is_replaced():
     assert copied.diag_plan is cache.diag_plan
 
 
-def test_structure_cache_holds_no_mm_preparation():
-    # The hybrid MM is planned from shapes at lowering; no mirror plan is cached.
-    assert set(StructureCache.__slots__) == {'mirror', 'diag_plan', 'tile_geometries'}
+def test_structure_cache_keeps_masks_separate_from_mm_launch_plans():
+    assert set(StructureCache.__slots__) == {
+        'mirror', 'diag_plan', 'tile_geometries', 'primary_mm_mask', 'mirror_mm_mask',
+    }
     with pytest.raises(TypeError):
         StructureCache(mirror_preparation=(object(), 7))
+
+
+def test_structure_cache_copies_masks_and_rebuilds_only_the_replaced_mirror():
+    primary = jnp.array([7], jnp.uint32)
+    lengths = np.zeros(64, np.int32)
+    lengths[0] = 65
+    mirror = (jnp.asarray(np.r_[0, lengths.cumsum()], jnp.int32),
+              jnp.zeros(65, jnp.int32), jnp.arange(65, dtype=jnp.int32))
+    cache = StructureCache(primary_mm_mask=primary)
+    cache.set_mirror(mirror)
+    np.testing.assert_array_equal(cache.mirror_mm_mask, [1, 0])
+    copied = cache.copy()
+    assert copied.primary_mm_mask is primary
+    assert copied.mirror_mm_mask is cache.mirror_mm_mask
+
+    lengths[0], lengths[33] = 0, 65
+    copied.set_mirror((jnp.asarray(np.r_[0, lengths.cumsum()], jnp.int32), *mirror[1:]))
+    np.testing.assert_array_equal(copied.mirror_mm_mask, [0, 2])
+    np.testing.assert_array_equal(cache.mirror_mm_mask, [1, 0])
+    assert copied.primary_mm_mask is primary
 
 
 def test_warn_mirror_fallback_warns_once_per_owner_and_operation():

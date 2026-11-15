@@ -54,7 +54,7 @@ def test_construction_prepares_no_tiles_and_no_mirror(monkeypatch):
     assert matrix._cache.mirror is None
     # The config holds no structure state, so it adds no pytree leaves.
     assert jax.tree.leaves(matrix.config) == []
-    assert len(jax.tree.leaves(matrix)) == 3
+    assert len(jax.tree.leaves(matrix)) == 4
     for batch in (1, 188, 65535):
         assert matrix._get_tile_geometry(batch, transpose=True) is None
 

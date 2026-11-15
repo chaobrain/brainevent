@@ -245,6 +245,39 @@ def test_short_row_bound_leaves_the_benchmarked_shapes_on_the_l2_rule(rows, cols
         assert _plan(rows, cols, nnz, batch, l2_bytes=6 << 20).chunk == max(1, min(fit, batch))
 
 
+@pytest.mark.parametrize('rows, cols, nnz, dtype, expected', [
+    (100_000, 100_000, 300_000, np.float32, 128),
+    (200_000, 200_000, 1_200_000, np.float32, 83),
+    (1_000_000, 1_000_000, 1_000_000, np.float32, 16),
+    (1_000_000, 1_000_000, 1_000_000, np.float64, 8),
+    (100_000, 100_000, 1_700_000, np.float32, 83),
+    (200_000, 200_000, 6_600_000, np.float32, 33),
+    (100_000, 100_000, 6_400_000, np.float32, 64),
+    (100_000, 100_000, 6_500_000, np.float32, 65),
+])
+def test_large_l2_sparse_rows_keep_enough_batch_parallelism(rows, cols, nnz, dtype, expected):
+    # A fixed 4 MiB short list reduced a million-row, batch-128 product to
+    # 128 groups. Cache-sized lists keep many batches in each launch instead.
+    l2 = 128 << 20
+    plan = _plan(rows, cols, nnz, batch=128, dtype=dtype, l2_bytes=l2)
+    assert plan.chunk == expected
+    assert plan.short_rows_size * 4 <= max(nnz * 4, l2 // 2)
+    assert plan.task_capacity == plan.chunk * plan.long_tasks
+
+
+def test_large_l2_dense_rows_keep_the_quarter_cache_chunk():
+    plan = _plan(800_000, 800_000, 1_920_000_000, batch=256, l2_bytes=128 << 20)
+    assert (plan.group, plan.long_threshold, plan.chunk) == (32, 512, 10)
+
+
+def test_tall_sparse_output_keeps_a_cache_bounded_short_list():
+    rows, l2 = 1_000_000, 128 << 20
+    plan = _plan(rows, 10, rows, batch=1024, l2_bytes=l2)
+    assert plan.chunk == 16
+    assert plan.short_rows_size * 4 <= l2 // 2
+    assert plan.short_rows_size < rows * 1024
+
+
 @pytest.mark.parametrize('dtype', [np.float16, jnp.bfloat16, np.float32, np.float64])
 @pytest.mark.parametrize('batch', [1, 5, 300])
 def test_mm_plan_workspace_matches_the_native_layout(dtype, batch):
@@ -353,15 +386,15 @@ namespace hybrid
 @DECLARATIONS@
 #include @PLAN_HEADER@
 int main() {
-    int rows, cols, batch, l2, out_bytes, value_bytes, weighted;
+    int rows, batch, chunk, value_bytes, weighted;
     int64_t nnz, threshold, long_tasks;
-    while (std::cin >> rows >> cols >> batch >> l2 >> out_bytes >> value_bytes >> weighted >> nnz
+    while (std::cin >> rows >> batch >> chunk >> value_bytes >> weighted >> nnz
                     >> threshold >> long_tasks) {
         std::vector<int64_t> ptr(rows + 1);
         for (auto &value : ptr) std::cin >> value;
         hybrid::Plan plan;
         plan.long_threshold = threshold;
-        plan.chunk = std::min(hybrid::chunk_batches(cols, batch, l2, out_bytes), hybrid::kMaxGroupBatches);
+        plan.chunk = chunk;
         plan.long_tasks = long_tasks;
         plan.task_capacity = plan.chunk * long_tasks;
         std::cout << hybrid::group_size(nnz, rows) << ' ' << plan.chunk << ' '
@@ -374,7 +407,7 @@ int main() {
 
 
 def test_mm_plan_matches_the_native_sizing_and_mask(tmp_path):
-    """Compare with the packaged C++ helpers the FFI uses to check scratch sizes."""
+    """Check the chosen chunk against native scratch sizing, as the FFI does."""
     compiler = shutil.which('c++')
     if compiler is None:
         pytest.skip('C++ compiler unavailable for native planner parity')
@@ -390,7 +423,8 @@ def test_mm_plan_matches_the_native_sizing_and_mask(tmp_path):
 
     rng = np.random.default_rng(4)
     golden = [[1, 1, 1, 1, 65], [16, 17, 513], [64, 65, 513], [0, 513, 1024, 1025],
-              [512, 513], [1] * 32 + [65], [1] * 64 + [65], [1025], [3000] * 40]
+              [512, 513], [1] * 32 + [65], [1] * 64 + [65], [1025], [3000] * 40,
+              [1] * 32, [1] * 32]
     cases = []
     for i in range(48):
         lengths = np.array(golden[i]) if i < len(golden) else rng.integers(0, 1400, size=int(rng.integers(1, 80)))
@@ -404,9 +438,12 @@ def test_mm_plan_matches_the_native_sizing_and_mask(tmp_path):
         l2 = int(rng.choice([4096, 1 << 20, 6 << 20]))
         if i == 1:
             cols, batch, l2 = 1, 70_000, 1 << 30  # the 65535 cap
+        elif i in (9, 10):
+            cols, batch, l2 = 1_000_000, 128, 128 << 20
+            dtype = np.float32 if i == 9 else np.float64
         plan = _mm_plan(rows, cols, nnz, batch, np.dtype(dtype), weighted, l2)
         itemsize = np.dtype(dtype).itemsize
-        line = [rows, cols, batch, l2, max(4, itemsize), itemsize, int(weighted), nnz,
+        line = [rows, batch, plan.chunk, itemsize, int(weighted), nnz,
                 plan.long_threshold, plan.long_tasks, *indptr]
         cases.append((' '.join(map(str, line)), plan, indptr))
     native = subprocess.run([str(binary)], input='\n'.join(case[0] for case in cases) + '\n',

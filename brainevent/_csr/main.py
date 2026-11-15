@@ -29,7 +29,7 @@ from brainevent._misc import (
     _as_int32_indices, _as_indptr, _check_compressed_structure, _check_mirror,
 )
 from brainevent._op.lowering_target import cuda_available as _cuda_available
-from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
+from brainevent._structure import StructureCache, _mm_mask_for_structure, is_concrete, warn_mirror_fallback
 from brainevent._typing import ArrayData, Data, Indptr, Index, MatrixShape
 from brainevent.config import _backend_preference
 from brainevent._csr.binary.binary import binary_csrmv, binary_csrmm
@@ -132,8 +132,9 @@ class CompressedSparseData(DataRepresentation):
     automatically.
 
     The matrix is a JAX pytree whose leaves are ``data``, ``indices``,
-    ``indptr`` and, when cached, the three mirror arrays and the four
-    ``diag_add`` plan arrays. The structure is
+    ``indptr``, the automatically constructed long-row mask and, when cached,
+    the three mirror arrays and their mask, and the four ``diag_add`` plan
+    arrays. The structure is
     traced like any other input under ``jax.jit``: no index array is embedded in the compiled
     program. Equal shapes and scheduling metadata share one compilation.
     Differentiate with respect to ``M.data`` and rebuild with
@@ -214,7 +215,9 @@ class CompressedSparseData(DataRepresentation):
 
         self.backend = backend
         super().__init__((self.data, self.indices, self.indptr), shape=shape)
-        self._cache = StructureCache()
+        self._cache = StructureCache(
+            primary_mm_mask=_mm_mask_for_structure(self.indptr, self.indices.size),
+        )
         self.config = _select_config(self.indices, shape=self._storage_shape, config=config)
         self._ingest_buffers(buffers)
         if precompute_weight_indices and self._mirror() is None:
@@ -461,6 +464,7 @@ class CompressedSparseData(DataRepresentation):
                 shape=shape, transpose=transpose,
                 backend=self.backend, weighted=weighted,
                 config=self.config,
+                long_mask=self._cache.primary_mm_mask,
             )
         mirror_indptr, mirror_indices, perm = mirror
         indexed = binary_csrmm_indexed if matrix else binary_csrmv_indexed
@@ -468,6 +472,7 @@ class CompressedSparseData(DataRepresentation):
             self.data, mirror_indices, mirror_indptr, perm, x,
             shape=(shape[1], shape[0]), transpose=True, backend=self.backend, weighted=weighted,
             config=self.config,
+            long_mask=self._cache.mirror_mm_mask,
         )
 
     def tree_flatten(self):
@@ -476,14 +481,16 @@ class CompressedSparseData(DataRepresentation):
 
         This method is part of the JAX pytree protocol. ``data``, ``indices``
         and ``indptr`` are leaves, followed by the configuration pytree (which
-        has no leaves), cached mirror arrays and ``diag_add`` plan when
+        has no leaves), the primary MM mask, cached mirror arrays and their
+        MM mask, and the ``diag_add`` plan when
         present. The auxiliary data holds only hashable metadata, so
         structurally equal matrices share one jit cache entry.
 
         Returns
         -------
         children : tuple
-            ``(data, indices, indptr, config, *mirror, *diag_plan)``.
+            ``(data, indices, indptr, config, primary_mm_mask, *mirror, *diag_plan)``.
+            A present mirror is followed by its MM mask.
         aux_data : tuple
             ``(shape, backend, has_mirror, has_diag_plan)``.
 
@@ -492,9 +499,9 @@ class CompressedSparseData(DataRepresentation):
         tree_unflatten : Reconstruct a sparse matrix from flattened data.
         """
         cache = self._cache
-        mirror = cache.mirror or ()
+        mirror = () if cache.mirror is None else (*cache.mirror, cache.mirror_mm_mask)
         plan = cache.diag_plan or ()
-        children = (self.data, self.indices, self.indptr, self.config, *mirror, *plan)
+        children = (self.data, self.indices, self.indptr, self.config, cache.primary_mm_mask, *mirror, *plan)
         aux = (self.shape, self.backend, bool(mirror), bool(plan))
         return children, aux
 
@@ -527,13 +534,15 @@ class CompressedSparseData(DataRepresentation):
         tree_flatten : Flatten a sparse matrix for JAX pytree handling.
         """
         shape, backend, has_mirror, has_plan = aux_data
-        expected = 4 + 3 * has_mirror + 4 * has_plan
+        expected = 5 + 4 * has_mirror + 4 * has_plan
         if len(children) != expected:
             raise ValueError(f'{cls.__name__}.tree_unflatten expects {expected} leaves, got {len(children)}.')
-        data, indices, indptr, config = children[:4]
-        mirror = tuple(children[4:7]) if has_mirror else None
-        plan = tuple(children[4 + 3 * has_mirror:]) if has_plan else None
-        cache = StructureCache(mirror=mirror, diag_plan=plan)
+        data, indices, indptr, config, primary_mm_mask = children[:5]
+        mirror = tuple(children[5:8]) if has_mirror else None
+        mirror_mm_mask = children[8] if has_mirror else None
+        plan = tuple(children[5 + 4 * has_mirror:]) if has_plan else None
+        cache = StructureCache(mirror=mirror, diag_plan=plan,
+                               primary_mm_mask=primary_mm_mask, mirror_mm_mask=mirror_mm_mask)
         return cls._from_parts(data, indices, indptr, shape=shape, backend=backend,
                                cache=cache, config=config)
 
@@ -1076,6 +1085,7 @@ class CompressedSparseData(DataRepresentation):
             identity = jnp.arange(new_indices.shape[0], dtype=new_indices.dtype)
         cache = StructureCache(
             diag_plan=(new_indptr, new_indices, identity, diag_dest),
+            primary_mm_mask=_mm_mask_for_structure(new_indptr, new_indices.size),
         )
         # The augmented structure is valid by construction (numba planner), so
         # skip re-validation. ``csr_diag_position`` already raised for the
@@ -1410,8 +1420,12 @@ class CSR(CompressedSparseData):
         """
         csc_indptr, csc_indices, perm = self._weight_indices()
         csc_data = self.data if self.data.size == 1 else self.data[perm]
+        mm_mask = self._cache.mirror_mm_mask
+        if mm_mask is None:
+            mm_mask = _mm_mask_for_structure(csc_indptr, csc_indices.size)
         return CSC._from_parts(
             csc_data, csc_indices, csc_indptr, shape=self.shape, backend=self.backend,
+            cache=StructureCache(primary_mm_mask=mm_mask),
             config=self.config,
         )
 
@@ -1817,6 +1831,7 @@ class CSR(CompressedSparseData):
         )
         return CSR._from_parts(
             new_data, new_indices, new_indptr, shape=shape, backend=self.backend,
+            cache=StructureCache(primary_mm_mask=_mm_mask_for_structure(new_indptr, new_indices.size)),
             config=self.config,
         )
 
@@ -2380,8 +2395,12 @@ class CSC(CompressedSparseData):
         """
         csr_indptr, csr_indices, perm = self._weight_indices()
         csr_data = self.data if self.data.size == 1 else self.data[perm]
+        mm_mask = self._cache.mirror_mm_mask
+        if mm_mask is None:
+            mm_mask = _mm_mask_for_structure(csr_indptr, csr_indices.size)
         return CSR._from_parts(
             csr_data, csr_indices, csr_indptr, shape=self.shape, backend=self.backend,
+            cache=StructureCache(primary_mm_mask=mm_mask),
             config=self.config,
         )
 
@@ -2615,6 +2634,7 @@ class CSC(CompressedSparseData):
         csc_data = sub_data if sub_data.size == 1 else sub_data[cperm]
         return CSC._from_parts(
             csc_data, csc_indices, csc_indptr, shape=shape, backend=self.backend,
+            cache=StructureCache(primary_mm_mask=_mm_mask_for_structure(csc_indptr, csc_indices.size)),
             config=self.config,
         )
 
