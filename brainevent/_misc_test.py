@@ -20,6 +20,7 @@ from brainevent._misc import (
     _as_int32_indices,
     _check_compressed_structure,
     _cusparse_accepts_nse,
+    _long_row_mask,
     _require_jax_x64_for_int64,
     _resolve_indptr_dtype,
     coo2csr,
@@ -828,3 +829,83 @@ def test_namescope_precheck_sees_concrete_arguments_before_jit():
 ])
 def test_cusparse_accepts_nse(nse, shape, accepts):
     assert _cusparse_accepts_nse(nse, shape) is accepts
+
+
+# -- _long_row_mask: packed long-row bits of the native hybrid kernels -------
+
+def _reference_long_row_mask(lengths, threshold):
+    """Bit ``r % 32`` of uint32 word ``r // 32`` set when row ``r`` is longer than ``threshold``."""
+    bits = np.asarray(lengths) > threshold
+    words = (bits.size + 31) // 32
+    padded = np.zeros(words * 32, dtype=bool)
+    padded[:bits.size] = bits
+    # Little-endian bytes of little-endian bits are the uint32 word layout.
+    return np.packbits(padded, bitorder='little').view('<u4').astype(np.uint32)
+
+
+def _indptr(lengths, dtype=np.int32):
+    return np.concatenate([[0], np.cumsum(lengths, dtype=np.int64)]).astype(dtype)
+
+
+@pytest.mark.parametrize('rows', [0, 1, 31, 32, 33, 64, 95, 1000])
+@pytest.mark.parametrize('threshold', [0, 64, 512])
+def test_long_row_mask_matches_packed_numpy_reference(rows, threshold):
+    rng = np.random.default_rng(rows * 1009 + threshold)
+    lengths = rng.integers(0, 2 * threshold + 3, size=rows)
+    if rows:
+        # Rows exactly at the threshold are short; one edge more makes them long.
+        lengths[rng.integers(rows)] = threshold
+        lengths[rng.integers(rows)] = threshold + 1
+    expected = _reference_long_row_mask(lengths, threshold)
+    for fn in (_long_row_mask, jax.jit(_long_row_mask, static_argnums=1)):
+        mask = fn(jnp.asarray(_indptr(lengths)), threshold)
+        assert mask.dtype == jnp.uint32
+        assert mask.shape == ((rows + 31) // 32,)
+        np.testing.assert_array_equal(np.asarray(mask), expected)
+
+
+def test_long_row_mask_sets_every_bit_of_a_full_word():
+    # Bit 31 is the uint32 sign bit; a full word must not overflow or wrap.
+    mask = _long_row_mask(jnp.asarray(_indptr(np.full(64, 3))), 2)
+    np.testing.assert_array_equal(np.asarray(mask), np.full(2, 0xFFFFFFFF, np.uint32))
+    none = _long_row_mask(jnp.asarray(_indptr(np.full(33, 3))), 3)
+    np.testing.assert_array_equal(np.asarray(none), np.zeros(2, np.uint32))
+
+
+def test_long_row_mask_single_row_per_bit_position():
+    for row in (0, 1, 30, 31, 32, 63, 64, 99):
+        lengths = np.zeros(100, np.int64)
+        lengths[row] = 5
+        mask = np.asarray(_long_row_mask(jnp.asarray(_indptr(lengths)), 4))
+        expected = np.zeros(4, np.uint32)
+        expected[row // 32] = np.uint32(1) << np.uint32(row % 32)
+        np.testing.assert_array_equal(mask, expected)
+
+
+def test_long_row_mask_accepts_int64_indptr_beyond_int32_offsets():
+    lengths = np.array([0, 2 ** 31, 1, 2 ** 31 + 5, 3], dtype=np.int64)
+    expected = _reference_long_row_mask(lengths, 2)
+    with jax_x64_enabled():
+        indptr = jnp.asarray(_indptr(lengths, np.int64))
+        assert indptr.dtype == jnp.int64
+        for fn in (_long_row_mask, jax.jit(_long_row_mask, static_argnums=1)):
+            mask = fn(indptr, 2)
+            assert mask.dtype == jnp.uint32
+            np.testing.assert_array_equal(np.asarray(mask), expected)
+
+
+def test_long_row_mask_traces_indptr_with_a_static_threshold():
+    lengths = np.array([1, 9, 0, 10, 8], np.int32)
+    seen = []
+
+    @jax.jit
+    def run(indptr):
+        seen.append(isinstance(indptr, jax.core.Tracer))
+        return _long_row_mask(indptr, 8)
+
+    for permuted in (lengths, lengths[::-1]):
+        np.testing.assert_array_equal(
+            np.asarray(run(jnp.asarray(_indptr(permuted)))),
+            _reference_long_row_mask(permuted, 8))
+    # Redrawn structures with the same row count reuse one trace.
+    assert seen == [True]

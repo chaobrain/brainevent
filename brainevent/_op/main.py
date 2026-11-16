@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import functools
+import inspect
 import os
 import re
 import warnings
@@ -25,6 +26,7 @@ from jax.interpreters import batching, ad, mlir
 
 from brainevent._compatible_import import Primitive, apply_primitive, pvary, varying_axes, with_varying_axes
 from brainevent._error import KernelCompilationError, KernelFallbackExhaustedError
+from brainevent._op.lowering_target import target_devices
 from brainevent._registry import register_primitive
 from brainevent._typing import KernelGenerator
 from brainevent.config import _backend_preference
@@ -153,7 +155,9 @@ class KernelEntry:
     kernel_generator : KernelGenerator
         A callable that accepts keyword arguments (forwarded from the
         primitive ``bind`` call) and returns a concrete kernel function
-        ready to be invoked with the input arrays.
+        ready to be invoked with the input arrays. A generator that declares
+        a ``target_devices`` keyword also receives the devices the lowering
+        targets (see :func:`~brainevent._op.lowering_target.target_devices`).
 
     See Also
     --------
@@ -186,6 +190,21 @@ class KernelEntry:
     backend: str
     platform: str
     kernel_generator: KernelGenerator
+
+    @functools.cached_property
+    def wants_target_devices(self) -> bool:
+        """Whether the generator declares a ``target_devices`` keyword.
+
+        Returns
+        -------
+        bool
+            ``True`` when lowering must pass the target devices.
+        """
+        try:
+            parameters = inspect.signature(self.kernel_generator).parameters
+        except (TypeError, ValueError):
+            return False
+        return 'target_devices' in parameters
 
 
 class XLACustomKernel:
@@ -325,7 +344,51 @@ class XLACustomKernel:
         self._warned_backends.add(message)
         warnings.warn(message, stacklevel=3)
 
-    def _resolve_backend(self, platform: str, requested: Optional[str] = None) -> str:
+    def resolve_backend(self, platform: str, requested: Optional[str] = None) -> Optional[str]:
+        """Report the backend that would lower this primitive on *platform*.
+
+        Applies the same priority as lowering: the per-call *requested*
+        backend, then the global :func:`~brainevent.config.set_backend`
+        choice, then the per-primitive default (``'jax_raw'`` on GPU under
+        ``--xla_gpu_deterministic_ops``), then the first registered kernel.
+        Unlike lowering, the query never warns and never raises, so call
+        sites can use it to decide a route before the platform is known.
+
+        Parameters
+        ----------
+        platform : str
+            The platform to ask about (``'cpu'``, ``'gpu'``, ``'tpu'``).
+        requested : str or None, optional
+            The ``backend=`` keyword a call would pass.
+
+        Returns
+        -------
+        str or None
+            The backend name, or ``None`` when lowering would fail: an empty
+            or unregistered *requested* name, or no kernel for *platform*.
+
+        See Also
+        --------
+        available_backends : Every backend registered for a platform.
+        brainevent.config.set_backend : The global backend choice.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> brainevent.binary_csrmv_p.resolve_backend('cpu', 'jax_raw')
+            'jax_raw'
+            >>> brainevent.binary_csrmv_p.resolve_backend('cpu', 'no_such_backend') is None
+            True
+        """
+        try:
+            return self._resolve_backend(platform, requested, warn=False)
+        except (ValueError, KernelFallbackExhaustedError):
+            return None
+
+    def _resolve_backend(self, platform: str, requested: Optional[str] = None, *,
+                         warn: bool = True) -> str:
         """The backend that lowers this primitive on *platform*.
 
         Priority: the per-call *requested* backend, then the global
@@ -341,6 +404,9 @@ class XLACustomKernel:
             The platform being lowered (``'cpu'``, ``'gpu'``, ``'tpu'``).
         requested : str or None, optional
             The ``backend=`` keyword of the call.
+        warn : bool, optional
+            Warn once about an ignored global backend, an undeterministic
+            default under the deterministic flag, or an arbitrary choice.
 
         Returns
         -------
@@ -374,7 +440,7 @@ class XLACustomKernel:
         global_be = preferred
         if global_be is not None and global_be in kernels:
             return global_be
-        if global_be is not None:
+        if global_be is not None and warn:
             # A global backend was requested but is not registered for this
             # platform/primitive.  The per-call path raises here; the global path
             # stays lenient, but must not *silently* discard the user's choice (M13).
@@ -388,17 +454,18 @@ class XLACustomKernel:
             # The atomic CUDA kernels ignore XLA's determinism flag (#216).
             if DETERMINISTIC_GPU_BACKEND in kernels:
                 return DETERMINISTIC_GPU_BACKEND
-            self._warn_backend_once(
-                f"--xla_gpu_deterministic_ops is set, but primitive '{self.name}' has no "
-                f"'{DETERMINISTIC_GPU_BACKEND}' GPU kernel; its default GPU backend may not "
-                f"be deterministic."
-            )
+            if warn:
+                self._warn_backend_once(
+                    f"--xla_gpu_deterministic_ops is set, but primitive '{self.name}' has no "
+                    f"'{DETERMINISTIC_GPU_BACKEND}' GPU kernel; its default GPU backend may not "
+                    f"be deterministic."
+                )
         if not backend or backend not in kernels:
             # No explicit/global/default backend resolved: fall back to the
             # first registered kernel.  When more than one is registered the
             # choice is dict-insertion-order arbitrary, so log it (M13).
             fallback_be = next(iter(kernels))
-            if len(kernels) > 1:
+            if len(kernels) > 1 and warn:
                 self._warn_backend_once(
                     f"No default backend set for platform '{platform}' in "
                     f"primitive '{self.name}'; using first-registered backend "
@@ -687,7 +754,7 @@ class XLACustomKernel:
             backends available for *platform* and how to switch to one.
         """
 
-        def fallback_kernel_fn(*args, **kwargs):
+        def fallback_kernel_fn(*args, _target_devices=(), **kwargs):
             backend_to_use = self._resolve_backend(platform, kwargs.pop('backend', None))
             kernels = self._kernels[platform]
 
@@ -709,6 +776,8 @@ class XLACustomKernel:
                     f"the default."
                 )
 
+            if entry.wants_target_devices:
+                kwargs['target_devices'] = _target_devices
             try:
                 kernel = entry.kernel_generator(**kwargs)
             except Exception as exc:
@@ -727,8 +796,12 @@ class XLACustomKernel:
                     f"{type(exc).__name__}: {exc}." + _construction_error_suffix()
                 ) from exc
 
-        # Register the lowering with JAX
-        lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
+        def lower(ctx, *args, **params):
+            # Device-dependent generators size launches for the devices this
+            # lowering targets, not for wherever the operands were created.
+            kernel_fn = functools.partial(fallback_kernel_fn, _target_devices=target_devices(ctx))
+            return mlir.lower_fun(kernel_fn, multiple_results=True)(ctx, *args, **params)
+
         mlir.register_lowering(self.primitive, lower, platform=platform)
 
     def def_numba_kernel(

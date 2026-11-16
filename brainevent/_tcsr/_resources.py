@@ -17,6 +17,7 @@ from jax.interpreters import ad, batching, mlir
 
 from brainevent._compatible_import import Primitive, apply_primitive, init_zero
 from brainevent._op.cuda_driver import device_attributes
+from brainevent._op.lowering_target import target_devices as _target_devices
 
 
 #: Oldest compute capability the combined kernels support. f64 tiles use the
@@ -76,23 +77,6 @@ def _supports(resources: LaunchResources | None, threads: int, shared_bytes: int
         return shared_bytes <= resources.shared_bytes
     # The launcher requests the full 96 KiB ceiling even for a smaller tile.
     return resources.optin_shared_bytes >= 96 * 1024
-
-
-def _target_devices(context: Any) -> tuple[Any, ...]:
-    """Find the lowering assignment, conservatively covering unknown targets."""
-    module = context.module_context
-    axes = module.axis_context
-    assignment = getattr(axes, 'device_assignment', None)
-    if assignment is not None:
-        return tuple(assignment)
-    mesh = getattr(axes, 'mesh', None)
-    devices = getattr(mesh, 'devices', None)
-    if devices is not None:
-        return tuple(np.asarray(devices, dtype=object).ravel())
-    # A portable lowering may have no concrete assignment. Restrict the tile
-    # to capabilities common to every possible local target of this backend.
-    backend = module.backend
-    return () if backend is None else tuple(backend.local_devices())
 
 
 def _lower_false(context, *, threads, shared_bytes):

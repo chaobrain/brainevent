@@ -31,7 +31,7 @@ from brainevent._csr import (
     csr_apply_on_pre, csr_apply_on_post,
     csr_slice_rows, csr_slice_rows_p,
     CSRDelayLayout, csr_delay_deliver_layout, csr_delay_deliver_layout_p,
-    CSRConfig, MVSchedule, load_csr_config, save_csr_config, init_csr_config,
+    CSRConfig, load_csr_config, save_csr_config, init_csr_config,
 )
 from brainevent._tcsr import TCSR
 from brainevent._data import (
@@ -171,7 +171,7 @@ __all__ = [
     'csrmm', 'csrmm_p',
     'csrmv_dt2t', 'cscmv_dt2t', 'csrmv_dt2t_p',
     'csrmm_dt2t', 'cscmm_dt2t', 'csrmm_dt2t_p',
-    'CSRConfig', 'MVSchedule', 'load_csr_config', 'save_csr_config', 'init_csr_config',
+    'CSRConfig', 'load_csr_config', 'save_csr_config', 'init_csr_config',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'update_csc_on_binary_pre', 'update_csc_on_binary_post',

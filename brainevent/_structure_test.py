@@ -7,6 +7,7 @@ import warnings
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from brainevent._error import PerformanceWarning
 from brainevent._structure import StructureCache, is_concrete, warn_mirror_fallback
@@ -30,16 +31,45 @@ def test_structure_cache_set_mirror_does_not_read_array_values():
     assert cache.diag_plan is None
 
 
-def test_mirror_preparation_is_shared_by_copies_and_invalidated_on_replacement(
-):
-    preparation = (object(), 7)
+def test_copies_share_structure_until_the_mirror_is_replaced():
     mirror = (object(), object(), object())
-    cache = StructureCache(mirror=mirror, mirror_preparation=preparation)
+    diag_plan = (object(), object())
+    cache = StructureCache(mirror=mirror, diag_plan=diag_plan)
     copied = cache.copy()
-    assert copied.mirror_preparation is cache.mirror_preparation is preparation
-    copied.set_mirror((object(), object(), object()))
-    assert copied.mirror_preparation is None
-    assert cache.mirror_preparation is preparation
+    assert copied.mirror is cache.mirror and copied.diag_plan is cache.diag_plan
+    replacement = copied.set_mirror([object(), object(), object()])
+    assert copied.mirror is replacement and replacement is not mirror
+    # Replacing the copy's mirror neither touches the source nor the diag plan.
+    assert cache.mirror is not replacement and cache.mirror == mirror
+    assert copied.diag_plan is cache.diag_plan
+
+
+def test_structure_cache_keeps_masks_separate_from_mm_launch_plans():
+    assert set(StructureCache.__slots__) == {
+        'mirror', 'diag_plan', 'tile_geometries', 'primary_mm_mask', 'mirror_mm_mask',
+    }
+    with pytest.raises(TypeError):
+        StructureCache(mirror_preparation=(object(), 7))
+
+
+def test_structure_cache_copies_masks_and_rebuilds_only_the_replaced_mirror():
+    primary = jnp.array([7], jnp.uint32)
+    lengths = np.zeros(64, np.int32)
+    lengths[0] = 65
+    mirror = (jnp.asarray(np.r_[0, lengths.cumsum()], jnp.int32),
+              jnp.zeros(65, jnp.int32), jnp.arange(65, dtype=jnp.int32))
+    cache = StructureCache(primary_mm_mask=primary)
+    cache.set_mirror(mirror)
+    np.testing.assert_array_equal(cache.mirror_mm_mask, [1, 0])
+    copied = cache.copy()
+    assert copied.primary_mm_mask is primary
+    assert copied.mirror_mm_mask is cache.mirror_mm_mask
+
+    lengths[0], lengths[33] = 0, 65
+    copied.set_mirror((jnp.asarray(np.r_[0, lengths.cumsum()], jnp.int32), *mirror[1:]))
+    np.testing.assert_array_equal(copied.mirror_mm_mask, [0, 2])
+    np.testing.assert_array_equal(cache.mirror_mm_mask, [1, 0])
+    assert copied.primary_mm_mask is primary
 
 
 def test_warn_mirror_fallback_warns_once_per_owner_and_operation():

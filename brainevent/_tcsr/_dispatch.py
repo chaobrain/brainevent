@@ -88,7 +88,7 @@ def _dispatch_on_platform(
         primitive = csr_binary_csrmm_p
         if not transpose and _use_cuda_indexed_binary_route(matrix.backend):
             primitive = binary_csrmm_indexed_p
-        if primitive._resolve_backend('gpu', matrix.backend) != 'cuda_raw':
+        if primitive.resolve_backend('gpu', matrix.backend) != 'cuda_raw':
             return inherited(operand)
         event = as_event_operand(operand)
         if event is None or event[1] or event[0].ndim != 2:

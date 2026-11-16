@@ -13,10 +13,17 @@ one explicit scheduler configuration (`CSRConfig`) in place of
 
 ### Added
 
-- `CSRConfig` and `MVSchedule` describe the CSR hybrid scheduler; pass
+- `CSRConfig` describes the CSR hybrid scheduler; pass
   `config=` to the CSR, CSC and `FixedNumPer*` constructors.
   `load_csr_config` and `save_csr_config` read and persist per-device
-  tuning; `init_csr_config` measures it.
+  tuning; `init_csr_config` measures it. Configs are hashable and compare
+  equal when their schedulers are equal (benchmark records are ignored).
+  Its four MV fields are flat, and five keyword-only MM policies control
+  chunk selection. `to_dict` / `from_dict` serialize these nine fields,
+  defaulting missing MM fields when reading older configurations.
+- `XLACustomKernel.resolve_backend(platform, requested=None)` reports the
+  backend a primitive would lower with, without warnings or errors
+  (`None` when lowering would fail).
 - `TCSR.sort_permutation`: the row-local stable permutation applied at
   construction (`tcsr.indices == source.indices[p]`), for realigning
   external per-edge arrays such as delays or edge state. `None` when no edge
@@ -27,6 +34,13 @@ one explicit scheduler configuration (`CSRConfig`) in place of
 
 ### Changed
 
+- CSR scheduling uses one immutable `CSRConfig` for MV and hybrid MM.
+  The separate `MVSchedule` and private plan/record/auxiliary classes are
+  removed; `config.mv.field` becomes `config.field`. `config.mm_plan(...)`
+  returns a fresh seven-field dictionary, and benchmark records use dictionaries.
+  The default formulas, fixed MM geometry, dynamic mask lifetime and TCSR
+  tile algorithm are unchanged. Policy fields participate in JIT identity;
+  benchmark diagnostics do not.
 - **Event weight gradients follow the event type.** Binary events
   (`BinaryArray`, raw bool, `weighted=False`) differentiate the weights with
   the activity mask; `WeightedArray` (`weighted=True`) uses the event
@@ -36,7 +50,7 @@ one explicit scheduler configuration (`CSRConfig`) in place of
 - `TCSR` is a `CSR` subclass. Its constructor stably sorts each row by
   column, and `.T` / `.T.T` return CSC / CSR. Tile geometry is built per
   batch width on the first eager product with that width, and only when the
-  backend can reach CUDA. Construction builds nothing (it used to build
+  backend can reach CUDA. Construction builds no tiles (it used to build
   about 4.8 GiB per direction at 100k × 100k, 1% density). Inside
   `jax.jit`, a width that was not prepared uses the parent CSR path with a
   one-time `PerformanceWarning`. Call
@@ -47,18 +61,37 @@ one explicit scheduler configuration (`CSRConfig`) in place of
 - CSR hybrid MV/MM in float16/bfloat16 accumulate every edge in float32 and
   round once. bfloat16 sums used to saturate at 256. The raw hybrid FFI
   output is float32 (float64 for float64 weights).
-- A native transposed binary MM without a prepared plan (traced, vmapped or
-  `config=None` structure) falls back to the JAX scatter with a one-time
-  `PerformanceWarning` instead of failing to lower.
-- Prepared row statistics (`primary_max_row_nnz`, `mirror_max_row_nnz`, MM
-  long-task counts) are power-of-two upper bounds, and nonzero long-task
-  counts are at least 64. A structure redrawn from the same distribution with
-  the same shape and nnz reuses compiled executables instead of recompiling
-  once per matrix.
-- CSR construction reads GPU SM count and L2 size through the CUDA driver
-  API and no longer needs `nvcc`. Placements over several GPUs of one kind
-  use the lowest device id. `CSRConfig.prepare_structure` reads `indptr`
-  only, and `check_structure=False` skips copying the indices to the host.
+- The CUDA hybrid scatter MM (`binary_csrmm` / `binary_csrmm_indexed` with
+  `transpose=True`) is a batched kernel planned when the call is lowered,
+  from static shapes (rows, columns, stored edges, batch, value dtype, event
+  mode) and the smallest L2 cache among the target GPUs. CSR/CSC construction
+  automatically builds a packed long-row mask, carried as a dynamic pytree
+  leaf and shared by weight-only updates and transpose views. Mirror layouts
+  carry their own mask, including the FixedNum indexed path. Raw event MV/MM
+  interfaces accept optional `long_mask=`; omitted masks are constructed
+  automatically when the native MM needs them. Matrices built inside `jax.jit`
+  from traced arrays, built on the CPU, or used through `vmap` of MV run it
+  natively, and redrawn structures of equal shape share one executable.
+  Its short-row scratch is bounded by the larger of one int32 entry per
+  stored edge, 4 MiB and the output chunk's L2 budget (or one batch when
+  larger). The four-lane schedule uses half of L2 on GPUs with at least
+  32 MiB L2; other schedules keep the quarter-L2 rule. Large sparse matrices
+  retain more batches per launch while bounding short-list growth for tall,
+  narrow outputs. The larger allowance applies only when it reduces the
+  number of launch groups.
+  Matrix construction reads no structure statistics and queries no GPU;
+  `check_structure=False` skips every host read of the structure.
+- With no backend chosen on a process with a CUDA device, CSR and CSC
+  `W @ events` scatter over the mirror with the indexed CUDA kernel (the GPU
+  default), as an explicit or global `cuda_raw` already did. Under
+  `--xla_gpu_deterministic_ops` and on CPU-only processes the gather is kept.
+  A structure built inside `jax.jit` has no mirror and gathers; that warns
+  once only when `cuda_raw` was chosen explicitly or globally.
+- `CompactBinary` preprocessing follows the usual backend resolution
+  (`set_backend`, the per-primitive default and the deterministic-ops flag)
+  on the platform it lowers for, instead of picking `cuda_raw` from the
+  default device. The CPU default is Numba. `COMPACT_BINARY_PREPROCESS_BACKEND`
+  defaults to `None`; set a backend name to force it where available.
 - Tuning searches 48 scheduler candidates at 3% and 0.3% density, and
   `init_csr_config()` returns one result per workload. The default scale is
   50. Matrices without an exact workload match use the nearest tuned
@@ -112,6 +145,9 @@ one explicit scheduler configuration (`CSRConfig`) in place of
   alive past module cleanup, so an execution queued after its outputs were
   dropped cannot call a freed trampoline (Windows `0xC0000096`).
 - A stale or undersized CSR hybrid task queue no longer drops edges.
+- SDDMM event gradients with no backend follow a global
+  `set_backend('gpu', 'cuda_raw')` as a preference: untransposed products,
+  which the CUDA kernel does not support, use JAX instead of raising.
 - The CSR and TCSR hybrid kernels compile for GPUs older than sm_80, using a
   shuffle fallback for `__reduce_add_sync`.
 - The row-major hybrid MM FFI checks its int32 range. The MM short-row

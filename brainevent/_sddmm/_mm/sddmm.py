@@ -27,7 +27,7 @@ import jax.numpy as jnp
 from jax.experimental import sparse
 
 from brainevent._compatible_import import match_varying_axes, varying_axes_of
-from brainevent._misc import _csr_to_coo
+from brainevent._misc import _csr_to_coo, _long_row_mask
 from brainevent._op import load_cuda_file
 from brainevent._op.util import event_factor
 from brainevent._sddmm import _common
@@ -88,14 +88,6 @@ def _cuda_plan(rows: int, batch: int, nnz: int, dtype: Any, weighted: bool):
     return attrs, infos
 
 
-def _long_mask(indptr: jax.Array) -> jax.Array:
-    """Pack the current row classification into the native uint32 bit mask."""
-    rows = indptr.size - 1
-    bits = (jnp.diff(indptr) > _TASK_NNZ).astype(jnp.uint32)
-    bits = jnp.pad(bits, (0, -rows % 32)).reshape((-1, 32))
-    return jnp.sum(bits << jnp.arange(32, dtype=jnp.uint32), axis=1, dtype=jnp.uint32)
-
-
 def _jax_kernel(events: jax.Array, ct: jax.Array, indices: jax.Array,
                 indptr: jax.Array | None, *, transpose: bool, weighted: bool,
                 **kwargs: Any) -> tuple[jax.Array]:
@@ -142,7 +134,7 @@ def _cuda_kernel(*, transpose: bool, weighted: bool, ct_info: jax.ShapeDtypeStru
     def kernel(events, ct, indices, indptr):
         target, vector = native_event_target(
             'batched_v3_sddmm_weighted' if weighted else 'batched_v3_sddmm', dtype, events, weighted=weighted)
-        mask = _long_mask(indptr) if attrs['long_count'] else jnp.zeros(((rows + 31) // 32,), jnp.uint32)
+        mask = _long_row_mask(indptr, _TASK_NNZ) if attrs['long_count'] else jnp.zeros(((rows + 31) // 32,), jnp.uint32)
         out = jax.ffi.ffi_call(
             f'{module}.{target}', infos, input_output_aliases={5: 0}, vmap_method='sequential',
         )(vector.T, ct.T, indices, indptr, mask, jnp.zeros((nnz,), dtype), **attrs)[0]

@@ -116,7 +116,8 @@ def test_fresh_import_emits_no_warning():
 
 
 def test_all_exports_resolve_and_are_stable():
-    assert len(brainevent.__all__) == 175
+    # MVSchedule was folded into CSRConfig and removed from the public exports.
+    assert len(brainevent.__all__) == 174
     for name in brainevent.__all__:
         assert hasattr(brainevent, name), name
 

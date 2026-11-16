@@ -18,10 +18,12 @@ The names are orientation-free: ``CSR(W).T`` is a ``CSC`` over the very same
 arrays, so its primary/mirror layouts are the same objects and nothing has to
 be re-keyed.
 
-A cache is only written with concrete arrays (see :func:`is_concrete`): a
-matrix whose structure is traced either carries its mirror as pytree leaves
-or uses a mirror-free fallback, so no tracer is ever stored on an object that
-outlives its trace.
+A persistent shared cache is only populated with concrete arrays (see
+:func:`is_concrete`). A newly constructed, trace-local matrix may cache
+derived tracers, which leave the trace as ordinary pytree leaves. A matrix
+passed into a trace carries its cached arrays as leaves; a missing mirror
+uses a mirror-free fallback. No tracer is stored on an object that outlives
+its trace.
 """
 
 import warnings
@@ -42,6 +44,24 @@ def is_concrete(*arrays) -> bool:
     return not any(isinstance(a, Tracer) for a in arrays)
 
 
+def _mm_mask_for_structure(indptr, nnz: int):
+    """Build the shape-planned MM mask without reading structure values on the host."""
+    import jax
+
+    # config imports this module, so keep these imports out of module setup.
+    from brainevent._csr.config import CSRConfig
+    from brainevent._misc import _long_row_mask
+
+    rows = indptr.shape[0] - 1
+    threshold = CSRConfig.mm_threshold(rows, nnz)
+    if is_concrete(indptr):
+        # A closed-over concrete structure may be used during another trace.
+        # Its shared cache must contain a real array rather than a tracer.
+        with jax.ensure_compile_time_eval():
+            return _long_row_mask(indptr, threshold)
+    return _long_row_mask(indptr, threshold)
+
+
 class StructureCache:
     """Mutable holder of arrays derived from one sparse structure.
 
@@ -52,9 +72,10 @@ class StructureCache:
         the mirror holds stored element ``perm[j]``.
     diag_plan : tuple of jax.Array or None
         The ``diag_add`` relocation plan (CSR/CSC only).
-    mirror_preparation : tuple or None
-        The mirror's immutable MM structure plan and longest compressed row.
-        Shared by same-structure objects after the mirror is prepared.
+    primary_mm_mask, mirror_mm_mask : jax.Array or None
+        Packed long-row masks of the corresponding compressed traversal.
+        These arrays are carried as pytree leaves, independently of the
+        lowering-time launch plan.
     tile_geometries : dict
         Immutable tiled-MM geometry keyed by direction, actual tile width and
         offset dtype, independent of batch and value dtype.
@@ -63,7 +84,7 @@ class StructureCache:
         arrays may be shared by structure-preserving copies.
     """
     __slots__ = (
-        'mirror', 'diag_plan', 'tile_geometries', 'mirror_preparation',
+        'mirror', 'diag_plan', 'tile_geometries', 'primary_mm_mask', 'mirror_mm_mask',
     )
 
     def __init__(
@@ -72,12 +93,14 @@ class StructureCache:
         diag_plan: Optional[Tuple] = None,
         *,
         tile_geometries: Optional[Mapping[Tuple, Any]] = None,
-        mirror_preparation: Optional[Tuple[Any, int]] = None,
+        primary_mm_mask: Any = None,
+        mirror_mm_mask: Any = None,
     ):
         self.mirror = None if mirror is None else tuple(mirror)
-        self.mirror_preparation = mirror_preparation
         self.diag_plan = None if diag_plan is None else tuple(diag_plan)
         self.tile_geometries = {} if tile_geometries is None else dict(tile_geometries)
+        self.primary_mm_mask = primary_mm_mask
+        self.mirror_mm_mask = mirror_mm_mask
 
     def copy(self) -> 'StructureCache':
         """Copy cache containers while sharing immutable plan arrays.
@@ -91,7 +114,7 @@ class StructureCache:
         return type(self)(
             mirror=self.mirror, diag_plan=self.diag_plan,
             tile_geometries=self.tile_geometries,
-            mirror_preparation=self.mirror_preparation,
+            primary_mm_mask=self.primary_mm_mask, mirror_mm_mask=self.mirror_mm_mask,
         )
 
     def set_mirror(self, mirror: Tuple) -> Tuple:
@@ -105,12 +128,19 @@ class StructureCache:
         Returns
         -------
         tuple
-            The stored mirror. Primary tile plans are preserved; mirror
-            statistics and tile plans must be prepared again. No array values
-            are read.
+            The stored mirror. Primary tile plans are preserved; mirror tile
+            plans must be prepared again. The mirror's MM mask is rebuilt
+            with JAX operations; no array values are read on the host.
         """
         self.mirror = tuple(mirror)
-        self.mirror_preparation = None
+        indptr, indices, _ = self.mirror
+        # Placeholder-only caches are also used by pytree tooling and tests.
+        # Real mirrors always supply shaped arrays, including traced arrays
+        # on newly constructed, trace-local matrices.
+        self.mirror_mm_mask = (
+            _mm_mask_for_structure(indptr, indices.size)
+            if hasattr(indptr, 'shape') and hasattr(indices, 'size') else None
+        )
         self.tile_geometries = {
             key: geometry for key, geometry in self.tile_geometries.items() if key[0]
         }

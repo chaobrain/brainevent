@@ -45,6 +45,25 @@ class TestConstruction1D:
         CompactBinary.from_array(x)
         assert recorded['backend'] == 'jax_raw'
 
+    @pytest.mark.parametrize('configured', [None, 'no_such_backend'])
+    def test_unset_or_unavailable_preprocess_backend_defers_to_resolution(self, monkeypatch, configured):
+        x = jnp.asarray([False, True, False, True], dtype=jnp.bool_)
+        recorded = {}
+        original = compact_binary_mod.binary_1d_array_index_p_call
+
+        def _spy(spikes, *, backend=None):
+            recorded['backend'] = backend
+            return original(spikes, backend=backend)
+
+        monkeypatch.setattr(compact_binary_mod, 'binary_1d_array_index_p_call', _spy)
+        monkeypatch.setattr(compact_binary_mod, 'COMPACT_BINARY_PREPROCESS_BACKEND', configured)
+        cb = CompactBinary.from_array(x)
+        # No explicit backend: set_backend, the primitive default and the
+        # deterministic flag decide on the actual lowering platform.
+        assert recorded['backend'] is None
+        np.testing.assert_array_equal(np.asarray(cb.n_active), [2])
+        np.testing.assert_array_equal(np.asarray(cb.active_ids)[:2], [1, 3])
+
 
 class TestConstruction1DLight:
     def test_skips_compaction_metadata(self):

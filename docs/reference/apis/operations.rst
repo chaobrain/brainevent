@@ -11,18 +11,19 @@ CSR Operations
 
 Binary matrix-vector / matrix-matrix multiplication.
 
-.. important::
+.. note::
 
-   Raw ``binary_csrmm`` and ``binary_csrmm_indexed`` calls need an explicit
-   prepared ``config`` to use the native CUDA hybrid scatter MM
-   (``transpose=True``, backend resolving to ``cuda_raw``). Construct it for
-   the actual structure and target GPU outside ``jax.jit``, before calling
-   MM. Omitting ``config`` or passing ``None`` or a bare ``CSRConfig()``
-   leaves that call unprepared: it runs the portable JAX scatter instead and
-   warns once with ``PerformanceWarning``.
-   The raw functions do not build a long-row mask automatically. See
-   :ref:`csr-mm-configuration` for preparation and the exceptions for gather
-   calls, other backends and empty operations.
+   The native CUDA hybrid scatter MM of ``binary_csrmm`` and
+   ``binary_csrmm_indexed`` (``transpose=True``, backend resolving to
+   ``cuda_raw``) needs no preparation: it is planned from static shapes and
+   the target GPU when the call is lowered, including inside ``jax.jit``.
+   CSR/CSC objects automatically cache their long-row mask as a dynamic
+   pytree leaf; weight-only updates and transpose views share it. The raw
+   event MV/MM functions accept an optional ``long_mask`` array. When it is
+   omitted, native MM computes it automatically. A matrix created before a
+   time-step loop reuses its mask; recreating it inside the loop rebuilds it.
+   ``config`` holds MV scheduler constants and MM chunk policies; resolved
+   plans remain local to lowering. See :ref:`csr-mm-configuration`.
 
 .. autosummary::
    :toctree: generated/

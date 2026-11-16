@@ -133,7 +133,7 @@ def _require_cuda():
 
 
 @pytest.mark.parametrize('factory_name', ['constructor', 'fromcsr', 'fromcsc', 'fromdense'])
-def test_checked_factories_prepare_inherited_mm_for_backend_override(factory_name):
+def test_checked_factories_run_inherited_mm_for_backend_override(factory_name):
     _require_cuda()
     source = _source()
     argument = source.tocsc() if factory_name == 'fromcsc' else source
@@ -141,7 +141,9 @@ def test_checked_factories_prepare_inherited_mm_for_backend_override(factory_nam
         argument = source.todense()
     factory = TCSR if factory_name == 'constructor' else getattr(TCSR, factory_name)
     matrix = factory(argument, binary_backend='cuda_raw')
-    assert matrix.config.device_info is not None
+    assert matrix.backend == 'cuda_raw'
+    if factory_name != 'fromdense':
+        assert matrix.config is source.config
     assert matrix._cache.tile_geometries == {}  # prepared by the first product
     events = jnp.array([[True, False], [True, True]])
     np.testing.assert_allclose(
@@ -157,12 +159,21 @@ def test_checked_factories_prepare_inherited_mm_for_backend_override(factory_nam
     assert sorted(key[0] for key in matrix._cache.tile_geometries) == [False, True]
 
 
-def test_trusted_backend_override_can_explicitly_rebuild_parent_configuration():
+@pytest.mark.parametrize('built_on', ['default', 'cpu'])
+def test_trusted_backend_override_runs_cuda_mm_with_parent_configuration(built_on):
     _require_cuda()
-    source = CSR.fromdense(jnp.array([[1., 2., 0.], [0., 3., 4.]]), backend='jax_raw')
+    dense = jnp.array([[1., 2., 0.], [0., 3., 4.]])
+    if built_on == 'cpu':
+        # A CPU-built JAX configuration needs no rebuild on the GPU.
+        cpu = jax.devices('cpu')[0]
+        with jax.default_device(cpu):
+            source = CSR.fromdense(jax.device_put(dense, cpu), backend='jax_raw')
+        source = jax.device_put(source, jax.devices('gpu')[0])
+    else:
+        source = CSR.fromdense(dense, backend='jax_raw')
     matrix = TCSR.from_sorted_csr(source, backend='cuda_raw')
-    assert matrix.config is source.config and matrix.config.device_info is None
-    rebuilt = matrix.with_rebuilt_config()
-    assert type(rebuilt) is TCSR and rebuilt.config.device_info is not None
+    assert type(matrix) is TCSR and matrix.config is source.config
     events = jnp.array([[True, False], [True, True]])
-    np.testing.assert_allclose(BinaryArray(events) @ rebuilt, np.asarray(events) @ np.asarray(source.todense()))
+    np.testing.assert_allclose(BinaryArray(events) @ matrix, np.asarray(events) @ np.asarray(dense))
+    right = jnp.array([[True, False], [False, True], [True, True]])
+    np.testing.assert_allclose(matrix @ BinaryArray(right), np.asarray(dense) @ np.asarray(right))

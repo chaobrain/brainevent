@@ -42,20 +42,6 @@ def test_limits_match_actual_native_allocation(resources, threads, shared, expec
     assert api._supports(resources, threads, shared) is expected
 
 
-def test_target_assignment_and_mesh_precede_backend_candidates():
-    context = SimpleNamespace(module_context=SimpleNamespace(
-        axis_context=SimpleNamespace(device_assignment=('actual',)), backend=None,
-    ))
-    assert api._target_devices(context) == ('actual',)
-    context.module_context.axis_context = SimpleNamespace(mesh=SimpleNamespace(devices=np.array([['mesh0', 'mesh1']])))
-    assert api._target_devices(context) == ('mesh0', 'mesh1')
-    context.module_context.axis_context = SimpleNamespace()
-    context.module_context.backend = SimpleNamespace(local_devices=lambda: ['candidate0', 'candidate1'])
-    assert api._target_devices(context) == ('candidate0', 'candidate1')
-    context.module_context.backend = None
-    assert api._target_devices(context) == ()
-
-
 def test_unknown_or_cpu_device_does_not_load_driver(monkeypatch):
     def forbidden(device, attributes):
         raise AssertionError('non-CUDA target loaded the driver')

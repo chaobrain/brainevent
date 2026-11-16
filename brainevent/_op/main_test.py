@@ -482,6 +482,46 @@ def test_216_resolution_errors_are_unchanged():
         prim._resolve_backend('gpu', 'warp')
 
 
+def test_resolve_backend_reports_the_lowering_choice_quietly(monkeypatch):
+    """The public query follows the lowering priority but never warns or raises."""
+    prim = _gpu_probe('resolve_backend_probe', 'cuda_raw', 'cublas')
+    monkeypatch.delenv('XLA_FLAGS', raising=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        assert prim.resolve_backend('gpu') == 'cuda_raw'
+        assert prim.resolve_backend('gpu', 'cublas') == 'cublas'
+        assert prim.resolve_backend('gpu', 'warp') is None
+        assert prim.resolve_backend('gpu', '') is None
+        assert prim.resolve_backend('tpu') is None
+        try:
+            set_backend('gpu', 'cublas')
+            assert prim.resolve_backend('gpu') == 'cublas'
+            set_backend('gpu', 'warp')  # an unregistered global falls back silently
+            assert prim.resolve_backend('gpu') == 'cuda_raw'
+        finally:
+            clear_backends()
+        monkeypatch.setenv('XLA_FLAGS', '--xla_gpu_deterministic_ops=true')
+        assert prim.resolve_backend('gpu') == 'cuda_raw'  # no GPU jax_raw: kept, unwarned
+
+
+def test_resolve_backend_leaves_lowering_warnings_pending(monkeypatch):
+    """A quiet query does not consume the once-per-message lowering warning."""
+    prim = _gpu_probe('resolve_backend_pending_probe', 'cuda_raw', 'cublas')
+    monkeypatch.setenv('XLA_FLAGS', '--xla_gpu_deterministic_ops=true')
+    assert prim.resolve_backend('gpu') == 'cuda_raw'
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        assert prim._resolve_backend('gpu') == 'cuda_raw'
+    assert any('deterministic' in str(w.message) for w in caught)
+
+
+def test_resolve_backend_follows_the_deterministic_flag(monkeypatch):
+    prim = _gpu_probe('resolve_backend_flag_probe', 'cuda_raw', DETERMINISTIC_GPU_BACKEND)
+    monkeypatch.setenv('XLA_FLAGS', '--xla_gpu_deterministic_ops=true')
+    assert prim.resolve_backend('gpu') == DETERMINISTIC_GPU_BACKEND
+    assert prim.resolve_backend('gpu', 'cuda_raw') == 'cuda_raw'
+
+
 _REPRODUCIBILITY_PROBE = r'''
 import jax, jax.numpy as jnp, numpy as np
 import brainevent

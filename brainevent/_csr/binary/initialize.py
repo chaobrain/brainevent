@@ -34,7 +34,7 @@ import numpy as np
 from brainevent._error import BrainEventError
 from brainevent._misc import _static_integer
 from brainevent._op import get_cache_dir
-from brainevent._csr.config import _BenchmarkRecord, CSRConfig, MVSchedule
+from brainevent._csr.config import CSRConfig
 
 CONFIG_FILENAME = 'csr_hybrid_config.json'
 _ENV_OVERRIDE = 'BRAINEVENT_CSR_HYBRID_CONFIG'
@@ -52,10 +52,10 @@ _LOG = logging.getLogger(__name__)
 #: default sweep's memory footprint modest.
 _N_BASE = 1000
 
-#: Candidate axes, ordered as the four fields in ``MVSchedule``.
+#: Candidate axes, ordered as the four MV fields in ``CSRConfig``.
 PARAMETER_VALUES = ((512, 256), (512, 1024, 2048), (128, 256), (512, 1024, 2048, 4096))
 DEFAULT_CANDIDATES: tuple[CSRConfig, ...] = tuple(
-    CSRConfig(mv=MVSchedule(*values)) for values in product(*PARAMETER_VALUES)
+    CSRConfig(*values) for values in product(*PARAMETER_VALUES)
 )
 DEFAULT_DENSITIES = (0.03, 0.003)
 
@@ -68,12 +68,19 @@ def _current_device_kind() -> str:
         return ''
 
 
-def _mv_from_mapping(data: Mapping[str, Any]) -> MVSchedule:
-    return MVSchedule(**{name: data[name] for name in _CONFIG_FIELDS})
+def _policy_from_mapping(data: Mapping[str, Any]) -> CSRConfig:
+    """Read a complete MV policy, defaulting the newer MM policy fields.
 
-
-def _mv_to_mapping(schedule: MVSchedule) -> dict[str, int]:
-    return {key: int(getattr(schedule, key)) for key in _CONFIG_FIELDS}
+    Stored configurations and explicit overrides historically required all
+    four MV fields. Keep that validation stricter than ``from_dict`` so a
+    partial or invalid saved entry cannot replace a valid fallback.
+    """
+    parameters = dict(data)
+    for name in _CONFIG_FIELDS:
+        # The public constructor treats None as an omitted MV argument;
+        # persisted nulls were invalid before that constructor was unified.
+        parameters[name] = _static_integer(data[name], name)
+    return CSRConfig.from_dict(parameters)
 
 
 def _matrix_key(metadata: Mapping[str, Any] | None) -> tuple[int, int, int] | None:
@@ -157,7 +164,7 @@ def _nearest_workload(key: tuple[int, int, int] | None,
 
 
 def _config_from_mapping(entry: Mapping[str, Any]) -> CSRConfig:
-    schedule = _mv_from_mapping(entry.get('best_config', entry))
+    config = _policy_from_mapping(entry.get('best_config', entry))
     records = []
     diagnostics = entry.get('benchmark_records', ())
     if not isinstance(diagnostics, (list, tuple)):
@@ -169,19 +176,21 @@ def _config_from_mapping(entry: Mapping[str, Any]) -> CSRConfig:
             elapsed, per_call = float(record['elapsed_ms']), float(record['per_call_us'])
             if not math.isfinite(elapsed) or not math.isfinite(per_call) or min(elapsed, per_call) < 0:
                 continue
-            records.append(_BenchmarkRecord(
-                config=CSRConfig(mv=_mv_from_mapping(record['config'])),
-                elapsed_ms=elapsed, per_call_us=per_call,
-                task_capacity=(None if record.get('task_capacity') is None
-                               else operator.index(record['task_capacity'])),
-            ))
+            records.append({
+                **record,
+                'config': _policy_from_mapping(record['config']),
+                'elapsed_ms': elapsed, 'per_call_us': per_call,
+                'task_capacity': (None if record.get('task_capacity') is None
+                                  else operator.index(record['task_capacity'])),
+            })
         except (ValueError, KeyError, TypeError, AttributeError):
             continue
-    return CSRConfig(mv=schedule, benchmark_records=tuple(records))
+    return CSRConfig(**config.to_dict(), benchmark_records=tuple(records))
 
 
-# Saved workloads resolved per (store path, file version, device kind). Every
-# value is immutable, so matrices constructed from one store version share them.
+# Saved workloads resolved per (store path, file version, device kind). Matrices
+# from one store version share policy snapshots; diagnostic dicts were copied
+# from the parsed store when those snapshots were built.
 _WORKLOAD_CACHE: dict[tuple[str, tuple[int, int, int], str], tuple[Any, ...]] = {}
 
 _Workload = tuple[tuple[int, int, int], str, CSRConfig]
@@ -255,7 +264,7 @@ def load_csr_config(
     integer shape/nnz metadata rather than floating-point density keys.
     Existing matrices retain their snapshots when the persisted configuration
     changes. The parsed store and its resolved configurations are cached
-    until the file changes, so repeated calls share immutable snapshots.
+    until the file changes, so repeated calls share policy snapshots.
     """
     raw = os.environ.get(_ENV_OVERRIDE)
     if raw:
@@ -291,16 +300,12 @@ def load_csr_config(
     return config
 
 
-def _serialize_records(records: Sequence[_BenchmarkRecord | Mapping[str, Any]]) -> list[dict]:
+def _serialize_records(records: Sequence[Mapping[str, Any]]) -> list[dict]:
     saved = []
     for record in records:
-        row: dict[str, Any]
-        if isinstance(record, _BenchmarkRecord):
-            row = dict(config=record.config, elapsed_ms=record.elapsed_ms,
-                       per_call_us=record.per_call_us, task_capacity=record.task_capacity)
-        else:
-            row = dict(record)
-        row['config'] = _mv_to_mapping(row['config'].mv)
+        row = dict(record)
+        config = row['config']
+        row['config'] = (config if isinstance(config, CSRConfig) else CSRConfig.from_dict(config)).to_dict()
         for name in ('elapsed_ms', 'per_call_us'):
             if name in row:
                 row[name] = float(row[name])
@@ -313,7 +318,7 @@ def _serialize_records(records: Sequence[_BenchmarkRecord | Mapping[str, Any]]) 
 def save_csr_config(
     config: CSRConfig,
     device_kind: str | None = None,
-    benchmark_records: Sequence[_BenchmarkRecord | Mapping[str, Any]] | None = None,
+    benchmark_records: Sequence[Mapping[str, Any]] | None = None,
     *,
     matrix_metadata: Mapping[str, Any] | None = None,
 ) -> Path:
@@ -322,7 +327,7 @@ def save_csr_config(
     Parameters
     ----------
     config : CSRConfig
-        Snapshot whose four scheduling constants are saved.
+        Snapshot whose nine MV/MM policy fields are saved.
     device_kind : str or None, optional
         Target device model; defaults to the first JAX device's model.
     benchmark_records : sequence or None, optional
@@ -451,13 +456,13 @@ def _read_store_for_update(path: Path) -> dict[str, Any]:
 
 
 def _merge_entry(store: dict[str, Any], config: CSRConfig, device_kind: str,
-                 benchmark_records: Sequence[_BenchmarkRecord | Mapping[str, Any]] | None,
+                 benchmark_records: Sequence[Mapping[str, Any]] | None,
                  matrix_metadata: Mapping[str, Any] | None) -> None:
     """Merge one device fallback or workload winner into ``store`` in place."""
     existing = store.get(device_kind, {})
     entry: dict[str, Any] = dict(existing) if isinstance(existing, Mapping) else {}
     records = config.benchmark_records if benchmark_records is None else benchmark_records
-    parameters = _mv_to_mapping(config.mv)
+    parameters = config.to_dict()
     if matrix_metadata is None:
         entry.update(parameters)
         entry.pop('benchmark_records', None)
@@ -549,12 +554,12 @@ def _benchmark_config(
 
     from brainevent._op import load_cuda_file
 
-    module_name = _MODULE_BASE + config.mv.module_suffix()
+    module_name = _MODULE_BASE + config.module_suffix()
     module = load_cuda_file(
         _CUDA_SOURCE,
         name=module_name,
         extra_include_paths=[str(_CUDA_SOURCE.parent)],
-        extra_cuda_cflags=config.mv.compile_flags(),
+        extra_cuda_cflags=config.compile_flags(),
         force_rebuild=force_rebuild,
         verbose=verbose_compile,
         allow_cuda_graph=True,

@@ -22,28 +22,13 @@
 
 namespace
 {
-  // Prepared plans use the device's L2 size. Check the executing device before
-  // touching scratch; zero-valued expectations are reserved for raw FFI tests.
-  inline void check_prepared_spmm_device(const char *name, int64_t expected_sms,
-                                         int64_t expected_l2_bytes)
-  {
-    if (expected_sms == 0 && expected_l2_bytes == 0)
-      return;
-    BE_CHECK(expected_sms > 0 && expected_l2_bytes > 0)
-        << name << ": invalid prepared device information";
-    hybrid::Device actual;
-    BE_CUDA_CHECK(hybrid::device_info(&actual));
-    BE_CHECK(actual.sms == expected_sms && actual.l2_bytes == expected_l2_bytes)
-        << name << ": prepared CSRConfig device does not match the executing GPU; prepare it for this device";
-  }
-
-  // Validate the static plan attributes of a nonempty call on the executing
-  // device and build its launch plan.
+  // Validate the static plan attributes of a nonempty call and build its launch
+  // plan. The plan comes from static shapes; any value passing these checks is
+  // correct (an undersized task queue only runs slower).
   inline hybrid::Plan plan_from_attrs(const char *name, int64_t batch, int64_t nnz, int64_t group,
                                       int64_t long_threshold, int64_t chunk, int64_t long_tasks,
-                                      int64_t task_capacity, int64_t expected_sms, int64_t expected_l2_bytes)
+                                      int64_t task_capacity)
   {
-    check_prepared_spmm_device(name, expected_sms, expected_l2_bytes);
     BE_CHECK((group == 4 || group == 8 || group == 16 || group == 32) && long_threshold >= 0 &&
              chunk >= 1 && chunk <= batch && chunk <= hybrid::kMaxGroupBatches && long_tasks >= 0 &&
              long_tasks <= std::numeric_limits<int64_t>::max() / chunk && task_capacity == chunk * long_tasks)
@@ -65,8 +50,7 @@ namespace
       const char *name, const BE::Tensor &values, const BE::Tensor &indices, const BE::Tensor &indptr,
       const BE::Tensor *perm, const BE::Tensor &long_mask, const BE::Tensor &events, BE::Tensor &output,
       BE::Tensor &workspace, BE::Tensor &short_rows, int64_t group, int64_t long_threshold, int64_t chunk,
-      int64_t long_tasks, int64_t task_capacity, int64_t expected_sms, int64_t expected_l2_bytes,
-      int64_t stream)
+      int64_t long_tasks, int64_t task_capacity, int64_t stream)
   {
     static_assert(!(ColMajor && Homo), "column-major hybrid SpMM is heterogeneous only");
     using OutT = hybrid::OutT<ValueT>;
@@ -108,7 +92,7 @@ namespace
       return;
     }
     const hybrid::Plan plan = plan_from_attrs(name, batch, nnz, group, long_threshold, chunk, long_tasks,
-                                              task_capacity, expected_sms, expected_l2_bytes);
+                                              task_capacity);
     BE_CHECK(static_cast<size_t>(workspace.numel()) * sizeof(uint32_t) >=
                  hybrid::workspace_bytes(plan, static_cast<int>(batch), Weighted ? sizeof(ValueT) : 0) &&
              static_cast<int64_t>(short_rows.numel()) >= chunk * rows)

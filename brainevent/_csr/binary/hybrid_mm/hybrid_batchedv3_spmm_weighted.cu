@@ -58,12 +58,11 @@ namespace hybrid
                                         const BE::Tensor indptr, const BE::Tensor long_mask,                     \
                                         const BE::Tensor events, BE::Tensor output, BE::Tensor workspace,        \
                                         BE::Tensor short_rows, int64_t group, int64_t long_threshold,            \
-                                        int64_t chunk, int64_t long_tasks, int64_t task_capacity, int64_t expected_sms, int64_t expected_l2_bytes, int64_t stream) \
+                                        int64_t chunk, int64_t long_tasks, int64_t task_capacity, int64_t stream) \
   {                                                                                                               \
     batched_spmm_v3_ffi<VALUE_T, VALUE_T, true, HOMO, false>(                                                     \
         "batched_spmm_v3_weighted" #SUFFIX, values, indices, indptr, nullptr, long_mask, events, output,          \
-        workspace, short_rows, group, long_threshold, chunk, long_tasks, task_capacity, expected_sms,             \
-        expected_l2_bytes, stream);                                                                               \
+        workspace, short_rows, group, long_threshold, chunk, long_tasks, task_capacity, stream);                                                                               \
   }
 
 // @BE batched_spmm_v3_weighted_f16

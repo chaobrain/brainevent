@@ -416,10 +416,15 @@ class TestCSRBuffers:
     def test_csr_pytree_roundtrip_carries_mirror_as_leaves(self, csr_mat):
         built = csr_mat.build_weight_indices()
         children, aux = built.tree_flatten()
-        assert len(children) == 7
+        # data, indices, indptr, config, primary mask, mirror arrays, mirror mask.
+        assert len(children) == 9
         assert children[3] is built.config
+        assert children[4] is built._cache.primary_mm_mask
+        assert children[8] is built._cache.mirror_mm_mask
         restored = brainevent.CSR.tree_unflatten(aux, children)
         assert restored.config is built.config
+        assert restored._cache.primary_mm_mask is built._cache.primary_mm_mask
+        assert restored._cache.mirror_mm_mask is built._cache.mirror_mm_mask
         for got, expected in zip(restored.buffers['csc'], built.buffers['csc']):
             np.testing.assert_array_equal(got, expected)
 
@@ -428,6 +433,8 @@ class TestCSRBuffers:
         result = jax.jit(lambda m: m)(built)
         for got, expected in zip(result.buffers['csc'], built.buffers['csc']):
             np.testing.assert_array_equal(got, expected)
+        np.testing.assert_array_equal(result._cache.primary_mm_mask, built._cache.primary_mm_mask)
+        np.testing.assert_array_equal(result._cache.mirror_mm_mask, built._cache.mirror_mm_mask)
 
     def test_csr_structure_preserving_ops_share_the_cache(self, csr_mat):
         built = csr_mat.build_weight_indices()

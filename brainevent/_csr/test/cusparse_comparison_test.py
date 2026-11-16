@@ -32,7 +32,7 @@ from brainevent._csr.test._test_util import (
     requires_cuda,
 )
 from brainevent._csr.test._test_util import comparison_x64  # noqa: F401
-from brainevent._csr.config import CSRConfig, get_device_info
+from brainevent._csr.config import CSRConfig
 
 
 pytestmark = [requires_cuda, pytest.mark.usefixtures('comparison_x64')]
@@ -42,22 +42,18 @@ pytestmark = [requires_cuda, pytest.mark.usefixtures('comparison_x64')]
 _COMPARISON_VALUE_DTYPES = VALUE_DTYPES
 
 
-@lru_cache(maxsize=2)
-def _prepared_config(offset_dtype):
-    case = make_case('float32', 'float32', offset_dtype)
-    device_info = get_device_info(case.indices, case.indptr)
-    assert device_info is not None
-    return CSRConfig(device_info=device_info).prepare_structure(
-        case.indices, case.indptr, shape=SHAPE,
-    )
+# The hybrid MM is planned from shapes at lowering, so one structure-free
+# config serves the matrix and its mirror. It is passed as a (leafless) pytree
+# argument of the jitted products.
+_CONFIG = CSRConfig()
 
 
 @lru_cache(maxsize=2)
-def _prepared_mirror(offset_dtype):
+def _mirror(offset_dtype):
     case = make_case('float32', 'float32', offset_dtype)
     matrix = be.CSR(
         (case.weights, case.indices, case.indptr), shape=SHAPE,
-        backend='cuda_raw', config=_prepared_config(offset_dtype),
+        backend='cuda_raw', config=_CONFIG,
         indptr_dtype=case.indptr.dtype,
     ).build_weight_indices()
     indptr, indices, perm = matrix._mirror()
@@ -69,14 +65,11 @@ def _prepared_mirror(offset_dtype):
     assert not np.array_equal(permutation, np.arange(permutation.size))
     assert indices.dtype == jnp.int32
     # Mirror builders choose offsets from nnz; explicitly retain each tested
-    # offset ABI and prepare a plan for these normalized mirror arrays.
+    # offset ABI for these normalized mirror arrays.
     indptr = indptr.astype(case.indptr.dtype)
     perm = perm.astype(case.indptr.dtype)
     assert indptr.dtype == perm.dtype == case.indptr.dtype
-    config = CSRConfig(
-        device_info=_prepared_config(offset_dtype).device_info,
-    ).prepare_structure(indices, indptr, shape=SHAPE[::-1])
-    return indptr, indices, perm, config
+    return indptr, indices, perm
 
 
 @partial(
@@ -198,10 +191,9 @@ def test_direct_csr_1k_matches_cusparse(
 ):
     case = make_case(value_dtype, event_dtype, offset_dtype)
     events = case.events_mm if matrix else case.events_mv
-    config = _prepared_config(offset_dtype)
     # Events remain the final runtime operand so the same executables can be
-    # reused with a silent input without rebuilding structure or plans.
-    args = (case.weights, case.indices, case.indptr, config, events)
+    # reused with a silent input without rebuilding the structure.
+    args = (case.weights, case.indices, case.indptr, _CONFIG, events)
     reference_args = (case.weights, case.indices, case.indptr, events)
     cuda_lowered = _direct.lower(
         *args, matrix=matrix, transpose=transpose, weighted=weighted,
@@ -231,11 +223,9 @@ def test_indexed_mirror_1k_matches_original_csr_cusparse(
 ):
     case = make_case(value_dtype, event_dtype, offset_dtype)
     events = case.events_mm if matrix else case.events_mv
-    mirror_indptr, mirror_indices, perm, config = _prepared_mirror(
-        offset_dtype,
-    )
+    mirror_indptr, mirror_indices, perm = _mirror(offset_dtype)
     cuda_args = (
-        case.weights, mirror_indices, mirror_indptr, perm, config, events,
+        case.weights, mirror_indices, mirror_indptr, perm, _CONFIG, events,
     )
     reference_args = (case.weights, case.indices, case.indptr, events)
     cuda_lowered = _indexed.lower(*cuda_args, matrix=matrix, weighted=weighted)
