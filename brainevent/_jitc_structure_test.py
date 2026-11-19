@@ -199,8 +199,24 @@ def test_prepared_structure_is_a_program_input_not_a_constant():
     mat = brainevent.JITCNormalR(1.5, 0.3, prob=0.1, seed=SEED, shape=shape)
     prepared = mat.prepare_structure()
     y = jnp.ones(shape[0])
-    as_argument = len(jax.jit(lambda m, y_: m.dt2t(y_, None)).lower(prepared, y).as_text())
-    closed_over = len(jax.jit(lambda y_: mat.dt2t(y_, None)).lower(y).as_text())
+    as_argument = jax.make_jaxpr(lambda m, y_: m.dt2t(y_, None))(prepared, y)
+    closed_over = jax.make_jaxpr(lambda y_: mat.dt2t(y_, None))(y)
     assert prepared.structure.nnz > 100_000
-    assert as_argument < 50_000
-    assert closed_over > 10 * as_argument
+    leaves = jax.tree.leaves((prepared, y))
+    for array in prepared.structure:
+        position = next(i for i, leaf in enumerate(leaves) if leaf is array)
+        aval = as_argument.jaxpr.invars[position].aval
+        assert aval.shape == array.shape and aval.dtype == array.dtype
+    # JAX may represent captured arrays as constvars or as equation literals.
+    def constants(jaxpr):
+        return list(jaxpr.consts) + [
+            var.val for eqn in jaxpr.jaxpr.eqns for var in eqn.invars
+            if hasattr(var, 'val')
+        ]
+
+    assert not any(np.size(c) >= prepared.structure.nnz for c in constants(as_argument))
+    assert any(
+        np.shape(c) == prepared.structure.order.shape
+        and np.array_equal(c, prepared.structure.order)
+        for c in constants(closed_over)
+    )
