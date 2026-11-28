@@ -25,3 +25,14 @@ repos:
   rev: '6.1.0'
   hooks:
   - id: flake8
+
+- repo: local
+  hooks:
+    - id: no-private-references
+      name: no maintainer-spec paths or personal home paths
+      language: pygrep
+      # Specs and design notes are kept outside this repository: name a task
+      # by its ID instead. Bare spec file names count too, not only paths.
+      entry: 'docs/(design|specs|superpowers)/|\bbrainevent-spec\b|decisions-need-me|\b(roadmap|lessons)\.md\b|\bmilestones/|\b20\d\d-\d\d-\d\d-[a-z0-9-]+\.md\b|/home/[A-Za-z0-9_.-]+/'
+      types: [text]
+      exclude: '^(\.pre-commit-config\.yaml|AGENTS\.md)$'

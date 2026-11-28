@@ -4,10 +4,19 @@
 
 """Tests for the shape-only hybrid MM plan in ``brainevent/_csr/config.py``.
 
-See ``docs/specs/2026-11-14-csr-mm-shape-plan.md`` (D1-D5). The plan reads
-only static shapes, the value dtype and the target L2 size; its task queue
-must hold every long-row task the native kernel can emit for *any* structure
-with those shapes.
+The plan reads only static shapes, the value dtype and the target L2 size;
+its task queue must hold every long-row task the native kernel can emit for
+*any* structure with those shapes. The decisions the tests check:
+
+* D1 inputs: rows, cols, nnz, batch, value dtype, ``weighted`` and the
+  target's L2 size; never array values.
+* D2 long rows: ``diff(indptr) > 16 * G``, computed at lowering.
+* D3 group: ``quarter = (min(nnz // rows, 512) + 3) // 4``, rounded up to
+  4, 8, 16 or 32.
+* D4 capacity: ``long_tasks = ceil(nnz / 512) + min(rows, nnz // (16 * G + 1))``
+  per batch chunk, a true upper bound.
+* D5 chunk: ``min(batch, 65535, (L2 / 4) // (cols * max(4, value bytes)))``,
+  L2 the minimum over the target devices.
 """
 
 import json

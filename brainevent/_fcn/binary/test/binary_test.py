@@ -787,7 +787,6 @@ def test_binary_fcnmm_weighted_large_gpu(homo_w, w_dtype, transpose):
 
 # ---------------------------------------------------------------------------
 # Inactive events contribute exactly zero (NaN/Inf weight isolation)
-# docs/specs/2026-10-24-inactive-row-nan-isolation.md
 # ---------------------------------------------------------------------------
 
 _ISO_BAD = [pytest.param(np.nan, id='nan'), pytest.param(np.inf, id='inf'),

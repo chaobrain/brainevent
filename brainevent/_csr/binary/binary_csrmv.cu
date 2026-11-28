@@ -30,7 +30,6 @@
 // zero even when its weight is NaN or +-Inf (``NaN * 0`` is NaN). ``F`` is the
 // event factor ``(ACC_T)IS_ACTIVE(x)``: 1/0 for binary events, the event value
 // for weighted (``_wv``) ones, so ``F != 0`` is the activity in both cases.
-// docs/specs/2026-10-24-inactive-row-nan-isolation.md
 #ifndef BE_EVENT_TERM
 #define BE_EVENT_TERM(W, F) (((F) != 0) ? (W) * (F) : 0)
 #endif

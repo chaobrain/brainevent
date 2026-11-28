@@ -490,8 +490,7 @@ when `2 / p` is not an integer. The low-level `clen` operand of the JITC
   that need 64-bit dtypes opt in with `with_jax_x64` (#219). The test of an
   unwritable cache directory simulates it portably, so it also runs on Windows
   CI (#222).
-- Completed release checklists and finished chore specs were removed from
-  `docs/specs`, and `AGENTS.md` asks for a spec only when it guides the
+- Completed release checklists and finished chore specs were removed, and `AGENTS.md` asks for a spec only when it guides the
   implementation (#213, #214). The package author email is
   `chaobrain@outlook.com`.
 
@@ -753,8 +752,7 @@ exceeds the `int32` range, and a first-class `Dense` representation joins the
 data-representation family (#179).
 
 *Operator machinery.* A hardening pass over `brainevent._op` fixes the 19
-defects catalogued in the 2026-07-16 operator-registration audit
-(`dev/2026-07-16-op-registration-audit.md`): stale backend dispatch after runtime
+defects catalogued in the 2026-07-16 operator-registration audit: stale backend dispatch after runtime
 backend switches, silently dropped JVP rules, incomplete compilation-cache keys,
 order-dependent FFI target names, and incorrect `vmap` execution of `numba.cuda`
 kernels, among others (#187).

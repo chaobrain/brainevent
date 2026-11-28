@@ -54,8 +54,7 @@ _numba_event_mask = numba_event_mask
 # Event-driven kernels (numba, cuda_raw) skip inactive events, so a NaN/Inf
 # weight that only meets inactive events never reaches the output. Backends
 # that evaluate a dense product (``jax_raw``, ``cublas``) would compute
-# ``w * 0 = NaN`` instead; they select before multiplying
-# (docs/specs/2026-10-24-inactive-row-nan-isolation.md).
+# ``w * 0 = NaN`` instead; they select before multiplying.
 
 
 def _mask_inactive(weights, spikes, *, axis: int):

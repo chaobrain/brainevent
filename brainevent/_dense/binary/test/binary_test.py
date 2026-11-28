@@ -746,7 +746,7 @@ def test_dense_weighted_gpu_large(backend, w_dtype, transpose):
 # Inactive events contribute exactly zero (NaN/Inf weight isolation)
 # ==============================================================================
 #
-# docs/specs/2026-10-24-inactive-row-nan-isolation.md: a NaN/Inf weight that
+# A NaN/Inf weight that
 # only meets inactive events must not reach the output, on every backend.
 
 _BAD_VALUES = [pytest.param(np.nan, id='nan'), pytest.param(np.inf, id='inf'),

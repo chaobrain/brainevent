@@ -165,8 +165,8 @@ def event_factor(x, *, dtype, weighted: bool = False) -> jax.Array:
     -----
     Multiplying by the mask is not NaN-safe: ``0 * NaN`` and ``0 * Inf`` are
     ``NaN``, so an inactive event would still see a non-finite weight or
-    cotangent. Inactive events must contribute exactly zero
-    (``2026-10-24-inactive-row-nan-isolation.md``); use :func:`select_active`
+    cotangent. Inactive events must contribute exactly zero, whatever the
+    weight they meet; use :func:`select_active`
     or :func:`active_sum` wherever the other operand can be non-finite.
 
     Examples

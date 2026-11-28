@@ -50,8 +50,7 @@
  *         output of the homogeneous kernels from the accumulator.
  *   Inactive (or invalid) events SELECT a zero term; the weight is never
  *   multiplied by a 0/1 mask, so a NaN/Inf weight that only meets inactive
- *   events contributes exactly 0 (docs/specs/2026-10-24-inactive-row-nan-
- *   isolation.md). Binary homogeneous kernels count active events and scale
+ *   events contributes exactly 0. Binary homogeneous kernels count active events and scale
  *   by w0 only when the count is non-zero.
  *   Weighted event buffers have the weight dtype, so READ_W converts them.
  */
