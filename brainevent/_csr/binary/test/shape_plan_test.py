@@ -2,7 +2,7 @@
 # Licensed under the Apache License, Version 2.0:
 # http://www.apache.org/licenses/LICENSE-2.0
 
-"""Shape-only hybrid MM planning (docs/specs/2026-11-14-csr-mm-shape-plan.md)."""
+"""Shape-only hybrid MM planning: the plan reads shapes, never array values."""
 
 import re
 

@@ -11,14 +11,10 @@ Follow the repository's [CONTRIBUTING.md](CONTRIBUTING.md) when making changes.
 4. Bug? Write a test that reproduces it, then fix until the test passes.
 5. Every correction: reflect on the mistake, plan to avoid repeating it.
 6. All updates must happen on the worktree branch, not main. 
-7. Write a spec only when it will actually guide the implementation: the work
-   spans several modules or repos, changes a public API or the architecture,
-   has real design choices to settle first, or will take multiple sessions.
-   Skip it for bug fixes, small features, local refactors, and docs edits.
-   A spec goes in `docs/specs/YYYY-MM-DD-<slug>.md`, one file (no separate
-   -spec/-plan pairs), and stays short: goal, decisions with reasons, step
-   plan, how to verify. Specs are dated records: don't rewrite old ones to
-   match later changes.
+7. Design notes, task specs and the roadmap are kept by the maintainers
+   outside this repository. Do not cite their paths in code, tests or docs
+   here: name a task by its ID and state the decision you rely on in the text
+   itself (pre-commit `no-private-references` checks).
 8. Tests should >90% coverage, but focus on meaningful tests that cover edge cases and critical paths, not just trivial lines. 
 9. Typing tests should pass mypy with no errors, but prioritize meaningful type annotations that improve readability and maintainability over exhaustive coverage of every variable.
 10. Support jax version >=0.9.0

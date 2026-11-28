@@ -6,8 +6,7 @@
 
 """Reproduction tests for the ``brainevent/_op/util.py`` audit findings.
 
-Each test targets one finding from
-``dev/2026-06-13-op-issues.md``:
+Each test targets one finding of the 2026-06-13 operator audit:
 
 * **H2** -- ``defjvp`` single-result path called the removed
   ``jax.interpreters.ad.standard_jvp`` -> ``AttributeError`` at registration.

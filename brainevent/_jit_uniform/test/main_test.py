@@ -944,8 +944,7 @@ def test_weighted_jitc_numba_nan_event_propagates(op, cls_name, corder):
 
 
 # ---------------------------------------------------------------------------
-# Inactive events contribute exactly zero (docs/specs/2026-10-24-inactive-row-
-# nan-isolation.md). JITC weights come from parameters, so the case is a NaN /
+# Inactive events contribute exactly zero, whatever the weight. JITC weights come from parameters, so the case is a NaN /
 # +-Inf *parameter*: outputs that receive only inactive contributions must be
 # exactly 0 on every backend, outputs reached by an active event stay
 # non-finite, and the parameter cotangent ignores inactive events even when

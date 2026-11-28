@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Shape-only plan for the CSR hybrid scatter MM (docs/specs/2026-11-14-csr-mm-shape-plan.md).
+"""Shape-only plan for the CSR hybrid scatter MM.
 
 Measures the transposed binary event product ``W.T @ events`` (events
 ``(rows, batch)``) with the native hybrid batched SpMM. Variants:

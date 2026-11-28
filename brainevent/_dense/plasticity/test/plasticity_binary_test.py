@@ -270,7 +270,6 @@ def test_dense_plasticity_transpose_rejects_spikes_and_zero_ct(prim):
 
 # --------------------------------------------------------------------------- #
 # Inactive events leave their edges bit-identical (NaN trace isolation)
-# docs/specs/2026-10-24-inactive-row-nan-isolation.md
 # --------------------------------------------------------------------------- #
 
 _ISO_SPIKES = np.array([2., 0., -1., 0., 0.5, 0.])  # rows 1, 3, 5 inactive

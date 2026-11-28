@@ -396,8 +396,7 @@ def recording_ffi_call(calls):
 
 
 # ---------------------------------------------------------------------------
-# Helpers for the event-activity tests (``x != 0`` contract, see
-# ``docs/specs/2026-10-24-event-activity-and-abi.md``).
+# Helpers for the event-activity tests (an event is active iff ``x != 0``).
 # ---------------------------------------------------------------------------
 
 #: Event dtypes swept by the activity tests. ``float64`` needs x64 mode; wrap
@@ -592,8 +591,8 @@ def heavy_row_csr_numpy(rng, m, k, row_nnz, weight_dtype=np.float32):
 
 
 # ---------------------------------------------------------------------------
-# Inactive-event NaN/Inf isolation
-# (docs/specs/2026-10-24-inactive-row-nan-isolation.md)
+# Inactive-event NaN/Inf isolation: an inactive event contributes exactly 0,
+# even when its weight is NaN or +-Inf
 # ---------------------------------------------------------------------------
 
 NONFINITE_VALUES = {'nan': np.nan, '+inf': np.inf, '-inf': -np.inf}
